@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from nccl.bindings import nccl as _nccl_bindings
-
 from nccl.core._binding_helpers import LowppSpec
 
 __all__ = ["NCCLTeam"]

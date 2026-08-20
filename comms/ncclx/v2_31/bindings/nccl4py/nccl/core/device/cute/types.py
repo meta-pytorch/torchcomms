@@ -1,10 +1,10 @@
 """User-facing enums shared by the rest of the device API.
 
-  - :class:`MemoryOrder`   — argument to barrier ``arrive`` / ``wait`` / ``sync``.
-  - :class:`ThreadScope`   — release-scope argument to GIN ``put`` / ``signal``.
-  - :class:`GinFenceLevel` — fence-level argument to GIN barrier ``sync``.
-  - :class:`GinBackendMask` — backend selection for :meth:`DevComm.gin`.
-  - :class:`GinResourceSharingMode` — resource-sharing mode for :meth:`DevComm.gin`.
+- :class:`MemoryOrder`   — argument to barrier ``arrive`` / ``wait`` / ``sync``.
+- :class:`ThreadScope`   — release-scope argument to GIN ``put`` / ``signal``.
+- :class:`GinFenceLevel` — fence-level argument to GIN barrier ``sync``.
+- :class:`GinBackendMask` — backend selection for :meth:`DevComm.gin`.
+- :class:`GinResourceSharingMode` — resource-sharing mode for :meth:`DevComm.gin`.
 """
 
 from enum import IntEnum, IntFlag
@@ -49,9 +49,9 @@ class GinFenceLevel(IntFlag):
     both prior puts and prior gets on the bound GIN context.
     """
 
-    NONE = 0           # pure sync, no drain
-    PUT = 1 << 0       # 1: drain prior puts
-    GET = 1 << 1       # 2: drain prior gets
+    NONE = 0  # pure sync, no drain
+    PUT = 1 << 0  # 1: drain prior puts
+    GET = 1 << 1  # 2: drain prior gets
 
 
 class GinBackendMask(IntFlag):
@@ -60,9 +60,9 @@ class GinBackendMask(IntFlag):
     ``NCCL_NET_DEVICE_GIN_*`` enumerators in ``net_device.h``.
     """
 
-    PROXY = 1 << 2     # 4
-    GDAKI = 1 << 3     # 8
-    GPI = 1 << 4       # 16
+    PROXY = 1 << 2  # 4
+    GDAKI = 1 << 3  # 8
+    GPI = 1 << 4  # 16
     ALL = PROXY | GDAKI | GPI
 
 

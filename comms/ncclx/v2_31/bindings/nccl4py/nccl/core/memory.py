@@ -16,9 +16,7 @@ import threading
 
 from cuda.core import Buffer, Device, MemoryResource, Stream
 from cuda.core.typing import DevicePointerType
-
 from nccl.bindings import nccl as _nccl_bindings
-
 from nccl.core.cuda import CudaDeviceContext
 
 
@@ -55,7 +53,9 @@ class NcclMemoryResource(MemoryResource):
             Buffer wrapping the allocated memory.
         """
         with CudaDeviceContext(self.device):
-            ptr = _nccl_bindings.mem_alloc(size)  # mem_alloc raises NCCLError if ptr is 0
+            ptr = _nccl_bindings.mem_alloc(
+                size
+            )  # mem_alloc raises NCCLError if ptr is 0
             buf = Buffer.from_handle(ptr=ptr, size=size, mr=self)
             return buf
 

@@ -12,6 +12,7 @@ Usage:
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -33,7 +34,9 @@ def get_rank_info():
         world_size = int(os.environ["SLURM_NTASKS"])
         local_rank = int(os.environ.get("SLURM_LOCALID", rank))
     else:
-        raise RuntimeError("Cannot determine rank — not launched via srun/mpirun/torchrun")
+        raise RuntimeError(
+            "Cannot determine rank — not launched via srun/mpirun/torchrun"
+        )
     return rank, world_size, local_rank
 
 
@@ -43,8 +46,10 @@ def init_distributed():
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
         dist.init_process_group(
-            backend="nccl", init_method="env://",
-            world_size=world_size, rank=rank,
+            backend="nccl",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
         )
     return rank, world_size, local_rank
 
@@ -53,7 +58,7 @@ def run_request_and_get_tensor(args):
     """Test request_allocator() then get_sym_tensor()."""
     rank, world_size, local_rank = init_distributed()
 
-    from ubx.ops import request_allocator, get_sym_tensor, _allocator_map
+    from ubx.ops import _allocator_map, get_sym_tensor, request_allocator
     from ubx.tensor import SymmTensor
 
     group = dist.group.WORLD
@@ -99,8 +104,7 @@ def run_allreduce_convenience(args):
     ref = input_data.float().clone()
     dist.all_reduce(ref, group=dist.group.WORLD)
 
-    from ubx.ops import request_allocator, get_sym_tensor
-    from ubx.ops import allreduce as ops_allreduce
+    from ubx.ops import allreduce as ops_allreduce, get_sym_tensor, request_allocator
 
     group = dist.group.WORLD
     shape = (size,)
@@ -120,7 +124,10 @@ def run_allreduce_convenience(args):
         print(f"FAIL rank={rank} mode=allreduce_convenience: {e}", flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} mode=allreduce_convenience: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=allreduce_convenience: {type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -133,7 +140,7 @@ def run_restore_round_trip(args):
     dtype = torch.bfloat16
     size = 512
 
-    from ubx.ops import request_allocator, get_sym_tensor, restore
+    from ubx.ops import get_sym_tensor, request_allocator, restore
     from ubx.tensor import SymmTensor
 
     group = dist.group.WORLD
@@ -148,11 +155,15 @@ def run_restore_round_trip(args):
 
     # Strip SymmTensor subclass (simulating an op that returns a plain Tensor)
     plain_tensor = symm_tensor.as_subclass(torch.Tensor)
-    assert not isinstance(plain_tensor, SymmTensor), "as_subclass should return plain Tensor"
+    assert not isinstance(plain_tensor, SymmTensor), (
+        "as_subclass should return plain Tensor"
+    )
 
     # restore() should wrap it back
     restored = restore(plain_tensor, group)
-    assert isinstance(restored, SymmTensor), f"restore should return SymmTensor, got {type(restored)}"
+    assert isinstance(restored, SymmTensor), (
+        f"restore should return SymmTensor, got {type(restored)}"
+    )
 
     # Data should be preserved
     torch.testing.assert_close(restored.float(), data.float(), atol=0, rtol=0)
@@ -160,18 +171,27 @@ def run_restore_round_trip(args):
     # Tensor outside pool should be returned unchanged
     outside_tensor = torch.randn(size, dtype=dtype, device=device)
     not_restored = restore(outside_tensor, group)
-    assert not isinstance(not_restored, SymmTensor), \
+    assert not isinstance(not_restored, SymmTensor), (
         "Tensor outside pool should not become SymmTensor"
+    )
 
     print(f"PASS rank={rank} mode=restore_round_trip")
     dist.destroy_process_group()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="UB-X convenience function test worker")
-    parser.add_argument("--mode", required=True,
-                        choices=["request_and_get_tensor", "allreduce_convenience",
-                                 "restore_round_trip"])
+    parser = argparse.ArgumentParser(
+        description="UB-X convenience function test worker"
+    )
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=[
+            "request_and_get_tensor",
+            "allreduce_convenience",
+            "restore_round_trip",
+        ],
+    )
     args = parser.parse_args()
 
     if args.mode == "request_and_get_tensor":

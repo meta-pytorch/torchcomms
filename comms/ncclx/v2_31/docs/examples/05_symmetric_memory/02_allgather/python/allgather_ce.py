@@ -17,8 +17,8 @@ mpirun -np <num_processes> python allgather_ce.py
 
 import sys
 
-import nccl.core as nccl
 import cupy as cp
+import nccl.core as nccl
 import numpy as np
 from mpi4py import MPI
 
@@ -141,7 +141,11 @@ def main() -> int:
     # Segment r of the receive buffer must hold rank r's value in all elements.
     result = cp.asnumpy(recv_buf)
     local_ok = all(
-        bool(np.allclose(result[r * sendcount : (r + 1) * sendcount], float(r), atol=0.001))
+        bool(
+            np.allclose(
+                result[r * sendcount : (r + 1) * sendcount], float(r), atol=0.001
+            )
+        )
         for r in range(mpi_size)
     )
     all_ok = comm_world.allreduce(local_ok, op=MPI.LAND)

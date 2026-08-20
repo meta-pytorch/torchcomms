@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import os
 import time
+
 import torch
 import torch.distributed as dist
 
@@ -12,8 +13,13 @@ from ..report import BenchResult, compute_bandwidth
 
 
 def bench_allgather_nccl(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    cudagraph: int = 10000,
 ) -> BenchResult:
     """Benchmark NCCL allgather."""
     element_size = torch.tensor(0, dtype=dtype).element_size()
@@ -69,16 +75,26 @@ def bench_allgather_nccl(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
 def bench_allgather_ubx(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int,
-    smlimit: int = 0, group=None, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    smlimit: int = 0,
+    group=None,
+    cudagraph: int = 10000,
     kernel: str = "auto",
 ) -> BenchResult:
     """Benchmark UB-X allgather.
@@ -172,7 +188,11 @@ def bench_allgather_ubx(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

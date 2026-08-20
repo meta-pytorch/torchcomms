@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import os
 import time
+
 import torch
 import torch.distributed as dist
 
@@ -22,7 +23,9 @@ def powerlaw_split(total_elems, nranks, alpha, seed, device):
     if alpha == 0:
         weights = torch.ones(nranks, device=device)
     else:
-        weights = torch.arange(1, nranks + 1, dtype=torch.float32, device=device) ** (-alpha)
+        weights = torch.arange(1, nranks + 1, dtype=torch.float32, device=device) ** (
+            -alpha
+        )
         perm = torch.randperm(nranks, device=device)
         weights = weights[perm]
 
@@ -37,8 +40,13 @@ def powerlaw_split(total_elems, nranks, alpha, seed, device):
 
 
 def bench_alltoallv_nccl(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int, alpha: float = 0.5,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    alpha: float = 0.5,
 ) -> BenchResult:
     """Benchmark NCCL alltoallv with power-law split sizes."""
     element_size = torch.tensor(0, dtype=dtype).element_size()
@@ -58,8 +66,9 @@ def bench_alltoallv_nccl(
 
     input_tensor = torch.randn(total_send, dtype=dtype, device=device)
     send_chunks = list(input_tensor.split(input_splits.tolist()))
-    recv_chunks = [torch.empty(s, dtype=dtype, device=device)
-                   for s in output_splits.tolist()]
+    recv_chunks = [
+        torch.empty(s, dtype=dtype, device=device) for s in output_splits.tolist()
+    ]
 
     for _ in range(warmup):
         dist.all_to_all(recv_chunks, send_chunks)
@@ -81,16 +90,26 @@ def bench_alltoallv_nccl(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=report_bytes, count=total_send,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="none",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=report_bytes,
+        count=total_send,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="none",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
 def bench_alltoallv_ubx(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int,
-    smlimit: int = 0, group=None, alpha: float = 0.5,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    smlimit: int = 0,
+    group=None,
+    alpha: float = 0.5,
 ) -> BenchResult:
     """Benchmark UB-X alltoallv with power-law split sizes."""
     from ubx import SymmAllocator
@@ -146,7 +165,11 @@ def bench_alltoallv_ubx(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=report_bytes, count=total_send,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="none",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=report_bytes,
+        count=total_send,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="none",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

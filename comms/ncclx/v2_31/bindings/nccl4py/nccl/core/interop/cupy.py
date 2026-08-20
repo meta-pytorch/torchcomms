@@ -11,11 +11,11 @@ memory, enabling zero-copy integration between NCCL operations and CuPy workflow
 
 from __future__ import annotations
 
-import numpy as np
 from typing import Literal
 
+import numpy as np
 from nccl.core.buffer import mem_alloc
-from nccl.core.typing import NcclInvalid, NcclDataType
+from nccl.core.typing import NcclDataType, NcclInvalid
 
 __all__ = ["empty", "resolve_array"]
 
@@ -63,7 +63,9 @@ def _to_nccl_dtype(cupy_dtype) -> NcclDataType:
     return NcclDataType.from_numpy_dtype(np_dtype)
 
 
-def _allocate_nccl_array(shape: tuple[int, ...], dtype: np.dtype, order: str) -> cupy.ndarray:
+def _allocate_nccl_array(
+    shape: tuple[int, ...], dtype: np.dtype, order: str
+) -> cupy.ndarray:
     """Allocates an NCCL-backed CuPy array on the current device.
 
     Args:

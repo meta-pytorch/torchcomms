@@ -14,6 +14,7 @@ Launch (2 or more GPUs on a single node):
 """
 
 import os
+
 import torch
 import torch.distributed as dist
 
@@ -34,7 +35,9 @@ def main():
     # in bf16) to see the UC path.
     total_count = 65536
     dtype = torch.bfloat16
-    pool_bytes = max(64 * 1024 * 1024, total_count * 2 * 16)  # headroom for Lamport triple buffer
+    pool_bytes = max(
+        64 * 1024 * 1024, total_count * 2 * 16
+    )  # headroom for Lamport triple buffer
     allocator = SymmAllocator(pool_bytes, device, dist.group.WORLD)
 
     # Fill input with rank-distinct data so the alltoall transpose is observable.
@@ -56,8 +59,10 @@ def main():
 
     torch.testing.assert_close(out, ref, atol=0.001, rtol=0.02)
     if rank == 0:
-        print(f"OK: alltoall_auto on {world_size} GPUs matches NCCL reference "
-              f"(total_count={total_count}, dtype={dtype})")
+        print(
+            f"OK: alltoall_auto on {world_size} GPUs matches NCCL reference "
+            f"(total_count={total_count}, dtype={dtype})"
+        )
 
     dist.destroy_process_group()
 

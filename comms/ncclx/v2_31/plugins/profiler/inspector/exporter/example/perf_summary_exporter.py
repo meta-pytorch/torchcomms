@@ -3,25 +3,27 @@
 #
 # See LICENSE.txt for more license information
 
-from pathlib import Path
 import argparse
+import contextlib
 import glob
 import gzip
-import sys
-import pandas as pd
-from concurrent.futures import ProcessPoolExecutor
 import json
-from tqdm.auto import tqdm
-import duckdb
-import math
-import matplotlib.pyplot as plt
-import matplotlib.dates
-from matplotlib.gridspec import GridSpec
-import os
 import logging
-import contextlib
+import math
+import os
+import sys
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
+from pathlib import Path
+
+import duckdb
+import matplotlib.dates
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+from matplotlib.gridspec import GridSpec
+from tqdm.auto import tqdm
+
 
 def setup_logging(output_dir):
     log_file = output_dir / "output.log"
@@ -53,7 +55,7 @@ def get_log_files_and_output_dir():
     parser.add_argument(
         "--output_dir",
         type=str,
-        help="Custom output directory name (default: auto-generated from input directory)."
+        help="Custom output directory name (default: auto-generated from input directory).",
     )
     args = parser.parse_args()
 
@@ -74,8 +76,8 @@ def get_log_files_and_output_dir():
         glob.iglob(str(Path(root_dir) / "**" / "*.jsonl.gz"), recursive=True)
     )
     if (
-            sum((1 for x in [logfiles, gzlogfiles, jsonlfiles, gzjsonlfiles] if len(x) > 0))
-            > 1
+        sum((1 for x in [logfiles, gzlogfiles, jsonlfiles, gzjsonlfiles] if len(x) > 0))
+        > 1
     ):
         ### TODO: we could probably generate some logic to pick the "right" file to load, but for now, bail
         logging.critical("Appear to have mixed .log/.log.gz/.jsonl/.jsonl.gz; bailing!")
@@ -94,6 +96,7 @@ def get_log_files_and_output_dir():
         output_dir_name = f"{root_dir.name}-analysis"
 
     return files, output_dir_name
+
 
 def bytes_to_human_readable(size_bytes):
     """
@@ -120,18 +123,23 @@ def bytes_to_human_readable(size_bytes):
     s = round(size_bytes * math.pow(10, -3 * i), 2)
     return f"{s:.2f}{size_name[i]}"
 
+
 def timestamp_to_datetime(timestamp_us):
     """Convert microsecond timestamp to datetime string"""
-    return datetime.fromtimestamp(timestamp_us / 1000000).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+    return datetime.fromtimestamp(timestamp_us / 1000000).strftime(
+        "%Y-%m-%d %H:%M:%S.%f"
+    )[:-3]
+
 
 def microseconds_to_human_readable(microseconds):
     """Convert microseconds to human readable format"""
     if microseconds < 1000:
         return f"{microseconds:.1f}μs"
     elif microseconds < 1000000:
-        return f"{microseconds/1000:.1f}ms"
+        return f"{microseconds / 1000:.1f}ms"
     else:
-        return f"{microseconds/1000000:.1f}s"
+        return f"{microseconds / 1000000:.1f}s"
+
 
 def get_comm_type(row) -> str:
     if row["n_ranks"] == 1:
@@ -142,6 +150,7 @@ def get_comm_type(row) -> str:
         return "hca-only"
     else:
         return "mixed"
+
 
 def parse_file(filepath: Path, output_dir):
     filename = Path(filepath).stem
@@ -155,7 +164,9 @@ def parse_file(filepath: Path, output_dir):
             logging.info(f"Parquet file {parquet_file} is up to date. Skipping...")
             return
         else:
-            logging.info(f"Source file {filepath} is newer than parquet. Regenerating...")
+            logging.info(
+                f"Source file {filepath} is newer than parquet. Regenerating..."
+            )
 
     # Check if file is empty or too small
     file_size = Path(filepath).stat().st_size
@@ -174,7 +185,9 @@ def parse_file(filepath: Path, output_dir):
                     continue
 
                 # Validate that required fields exist
-                if not all(key in json_recs for key in ["header", "metadata", "coll_perf"]):
+                if not all(
+                    key in json_recs for key in ["header", "metadata", "coll_perf"]
+                ):
                     logging.error(f"Missing required fields in {filepath}:{lineno}")
                     continue
 
@@ -203,6 +216,7 @@ def parse_file(filepath: Path, output_dir):
     df.to_parquet(parquet_file)
     logging.info(f"Created parquet file {parquet_file} with {len(recs)} records")
 
+
 def create_per_node_parquet_files(files, output_dir):
     output_dir = Path(output_dir) / "parquet_files"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -217,6 +231,7 @@ def create_per_node_parquet_files(files, output_dir):
             )
         )
     return output_dir
+
 
 def generate_scatter_plot(df, comm_type, coll_type, output_file):
     plt.figure(figsize=(10, 6), dpi=100)
@@ -240,6 +255,7 @@ def generate_scatter_plot(df, comm_type, coll_type, output_file):
     plt.savefig(output_file)
     plt.close()
     logging.info(f"Scatter plot saved to {output_file}")
+
 
 def generate_combined_scatter_plot(df, comm_type, coll_type, output_file, max_cols=3):
     distinct_msg_sizes = df["coll_msg_size_bytes"].unique()
@@ -277,6 +293,7 @@ def generate_combined_scatter_plot(df, comm_type, coll_type, output_file, max_co
     plt.close()
     logging.info(f"Combined scatter plot saved to {output_file}")
 
+
 def generate_histogram(df, comm_type, coll_type, output_file, message_size):
     plt.figure(figsize=(10, 6), dpi=100)
     data_range = df["mean_coll_busbw_gbs"].max() - df["mean_coll_busbw_gbs"].min()
@@ -301,6 +318,7 @@ def generate_histogram(df, comm_type, coll_type, output_file, message_size):
     plt.savefig(output_file)
     plt.close()
     logging.info(f"Histogram saved to {output_file}")
+
 
 def generate_boxplot(df, comm_type, coll_type, output_file, message_size):
     plt.figure(figsize=(10, 6))
@@ -353,9 +371,13 @@ def generate_boxplot(df, comm_type, coll_type, output_file, message_size):
     logging.info(f"Box plot saved to {output_file}")
 
 
-def summarize_data_per_comm_coll_type(output_root, comm_type, coll_type, output_dir_name):
+def summarize_data_per_comm_coll_type(
+    output_root, comm_type, coll_type, output_dir_name
+):
     """Summarize parquet data per communication and collective type using DuckDB"""
-    logging.info(f"Summarizing data per comm/coll type for {output_dir_name}, {comm_type} and {coll_type}")
+    logging.info(
+        f"Summarizing data per comm/coll type for {output_dir_name}, {comm_type} and {coll_type}"
+    )
 
     # Check if there are any parquet files
     parquet_dir = output_root / "parquet_files"
@@ -373,30 +395,41 @@ def summarize_data_per_comm_coll_type(output_root, comm_type, coll_type, output_
         try:
             # Check file size first
             if pf.stat().st_size == 0:
-                logging.warning(f"Moving zero-byte parquet file {pf} to invalid directory")
+                logging.warning(
+                    f"Moving zero-byte parquet file {pf} to invalid directory"
+                )
                 pf.rename(invalid_dir / pf.name)
                 invalid_count += 1
                 continue
 
             # Use pyarrow to check parquet metadata without reading data
             import pyarrow.parquet as pq
+
             parquet_file = pq.ParquetFile(pf)
             if parquet_file.metadata.num_rows == 0:
-                logging.warning(f"Moving empty parquet file {pf} (0 rows) to invalid directory")
+                logging.warning(
+                    f"Moving empty parquet file {pf} (0 rows) to invalid directory"
+                )
                 pf.rename(invalid_dir / pf.name)
                 invalid_count += 1
         except Exception as e:
-            logging.warning(f"Moving invalid parquet file {pf} to invalid directory: {e}")
+            logging.warning(
+                f"Moving invalid parquet file {pf} to invalid directory: {e}"
+            )
             pf.rename(invalid_dir / pf.name)
             invalid_count += 1
 
     # Check if any valid files remain
     remaining_files = list(parquet_dir.glob("*.parquet"))
     if not remaining_files:
-        logging.warning(f"No valid parquet files found for {comm_type} and {coll_type} (moved {invalid_count} invalid files)")
+        logging.warning(
+            f"No valid parquet files found for {comm_type} and {coll_type} (moved {invalid_count} invalid files)"
+        )
         return None
 
-    logging.info(f"Found {len(remaining_files)} valid parquet files (moved {invalid_count} invalid files)")
+    logging.info(
+        f"Found {len(remaining_files)} valid parquet files (moved {invalid_count} invalid files)"
+    )
 
     try:
         duckdb.execute(
@@ -420,7 +453,9 @@ def summarize_data_per_comm_coll_type(output_root, comm_type, coll_type, output_
             ORDER BY coll_sn
         """).df()
     except Exception as e:
-        logging.error(f"Error executing DuckDB query for {comm_type} and {coll_type}: {e}")
+        logging.error(
+            f"Error executing DuckDB query for {comm_type} and {coll_type}: {e}"
+        )
         return None
 
     if df.empty:
@@ -435,11 +470,13 @@ def summarize_data_per_comm_coll_type(output_root, comm_type, coll_type, output_
     # Log example of time range data for first few rows
     if len(df) > 0:
         sample_row = df.iloc[0]
-        start_time = timestamp_to_datetime(sample_row['coll_start_timestamp_us'])
-        end_time = timestamp_to_datetime(sample_row['coll_end_timestamp_us'])
-        duration = microseconds_to_human_readable(sample_row['coll_duration_us'])
-        logging.info(f"Example time range - ID: {sample_row['id']}, Coll_SN: {sample_row['coll_sn']}, "
-                     f"Start: {start_time}, End: {end_time}, Duration: {duration}")
+        start_time = timestamp_to_datetime(sample_row["coll_start_timestamp_us"])
+        end_time = timestamp_to_datetime(sample_row["coll_end_timestamp_us"])
+        duration = microseconds_to_human_readable(sample_row["coll_duration_us"])
+        logging.info(
+            f"Example time range - ID: {sample_row['id']}, Coll_SN: {sample_row['coll_sn']}, "
+            f"Start: {start_time}, End: {end_time}, Duration: {duration}"
+        )
 
     return df
 
@@ -473,9 +510,15 @@ def generate_visualizations(df, output_root, comm_type, coll_type):
 
         # Add human-readable time formatting
         df_msg_size = df_msg_size.copy()
-        df_msg_size["coll_start_datetime"] = df_msg_size["coll_start_timestamp_us"].apply(timestamp_to_datetime)
-        df_msg_size["coll_end_datetime"] = df_msg_size["coll_end_timestamp_us"].apply(timestamp_to_datetime)
-        df_msg_size["coll_duration_human"] = df_msg_size["coll_duration_us"].apply(microseconds_to_human_readable)
+        df_msg_size["coll_start_datetime"] = df_msg_size[
+            "coll_start_timestamp_us"
+        ].apply(timestamp_to_datetime)
+        df_msg_size["coll_end_datetime"] = df_msg_size["coll_end_timestamp_us"].apply(
+            timestamp_to_datetime
+        )
+        df_msg_size["coll_duration_human"] = df_msg_size["coll_duration_us"].apply(
+            microseconds_to_human_readable
+        )
 
         # Histogram
         output_file = (
@@ -510,16 +553,22 @@ def generate_visualizations(df, output_root, comm_type, coll_type):
 
 def generate_summary(output_root, comm_type, coll_type, output_dir_name):
     """Generate summary by summarizing data per comm/coll type and creating visualizations"""
-    logging.info(f"Generating summary for {output_dir_name}, {comm_type} and {coll_type}")
+    logging.info(
+        f"Generating summary for {output_dir_name}, {comm_type} and {coll_type}"
+    )
 
     # Step 1: Summarize data per communication and collective type
-    df = summarize_data_per_comm_coll_type(output_root, comm_type, coll_type, output_dir_name)
+    df = summarize_data_per_comm_coll_type(
+        output_root, comm_type, coll_type, output_dir_name
+    )
 
     # Step 2: Generate visualizations if data exists
     if df is not None:
         generate_visualizations(df, output_root, comm_type, coll_type)
     else:
-        logging.warning(f"No data found for {comm_type} and {coll_type} - skipping visualization generation")
+        logging.warning(
+            f"No data found for {comm_type} and {coll_type} - skipping visualization generation"
+        )
 
 
 def generate_summary_wrapper(args):

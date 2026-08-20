@@ -27,13 +27,13 @@ except ImportError as e:
         "    pip install 'nccl4py[cu13]'   # for CUDA 13"
     ) from e
 
-from . import types, coop, handles, comm, window, gin, barrier
-from .types import *    # MemoryOrder, ThreadScope, GinFenceLevel, GinBackendMask, GinResourceSharingMode
-from .coop import *     # Coop, cta, warp, thread, lanes, warp_span
+from . import barrier, comm, coop, gin, handles, types, window
+from .types import *  # MemoryOrder, ThreadScope, GinFenceLevel, GinBackendMask, GinResourceSharingMode
+from .coop import *  # Coop, cta, warp, thread, lanes, warp_span
 from .handles import *  # MultimemHandle, LsaBarrierHandle, GinBarrierHandle
-from .comm import *     # Team, DevComm
-from .window import *   # Window
-from .gin import *      # Gin
+from .comm import *  # Team, DevComm
+from .window import *  # Window
+from .gin import *  # Gin
 from .barrier import *  # session classes + factories
 
 __all__ = [

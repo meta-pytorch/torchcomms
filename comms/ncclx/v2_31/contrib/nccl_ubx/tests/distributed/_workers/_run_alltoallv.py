@@ -12,6 +12,7 @@ Usage (4 GPUs):
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -38,8 +39,9 @@ def init_distributed():
     rank, world_size, local_rank = get_rank_info()
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl", init_method="env://",
-                                world_size=world_size, rank=rank)
+        dist.init_process_group(
+            backend="nccl", init_method="env://", world_size=world_size, rank=rank
+        )
     return rank, world_size, local_rank
 
 
@@ -54,7 +56,9 @@ def powerlaw_split(total_elems, nranks, alpha, seed, device):
     if alpha == 0:
         weights = torch.ones(nranks, device=device)
     else:
-        weights = torch.arange(1, nranks + 1, dtype=torch.float32, device=device) ** (-alpha)
+        weights = torch.arange(1, nranks + 1, dtype=torch.float32, device=device) ** (
+            -alpha
+        )
         # Shuffle so skew isn't always rank-0-heavy
         perm = torch.randperm(nranks, device=device)
         weights = weights[perm]
@@ -75,8 +79,12 @@ def powerlaw_split(total_elems, nranks, alpha, seed, device):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--total-elems", type=int, default=4096)
-    parser.add_argument("--alpha", type=float, default=0.5,
-                        help="Power-law skew: 0=uniform, 0.5=moderate, 1.0=Zipf")
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=0.5,
+        help="Power-law skew: 0=uniform, 0.5=moderate, 1.0=Zipf",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -90,7 +98,8 @@ def main():
     split_matrix = torch.zeros(world_size, world_size, dtype=torch.int32, device=device)
     for src in range(world_size):
         split_matrix[src] = powerlaw_split(
-            args.total_elems, world_size, args.alpha, args.seed + src, device)
+            args.total_elems, world_size, args.alpha, args.seed + src, device
+        )
 
     input_split_sizes = split_matrix[rank]  # what this rank sends to each dst
     output_split_sizes = split_matrix[:, rank]  # what this rank receives from each src
@@ -98,9 +107,12 @@ def main():
     total_send = int(input_split_sizes.sum().item())
     total_recv = int(output_split_sizes.sum().item())
 
-    print(f"[rank{rank}] send_splits={input_split_sizes.cpu().tolist()} "
-          f"recv_splits={output_split_sizes.cpu().tolist()} "
-          f"total_send={total_send} total_recv={total_recv}", flush=True)
+    print(
+        f"[rank{rank}] send_splits={input_split_sizes.cpu().tolist()} "
+        f"recv_splits={output_split_sizes.cpu().tolist()} "
+        f"total_send={total_send} total_recv={total_recv}",
+        flush=True,
+    )
 
     # Create input with rank-unique pattern
     torch.manual_seed(args.seed + rank * 1000)
@@ -108,13 +120,16 @@ def main():
 
     # --- Reference: torch.distributed.all_to_all ---
     send_chunks = list(input_data.split(input_split_sizes.tolist()))
-    recv_chunks = [torch.empty(s, dtype=torch.bfloat16, device=device)
-                   for s in output_split_sizes.tolist()]
+    recv_chunks = [
+        torch.empty(s, dtype=torch.bfloat16, device=device)
+        for s in output_split_sizes.tolist()
+    ]
     dist.all_to_all(recv_chunks, send_chunks)
     ref_output = torch.cat(recv_chunks)
 
     # --- UBX: alltoallv ---
     from ubx import SymmAllocator
+
     pool_size = max((total_send + total_recv) * 4, 16 * 1024 * 1024)
     allocator = SymmAllocator(pool_size, device, dist.group.WORLD)
 
@@ -131,11 +146,16 @@ def main():
     num_diff = (ubx_result != ref_output).sum().item()
 
     if max_err > 0.001 or num_diff > 0:
-        print(f"FAIL rank={rank}: max_err={max_err:.6f} num_diff={num_diff}/{total_recv}",
-              flush=True)
+        print(
+            f"FAIL rank={rank}: max_err={max_err:.6f} num_diff={num_diff}/{total_recv}",
+            flush=True,
+        )
         sys.exit(1)
     else:
-        print(f"PASS rank={rank}: total_recv={total_recv} max_err={max_err:.6f}", flush=True)
+        print(
+            f"PASS rank={rank}: total_recv={total_recv} max_err={max_err:.6f}",
+            flush=True,
+        )
 
     dist.destroy_process_group()
 

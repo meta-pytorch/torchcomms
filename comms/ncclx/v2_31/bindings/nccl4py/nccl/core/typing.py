@@ -339,7 +339,9 @@ _NCCL_TO_NUMPY_NAME: dict[NcclDataType, str] = {
     NcclDataType.FLOAT8E5M2: "float8_e5m2",
 }
 
-_ML_DTYPE_NAMES: frozenset[str] = frozenset({"bfloat16", "float8_e4m3fn", "float8_e5m2"})
+_ML_DTYPE_NAMES: frozenset[str] = frozenset(
+    {"bfloat16", "float8_e4m3fn", "float8_e5m2"}
+)
 
 
 ###############################################################################

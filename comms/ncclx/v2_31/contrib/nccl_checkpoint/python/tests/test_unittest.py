@@ -10,10 +10,12 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+
 import cupy as cp
 import nccl.core as nccl
-from mpi4py import MPI
 import pytest
+from mpi4py import MPI
+
 
 class ScenarioSkip(RuntimeError):
     """Raised when a scenario cannot run in the current environment."""
@@ -33,7 +35,9 @@ def _pick_local_port() -> int:
             sock.bind(("0.0.0.0", 0))
             return sock.getsockname()[1]
     except PermissionError as err:
-        pytest.skip(f"unable to bind a local redis test port in this environment: {err}")
+        pytest.skip(
+            f"unable to bind a local redis test port in this environment: {err}"
+        )
 
 
 def _wait_for_port(host: str, port: int, timeout_s: float) -> bool:
@@ -58,7 +62,6 @@ def _read_text(path: Path) -> str:
 
 @contextlib.contextmanager
 def _redis_server(kvs_path, comm, root):
-
     if comm.Get_rank() != root:
         try:
             yield
@@ -74,15 +77,24 @@ def _redis_server(kvs_path, comm, root):
         host = socket.gethostname()
         cmd = [
             str(REDIS_SERVER),
-            "--bind", "0.0.0.0",
-            "--port", str(port),
-            "--save", "",
-            "--protected-mode", "no",
-            "--appendonly", "no",
-            "--dir", str(tmpdir_path),
+            "--bind",
+            "0.0.0.0",
+            "--port",
+            str(port),
+            "--save",
+            "",
+            "--protected-mode",
+            "no",
+            "--appendonly",
+            "no",
+            "--dir",
+            str(tmpdir_path),
         ]
 
-        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
+        with (
+            stdout_path.open("w", encoding="utf-8") as stdout_file,
+            stderr_path.open("w", encoding="utf-8") as stderr_file,
+        ):
             proc = subprocess.Popen(
                 cmd,
                 stdout=stdout_file,
@@ -121,7 +133,9 @@ def _redis_server(kvs_path, comm, root):
 @contextlib.contextmanager
 def root_bcast_tmpdir(prefix, comm, root):
     if comm.Get_rank() == root:
-        with tempfile.TemporaryDirectory(prefix=prefix, dir=os.path.realpath(os.getcwd())) as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix=prefix, dir=os.path.realpath(os.getcwd())
+        ) as tmpdir:
             comm.bcast(tmpdir, root=root)
             try:
                 yield tmpdir
@@ -135,14 +149,15 @@ def root_bcast_tmpdir(prefix, comm, root):
             comm.Barrier()
 
 
-
 @pytest.fixture
 def kvs_fixture(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
     if not _use_shim(request):
         yield
         return
 
-    with root_bcast_tmpdir(prefix="nccl-checkpoint-kvs-", comm=MPI_COMM, root=0) as tmpdir:
+    with root_bcast_tmpdir(
+        prefix="nccl-checkpoint-kvs-", comm=MPI_COMM, root=0
+    ) as tmpdir:
         kvs_path = os.path.join(tmpdir, "checkpoint-kvs.txt")
         monkeypatch.setenv("NCCL_CHECKPOINT_KVS_PATH", kvs_path)
 
@@ -191,7 +206,9 @@ def _checkpoint_library(required: bool = False):
         nccl_checkpoint.get_version()
     except nccl_checkpoint.NCCLCheckpointPreloadError as err:
         if required:
-            pytest.skip(f"libnccl-checkpoint-shim.so is not loaded in this process: {err}")
+            pytest.skip(
+                f"libnccl-checkpoint-shim.so is not loaded in this process: {err}"
+            )
         return None
     return nccl_checkpoint
 
@@ -228,8 +245,9 @@ def _expect_restore_unsafe_prepare_failure(request: pytest.FixtureRequest) -> No
 
 
 def nccl_wait_comms(comms, timeout_s: float = 30.0) -> None:
-    import nccl.bindings.nccl as nccl_bindings
     import time
+
+    import nccl.bindings.nccl as nccl_bindings
 
     deadline = time.monotonic() + timeout_s
     for comm in comms:
@@ -240,7 +258,9 @@ def nccl_wait_comms(comms, timeout_s: float = 30.0) -> None:
             if state != nccl_bindings.Result.InProgress:
                 raise RuntimeError(f"communicator async state completed with {state}")
             if time.monotonic() >= deadline:
-                raise TimeoutError("communicator async state did not complete before timeout")
+                raise TimeoutError(
+                    "communicator async state did not complete before timeout"
+                )
             time.sleep(0.01)
 
 
@@ -262,7 +282,9 @@ def synchronize_or_timeout(comms, timeout_s: float = 5.0) -> None:
                     comm.revoke()
                 except Exception:
                     pass
-            raise TimeoutError(f"CUDA stream did not complete before timeout ({timeout_s}s)")
+            raise TimeoutError(
+                f"CUDA stream did not complete before timeout ({timeout_s}s)"
+            )
         time.sleep(0.01)
 
     nccl_wait_comms(comms, timeout_s=timeout_s)
@@ -296,7 +318,9 @@ def synchronize_multidevice_or_timeout(comms, timeout_s: float = 5.0) -> None:
                     comm.revoke()
                 except Exception:
                     pass
-            raise TimeoutError(f"CUDA streams did not complete before timeout ({timeout_s}s)")
+            raise TimeoutError(
+                f"CUDA streams did not complete before timeout ({timeout_s}s)"
+            )
         time.sleep(0.01)
 
     nccl_wait_comms(comms, timeout_s=timeout_s)
@@ -347,12 +371,16 @@ def comm_blocking(request: pytest.FixtureRequest) -> bool:
     return bool(request.param)
 
 
-def test_empty_checkpointrestore(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_empty_checkpointrestore(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     _select_device(rank_info)
     test_checkpointrestore()
 
 
-def test_basic(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_basic(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     if os.environ.get("_FORCE_PYTEST_FAILURE") == "1":
         raise AssertionError("_FORCE_PYTEST_FAILURE=1 requested a basic test failure")
     _select_device(rank_info)
@@ -369,7 +397,9 @@ def test_basic(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool,
     _finalize_and_destroy(comm)
 
 
-def test_multiple_comms(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_multiple_comms(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     _select_device(rank_info)
     comm0 = _make_comm(rank_info, blocking=comm_blocking)
     comm1 = _make_comm(rank_info, blocking=comm_blocking)
@@ -391,7 +421,9 @@ def test_multiple_comms(request: pytest.FixtureRequest, kvs_fixture, comm_blocki
     _finalize_and_destroy(comm1)
 
 
-def test_registration(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_registration(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     _select_device(rank_info)
     comm = _make_comm(rank_info, blocking=comm_blocking)
     nccl_wait_comms([comm])
@@ -416,7 +448,9 @@ def test_registration(request: pytest.FixtureRequest, kvs_fixture, comm_blocking
     _finalize_and_destroy(comm)
 
 
-def test_window(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_window(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     _select_device(rank_info)
     comm = _make_comm(rank_info, blocking=comm_blocking)
     nccl_wait_comms([comm])
@@ -425,7 +459,9 @@ def test_window(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool
     window = comm.register_window(buf)
     nccl_wait_comms([comm])
     if window is None:
-        _skip_unsupported_window(comm, "window registration is not supported in this environment")
+        _skip_unsupported_window(
+            comm, "window registration is not supported in this environment"
+        )
     assert window.is_valid
     assert window.user_ptr == buf.data.ptr
     test_checkpointrestore()
@@ -438,7 +474,9 @@ def test_window(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool
     _finalize_and_destroy(comm)
 
 
-def test_mixed_resources(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_mixed_resources(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     _select_device(rank_info)
     comm = _make_comm(rank_info, blocking=comm_blocking)
     nccl_wait_comms([comm])
@@ -451,7 +489,9 @@ def test_mixed_resources(request: pytest.FixtureRequest, kvs_fixture, comm_block
     nccl_wait_comms([comm])
     if window is None:
         reg_handle.close()
-        _skip_unsupported_window(comm, "window registration is not supported in this environment")
+        _skip_unsupported_window(
+            comm, "window registration is not supported in this environment"
+        )
     assert reg_handle.is_valid
     assert window.is_valid
     assert window.user_ptr == win_buf.data.ptr
@@ -466,7 +506,9 @@ def test_mixed_resources(request: pytest.FixtureRequest, kvs_fixture, comm_block
     _finalize_and_destroy(comm)
 
 
-def test_restore_unsafe_window_user_ptr_prepare_fails(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_restore_unsafe_window_user_ptr_prepare_fails(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     _select_device(rank_info)
     if not _use_shim(request):
         pytest.skip("restore-unsafe prepare failures are shim-only")
@@ -481,7 +523,9 @@ def test_restore_unsafe_window_user_ptr_prepare_fails(request: pytest.FixtureReq
         window = comm.register_window(buf)
         nccl_wait_comms([comm])
         if window is None:
-            _skip_unsupported_window(comm, "window registration is not supported in this environment")
+            _skip_unsupported_window(
+                comm, "window registration is not supported in this environment"
+            )
         assert nccl_bindings.win_get_user_ptr(comm._comm, window.handle) == buf.data.ptr
         _expect_restore_unsafe_prepare_failure(request)
     finally:
@@ -490,7 +534,9 @@ def test_restore_unsafe_window_user_ptr_prepare_fails(request: pytest.FixtureReq
         _finalize_and_destroy(comm)
 
 
-def test_restore_unsafe_custom_redop_prepare_fails(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_restore_unsafe_custom_redop_prepare_fails(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     _select_device(rank_info)
     if not _use_shim(request):
         pytest.skip("restore-unsafe prepare failures are shim-only")
@@ -507,7 +553,9 @@ def test_restore_unsafe_custom_redop_prepare_fails(request: pytest.FixtureReques
         _finalize_and_destroy(comm)
 
 
-def test_restore_unsafe_dev_comm_prepare_fails(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_restore_unsafe_dev_comm_prepare_fails(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     _select_device(rank_info)
     if not _use_shim(request):
         pytest.skip("restore-unsafe prepare failures are shim-only")
@@ -526,7 +574,9 @@ def test_restore_unsafe_dev_comm_prepare_fails(request: pytest.FixtureRequest, k
         _finalize_and_destroy(comm)
 
 
-def test_mixed_comm_modes(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_mixed_comm_modes(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     _select_device(rank_info)
     blocking_comm = _make_comm(rank_info, blocking=True)
     nonblocking_comm = _make_comm(rank_info, blocking=False)
@@ -546,14 +596,18 @@ def test_mixed_comm_modes(request: pytest.FixtureRequest, kvs_fixture, rank_info
     _finalize_and_destroy(nonblocking_comm)
 
 
-def test_init_all_restore(request: pytest.FixtureRequest, kvs_fixture, rank_info) -> None:
+def test_init_all_restore(
+    request: pytest.FixtureRequest, kvs_fixture, rank_info
+) -> None:
     if rank_info.mpi_rank % 2 != 0:
         return
 
     _select_device(rank_info)
 
     if cp.cuda.runtime.getDeviceCount() < 2:
-        pytest.skip("two visible CUDA devices are required for ncclCommInitAll restore coverage")
+        pytest.skip(
+            "two visible CUDA devices are required for ncclCommInitAll restore coverage"
+        )
 
     comms = []
     try:
@@ -580,7 +634,9 @@ def test_init_all_restore(request: pytest.FixtureRequest, kvs_fixture, rank_info
         _finalize_and_destroy_many(comms)
 
 
-def test_even_ranks_two_gpus_same_process(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_even_ranks_two_gpus_same_process(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     cuda_error = None
     try:
         from cuda.core import Device, system
@@ -590,7 +646,9 @@ def test_even_ranks_two_gpus_same_process(request: pytest.FixtureRequest, kvs_fi
         cuda_error = str(err)
     cuda_errors = MPI_COMM.allgather(cuda_error)
     if any(cuda_errors):
-        pytest.skip(f"cuda.core is unavailable: {next(err for err in cuda_errors if err)}")
+        pytest.skip(
+            f"cuda.core is unavailable: {next(err for err in cuda_errors if err)}"
+        )
 
     host = socket.gethostname()
     hosts = MPI_COMM.allgather(host)
@@ -603,7 +661,9 @@ def test_even_ranks_two_gpus_same_process(request: pytest.FixtureRequest, kvs_fi
         for rank, (rank_host, active) in enumerate(zip(hosts, active_flags))
         if rank < rank_info.mpi_rank and rank_host == host and active
     )
-    device_ids = [2 * local_active_index, 2 * local_active_index + 1] if active_process else []
+    device_ids = (
+        [2 * local_active_index, 2 * local_active_index + 1] if active_process else []
+    )
     try:
         device_count = system.get_num_devices()
         device_error = None
@@ -612,7 +672,9 @@ def test_even_ranks_two_gpus_same_process(request: pytest.FixtureRequest, kvs_fi
         device_error = str(err)
     device_errors = MPI_COMM.allgather(device_error)
     if any(device_errors):
-        pytest.skip(f"unable to query CUDA device count: {next(err for err in device_errors if err)}")
+        pytest.skip(
+            f"unable to query CUDA device count: {next(err for err in device_errors if err)}"
+        )
     can_run = (not active_process) or (device_count >= device_ids[-1] + 1)
     if not all(MPI_COMM.allgather(can_run)):
         pytest.skip("active even ranks need two CUDA devices each on their local host")
@@ -666,14 +728,17 @@ def test_even_ranks_two_gpus_same_process(request: pytest.FixtureRequest, kvs_fi
         MPI_COMM.Barrier()
 
 
-def test_split_shared_resources_nocolor(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_split_shared_resources_nocolor(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     _select_device(rank_info)
     parent = _make_comm(rank_info, blocking=comm_blocking, split_share=True)
     nccl_wait_comms([parent])
 
     color = 1
     active = lambda x: not (x == 0)
-    if not active(rank_info.nccl_rank): color = None
+    if not active(rank_info.nccl_rank):
+        color = None
     child = parent.split(color=color, key=rank_info.nccl_rank)
     if color is None:
         nccl_wait_comms([parent])
@@ -692,14 +757,16 @@ def test_split_shared_resources_nocolor(request: pytest.FixtureRequest, kvs_fixt
         child.allreduce(send_data, recv_data, nccl.SUM)
         synchronize_or_timeout([child])
         expected = sum([r + 1 for r in range(rank_info.nccl_size) if active(r)])
-        assert abs(1.0 - recv_data.get()[0]/expected) < 0.001
+        assert abs(1.0 - recv_data.get()[0] / expected) < 0.001
         _finalize_and_destroy(child)
 
     MPI_COMM.Barrier()
     _finalize_and_destroy(parent)
 
 
-def test_shrink_shared_resources_excluded(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_shrink_shared_resources_excluded(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     if rank_info.nccl_size < 2:
         pytest.skip("communicator shrink exclusion requires at least two ranks")
 
@@ -738,7 +805,9 @@ def test_shrink_shared_resources_excluded(request: pytest.FixtureRequest, kvs_fi
     _finalize_and_destroy(parent)
 
 
-def test_grow(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_grow(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     if rank_info.nccl_size < 2:
         pytest.skip("communicator grow requires at least two ranks")
 
@@ -795,7 +864,9 @@ def test_grow(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, 
         _finalize_and_destroy(parent)
 
 
-def test_grow_preserves_parent(request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info) -> None:
+def test_grow_preserves_parent(
+    request: pytest.FixtureRequest, kvs_fixture, comm_blocking: bool, rank_info
+) -> None:
     if rank_info.nccl_size < 2:
         pytest.skip("communicator grow requires at least two ranks")
 

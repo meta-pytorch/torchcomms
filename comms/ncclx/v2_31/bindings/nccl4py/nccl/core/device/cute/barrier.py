@@ -32,26 +32,16 @@ The three GIN factories also accept :data:`GIN_ALL_CONTEXTS` in place of a
 
 import cutlass
 import cutlass.cute as cute
-from cutlass.cutlass_dsl import ir
 from cutlass._mlir.dialects import llvm
-from cutlass.cutlass_dsl import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op, ir
 
 from . import _bindings
-from ._helpers import _to_ptr, _to_coop_value, _to_value
-from ._structs import (
-    _LLVMPtrType,
-    ncclTeam,
-    ncclCoopAny,
-    ncclMultimemHandle,
-)
+from ._helpers import _to_coop_value, _to_ptr, _to_value
+from ._structs import _LLVMPtrType, ncclCoopAny, ncclMultimemHandle, ncclTeam
 from .comm import DevComm
 from .gin import Gin
-from .handles import (
-    GinBarrierHandle,
-    LsaBarrierHandle,
-    MultimemHandle,
-)
-from .types import MemoryOrder, GinFenceLevel
+from .handles import GinBarrierHandle, LsaBarrierHandle, MultimemHandle
+from .types import GinFenceLevel, MemoryOrder
 
 
 # Session storage alignment. Conservatively chosen — covers ncclCoopAny
@@ -92,6 +82,7 @@ def _zero_multimem_handle() -> ncclMultimemHandle:
 
 # === LSA Barrier Session ===
 
+
 @cute.native_struct
 class LsaBarrierSession:
     """LSA (Load/Store Accessible) barrier session — intra-node, peer-access
@@ -106,7 +97,9 @@ class LsaBarrierSession:
             coop: cooperative group issuing the arrive.
             order: ``cuda::memory_order``. See :class:`MemoryOrder`.
         """
-        _bindings.nccl_lsa_barrier_session_arrive(self.ptr, _to_coop_value(coop), cutlass.Int32(int(order)))
+        _bindings.nccl_lsa_barrier_session_arrive(
+            self.ptr, _to_coop_value(coop), cutlass.Int32(int(order))
+        )
 
     def wait(self, coop: ncclCoopAny, order: MemoryOrder) -> None:
         """Wait for the barrier to complete.
@@ -115,7 +108,9 @@ class LsaBarrierSession:
             coop: cooperative group issuing the wait.
             order: ``cuda::memory_order``. See :class:`MemoryOrder`.
         """
-        _bindings.nccl_lsa_barrier_session_wait(self.ptr, _to_coop_value(coop), cutlass.Int32(int(order)))
+        _bindings.nccl_lsa_barrier_session_wait(
+            self.ptr, _to_coop_value(coop), cutlass.Int32(int(order))
+        )
 
     def sync(self, coop: ncclCoopAny, order: MemoryOrder) -> None:
         """Arrive + wait in one call.
@@ -124,7 +119,9 @@ class LsaBarrierSession:
             coop: cooperative group issuing the sync.
             order: ``cuda::memory_order``. See :class:`MemoryOrder`.
         """
-        _bindings.nccl_lsa_barrier_session_sync(self.ptr, _to_coop_value(coop), cutlass.Int32(int(order)))
+        _bindings.nccl_lsa_barrier_session_sync(
+            self.ptr, _to_coop_value(coop), cutlass.Int32(int(order))
+        )
 
 
 def lsa_session(
@@ -151,16 +148,24 @@ def lsa_session(
     Returns:
         Initialized :class:`LsaBarrierSession`.
     """
-    storage = _alloca_session(cutlass.Int64(_bindings.nccl_lsa_barrier_session_c_size()))
+    storage = _alloca_session(
+        cutlass.Int64(_bindings.nccl_lsa_barrier_session_c_size())
+    )
     _bindings.nccl_lsa_barrier_session_init(
-        storage, _to_coop_value(coop), dev_comm.ptr, _to_value(team),
-        _to_value(handle), cutlass.Uint32(index), cutlass.Boolean(multimem),
+        storage,
+        _to_coop_value(coop),
+        dev_comm.ptr,
+        _to_value(team),
+        _to_value(handle),
+        cutlass.Uint32(index),
+        cutlass.Boolean(multimem),
         _to_value(mm_handle if mm_handle is not None else _zero_multimem_handle()),
     )
     return LsaBarrierSession(ptr=storage)
 
 
 # === GIN Barrier Session ===
+
 
 @cute.native_struct
 class GinBarrierSession:
@@ -178,7 +183,11 @@ class GinBarrierSession:
             fence: GIN fence level. See :class:`GinFenceLevel`.
         """
         _bindings.nccl_gin_barrier_session_sync(
-            self.ptr, _to_coop_value(coop), cutlass.Int32(int(order)), cutlass.Int32(int(fence)))
+            self.ptr,
+            _to_coop_value(coop),
+            cutlass.Int32(int(order)),
+            cutlass.Int32(int(fence)),
+        )
 
 
 class _GinAllContexts:
@@ -218,21 +227,32 @@ def gin_session(
     Returns:
         Initialized :class:`GinBarrierSession`.
     """
-    storage = _alloca_session(cutlass.Int64(_bindings.nccl_gin_barrier_session_c_size()))
+    storage = _alloca_session(
+        cutlass.Int64(_bindings.nccl_gin_barrier_session_c_size())
+    )
     if isinstance(gin, _GinAllContexts):
         _bindings.nccl_gin_barrier_session_init_all_contexts(
-            storage, _to_coop_value(coop), dev_comm.ptr, _to_value(team),
-            _to_value(handle), cutlass.Uint32(index),
+            storage,
+            _to_coop_value(coop),
+            dev_comm.ptr,
+            _to_value(team),
+            _to_value(handle),
+            cutlass.Uint32(index),
         )
     else:
         _bindings.nccl_gin_barrier_session_init(
-            storage, _to_coop_value(coop), gin.ptr, _to_value(team),
-            _to_value(handle), cutlass.Uint32(index),
+            storage,
+            _to_coop_value(coop),
+            gin.ptr,
+            _to_value(team),
+            _to_value(handle),
+            cutlass.Uint32(index),
         )
     return GinBarrierSession(ptr=storage)
 
 
 # === Hybrid Barrier Session ===
+
 
 @cute.native_struct
 class BarrierSession:
@@ -251,7 +271,11 @@ class BarrierSession:
                 See :class:`GinFenceLevel`.
         """
         _bindings.nccl_barrier_session_sync(
-            self.ptr, _to_coop_value(coop), cutlass.Int32(int(order)), cutlass.Int32(int(fence)))
+            self.ptr,
+            _to_coop_value(coop),
+            cutlass.Int32(int(order)),
+            cutlass.Int32(int(fence)),
+        )
 
 
 def hybrid_session(
@@ -285,11 +309,18 @@ def hybrid_session(
     """
     storage = _alloca_session(cutlass.Int64(_bindings.nccl_barrier_session_c_size()))
     _bindings.nccl_barrier_session_init(
-        storage, _to_coop_value(coop), _to_value(inner_team), _to_value(outer_team),
-        gin.ptr, _to_value(inner_handle), _to_value(outer_handle),
-        cutlass.Uint32(index), cutlass.Boolean(multimem),
-        _to_value(inner_mm_handle if inner_mm_handle is not None
-                  else _zero_multimem_handle()),
+        storage,
+        _to_coop_value(coop),
+        _to_value(inner_team),
+        _to_value(outer_team),
+        gin.ptr,
+        _to_value(inner_handle),
+        _to_value(outer_handle),
+        cutlass.Uint32(index),
+        cutlass.Boolean(multimem),
+        _to_value(
+            inner_mm_handle if inner_mm_handle is not None else _zero_multimem_handle()
+        ),
     )
     return BarrierSession(ptr=storage)
 
@@ -297,6 +328,7 @@ def hybrid_session(
 # === Convenience factories ===
 # Pull the right team and handle from a DevComm so the user doesn't have to
 # wire them up manually.
+
 
 def lsa_default(
     coop: ncclCoopAny,
@@ -318,8 +350,15 @@ def lsa_default(
     Returns:
         Initialized :class:`LsaBarrierSession`.
     """
-    return lsa_session(coop, dev_comm, dev_comm.team_lsa, dev_comm.lsa_barrier,
-                       index, multimem=multimem, mm_handle=mm_handle)
+    return lsa_session(
+        coop,
+        dev_comm,
+        dev_comm.team_lsa,
+        dev_comm.lsa_barrier,
+        index,
+        multimem=multimem,
+        mm_handle=mm_handle,
+    )
 
 
 def world_gin(
@@ -340,8 +379,9 @@ def world_gin(
     Returns:
         Initialized :class:`GinBarrierSession`.
     """
-    return gin_session(coop, gin, dev_comm, dev_comm.team_world,
-                       dev_comm.world_gin_barrier, index)
+    return gin_session(
+        coop, gin, dev_comm, dev_comm.team_world, dev_comm.world_gin_barrier, index
+    )
 
 
 def rail_gin(
@@ -362,8 +402,9 @@ def rail_gin(
     Returns:
         Initialized :class:`GinBarrierSession`.
     """
-    return gin_session(coop, gin, dev_comm, dev_comm.team_rail,
-                       dev_comm.rail_gin_barrier, index)
+    return gin_session(
+        coop, gin, dev_comm, dev_comm.team_rail, dev_comm.rail_gin_barrier, index
+    )
 
 
 def world_hybrid(
@@ -390,10 +431,17 @@ def world_hybrid(
     Returns:
         Initialized :class:`BarrierSession`.
     """
-    return hybrid_session(coop, dev_comm.team_lsa, dev_comm.team_world, gin,
-                     dev_comm.hybrid_lsa_barrier,
-                     dev_comm.hybrid_rail_gin_barrier, index,
-                     multimem=multimem, inner_mm_handle=inner_mm_handle)
+    return hybrid_session(
+        coop,
+        dev_comm.team_lsa,
+        dev_comm.team_world,
+        gin,
+        dev_comm.hybrid_lsa_barrier,
+        dev_comm.hybrid_rail_gin_barrier,
+        index,
+        multimem=multimem,
+        inner_mm_handle=inner_mm_handle,
+    )
 
 
 __all__ = [

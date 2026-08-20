@@ -7,12 +7,13 @@ that manage allocator lifecycles and dispatch to the appropriate collective ops.
 from __future__ import annotations
 
 import os
-import torch
 from typing import Dict, Optional, Tuple
 
-from .allocator import SymmAllocator, AUTO_SWITCH_BYTES
-from .tensor import SymmTensor
+import torch
+
+from .allocator import AUTO_SWITCH_BYTES, SymmAllocator
 from .fused import allreduce_fused
+from .tensor import SymmTensor
 
 # Global allocator registry: maps process groups to (max_size, allocator) pairs
 _allocator_map: Dict[torch.distributed.group, Tuple[int, Optional[SymmAllocator]]] = {}
@@ -59,7 +60,9 @@ def get_sym_tensor(
     (max_size, allocator) = _allocator_map[dist_group]
     if allocator is None:
         new_max_size = int(
-            os.environ.get("UBX_SYMM_POOL_SIZE", ((6 * max_size + 1048575) / 1024 / 1024))
+            os.environ.get(
+                "UBX_SYMM_POOL_SIZE", ((6 * max_size + 1048575) / 1024 / 1024)
+            )
         )
         allocator = SymmAllocator(
             new_max_size * 1024 * 1024,
@@ -88,7 +91,9 @@ def allreduce(
     if tensor_in._allocator.dummy:
         return tensor_in
     if tensor_in._allocator.debug:
-        print(f"UBX ALLREDUCE: {tensor_in.shape} gamma None:{gamma is None} eps None:{eps is None}")
+        print(
+            f"UBX ALLREDUCE: {tensor_in.shape} gamma None:{gamma is None} eps None:{eps is None}"
+        )
 
     fuse_layernorm = gamma is not None and eps is not None
     internal_residual = tensor_in._allocator.residual
@@ -96,18 +101,25 @@ def allreduce(
     num_ranks = tensor_in._allocator.world_size
     hidden_size = (
         tensor_in.shape[-1]
-        if fuse_layernorm or internal_residual is not None or residual_global is not None
+        if fuse_layernorm
+        or internal_residual is not None
+        or residual_global is not None
         else tensor_in.numel() // num_ranks
     )
-    assert (tensor_in.numel() // hidden_size) % tensor_in._allocator.nchunks == 0, \
+    assert (tensor_in.numel() // hidden_size) % tensor_in._allocator.nchunks == 0, (
         "Token count must be divisible by nchunks"
+    )
 
     num_tokens = (tensor_in.numel() // hidden_size) // tensor_in._allocator.nchunks
     myrank = tensor_in._allocator.myrank
-    if residual_global is not None and tensor_in._allocator.current_chunk == 0 and (
-        internal_residual is None
-        or tensor_in._allocator.residual_tokens != num_tokens
-        or tensor_in._allocator.residual_chunks != tensor_in._allocator.nchunks
+    if (
+        residual_global is not None
+        and tensor_in._allocator.current_chunk == 0
+        and (
+            internal_residual is None
+            or tensor_in._allocator.residual_tokens != num_tokens
+            or tensor_in._allocator.residual_chunks != tensor_in._allocator.nchunks
+        )
     ):
         my_tokens = num_tokens // num_ranks
         extra_tokens = num_tokens % num_ranks
@@ -123,7 +135,8 @@ def allreduce(
             del tensor_in._allocator.residual
         tensor_in._allocator.residual = torch.empty(
             my_tokens * tensor_in._allocator.nchunks * hidden_size,
-            dtype=tensor_in.dtype, device=tensor_in.device,
+            dtype=tensor_in.dtype,
+            device=tensor_in.device,
         )
         tensor_in._allocator.residual_tokens = num_tokens
         tensor_in._allocator.residual_chunks = tensor_in._allocator.nchunks
@@ -140,13 +153,27 @@ def allreduce(
 
     if tensor_in.numel() * tensor_in.element_size() > AUTO_SWITCH_BYTES:
         return tensor_in._allocator.allreduce_mc(
-            tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm, gamma, eps,
-            smlimit, cgasize,
+            tensor_in,
+            hidden_size,
+            residual_in,
+            residual_out,
+            fuse_layernorm,
+            gamma,
+            eps,
+            smlimit,
+            cgasize,
         )
     else:
         return tensor_in._allocator.allreduce_lamport(
-            tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm, gamma, eps,
-            smlimit, cgasize,
+            tensor_in,
+            hidden_size,
+            residual_in,
+            residual_out,
+            fuse_layernorm,
+            gamma,
+            eps,
+            smlimit,
+            cgasize,
         )
 
 
@@ -262,8 +289,8 @@ def compute_token_offsets(
     routed = routing != 0  # bool
 
     # Exclusive prefix sum per column: sequential slot index for each (token, expert)
-    cumsum = routed.int().cumsum(dim=0)       # [ntokens, total_experts], inclusive
-    prefix = cumsum - routed.int()            # [ntokens, total_experts], exclusive
+    cumsum = routed.int().cumsum(dim=0)  # [ntokens, total_experts], inclusive
+    prefix = cumsum - routed.int()  # [ntokens, total_experts], exclusive
 
     # Width of each expert's sub-range = max tokens any single expert receives
     max_slots = int(cumsum[-1].max().item())  # scalar int
@@ -271,9 +298,13 @@ def compute_token_offsets(
     # Sub-range base for each expert: expert e_local = e % experts_per_rank
     # gets slots [e_local * max_slots, (e_local+1) * max_slots)
     e_idx = torch.arange(total_experts, device=routing.device)
-    slot_base = (e_idx % experts_per_rank * max_slots).to(torch.int32)  # [total_experts]
+    slot_base = (e_idx % experts_per_rank * max_slots).to(
+        torch.int32
+    )  # [total_experts]
 
-    local_routed = routed[local_start : local_start + local_n]           # [local_n, total_experts]
+    local_routed = routed[
+        local_start : local_start + local_n
+    ]  # [local_n, total_experts]
     local_prefix = prefix[local_start : local_start + local_n].to(torch.int32)
 
     token_offsets = torch.where(
@@ -286,8 +317,12 @@ def compute_token_offsets(
 
     # Expert offsets for this rank's local experts: prefix sum of local expert counts
     my_expert_start = myrank * experts_per_rank
-    local_counts = tokens_per_expert[my_expert_start:my_expert_start + experts_per_rank]
-    expert_offsets = torch.zeros(experts_per_rank + 1, dtype=torch.int32, device=routing.device)
+    local_counts = tokens_per_expert[
+        my_expert_start : my_expert_start + experts_per_rank
+    ]
+    expert_offsets = torch.zeros(
+        experts_per_rank + 1, dtype=torch.int32, device=routing.device
+    )
     expert_offsets[1:] = local_counts.cumsum(0)
 
     max_tokens_per_rank = experts_per_rank * max_slots
@@ -355,10 +390,10 @@ def compute_combine_push_map(
     local_n = ntokens // nranks
     device = routing.device
 
-    routed = (routing != 0).int()                              # [ntokens, te] bool→int
+    routed = (routing != 0).int()  # [ntokens, te] bool→int
     if slot_per_K_t_e is None:
-        cumsum = routed.cumsum(dim=0)                          # [ntokens, te], inclusive
-        prefix = cumsum - routed                               # exclusive
+        cumsum = routed.cumsum(dim=0)  # [ntokens, te], inclusive
+        prefix = cumsum - routed  # exclusive
         if max_slots_hint is None:
             max_slots = int(cumsum[-1].max().item())
         else:
@@ -381,14 +416,14 @@ def compute_combine_push_map(
     # No nonzero(), no .item() — no host syncs.
     my_e_start = myrank * experts_per_rank
     my_e_end = my_e_start + experts_per_rank
-    my_routed = routed[:, my_e_start:my_e_end]                 # [ntokens, ne_local] int32 0/1
+    my_routed = routed[:, my_e_start:my_e_end]  # [ntokens, ne_local] int32 0/1
     my_routed_bool = my_routed.bool()
     ne_local = experts_per_rank
 
     # k_idx along the expert axis: # of routed experts with smaller id for the
     # SAME origin_t. rowwise_prefix is needed for both inverse_map (k_idx of
     # peers' tokens) and topk_idx (k_idx of my own tokens). Compute once.
-    rowwise_prefix = routed.cumsum(dim=1) - routed             # [ntokens, te]
+    rowwise_prefix = routed.cumsum(dim=1) - routed  # [ntokens, te]
 
     if slot_per_K_t_e is not None:
         # Fast path: slot index already computed by caller. The caller may
@@ -408,15 +443,17 @@ def compute_combine_push_map(
     else:
         e_local_grid = (
             torch.arange(ne_local, device=device, dtype=torch.int64)
-            .view(1, -1).expand(ntokens, -1)
+            .view(1, -1)
+            .expand(ntokens, -1)
         )
-        my_slot_grid = (
-            e_local_grid * max_slots + prefix[:, my_e_start:my_e_end].to(torch.int64)
-        )                                                      # [ntokens, ne_local] int64
+        my_slot_grid = e_local_grid * max_slots + prefix[:, my_e_start:my_e_end].to(
+            torch.int64
+        )  # [ntokens, ne_local] int64
 
     t_grid = (
         torch.arange(ntokens, device=device, dtype=torch.int64)
-        .view(-1, 1).expand(-1, ne_local)
+        .view(-1, 1)
+        .expand(-1, ne_local)
     )
     origin_rank_grid = (t_grid // local_n).to(torch.int32)
     origin_token_grid = (t_grid % local_n).to(torch.int32)
@@ -426,25 +463,30 @@ def compute_combine_push_map(
     junk_slot = torch.full((), max_tokens_per_rank, dtype=torch.int64, device=device)
     slot_safe = torch.where(my_routed_bool, my_slot_grid, junk_slot)
 
-    inverse_map_ext = torch.zeros((max_tokens_per_rank + 1, 4),
-                                  dtype=torch.int32, device=device)
+    inverse_map_ext = torch.zeros(
+        (max_tokens_per_rank + 1, 4), dtype=torch.int32, device=device
+    )
     slot_flat = slot_safe.flatten()
     # UBX_PUSH_MAP_DIAG=1: print min/max of slot_flat per rank with the
     # bound (max_tokens_per_rank). Helps localize OOB asserts in
     # inverse_map_ext[slot_flat, ...] without needing CUDA_LAUNCH_BLOCKING.
     import os as _os_pmd
+
     if _os_pmd.environ.get("UBX_PUSH_MAP_DIAG", "0") == "1":
         import torch as _t
+
         _t.cuda.synchronize()
         _smin = int(slot_flat.min().item())
         _smax = int(slot_flat.max().item())
         _rank = _t.distributed.get_rank() if _t.distributed.is_initialized() else 0
-        print(f"[PUSH_MAP_DIAG r{_rank}] slot_flat: min={_smin} max={_smax} "
-              f"bound=max_tokens_per_rank={max_tokens_per_rank} "
-              f"OOB={1 if _smax > max_tokens_per_rank else 0} "
-              f"my_routed.sum={int(my_routed.sum().item())} "
-              f"my_e=[{my_e_start}:{my_e_end})",
-              flush=True)
+        print(
+            f"[PUSH_MAP_DIAG r{_rank}] slot_flat: min={_smin} max={_smax} "
+            f"bound=max_tokens_per_rank={max_tokens_per_rank} "
+            f"OOB={1 if _smax > max_tokens_per_rank else 0} "
+            f"my_routed.sum={int(my_routed.sum().item())} "
+            f"my_e=[{my_e_start}:{my_e_end})",
+            flush=True,
+        )
     inverse_map_ext[slot_flat, 0] = origin_rank_grid.flatten()
     inverse_map_ext[slot_flat, 1] = origin_token_grid.flatten()
     inverse_map_ext[slot_flat, 2] = k_idx_grid.flatten()
@@ -457,40 +499,52 @@ def compute_combine_push_map(
     # at column e.
     local_routed_bool = (
         routed[myrank * local_n : (myrank + 1) * local_n] != 0
-    )                                                               # [local_n, te]
+    )  # [local_n, te]
     local_per_row_excl = (
         local_routed_bool.int().cumsum(dim=1) - local_routed_bool.int()
-    )                                                               # [local_n, te]
+    )  # [local_n, te]
     # NOTE: topk_max must be IDENTICAL on every rank — peers push tokens to
     # this rank's dest_buf using their kernel's `topk_max` as the per-token
     # stride. If A's topk_max differs from B's, A's writes land at wrong
     # offsets in B's dest_buf → OOB. Compute the GLOBAL max over ALL tokens
     # (the routing matrix is the same on every rank, so the max is too).
     if topk_max_hint is None:
-        global_topk_counts = (routing != 0).int().sum(dim=1)        # [ntokens]
-        topk_max = int(global_topk_counts.max().item()) if global_topk_counts.numel() else 0
+        global_topk_counts = (routing != 0).int().sum(dim=1)  # [ntokens]
+        topk_max = (
+            int(global_topk_counts.max().item()) if global_topk_counts.numel() else 0
+        )
     else:
         topk_max = int(topk_max_hint)
 
-    topk_idx = torch.full((local_n, max(topk_max, 1)), -1,
-                          dtype=torch.int32, device=device)
+    topk_idx = torch.full(
+        (local_n, max(topk_max, 1)), -1, dtype=torch.int32, device=device
+    )
     if topk_max > 0:
         # Closed-form vectorised fill: for each (t, e) on my rank, write
         # the global expert id at column k_idx_local; unrouted entries
         # write to a junk column that's sliced off.
         e_id_grid = (
             torch.arange(total_experts, device=device, dtype=torch.int32)
-            .view(1, -1).expand(local_n, -1)
+            .view(1, -1)
+            .expand(local_n, -1)
         )
         junk_col = torch.full((), topk_max, dtype=torch.int64, device=device)
-        k_safe = torch.where(local_routed_bool, local_per_row_excl, junk_col.to(torch.int32)).to(torch.int64)
-        e_id_safe = torch.where(local_routed_bool, e_id_grid, torch.full((), -1, dtype=torch.int32, device=device))
+        k_safe = torch.where(
+            local_routed_bool, local_per_row_excl, junk_col.to(torch.int32)
+        ).to(torch.int64)
+        e_id_safe = torch.where(
+            local_routed_bool,
+            e_id_grid,
+            torch.full((), -1, dtype=torch.int32, device=device),
+        )
 
-        topk_idx_ext = torch.full((local_n, topk_max + 1), -1,
-                                  dtype=torch.int32, device=device)
+        topk_idx_ext = torch.full(
+            (local_n, topk_max + 1), -1, dtype=torch.int32, device=device
+        )
         row_idx = (
             torch.arange(local_n, device=device, dtype=torch.int64)
-            .view(-1, 1).expand(-1, total_experts)
+            .view(-1, 1)
+            .expand(-1, total_experts)
         )
         topk_idx_ext[row_idx.flatten(), k_safe.flatten()] = e_id_safe.flatten()
         topk_idx = topk_idx_ext[:, :topk_max].contiguous()
@@ -549,13 +603,13 @@ def compute_dispatch_topk_map(
 
     # Slice routing to this rank's local tokens. token_offsets is already
     # the local slice (per compute_token_offsets contract).
-    local_routing = routing[myrank * local_n:(myrank + 1) * local_n]
+    local_routing = routing[myrank * local_n : (myrank + 1) * local_n]
     local_offsets = token_offsets
 
-    local_routed = (local_routing != 0)                                # [local_n, total_experts]
+    local_routed = local_routing != 0  # [local_n, total_experts]
     # k_idx within each token row: exclusive cumsum along expert axis.
     routed_int = local_routed.int()
-    excl_cumsum = routed_int.cumsum(dim=1) - routed_int                # [local_n, total_experts]
+    excl_cumsum = routed_int.cumsum(dim=1) - routed_int  # [local_n, total_experts]
 
     # Global topk_max from the FULL routing matrix — must be identical on
     # every rank so the kernel's per-token stride is consistent.  (Mirrors
@@ -566,15 +620,13 @@ def compute_dispatch_topk_map(
         # kernel can early-exit cleanly on the -1 sentinel.
         topk_max = 1
 
-    topk_expert = torch.full((local_n, topk_max), -1,
-                             dtype=torch.int32, device=device)
-    topk_slot   = torch.full((local_n, topk_max), -1,
-                             dtype=torch.int32, device=device)
+    topk_expert = torch.full((local_n, topk_max), -1, dtype=torch.int32, device=device)
+    topk_slot = torch.full((local_n, topk_max), -1, dtype=torch.int32, device=device)
     # Scatter routed (t, e) -> (t, k_idx)
     t_idx, e_idx = local_routed.nonzero(as_tuple=True)
-    k_idx        = excl_cumsum[t_idx, e_idx].to(torch.int64)
+    k_idx = excl_cumsum[t_idx, e_idx].to(torch.int64)
     topk_expert[t_idx, k_idx] = e_idx.to(torch.int32)
-    topk_slot  [t_idx, k_idx] = local_offsets[t_idx, e_idx]
+    topk_slot[t_idx, k_idx] = local_offsets[t_idx, e_idx]
 
     return topk_expert, topk_slot, topk_max
 
@@ -583,7 +635,11 @@ def mem_stats():
     """Print memory statistics for all active allocators."""
     for dist_group, (_, allocator) in _allocator_map.items():
         if allocator is not None:
-            print(f"Rank {allocator.myrank} Graph pool used size: "
-                  f"{sum(size for _, size, _ in allocator.allocated[True]) / 1024 / 1024} MB")
-            print(f"Rank {allocator.myrank} Non-graph pool used size: "
-                  f"{sum(size for _, size, _ in allocator.allocated[False]) / 1024 / 1024} MB")
+            print(
+                f"Rank {allocator.myrank} Graph pool used size: "
+                f"{sum(size for _, size, _ in allocator.allocated[True]) / 1024 / 1024} MB"
+            )
+            print(
+                f"Rank {allocator.myrank} Non-graph pool used size: "
+                f"{sum(size for _, size, _ in allocator.allocated[False]) / 1024 / 1024} MB"
+            )

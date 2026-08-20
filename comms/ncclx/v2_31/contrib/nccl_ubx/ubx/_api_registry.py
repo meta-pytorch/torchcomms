@@ -33,7 +33,7 @@ checklist (event kinds, version-bump rules, doc updates).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import List, Optional
 
 
 # ----------------------------------------------------------------------
@@ -107,252 +107,479 @@ API_LOG: List[Event] = [
     # ============================================================
     # v0.01 — initial registry snapshot
     # ============================================================
-
     # --- SymmAllocator (class + core methods) ---
-
-    Event(version="0.01", kind="api_added", api="SymmAllocator",
-          description="Symmetric memory pool allocator backed by NCCL's device "
-                      "API. Manages a contiguous pool + REG0 (commbuff + flag "
-                      "slots) + graph/non-graph sub-pools. Exposes collectives "
-                      "(allreduce, alltoall, alltoallv, allgather, combine_*, "
-                      "a2av_token_*) that operate on tensors backed by the pool.",
-          params=("size_bytes", "device", "dist_group")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.close",
-          description="Release pool, window, devcomm, and bootstrapped "
-                      "ncclComm. Idempotent.",
-          params=()),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.create_tensor",
-          description="Allocate a SymmTensor view of the pool.",
-          params=("shape", "dtype", "blocked"),
-          optional_params=("blocked",)),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.barrier",
-          description="Cross-rank barrier on the EP group via a dummy UBX kernel.",
-          params=("smlimit",),
-          optional_params=("smlimit",)),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator",
+        description="Symmetric memory pool allocator backed by NCCL's device "
+        "API. Manages a contiguous pool + REG0 (commbuff + flag "
+        "slots) + graph/non-graph sub-pools. Exposes collectives "
+        "(allreduce, alltoall, alltoallv, allgather, combine_*, "
+        "a2av_token_*) that operate on tensors backed by the pool.",
+        params=("size_bytes", "device", "dist_group"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.close",
+        description="Release pool, window, devcomm, and bootstrapped "
+        "ncclComm. Idempotent.",
+        params=(),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.create_tensor",
+        description="Allocate a SymmTensor view of the pool.",
+        params=("shape", "dtype", "blocked"),
+        optional_params=("blocked",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.barrier",
+        description="Cross-rank barrier on the EP group via a dummy UBX kernel.",
+        params=("smlimit",),
+        optional_params=("smlimit",),
+    ),
     # --- Allreduce ---
-
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allreduce",
-          description="Automatic-kernel allreduce. <0.25 MB → Lamport, else MC.",
-          params=("tensor_in", "tensor_out", "smlimit", "nthreads",
-                  "gamma", "residual_in", "residual_out", "eps"),
-          optional_params=("tensor_out", "smlimit", "nthreads",
-                           "gamma", "residual_in", "residual_out", "eps")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allreduce_mc",
-          description="Multicast allreduce. Best for large tensors.",
-          params=("tensor_in", "tensor_out", "smlimit", "nthreads",
-                  "gamma", "residual_in", "residual_out", "eps"),
-          optional_params=("tensor_out", "smlimit", "nthreads",
-                           "gamma", "residual_in", "residual_out", "eps")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allreduce_uc",
-          description="Unicast software-reduction allreduce. Fallback when "
-                      "multicast unavailable.",
-          params=("tensor_in", "tensor_out", "smlimit", "nthreads"),
-          optional_params=("tensor_out", "smlimit", "nthreads")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allreduce_lamport",
-          description="MC reduce-scatter + Lamport poison polling allgather. "
-                      "Best for small tensors.",
-          params=("tensor_in", "tensor_out", "smlimit", "nthreads"),
-          optional_params=("tensor_out", "smlimit", "nthreads")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allreduce",
+        description="Automatic-kernel allreduce. <0.25 MB → Lamport, else MC.",
+        params=(
+            "tensor_in",
+            "tensor_out",
+            "smlimit",
+            "nthreads",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+        ),
+        optional_params=(
+            "tensor_out",
+            "smlimit",
+            "nthreads",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+        ),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allreduce_mc",
+        description="Multicast allreduce. Best for large tensors.",
+        params=(
+            "tensor_in",
+            "tensor_out",
+            "smlimit",
+            "nthreads",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+        ),
+        optional_params=(
+            "tensor_out",
+            "smlimit",
+            "nthreads",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+        ),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allreduce_uc",
+        description="Unicast software-reduction allreduce. Fallback when "
+        "multicast unavailable.",
+        params=("tensor_in", "tensor_out", "smlimit", "nthreads"),
+        optional_params=("tensor_out", "smlimit", "nthreads"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allreduce_lamport",
+        description="MC reduce-scatter + Lamport poison polling allgather. "
+        "Best for small tensors.",
+        params=("tensor_in", "tensor_out", "smlimit", "nthreads"),
+        optional_params=("tensor_out", "smlimit", "nthreads"),
+    ),
     # --- Allgather ---
-
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allgather",
-          description="Multicast allgather.",
-          params=("tensor_in", "smlimit", "nthreads"),
-          optional_params=("smlimit", "nthreads")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.allgather_uc",
-          description="Unicast allgather (works when multicast is disabled).",
-          params=("tensor_in", "smlimit", "nthreads"),
-          optional_params=("smlimit", "nthreads")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allgather",
+        description="Multicast allgather.",
+        params=("tensor_in", "smlimit", "nthreads"),
+        optional_params=("smlimit", "nthreads"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.allgather_uc",
+        description="Unicast allgather (works when multicast is disabled).",
+        params=("tensor_in", "smlimit", "nthreads"),
+        optional_params=("smlimit", "nthreads"),
+    ),
     # --- Alltoall (fixed-size) ---
-
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoall",
-          description="Fixed-size all-to-all (UC + UC exit barrier).",
-          params=("tensor_in", "smlimit", "nthreads"),
-          optional_params=("smlimit", "nthreads")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoall_lamport",
-          description="All-to-all with Lamport poison polling. 1.5-2x faster "
-                      "than `alltoall` at small sizes.",
-          params=("tensor_in", "smlimit", "nthreads"),
-          optional_params=("smlimit", "nthreads")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoall_auto",
-          description="Auto-select alltoall variant. <0.25 MB → Lamport, else "
-                      "regular.",
-          params=("tensor_in", "smlimit", "nthreads"),
-          optional_params=("smlimit", "nthreads")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoall",
+        description="Fixed-size all-to-all (UC + UC exit barrier).",
+        params=("tensor_in", "smlimit", "nthreads"),
+        optional_params=("smlimit", "nthreads"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoall_lamport",
+        description="All-to-all with Lamport poison polling. 1.5-2x faster "
+        "than `alltoall` at small sizes.",
+        params=("tensor_in", "smlimit", "nthreads"),
+        optional_params=("smlimit", "nthreads"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoall_auto",
+        description="Auto-select alltoall variant. <0.25 MB → Lamport, else regular.",
+        params=("tensor_in", "smlimit", "nthreads"),
+        optional_params=("smlimit", "nthreads"),
+    ),
     # --- Alltoallv ---
-
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoallv",
-          description="Variable-length all-to-all (convenience wrapper). For "
-                      "repeated calls with same splits, use prepare+run.",
-          params=("tensor_in", "output_split_sizes", "input_split_sizes",
-                  "smlimit"),
-          optional_params=("smlimit",)),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoallv_prepare",
-          description="Precompute per-rank byte offsets for a fixed split "
-                      "pattern.",
-          params=("output_split_sizes", "input_split_sizes", "dtype")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.alltoallv_run",
-          description="Execute alltoallv using state from `alltoallv_prepare`.",
-          params=("tensor_in", "state", "smlimit"),
-          optional_params=("smlimit",)),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoallv",
+        description="Variable-length all-to-all (convenience wrapper). For "
+        "repeated calls with same splits, use prepare+run.",
+        params=("tensor_in", "output_split_sizes", "input_split_sizes", "smlimit"),
+        optional_params=("smlimit",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoallv_prepare",
+        description="Precompute per-rank byte offsets for a fixed split pattern.",
+        params=("output_split_sizes", "input_split_sizes", "dtype"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.alltoallv_run",
+        description="Execute alltoallv using state from `alltoallv_prepare`.",
+        params=("tensor_in", "state", "smlimit"),
+        optional_params=("smlimit",),
+    ),
     # --- MoE fused dispatch ---
-
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.a2av_token_bf16_bf16",
-          description="Fused MoE dispatch: per-(token, expert) NVLink writes of "
-                      "bf16 token data to peer pools.",
-          params=("tokens_bf16", "token_offsets", "experts_per_rank", "output",
-                  "smlimit", "sync", "expert_start", "expert_count"),
-          optional_params=("output", "smlimit", "sync",
-                           "expert_start", "expert_count")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.a2av_token_bf16_bf16_topk",
-          description="Top-K variant of `a2av_token_bf16_bf16`. Inner loop "
-                      "iterates K routed entries per token instead of "
-                      "total_experts.",
-          params=("tokens_bf16", "topk_expert", "topk_slot", "experts_per_rank",
-                  "output", "smlimit", "sync"),
-          optional_params=("output", "smlimit", "sync")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.a2av_token_bf16_mxfp8",
-          description="Fused MoE dispatch with bf16 → mxfp8 quantization in-kernel.",
-          params=("tokens_bf16", "token_offsets", "experts_per_rank", "output",
-                  "smlimit", "sync", "expert_start", "expert_count"),
-          optional_params=("smlimit", "sync", "expert_start", "expert_count")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.a2av_token_bf16_mxfp8_persistent",
-          description="Persistent-grid variant of `a2av_token_bf16_mxfp8`.",
-          params=("tokens_bf16", "token_offsets", "experts_per_rank", "output",
-                  "smlimit", "sync"),
-          optional_params=("smlimit", "sync")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.a2av_wait",
-          description="Wait kernel paired with `a2av_token_*` when sync=False.",
-          params=()),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.a2av_token_bf16_bf16",
+        description="Fused MoE dispatch: per-(token, expert) NVLink writes of "
+        "bf16 token data to peer pools.",
+        params=(
+            "tokens_bf16",
+            "token_offsets",
+            "experts_per_rank",
+            "output",
+            "smlimit",
+            "sync",
+            "expert_start",
+            "expert_count",
+        ),
+        optional_params=("output", "smlimit", "sync", "expert_start", "expert_count"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.a2av_token_bf16_bf16_topk",
+        description="Top-K variant of `a2av_token_bf16_bf16`. Inner loop "
+        "iterates K routed entries per token instead of "
+        "total_experts.",
+        params=(
+            "tokens_bf16",
+            "topk_expert",
+            "topk_slot",
+            "experts_per_rank",
+            "output",
+            "smlimit",
+            "sync",
+        ),
+        optional_params=("output", "smlimit", "sync"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.a2av_token_bf16_mxfp8",
+        description="Fused MoE dispatch with bf16 → mxfp8 quantization in-kernel.",
+        params=(
+            "tokens_bf16",
+            "token_offsets",
+            "experts_per_rank",
+            "output",
+            "smlimit",
+            "sync",
+            "expert_start",
+            "expert_count",
+        ),
+        optional_params=("smlimit", "sync", "expert_start", "expert_count"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.a2av_token_bf16_mxfp8_persistent",
+        description="Persistent-grid variant of `a2av_token_bf16_mxfp8`.",
+        params=(
+            "tokens_bf16",
+            "token_offsets",
+            "experts_per_rank",
+            "output",
+            "smlimit",
+            "sync",
+        ),
+        optional_params=("smlimit", "sync"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.a2av_wait",
+        description="Wait kernel paired with `a2av_token_*` when sync=False.",
+        params=(),
+    ),
     # --- MoE combine ---
-
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_push3_bf16_bf16",
-          description="RECOMMENDED MoE combine. 3-kernel split PUSH "
-                      "(Phase 1 writes, Phase 2 barrier, Phase 3 local sum). "
-                      "Double-buffered dest_bufs. Validated at EP=32.",
-          params=("expert_outputs", "inverse_map", "topk_idx", "experts_per_rank",
-                  "max_tokens_per_rank", "gate_weights", "smlimit"),
-          optional_params=("gate_weights", "smlimit")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_bf16_bf16_push",
-          description="Single-kernel PUSH combine with MC-atomic barrier.",
-          params=("expert_outputs", "inverse_map", "topk_idx", "experts_per_rank",
-                  "max_tokens_per_rank", "gate_weights", "smlimit"),
-          optional_params=("gate_weights", "smlimit")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_bf16_bf16_lamport_push",
-          description="PUSH combine with Lamport polling (no barrier).",
-          params=("expert_outputs", "inverse_map", "topk_idx", "experts_per_rank",
-                  "max_tokens_per_rank", "gate_weights", "smlimit"),
-          optional_params=("gate_weights", "smlimit")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_v2_bf16_bf16",
-          description="2-kernel combine (E22): Phase 1 pure data copy, Phase 2 "
-                      "atomics + fp32 sum.",
-          params=("expert_outputs", "token_offsets", "experts_per_rank", "smlimit"),
-          optional_params=("smlimit",)),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_bf16_bf16",
-          description="PULL barrier variant — NOT STABLE at EP≥32; use "
-                      "combine_push3 instead. Kept for diagnostics.",
-          params=("expert_outputs", "token_offsets", "experts_per_rank",
-                  "combine_temp", "smlimit"),
-          optional_params=("combine_temp", "smlimit")),
-    Event(version="0.01", kind="api_added",
-          api="SymmAllocator.combine_mxfp8_bf16",
-          description="MoE combine that reads mxfp8 expert outputs and "
-                      "accumulates in bf16.",
-          params=("expert_outputs", "token_offsets", "experts_per_rank",
-                  "combine_temp", "smlimit"),
-          optional_params=("combine_temp", "smlimit")),
-    Event(version="0.01", kind="api_added", api="SymmAllocator.combine_wait",
-          description="Wait kernel for split combine variants.",
-          params=()),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_push3_bf16_bf16",
+        description="RECOMMENDED MoE combine. 3-kernel split PUSH "
+        "(Phase 1 writes, Phase 2 barrier, Phase 3 local sum). "
+        "Double-buffered dest_bufs. Validated at EP=32.",
+        params=(
+            "expert_outputs",
+            "inverse_map",
+            "topk_idx",
+            "experts_per_rank",
+            "max_tokens_per_rank",
+            "gate_weights",
+            "smlimit",
+        ),
+        optional_params=("gate_weights", "smlimit"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_bf16_bf16_push",
+        description="Single-kernel PUSH combine with MC-atomic barrier.",
+        params=(
+            "expert_outputs",
+            "inverse_map",
+            "topk_idx",
+            "experts_per_rank",
+            "max_tokens_per_rank",
+            "gate_weights",
+            "smlimit",
+        ),
+        optional_params=("gate_weights", "smlimit"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_bf16_bf16_lamport_push",
+        description="PUSH combine with Lamport polling (no barrier).",
+        params=(
+            "expert_outputs",
+            "inverse_map",
+            "topk_idx",
+            "experts_per_rank",
+            "max_tokens_per_rank",
+            "gate_weights",
+            "smlimit",
+        ),
+        optional_params=("gate_weights", "smlimit"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_v2_bf16_bf16",
+        description="2-kernel combine (E22): Phase 1 pure data copy, Phase 2 "
+        "atomics + fp32 sum.",
+        params=("expert_outputs", "token_offsets", "experts_per_rank", "smlimit"),
+        optional_params=("smlimit",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_bf16_bf16",
+        description="PULL barrier variant — NOT STABLE at EP≥32; use "
+        "combine_push3 instead. Kept for diagnostics.",
+        params=(
+            "expert_outputs",
+            "token_offsets",
+            "experts_per_rank",
+            "combine_temp",
+            "smlimit",
+        ),
+        optional_params=("combine_temp", "smlimit"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_mxfp8_bf16",
+        description="MoE combine that reads mxfp8 expert outputs and "
+        "accumulates in bf16.",
+        params=(
+            "expert_outputs",
+            "token_offsets",
+            "experts_per_rank",
+            "combine_temp",
+            "smlimit",
+        ),
+        optional_params=("combine_temp", "smlimit"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmAllocator.combine_wait",
+        description="Wait kernel for split combine variants.",
+        params=(),
+    ),
     # --- SymmTensor ---
-
-    Event(version="0.01", kind="api_added", api="SymmTensor",
-          description="torch.Tensor subclass backed by a slice of the symmetric "
-                      "pool. Reference-counted; freed when last view drops.",
-          params=("data", "allocator")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="SymmTensor",
+        description="torch.Tensor subclass backed by a slice of the symmetric "
+        "pool. Reference-counted; freed when last view drops.",
+        params=("data", "allocator"),
+    ),
     # --- Module-level helpers (ubx.*) ---
-
-    Event(version="0.01", kind="api_added", api="compute_token_offsets",
-          description="Per-(token, expert) destination slot indices from a "
-                      "routing matrix.",
-          params=("routing", "experts_per_rank", "myrank", "nranks")),
-    Event(version="0.01", kind="api_added", api="compute_combine_push_map",
-          description="Inverse map + topk indices for combine_push3 / "
-                      "combine_*_push.",
-          params=("token_offsets", "experts_per_rank", "myrank", "nranks",
-                  "capacity"),
-          optional_params=("capacity",)),
-    Event(version="0.01", kind="api_added", api="compute_dispatch_topk_map",
-          description="[ntokens, topk_max] LUT for `a2av_token_bf16_bf16_topk`.",
-          params=("token_offsets", "topk_max")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="compute_token_offsets",
+        description="Per-(token, expert) destination slot indices from a "
+        "routing matrix.",
+        params=("routing", "experts_per_rank", "myrank", "nranks"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="compute_combine_push_map",
+        description="Inverse map + topk indices for combine_push3 / combine_*_push.",
+        params=("token_offsets", "experts_per_rank", "myrank", "nranks", "capacity"),
+        optional_params=("capacity",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="compute_dispatch_topk_map",
+        description="[ntokens, topk_max] LUT for `a2av_token_bf16_bf16_topk`.",
+        params=("token_offsets", "topk_max"),
+    ),
     # ubx.ops.* helpers
-
-    Event(version="0.01", kind="api_added", api="ops.allreduce",
-          description="Module-level allreduce convenience (manages allocator).",
-          params=("tensor_in", "dist_group", "gamma", "residual_in",
-                  "residual_out", "eps"),
-          optional_params=("dist_group", "gamma", "residual_in",
-                           "residual_out", "eps")),
-    Event(version="0.01", kind="api_added", api="ops.request_allocator",
-          description="Get-or-create a SymmAllocator for `(dist_group, dtype, "
-                      "max_tensor_size)`.",
-          params=("max_tensor_size", "dtype", "dist_group")),
-    Event(version="0.01", kind="api_added", api="ops.get_sym_tensor",
-          description="Allocate a SymmTensor from the module-level allocator "
-                      "registry.",
-          params=("shape", "dtype", "dist_group")),
-    Event(version="0.01", kind="api_added", api="ops.free_residual",
-          description="Return a residual tensor's pool slot.",
-          params=("tensor_in",)),
-    Event(version="0.01", kind="api_added", api="ops.restore",
-          description="Copy a regular tensor into a SymmTensor.",
-          params=("tensor", "dist_group")),
-    Event(version="0.01", kind="api_added", api="ops.mem_stats",
-          description="Per-allocator memory statistics.",
-          params=()),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.allreduce",
+        description="Module-level allreduce convenience (manages allocator).",
+        params=(
+            "tensor_in",
+            "dist_group",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+        ),
+        optional_params=("dist_group", "gamma", "residual_in", "residual_out", "eps"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.request_allocator",
+        description="Get-or-create a SymmAllocator for `(dist_group, dtype, "
+        "max_tensor_size)`.",
+        params=("max_tensor_size", "dtype", "dist_group"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.get_sym_tensor",
+        description="Allocate a SymmTensor from the module-level allocator registry.",
+        params=("shape", "dtype", "dist_group"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.free_residual",
+        description="Return a residual tensor's pool slot.",
+        params=("tensor_in",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.restore",
+        description="Copy a regular tensor into a SymmTensor.",
+        params=("tensor", "dist_group"),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="ops.mem_stats",
+        description="Per-allocator memory statistics.",
+        params=(),
+    ),
     # ubx.fused.*
-
-    Event(version="0.01", kind="api_added", api="fused.allreduce_fused",
-          description="Allreduce fused with residual-add + RMSNorm.",
-          params=("tensor_in", "gamma", "residual_in", "residual_out",
-                  "eps", "dist_group"),
-          optional_params=("residual_out", "eps", "dist_group")),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="fused.allreduce_fused",
+        description="Allreduce fused with residual-add + RMSNorm.",
+        params=(
+            "tensor_in",
+            "gamma",
+            "residual_in",
+            "residual_out",
+            "eps",
+            "dist_group",
+        ),
+        optional_params=("residual_out", "eps", "dist_group"),
+    ),
     # --- Meta APIs (this module) ---
-
-    Event(version="0.01", kind="api_added", api="get_version",
-          description="Return the current API contract version (string).",
-          params=()),
-    Event(version="0.01", kind="api_added", api="query_api",
-          description="Check whether an API and its named params exist in the "
-                      "current contract. Returns advice if not.",
-          params=("name", "params"),
-          optional_params=("params",)),
-    Event(version="0.01", kind="api_added", api="query_supported_hw",
-          description="Return supported transports / SM archs / NVLink-domain "
-                      "constraints, either per-API or global aggregate.",
-          params=("api_name",),
-          optional_params=("api_name",)),
-
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="get_version",
+        description="Return the current API contract version (string).",
+        params=(),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="query_api",
+        description="Check whether an API and its named params exist in the "
+        "current contract. Returns advice if not.",
+        params=("name", "params"),
+        optional_params=("params",),
+    ),
+    Event(
+        version="0.01",
+        kind="api_added",
+        api="query_supported_hw",
+        description="Return supported transports / SM archs / NVLink-domain "
+        "constraints, either per-API or global aggregate.",
+        params=("api_name",),
+        optional_params=("api_name",),
+    ),
     # ============================================================
     # Future versions append events below this line.
     # ============================================================
@@ -430,7 +657,11 @@ def _compute_current_state(log: List[Event]) -> dict:
                 spec["optional_params"].remove(ev.param)
         elif ev.kind == "hw_added":
             spec = state.get(ev.api)
-            if spec is not None and ev.transport and ev.transport not in spec["transports"]:
+            if (
+                spec is not None
+                and ev.transport
+                and ev.transport not in spec["transports"]
+            ):
                 spec["transports"].append(ev.transport)
         elif ev.kind == "hw_removed":
             spec = state.get(ev.api)
@@ -609,8 +840,7 @@ def query_supported_hw(api_name: Optional[str] = None) -> dict:
     if api_name is not None:
         spec = _CURRENT.get(api_name)
         if spec is None:
-            return {"error": f"'{api_name}' is not a known ubx API in "
-                             f"v{API_VERSION}."}
+            return {"error": f"'{api_name}' is not a known ubx API in v{API_VERSION}."}
         return {
             "api": api_name,
             "transports": list(spec["transports"]),

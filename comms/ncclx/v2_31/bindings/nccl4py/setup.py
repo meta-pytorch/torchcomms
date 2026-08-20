@@ -16,7 +16,9 @@ if not CUDA_HOME:
 
 cuda_path = Path(CUDA_HOME)
 if not cuda_path.exists() or not cuda_path.is_dir():
-    raise SystemExit(f"Error: CUDA_HOME does not exist or is not a directory: {CUDA_HOME}")
+    raise SystemExit(
+        f"Error: CUDA_HOME does not exist or is not a directory: {CUDA_HOME}"
+    )
 CUDA_INC = str(cuda_path / "include")
 
 PACKAGE = "nccl.bindings"
@@ -43,8 +45,13 @@ def libname_extensions(libname: str) -> list[Extension]:
         nccl.bindings._internal.nccl    <- nccl/bindings/_internal/nccl_linux.pyx
     """
     return [
-        _ext(f"{PACKAGE}.{libname}", os.path.join(*PACKAGE.split("."), f"{libname}.pyx")),
-        _ext(f"{PACKAGE}.cy{libname}", os.path.join(*PACKAGE.split("."), f"cy{libname}.pyx")),
+        _ext(
+            f"{PACKAGE}.{libname}", os.path.join(*PACKAGE.split("."), f"{libname}.pyx")
+        ),
+        _ext(
+            f"{PACKAGE}.cy{libname}",
+            os.path.join(*PACKAGE.split("."), f"cy{libname}.pyx"),
+        ),
         _ext(
             f"{PACKAGE}._internal.{libname}",
             os.path.join(*PACKAGE.split("."), "_internal", f"{libname}_linux.pyx"),
@@ -53,7 +60,10 @@ def libname_extensions(libname: str) -> list[Extension]:
 
 
 ext_modules = [
-    _ext(f"{PACKAGE}._internal.utils", os.path.join(*PACKAGE.split("."), "_internal", "utils.pyx"))
+    _ext(
+        f"{PACKAGE}._internal.utils",
+        os.path.join(*PACKAGE.split("."), "_internal", "utils.pyx"),
+    )
 ]
 for libname in LIBNAMES:
     ext_modules.extend(libname_extensions(libname))

@@ -39,13 +39,17 @@ def parse_size(s):
 
 def get_rank_info():
     if "RANK" in os.environ:
-        return (int(os.environ["RANK"]),
-                int(os.environ["WORLD_SIZE"]),
-                int(os.environ.get("LOCAL_RANK", os.environ["RANK"])))
+        return (
+            int(os.environ["RANK"]),
+            int(os.environ["WORLD_SIZE"]),
+            int(os.environ.get("LOCAL_RANK", os.environ["RANK"])),
+        )
     if "SLURM_PROCID" in os.environ:
-        return (int(os.environ["SLURM_PROCID"]),
-                int(os.environ["SLURM_NTASKS"]),
-                int(os.environ.get("SLURM_LOCALID", os.environ["SLURM_PROCID"])))
+        return (
+            int(os.environ["SLURM_PROCID"]),
+            int(os.environ["SLURM_NTASKS"]),
+            int(os.environ.get("SLURM_LOCALID", os.environ["SLURM_PROCID"])),
+        )
     raise RuntimeError("Cannot determine rank")
 
 
@@ -55,6 +59,7 @@ def log(rank, msg):
 
 def run_eager(allocator, dtype, count, calls, do_check, rank, world_size, device):
     from ubx import SymmAllocator  # noqa: F401
+
     symm_in = allocator.create_tensor(torch.Size([count]), dtype)
     symm_in.fill_(float(rank) + 1.0)
     log(rank, f"eager: input symm allocated, count={count}, dtype={dtype}")
@@ -133,55 +138,80 @@ def run_graph(allocator, dtype, count, calls, captures_per_graph, rank, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sizes", default="256K,1M,4M,8M,16M",
-                        help="Comma-separated total tensor sizes (bytes; K/M/G ok)")
+    parser.add_argument(
+        "--sizes",
+        default="256K,1M,4M,8M,16M",
+        help="Comma-separated total tensor sizes (bytes; K/M/G ok)",
+    )
     parser.add_argument("--mode", choices=["eager", "graph", "both"], default="both")
-    parser.add_argument("--calls", type=int, default=8,
-                        help="Eager: # of consecutive calls. Graph: # of replays.")
-    parser.add_argument("--captures-per-graph", type=int, default=4,
-                        help="# of lamport ops captured into one graph (graph mode).")
+    parser.add_argument(
+        "--calls",
+        type=int,
+        default=8,
+        help="Eager: # of consecutive calls. Graph: # of replays.",
+    )
+    parser.add_argument(
+        "--captures-per-graph",
+        type=int,
+        default=4,
+        help="# of lamport ops captured into one graph (graph mode).",
+    )
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
-    parser.add_argument("--check", action="store_true",
-                        help="Validate first eager call against NCCL.")
+    parser.add_argument(
+        "--check", action="store_true", help="Validate first eager call against NCCL."
+    )
     args = parser.parse_args()
 
     rank, world_size, local_rank = get_rank_info()
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", init_method="env://",
-                            world_size=world_size, rank=rank)
+    dist.init_process_group(
+        backend="nccl", init_method="env://", world_size=world_size, rank=rank
+    )
     device = torch.device(f"cuda:{local_rank}")
 
     dtype_map = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
     dtype = dtype_map[args.dtype]
 
     sizes_b = [parse_size(s) for s in args.sizes.split(",")]
-    log(rank, f"start: world={world_size}, sizes={[s//1024 for s in sizes_b]}KB, "
-              f"mode={args.mode}, calls={args.calls}")
+    log(
+        rank,
+        f"start: world={world_size}, sizes={[s // 1024 for s in sizes_b]}KB, "
+        f"mode={args.mode}, calls={args.calls}",
+    )
 
     from ubx import SymmAllocator
+
     # Pool size: 3 triple-bufs + headroom + per-size overhead. Make it big.
     max_size = max(sizes_b)
     # graph + eager pools both — graph share 0.5
     os.environ["UBX_GRAPH_POOL_SHARE"] = "0.5"
     pool_size = max(max_size * 32, 256 * 1024 * 1024)
-    log(rank, f"allocating pool: {pool_size//(1024*1024)}MB")
+    log(rank, f"allocating pool: {pool_size // (1024 * 1024)}MB")
 
     failure = 0
     for sz in sizes_b:
         elem_size = torch.tensor(0, dtype=dtype).element_size()
         count = sz // elem_size
-        log(rank, f"=== size={sz//1024}KB count={count} ===")
+        log(rank, f"=== size={sz // 1024}KB count={count} ===")
 
         if args.mode in ("eager", "both"):
             allocator = SymmAllocator(pool_size, device, dist.group.WORLD)
             try:
-                ok = run_eager(allocator, dtype, count, args.calls, args.check,
-                               rank, world_size, device)
-                log(rank, f"eager size={sz//1024}KB: {'OK' if ok else 'FAIL'}")
+                ok = run_eager(
+                    allocator,
+                    dtype,
+                    count,
+                    args.calls,
+                    args.check,
+                    rank,
+                    world_size,
+                    device,
+                )
+                log(rank, f"eager size={sz // 1024}KB: {'OK' if ok else 'FAIL'}")
                 if not ok:
                     failure += 1
             except Exception as e:
-                log(rank, f"eager size={sz//1024}KB: EXCEPTION {e}")
+                log(rank, f"eager size={sz // 1024}KB: EXCEPTION {e}")
                 failure += 1
             allocator.close()
             del allocator
@@ -190,13 +220,20 @@ def main():
         if args.mode in ("graph", "both"):
             allocator = SymmAllocator(pool_size, device, dist.group.WORLD)
             try:
-                ok = run_graph(allocator, dtype, count, args.calls,
-                               args.captures_per_graph, rank, device)
-                log(rank, f"graph size={sz//1024}KB: {'OK' if ok else 'FAIL'}")
+                ok = run_graph(
+                    allocator,
+                    dtype,
+                    count,
+                    args.calls,
+                    args.captures_per_graph,
+                    rank,
+                    device,
+                )
+                log(rank, f"graph size={sz // 1024}KB: {'OK' if ok else 'FAIL'}")
                 if not ok:
                     failure += 1
             except Exception as e:
-                log(rank, f"graph size={sz//1024}KB: EXCEPTION {e}")
+                log(rank, f"graph size={sz // 1024}KB: EXCEPTION {e}")
                 failure += 1
             allocator.close()
             del allocator

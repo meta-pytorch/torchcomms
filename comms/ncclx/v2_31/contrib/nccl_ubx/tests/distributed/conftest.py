@@ -8,10 +8,11 @@ Multi-GPU tests use the subprocess pattern:
 """
 
 import os
-import sys
-import subprocess
-import pytest
 import shutil
+import subprocess
+import sys
+
+import pytest
 
 
 def _find_launcher():
@@ -67,19 +68,26 @@ def run_distributed_test(
         cmd = [
             "mpirun",
             "--allow-run-as-root",
-            "-np", str(num_procs),
-            sys.executable, script,
+            "-np",
+            str(num_procs),
+            sys.executable,
+            script,
         ] + args
     else:
         # torchrun fallback for local development
         cmd = [
-            sys.executable, "-m", "torch.distributed.run",
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
             f"--nproc_per_node={num_procs}",
             "--standalone",
             script,
         ] + args
 
-    env = {**os.environ, "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.dirname(__file__)))}
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    }
     if env_extra:
         env.update(env_extra)
 
@@ -96,6 +104,7 @@ def run_distributed_test(
 def requires_multi_gpu(min_gpus=2):
     """Skip decorator for tests requiring multiple GPUs."""
     import torch
+
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     return pytest.mark.skipif(
         num_gpus < min_gpus,

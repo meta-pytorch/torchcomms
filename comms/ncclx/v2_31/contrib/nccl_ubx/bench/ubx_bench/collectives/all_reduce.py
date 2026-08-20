@@ -5,16 +5,22 @@ from __future__ import annotations
 import gc
 import os
 import time
+from typing import Optional
+
 import torch
 import torch.distributed as dist
-from typing import Optional
 
 from ..report import BenchResult, compute_bandwidth
 
 
 def bench_allreduce_nccl(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    cudagraph: int = 10000,
 ) -> BenchResult:
     """Benchmark NCCL allreduce."""
     element_size = torch.tensor(0, dtype=dtype).element_size()
@@ -66,17 +72,28 @@ def bench_allreduce_nccl(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
 def bench_allreduce_ubx(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int,
-    kernel: str = "auto", smlimit: int = 0, cgasize: int = 0,
-    group=None, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    kernel: str = "auto",
+    smlimit: int = 0,
+    cgasize: int = 0,
+    group=None,
+    cudagraph: int = 10000,
 ) -> BenchResult:
     """Benchmark UB-X allreduce.
 
@@ -111,7 +128,9 @@ def bench_allreduce_ubx(
     if kernel == "mc":
         op_fn = lambda t: allocator.allreduce_mc(t, smlimit=smlimit, cgasize=cgasize)
     elif kernel == "lamport":
-        op_fn = lambda t: allocator.allreduce_lamport(t, smlimit=smlimit, cgasize=cgasize)
+        op_fn = lambda t: allocator.allreduce_lamport(
+            t, smlimit=smlimit, cgasize=cgasize
+        )
     elif kernel == "uc":
         op_fn = lambda t: allocator.allreduce_uc(t, smlimit=smlimit, cgasize=cgasize)
     else:
@@ -184,7 +203,11 @@ def bench_allreduce_ubx(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

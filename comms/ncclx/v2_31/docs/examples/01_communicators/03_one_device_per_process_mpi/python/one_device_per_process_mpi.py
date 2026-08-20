@@ -90,7 +90,9 @@ def main() -> int:
     unique_id = comm_world.bcast(unique_id, root=0)
 
     # Each process joins the distributed communicator on its assigned GPU.
-    nccl_comm = nccl.Communicator.init(nranks=mpi_size, rank=mpi_rank, unique_id=unique_id)
+    nccl_comm = nccl.Communicator.init(
+        nranks=mpi_size, rank=mpi_rank, unique_id=unique_id
+    )
     print(f"  Rank {mpi_rank} created NCCL communicator")
 
     print()
@@ -103,7 +105,9 @@ def main() -> int:
     comm_size = nccl_comm.nranks
     comm_device = nccl_comm.device.device_id
 
-    print(f"  MPI rank {mpi_rank} -> NCCL rank {comm_rank}/{comm_size} on GPU device {comm_device}")
+    print(
+        f"  MPI rank {mpi_rank} -> NCCL rank {comm_rank}/{comm_size} on GPU device {comm_device}"
+    )
 
     comm_world.Barrier()
 
@@ -112,7 +116,7 @@ def main() -> int:
     # =========================================================================
     # STEP 5: Clean shutdown and resource cleanup
     # =========================================================================
-    
+
     print("Cleaning up resources")
 
     if mpi_rank == 0:
