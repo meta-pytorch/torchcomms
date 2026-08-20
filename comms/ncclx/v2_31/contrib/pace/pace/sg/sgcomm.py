@@ -1,27 +1,42 @@
-import torch
-import torch.distributed as dist
-from typing import List, Tuple, Union, Optional
+from typing import List, Optional, Tuple, Union
 
 import pace_cpp
-from ..utils import EventOverlap, CommConfig, BaseComm
+import torch
+import torch.distributed as dist
+
+from ..utils import BaseComm, CommConfig, EventOverlap
 
 
 class SGComm(BaseComm):
-
-    def __init__(self, group : dist.ProcessGroup, num_local_ranks : int, config : CommConfig = None):
+    def __init__(
+        self, group: dist.ProcessGroup, num_local_ranks: int, config: CommConfig = None
+    ):
         """
-            Initialize the SGComm buffer.
-            Args:
-                group: the process group to exchange information.
-                num_local_ranks: the number of local ranks in a node.
-                config: the communication configuration.
+        Initialize the SGComm buffer.
+        Args:
+            group: the process group to exchange information.
+            num_local_ranks: the number of local ranks in a node.
+            config: the communication configuration.
         """
-        self.config = config if config else self.get_recommended_config(num_local_ranks, group.size())
+        self.config = (
+            config
+            if config
+            else self.get_recommended_config(num_local_ranks, group.size())
+        )
         super().__init__(group, num_local_ranks)
 
     def _build_runtime(self, topo_key):
         c = self.config
-        return pace_cpp.SGComm(self.rank, self.num_ranks, self.num_local_ranks, c.slot_unroll, c.nvl_ring_size, c.rdma_ring_size, c.num_sms, topo_key)
+        return pace_cpp.SGComm(
+            self.rank,
+            self.num_ranks,
+            self.num_local_ranks,
+            c.slot_unroll,
+            c.nvl_ring_size,
+            c.rdma_ring_size,
+            c.num_sms,
+            topo_key,
+        )
 
     @staticmethod
     def get_recommended_config(num_local_ranks: int, num_ranks: int) -> CommConfig:
@@ -34,7 +49,7 @@ class SGComm(BaseComm):
           Intranode (H100 sm_90): unroll=4, nvl_ring=4, rdma_ring=2, num_sms=32.
           Intranode (B300 sm_100+): unroll=16, nvl_ring=4, rdma_ring=2, num_sms=32.
         """
-        is_multinode = (num_local_ranks != num_ranks)
+        is_multinode = num_local_ranks != num_ranks
         if is_multinode:
             return CommConfig(16, 4, 4, 32)
 
@@ -51,8 +66,16 @@ class SGComm(BaseComm):
         if is_blackwell:
             return CommConfig(16, 4, 2, num_sms)
         return CommConfig(4, 4, 2, num_sms)
-    
-    def scatter_gather(self, tensor: Union[torch.Tensor, List[torch.Tensor]], scatter_dim = 0, gather_dim = 1, out: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None, previous_event: Optional[EventOverlap] = None, async_finish: bool = False):
+
+    def scatter_gather(
+        self,
+        tensor: Union[torch.Tensor, List[torch.Tensor]],
+        scatter_dim=0,
+        gather_dim=1,
+        out: Optional[Union[torch.Tensor, List[torch.Tensor]]] = None,
+        previous_event: Optional[EventOverlap] = None,
+        async_finish: bool = False,
+    ):
         """
         Perform scatter-gather on different dimensions
 
@@ -77,7 +100,9 @@ class SGComm(BaseComm):
             `result` (Union[torch.Tensor, List[torch.Tensor]]): the result tensor, shaped like (S // num_ranks, H * num_ranks, D) if scatter 0 gather 1 else (S * num_ranks, H // num_ranks, D). Same object(s) as `out` when provided.
             `event` (Optional[EventOverlap]): the completion event if async_finish is True, else None.
         """
-        assert (scatter_dim, gather_dim) in [(1, 0), (0, 1)], 'Only support scatter_dim=1 and gather_dim=0 or scatter_dim=0 and gather_dim=1.'
+        assert (scatter_dim, gather_dim) in [(1, 0), (0, 1)], (
+            "Only support scatter_dim=1 and gather_dim=0 or scatter_dim=0 and gather_dim=1."
+        )
         list_trans = False
         if isinstance(tensor, torch.Tensor):
             tensor = [tensor]
@@ -93,8 +118,17 @@ class SGComm(BaseComm):
         out_list = None
         if out is not None:
             out_list = [out] if isinstance(out, torch.Tensor) else list(out)
-            assert len(out_list) == len(tensor), 'out must provide one tensor per input tensor'
-        result, event = self.runtime.scatter_gather(tensor, scatter_dim, gather_dim, getattr(previous_event, 'event', None), async_finish, out_list)
+            assert len(out_list) == len(tensor), (
+                "out must provide one tensor per input tensor"
+            )
+        result, event = self.runtime.scatter_gather(
+            tensor,
+            scatter_dim,
+            gather_dim,
+            getattr(previous_event, "event", None),
+            async_finish,
+            out_list,
+        )
         evt = EventOverlap(event) if event is not None else None
         result = result[0] if list_trans else result
         return result, evt
@@ -113,7 +147,8 @@ class SGComm(BaseComm):
             return  # unchanged fast path
         if t.dim() != 3:
             raise ValueError(
-                f"[SGComm] input {idx}: expected a 3-D (S, H, D) tensor, got dim={t.dim()}")
+                f"[SGComm] input {idx}: expected a 3-D (S, H, D) tensor, got dim={t.dim()}"
+            )
         D, H, esize = t.size(2), t.size(1), t.element_size()
         st = t.stride()
         reasons = []
@@ -124,13 +159,19 @@ class SGComm(BaseComm):
         if st[0] < H * D:
             reasons.append(f"stride(0)=={st[0]} (must be >= size(1)*size(2)={H * D})")
         if (st[0] * esize) % self._STRIDE_ALIGN != 0:
-            reasons.append(f"stride(0)*element_size={st[0] * esize} (must be %{self._STRIDE_ALIGN} == 0)")
+            reasons.append(
+                f"stride(0)*element_size={st[0] * esize} (must be %{self._STRIDE_ALIGN} == 0)"
+            )
         if (D * esize) % self._STRIDE_ALIGN != 0:
-            reasons.append(f"size(2)*element_size={D * esize} (must be %{self._STRIDE_ALIGN} == 0)")
+            reasons.append(
+                f"size(2)*element_size={D * esize} (must be %{self._STRIDE_ALIGN} == 0)"
+            )
         if reasons:
             raise ValueError(
                 f"[SGComm] input {idx}: non-contiguous tensor does not satisfy the strided-S "
-                f"contract (the only non-contiguous axis may be dim 0 / S): " + "; ".join(reasons))
+                f"contract (the only non-contiguous axis may be dim 0 / S): "
+                + "; ".join(reasons)
+            )
         # The contract holds — every SG engine reads the strided-S source
         # directly (no copy-in): the SM-resident kernels honor the S-row stride
         # in the in-Y arg slot, and the 0-SM stream path walks rows at the
@@ -139,30 +180,35 @@ class SGComm(BaseComm):
         # is gated by num_sms instead, see runtime.num_sms()).
         return
 
-    def get_split_tensors(self, tensors : Union[torch.Tensor, List[torch.Tensor]], output: torch.Tensor):
+    def get_split_tensors(
+        self, tensors: Union[torch.Tensor, List[torch.Tensor]], output: torch.Tensor
+    ):
         if isinstance(tensors, torch.Tensor):
             tensors = [tensors]
         outs = []
         tsizes = [t.numel() * t.element_size() for t in tensors]
-        align = 16 # int4 aligned
+        align = 16  # int4 aligned
         aligned_sizes = [(s + align - 1) & ~(align - 1) for s in tsizes]
         prefix_sizes = [0]
         psize = 0
         for s in aligned_sizes:
             psize += s // tensors[0].element_size()
             prefix_sizes.append(psize)
-        outs = [output[prefix_sizes[i]:prefix_sizes[i] + tensors[i].numel()] for i in range(len(tensors))]
+        outs = [
+            output[prefix_sizes[i] : prefix_sizes[i] + tensors[i].numel()]
+            for i in range(len(tensors))
+        ]
         return outs
-    
-    def get_comm_slots(self, tensors : Union[torch.Tensor, List[torch.Tensor]]):
+
+    def get_comm_slots(self, tensors: Union[torch.Tensor, List[torch.Tensor]]):
         if isinstance(tensors, torch.Tensor):
             tensors = [tensors]
         tsizes = [t.numel() * t.element_size() // self.num_ranks for t in tensors]
-        align = 16 # int4 aligned
+        align = 16  # int4 aligned
         aligned_sizes = [(s + align - 1) & ~(align - 1) for s in tsizes]
         total_size = sum(aligned_sizes)
         slot_bytes = align * 1024 * self.config.slot_unroll
         return (total_size + slot_bytes - 1) // slot_bytes
-    
+
     def is_ring_mode(self):
         return self.runtime.is_ring_mode()

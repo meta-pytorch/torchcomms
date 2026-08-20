@@ -20,11 +20,7 @@ from ...resources import (
     LsaBarrierHandle as _LsaBarrierHandleResource,
     MultimemHandle as _MultimemHandleResource,
 )
-from ._structs import (
-    ncclGinBarrierHandle,
-    ncclLsaBarrierHandle,
-    ncclMultimemHandle,
-)
+from ._structs import ncclGinBarrierHandle, ncclLsaBarrierHandle, ncclMultimemHandle
 
 
 class _Handle:

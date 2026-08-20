@@ -1,10 +1,10 @@
-import torch
-import torch.distributed as dist
-from typing import Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from typing import Any, Optional, Tuple, Union
 
 # noinspection PyUnresolvedReferences
 import pace_cpp
+import torch
+import torch.distributed as dist
 from pace_cpp import EventHandle
 
 
@@ -45,7 +45,11 @@ def bootstrap_runtime(runtime, group: dist.ProcessGroup, topo_key):
     if group.rank() == 0:
         head = runtime.get_head_info()
     backend = dist.get_backend(group)
-    dev = 'cpu' if backend == 'gloo' else torch.device('cuda', torch.cuda.current_device())
+    dev = (
+        "cpu"
+        if backend == "gloo"
+        else torch.device("cuda", torch.cuda.current_device())
+    )
     size_t = torch.tensor([len(head)], dtype=torch.long, device=dev)
     dist.broadcast(size_t, src=0, group=group)
     buf = torch.zeros(int(size_t.item()), dtype=torch.uint8, device=dev)
@@ -65,8 +69,11 @@ class EventOverlap:
         extra_tensors: an easier way to simulate PyTorch tensor `record_stream`, may be useful with CUDA graph.
     """
 
-    def __init__(self, event: Optional[EventHandle] = None,
-                 extra_tensors: Optional[Union[Tuple[torch.Tensor], torch.Tensor]] = None) -> None:
+    def __init__(
+        self,
+        event: Optional[EventHandle] = None,
+        extra_tensors: Optional[Union[Tuple[torch.Tensor], torch.Tensor]] = None,
+    ) -> None:
         """
         Initialize the class.
 
@@ -88,7 +95,7 @@ class EventOverlap:
         self.event.current_stream_wait()
         self.extra_tensors = None
 
-    def wait(self, stream : torch.cuda.Stream = None):
+    def wait(self, stream: torch.cuda.Stream = None):
         if stream is None:
             self.current_stream_wait()
         else:
@@ -102,7 +109,7 @@ class EventOverlap:
         assert self.event is not None
         self.event.host_wait()
         self.extra_tensors = None
-    
+
     def host_query(self) -> bool:
         assert self.event is not None
         sync = self.event.host_query()
@@ -133,6 +140,7 @@ class EventOverlap:
         if self.event is not None:
             self.event.current_stream_wait()
         self.extra_tensors = None
+
 
 @dataclass
 class AGZeroSMConfig:
@@ -222,4 +230,6 @@ class BaseComm:
     def get_stream(self) -> torch.Stream:
         """Return the comm's internal stream as a torch.cuda.Stream."""
         stream_id, device_index, device_type = self.runtime.get_stream()
-        return torch.cuda.Stream(stream_id=stream_id, device_index=device_index, device_type=device_type)
+        return torch.cuda.Stream(
+            stream_id=stream_id, device_index=device_index, device_type=device_type
+        )

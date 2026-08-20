@@ -20,6 +20,7 @@ Launch (2 or more GPUs on a single node):
 """
 
 import os
+
 import torch
 import torch.distributed as dist
 
@@ -33,27 +34,31 @@ def main():
     dist.init_process_group(backend="nccl", init_method="env://")
     device = torch.device(f"cuda:{local_rank}")
 
-    from ubx import SymmAllocator, compute_token_offsets
+    from ubx import compute_token_offsets, SymmAllocator
 
-    hidden = 128                                  # must be a multiple of 32
+    hidden = 128  # must be a multiple of 32
     experts_per_rank = 2
     total_experts = world_size * experts_per_rank
     local_ntokens = 8
     global_ntokens = local_ntokens * world_size
-    topk = 2                                      # each token to 2 experts
+    topk = 2  # each token to 2 experts
 
     # 1. Deterministic top-K routing (same matrix on every rank — the API
     #    expects ranks to agree on slot assignments without an extra broadcast).
     g = torch.Generator(device=device).manual_seed(0)
-    routing = torch.zeros(global_ntokens, total_experts,
-                          dtype=torch.uint8, device=device)
+    routing = torch.zeros(
+        global_ntokens, total_experts, dtype=torch.uint8, device=device
+    )
     for t in range(global_ntokens):
         chosen = torch.randperm(total_experts, generator=g, device=device)[:topk]
         routing[t, chosen] = 1
 
     # 2. Per-rank slot table for dispatch and PULL combine.
     token_offsets, max_tokens_per_rank, _, _ = compute_token_offsets(
-        routing, experts_per_rank, myrank=rank, nranks=world_size,
+        routing,
+        experts_per_rank,
+        myrank=rank,
+        nranks=world_size,
     )
 
     # 3. Allocate the symmetric pool — needs to fit one bf16 dispatch buffer
@@ -64,15 +69,20 @@ def main():
 
     # This rank's input tokens.
     torch.manual_seed(100 + rank)
-    tokens_bf16 = torch.randn(local_ntokens, hidden,
-                              dtype=torch.bfloat16, device=device)
+    tokens_bf16 = torch.randn(
+        local_ntokens, hidden, dtype=torch.bfloat16, device=device
+    )
 
     # 4. Dispatch (bf16 wire — `a2av_token_bf16_bf16` writes raw bf16, no quantization).
     dispatch_out = allocator.create_tensor(
-        [max_tokens_per_rank, hidden], torch.bfloat16,
+        [max_tokens_per_rank, hidden],
+        torch.bfloat16,
     )
     dispatch_out = allocator.a2av_token_bf16_bf16(
-        tokens_bf16, token_offsets, experts_per_rank, dispatch_out,
+        tokens_bf16,
+        token_offsets,
+        experts_per_rank,
+        dispatch_out,
     )
     torch.cuda.synchronize()
 
@@ -86,21 +96,25 @@ def main():
         token_offsets,
         experts_per_rank,
         max_tokens_per_rank,
-        gate_weights=None,           # unweighted sum
+        gate_weights=None,  # unweighted sum
     )
     torch.cuda.synchronize()
 
     # 6. Reference: with identity experts and gate_weights=None,
     #    combined[t] = (#experts t is routed to) × tokens_bf16[t].
     src_start = rank * local_ntokens
-    fanout = routing[src_start : src_start + local_ntokens].sum(dim=1).float()  # [local_ntokens]
+    fanout = (
+        routing[src_start : src_start + local_ntokens].sum(dim=1).float()
+    )  # [local_ntokens]
     ref = tokens_bf16.float() * fanout.unsqueeze(1)
 
     torch.testing.assert_close(combined.float(), ref, atol=0.02, rtol=0.05)
     if rank == 0:
-        print(f"OK: combine_bf16_bf16 round-trip on {world_size} GPUs "
-              f"(global_ntokens={global_ntokens}, hidden={hidden}, "
-              f"experts_per_rank={experts_per_rank}, topk={topk}).")
+        print(
+            f"OK: combine_bf16_bf16 round-trip on {world_size} GPUs "
+            f"(global_ntokens={global_ntokens}, hidden={hidden}, "
+            f"experts_per_rank={experts_per_rank}, topk={topk})."
+        )
 
     dist.destroy_process_group()
 

@@ -41,14 +41,17 @@ except ImportError:
 try:
     import cupy as cp
 except ImportError:
-    print("ERROR: cupy required. Install with: pip install cupy-cuda13x (or cupy-cuda12x)", flush=True)
+    print(
+        "ERROR: cupy required. Install with: pip install cupy-cuda13x (or cupy-cuda12x)",
+        flush=True,
+    )
     sys.exit(1)
 
 import cutlass
 import cutlass.cute as cute
-from cutlass.cute.arch.nvvm_wrappers import WARP_SIZE
 import nccl.core as nccl
 import nccl.core.device.cute as nccl_cute
+from cutlass.cute.arch.nvvm_wrappers import WARP_SIZE
 
 # 1 MiB transfer: 131072 Int64 elements * 8 bytes = 1,048,576 bytes.
 NUM_ELEMS = 1024 * 1024 // 8
@@ -57,6 +60,7 @@ DST_RANK = 1
 # instead of seeing the first one's signal already raised.
 SIGNAL_ID1 = 1
 SIGNAL_ID2 = 2
+
 
 @cute.kernel
 def test_nccl_put_kernel(
@@ -99,12 +103,16 @@ def test_nccl_put_kernel(
     if team.nRanks >= 2:
         if 0 == team.rank:
             if 0 == tidx:
-                cute.printf(f"Before Put: send[0]={send[0]} send[{NUM_ELEMS - 1}]={send[NUM_ELEMS - 1]}")
+                cute.printf(
+                    f"Before Put: send[0]={send[0]} send[{NUM_ELEMS - 1}]={send[NUM_ELEMS - 1]}"
+                )
             gin.put(
                 team,
                 DST_RANK,
-                recv_win, recv,   # destination window + tensor (lives on the peer)
-                send_win, send,   # source window + tensor (local)
+                recv_win,
+                recv,  # destination window + tensor (lives on the peer)
+                send_win,
+                send,  # source window + tensor (local)
                 coop,
                 is_signal=True,
                 signal_id=signal_id,
@@ -114,7 +122,9 @@ def test_nccl_put_kernel(
         if 1 == team.rank:
             gin.wait_signal(coop, signal=signal_id, least=1)
             if 0 == tidx:
-                cute.printf(f"After Put:  recv[0]={recv[0]} recv[{NUM_ELEMS - 1}]={recv[NUM_ELEMS - 1]}")
+                cute.printf(
+                    f"After Put:  recv[0]={recv[0]} recv[{NUM_ELEMS - 1}]={recv[NUM_ELEMS - 1]}"
+                )
 
 
 # A @cute.jit function can take NCCL resources in two forms, and the
@@ -132,10 +142,10 @@ def test_nccl_put_kernel(
 
 @cute.jit
 def test_nccl_put(
-        dev_comm: nccl_cute.DevComm,
-        send_win: nccl_cute.Window,
-        recv_win: nccl_cute.Window,
-    ):
+    dev_comm: nccl_cute.DevComm,
+    send_win: nccl_cute.Window,
+    recv_win: nccl_cute.Window,
+):
     """Launch the kernel, taking arguments the caller already converted.
 
     The caller wraps each resource — nccl_cute.DevComm(resource) /
@@ -150,18 +160,16 @@ def test_nccl_put(
         recv_win: CuTeDSL view of the registered destination window.
     """
     test_nccl_put_kernel(dev_comm, send_win, recv_win, SIGNAL_ID1).launch(
-        grid=[1, 1, 1],
-        block=[cute.size(WARP_SIZE, mode=[0]), 1, 1],
-        cooperative=True
+        grid=[1, 1, 1], block=[cute.size(WARP_SIZE, mode=[0]), 1, 1], cooperative=True
     )
 
 
 @cute.jit
 def test_nccl_put_resources(
-        dev_comm: nccl.DevCommResource,
-        send_win: nccl.RegisteredWindowHandle,
-        recv_win: nccl.RegisteredWindowHandle,
-    ):
+    dev_comm: nccl.DevCommResource,
+    send_win: nccl.RegisteredWindowHandle,
+    recv_win: nccl.RegisteredWindowHandle,
+):
     """Same launch, taking the nccl.core resources unconverted.
 
     The registered JIT arg adapters convert each argument on the way in,
@@ -176,9 +184,7 @@ def test_nccl_put_resources(
         recv_win: destination RegisteredWindowHandle, likewise.
     """
     test_nccl_put_kernel(dev_comm, send_win, recv_win, SIGNAL_ID2).launch(
-        grid=[1, 1, 1],
-        block=[cute.size(WARP_SIZE, mode=[0]), 1, 1],
-        cooperative=True
+        grid=[1, 1, 1], block=[cute.size(WARP_SIZE, mode=[0]), 1, 1], cooperative=True
     )
 
 
@@ -205,9 +211,11 @@ def main():
     # The put below needs a GIN transport.
     if not nccl_comm.device_api_support or nccl_comm.gin_type == nccl.NcclGinType.NONE:
         if rank == root:
-            print(f"Gin.put needs a GIN transport, which this platform does not "
-                  f"provide (device_api_support={nccl_comm.device_api_support}, "
-                  f"gin_type={nccl_comm.gin_type.name}); nothing to run")
+            print(
+                f"Gin.put needs a GIN transport, which this platform does not "
+                f"provide (device_api_support={nccl_comm.device_api_support}, "
+                f"gin_type={nccl_comm.gin_type.name}); nothing to run"
+            )
         nccl_comm.destroy()
         return 0
 
@@ -217,10 +225,10 @@ def main():
     # Rank 0 fills send_buf with a pattern; rank 1's recv_buf starts zeroed
     # so the transfer is visible. Each rank registers both windows because
     # registration is collective, so one of them goes unused.
-    send_buf = nccl.cupy.empty(NUM_ELEMS, dtype='int64')
-    recv_buf = nccl.cupy.empty(NUM_ELEMS, dtype='int64')
+    send_buf = nccl.cupy.empty(NUM_ELEMS, dtype="int64")
+    recv_buf = nccl.cupy.empty(NUM_ELEMS, dtype="int64")
     if rank == 0:
-        send_buf[:] = cp.arange(NUM_ELEMS, dtype='int64')
+        send_buf[:] = cp.arange(NUM_ELEMS, dtype="int64")
     else:
         send_buf[:] = 0
     recv_buf[:] = 0
@@ -267,10 +275,12 @@ def main():
 
     # Host-side validation on the receiver — compare the full 1 MiB payload.
     if rank == DST_RANK:
-        expected = cp.arange(NUM_ELEMS, dtype='int64')
+        expected = cp.arange(NUM_ELEMS, dtype="int64")
         mismatches = int((recv_buf != expected).sum().item())
         if mismatches == 0:
-            print(f"[rank {rank}] [SUCCESS] {NUM_ELEMS * 8} bytes transferred correctly")
+            print(
+                f"[rank {rank}] [SUCCESS] {NUM_ELEMS * 8} bytes transferred correctly"
+            )
         else:
             print(f"[rank {rank}] [ERROR] {mismatches} / {NUM_ELEMS} mismatches")
 

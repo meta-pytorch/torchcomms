@@ -14,7 +14,6 @@ device/stream specifications into the concrete forms NCCL expects.
 from __future__ import annotations
 
 from cuda.core import Device, Stream
-
 from nccl.core.typing import NcclDeviceSpec, NcclStreamSpec
 
 

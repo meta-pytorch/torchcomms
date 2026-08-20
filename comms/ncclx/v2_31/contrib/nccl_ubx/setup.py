@@ -1,9 +1,10 @@
 """Build script for UB-X (Ultra Bandwidth X) CUDA extensions."""
 
 import os
+
 import torch
 from setuptools import setup
-from torch.utils.cpp_extension import CUDAExtension, BuildExtension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 # Source files use relative paths (relative to setup.py, resolved by setuptools).
 # include_dirs must be absolute — the compiler receives them directly and ninja
@@ -18,9 +19,9 @@ include_dir = os.path.join(BASE_DIR, "csrc", "include")
 # (the NGC / nccl-from-source install layout); overridable via env vars.
 nccl_home = os.environ.get("NCCL_HOME", "/usr/local")
 nccl_include_dir = os.environ.get(
-    "NCCL_INCLUDE_DIR", os.path.join(nccl_home, "include"))
-nccl_library_dir = os.environ.get(
-    "NCCL_LIBRARY_DIR", os.path.join(nccl_home, "lib"))
+    "NCCL_INCLUDE_DIR", os.path.join(nccl_home, "include")
+)
+nccl_library_dir = os.environ.get("NCCL_LIBRARY_DIR", os.path.join(nccl_home, "lib"))
 
 # Kernel + binding sources.
 kernel_sources = [
@@ -55,7 +56,12 @@ if os.environ.get("UBX_BUILD_TIMEOUT", "0") not in ("0", "", "false", "False"):
 # programmaticStreamSerializationAllowed attribute (PDL off), the intrinsic
 # should be a no-op, but some driver/runtime combos still wedge on it.
 # Define UBX_SKIP_GRID_DEP_SYNC to compile the calls out entirely.
-if os.environ.get("UBX_BUILD_SKIP_GRID_DEP_SYNC", "0") not in ("0", "", "false", "False"):
+if os.environ.get("UBX_BUILD_SKIP_GRID_DEP_SYNC", "0") not in (
+    "0",
+    "",
+    "false",
+    "False",
+):
     cxx_flags.append("-DUBX_SKIP_GRID_DEP_SYNC")
     nvcc_flags.append("-DUBX_SKIP_GRID_DEP_SYNC")
 

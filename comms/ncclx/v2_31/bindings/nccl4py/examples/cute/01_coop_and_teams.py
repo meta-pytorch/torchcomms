@@ -40,7 +40,6 @@ import nccl.core.device.cute as nccl_cute
 NAME = os.path.basename(__file__)
 
 
-
 N_WARPS = 2
 THREADS = 32 * N_WARPS
 
@@ -64,15 +63,20 @@ def coop_and_teams_kernel(dev_comm: nccl_cute.DevComm):
 
     if 0 == tidx:
         cute.printf(
-            f"coop cta        rank={block.thread_rank} size={block.size} threads={block.num_threads}")
+            f"coop cta        rank={block.thread_rank} size={block.size} threads={block.num_threads}"
+        )
         cute.printf(
-            f"coop warp       rank={lane_group.thread_rank} size={lane_group.size} threads={lane_group.num_threads}")
+            f"coop warp       rank={lane_group.thread_rank} size={lane_group.size} threads={lane_group.num_threads}"
+        )
         cute.printf(
-            f"coop thread     rank={single.thread_rank} size={single.size} threads={single.num_threads}")
+            f"coop thread     rank={single.thread_rank} size={single.size} threads={single.num_threads}"
+        )
         cute.printf(
-            f"coop lanes      rank={even_lanes.thread_rank} size={even_lanes.size} threads={even_lanes.num_threads}")
+            f"coop lanes      rank={even_lanes.thread_rank} size={even_lanes.size} threads={even_lanes.num_threads}"
+        )
         cute.printf(
-            f"coop warp_span  rank={span.thread_rank} size={span.size} threads={span.num_threads}")
+            f"coop warp_span  rank={span.thread_rank} size={span.size} threads={span.num_threads}"
+        )
 
     # The coop-scoped barrier; on a CTA coop this is __syncthreads().
     block.sync()
@@ -85,17 +89,28 @@ def coop_and_teams_kernel(dev_comm: nccl_cute.DevComm):
 
     if 0 == tidx:
         cute.printf(
-            f"devcomm rank={dev_comm.rank}/{dev_comm.n_ranks} lsa={dev_comm.lsa_rank}/{dev_comm.lsa_size}")
-        cute.printf(f"team world  rank={world.rank} nRanks={world.nRanks} stride={world.stride}")
-        cute.printf(f"team lsa    rank={lsa.rank} nRanks={lsa.nRanks} stride={lsa.stride}")
-        cute.printf(f"team rail   rank={rail.rank} nRanks={rail.nRanks} stride={rail.stride}")
+            f"devcomm rank={dev_comm.rank}/{dev_comm.n_ranks} lsa={dev_comm.lsa_rank}/{dev_comm.lsa_size}"
+        )
+        cute.printf(
+            f"team world  rank={world.rank} nRanks={world.nRanks} stride={world.stride}"
+        )
+        cute.printf(
+            f"team lsa    rank={lsa.rank} nRanks={lsa.nRanks} stride={lsa.stride}"
+        )
+        cute.printf(
+            f"team rail   rank={rail.rank} nRanks={rail.nRanks} stride={rail.stride}"
+        )
 
         # Translate a rank expressed in one team to world or LSA numbering.
         cute.printf(f"lsa   rank 0 -> world rank {dev_comm.team_rank_to_world(lsa, 0)}")
-        cute.printf(f"rail  rank 0 -> world rank {dev_comm.team_rank_to_world(rail, 0)}")
+        cute.printf(
+            f"rail  rank 0 -> world rank {dev_comm.team_rank_to_world(rail, 0)}"
+        )
         # team_rank_to_lsa requires the rank to be local; a non-local rank
         # yields an out-of-range result rather than an error.
-        cute.printf(f"world rank {dev_comm.rank} -> lsa rank {dev_comm.team_rank_to_lsa(world, dev_comm.rank)}")
+        cute.printf(
+            f"world rank {dev_comm.rank} -> lsa rank {dev_comm.team_rank_to_lsa(world, dev_comm.rank)}"
+        )
 
 
 @cute.jit
@@ -137,19 +152,21 @@ def main():
     # Without device API support no devcomm can be created at all.
     if not nccl_comm.device_api_support:
         if rank == root:
-            print("WARNING: this platform has no device API support; "
-                  "nothing to run", flush=True)
+            print(
+                "WARNING: this platform has no device API support; nothing to run",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 0
 
     # No windows, barriers or GIN here, so default requirements suffice.
     dev_comm_resource = nccl_comm.create_dev_comm(
-        requirements=nccl.NCCLDevCommRequirements())
+        requirements=nccl.NCCLDevCommRequirements()
+    )
     assert dev_comm_resource.is_valid
 
     coop_and_teams(nccl_cute.DevComm(dev_comm_resource))
     device.sync()
-
 
     dev_comm_resource.close()
     nccl_comm.destroy()

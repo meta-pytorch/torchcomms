@@ -17,17 +17,20 @@ Versioning:
     archs are usable in this build.
 """
 
-from .allocator import SymmAllocator
-from .tensor import SymmTensor
-from .ops import compute_token_offsets, compute_combine_push_map, compute_dispatch_topk_map
-from . import ops
-from . import fused
+from . import fused, ops
 from ._api_registry import (
     API_VERSION as version,
     get_version,
     query_api,
     query_supported_hw,
 )
+from .allocator import SymmAllocator
+from .ops import (
+    compute_combine_push_map,
+    compute_dispatch_topk_map,
+    compute_token_offsets,
+)
+from .tensor import SymmTensor
 
 __version__ = "1.1.0"
 

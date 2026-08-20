@@ -1,2 +1,2 @@
-from .agcomm import AGComm
 from ..utils import CommConfig
+from .agcomm import AGComm

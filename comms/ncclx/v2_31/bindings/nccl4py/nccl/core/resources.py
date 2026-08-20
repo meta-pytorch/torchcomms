@@ -16,7 +16,6 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from nccl.bindings import nccl as _nccl_bindings
-
 from nccl.core._binding_helpers import LowppView
 from nccl.core.constants import WindowFlag
 from nccl.core.team import NCCLTeam
@@ -154,7 +153,9 @@ class CommResource(ABC):
             RuntimeError: If the resource has been closed.
         """
         if self._closed:
-            raise RuntimeError(f"{self.__class__.__name__} has been closed and is no longer valid")
+            raise RuntimeError(
+                f"{self.__class__.__name__} has been closed and is no longer valid"
+            )
 
     @property
     def is_valid(self) -> bool:
@@ -191,7 +192,9 @@ class RegisteredBufferHandle(CommResource):
 
     def _allocate(self) -> None:
         """Registers the buffer with NCCL for zero-copy communication."""
-        self._handle = _nccl_bindings.comm_register(self._comm_ptr, self._buffer_ptr, self._size)
+        self._handle = _nccl_bindings.comm_register(
+            self._comm_ptr, self._buffer_ptr, self._size
+        )
 
     def _deallocate(self) -> None:
         """Deregisters the buffer from NCCL."""
@@ -235,7 +238,9 @@ class RegisteredWindowHandle(CommResource):
     communicator is destroyed or aborted.
     """
 
-    def __init__(self, comm_ptr: int, buffer_ptr: int, size: int, flags: WindowFlag | None = None):
+    def __init__(
+        self, comm_ptr: int, buffer_ptr: int, size: int, flags: WindowFlag | None = None
+    ):
         """Creates and registers a memory window with NCCL.
 
         Args:
@@ -260,7 +265,11 @@ class RegisteredWindowHandle(CommResource):
     def _allocate(self) -> None:
         """Collectively registers the window with NCCL."""
         _nccl_bindings.comm_window_register(
-            self._comm_ptr, self._buffer_ptr, self._size, self._handle.address, self._flags.value
+            self._comm_ptr,
+            self._buffer_ptr,
+            self._size,
+            self._handle.address,
+            self._flags.value,
         )
 
     def _deallocate(self) -> None:
@@ -319,7 +328,9 @@ class RegisteredWindowHandle(CommResource):
         ptr = _nccl_bindings.get_lsa_multimem_device_pointer(self.handle, offset)
         return ptr if ptr != 0 else None
 
-    def get_multimem_device_pointer(self, multimem: MultimemHandle, offset: int = 0) -> int | None:
+    def get_multimem_device_pointer(
+        self, multimem: MultimemHandle, offset: int = 0
+    ) -> int | None:
         """Returns the multicast device pointer for this window and ``multimem``.
 
         Unlike :meth:`get_lsa_multimem_device_pointer` (which uses the LSA
@@ -338,7 +349,9 @@ class RegisteredWindowHandle(CommResource):
             RuntimeError: If the window has been closed.
         """
         self._check_valid()
-        ptr = _nccl_bindings.get_multimem_device_pointer(self.handle, offset, multimem._lowpp.ptr)
+        ptr = _nccl_bindings.get_multimem_device_pointer(
+            self.handle, offset, multimem._lowpp.ptr
+        )
         return ptr if ptr != 0 else None
 
     def get_lsa_device_pointer(self, lsa_rank: int, offset: int = 0) -> int:
@@ -472,7 +485,8 @@ class DevCommResource(CommResource):
         self,
         comm_ptr: int,
         reqs_lowpp: _nccl_bindings.DevCommRequirements,
-        team_multimem_lowpp: dict[NCCLTeam, _nccl_bindings.MultimemHandle] | None = None,
+        team_multimem_lowpp: dict[NCCLTeam, _nccl_bindings.MultimemHandle]
+        | None = None,
         resource_handle_lowpps: tuple[
             _nccl_bindings.LsaBarrierHandle
             | _nccl_bindings.GinBarrierHandle
@@ -515,7 +529,9 @@ class DevCommResource(CommResource):
 
     def _allocate(self) -> None:
         """Creates the device communicator via ncclDevCommCreate."""
-        self._dev_comm = _nccl_bindings.dev_comm_create(self._comm_ptr, self._reqs_lowpp.ptr)
+        self._dev_comm = _nccl_bindings.dev_comm_create(
+            self._comm_ptr, self._reqs_lowpp.ptr
+        )
 
     def _deallocate(self) -> None:
         """Destroys the device communicator via ncclDevCommDestroy."""
@@ -596,7 +612,9 @@ class DevCommResource(CommResource):
             elif isinstance(lowpp, _nccl_bindings.LLA2AHandle):
                 handles.append(LLA2AHandle._from_lowpp(lowpp))
             else:
-                raise NcclInvalid(f"unexpected resource handle lowpp: {type(lowpp).__name__}")
+                raise NcclInvalid(
+                    f"unexpected resource handle lowpp: {type(lowpp).__name__}"
+                )
 
         return tuple(handles)
 

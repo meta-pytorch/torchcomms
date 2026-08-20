@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import reprlib
 from dataclasses import field as dataclass_field, fields as dataclass_fields
-from enum import Enum, auto
+from enum import auto, Enum
 from typing import Any, ClassVar, TypeVar
 
 __all__ = ["PassBy", "Field", "LowppSpec", "LowppView"]
@@ -89,7 +89,9 @@ def _config_binds(cls: type) -> dict[str, tuple[str, PassBy]]:
     lowpp_cls = cls._lowpp_cls
     binds: dict[str, tuple[str, PassBy]] = {}
     for f in dataclass_fields(cls):
-        lowpp_name, pass_by = f.metadata.get(_FIELD_CONFIG_METADATA_KEY, (None, PassBy.VALUE))
+        lowpp_name, pass_by = f.metadata.get(
+            _FIELD_CONFIG_METADATA_KEY, (None, PassBy.VALUE)
+        )
         name = lowpp_name or f.name
         if _writable_member(lowpp_cls, name):
             binds[f.name] = (name, pass_by)
@@ -189,9 +191,7 @@ class LowppView:
         cls._lowpp_cls = lowpp_cls
         # Every getter, whether or not its name matches the member it reads.
         cls.__lowpp_fields__ = tuple(
-            name
-            for name, attr in vars(cls).items()
-            if isinstance(attr, property)
+            name for name, attr in vars(cls).items() if isinstance(attr, property)
         )
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:

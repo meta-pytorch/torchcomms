@@ -47,7 +47,6 @@ import nccl.core.device.cute as nccl_cute
 NAME = os.path.basename(__file__)
 
 
-
 THREADS = 128
 INDEX = 0
 
@@ -72,31 +71,38 @@ def resource_buffers_kernel(
 
     if 0 == tidx:
         local = cute.make_ptr(
-            cutlass.Int8, dev_comm.resource_buffer_local_pointer(handle)).toint()
+            cutlass.Int8, dev_comm.resource_buffer_local_pointer(handle)
+        ).toint()
         # Same slice as seen on an LSA peer; peer == me gives the local one.
         lsa = cute.make_ptr(
-            cutlass.Int8, dev_comm.resource_buffer_lsa_pointer(handle, me)).toint()
+            cutlass.Int8, dev_comm.resource_buffer_lsa_pointer(handle, me)
+        ).toint()
         # The team-relative form: addresses within any team, not just LSA.
         peer = cute.make_ptr(
             cutlass.Int8,
-            dev_comm.resource_buffer_peer_pointer(handle, dev_comm.team_lsa, me)).toint()
+            dev_comm.resource_buffer_peer_pointer(handle, dev_comm.team_lsa, me),
+        ).toint()
         # Multicast addresses: one store reaches every peer's copy.
         mm = cute.make_ptr(
             cutlass.Int8,
-            dev_comm.resource_buffer_multimem_pointer(handle, dev_comm.lsa_multimem)).toint()
+            dev_comm.resource_buffer_multimem_pointer(handle, dev_comm.lsa_multimem),
+        ).toint()
         lsa_mm = cute.make_ptr(
-            cutlass.Int8,
-            dev_comm.resource_buffer_lsa_multimem_pointer(handle)).toint()
+            cutlass.Int8, dev_comm.resource_buffer_lsa_multimem_pointer(handle)
+        ).toint()
 
         cute.printf(f"resource buffer local={local} lsa={lsa} peer={peer}")
         cute.printf(f"resource buffer multimem={mm} lsa_multimem={lsa_mm}")
-        cute.printf(f"local == lsa(self): {local == lsa}, local == peer(self): {local == peer}")
+        cute.printf(
+            f"local == lsa(self): {local == lsa}, local == peer(self): {local == peer}"
+        )
 
     # Live barrier storage: reading it around a barrier shows NCCL updating
     # it. Never write through it.
     state = cute.make_tensor(
         cute.make_ptr(cutlass.Uint64, dev_comm.resource_buffer_local_pointer(handle)),
-        cute.make_layout(1))
+        cute.make_layout(1),
+    )
     before = state[0]
 
     nccl_cute.lsa_session(
@@ -149,8 +155,11 @@ def main():
 
     if nccl_comm.team_lsa.n_ranks != nranks:
         if rank == root:
-            print(f"\n[{NAME}] ERROR: all {nranks} ranks must be LSA peers "
-                  f"(lsa team has {nccl_comm.team_lsa.n_ranks}); run on one node", flush=True)
+            print(
+                f"\n[{NAME}] ERROR: all {nranks} ranks must be LSA peers "
+                f"(lsa team has {nccl_comm.team_lsa.n_ranks}); run on one node",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 1
 
@@ -158,8 +167,11 @@ def main():
     # what lets the team requirement below succeed.
     if not nccl_comm.device_api_support or not nccl_comm.multimem_support:
         if rank == root:
-            print("WARNING: no multicast support on this system, so the "
-                  "two multimem translations cannot run; nothing to run", flush=True)
+            print(
+                "WARNING: no multicast support on this system, so the "
+                "two multimem translations cannot run; nothing to run",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 0
 
@@ -168,16 +180,16 @@ def main():
     reqs = nccl.NCCLDevCommRequirements(
         lsa_multimem=True,
         teams=(nccl.TeamRequirement(team=nccl_comm.team_lsa, multimem=True),),
-        resources=(
-            nccl.LsaBarrierRequirement(team=nccl_comm.team_lsa, n_barriers=1),
-        ),
+        resources=(nccl.LsaBarrierRequirement(team=nccl_comm.team_lsa, n_barriers=1),),
     )
     dev_comm_resource = nccl_comm.create_dev_comm(requirements=reqs)
     (lsa_handle,) = dev_comm_resource.resource_handles
 
     if rank == root:
-        print(f"host: buf_handle={lsa_handle.buf_handle} "
-              f"n_barriers={lsa_handle.n_barriers}")
+        print(
+            f"host: buf_handle={lsa_handle.buf_handle} "
+            f"n_barriers={lsa_handle.n_barriers}"
+        )
 
     resource_buffers(
         nccl_cute.DevComm(dev_comm_resource),
@@ -187,7 +199,6 @@ def main():
     comm_mpi.Barrier()
 
     print(f"[rank {rank}] [SUCCESS] resource handle translated in all five modes")
-
 
     dev_comm_resource.close()
     nccl_comm.destroy()

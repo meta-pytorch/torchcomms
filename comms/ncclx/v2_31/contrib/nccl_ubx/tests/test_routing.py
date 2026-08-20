@@ -21,6 +21,7 @@ def _routing(rows, dtype=torch.uint8, device="cpu"):
 # Basic correctness
 # ---------------------------------------------------------------------------
 
+
 def test_k1_each_token_one_expert():
     """K=1: token t goes to expert t, 4 tokens, 4 experts, 2 ranks, 2 epr.
 
@@ -32,8 +33,12 @@ def test_k1_each_token_one_expert():
     rank 1 (tokens 2,3): token2→e2 slot 0, token3→e3 slot 1
     """
     routing = _routing([[0], [1], [2], [3]])  # [4, 4]
-    offsets0, max0, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
-    offsets1, max1, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=1, nranks=2)
+    offsets0, max0, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=0, nranks=2
+    )
+    offsets1, max1, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=1, nranks=2
+    )
 
     assert max0 == max1 == 2  # 2 experts_per_rank * 1 max_slot
     assert offsets0.shape == (2, 4)
@@ -65,8 +70,12 @@ def test_k2_token_to_two_experts():
     Sub-ranges: e0→[0,2), e1→[2,4), e2→[0,2), e3→[2,4)
     """
     routing = _routing([[0, 1], [2, 3], [0, 2], [1, 3]])  # [4, 4]
-    offsets0, max0, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
-    offsets1, max1, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=1, nranks=2)
+    offsets0, max0, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=0, nranks=2
+    )
+    offsets1, max1, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=1, nranks=2
+    )
 
     assert max0 == max1 == 4  # 2 epr * 2 max_slots
 
@@ -103,7 +112,9 @@ def test_no_slot_collisions():
 
     all_offsets = []
     for r in range(nranks):
-        offs, max_tpr, _, _ = compute_token_offsets(routing, epr, myrank=r, nranks=nranks)
+        offs, max_tpr, _, _ = compute_token_offsets(
+            routing, epr, myrank=r, nranks=nranks
+        )
         all_offsets.append((r, offs))
 
     _, first_offs = all_offsets[0]
@@ -143,7 +154,9 @@ def test_max_tokens_per_rank_is_symmetric():
 def test_unrouted_entries_are_minus_one():
     """All entries where routing=0 must produce token_offsets=-1."""
     routing = _routing([[0], [3], [1], [2]])  # [4, 4], sparse
-    offsets, _, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
+    offsets, _, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=0, nranks=2
+    )
     routed_mask = routing[:2] != 0  # local tokens for rank 0
     assert (offsets[~routed_mask] == -1).all()
 
@@ -154,7 +167,9 @@ def test_all_tokens_same_expert():
     routing = torch.zeros(ntokens, total_experts, dtype=torch.uint8)
     routing[:, 0] = 1  # all tokens → expert 0
 
-    offsets, max_tpr, _, _ = compute_token_offsets(routing, epr, myrank=0, nranks=nranks)
+    offsets, max_tpr, _, _ = compute_token_offsets(
+        routing, epr, myrank=0, nranks=nranks
+    )
     assert max_tpr == epr * ntokens  # max_slots=ntokens, total=epr*ntokens
 
     # rank 0 local tokens 0..3 all go to expert 0 with sequential slots 0,1,2,3
@@ -166,7 +181,9 @@ def test_all_tokens_same_expert():
 def test_empty_routing():
     """No tokens routed anywhere. max_tokens_per_rank=0, all offsets -1."""
     routing = torch.zeros(4, 4, dtype=torch.uint8)
-    offsets, max_tpr, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
+    offsets, max_tpr, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=0, nranks=2
+    )
     assert max_tpr == 0
     assert (offsets == -1).all()
 
@@ -176,7 +193,9 @@ def test_bool_and_int_routing_dtypes():
     base = _routing([[0, 1], [2, 3], [0, 2], [1, 3]])
     for dtype in (torch.bool, torch.int32, torch.int64):
         routing = base.to(dtype)
-        offsets, max_tpr, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
+        offsets, max_tpr, _, _ = compute_token_offsets(
+            routing, experts_per_rank=2, myrank=0, nranks=2
+        )
         assert offsets.dtype == torch.int32
         assert max_tpr > 0
 
@@ -185,7 +204,9 @@ def test_bool_and_int_routing_dtypes():
 def test_gpu_routing():
     """Function works on CUDA tensors and returns CUDA token_offsets."""
     routing = _routing([[0], [1], [2], [3]], device="cuda")
-    offsets, max_tpr, _, _ = compute_token_offsets(routing, experts_per_rank=2, myrank=0, nranks=2)
+    offsets, max_tpr, _, _ = compute_token_offsets(
+        routing, experts_per_rank=2, myrank=0, nranks=2
+    )
     assert offsets.is_cuda
     assert offsets.dtype == torch.int32
     assert max_tpr == 2

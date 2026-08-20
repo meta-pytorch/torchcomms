@@ -94,7 +94,8 @@ class Window:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_lsa_pointer(
-            self.ptr, cutlass.Int64(offset), cutlass.Int32(peer))
+            self.ptr, cutlass.Int64(offset), cutlass.Int32(peer)
+        )
 
     def peer_pointer(
         self, offset: int, peer: int, team: Team | None = None
@@ -111,13 +112,13 @@ class Window:
         """
         if team is None:
             return _bindings.nccl_get_peer_pointer(
-                self.ptr, cutlass.Int64(offset), cutlass.Int32(peer))
+                self.ptr, cutlass.Int64(offset), cutlass.Int32(peer)
+            )
         return _bindings.nccl_get_peer_pointer_team(
-            self.ptr, cutlass.Int64(offset), _to_value(team), cutlass.Int32(peer))
+            self.ptr, cutlass.Int64(offset), _to_value(team), cutlass.Int32(peer)
+        )
 
-    def multimem_pointer(
-        self, offset: int, mm_handle: MultimemHandle
-    ) -> ir.Value:
+    def multimem_pointer(self, offset: int, mm_handle: MultimemHandle) -> ir.Value:
         """Translate ``offset`` to its multimem virtual address.
 
         Args:
@@ -130,7 +131,8 @@ class Window:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_multimem_pointer(
-            self.ptr, cutlass.Int64(offset), _to_value(mm_handle))
+            self.ptr, cutlass.Int64(offset), _to_value(mm_handle)
+        )
 
     def lsa_multimem_pointer(self, offset: int, dev_comm: DevComm) -> ir.Value:
         """Translate ``offset`` to the LSA multimem virtual address.
@@ -143,7 +145,8 @@ class Window:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_lsa_multimem_pointer(
-            self.ptr, cutlass.Int64(offset), dev_comm.ptr)
+            self.ptr, cutlass.Int64(offset), dev_comm.ptr
+        )
 
     def tensor(self, dtype, layout, offset: int = 0):
         """Construct a ``cute.Tensor`` view over the registered buffer.

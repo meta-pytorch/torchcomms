@@ -17,8 +17,8 @@ mpirun -np <num_processes> python allreduce_ub.py
 
 import sys
 
-import nccl.core as nccl
 import cupy as cp
+import nccl.core as nccl
 import numpy as np
 from mpi4py import MPI
 
@@ -91,7 +91,9 @@ def main() -> int:
     unique_id = comm_world.bcast(unique_id, root=0)
 
     # Each process joins the distributed communicator on its assigned GPU.
-    nccl_comm = nccl.Communicator.init(nranks=mpi_size, rank=mpi_rank, unique_id=unique_id)
+    nccl_comm = nccl.Communicator.init(
+        nranks=mpi_size, rank=mpi_rank, unique_id=unique_id
+    )
     print(f"  Rank {mpi_rank} created NCCL communicator")
 
     print()
@@ -137,7 +139,9 @@ def main() -> int:
     local_ok = bool(np.isclose(got, expected, atol=0.001))
     all_ok = comm_world.allreduce(local_ok, op=MPI.LAND)
 
-    print(f"  MPI rank {mpi_rank} verification - Expected: {expected:.1f}, Got: {got:.1f}")
+    print(
+        f"  MPI rank {mpi_rank} verification - Expected: {expected:.1f}, Got: {got:.1f}"
+    )
 
     comm_world.Barrier()
 

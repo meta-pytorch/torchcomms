@@ -12,8 +12,10 @@ budget.
 """
 
 import os
+
 import pytest
-from .conftest import run_distributed_test, requires_multi_gpu
+
+from .conftest import requires_multi_gpu, run_distributed_test
 
 WORKER = os.path.join(os.path.dirname(__file__), "_workers", "_run_alloc_lifecycle.py")
 
@@ -26,7 +28,8 @@ class TestAllocLifecycle:
     def test_no_leak_across_iters(self):
         """20 SymmAllocators in a row stay within a per-rank leak budget."""
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--iters", "20", "--pool-mib", "64", "--leak-mb", "100"],
             timeout=300,
         )
@@ -39,7 +42,8 @@ class TestAllocLifecycle:
     def test_no_leak_no_multicast(self):
         """Same guard with NCCL_NVLS_ENABLE=0 (NVLS-disabled code path)."""
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--iters", "20", "--pool-mib", "64", "--leak-mb", "100"],
             env_extra={"NCCL_NVLS_ENABLE": "0"},
             timeout=300,

@@ -24,17 +24,18 @@ import torch.distributed as dist
 from ..report import BenchResult, compute_bandwidth
 from . import a2av_token_dispatch as _td
 from .a2av_token_dispatch import (
-    _make_routing,
-    _NCCL_EP_OK,
-    _get_nccl_lib,
     _bootstrap_comm,
-    _tensor_create,
-    _tensor_destroy,
-    _tensor_data,
-    _skipped,
     _CUDA_MEMCPY_D2D,
+    _get_nccl_lib,
+    _make_routing,
     _NCCL_EP_AUTO,
+    _NCCL_EP_OK,
+    _skipped,
+    _tensor_create,
+    _tensor_data,
+    _tensor_destroy,
 )
+
 if _NCCL_EP_OK:
     from nccl_ep.nccl_wrapper import (  # type: ignore
         ncclDataTypeEnum,
@@ -46,10 +47,19 @@ if _NCCL_EP_OK:
 
 
 def _bench_combine_ubx(
-    ntokens, hidden, experts_per_rank, topk,
-    device, iters, warmup, nranks,
+    ntokens,
+    hidden,
+    experts_per_rank,
+    topk,
+    device,
+    iters,
+    warmup,
+    nranks,
     wire: str,
-    smlimit=0, group=None, cudagraph=0, routing_alpha: float = 0.0,
+    smlimit=0,
+    group=None,
+    cudagraph=0,
+    routing_alpha: float = 0.0,
     sync: bool = True,
     kernel: str = "auto",
 ) -> BenchResult:
@@ -62,8 +72,8 @@ def _bench_combine_ubx(
                       pre-poisoned temp. No cross-rank barrier in steady state.
                       Ignored (falls back to default) for wire='mxfp8'.
     """
-    use_lamport_push = (kernel == "lamport_push" and wire == "bf16")
-    use_push         = (kernel == "push"         and wire == "bf16")
+    use_lamport_push = kernel == "lamport_push" and wire == "bf16"
+    use_push = kernel == "push" and wire == "bf16"
     from ubx import SymmAllocator
     from ubx.ops import compute_token_offsets
 
@@ -76,17 +86,23 @@ def _bench_combine_ubx(
     total_experts = nranks * experts_per_rank
     local_ntokens = ntokens // nranks
 
-    routing = _make_routing(ntokens, total_experts, topk, device,
-                            alpha=routing_alpha)
+    routing = _make_routing(ntokens, total_experts, topk, device, alpha=routing_alpha)
     token_offsets, max_tokens_per_rank, _, expert_offsets = compute_token_offsets(
-        routing, experts_per_rank, rank, nranks,
+        routing,
+        experts_per_rank,
+        rank,
+        nranks,
     )
     inverse_map = None
     topk_idx_t = None
     if use_lamport_push or use_push:
         from ubx import compute_combine_push_map
+
         inverse_map, topk_idx_t, _ = compute_combine_push_map(
-            routing, experts_per_rank, rank, nranks,
+            routing,
+            experts_per_rank,
+            rank,
+            nranks,
         )
     # Actual received-token count for this rank (≤ max_tokens_per_rank,
     # which is the symmetric ceiling). Phase 1 iterates n_recv slots, not
@@ -96,8 +112,10 @@ def _bench_combine_ubx(
     # Pool sizing: dispatch output (bf16, [max_tpr, hidden]) + combine temp
     # (bf16 or mxfp8 [max_tpr, hidden]) + REG0 + alignment headroom.
     bytes_dispatch = max_tokens_per_rank * hidden * 2  # bf16
-    bytes_temp = (max_tokens_per_rank * hidden        # fp8 1B
-                  + max_tokens_per_rank * (hidden // 32))  # E8M0 scales
+    bytes_temp = (
+        max_tokens_per_rank * hidden  # fp8 1B
+        + max_tokens_per_rank * (hidden // 32)
+    )  # E8M0 scales
     if wire == "bf16":
         bytes_temp = max_tokens_per_rank * hidden * 2
     pool_size = max(8 * (bytes_dispatch + bytes_temp), 64 * 1024 * 1024)
@@ -110,12 +128,15 @@ def _bench_combine_ubx(
     allocator = SymmAllocator(pool_size, device, group)
 
     # ---- Setup: run dispatch once to populate "expert outputs" ----
-    tokens_bf16 = torch.randn(local_ntokens, hidden,
-                              dtype=torch.bfloat16, device=device)
+    tokens_bf16 = torch.randn(
+        local_ntokens, hidden, dtype=torch.bfloat16, device=device
+    )
     dispatch_out = allocator.create_tensor(
-        [max_tokens_per_rank, hidden], torch.bfloat16)
+        [max_tokens_per_rank, hidden], torch.bfloat16
+    )
     allocator.a2av_token_bf16_bf16(
-        tokens_bf16, token_offsets, experts_per_rank, dispatch_out)
+        tokens_bf16, token_offsets, experts_per_rank, dispatch_out
+    )
     torch.cuda.synchronize()
 
     # Materialize as a regular tensor — combine API takes torch.Tensor (not
@@ -135,36 +156,70 @@ def _bench_combine_ubx(
     n_recv = max_tokens_per_rank
 
     if use_push:
+
         def op_fn():
             allocator.combine_bf16_bf16_push(
-                expert_outputs, inverse_map, topk_idx_t,
-                experts_per_rank, max_tokens_per_rank, smlimit=smlimit)
+                expert_outputs,
+                inverse_map,
+                topk_idx_t,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+            )
     elif use_lamport_push:
+
         def op_fn():
             allocator.combine_bf16_bf16_lamport_push(
-                expert_outputs, inverse_map, topk_idx_t,
-                experts_per_rank, max_tokens_per_rank, smlimit=smlimit)
+                expert_outputs,
+                inverse_map,
+                topk_idx_t,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+            )
     elif wire == "bf16" and sync:
+
         def op_fn():
             allocator.combine_bf16_bf16(
-                expert_outputs, token_offsets, experts_per_rank,
-                max_tokens_per_rank, smlimit=smlimit)
+                expert_outputs,
+                token_offsets,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+            )
     elif wire == "bf16":  # async: Phase 1 in main kernel, Phase 2 in combine_wait
+
         def op_fn():
             allocator.combine_bf16_bf16(
-                expert_outputs, token_offsets, experts_per_rank,
-                max_tokens_per_rank, smlimit=smlimit, sync=False)
+                expert_outputs,
+                token_offsets,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+                sync=False,
+            )
             allocator.combine_wait()
     elif wire == "mxfp8" and sync:
+
         def op_fn():
             allocator.combine_mxfp8_bf16(
-                expert_outputs, token_offsets, experts_per_rank,
-                max_tokens_per_rank, smlimit=smlimit)
+                expert_outputs,
+                token_offsets,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+            )
     else:  # mxfp8 async
+
         def op_fn():
             allocator.combine_mxfp8_bf16(
-                expert_outputs, token_offsets, experts_per_rank,
-                max_tokens_per_rank, smlimit=smlimit, sync=False)
+                expert_outputs,
+                token_offsets,
+                experts_per_rank,
+                max_tokens_per_rank,
+                smlimit=smlimit,
+                sync=False,
+            )
             allocator.combine_wait()
 
     if cudagraph > 0:
@@ -219,8 +274,9 @@ def _bench_combine_ubx(
     # reverse — local_ntokens * topk tokens-worth of contributions enter
     # this rank from peers.
     bytes_per_elem = 2 if wire == "bf16" else 1
-    overhead_bytes = 0 if wire == "bf16" else (
-        local_ntokens * topk * (hidden // 32))  # 1 byte E8M0 per block
+    overhead_bytes = (
+        0 if wire == "bf16" else (local_ntokens * topk * (hidden // 32))
+    )  # 1 byte E8M0 per block
     size_bytes = local_ntokens * topk * hidden * bytes_per_elem + overhead_bytes
     algbw, busbw = compute_bandwidth(size_bytes, time_us, nranks, "a2av_dispatch")
 
@@ -235,7 +291,9 @@ def _bench_combine_ubx(
         count=local_ntokens * topk * hidden,
         dtype=("bf16->bf16" if wire == "bf16" else "bf16->mxfp8->bf16"),
         redop=redop,
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
@@ -260,10 +318,19 @@ def bench_a2av_combine_ubx_mxfp8_async(*args, **kwargs):
 # in setup to populate expert outputs, then time only ncclEpCombine.
 # ---------------------------------------------------------------------------
 
+
 def bench_a2av_combine_nccl_ep(
-    ntokens, hidden, experts_per_rank, topk,
-    device, iters, warmup, nranks,
-    mode: str = "ll", group=None, cudagraph: int = 0,
+    ntokens,
+    hidden,
+    experts_per_rank,
+    topk,
+    device,
+    iters,
+    warmup,
+    nranks,
+    mode: str = "ll",
+    group=None,
+    cudagraph: int = 0,
     routing_alpha: float = 0.0,
 ) -> BenchResult:
     """NCCL EP combine row (mode='ll' or 'ht'), single NVLink domain.
@@ -286,9 +353,12 @@ def bench_a2av_combine_nccl_ep(
     nccl = _get_nccl_lib()
     comm = _bootstrap_comm(nranks, rank, group=group)
 
-    algorithm = (ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY if mode == "ll"
-                 else ncclEpAlgorithm_t.NCCL_EP_ALGO_HIGH_THROUGHPUT)
-    is_ll = (mode == "ll")
+    algorithm = (
+        ncclEpAlgorithm_t.NCCL_EP_ALGO_LOW_LATENCY
+        if mode == "ll"
+        else ncclEpAlgorithm_t.NCCL_EP_ALGO_HIGH_THROUGHPUT
+    )
+    is_ll = mode == "ll"
 
     ep_stream = torch.cuda.Stream(device=device)
     stream_ptr = ctypes.c_void_p(ep_stream.cuda_stream)
@@ -303,24 +373,35 @@ def bench_a2av_combine_nccl_ep(
     cfg.rdma_buffer_size = _NCCL_EP_AUTO
     cfg.num_qp_per_rank = _NCCL_EP_AUTO
     cfg.num_channels = _NCCL_EP_AUTO
-    ep_group = nccl.ncclEpCreateGroup(comm, cfg, stream_ptr,
-                                       _td._ALLOC_FN, _td._FREE_FN)
+    ep_group = nccl.ncclEpCreateGroup(
+        comm, cfg, stream_ptr, _td._ALLOC_FN, _td._FREE_FN
+    )
 
     # ---- topk_idx + handle ------------------------------------------------
     topk_idx_t = _tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclInt64,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclInt64,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_IDX,
-        None, local_ntokens, topk,
+        None,
+        local_ntokens,
+        topk,
     )
     routing = _make_routing(ntokens, total_experts, topk, device, alpha=routing_alpha)
-    routing_local = routing[rank * local_ntokens:(rank + 1) * local_ntokens]
-    expert_ids = (routing_local.nonzero()[:, 1]
-                  .view(local_ntokens, topk)
-                  .to(torch.int64)
-                  .contiguous())
+    routing_local = routing[rank * local_ntokens : (rank + 1) * local_ntokens]
+    expert_ids = (
+        routing_local.nonzero()[:, 1]
+        .view(local_ntokens, topk)
+        .to(torch.int64)
+        .contiguous()
+    )
     _td._CUDA_RT.cudaMemcpyAsync(
-        _tensor_data(nccl, topk_idx_t), ctypes.c_void_p(expert_ids.data_ptr()),
-        local_ntokens * topk * 8, _CUDA_MEMCPY_D2D, stream_ptr,
+        _tensor_data(nccl, topk_idx_t),
+        ctypes.c_void_p(expert_ids.data_ptr()),
+        local_ntokens * topk * 8,
+        _CUDA_MEMCPY_D2D,
+        stream_ptr,
     )
 
     ep_handle = nccl.ncclEpCreateHandle(ep_group, topk_idx_t, None, stream_ptr)
@@ -328,28 +409,47 @@ def bench_a2av_combine_nccl_ep(
 
     # ---- dispatch tensors (used to populate expert outputs once) ---------
     input_t = _tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclBfloat16,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-        None, local_ntokens, hidden,
+        None,
+        local_ntokens,
+        hidden,
     )
-    tokens_bf16 = torch.randn(local_ntokens, hidden,
-                              dtype=torch.bfloat16, device=device)
+    tokens_bf16 = torch.randn(
+        local_ntokens, hidden, dtype=torch.bfloat16, device=device
+    )
     _td._CUDA_RT.cudaMemcpyAsync(
-        _tensor_data(nccl, input_t), ctypes.c_void_p(tokens_bf16.data_ptr()),
-        local_ntokens * hidden * 2, _CUDA_MEMCPY_D2D, stream_ptr,
+        _tensor_data(nccl, input_t),
+        ctypes.c_void_p(tokens_bf16.data_ptr()),
+        local_ntokens * hidden * 2,
+        _CUDA_MEMCPY_D2D,
+        stream_ptr,
     )
 
     # Dispatch output (= combine input). Shape depends on mode.
     if is_ll:
         expert_outputs_t = _tensor_create(
-            nccl, ep_group, 3, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            3,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_local_experts, local_ntokens * nranks, hidden,
+            None,
+            num_local_experts,
+            local_ntokens * nranks,
+            hidden,
         )
         recv_count_t = _tensor_create(
-            nccl, ep_group, 1, ncclDataTypeEnum.ncclInt32,
+            nccl,
+            ep_group,
+            1,
+            ncclDataTypeEnum.ncclInt32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_RECV_EXPERT_COUNTER_DEVICE,
-            None, num_local_experts,
+            None,
+            num_local_experts,
         )
         d_topk_weights_t = None
         d_out_tw_t = None
@@ -357,53 +457,90 @@ def bench_a2av_combine_nccl_ep(
     else:
         num_recv_tokens = local_ntokens * num_local_experts
         expert_outputs_t = _tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclBfloat16,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-            None, num_recv_tokens, hidden,
+            None,
+            num_recv_tokens,
+            hidden,
         )
         d_topk_weights_t = _tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, local_ntokens, topk,
+            None,
+            local_ntokens,
+            topk,
         )
-        tw = torch.full((local_ntokens, topk), 1.0 / topk,
-                        dtype=torch.float32, device=device)
+        tw = torch.full(
+            (local_ntokens, topk), 1.0 / topk, dtype=torch.float32, device=device
+        )
         _td._CUDA_RT.cudaMemcpyAsync(
-            _tensor_data(nccl, d_topk_weights_t), ctypes.c_void_p(tw.data_ptr()),
-            local_ntokens * topk * 4, _CUDA_MEMCPY_D2D, stream_ptr,
+            _tensor_data(nccl, d_topk_weights_t),
+            ctypes.c_void_p(tw.data_ptr()),
+            local_ntokens * topk * 4,
+            _CUDA_MEMCPY_D2D,
+            stream_ptr,
         )
         d_out_tw_t = _tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, num_recv_tokens, topk,
+            None,
+            num_recv_tokens,
+            topk,
         )
         d_out_ti_t = _tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclInt64,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclInt64,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_IDX,
-            None, num_recv_tokens, topk,
+            None,
+            num_recv_tokens,
+            topk,
         )
         recv_count_t = None
 
     # ---- combine output tensor (always 2D [local_ntokens, hidden]) -------
     combine_out_t = _tensor_create(
-        nccl, ep_group, 2, ncclDataTypeEnum.ncclBfloat16,
+        nccl,
+        ep_group,
+        2,
+        ncclDataTypeEnum.ncclBfloat16,
         ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOKENS,
-        None, local_ntokens, hidden,
+        None,
+        local_ntokens,
+        hidden,
     )
 
     # LL mode: optional TOP_K_WEIGHTS local tensor for the combine.
     if is_ll:
         c_topk_weights_t = _tensor_create(
-            nccl, ep_group, 2, ncclDataTypeEnum.ncclFloat32,
+            nccl,
+            ep_group,
+            2,
+            ncclDataTypeEnum.ncclFloat32,
             ncclEpTensorTag_t.NCCL_EP_TENSOR_TAG_TOPK_WEIGHTS,
-            None, local_ntokens, topk,
+            None,
+            local_ntokens,
+            topk,
         )
-        tw_combine = torch.full((local_ntokens, topk), 1.0 / topk,
-                                dtype=torch.float32, device=device)
+        tw_combine = torch.full(
+            (local_ntokens, topk), 1.0 / topk, dtype=torch.float32, device=device
+        )
         _td._CUDA_RT.cudaMemcpyAsync(
             _tensor_data(nccl, c_topk_weights_t),
             ctypes.c_void_p(tw_combine.data_ptr()),
-            local_ntokens * topk * 4, _CUDA_MEMCPY_D2D, stream_ptr,
+            local_ntokens * topk * 4,
+            _CUDA_MEMCPY_D2D,
+            stream_ptr,
         )
     else:
         c_topk_weights_t = None
@@ -411,10 +548,10 @@ def bench_a2av_combine_nccl_ep(
     ep_stream.synchronize()
 
     # ---- assemble dispatch arrays (used once) ----------------------------
-    d_num_inputs  = 1 if is_ll else 3
+    d_num_inputs = 1 if is_ll else 3
     d_num_outputs = 1 if is_ll else 3
-    d_num_local   = 1 if is_ll else 0
-    d_inputs_arr  = (ncclNDTensor_t * d_num_inputs)()
+    d_num_local = 1 if is_ll else 0
+    d_inputs_arr = (ncclNDTensor_t * d_num_inputs)()
     d_inputs_arr[0] = input_t
     if not is_ll:
         d_inputs_arr[1] = d_topk_weights_t
@@ -427,12 +564,16 @@ def bench_a2av_combine_nccl_ep(
     d_local_arr = (ncclNDTensor_t * max(d_num_local, 1))()
     if is_ll:
         d_local_arr[0] = recv_count_t
-    d_inputs_p  = ctypes.cast(d_inputs_arr,  ctypes.POINTER(ncclNDTensor_t))
+    d_inputs_p = ctypes.cast(d_inputs_arr, ctypes.POINTER(ncclNDTensor_t))
     d_outputs_p = ctypes.cast(d_outputs_arr, ctypes.POINTER(ncclNDTensor_t))
-    d_local_p   = ctypes.cast(d_local_arr,   ctypes.POINTER(ncclNDTensor_t)) \
-                  if d_num_local else None
+    d_local_p = (
+        ctypes.cast(d_local_arr, ctypes.POINTER(ncclNDTensor_t))
+        if d_num_local
+        else None
+    )
 
     from nccl_ep.nccl_wrapper import ncclEpDispatchConfig_t  # type: ignore
+
     dispatch_cfg = ncclEpDispatchConfig_t()
     dispatch_cfg.round_scales = 0
 
@@ -441,7 +582,7 @@ def bench_a2av_combine_nccl_ep(
     c_inputs_arr[0] = expert_outputs_t  # dispatch's output is combine's input
     c_outputs_arr = (ncclNDTensor_t * 1)()
     c_outputs_arr[0] = combine_out_t
-    c_inputs_p  = ctypes.cast(c_inputs_arr,  ctypes.POINTER(ncclNDTensor_t))
+    c_inputs_p = ctypes.cast(c_inputs_arr, ctypes.POINTER(ncclNDTensor_t))
     c_outputs_p = ctypes.cast(c_outputs_arr, ctypes.POINTER(ncclNDTensor_t))
 
     if is_ll:
@@ -461,8 +602,16 @@ def bench_a2av_combine_nccl_ep(
     # --backend nccl_ep_ht, the bench will abort here.
     with torch.cuda.stream(ep_stream):
         nccl.ncclEpDispatch(
-            ep_handle, d_inputs_p, d_num_inputs, d_outputs_p, d_num_outputs,
-            d_local_p, d_num_local, 0, dispatch_cfg, stream_ptr,
+            ep_handle,
+            d_inputs_p,
+            d_num_inputs,
+            d_outputs_p,
+            d_num_outputs,
+            d_local_p,
+            d_num_local,
+            0,
+            dispatch_cfg,
+            stream_ptr,
         )
         nccl.ncclEpComplete(ep_handle, None, stream_ptr)
     ep_stream.synchronize()
@@ -470,8 +619,16 @@ def bench_a2av_combine_nccl_ep(
     # ---- combine op ------------------------------------------------------
     def op_fn():
         nccl.ncclEpCombine(
-            ep_handle, c_inputs_p, 1, c_outputs_p, 1,
-            c_local_p, c_num_local, 0, None, stream_ptr,
+            ep_handle,
+            c_inputs_p,
+            1,
+            c_outputs_p,
+            1,
+            c_local_p,
+            c_num_local,
+            0,
+            None,
+            stream_ptr,
         )
 
     fallback_dtype = "bf16->bf16"
@@ -496,8 +653,16 @@ def bench_a2av_combine_nccl_ep(
                     cap_stream_ptr = ctypes.c_void_p(cap_stream.cuda_stream)
                     for _ in range(cudagraph):
                         nccl.ncclEpCombine(
-                            ep_handle, c_inputs_p, 1, c_outputs_p, 1,
-                            c_local_p, c_num_local, 0, None, cap_stream_ptr,
+                            ep_handle,
+                            c_inputs_p,
+                            1,
+                            c_outputs_p,
+                            1,
+                            c_local_p,
+                            c_num_local,
+                            0,
+                            None,
+                            cap_stream_ptr,
                         )
             if gc_was_enabled:
                 gc.enable()
@@ -544,10 +709,19 @@ def bench_a2av_combine_nccl_ep(
                 times.append((time.perf_counter() - t0) * 1e6)
         else:
             _cleanup_combine_state(
-                nccl, ep_group, ep_handle, stream_ptr,
-                topk_idx_t, input_t, expert_outputs_t,
-                recv_count_t, d_topk_weights_t, d_out_tw_t, d_out_ti_t,
-                combine_out_t, c_topk_weights_t,
+                nccl,
+                ep_group,
+                ep_handle,
+                stream_ptr,
+                topk_idx_t,
+                input_t,
+                expert_outputs_t,
+                recv_count_t,
+                d_topk_weights_t,
+                d_out_tw_t,
+                d_out_ti_t,
+                combine_out_t,
+                c_topk_weights_t,
             )
             raise
 
@@ -555,10 +729,19 @@ def bench_a2av_combine_nccl_ep(
     time_us = times[len(times) // 2]
 
     _cleanup_combine_state(
-        nccl, ep_group, ep_handle, stream_ptr,
-        topk_idx_t, input_t, expert_outputs_t,
-        recv_count_t, d_topk_weights_t, d_out_tw_t, d_out_ti_t,
-        combine_out_t, c_topk_weights_t,
+        nccl,
+        ep_group,
+        ep_handle,
+        stream_ptr,
+        topk_idx_t,
+        input_t,
+        expert_outputs_t,
+        recv_count_t,
+        d_topk_weights_t,
+        d_out_tw_t,
+        d_out_ti_t,
+        combine_out_t,
+        c_topk_weights_t,
     )
 
     # Wire payload mirrors dispatch (combine moves the same data in reverse).
@@ -570,18 +753,39 @@ def bench_a2av_combine_nccl_ep(
         count=local_ntokens * topk * hidden,
         dtype=fallback_dtype,
         redop=f"nccl_ep_{mode}",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
-def _cleanup_combine_state(nccl, ep_group, ep_handle, stream_ptr,
-                            topk_idx_t, input_t, expert_outputs_t,
-                            recv_count_t, d_topk_weights_t, d_out_tw_t, d_out_ti_t,
-                            combine_out_t, c_topk_weights_t):
+def _cleanup_combine_state(
+    nccl,
+    ep_group,
+    ep_handle,
+    stream_ptr,
+    topk_idx_t,
+    input_t,
+    expert_outputs_t,
+    recv_count_t,
+    d_topk_weights_t,
+    d_out_tw_t,
+    d_out_ti_t,
+    combine_out_t,
+    c_topk_weights_t,
+):
     """Tear down everything created in bench_a2av_combine_nccl_ep."""
-    for t in (input_t, expert_outputs_t, recv_count_t,
-              d_topk_weights_t, d_out_tw_t, d_out_ti_t,
-              combine_out_t, c_topk_weights_t, topk_idx_t):
+    for t in (
+        input_t,
+        expert_outputs_t,
+        recv_count_t,
+        d_topk_weights_t,
+        d_out_tw_t,
+        d_out_ti_t,
+        combine_out_t,
+        c_topk_weights_t,
+        topk_idx_t,
+    ):
         if t is not None:
             _tensor_destroy(nccl, ep_group, t)
     if ep_handle is not None:

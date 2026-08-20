@@ -16,8 +16,8 @@ python ring_pattern.py
 
 import sys
 
-import nccl.core as nccl
 import cupy as cp
+import nccl.core as nccl
 
 EXAMPLE_NAME = "Ring Pattern"
 
@@ -124,9 +124,11 @@ def main() -> int:
 
         prev_rank = (i - 1 + num_gpus) % num_gpus
         expected = float(prev_rank * 1000)
-        correct = (result[0] == expected)
+        correct = result[0] == expected
 
-        print(f"  GPU {i} received data from GPU {prev_rank}: {'CORRECT' if correct else 'ERROR'}")
+        print(
+            f"  GPU {i} received data from GPU {prev_rank}: {'CORRECT' if correct else 'ERROR'}"
+        )
 
         if not correct:
             success = False

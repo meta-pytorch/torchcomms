@@ -25,7 +25,7 @@ try:
     import nccl.bindings as _nccl_bindings
     from nccl.core.communicator import Communicator, NCCLDevCommRequirements
     from nccl.core.constants import WindowFlag
-    from nccl.core.utils import UniqueId, get_unique_id
+    from nccl.core.utils import get_unique_id, UniqueId
 
     _NCCL4PY_AVAILABLE = True
     _NCCL4PY_IMPORT_ERROR: Optional[BaseException] = None
@@ -47,6 +47,7 @@ def _debug_enabled() -> bool:
 # Communicator acquisition
 # ---------------------------------------------------------------------------
 
+
 def _try_extract_nccl_comm_from_pg(pg, device: torch.device) -> Optional[int]:
     """Best-effort: pull the raw ncclComm_t (int) out of a torch ProcessGroup.
 
@@ -60,10 +61,14 @@ def _try_extract_nccl_comm_from_pg(pg, device: torch.device) -> Optional[int]:
         return None
     # Probe attribute names in order of likelihood across PyTorch versions.
     candidates: Sequence[str] = (
-        "comm", "_comm",
-        "get_handle", "_get_handle",
-        "get_nccl_comm", "_get_nccl_comm",
-        "nccl_comm", "_nccl_comm",
+        "comm",
+        "_comm",
+        "get_handle",
+        "_get_handle",
+        "get_nccl_comm",
+        "_get_nccl_comm",
+        "nccl_comm",
+        "_nccl_comm",
     )
     for attr in candidates:
         try:
@@ -139,8 +144,10 @@ def get_or_create_nccl_comm(
             print(f"[ubx._nccl_backend] reusing PG ncclComm_t = {raw:#x}")
         return Communicator(raw), False
     if _debug_enabled():
-        print("[ubx._nccl_backend] PG handle extraction failed; "
-              "bootstrapping a fresh ncclComm_t via uid broadcast")
+        print(
+            "[ubx._nccl_backend] PG handle extraction failed; "
+            "bootstrapping a fresh ncclComm_t via uid broadcast"
+        )
     return _bootstrap_nccl_comm(pg, world_size, rank, device), True
 
 
@@ -148,8 +155,11 @@ def get_or_create_nccl_comm(
 # Pool: ncclMemAlloc + window register + devcomm create
 # ---------------------------------------------------------------------------
 
+
 def _wrap_device_ptr_as_tensor(
-    ptr: int, size: int, device: torch.device,
+    ptr: int,
+    size: int,
+    device: torch.device,
 ) -> torch.Tensor:
     """Zero-copy wrap of an externally-allocated device pointer as torch.Tensor.
 
@@ -157,6 +167,7 @@ def _wrap_device_ptr_as_tensor(
     is a view (no copy). The caller is responsible for keeping ``ptr`` alive
     for the tensor's lifetime — ``NcclSymPool.close()`` enforces this.
     """
+
     class _CAIView:
         __cuda_array_interface__ = {
             "version": 3,
@@ -215,6 +226,7 @@ class NcclSymPool:
         self._mc0_ptr: int = 0
 
         import os
+
         _r = int(os.environ.get("RANK", "-1"))
         _diag = os.environ.get("UBX_INIT_DIAG", "0") == "1"
 
@@ -225,11 +237,16 @@ class NcclSymPool:
         if self._raw_ptr == 0:
             raise RuntimeError(f"ncclMemAlloc({self._size}) returned NULL")
         if _diag:
-            print(f"[r{_r} NcclSymPool] step1 POST mem_alloc ptr={self._raw_ptr:#x}", flush=True)
+            print(
+                f"[r{_r} NcclSymPool] step1 POST mem_alloc ptr={self._raw_ptr:#x}",
+                flush=True,
+            )
 
         # 2. wrap as torch.Tensor (zero-copy)
         self._internal_pool = _wrap_device_ptr_as_tensor(
-            self._raw_ptr, self._size, device,
+            self._raw_ptr,
+            self._size,
+            device,
         )
         if _diag:
             print(f"[r{_r} NcclSymPool] step2 PRE fill_(0)", flush=True)
@@ -241,7 +258,8 @@ class NcclSymPool:
         if _diag:
             print(f"[r{_r} NcclSymPool] step3 PRE register_window", flush=True)
         self._window = comm.register_window(
-            self._internal_pool, flags=WindowFlag.CollSymmetric,
+            self._internal_pool,
+            flags=WindowFlag.CollSymmetric,
         )
         if _diag:
             print(f"[r{_r} NcclSymPool] step3 POST register_window", flush=True)
@@ -255,7 +273,10 @@ class NcclSymPool:
         reqs = NCCLDevCommRequirements()
         reqs.lsa_multimem = bool(enable_multicast)
         if _diag:
-            print(f"[r{_r} NcclSymPool] step4 PRE create_dev_comm lsa_mc={reqs.lsa_multimem}", flush=True)
+            print(
+                f"[r{_r} NcclSymPool] step4 PRE create_dev_comm lsa_mc={reqs.lsa_multimem}",
+                flush=True,
+            )
         self._dev_comm = comm.create_dev_comm(reqs)
         if _diag:
             print(f"[r{_r} NcclSymPool] step4 POST create_dev_comm", flush=True)

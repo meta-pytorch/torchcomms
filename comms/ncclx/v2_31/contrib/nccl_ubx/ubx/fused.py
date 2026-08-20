@@ -7,11 +7,12 @@ non-null gamma/residual_in parameters to enable fusion paths.
 
 from __future__ import annotations
 
-import torch
 from typing import Optional
 
+import torch
+
+from .allocator import AUTO_SWITCH_BYTES, SymmAllocator
 from .tensor import SymmTensor
-from .allocator import SymmAllocator, AUTO_SWITCH_BYTES
 
 
 def allreduce_fused(
@@ -50,11 +51,25 @@ def allreduce_fused(
 
     if tensor_in.numel() * tensor_in.element_size() > AUTO_SWITCH_BYTES:
         return allocator.allreduce_mc(
-            tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm,
-            gamma, eps, smlimit, cgasize,
+            tensor_in,
+            hidden_size,
+            residual_in,
+            residual_out,
+            fuse_layernorm,
+            gamma,
+            eps,
+            smlimit,
+            cgasize,
         )
     else:
         return allocator.allreduce_lamport(
-            tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm,
-            gamma, eps, smlimit, cgasize,
+            tensor_in,
+            hidden_size,
+            residual_in,
+            residual_out,
+            fuse_layernorm,
+            gamma,
+            eps,
+            smlimit,
+            cgasize,
         )

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -35,7 +36,9 @@ def get_rank_info():
         world_size = int(os.environ["SLURM_NTASKS"])
         local_rank = int(os.environ.get("SLURM_LOCALID", rank))
     else:
-        raise RuntimeError("Cannot determine rank — not launched via srun/mpirun/torchrun")
+        raise RuntimeError(
+            "Cannot determine rank — not launched via srun/mpirun/torchrun"
+        )
     return rank, world_size, local_rank
 
 
@@ -45,8 +48,10 @@ def init_distributed():
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
         dist.init_process_group(
-            backend="nccl", init_method="env://",
-            world_size=world_size, rank=rank,
+            backend="nccl",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
         )
     return rank, world_size, local_rank
 
@@ -59,6 +64,7 @@ def run_allreduce_in_graph(args):
     size = 1024
 
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     pool_bytes = size * 2 * 6
     allocator = SymmAllocator(pool_bytes, device, group)
@@ -95,7 +101,10 @@ def run_allreduce_in_graph(args):
         print(f"FAIL rank={rank} mode=allreduce_in_graph: {e}", flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} mode=allreduce_in_graph: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=allreduce_in_graph: {type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -109,6 +118,7 @@ def run_multiple_replays(args):
     size = 1024
 
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     pool_bytes = size * 2 * 6
     allocator = SymmAllocator(pool_bytes, device, group)
@@ -145,12 +155,19 @@ def run_multiple_replays(args):
 
         atol, rtol = 0.0625, 0.02
         try:
-            torch.testing.assert_close(result.detach().float(), ref, atol=atol, rtol=rtol)
+            torch.testing.assert_close(
+                result.detach().float(), ref, atol=atol, rtol=rtol
+            )
         except AssertionError as e:
-            print(f"FAIL rank={rank} mode=multiple_replays iteration={i}: {e}", flush=True)
+            print(
+                f"FAIL rank={rank} mode=multiple_replays iteration={i}: {e}", flush=True
+            )
             sys.exit(1)
         except Exception as e:
-            print(f"FAIL rank={rank} mode=multiple_replays iteration={i}: {type(e).__name__}: {e}", flush=True)
+            print(
+                f"FAIL rank={rank} mode=multiple_replays iteration={i}: {type(e).__name__}: {e}",
+                flush=True,
+            )
             sys.exit(1)
 
     print(f"PASS rank={rank} mode=multiple_replays (10 iterations)")
@@ -165,6 +182,7 @@ def run_graph_pool_allocation(args):
     size = 512
 
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     pool_bytes = size * 2 * 20  # generous
     allocator = SymmAllocator(pool_bytes, device, group)
@@ -173,8 +191,11 @@ def run_graph_pool_allocation(args):
     eager_tensor = allocator.create_tensor((size,), dtype)
     eager_offset = eager_tensor.data_ptr() - allocator.pool_ptr
     if eager_offset < allocator.graph_pool_size:
-        print(f"FAIL rank={rank}: eager alloc at offset {eager_offset} "
-              f"should be >= graph_pool_size {allocator.graph_pool_size}", flush=True)
+        print(
+            f"FAIL rank={rank}: eager alloc at offset {eager_offset} "
+            f"should be >= graph_pool_size {allocator.graph_pool_size}",
+            flush=True,
+        )
         sys.exit(1)
 
     # Graph-mode allocation: should go to graph pool (offset < graph_pool_size)
@@ -188,21 +209,28 @@ def run_graph_pool_allocation(args):
 
     graph_offset = graph_tensor.data_ptr() - allocator.pool_ptr
     if graph_offset >= allocator.graph_pool_size:
-        print(f"FAIL rank={rank}: graph alloc at offset {graph_offset} "
-              f"should be < graph_pool_size {allocator.graph_pool_size}", flush=True)
+        print(
+            f"FAIL rank={rank}: graph alloc at offset {graph_offset} "
+            f"should be < graph_pool_size {allocator.graph_pool_size}",
+            flush=True,
+        )
         sys.exit(1)
 
-    print(f"PASS rank={rank} mode=graph_pool_allocation "
-          f"eager_offset={eager_offset} graph_offset={graph_offset} "
-          f"graph_pool_size={allocator.graph_pool_size}")
+    print(
+        f"PASS rank={rank} mode=graph_pool_allocation "
+        f"eager_offset={eager_offset} graph_offset={graph_offset} "
+        f"graph_pool_size={allocator.graph_pool_size}"
+    )
     dist.destroy_process_group()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UB-X CUDA graph test worker")
-    parser.add_argument("--mode", required=True,
-                        choices=["allreduce_in_graph", "multiple_replays",
-                                 "graph_pool_allocation"])
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["allreduce_in_graph", "multiple_replays", "graph_pool_allocation"],
+    )
     args = parser.parse_args()
 
     if args.mode == "allreduce_in_graph":
