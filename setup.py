@@ -84,6 +84,14 @@ USE_NCCLX = flag_enabled("USE_NCCLX", not IS_ROCM)
 USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", IS_ROCM)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
+# Select the real rcclx-dev sharded-relay implementation (RcclxApiShardedRelay.cpp)
+# over the stub (RcclxApiShardedRelayStub.cpp). Both TUs define the same
+# DefaultRcclxApi::shardedRelay* symbols with no #ifdef guards, so exactly one
+# must be compiled. In buck this is a select() on the rccl constraint (see
+# comms/torchcomms/rcclx/BUCK); the OSS/wheel CMake path keys off this flag.
+# Only meaningful when USE_RCCLX is set; requires linking an rcclx-dev librccl
+# that actually exports the ncclShardedRelayMultiGroup* symbols.
+USE_RCCLX_DEV = flag_enabled("USE_RCCLX_DEV", False)
 USE_XCCL = flag_enabled("USE_XCCL", False)
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
@@ -190,6 +198,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_GLOO={flag_str(USE_GLOO)}",
             f"-DUSE_RCCL={flag_str(USE_RCCL)}",
             f"-DUSE_RCCLX={flag_str(USE_RCCLX)}",
+            f"-DUSE_RCCLX_DEV={flag_str(USE_RCCLX_DEV)}",
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
