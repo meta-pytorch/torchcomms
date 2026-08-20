@@ -3,9 +3,13 @@
 #pragma once
 
 #include "comm.h"
+#include "meta/algoconf/ConfiguredCollective.h"
 #include "meta/algoconf/InfoExt.h"
 
 namespace ncclx::algoconf {
+
+// adjustChunkSizeForExt is defined in ConfiguredCollective.h and re-exported
+// here via the include above.
 
 // Apply algorithm info override from task->ext to task fields.
 // Returns ncclInvalidUsage if isGrouped is true,
