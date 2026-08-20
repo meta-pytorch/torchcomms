@@ -90,7 +90,10 @@ __global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
   }
   if (testCase == NvlSignalTrapCase::AggregateDepthTooLarge ||
       testCase == NvlSignalTrapCase::ArrivalCountMismatch ||
-      testCase == NvlSignalTrapCase::SignalsPerChannelMismatch) {
+      testCase == NvlSignalTrapCase::SignalsPerChannelMismatch ||
+      testCase == NvlSignalTrapCase::DuplicateChannelOwner ||
+      testCase == NvlSignalTrapCase::AggregatePartialWarp ||
+      testCase == NvlSignalTrapCase::AggregateNon1DGrid) {
     auto group = make_warp_group();
     signal_publish_and_wait<
         NvlSignalAccess::Multimem,
@@ -159,12 +162,42 @@ __global__ void nvlSignalRankBoundaryKernel(int nvlRanks, uint64_t* output) {
   }
 }
 
+dim3 signal_trap_threads(NvlSignalTrapCase testCase) {
+  switch (testCase) {
+    case NvlSignalTrapCase::AggregatePartialWarp:
+      return dim3(kWarpSize / 2);
+    case NvlSignalTrapCase::DuplicateChannelOwner:
+      return dim3(2 * kWarpSize);
+    case NvlSignalTrapCase::PerPeerNon1DBlock:
+      return dim3(kNvlSignalSmallPerPeerThreads, 2);
+    case NvlSignalTrapCase::AggregateDepthTooLarge:
+    case NvlSignalTrapCase::ArrivalCountMismatch:
+    case NvlSignalTrapCase::SignalsPerChannelMismatch:
+    case NvlSignalTrapCase::AggregateNon1DGrid:
+    case NvlSignalTrapCase::PerPeerGroupTooSmall:
+      return dim3(kWarpSize);
+    default:
+      return dim3(kNvlSignalSmallPerPeerThreads);
+  }
+}
+
+dim3 signal_trap_blocks(NvlSignalTrapCase testCase) {
+  switch (testCase) {
+    case NvlSignalTrapCase::PerPeerDuplicateChannelOwner:
+      return dim3(2);
+    case NvlSignalTrapCase::AggregateNon1DGrid:
+      return dim3(1, 2);
+    default:
+      return dim3(1);
+  }
+}
+
 } // namespace
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase) {
-  const uint32_t threads =
-      testCase == NvlSignalTrapCase::PerPeerGroupTooSmall ? 32 : 64;
-  nvlSignalTrapKernel<<<1, threads>>>(
+  nvlSignalTrapKernel<<<
+      signal_trap_blocks(testCase),
+      signal_trap_threads(testCase)>>>(
       testCase); // NOLINT(facebook-cuda-safe-kernel-call-check)
 }
 

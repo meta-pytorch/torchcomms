@@ -130,10 +130,16 @@ Device validation traps on an out-of-range channel, lane, rank, or signal offset
 
 ## Execution Ownership
 
-One CUDA block owns one logical channel.
-A channel is the logical staging group selected by the block index.
+One cooperative `ThreadGroup` owns one logical channel.
+Signal kernels use one-dimensional grids and blocks, and both topologies
+require `group.group_id == channel`. The logical group id is authoritative even
+when a caller has deliberately renumbered groups; `block_id` continues to name
+the physical CUDA block rather than the channel.
+Concurrent operations may use separate streams only when they own disjoint
+channels; concurrent launches targeting the same channel are invalid.
 
-Aggregate topology uses one warp per channel.
+Aggregate topology uses one full owning warp per channel, so multiple warp
+groups in one CUDA block may own distinct channels.
 Pipeline depth determines the active lane owners:
 
 ```text
@@ -156,6 +162,7 @@ threads R..127 own no peer slot
 ```
 
 Per-peer launches use 64 threads through 64 ranks and 128 threads for 65-72 ranks.
+The block contains exactly that many threads.
 Every launched thread participates in required block synchronization.
 `TreeMin` and `ButterflyMin` additionally use all threads for their reductions.
 
@@ -187,6 +194,7 @@ Wait-policy selection changes observation geometry, not protocol semantics.
 
 Aggregate multicast publication issues one `multimem.red.release.sys.global.add.u64` for each active lane.
 Every publisher targets the counter owned by its channel and lane.
+Global warp group `C` owns aggregate channel `C`.
 The multicast instruction advances the corresponding counter on every rank, regardless of which ranks wait for that operation.
 Global completion advances each rank's counter by `R`.
 Fan-in completion advances each rank's counter by `R - 1`.
