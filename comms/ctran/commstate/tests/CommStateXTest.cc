@@ -339,7 +339,7 @@ TEST(CommStateXTest, nvlFabricTest) {
 // calls setNvlFabricTopos): a single NVL fabric clusterId spanning MULTIPLE
 // physical hosts must collapse into ONE cross-host NVL domain, so
 // localRankToRanks() returns the whole domain (all ranks) rather than the
-// per-host node group. This is what lets a single-NVL-domain algo (cnvlmm) span
+// per-host node group. This is what lets a single-NVL-domain algo (nvlmm) span
 // an MNNVL clique; without the fabric topos, localRankToRanks() would return
 // only same-host ranks and cross-host peers would fall back to IB.
 TEST(CommStateXTest, nvlFabricCrossHostSingleDomain) {

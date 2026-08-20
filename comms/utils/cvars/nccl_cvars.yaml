@@ -1680,10 +1680,10 @@ cvars:
    type        : uint64_t
    default     : 33554432
    description : |-
-    Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
+    Size in bytes of the nvlmm (NVLink multimem) staging window, per rank.
     This allocation is independent of
     NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE. A larger window means fewer staging
-    rounds, which is the dominant cnvlmm throughput lever at large message
+    rounds, which is the dominant nvlmm throughput lever at large message
     sizes. Set to 0 to disable the NVL multimem transport. Default 32 MiB.
 
  - name        : MCCL_NVL_MULTIMEM_PIPELINE_DEPTH

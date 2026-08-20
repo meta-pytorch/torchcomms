@@ -189,7 +189,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     // The multimem staging window is independent of the P2P shared devbuf.
     // A larger window means fewer staging rounds, which is the dominant
-    // cnvlmm throughput lever at large sizes. A zero size disables multimem.
+    // nvlmm throughput lever at large sizes. A zero size disables multimem.
     const size_t multimemDevbufSize =
         static_cast<size_t>(MCCL_NVL_MULTIMEM_BUFSIZE);
     if (comm->statex_->nLocalRanks() > 2 && multimemDevbufSize > 0) {
