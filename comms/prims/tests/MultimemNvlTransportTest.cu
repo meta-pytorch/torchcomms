@@ -2,11 +2,13 @@
 
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
 
+#include <stdexcept>
 #include <type_traits>
 
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlStageLayout.cuh"
 
 namespace comms::prims::test {
@@ -101,6 +103,314 @@ __global__ void readPeerInternalSignalsKernel(
        source < transport.nvlRanks;
        source += blockDim.x * gridDim.x) {
     out[source] = transport.internalLocalSignals[source].load();
+  }
+}
+
+__device__ NvlSignalParticipants
+makeTestParticipants(const MultimemNvlTransportDevice& transport, bool fanIn) {
+  const uint64_t allRanks = transport.nvlRanks == 64
+      ? ~uint64_t{0}
+      : (uint64_t{1} << transport.nvlRanks) - 1;
+  return NvlSignalParticipants{
+      .publisherMask = fanIn ? allRanks & ~uint64_t{1} : allRanks,
+      .waiterMask = fanIn ? uint64_t{1} : allRanks,
+      .expectedArrivals = static_cast<uint32_t>(
+          fanIn ? transport.nvlRanks - 1 : transport.nvlRanks),
+  };
+}
+
+__device__ NvlSignalParticipants
+makeAckParticipants(const MultimemNvlTransportDevice& transport) {
+  const uint64_t allRanks = transport.nvlRanks == 64
+      ? ~uint64_t{0}
+      : (uint64_t{1} << transport.nvlRanks) - 1;
+  return NvlSignalParticipants{
+      .publisherMask = 1,
+      .waiterMask = allRanks,
+      .expectedArrivals = 1,
+  };
+}
+
+template <NvlSignalAccess access, NvlSignalPhase phase>
+__global__ void aggregateSignalProtocolKernel(
+    MultimemNvlTransportDevice transport,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out) {
+  auto group = make_warp_group();
+  const StageRound round{.channel = 0, .value = roundValue};
+  signal_publish_and_wait<access, NvlSignalTopology::Aggregate, phase>(
+      transport,
+      round,
+      makeTestParticipants(transport, fanIn),
+      group,
+      Timeout{});
+
+  const uint32_t lane = group.thread_id_in_group;
+  if (lane < transport.pipelineDepth) {
+    const uint64_t phaseOffset =
+        phase == NvlSignalPhase::Ready ? uint64_t{0} : uint64_t{2};
+    const uint64_t laneBase =
+        static_cast<uint64_t>(3 * transport.nvlRanks) + 4 * lane;
+    out[lane] = transport.internalLocalSignals[laneBase + phaseOffset].load();
+    out[transport.pipelineDepth + lane] =
+        transport.internalLocalSignals[laneBase + phaseOffset + 1].load();
+  }
+}
+
+template <
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    NvlPerPeerWaitPolicy waitPolicy>
+__global__ void perPeerSignalProtocolKernel(
+    MultimemNvlTransportDevice transport,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out) {
+  auto group = make_block_group();
+  const StageRound round{.channel = 0, .value = roundValue};
+  signal_publish_and_wait<
+      access,
+      NvlSignalTopology::PerPeer,
+      phase,
+      waitPolicy>(
+      transport,
+      round,
+      makeTestParticipants(transport, fanIn),
+      group,
+      Timeout{});
+
+  const int source = static_cast<int>(group.thread_id_in_group);
+  if (source < transport.nvlRanks) {
+    uint64_t stripe = 0;
+    if constexpr (phase == NvlSignalPhase::Ack) {
+      stripe = static_cast<uint64_t>(transport.nvlRanks);
+    } else if constexpr (phase == NvlSignalPhase::Consumed) {
+      stripe = static_cast<uint64_t>(2 * transport.nvlRanks);
+    }
+    out[source] = transport.internalLocalSignals[stripe + source].load();
+  }
+}
+
+__global__ void aggregateAckSignalProtocolKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out) {
+  auto group = make_warp_group();
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::Aggregate,
+      NvlSignalPhase::Ack>(
+      transport,
+      StageRound{.channel = 0, .value = roundValue},
+      makeAckParticipants(transport),
+      group,
+      Timeout{});
+
+  const uint32_t lane = group.thread_id_in_group;
+  if (lane < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(3 * transport.nvlRanks) + 4 * lane + 2;
+    out[lane] = transport.internalLocalSignals[signalId].load();
+    out[transport.pipelineDepth + lane] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
+__global__ void multiChannelAggregateSignalKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out) {
+  auto group = make_warp_group();
+  const StageRound round{
+      .channel = static_cast<uint32_t>(blockIdx.x),
+      .value = 1,
+  };
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::Aggregate,
+      NvlSignalPhase::Ready>(
+      transport,
+      round,
+      makeTestParticipants(transport, /*fanIn=*/false),
+      group,
+      Timeout{});
+  const uint32_t lane = group.thread_id_in_group;
+  if (lane < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(round.channel) * transport.signalsPerChannel +
+        static_cast<uint64_t>(3 * transport.nvlRanks) + 4 * lane;
+    const uint64_t outputBase =
+        static_cast<uint64_t>(round.channel) * 2 * transport.pipelineDepth;
+    out[outputBase + lane] = transport.internalLocalSignals[signalId].load();
+    out[outputBase + transport.pipelineDepth + lane] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
+__global__ void aggregateMultimemWaiterTransitionKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out) {
+  auto group = make_warp_group();
+  const StageRound round{.channel = 0, .value = 1};
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::Aggregate,
+      NvlSignalPhase::Ready>(
+      transport,
+      round,
+      makeTestParticipants(transport, /*fanIn=*/true),
+      group,
+      Timeout{});
+
+  if (transport.nvlRank == transport.nvlRanks - 1) {
+    __nanosleep(100'000'000);
+  }
+  group.sync();
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::Aggregate,
+      NvlSignalPhase::Ready>(
+      transport,
+      round,
+      makeTestParticipants(transport, /*fanIn=*/false),
+      group,
+      Timeout{});
+
+  const uint32_t lane = group.thread_id_in_group;
+  if (lane < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(3 * transport.nvlRanks) + 4 * lane;
+    out[lane] = transport.internalLocalSignals[signalId].load();
+    out[transport.pipelineDepth + lane] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
+__global__ void separatePublishAndWaitKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out) {
+  auto group = make_block_group();
+  const uint64_t allRanks = transport.nvlRanks == 64
+      ? ~uint64_t{0}
+      : (uint64_t{1} << transport.nvlRanks) - 1;
+  const NvlSignalParticipants participants{
+      .publisherMask = allRanks & ~uint64_t{1},
+      .waiterMask = 1,
+      .expectedArrivals = static_cast<uint32_t>(transport.nvlRanks - 1),
+  };
+  const StageRound round{.channel = 0, .value = roundValue};
+  if (transport.nvlRank == 0) {
+    signal_wait<
+        NvlSignalAccess::Unicast,
+        NvlSignalTopology::PerPeer,
+        NvlSignalPhase::Ready>(
+        transport, round, participants, group, Timeout{});
+  } else {
+    signal_publish<
+        NvlSignalAccess::Unicast,
+        NvlSignalTopology::PerPeer,
+        NvlSignalPhase::Ready>(transport, round, participants, group);
+  }
+  const int source = static_cast<int>(group.thread_id_in_group);
+  if (transport.nvlRank == 0 && source < transport.nvlRanks) {
+    out[source] = transport.internalLocalSignals[source].load();
+  }
+}
+
+__global__ void initializeAggregateSignalsKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t counterValue,
+    uint64_t epochValue) {
+  const uint32_t lane = threadIdx.x;
+  if (lane < transport.pipelineDepth) {
+    const uint64_t laneBase = static_cast<uint64_t>(3) * transport.nvlRanks +
+        static_cast<uint64_t>(lane) * 4;
+    transport.internalLocalSignals[laneBase].store(counterValue);
+    transport.internalLocalSignals[laneBase + 1].store(epochValue);
+  }
+}
+
+__global__ void perPeerWaitOnlyKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out) {
+  auto group = make_block_group();
+  const auto participants = makeTestParticipants(transport, /*fanIn=*/false);
+  signal_wait<
+      NvlSignalAccess::Unicast,
+      NvlSignalTopology::PerPeer,
+      NvlSignalPhase::Ready>(
+      transport,
+      StageRound{.channel = 0, .value = roundValue},
+      participants,
+      group,
+      Timeout{});
+  const int source = static_cast<int>(group.thread_id_in_group);
+  if (source < transport.nvlRanks) {
+    out[source] = transport.internalLocalSignals[source].load();
+  }
+}
+
+template <NvlSignalAccess access, NvlSignalPhase phase>
+void launchAggregateSignalProtocolTyped(
+    MultimemNvlTransportDevice transport,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  aggregateSignalProtocolKernel<access, phase>
+      <<<1, 32, 0, stream>>>(transport, fanIn, roundValue, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    NvlPerPeerWaitPolicy waitPolicy>
+void launchPerPeerSignalProtocolTyped(
+    MultimemNvlTransportDevice transport,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  perPeerSignalProtocolKernel<access, phase, waitPolicy>
+      <<<1, 64, 0, stream>>>(transport, fanIn, roundValue, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchMultimemReadyPerPeerSignalProtocolTyped(
+    MultimemNvlTransportDevice transport,
+    NvlPerPeerWaitPolicy waitPolicy,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  switch (waitPolicy) {
+    case NvlPerPeerWaitPolicy::WaitAll:
+      return launchPerPeerSignalProtocolTyped<
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::WaitAll>(
+          transport, fanIn, roundValue, out, stream);
+    case NvlPerPeerWaitPolicy::SerialMin:
+      return launchPerPeerSignalProtocolTyped<
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::SerialMin>(
+          transport, fanIn, roundValue, out, stream);
+    case NvlPerPeerWaitPolicy::TreeMin:
+      return launchPerPeerSignalProtocolTyped<
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::TreeMin>(
+          transport, fanIn, roundValue, out, stream);
+    case NvlPerPeerWaitPolicy::ButterflyMin:
+      return launchPerPeerSignalProtocolTyped<
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::ButterflyMin>(
+          transport, fanIn, roundValue, out, stream);
   }
 }
 
@@ -293,6 +603,139 @@ void launchReadPeerInternalSignals(
   const int blocks = (transport.nvlRanks + kThreads - 1) / kThreads;
   readPeerInternalSignalsKernel<<<blocks, kThreads, 0, stream>>>(
       transport, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchAggregateSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  if (phase == NvlSignalPhase::Consumed) {
+    throw std::runtime_error("aggregate consumed signal is unsupported");
+  }
+  if (access == NvlSignalAccess::Unicast) {
+    if (phase == NvlSignalPhase::Ready) {
+      return launchAggregateSignalProtocolTyped<
+          NvlSignalAccess::Unicast,
+          NvlSignalPhase::Ready>(transport, fanIn, roundValue, out, stream);
+    }
+    return launchAggregateSignalProtocolTyped<
+        NvlSignalAccess::Unicast,
+        NvlSignalPhase::Ack>(transport, fanIn, roundValue, out, stream);
+  }
+  if (phase == NvlSignalPhase::Ready) {
+    return launchAggregateSignalProtocolTyped<
+        NvlSignalAccess::Multimem,
+        NvlSignalPhase::Ready>(transport, fanIn, roundValue, out, stream);
+  }
+  return launchAggregateSignalProtocolTyped<
+      NvlSignalAccess::Multimem,
+      NvlSignalPhase::Ack>(transport, fanIn, roundValue, out, stream);
+}
+
+void launchAggregateAckSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  aggregateAckSignalProtocolKernel<<<1, 32, 0, stream>>>(
+      transport, roundValue, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchPerPeerWaitAllSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlSignalAccess access,
+    NvlSignalPhase phase,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+#define LAUNCH_PER_PEER_WAIT_ALL(ACCESS, PHASE) \
+  return launchPerPeerSignalProtocolTyped<      \
+      ACCESS,                                   \
+      PHASE,                                    \
+      NvlPerPeerWaitPolicy::WaitAll>(           \
+      transport, fanIn, roundValue, out, stream)
+  if (access == NvlSignalAccess::Unicast) {
+    if (phase == NvlSignalPhase::Ready) {
+      LAUNCH_PER_PEER_WAIT_ALL(NvlSignalAccess::Unicast, NvlSignalPhase::Ready);
+    }
+    if (phase == NvlSignalPhase::Ack) {
+      LAUNCH_PER_PEER_WAIT_ALL(NvlSignalAccess::Unicast, NvlSignalPhase::Ack);
+    }
+    LAUNCH_PER_PEER_WAIT_ALL(
+        NvlSignalAccess::Unicast, NvlSignalPhase::Consumed);
+  }
+  if (phase == NvlSignalPhase::Ready) {
+    LAUNCH_PER_PEER_WAIT_ALL(NvlSignalAccess::Multimem, NvlSignalPhase::Ready);
+  }
+  if (phase == NvlSignalPhase::Ack) {
+    LAUNCH_PER_PEER_WAIT_ALL(NvlSignalAccess::Multimem, NvlSignalPhase::Ack);
+  }
+  LAUNCH_PER_PEER_WAIT_ALL(NvlSignalAccess::Multimem, NvlSignalPhase::Consumed);
+#undef LAUNCH_PER_PEER_WAIT_ALL
+}
+
+void launchMultimemReadyPerPeerSignalProtocol(
+    MultimemNvlTransportDevice transport,
+    NvlPerPeerWaitPolicy waitPolicy,
+    bool fanIn,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  launchMultimemReadyPerPeerSignalProtocolTyped(
+      transport, waitPolicy, fanIn, roundValue, out, stream);
+}
+
+void launchMultiChannelAggregateSignal(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint64_t* out,
+    cudaStream_t stream) {
+  multiChannelAggregateSignalKernel<<<channels, 32, 0, stream>>>(
+      transport, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchAggregateMultimemWaiterTransition(
+    MultimemNvlTransportDevice transport,
+    uint64_t* out,
+    cudaStream_t stream) {
+  aggregateMultimemWaiterTransitionKernel<<<1, 32, 0, stream>>>(transport, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchSeparatePublishAndWait(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  separatePublishAndWaitKernel<<<1, 64, 0, stream>>>(
+      transport, roundValue, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchInitializeAggregateSignals(
+    MultimemNvlTransportDevice transport,
+    uint64_t counterValue,
+    uint64_t epochValue,
+    cudaStream_t stream) {
+  initializeAggregateSignalsKernel<<<1, 32, 0, stream>>>(
+      transport, counterValue, epochValue);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchPerPeerWaitOnly(
+    MultimemNvlTransportDevice transport,
+    uint64_t roundValue,
+    uint64_t* out,
+    cudaStream_t stream) {
+  perPeerWaitOnlyKernel<<<1, 64, 0, stream>>>(transport, roundValue, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

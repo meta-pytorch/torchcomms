@@ -120,6 +120,19 @@ struct MultimemNvlTransportDevice {
     signal_at(group, internal_multimem_signal_ptr(signal_id), op, value);
   }
 
+  template <SignalOp op>
+  __device__ __forceinline__ void signal_internal_scalar(
+      uint64_t signal_id,
+      uint64_t value) const {
+    auto* signal = internal_multimem_signal_ptr(signal_id);
+    comms::device::fence_acq_rel_sys();
+    if constexpr (op == SignalOp::SIGNAL_SET) {
+      detail::multimem_store_release_sys_u64(&signal->signal_, value);
+    } else {
+      detail::multimem_red_release_sys_add_u64(&signal->signal_, value);
+    }
+  }
+
   __device__ __forceinline__ uint64_t
   read_internal_signal(uint64_t signal_id) const {
     return internal_local_signal_ptr(signal_id)->load();
