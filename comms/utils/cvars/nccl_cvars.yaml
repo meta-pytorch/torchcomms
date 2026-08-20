@@ -3492,8 +3492,8 @@ cvars:
    default     : 1
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
-     in MCCL fused AllReduce. Ring supports 1, 2, and 4; Tree supports 1 and 2.
-     The default preserves the existing full-block protocol.
+     in MCCL fused AllReduce. Ring supports 1, 2, 4, and 10; Tree supports 1
+     and 2. The default preserves the existing full-block protocol.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
