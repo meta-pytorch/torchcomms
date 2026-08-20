@@ -45,6 +45,9 @@ __host__ __device__ inline float shape_multiplier(CopyOpReduceShape shape) {
     // One load + one store per payload byte.
     case CopyOpReduceShape::Copy:
       return 2.0f;
+    // Also 3, but composed 1 load + 2 stores rather than 2 loads + 1 store.
+    case CopyOpReduceShape::Forward:
+      return 3.0f;
     default:
       return 3.0f;
   }
@@ -166,6 +169,30 @@ __device__ __forceinline__ void body_copy(
   }
 }
 
+/*
+ * All-gather forward: one load, two stores to distinct destinations. The ring's
+ * AG hop lands a tile in recvbuff and re-stages the same tile in fwdStaging, so
+ * the two stores must go to separate buffers -- writing the same tile twice to
+ * one buffer would let the second store hit an already-resident line and
+ * understate the cost.
+ */
+template <int kThreads, int kVpt>
+__device__ __forceinline__ void body_forward(
+    float* out,
+    float* fwd,
+    const float* a,
+    std::size_t nbytes,
+    ThreadGroup& group) {
+  constexpr int kTileElems = kThreads * kVpt * kElemsPerVec;
+  const std::size_t nelems = nbytes / sizeof(float);
+  const std::size_t nFull = nelems / kTileElems;
+  for (std::size_t t = 0; t < nFull; t++) {
+    auto tile = tile_load<float, kTileElems, kThreads>(a, t, group);
+    tile_store<float, kTileElems, kThreads>(out, t, tile, group);
+    tile_store<float, kTileElems, kThreads>(fwd, t, tile, group);
+  }
+}
+
 // Fused with the next tile's loads issued before the current tile's store.
 template <int kThreads, int kVpt>
 __device__ __forceinline__ void body_pipelined(
@@ -197,6 +224,7 @@ __device__ __forceinline__ void body_pipelined(
 template <CopyOpReduceShape kShape, int kThreads, int kVpt>
 __global__ __launch_bounds__(kThreads, 1) void roofline_kernel(
     float* out,
+    float* fwd,
     const float* a,
     const float* b,
     std::size_t nbytes,
@@ -218,6 +246,8 @@ __global__ __launch_bounds__(kThreads, 1) void roofline_kernel(
       body_write_only<kThreads, kVpt>(out, a, b, nbytes, group);
     } else if constexpr (kShape == CopyOpReduceShape::Copy) {
       body_copy<kThreads, kVpt>(out, a, b, nbytes, group);
+    } else if constexpr (kShape == CopyOpReduceShape::Forward) {
+      body_forward<kThreads, kVpt>(out, fwd, a, nbytes, group);
     } else {
       body_pipelined<kThreads, kVpt>(out, a, b, nbytes, group);
     }
@@ -241,16 +271,17 @@ void launch(
     int threads,
     int vpt,
     float* out,
+    float* fwd,
     const float* a,
     const float* b,
     std::size_t nbytes,
     int repeats,
     unsigned long long* cycles) {
-#define COPY_OP_REDUCE_SHAPE_CASE(SHAPE, T, V)                \
-  if (shape == CopyOpReduceShape::SHAPE) {                    \
-    roofline_kernel<CopyOpReduceShape::SHAPE, T, V>           \
-        <<<kBlocks, T>>>(out, a, b, nbytes, repeats, cycles); \
-    return;                                                   \
+#define COPY_OP_REDUCE_SHAPE_CASE(SHAPE, T, V)                     \
+  if (shape == CopyOpReduceShape::SHAPE) {                         \
+    roofline_kernel<CopyOpReduceShape::SHAPE, T, V>                \
+        <<<kBlocks, T>>>(out, fwd, a, b, nbytes, repeats, cycles); \
+    return;                                                        \
   }
 #define COPY_OP_REDUCE_DISPATCH(T, V)          \
   if (threads == (T) && vpt == (V)) {          \
@@ -260,6 +291,7 @@ void launch(
     COPY_OP_REDUCE_SHAPE_CASE(WriteOnly, T, V) \
     COPY_OP_REDUCE_SHAPE_CASE(Copy, T, V)      \
     COPY_OP_REDUCE_SHAPE_CASE(Pipelined, T, V) \
+    COPY_OP_REDUCE_SHAPE_CASE(Forward, T, V)   \
   }
   COPY_OP_REDUCE_CONFIGS(COPY_OP_REDUCE_DISPATCH)
 #undef COPY_OP_REDUCE_DISPATCH
@@ -289,11 +321,14 @@ CopyOpReduceTiming runCopyOpReduceBenchmark(
   meta::comms::DeviceBuffer a(nbytes);
   meta::comms::DeviceBuffer b(nbytes);
   meta::comms::DeviceBuffer out(nbytes);
+  // Second destination, used only by Forward's re-stage store.
+  meta::comms::DeviceBuffer fwd(nbytes);
   meta::comms::DeviceBuffer cycleBuf(sizeof(unsigned long long));
   check_cuda(cudaMemset(a.get(), 1, nbytes), "initialize a");
   check_cuda(cudaMemset(b.get(), 2, nbytes), "initialize b");
 
   auto* outPtr = static_cast<float*>(out.get());
+  auto* fwdPtr = static_cast<float*>(fwd.get());
   const auto* aPtr = static_cast<const float*>(a.get());
   const auto* bPtr = static_cast<const float*>(b.get());
   auto* cyclePtr = static_cast<unsigned long long*>(cycleBuf.get());
@@ -303,13 +338,33 @@ CopyOpReduceTiming runCopyOpReduceBenchmark(
   check_cuda(cudaEventCreate(&start), "create start event");
   check_cuda(cudaEventCreate(&stop), "create stop event");
 
-  launch(shape, threads, vpt, outPtr, aPtr, bPtr, nbytes, repeats, cyclePtr);
+  launch(
+      shape,
+      threads,
+      vpt,
+      outPtr,
+      fwdPtr,
+      aPtr,
+      bPtr,
+      nbytes,
+      repeats,
+      cyclePtr);
   check_cuda(cudaGetLastError(), "warmup launch");
   check_cuda(cudaDeviceSynchronize(), "warmup synchronize");
 
   check_cuda(cudaEventRecord(start), "record start");
   for (int iteration = 0; iteration < iterations; ++iteration) {
-    launch(shape, threads, vpt, outPtr, aPtr, bPtr, nbytes, repeats, cyclePtr);
+    launch(
+        shape,
+        threads,
+        vpt,
+        outPtr,
+        fwdPtr,
+        aPtr,
+        bPtr,
+        nbytes,
+        repeats,
+        cyclePtr);
     check_cuda(cudaGetLastError(), "benchmark launch");
   }
   check_cuda(cudaEventRecord(stop), "record stop");
