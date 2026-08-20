@@ -124,8 +124,19 @@ struct MultimemNvlTransportDevice {
   __device__ __forceinline__ void signal_internal_scalar(
       uint64_t signal_id,
       uint64_t value) const {
-    auto* signal = internal_multimem_signal_ptr(signal_id);
     comms::device::fence_acq_rel_sys();
+    signal_internal_scalar_prefenced<op>(signal_id, value);
+  }
+
+  template <SignalOp op>
+  __device__ __forceinline__ void signal_internal_scalar_prefenced(
+      uint64_t signal_id,
+      uint64_t value) const {
+    // The caller must have already issued the required system-scope fence.
+    // When the signal publishes data produced by a cooperative group, the
+    // caller must also synchronize that group after the fence and before any
+    // thread invokes this helper.
+    auto* signal = internal_multimem_signal_ptr(signal_id);
     if constexpr (op == SignalOp::SIGNAL_SET) {
       detail::multimem_store_release_sys_u64(&signal->signal_, value);
     } else {
