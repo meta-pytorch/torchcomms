@@ -544,6 +544,14 @@ class MultiPeerIbTransportBase {
   }
 
   /**
+   * @return Logical IB channels per peer; device code requires
+   * group_id < this. Cross-validated across ranks at materialization.
+   */
+  int maxNumChannels() const {
+    return config_.max_num_channels;
+  }
+
+  /**
    * registerBuffer - Register a user GPU buffer for RDMA, refcounted per
    * allocation. Containment fast-path returns cached per-NIC lkeys without any
    * driver call; on a miss it resolves the allocation, exports a DMA-BUF, and
