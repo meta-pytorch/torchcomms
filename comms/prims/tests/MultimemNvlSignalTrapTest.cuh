@@ -14,6 +14,7 @@ enum class NvlSignalTrapCase : uint32_t {
   PerPeerGroupTooSmall,
   WaitTimeout,
   ZeroRound,
+  SignalsPerChannelMismatch,
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);

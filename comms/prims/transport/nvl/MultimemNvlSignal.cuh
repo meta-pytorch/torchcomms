@@ -137,6 +137,10 @@ __device__ __forceinline__ void validate_common(
   if (validRankCount && transport.nvlRanks < 64) {
     validRankMask = (uint64_t{1} << transport.nvlRanks) - 1;
   }
+  const uint64_t expectedSignalsPerChannel = validRankCount
+      ? static_cast<uint64_t>(3) * static_cast<uint64_t>(transport.nvlRanks) +
+          static_cast<uint64_t>(4) * transport.pipelineDepth
+      : 0;
   if (!validRankCount || transport.nvlRank < 0 ||
       transport.nvlRank >= transport.nvlRanks ||
       participants.publisherMask == 0 || participants.waiterMask == 0 ||
@@ -146,7 +150,7 @@ __device__ __forceinline__ void validate_common(
       participants.expectedArrivals !=
           static_cast<uint32_t>(__popcll(participants.publisherMask)) ||
       round.channel >= transport.maxChannels || round.value == 0 ||
-      transport.signalsPerChannel == 0) {
+      transport.signalsPerChannel != expectedSignalsPerChannel) {
     printf(
         "NVL signal invalid geometry: rank=%d ranks=%d channel=%u "
         "round=%llu maxChannels=%u publishers=%llu waiters=%llu arrivals=%u\n",
