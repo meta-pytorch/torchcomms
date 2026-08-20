@@ -256,6 +256,28 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
   storeConfiguration(std::make_shared<const Configuration>());
 }
 
+CommsLogStream::CommsLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level,
+    bool fatal)
+    : logger_(logger), location_(location), level_(level), fatal_(fatal) {}
+
+CommsLogStream::~CommsLogStream() {
+  const auto message = stream_.str();
+  if (fatal_) {
+    logger_.flush();
+    spdlog::shutdown();
+    logger_.logFatal(location_, message);
+    std::abort();
+  }
+  logger_.log(location_, level_, message);
+}
+
+std::ostream& CommsLogStream::stream() {
+  return stream_;
+}
+
 std::string_view CommsSpdlogLogger::getLevelName(
     spdlog::level::level_enum level) {
   return getSpdlogLevelName(level);

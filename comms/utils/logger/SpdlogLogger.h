@@ -3,9 +3,12 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -22,6 +25,7 @@
 #include <spdlog/spdlog.h>
 
 #include "comms/utils/logger/LogTypes.h"
+#include "comms/utils/logger/RateLimit.h"
 
 namespace meta::comms::logger {
 
@@ -135,6 +139,29 @@ class CommsSpdlogLogger {
   std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink_;
   std::shared_ptr<spdlog::logger> synchronousLogger_;
   ConfigurationStorage configuration_;
+};
+
+class CommsLogStream {
+ public:
+  CommsLogStream(
+      CommsSpdlogLogger& logger,
+      spdlog::source_loc location,
+      spdlog::level::level_enum level,
+      bool fatal);
+  ~CommsLogStream();
+  CommsLogStream(const CommsLogStream&) = delete;
+  CommsLogStream& operator=(const CommsLogStream&) = delete;
+  CommsLogStream(CommsLogStream&&) = delete;
+  CommsLogStream& operator=(CommsLogStream&&) = delete;
+
+  std::ostream& stream();
+
+ private:
+  CommsSpdlogLogger& logger_;
+  spdlog::source_loc location_;
+  spdlog::level::level_enum level_;
+  bool fatal_;
+  std::ostringstream stream_;
 };
 
 CommsSpdlogLogger& getSpdlogLogger();
@@ -258,3 +285,128 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 #define COMMS_LOG(level, ...) COMMS_LOG_##level(__VA_ARGS__)
 #define COMMS_LOG_NAMED(logger_name, level, ...) \
   COMMS_LOG_NAMED_##level(logger_name, __VA_ARGS__)
+
+#define COMMS_LOG_NAMED_STREAM_IMPL(                                  \
+    logger_name, spdlog_level, fatal, condition)                      \
+  if (auto& _comms_stream_logger = []() -> auto& {                    \
+        static auto& logger =                                         \
+            ::meta::comms::logger::getSpdlogLogger(logger_name);      \
+        return logger;                                                \
+      }();                                                            \
+      (!(fatal) && !_comms_stream_logger.should_log(spdlog_level)) || \
+      !(condition)) {                                                 \
+  } else                                                              \
+    ::meta::comms::logger::CommsLogStream(                            \
+        _comms_stream_logger,                                         \
+        ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION},    \
+        spdlog_level,                                                 \
+        fatal)                                                        \
+        .stream()
+
+#define COMMS_LOG_NAMED_STREAM_DBG_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                \
+      logger_name, ::spdlog::level::debug, false, condition)
+#define COMMS_LOG_NAMED_STREAM_DBG5_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                 \
+      logger_name, ::spdlog::level::trace, false, condition)
+#define COMMS_LOG_NAMED_STREAM_INFO_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                 \
+      logger_name, ::spdlog::level::info, false, condition)
+#define COMMS_LOG_NAMED_STREAM_WARN_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                 \
+      logger_name, ::spdlog::level::warn, false, condition)
+#define COMMS_LOG_NAMED_STREAM_WARNING_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_WARN_IF(logger_name, condition)
+#define COMMS_LOG_NAMED_STREAM_ERR_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                \
+      logger_name, ::spdlog::level::err, false, condition)
+#define COMMS_LOG_NAMED_STREAM_CRITICAL_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                     \
+      logger_name, ::spdlog::level::critical, false, condition)
+#define COMMS_LOG_NAMED_STREAM_FATAL_IF(logger_name, condition) \
+  COMMS_LOG_NAMED_STREAM_IMPL(                                  \
+      logger_name, ::spdlog::level::critical, true, condition)
+
+#define COMMS_LOG_NAMED_STREAM_IF_IMPL(logger_name, level, condition) \
+  COMMS_LOG_NAMED_STREAM_##level##_IF(logger_name, condition)
+#define COMMS_LOG_NAMED_STREAM_IF(logger_name, level, condition) \
+  COMMS_LOG_NAMED_STREAM_IF_IMPL(logger_name, level, condition)
+#define COMMS_LOG_NAMED_STREAM(logger_name, level) \
+  COMMS_LOG_NAMED_STREAM_IF(logger_name, level, true)
+#define COMMS_LOG_STREAM(level) COMMS_LOG_NAMED_STREAM("comms", level)
+
+/*
+ * The interval is fixed on first use at each expansion site. Disabled levels
+ * do not consume the rate-limit budget.
+ */
+#define COMMS_LOG_NAMED_STREAM_EVERY_MS(logger_name, level, ms)            \
+  COMMS_LOG_NAMED_STREAM_IF(                                               \
+      logger_name, level, [_comms_log_stream_every_ms = (ms)] {            \
+        static ::meta::comms::logger::IntervalRateLimiter                  \
+            comms_log_stream_rate_limiter(                                 \
+                1, std::chrono::milliseconds(_comms_log_stream_every_ms)); \
+        return comms_log_stream_rate_limiter.check();                      \
+      }())
+#define COMMS_LOG_STREAM_EVERY_MS(level, ms) \
+  COMMS_LOG_NAMED_STREAM_EVERY_MS("comms", level, ms)
+
+#define COMMS_LOGGER_STREAM_IMPL(                                     \
+    logger_expression, spdlog_level, fatal, condition)                \
+  if (auto& _comms_stream_logger = (logger_expression);               \
+      (!(fatal) && !_comms_stream_logger.should_log(spdlog_level)) || \
+      !(condition)) {                                                 \
+  } else                                                              \
+    ::meta::comms::logger::CommsLogStream(                            \
+        _comms_stream_logger,                                         \
+        ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION},    \
+        spdlog_level,                                                 \
+        fatal)                                                        \
+        .stream()
+
+#define COMMS_LOGGER_STREAM_DBG_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                      \
+      logger_expression, ::spdlog::level::debug, false, condition)
+#define COMMS_LOGGER_STREAM_INFO_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                       \
+      logger_expression, ::spdlog::level::info, false, condition)
+#define COMMS_LOGGER_STREAM_WARN_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                       \
+      logger_expression, ::spdlog::level::warn, false, condition)
+#define COMMS_LOGGER_STREAM_WARNING_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_WARN_IF(logger_expression, condition)
+#define COMMS_LOGGER_STREAM_ERR_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                      \
+      logger_expression, ::spdlog::level::err, false, condition)
+#define COMMS_LOGGER_STREAM_CRITICAL_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                           \
+      logger_expression, ::spdlog::level::critical, false, condition)
+#define COMMS_LOGGER_STREAM_FATAL_IF(logger_expression, condition) \
+  COMMS_LOGGER_STREAM_IMPL(                                        \
+      logger_expression, ::spdlog::level::critical, true, condition)
+
+#define COMMS_LOGGER_STREAM_IF_IMPL(logger_expression, level, condition) \
+  COMMS_LOGGER_STREAM_##level##_IF(logger_expression, condition)
+#define COMMS_LOGGER_STREAM_IF(logger_expression, level, condition) \
+  COMMS_LOGGER_STREAM_IF_IMPL(logger_expression, level, condition)
+#define COMMS_LOGGER_STREAM(logger_expression, level) \
+  COMMS_LOGGER_STREAM_IF(logger_expression, level, true)
+
+#define COMMS_LOGGER_STREAM_EVERY_MS(logger_expression, level, ms)            \
+  COMMS_LOGGER_STREAM_IF(                                                     \
+      logger_expression, level, [_comms_logger_stream_every_ms = (ms)] {      \
+        static ::meta::comms::logger::IntervalRateLimiter                     \
+            comms_logger_stream_rate_limiter(                                 \
+                1, std::chrono::milliseconds(_comms_logger_stream_every_ms)); \
+        return comms_logger_stream_rate_limiter.check();                      \
+      }())
+
+#define COMMS_LOGGER_STREAM_FIRST_N(logger_expression, level, n) \
+  COMMS_LOGGER_STREAM_IF(logger_expression, level, [&] {         \
+    struct comms_logger_stream_first_n_tag {};                   \
+    return ::meta::comms::logger::firstNExact<                   \
+        comms_logger_stream_first_n_tag>(n);                     \
+  }())
+
+#define COMMS_LOG_STREAM_FIRST_N(level, n) \
+  COMMS_LOGGER_STREAM_FIRST_N(             \
+      ::meta::comms::logger::getSpdlogLogger(), level, n)

@@ -3,12 +3,13 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 
 #include <algorithm>
+#include <utility>
 
 #include <folly/Unit.h>
 #include <folly/json.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/CommsMaybeChecks.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 #include "comms/utils/trainer/TrainerContext.h"
 
 namespace meta::comms::colltrace {
@@ -17,7 +18,8 @@ namespace {
 CommsMaybeVoid enqueuePendingColls(
     folly::MPMCQueue<std::shared_ptr<CollRecord>>& mpmcQueue,
     std::deque<std::shared_ptr<CollRecord>>& pendingQueue,
-    int64_t maxReadCount) noexcept {
+    int64_t maxReadCount,
+    logger::CommsSpdlogLogger& logger) noexcept {
   std::shared_ptr<CollRecord> nextEnqueue;
   int readCount{0};
   while (readCount < maxReadCount && mpmcQueue.read(nextEnqueue)) {
@@ -25,12 +27,9 @@ CommsMaybeVoid enqueuePendingColls(
     ++readCount;
   }
   if (readCount == maxReadCount) {
-    XLOG_FIRST_N(
-        ERR,
-        2,
-        "CommDumpPlugin: Read ",
-        readCount,
-        " pending colls, but queue is still not empty");
+    COMMS_LOGGER_STREAM_FIRST_N(logger, ERR, 2)
+        << "CommDumpPlugin: Read " << readCount
+        << " pending colls, but queue is still not empty";
     return folly::makeUnexpected(CommsError(
         "CommDumpPlugin: Read " + std::to_string(readCount) +
             " pending colls, but queue is still not empty",
@@ -41,7 +40,9 @@ CommsMaybeVoid enqueuePendingColls(
 } // namespace
 
 CommDumpPlugin::CommDumpPlugin(CommDumpConfig config)
-    : config_(config), newPendingColls_(config_.pendingCollSize) {}
+    : config_(std::move(config)),
+      logger_(&logger::getSpdlogLogger(config_.loggerName)),
+      newPendingColls_(config_.pendingCollSize) {}
 
 std::string_view CommDumpPlugin::getName() const noexcept {
   return kCommDumpPluginName;
@@ -56,7 +57,8 @@ CommsMaybeVoid CommDumpPlugin::beforeCollKernelScheduled(
 CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
     CollTraceEvent& curEvent) noexcept {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Got event with null collRecord in CommDumpPlugin");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Got event with null collRecord in CommDumpPlugin";
     return folly::makeUnexpected(CommsError(
         "CollTraceEvent does not contain valid record", commInternalError));
   }
@@ -65,7 +67,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
   auto success = newPendingColls_.write(curEvent.collRecord);
 
   if (!success) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Failed to enqueue event in CommDumpPlugin");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Failed to enqueue event in CommDumpPlugin";
     return folly::makeUnexpected(CommsError(
         "Failed to enqueue event in CommDumpPlugin", commInternalError));
   }
@@ -76,7 +79,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
 CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
     CollTraceEvent& curEvent) noexcept {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Got event with null collRecord in CommDumpPlugin");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Got event with null collRecord in CommDumpPlugin";
     return folly::makeUnexpected(CommsError(
         "CollTraceEvent does not contain valid record", commInternalError));
   }
@@ -88,7 +92,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
       enqueuePendingColls(
           newPendingColls_,
           lockedCollTraceDump->pendingColls,
-          config_.pendingCollSize + 1));
+          config_.pendingCollSize + 1,
+          *logger_));
 
   // Find the matching pending collective.
   // With deferred graph polling, completions may arrive out of enqueue order
@@ -100,10 +105,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
       });
 
   if (it == lockedCollTraceDump->pendingColls.end()) [[unlikely]] {
-    XLOG_FIRST_N(
-        ERR,
-        2,
-        "Could not find matching collRecord in pendingColls in CommDumpPlugin");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Could not find matching collRecord in pendingColls in CommDumpPlugin";
     return folly::makeUnexpected(CommsError(
         "Could not find matching collRecord in pendingColls in CommDumpPlugin",
         commInternalError));
@@ -124,7 +127,8 @@ CommsMaybeVoid CommDumpPlugin::collEventProgressing(
 CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
     CollTraceEvent& curEvent) noexcept {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
-    XLOG_FIRST_N(ERR, 2, "Got event with null collRecord in CommDumpPlugin");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Got event with null collRecord in CommDumpPlugin";
     return folly::makeUnexpected(CommsError(
         "CollTraceEvent does not contain valid record", commInternalError));
   }
@@ -136,7 +140,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
       enqueuePendingColls(
           newPendingColls_,
           lockedCollTraceDump->pendingColls,
-          config_.pendingCollSize + 1));
+          config_.pendingCollSize + 1,
+          *logger_));
 
   // ----- Find and move from currentColls to pastColls -----
   auto it = std::find_if(
@@ -147,10 +152,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
       });
 
   if (it == lockedCollTraceDump->currentColls.end()) [[unlikely]] {
-    XLOG_FIRST_N(
-        ERR,
-        2,
-        "Could not find matching collRecord in currentColls during coll end");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Could not find matching collRecord in currentColls during coll end";
     return folly::makeUnexpected(CommsError(
         "Could not find matching collRecord in currentColls during coll end",
         commInternalError));
@@ -198,10 +201,8 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
         collTraceDump_.wlock(config_.dumpLockAcquireTimeout);
 
     if (lockedCollTraceDump.isNull()) {
-      XLOG_FIRST_N(
-          ERR,
-          2,
-          "Failed to acquire lock for collTraceDump_ in CommDumpPlugin dump");
+      COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+          << "Failed to acquire lock for collTraceDump_ in CommDumpPlugin dump";
       return folly::makeUnexpected(CommsError(
           "Failed to acquire lock for collTraceDump_ in CommDumpPlugin dump",
           commInternalError));
@@ -212,17 +213,16 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
         enqueuePendingColls(
             newPendingColls_,
             lockedCollTraceDump->pendingColls,
-            config_.pendingCollSize + 1));
+            config_.pendingCollSize + 1,
+            *logger_));
   }
 
   auto readLockedCollTraceDump =
       collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
 
   if (readLockedCollTraceDump.isNull()) {
-    XLOG_FIRST_N(
-        ERR,
-        2,
-        "Failed to acquire read lock for collTraceDump_ in CommDumpPlugin dump");
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
+        << "Failed to acquire read lock for collTraceDump_ in CommDumpPlugin dump";
     return folly::makeUnexpected(CommsError(
         "Failed to acquire read lock for collTraceDump_ in CommDumpPlugin dump",
         commInternalError));

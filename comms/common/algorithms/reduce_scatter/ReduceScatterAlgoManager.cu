@@ -2,6 +2,8 @@
 
 #include "comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h"
 
+#include <folly/logging/xlog.h>
+
 namespace meta::comms {
 
 ReduceScatterAlgoManager::ReduceScatterAlgoManager(
