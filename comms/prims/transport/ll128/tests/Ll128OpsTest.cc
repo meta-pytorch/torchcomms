@@ -1081,4 +1081,71 @@ TEST_F(Ll128OpsTestFixture, AbortDeviceEnabledState) {
   EXPECT_TRUE(enabled.isEnabled());
 }
 
+// =============================================================================
+// Abort regression (Phase 1): forward must not touch the successor's slot.
+//
+// Ben's review point on D116111994: Phase 3 stamps the *current* per-packet
+// flag onto whatever `v0`/`v1` happen to hold, so an ungated store ships a
+// stale but structurally valid packet. The successor cannot distinguish that
+// from real data, accepts it, and never lapses on its own deadline -- one
+// rank's abort silently suppresses fault detection on the next.
+//
+// The local buffer is deliberately left as READY_TO_WRITE, so Phase 1 can never
+// be satisfied and the device deadline is the only exit.
+// =============================================================================
+TEST_F(Ll128OpsTestFixture, ForwardAbortLeavesRemoteSlotUntouched) {
+  constexpr size_t kNbytes = 4096;
+  constexpr auto kTimeout = std::chrono::milliseconds{200};
+  const size_t ll128BufSize = ll128_buffer_size(kNbytes);
+
+  DeviceBuffer dstBuffer(kNbytes);
+  DeviceBuffer localLl128Buffer(ll128BufSize);
+  DeviceBuffer remoteLl128Buffer(ll128BufSize);
+
+  auto* dst_d = static_cast<char*>(dstBuffer.get());
+  auto* local_ll128 = static_cast<Ll128Packet*>(localLl128Buffer.get());
+  auto* remote_ll128 = static_cast<Ll128Packet*>(remoteLl128Buffer.get());
+
+  // Local stays unfilled: every flag is READY_TO_WRITE, never the value the
+  // Phase 1 poll waits for, so the poll can only end on the deadline.
+  CUDACHECK_TEST(cudaMemset(local_ll128, kLl128MemsetInitByte, ll128BufSize));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, kNbytes));
+
+  // A recognizable pattern in the remote buffer, so "untouched" is checkable
+  // byte for byte rather than merely "not the forwarded payload".
+  std::vector<char> remoteBefore(ll128BufSize);
+  for (size_t i = 0; i < ll128BufSize; ++i) {
+    remoteBefore[i] = static_cast<char>(0xA5);
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      remote_ll128, remoteBefore.data(), ll128BufSize, cudaMemcpyHostToDevice));
+
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(kTimeout);
+
+  const auto start = std::chrono::steady_clock::now();
+  test::test_ll128_forward_abort_leaves_remote_untouched(
+      dst_d,
+      kNbytes,
+      local_ll128,
+      remote_ll128,
+      abort.getDeviceHandle(),
+      /*num_blocks=*/1,
+      /*block_size=*/256);
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+
+  EXPECT_TRUE(abort.isTimedOut())
+      << "the deadline, not anything else, must be what ended the forward";
+  EXPECT_LT(elapsed, kTimeout + std::chrono::seconds(5));
+
+  std::vector<char> remoteAfter(ll128BufSize);
+  CUDACHECK_TEST(cudaMemcpy(
+      remoteAfter.data(), remote_ll128, ll128BufSize, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < ll128BufSize; ++i) {
+    ASSERT_EQ(remoteAfter[i], remoteBefore[i])
+        << "aborted forward wrote to the successor's slot at byte " << i;
+  }
+}
+
 } // namespace comms::prims
