@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
@@ -12,6 +13,8 @@
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::test {
+
+using comms::fault_tolerance::testing::testAbortDevice;
 
 namespace {
 
@@ -58,10 +61,10 @@ __global__ void sendRecvKernel(
     std::size_t nbytes,
     int activeBlocks,
     std::size_t maxSignalBytes,
-    bool send) {
+    bool send,
+    Timeout timeout) {
   (void)activeBlocks; // master's detail::send/recv has no active_blocks param
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
     detail::send<P2pIbgdaTransportDevice, Memcpy, Proto>(
@@ -107,7 +110,13 @@ void launchLLSendRecv(
     int numBlocks,
     int blockSize) {
   sendRecvKernel<protocol::LL><<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+      transport,
+      buffer,
+      nbytes,
+      activeBlocks,
+      maxSignalBytes,
+      send,
+      testAbortDevice());
   throwOnLaunchError("sendRecvKernel<protocol::LL>");
 }
 
@@ -121,7 +130,13 @@ void launchSimpleSendRecv(
     int numBlocks,
     int blockSize) {
   sendRecvKernel<protocol::Simple><<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, activeBlocks, maxSignalBytes, send);
+      transport,
+      buffer,
+      nbytes,
+      activeBlocks,
+      maxSignalBytes,
+      send,
+      testAbortDevice());
   throwOnLaunchError("sendRecvKernel<protocol::Simple>");
 }
 

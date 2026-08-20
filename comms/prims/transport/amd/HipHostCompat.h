@@ -36,7 +36,12 @@
 
 #if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
 #include <hip/hip_runtime.h>
-#define __trap() abort()
+// Qualified: unqualified `abort` binds to any enclosing declaration of that
+// name before it reaches the global one, and fault-tolerance code names its
+// handle `abort` by convention, so an expansion inside such a scope would
+// resolve to the handle and fail to compile rather than trap. Must stay
+// character-identical to the definition in `HipDeviceCompat.h`.
+#define __trap() ::abort()
 #endif
 
 // ---------------------------------------------------------------------------

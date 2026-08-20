@@ -8,8 +8,10 @@
 #endif
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
@@ -491,6 +493,52 @@ struct AbortDevice final {
    */
   uint64_t deadlineCycles_{0};
 };
+
+/**
+ * Debug guard for collective onboarding.
+ *
+ * Logs once when `comm` has fault tolerance enabled but `handle` is disabled —
+ * the signature of a collective that never wired the communicator abort into
+ * its launch parameters, and so silently has no fault tolerance.
+ *
+ * Host-side by necessity: on the device a disabled handle is just a null state
+ * pointer, which is indistinguishable between "FT is off for this
+ * communicator" and "the collective forgot to pass the handle". Only the host
+ * can see both sides. Compiled out in optimized builds.
+ */
+inline void debugCheckAbortWired(
+    const Abort* comm,
+    const AbortDevice& handle,
+    const char* opName) {
+#ifndef NDEBUG
+  if (comm == nullptr || !comm->isEnabled() || handle.isEnabled()) {
+    return;
+  }
+  // Shared, not `thread_local`: this reports a static wiring mistake in a
+  // collective, so the second thread to launch it has nothing new to say. A
+  // per-thread flag would repeat the same diagnostic once per thread in a pool.
+  //
+  // Marked library-local because this is an inline function: under
+  // `-fvisibility-inlines-hidden` each shared object gets its own copy, so the
+  // dedup is per-DSO rather than per-process. That is fine here -- the worst
+  // case is one extra line in a debug build, and it still collapses the
+  // per-thread repetition this exists to prevent.
+  /* library-local */ static std::atomic<bool> warned{false};
+  if (!warned.exchange(true, std::memory_order_relaxed)) {
+    fprintf(
+        stderr,
+        "comms fault tolerance: %s launched with a disabled AbortDevice while "
+        "the communicator has fault tolerance enabled. This collective has no "
+        "device deadline and cannot be aborted. See the Collective Enablement "
+        "notes in comms/common/fault_tolerance/FAULT_TOLERANCE.md\n",
+        opName);
+  }
+#else
+  (void)comm;
+  (void)handle;
+  (void)opName;
+#endif
+}
 
 inline AbortDevice Abort::getDeviceHandle() const {
   if (state_ == nullptr) {

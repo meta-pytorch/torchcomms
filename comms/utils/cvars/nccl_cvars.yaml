@@ -1388,14 +1388,6 @@ cvars:
      Maximum bytes per signaled sub-chunk for the cthierarchical_ring NVLink
      fanout phase. 0 means each block signals once per per-block staging slot.
 
- - name        : NCCL_CTRAN_HIER_AG_TIMEOUT_MS
-   type        : float
-   default     : 30000.0
-   description : |-
-     Timeout in milliseconds for the cthierarchical_ring AllGather kernel.
-     0 means no timeout.
-
-
  - name        : NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS
    type        : int
    default     : 32

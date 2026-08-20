@@ -13,7 +13,6 @@
 #endif
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/AllToAllv.h"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -289,11 +288,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     const void* sendBuff_d = sendBuffer.get();
 
-    // Pre-build Timeout once to avoid per-call
-    // cudaGetDevice/cudaDeviceGetAttribute overhead.
-    int device = 0;
-    CUDA_CHECK(cudaGetDevice(&device));
-    Timeout timeout_config = makeTimeout(0, device);
+    Timeout timeout_config;
 
     CudaEvent start, stop;
     const int nIter = 100;

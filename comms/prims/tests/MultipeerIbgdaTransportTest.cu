@@ -7,12 +7,15 @@
 #include <stdexcept>
 #include <string>
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/ibgda/IbgdaWarpProxy.cuh"
 #endif
 
 namespace comms::prims::test {
+
+using comms::fault_tolerance::testing::testAbortDevice;
 
 // =============================================================================
 // Kernel: Put data + signal remote (adaptive-routing safe, with NIC flush)
@@ -359,9 +362,9 @@ __global__ void sendRecvKernel(
     void* buffer,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    bool send) {
+    bool send,
+    Timeout timeout) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
     transport->send(group, buffer, nbytes, maxSignalBytes, timeout);
@@ -376,9 +379,9 @@ __global__ void twoCallSendThenRecvKernel(
     void* recvBuffer,
     std::size_t firstBytes,
     std::size_t secondBytes,
-    std::size_t maxSignalBytes) {
+    std::size_t maxSignalBytes,
+    Timeout timeout) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   auto* sendBytes = static_cast<const char*>(sendBuffer);
   auto* recvBytes = static_cast<char*>(recvBuffer);
@@ -400,7 +403,7 @@ void testSendRecv(
     int numBlocks,
     int blockSize) {
   sendRecvKernel<<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, maxSignalBytes, send);
+      transport, buffer, nbytes, maxSignalBytes, send, testAbortDevice());
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -423,7 +426,8 @@ void testTwoCallSendThenRecv(
       recvBuffer,
       firstBytes,
       secondBytes,
-      maxSignalBytes);
+      maxSignalBytes,
+      testAbortDevice());
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -444,8 +448,7 @@ __global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
         bool send,
         uint32_t queueDepth,
         uint64_t* queueFullCount,
-        uint64_t timeoutCycles) {
-  Timeout timeout(timeoutCycles);
+        Timeout timeout) {
   timeout.start();
   auto block = make_block_group();
   __shared__ WarpProxyTest::SharedState sharedState;
@@ -472,9 +475,9 @@ __global__ void progressSendRecvKernel(
     std::size_t nbytes,
     std::size_t maxSignalBytes,
     bool send,
-    uint64_t* waitingCount) {
+    uint64_t* waitingCount,
+    Timeout timeout) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   uint64_t waits = 0;
   if (send) {
@@ -564,9 +567,9 @@ __global__ void registeredSendRecvKernel(
     bool blocking,
     bool overwriteAfterDrain,
     uint8_t overwriteValue,
-    bool zeroByteAfterPosted) {
+    bool zeroByteAfterPosted,
+    Timeout timeout) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
     if (blocking) {
@@ -616,9 +619,9 @@ __global__ void mixedRegisteredAndStagedSendRecvKernel(
     std::size_t secondBytes,
     std::size_t thirdBytes,
     std::size_t maxSignalBytes,
-    bool send) {
+    bool send,
+    Timeout timeout) {
   auto group = make_block_group();
-  Timeout timeout(kDefaultDeviceTimeoutCycles);
   timeout.start();
   if (send) {
     (void)postRegisteredSend(
@@ -708,8 +711,7 @@ void testWarpProxySendRecv(
     std::size_t maxSignalBytes,
     bool send,
     uint32_t queueDepth,
-    uint64_t* queueFullCount,
-    uint64_t timeoutCycles) {
+    uint64_t* queueFullCount) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)buffer;
@@ -718,7 +720,6 @@ void testWarpProxySendRecv(
   (void)send;
   (void)queueDepth;
   (void)queueFullCount;
-  (void)timeoutCycles;
   throw std::runtime_error("warp proxy is NVIDIA-only");
 #else
   warpProxySendRecvKernel<<<1, WarpProxyTest::kBlockThreads>>>(
@@ -729,7 +730,7 @@ void testWarpProxySendRecv(
       send,
       queueDepth,
       queueFullCount,
-      timeoutCycles);
+      testAbortDevice());
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -759,7 +760,13 @@ void testProgressSendRecv(
   throw std::runtime_error("progress send/recv is NVIDIA-only");
 #else
   progressSendRecvKernel<<<numBlocks, blockSize>>>(
-      transport, buffer, nbytes, maxSignalBytes, send, waitingCount);
+      transport,
+      buffer,
+      nbytes,
+      maxSignalBytes,
+      send,
+      waitingCount,
+      testAbortDevice());
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -838,7 +845,8 @@ void testRegisteredSendRecv(
       blocking,
       overwriteAfterDrain,
       overwriteValue,
-      zeroByteAfterPosted);
+      zeroByteAfterPosted,
+      testAbortDevice());
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -879,7 +887,8 @@ void testMixedRegisteredAndStagedSendRecv(
       secondBytes,
       thirdBytes,
       maxSignalBytes,
-      send);
+      send,
+      testAbortDevice());
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

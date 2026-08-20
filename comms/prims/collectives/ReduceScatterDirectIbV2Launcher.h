@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
@@ -25,7 +26,10 @@ struct DirectReduceScatterIbV2LaunchParams {
   IbgdaLocalBuffer input_reg{};
   int num_blocks{2};
   int block_threads{1024};
-  float timeout_ms{0.0f};
+  // Abort handle for the device waits, owned by the caller's communicator and
+  // valid for the life of the launch. Default-constructed means no deadline and
+  // no abort, so the waits run unbounded.
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   P2pIbTransportDevice peers[kDirectReduceScatterIbV2MaxRanks]{};
 };

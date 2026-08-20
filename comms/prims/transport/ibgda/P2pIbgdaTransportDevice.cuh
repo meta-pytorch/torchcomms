@@ -1084,7 +1084,7 @@ class P2pIbgdaTransportDevice {
             DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
             doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          (void)FT_ABORT_CHECK(
               timeout,
               "wait_local_on_qp timed out (ticket=%llu)",
               static_cast<unsigned long long>(ticket));
@@ -1251,7 +1251,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(signalBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        (void)FT_ABORT_CHECK(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
@@ -1272,7 +1272,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(counterBuf.ptr);
       while (current < expected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        (void)FT_ABORT_CHECK(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
