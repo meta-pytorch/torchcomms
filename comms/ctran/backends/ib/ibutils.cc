@@ -5,6 +5,7 @@
 #include <folly/Singleton.h>
 #include <folly/Synchronized.h>
 #include <folly/init/Init.h>
+#include <cerrno>
 #include <chrono>
 #include <thread>
 
@@ -54,6 +55,11 @@ commResult_t IbUtils::pollForAsyncEvent(
     // there is an async event read further down
     ret = verbsPtr->ibv_poll_async_fd(
         &fdSet, 1, NCCL_CTRAN_IB_ASYNC_EVENT_POLL_INTERVAL_MS);
+    if (ret < 0 && errno == EINTR) {
+      // A signal is benign; treat it as an empty poll so the loop retries
+      // without counting as a failure or triggering link-down detection.
+      ret = 0;
+    }
     if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
       auto singleton = CtranIbSingleton::getInstance();
       CHECK_VALID_IB_SINGLETON(singleton);
