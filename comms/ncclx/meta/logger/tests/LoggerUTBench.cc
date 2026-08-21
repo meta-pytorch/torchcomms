@@ -13,8 +13,8 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/DataTableWrapper.h"
 #include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/Logger.h"
 
 static constexpr int kGlobalRank = 5;
 static constexpr int kNranks = 16;
@@ -54,8 +54,7 @@ class NcclLoggerBenchEnv : public testing::Environment,
     // Set up dummy values for environment variables for Scuba test and also
     // call initEnv.
     ScubaLoggerTestMixin::SetUp();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
+    DataTableWrapper::shutdown();
   }
 
   void TearDown() override {}
@@ -69,9 +68,11 @@ class NcclLoggerBenchTest : public ::testing::Test {
   void SetUp() override {
     totalRecords = 0;
     logTmpFile = std::make_unique<folly::test::TemporaryFile>();
+    DataTableWrapper::init();
   }
 
   void TearDown() override {
+    DataTableWrapper::shutdown();
     auto logBytesEnd = getLogFileSize();
     auto loggedBytes = getLogFileSize() - logBytesStart;
     LOG(INFO) << "====== Total records ("
@@ -89,10 +90,6 @@ class NcclLoggerBenchTest : public ::testing::Test {
 
   std::string getTmpLogFile() {
     return logTmpFile->path().string();
-  }
-
-  void finishLogging() {
-    NcclLogger::close();
   }
 
   void setLogType(LogType type) {
@@ -177,14 +174,12 @@ TEST_F(NcclLoggerBenchTest, CommBenchScubaLog) {
   setLogType(LogType::SCUBA);
   initNcclLogger();
   ncclLoggerBenchTest();
-  finishLogging();
 }
 
 TEST_F(NcclLoggerBenchTest, CommBenchScubaLogWithEventApi) {
   setLogType(LogType::SCUBA);
   initNcclLogger();
   ncclLoggerBenchTest(true);
-  finishLogging();
 }
 
 TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
@@ -195,7 +190,6 @@ TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
   ncclDebugLevel = -1;
   initNcclLogger();
   ncclLoggerBenchTest();
-  finishLogging();
 }
 
 int main(int argc, char** argv) {

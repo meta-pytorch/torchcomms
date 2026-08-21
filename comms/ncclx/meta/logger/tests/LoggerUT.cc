@@ -20,8 +20,8 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/DataTableWrapper.h"
 #include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
 #include "comms/utils/trainer/TrainerContext.h"
 
@@ -69,8 +69,7 @@ class NcclLoggerTestEnv : public ::testing::Environment {
     setenv("NCCL_DEBUG_LOGGING_ASYNC", "0", 1);
 
     initEnv();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
+    DataTableWrapper::shutdown();
   }
 
   void TearDown() override {}
@@ -87,7 +86,7 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
   void TearDown() override {}
 
   void finishLogging() {
-    NcclLogger::close();
+    DataTableWrapper::shutdown();
   }
 
   void initLogging() {
@@ -95,6 +94,7 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
         make_mock([this]() {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
+    DataTableWrapper::init();
     ncclDebugLevel = -1;
     initNcclLogger();
   }
@@ -382,22 +382,6 @@ TEST_F(NcclLoggerTest, CommConcurrentLog) {
   finishLogging();
 }
 
-// Equivalent to recordStart/End with a logger event.
-// NcclLogger::recordStart(
-//     std::make_unique<CommEvent>(
-//         &comm->logMetaData,
-//         std::string(kncclCommFinalize) + " START",
-//         ""),
-//     getThreadUniqueId(kncclCommFinalize.data()));
-//
-// code to measusre
-//
-// NcclLogger::recordEnd(
-// std::make_unique<CommEvent>(
-//     &comm->logMetaData,
-//     std::string(kncclCommFinalize) + " COMPLETE",
-//     ""),
-// getThreadUniqueId(kncclCommFinalize.data()));
 TEST_F(NcclLoggerTest, NcclScubaEventRecordStartEnd) {
   folly::test::TemporaryDirectory tmpDir;
   auto scubaLogDirGuard =
