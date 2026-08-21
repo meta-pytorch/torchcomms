@@ -179,11 +179,8 @@ void CtranAllReduceTest::runTestRanksAbsent(
       // warmup
       runAllReduce(kBufferNElem, state, algo);
 
-      state.getBootstrap()->barrierNamed(
-          state.rank,
-          state.nRanks,
-          /*timeoutSeconds=*/4,
-          "after healthy run");
+      state.sharedState->barrierNamed(
+          state.rank, state.nRanks, /*timeoutSeconds=*/4, "after healthy run");
 
       auto workEnqueued = std::make_shared<folly::Baton<>>();
       auto timer = std::async(std::launch::async, [&]() {
@@ -200,7 +197,7 @@ void CtranAllReduceTest::runTestRanksAbsent(
         // Generally speaking, ranks aborting may cause peers to see network
         // errors before local abort signal. This is an inherently racey
         // condition, so we want to avoid any cascading failures from network.
-        state.getBootstrap()->barrierNamed(
+        state.sharedState->barrierNamed(
             state.rank,
             state.nRanks,
             /*timeoutSeconds=*/4,
@@ -218,7 +215,7 @@ void CtranAllReduceTest::runTestRanksAbsent(
           workEnqueued,
           timeout);
 
-      state.getBootstrap()->barrierNamed(
+      state.sharedState->barrierNamed(
           state.rank, state.nRanks, /*timeoutSeconds=*/4, "exit");
     });
   }
@@ -228,16 +225,13 @@ void CtranAllReduceTest::runTestRanksAbsent(
       // warmup
       runAllReduce(kBufferNElem, state, algo);
 
-      state.getBootstrap()->barrierNamed(
-          state.rank,
-          state.nRanks,
-          /*timeoutSeconds=*/4,
-          "after healthy run");
+      state.sharedState->barrierNamed(
+          state.rank, state.nRanks, /*timeoutSeconds=*/4, "after healthy run");
 
-      state.getBootstrap()->barrierNamed(
+      state.sharedState->barrierNamed(
           state.rank, state.nRanks, /*timeoutSeconds=*/4, "after verify hang");
 
-      state.getBootstrap()->barrierNamed(
+      state.sharedState->barrierNamed(
           state.rank, state.nRanks, /*timeoutSeconds=*/4, "exit");
     });
   }

@@ -13,10 +13,12 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/mccl/utils/Utils.h"
 #include "comms/utils/InitFolly.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/Logger.h"
 
@@ -547,22 +549,35 @@ constexpr uint64_t kMultiRankCommId{21};
 constexpr int kMultiRankCommHash{-1};
 constexpr std::string_view kMultiRankCommDesc{"ut_multirank_comm_desc"};
 
-void initCtranCommMultiRank(
-    std::shared_ptr<ctran::testing::IntraProcessBootstrap::State>
-        sharedBootstrapState,
-    CtranComm* ctranComm,
-    int nRanks,
-    int rank,
-    int cudaDev) {
+// Returns a real Bootstrap wrapped in a CtranAdapter (the production bootstrap
+// path), with ranks connecting over loopback via the shared URL table.
+std::unique_ptr<mccl::bootstrap::CtranAdapter> makeBootstrap(
+    PerRankState& state) {
+  auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
+      NCCL_SOCKET_IFNAME,
+      mccl::bootstrap::Options{
+          .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
+  // urls is pre-sized before the threads spawn and each rank writes only its
+  // own index; the barrier publishes the writes.
+  state.sharedState->urls[state.rank] = bootstrap->semi_getInitUrl().get();
+  state.sharedState->barrierNamed(
+      state.rank, state.nRanks, /*timeoutSeconds=*/10, "url-exchange");
+  bootstrap->init(state.sharedState->urls, state.rank, /*uuid=*/0);
+  return std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
+}
+
+void initCtranCommMultiRank(PerRankState& state) {
+  CtranComm* ctranComm = state.ctranComm.get();
+  const int rank = state.rank;
+  const int nRanks = state.nRanks;
+  const int cudaDev = state.cudaDev;
   FB_CUDACHECKTHROW_EX(
       cudaSetDevice(cudaDev),
       rank,
       kMultiRankCommHash,
       std::string(kMultiRankCommDesc));
 
-  ctranComm->bootstrap_ =
-      std::make_unique<ctran::testing::IntraProcessBootstrap>(
-          sharedBootstrapState);
+  ctranComm->bootstrap_ = makeBootstrap(state);
 
   ctranComm->logMetaData_.commId = kMultiRankCommId;
   ctranComm->logMetaData_.commHash = kMultiRankCommHash;
@@ -607,12 +622,7 @@ void workerRoutine(PerRankState& state) {
       state.nRanks,
       state.cudaDev);
 
-  initCtranCommMultiRank(
-      state.sharedBootstrapState,
-      state.ctranComm.get(),
-      state.nRanks,
-      state.rank,
-      state.cudaDev);
+  initCtranCommMultiRank(state);
   FB_CUDACHECKTHROW_EX(
       cudaStreamCreate(&state.stream), state.ctranComm->logMetaData_);
   FB_COMMCHECKTHROW_EX(
@@ -645,6 +655,43 @@ void workerRoutine(PerRankState& state) {
 
 } // namespace
 
+void CtranIntraProcessFixture::SharedState::barrierNamed(
+    int rank,
+    int nRanks,
+    int timeoutSeconds,
+    const std::string& name) {
+  CLOGF(INFO, "rank [{}/{}] barrier '{}' enter", rank, nRanks, name);
+  // Each thread gets its own sense
+  bool local_sense = !sense.load();
+  // Atomically increment the count
+  int arrived = nArrivals.fetch_add(1);
+  if (arrived == nRanks - 1) {
+    // Last thread to arrive: reset count and flip sense
+    nArrivals.store(0);
+    sense.store(local_sense);
+  } else {
+    const auto timeout = std::chrono::seconds(timeoutSeconds);
+    const auto startTs = std::chrono::high_resolution_clock::now();
+    // Spin-wait for sense to change
+    while (sense.load() != local_sense) {
+      auto now = std::chrono::high_resolution_clock::now();
+      if (now - startTs > timeout) {
+        throw ctran::utils::Exception(
+            fmt::format(
+                "rank [{}/{}] barrier '{}' timeout after {}s",
+                rank,
+                nRanks,
+                name,
+                timeoutSeconds),
+            commInternalError);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  CLOGF(INFO, "rank [{}/{}] barrier '{}' leave", rank, nRanks, name);
+}
+
 void CtranIntraProcessFixture::SetUp() {
   // Call base class setup which handles environment variables,
   // CUDA library init, and logging initialization
@@ -658,9 +705,10 @@ void CtranIntraProcessFixture::startWorkers(
   ASSERT_TRUE(aborts.size() == 0 || aborts.size() == nRanks)
       << "must supply either 0 or nRanks number of abort controls";
 
-  // Create shared bootstrap state for all workers
-  auto sharedBootstrapState =
-      std::make_shared<testing::IntraProcessBootstrap::State>();
+  // One shared state for all ranks. Size urls before spawning so per-rank
+  // writes never reallocate it.
+  auto sharedState = std::make_shared<SharedState>();
+  sharedState->urls.resize(nRanks);
 
   // Reserve space to prevent reallocation that would invalidate references
   perRankStates_.reserve(nRanks);
@@ -668,7 +716,7 @@ void CtranIntraProcessFixture::startWorkers(
   for (int i = 0; i < nRanks; ++i) {
     perRankStates_.emplace_back();
     auto& state = perRankStates_.back();
-    state.sharedBootstrapState = sharedBootstrapState;
+    state.sharedState = sharedState;
     state.ctranComm = std::make_unique<CtranComm>(
         aborts.size() == 0
             ? ::comms::fault_tolerance::createAbort(/*enabled=*/false)
