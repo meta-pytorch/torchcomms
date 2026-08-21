@@ -1,10 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include "comms/common/algorithms/AlgoFactory.cuh"
 #include "comms/common/tests/TestBaselineBootstrap.h"
 #include "comms/rcclx/develop/meta/lib/tests/RcclxTestUtils.h"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/logger/CudaLog.h"
 
 using namespace meta::rcclx;
 using namespace meta::comms;
@@ -31,7 +31,8 @@ class AlgoFactoryTest : public RcclxBaseTestFixture {
     ncclComm_t comm{nullptr};
     NCCL_CHECK(
         ncclCommInitRankConfig(&comm, numRanks, commId, globalRank, &config));
-    XLOGF(INFO, "rank {} init done; total ranks: {}", globalRank, numRanks);
+    COMMS_CUDA_LOG(
+        INFO, "rank %d init done; total ranks: %d", globalRank, numRanks);
 
     ASSERT_EQ(numRanks, 8);
     CUDA_CHECK(cudaSetDevice(localRank));

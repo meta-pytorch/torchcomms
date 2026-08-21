@@ -7,7 +7,8 @@
 #include <cstdint>
 
 #include <folly/Unit.h>
-#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace meta::comms::colltrace {
 
@@ -21,7 +22,8 @@ constexpr uint32_t kBacklogCheckPeriod = 256;
 
 LifecycleEventFeedPlugin::LifecycleEventFeedPlugin(
     LifecycleEventFeedConfig config)
-    : commId_(config.commId) {}
+    : commId_(config.commId),
+      logger_(&logger::getSpdlogLogger(config.loggerName)) {}
 
 std::string_view LifecycleEventFeedPlugin::getName() const noexcept {
   return kLifecycleEventFeedPluginName;
@@ -118,7 +120,7 @@ CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
   if (++backlogCheckCounter % kBacklogCheckPeriod == 0) {
     const auto backlog = unreadEvents_.size();
     if (backlog >= kBacklogWarningThreshold) [[unlikely]] {
-      XLOG_EVERY_MS(WARN, 60000)
+      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
           << "LifecycleEventFeedPlugin estimated unread backlog is " << backlog
           << " events for comm " << commId_
           << "; consumer may be stalled and memory will continue to grow";

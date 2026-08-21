@@ -11,17 +11,17 @@
 #include <cuda_runtime.h>
 
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/cvars/nccl_baseline_adapter.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
-#define NCCL_ADAPTER_INFO(fmt, ...)          \
-  XLOGF_IF(                                  \
-      INFO,                                  \
-      logNcclBaselineAdapterInfo,            \
-      "NcclBaselineAdapter INFO CVAR: " fmt, \
-      __VA_ARGS__);
+#define NCCL_ADAPTER_INFO(format, ...)                                        \
+  do {                                                                        \
+    if (logNcclBaselineAdapterInfo) {                                         \
+      COMMS_LOG(INFO, "NcclBaselineAdapter INFO CVAR: " format, __VA_ARGS__); \
+    }                                                                         \
+  } while (false)
 
 namespace nccl_baseline_adapter {
 int64_t ncclLoadParam(
@@ -90,9 +90,9 @@ int64_t ncclLoadParam(
     value = strtoll(strValue, &endptr, 0);
     if (errno || endptr == strValue) {
       value = deftVal;
-      XLOG(WARN) << "NcclBaselineAdapter WARN CVAR: Invalid value \""
-                 << strValue << "\" for CVAR " << env << ", using default \""
-                 << deftVal << "\".";
+      COMMS_LOG_STREAM(WARN)
+          << "NcclBaselineAdapter WARN CVAR: Invalid value \"" << strValue
+          << "\" for CVAR " << env << ", using default \"" << deftVal << "\".";
     } else {
       NCCL_ADAPTER_INFO(
           "{} set by string CVAR map to {}.", env, (long long)value);

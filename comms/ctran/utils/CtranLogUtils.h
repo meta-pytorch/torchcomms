@@ -6,13 +6,23 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LogTypes.h"
+#include "comms/utils/logger/LoggingFormat.h"
 
-#define CTRAN_LOG_SUBSYS(level, subsys, ...) \
-  CTRAN_LOG_IF(level, CLOGF_ENABLED(subsys), __VA_ARGS__)
+#define CTRAN_LOG_SUBSYS(level, subsys, ...)            \
+  CTRAN_LOG_IF(                                         \
+      level,                                            \
+      ::meta::comms::logger::isEnabledSubSystemBitwise( \
+          static_cast<uint64_t>([]() {                  \
+            using namespace ::meta::comms::logger;      \
+            return subsys;                              \
+          }())),                                        \
+      __VA_ARGS__)
 
-// The interval is fixed on first use at each expansion site, matching
-// CLOGF_EVERY_MS; callers must pass a call-site constant.
+/*
+ * The interval is fixed on first use at each expansion site, matching the
+ * legacy Comms logger; callers must pass a call-site constant.
+ */
 #define CTRAN_LOG_EVERY_MS(level, ms, ...)                          \
   CTRAN_LOG_IF(                                                     \
       level,                                                        \
@@ -23,6 +33,9 @@
         return ctran_log_rate_limiter.check();                      \
       }(),                                                          \
       __VA_ARGS__)
+
+#define CTRAN_LOG_STREAM_EVERY_MS(level, ms) \
+  COMMS_LOG_NAMED_STREAM_EVERY_MS(::ctran::logging::kCtranLoggerName, level, ms)
 
 #define CTRAN_LOG_TRACE(subsys, format, ...)                             \
   do {                                                                   \

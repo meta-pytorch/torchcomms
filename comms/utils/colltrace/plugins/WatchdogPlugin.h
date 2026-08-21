@@ -4,31 +4,33 @@
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
-#include <thread>
+#include <string>
 #include <unordered_map>
 
 #include <folly/stop_watch.h>
 
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
+
 namespace meta::comms::colltrace {
 
-void logFatalError(CollTraceEvent& curEvent, std::string_view errorType);
+[[noreturn]] void logFatalError(
+    CollTraceEvent& curEvent,
+    std::string_view errorType,
+    std::string_view loggerName = "comms");
 
 struct WatchdogPluginConfig {
+  std::string loggerName{"comms"};
   // Async error config
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
-  std::function<void(CollTraceEvent&)> funcTriggerOnError{
-      [](CollTraceEvent& event) {
-        // Sleep for 60 seconds to allow Analyzer to collect the error.
-        std::this_thread::sleep_for(std::chrono::seconds(60));
-        logFatalError(event, "AsyncError");
-      }};
+  std::function<void(CollTraceEvent&)> funcTriggerOnError;
 
   // Timeout config
   bool checkTimeout{false};
   std::chrono::milliseconds timeout{std::chrono::minutes{10}};
-  std::function<void(CollTraceEvent&)> funcTriggerOnTimeout{
-      [](CollTraceEvent& event) { logFatalError(event, "watchdog timeout"); }};
+  std::function<void(CollTraceEvent&)> funcTriggerOnTimeout;
 };
 
 class WatchdogPlugin : public ICollTracePlugin {
@@ -55,6 +57,7 @@ class WatchdogPlugin : public ICollTracePlugin {
 
  private:
   const WatchdogPluginConfig config_;
+  logger::CommsSpdlogLogger* logger_{nullptr};
 
   // Per-event timeout tracking. Each in-flight event gets its own timer
   // so a stuck collective is detected even when others progress normally.

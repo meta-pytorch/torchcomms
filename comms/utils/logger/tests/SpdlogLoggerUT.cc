@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include "comms/utils/logger/CudaLog.h"
+
 using meta::comms::logger::getSpdlogLogger;
 
 class ScopedTestFile {
@@ -218,6 +220,27 @@ TEST_F(LogLevelRestoringTest, RuntimeGateSkipsArguments) {
 
   COMMS_LOG(WARN, "enabled at runtime: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 1);
+}
+
+TEST_F(LogLevelRestoringTest, CudaFacadeFormatsAndGatesMessages) {
+  const ScopedTestFile scopedLogFile{"comms_cuda_log.log"};
+  auto& logger = getSpdlogLogger();
+  logger.configureOutput(scopedLogFile.path().string());
+  logger.configure("TEST", []() { return 0; }, {}, false);
+  logger.set_level(spdlog::level::warn);
+
+  int evaluationCount = 0;
+  COMMS_CUDA_LOG(INFO, "filtered value %d", ++evaluationCount);
+  COMMS_CUDA_LOG(WARN, "cuda facade value %d", 7);
+  logger.flush();
+
+  EXPECT_EQ(evaluationCount, 0);
+  EXPECT_NE(
+      readFile(scopedLogFile.path()).find("cuda facade value 7"),
+      std::string::npos);
+
+  logger.configureOutput({});
+  logger.configure("COMMS", []() { return 0; });
 }
 
 TEST_F(LogLevelRestoringTest, EmptyThreadContextUsesDefault) {

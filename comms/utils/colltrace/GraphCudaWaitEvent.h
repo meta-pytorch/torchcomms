@@ -9,6 +9,10 @@
 #include "comms/utils/colltrace/GraphCollTraceState.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
+
 namespace meta::comms::colltrace {
 
 // Default shared ring buffer size — must be a power of 2.
@@ -57,6 +61,10 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
       ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>*
           ringBuffer) noexcept;
 
+  void setLogger(logger::CommsSpdlogLogger& logger) noexcept {
+    logger_ = &logger;
+  }
+
   cudaStream_t getStream() const noexcept {
     return stream_;
   }
@@ -89,6 +97,7 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
   cudaStream_t stream_;
   uint32_t collId_;
   system_clock_time_point enqueueTime_;
+  logger::CommsSpdlogLogger* logger_{nullptr};
 
   // owned by CollTrace, shared across ALL graphs. set via attachRingBuffer().
   ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};

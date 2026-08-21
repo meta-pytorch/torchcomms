@@ -8,6 +8,7 @@
 #include <folly/init/Init.h>
 
 #include "comms/ctran/algos/perftrace/examples/PerfTraceExampleHelper.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -46,12 +47,12 @@ TEST_F(PerfTraceDistTest, DistributedTracing) {
   ASSERT_GE(globalRank, 0) << "MPI rank not initialized";
   ASSERT_GT(numRanks, 0) << "MPI numRanks not initialized";
 
-  XLOG(INFO) << "Rank " << globalRank << ": starting PerfTrace example";
+  CTRAN_LOG(INFO, "Rank {}: starting PerfTrace example", globalRank);
 
   // Each rank traces its own algorithm execution
   traceAlgo(globalRank, numRanks);
 
-  XLOG(INFO) << "Rank " << globalRank << ": PerfTrace example completed";
+  CTRAN_LOG(INFO, "Rank {}: PerfTrace example completed", globalRank);
 }
 
 } // namespace ctran::perftrace

@@ -3,6 +3,8 @@
 #include <cstring>
 #include <fstream>
 
+#include <folly/String.h>
+
 #include "comms/ctran/commstate/Topology.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"

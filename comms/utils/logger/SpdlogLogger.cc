@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -26,6 +27,16 @@
 #include "comms/utils/logger/CommsLogFormatter.h"
 
 namespace meta::comms::logger {
+
+void reportCommsLoggingFailureToStderr(const char* level) noexcept {
+  std::fprintf(stderr, "%s: communications logging failed\n", level);
+  std::fflush(stderr);
+}
+
+[[noreturn]] void abortAfterCommsLoggingFailure() noexcept {
+  reportCommsLoggingFailureToStderr("FATAL");
+  std::abort();
+}
 
 spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
   switch (level) {
@@ -256,6 +267,54 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
   storeConfiguration(std::make_shared<const Configuration>());
 }
 
+CommsLogStreamBase::CommsLogStreamBase(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level)
+    : logger_(logger), location_(location), level_(level) {}
+
+std::ostream& CommsLogStreamBase::stream() {
+  return stream_;
+}
+
+void CommsLogStreamBase::log() {
+  logger_.log(location_, level_, stream_.str());
+}
+
+[[noreturn]] void CommsLogStreamBase::logFatalAndAbort() noexcept {
+  try {
+    logger_.flush();
+    spdlog::shutdown();
+    logger_.logFatal(location_, stream_.str());
+  } catch (...) {
+    abortAfterCommsLoggingFailure();
+  }
+  std::abort();
+}
+
+CommsLogStream::CommsLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level)
+    : CommsLogStreamBase(logger, location, level) {}
+
+CommsLogStream::~CommsLogStream() noexcept {
+  try {
+    log();
+  } catch (...) {
+    reportCommsLoggingFailureToStderr("ERROR");
+  }
+}
+
+CommsFatalLogStream::CommsFatalLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location)
+    : CommsLogStreamBase(logger, location, spdlog::level::critical) {}
+
+[[noreturn]] CommsFatalLogStream::~CommsFatalLogStream() noexcept {
+  logFatalAndAbort();
+}
+
 std::string_view CommsSpdlogLogger::getLevelName(
     spdlog::level::level_enum level) {
   return getSpdlogLevelName(level);
@@ -448,6 +507,15 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
   auto logger = std::make_unique<CommsSpdlogLogger>(name);
   const auto it = loggers.emplace(std::move(name), std::move(logger)).first;
   return *it->second;
+}
+
+CommsSpdlogLogger& getSpdlogLoggerForFatal(
+    std::string_view loggerName) noexcept {
+  try {
+    return getSpdlogLogger(loggerName);
+  } catch (...) {
+    abortAfterCommsLoggingFailure();
+  }
 }
 
 void configureSpdlogLogger(
