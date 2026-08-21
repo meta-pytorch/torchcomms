@@ -236,6 +236,41 @@ TEST(AbortDeviceTest, deviceProducerSupportsDetailedTerminalReasons) {
   }
 }
 
+TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
+  Abort abort{/*enabled=*/true};
+  auto firstWon = makeDeviceValue<int>();
+  auto secondWon = makeDeviceValue<int>();
+  ASSERT_NE(firstWon, nullptr);
+  ASSERT_NE(secondWon, nullptr);
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithContext(
+          abort.getDeviceHandle(),
+          AbortReason::NETWORK_ERROR,
+          firstWon.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithContext(
+          abort.getDeviceHandle(),
+          AbortReason::INTERNAL_ERROR,
+          secondWon.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(firstWon), 1);
+  EXPECT_EQ(readDeviceValue(secondWon), 0);
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "",
+      }));
+}
+
 TEST(AbortDeviceTest, deviceWinnerDoesNotExposeLosingHostContext) {
   Abort abort{/*enabled=*/true};
 
