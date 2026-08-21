@@ -18,6 +18,7 @@
 #include "shmutils.h"
 #include "p2p.h"
 #include "collectives.h"
+#include "proxy_trace/proxy_trace.h"
 #include "comms/rcclx/develop/meta/lib/ProxyTrace.h"
 
 typedef enum : uint8_t {
@@ -35,7 +36,8 @@ typedef enum : uint8_t {
   ncclPatternPatUp,
   ncclPatternPatDown,
   ncclPatternSend,
-  ncclPatternRecv
+  ncclPatternRecv,
+  ncclPatternProfiler,
 } ncclPattern_t;
 
 enum ncclProxyOpState { ncclProxyOpNone, ncclProxyOpReady, ncclProxyOpProgress };
@@ -94,20 +96,37 @@ struct ncclProxyOp {
     struct ncclTaskP2p* p2p;
   } task;
 
+  // Profiler work counter increment flag. Set to 'true' if the profiler work counter for this channel needs increment.
+  // Always 'true' for collective operations. Grouped p2p operations are fused into one <send, recv> pair in the GPU kernel,
+  // meaning the GPU profiler code increments the work counter for the pair rather than the individual p2p. For this
+  // reason, the incWorkCounter flag is used to avoid incrementing the work counter twice in the host code. This is done
+  // by setting incWorkCounter to 'true' only for one of the p2ps in the pair during enqueue.
+  bool incWorkCounter;
   int eActivationMask;
   void* taskEventHandle;
   int rank;
   int peer;
   pid_t pid;
   void* profilerContext;
+  uint64_t workCounter;
 
   struct ncclProxyOp *enqNext;
 
   // Used to track total real bytes of this op
   uint32_t totalBytes;
   // Used to fetch/update the proxyOp in ProxyTrace map
+  facebook_rccl::ProxyTraceRecordKey traceKey_;
+  facebook_rccl::ProxyTraceExtraInfo traceInfo_;
+
   facebook::rcclx::ProxyTraceRecordKey traceKey;
   facebook::rcclx::ProxyTraceExtraInfo traceInfo;
+};
+
+struct ncclProxySubArgs;
+
+struct ncclProxyEventHandle {
+  void* stepEventHandle;
+  struct ncclProxySubArgs* subArgPtr;
 };
 
 struct ncclProxySubArgs {
@@ -146,8 +165,10 @@ struct ncclProxySubArgs {
   void* profilerContext;
   void* taskEventHandle;
   void* opEventHandle;
-  void* stepEventHandles[NCCL_STEPS];
+  void* kernelEventHandle;
+  struct ncclProxyEventHandle pHandles[NCCL_STEPS];
   size_t transSize;
+  uint64_t workCounter;
 
   void* recvRequestsCache[NCCL_STEPS];
   int recvRequestsSubCount;
@@ -157,9 +178,12 @@ struct ncclProxySubArgs {
   uint64_t timestamp[NCCL_STEPS];
 #endif
 
-  // Used to fetch/update the proxyOp in ProxyTrace map
+  // // Used to fetch/update the proxyOp in ProxyTrace map
   facebook::rcclx::ProxyTraceRecordKey traceKey;
   facebook::rcclx::ProxyTraceExtraInfo traceInfo;
+
+  facebook_rccl::ProxyTraceRecordKey traceKey_;
+  facebook_rccl::ProxyTraceExtraInfo traceInfo_;
 };
 
 struct ncclProxyArgs {
@@ -243,6 +267,8 @@ struct ncclProxyPeer {
 };
 
 struct ncclSharedNetComms {
+  int activeConnect[MAXCHANNELS];
+  int activeAccept[MAXCHANNELS];
   void* sendComm[MAXCHANNELS];
   void* recvComm[MAXCHANNELS];
   int sendRefCount[MAXCHANNELS];
@@ -352,6 +378,10 @@ struct ncclProxyState {
 
   // Queue of expected responses from the proxy
   struct ncclExpectedProxyResponse* expectedResponses;
+
+
+  // A handle to the proxy traces
+  std::unique_ptr<facebook_rccl::ProxyTrace> proxyTrace_;
 
   std::unique_ptr<facebook::rcclx::ProxyTrace> proxyTrace;
 };

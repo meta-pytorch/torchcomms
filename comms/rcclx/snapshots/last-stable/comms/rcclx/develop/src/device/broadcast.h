@@ -9,13 +9,16 @@
 #include "primitives.h"
 
 namespace {
-  template<typename T, typename RedOp, typename Proto, int COLL_UNROLL>
+  template<typename T, typename RedOp, typename Proto, int USE_ACC, int COLL_UNROLL, int Pipeline>
 #if defined(USE_INDIRECT_FUNCTION_CALL) && !defined(__gfx942__) && !defined(__gfx950__)
   __device__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
 #else
   __device__ __attribute__((noinline)) void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
 #endif
+#if defined(ENABLE_NPKIT)
     const int bid = ncclShmem.channelId - work->channelLo;
+    int npKitCtxIdx = bid; // unused variable - compiler warning
+#endif
     ncclRing *ring = &ncclShmem.channel.ring;
     const int rank = ring->userRanks[0];
     const int nextRank = ring->userRanks[1];
@@ -30,9 +33,6 @@ namespace {
     int workNthreads;
     bool isNetOffload = work->isOneRPN && work->netRegUsed;
 
-#if defined(ENABLE_NPKIT)
-    int npKitCtxIdx = bid;
-#endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_TIME_SYNC_CPU)
     if (tid == 0) {
@@ -83,7 +83,7 @@ namespace {
             prims.directCopySend(offset, offset, nelem);
           }
         } else if (nextRank == root) {
-          prims.directRecv(offset, offset, nelem);
+          prims.directRecv(offset, nelem);
         } else {
           prims.directRecvCopyDirectSend(offset, offset, nelem);
         }
@@ -91,7 +91,7 @@ namespace {
     } else if (inputBuf != outputBuf && rank == root) {
       inputBuf = inputBuf + gridOffset;
       outputBuf = outputBuf + gridOffset;
-      reduceCopy<COLL_UNROLL, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
+      reduceCopy<COLL_UNROLL, 0, RedOp, T, 0, 1, 1, 0, 1, 1, /*PreOpSrcs=*/0>
         (tid - workNthreads, nthreads - workNthreads, work->redOpArg, &work->redOpArg, false, 1, (void**)&inputBuf, 1, (void**)&outputBuf, channelCount);
     }
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_BROADCAST_RING_EXIT)
@@ -106,24 +106,24 @@ namespace {
   }
 }
 
-template<typename T, typename RedOp, int COLL_UNROLL>
-struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, COLL_UNROLL> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
+struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, USE_ACC, COLL_UNROLL, Pipeline> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
-    using Proto = ProtoSimple<BROADCAST_CHUNKSTEPS/BROADCAST_SLICESTEPS, BROADCAST_SLICESTEPS, COLL_UNROLL>;
-    runRing<T, RedOp, Proto, COLL_UNROLL>(tid, nthreads, work);
+    using Proto = ProtoSimple<BROADCAST_CHUNKSTEPS/BROADCAST_SLICESTEPS, BROADCAST_SLICESTEPS, USE_ACC, COLL_UNROLL>;
+    runRing<T, RedOp, Proto, USE_ACC, COLL_UNROLL, Pipeline>(tid, nthreads, work);
   }
 };
 
-template<typename T, typename RedOp, int COLL_UNROLL>
-struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL, COLL_UNROLL> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
+struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL, USE_ACC, COLL_UNROLL, Pipeline> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
-    runRing<T, RedOp, ProtoLL, COLL_UNROLL>(tid, nthreads, work);
+    runRing<T, RedOp, ProtoLL, USE_ACC, COLL_UNROLL, 0>(tid, nthreads, work);
   }
 };
 
-template<typename T, typename RedOp, int COLL_UNROLL>
-struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL128, COLL_UNROLL> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
+struct RunWorkColl<ncclFuncBroadcast, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL128, USE_ACC, COLL_UNROLL, Pipeline> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
-    runRing<T, RedOp, ProtoLL128, COLL_UNROLL>(tid, nthreads, work);
+    runRing<T, RedOp, ProtoLL128, USE_ACC, COLL_UNROLL, 0>(tid, nthreads, work);
   }
 };

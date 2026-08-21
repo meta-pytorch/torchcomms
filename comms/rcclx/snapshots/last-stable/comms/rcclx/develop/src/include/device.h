@@ -14,12 +14,16 @@
 #include <hip/hip_bfloat16.h>
 #include "nccl_common.h"
 #include "bitops.h"
+#include "symmetric.h"
 #if defined(ENABLE_NPKIT)
 #include "npkit/npkit_struct.h"
 #endif
 #include <algorithm>
 #include <stdint.h>
 #include <sys/types.h>
+#include <unordered_map>
+#include <string>
+#include "debug.h"
 
 extern const char* ncclFuncStr[NCCL_NUM_FUNCTIONS+2];
 
@@ -27,7 +31,7 @@ extern const char* ncclAlgoStr[NCCL_NUM_ALGORITHMS];
 
 extern const char* ncclProtoStr[NCCL_NUM_PROTOCOLS];
 
-extern const char* funcNames[FUNC_INDEX_TOTAL];
+extern const char* funcNames[];
 
 #define NCCL_MAX_OPS 2048
 #define NCCL_STEPS 8
@@ -36,6 +40,30 @@ extern const char* funcNames[FUNC_INDEX_TOTAL];
   #define NCCL_CUDA_ARCH __CUDA_ARCH__
 #else
   #define NCCL_CUDA_ARCH 0
+#endif
+
+#ifdef __CUDA_ARCH_SPECIFIC__
+  #define NCCL_CUDA_ARCH_SPECIFIC __CUDA_ARCH_SPECIFIC__
+#elif defined(__CUDA_ARCH_HAS_FEATURE__)
+  #if __CUDA_ARCH_HAS_FEATURE__(SM90_ALL)
+    #define NCCL_CUDA_ARCH_SPECIFIC 900
+  #elif __CUDA_ARCH_HAS_FEATURE__(SM100_ALL)
+    #define NCCL_CUDA_ARCH_SPECIFIC 1000
+  #elif __CUDA_ARCH_HAS_FEATURE__(SM101_ALL)
+    #define NCCL_CUDA_ARCH_SPECIFIC 1010
+  #elif __CUDA_ARCH_HAS_FEATURE__(SM120_ALL)
+    #define NCCL_CUDA_ARCH_SPECIFIC 1200
+  #else
+    #define NCCL_CUDA_ARCH_SPECIFIC 0
+  #endif
+#else
+  #define NCCL_CUDA_ARCH_SPECIFIC 0
+#endif
+
+#ifdef __CUDA_ARCH_FAMILY_SPECIFIC__
+  #define NCCL_CUDA_ARCH_FAMILY_SPECIFIC __CUDA_ARCH_FAMILY_SPECIFIC__
+#else
+  #define NCCL_CUDA_ARCH_FAMILY_SPECIFIC 0
 #endif
 
 #include "net_device.h"
@@ -73,19 +101,30 @@ union ncclLLFifoLine {
   #else
   #define WARP_SIZE 32
   #endif
+  #if defined (__gfx950__)
+  // 512 is causing invalid ISA errors, so use 256 instead
+  // #define NCCL_MAX_NTHREADS 512
+  #define NCCL_MAX_NTHREADS 256
+  #else
+  #define NCCL_MAX_NTHREADS 256
+  #endif
+  // Number of named barriers supported by CUDA
+  #define NCCL_MAX_GROUPS (NCCL_MAX_NTHREADS/WARP_SIZE)
 #else
- /* IMPORTANT:
-  * WARP_SIZE should NEVER be referenced by host code in RCCL. It is defined here
+ /* IMPORTANT Note ragarding WARP_SIZE, NCCL_MAX_NTHREADS and NCCL_MAX_GROUPS:
+  * These should NEVER be referenced by host code in RCCL. It is defined here
   * solely as a workaround to allow RCCL to compile, since the host still compiles __device__ functions,
-  * and WARP_SIZE needs to be defined. These __device__ functions will not be called from the host.
+  * and they need to be defined. These __device__ functions will not be called from the host.
   * The host warp size is handled in src/enqueue.cc by calling hipDeviceGetAttributes(). */
   #define WARP_SIZE 32
+  #define NCCL_MAX_NTHREADS 256
+  // Number of named barriers supported by CUDA
+  #define NCCL_MAX_GROUPS (NCCL_MAX_NTHREADS/WARP_SIZE)
 #endif
 
 #define MAXCHANNELS 128
 #define CHANNEL_LIMIT 16
 #define NCCL_MAX_LOCAL_RANKS 72
-#define NCCL_MAX_NTHREADS 256
 #define NCCL_MIN_NTHREADS (4*WARP_SIZE)
 #define NCCL_SIMPLE_MAX_NTHREADS NCCL_MAX_NTHREADS
 #define NCCL_SIMPLE_EXTRA_GROUP_IF_NTHREADS_GE (3*WARP_SIZE)
@@ -117,13 +156,21 @@ static_assert(NCCL_LL_CLEAN_MASK % NCCL_STEPS == 0, "Invalid NCCL_LL_CLEAN_MASK 
 #define NCCL_DIRECT_NIC   0x04
 #define NCCL_NVLS_MIN_POLL 0x80
 
-// Number of named barriers supported by CUDA
-#define NCCL_MAX_GROUPS (NCCL_MAX_NTHREADS/WARP_SIZE)
+
 
 #define NCCL_REGULAR_BUFFER 0x00
 #define NCCL_IPC_REG_BUFFER 0x01
 #define NCCL_NVLS_REG_BUFFER 0x02
 #define NCCL_NET_REG_BUFFER 0x04
+
+#define RCCL_FUNC_ID_MASK 0xF
+#define RCCL_COLL_SHIFT 0
+#define RCCL_ALGO_SHIFT 4
+#define RCCL_PROTO_SHIFT 8
+#define RCCL_REDOP_SHIFT 12
+#define RCCL_DTYPE_SHIFT 16
+#define RCCL_ACC_SHIFT 20
+#define RCCL_PIPELINE_SHIFT 24
 
 struct ncclConnInfo {
   // Regular comm mechanism
@@ -163,6 +210,7 @@ struct ncclProxyConnector {
 
 struct ncclConnector {
   int connected;
+  int hasSeen;
   struct ncclProxyConnector proxyConn;
   struct ncclTransportComm* transportComm;
   void* transportResources;
@@ -256,6 +304,8 @@ struct alignas(16) ncclDevWorkP2p {
   uint8_t sendNetReg:1, recvNetReg:1;
   uint8_t sendIpcReg:1, recvIpcReg:1;
 
+  uint8_t profilerEnabled:1;
+
   uint8_t sendConnIndex:2, recvConnIndex:2;
 };
 
@@ -272,12 +322,12 @@ inline __host__ __device__ void ncclP2pPartBounds(int nParts, int part, size_t b
 }
 
 // implemented in channel.h
-inline __host__ uint8_t ncclP2pChannelBaseForRound(struct ncclComm* comm, int p2pRound);
+inline __host__ uint8_t ncclP2pChannelBaseForRound(struct ncclComm* comm, int p2pRound, int p2pBatchEnable);
 
 // ncclP2pChannelToPart and ncclP2pChannelForPart are inverses. The device code
 // uses ncclP2pChannelToPart to determine which part "this" channel is responsible for.
 inline __host__ int ncclP2pChannelForPart(int nP2pChannels, int base, int part, int nParts, int nNodes) {
-  if (nNodes > 1) {
+  if (nNodes > 2) {
     // Only works because nP2pChannels is pow2
     int nChannelsLog2 = countOneBits(nP2pChannels-1);
     int delta = reverseBits(part, nChannelsLog2);
@@ -287,13 +337,13 @@ inline __host__ int ncclP2pChannelForPart(int nP2pChannels, int base, int part, 
   }
 }
 inline __device__ int ncclP2pChannelToPart(int nP2pChannels, int base, int channel, int nParts, int nNodes) {
-  if (nNodes > 1) {
+  if (nNodes > 2) {
     // Only works because nP2pChannels is pow2
     int nChannelsLog2 = countOneBits(nP2pChannels-1);
     int delta = (channel-base) & (nP2pChannels-1);
     return reverseBits(delta, nChannelsLog2);
   } else {
-    return (channel - base * nParts) & (nParts-1);
+    return (channel - base * nParts) & (nP2pChannels-1);
   }
 }
 
@@ -302,9 +352,9 @@ struct alignas(16) ncclDevWorkColl {
   //   nChannels == (channelHi - channelLo) + 1
   uint32_t channelLo:8, channelHi:8;
   uint32_t nWarps:8;
-  uint32_t redOpArgIsPtr:1, regUsed:1, netRegUsed:1, oneNode:1, direct:2, isOneRPN:1, rcclUseOneSlice:1, gfx942CheapFenceOff:1;
+  uint32_t redOpArgIsPtr:1, regUsed:1, netRegUsed:1, oneNode:1, direct:2, isOneRPN:1, rcclUseOneSlice:1, gfx9CheapFenceOff:1;
   uint32_t root:30, connIndex:2;
-  uint16_t pivotA2ANumBiRings;
+  uint16_t pivotA2ANumBiRings:15, profilerEnabled:1;
   void* recvbuff;
   void* sendbuff;
   void *acc;
@@ -386,7 +436,7 @@ constexpr size_t ncclDevWorkSize(enum ncclDevWorkType type) {
 
 #define NCCL_MAX_DEV_WORK_BATCH_BYTES 128
 #define NCCL_MAX_DEV_WORK_BATCH_COLLS (NCCL_MAX_DEV_WORK_BATCH_BYTES/sizeof(ncclDevWorkColl))
-#define NCCL_MAX_DEV_WORK_P2P_PER_BATCH 1
+#define NCCL_MAX_DEV_WORK_P2P_PER_BATCH 2
 #define NCCL_MAX_DEV_WORK_P2P_ELEMENTS 2
 struct alignas(16) ncclDevWorkBatch {
   union {
@@ -499,6 +549,15 @@ struct alignas(16) ncclDevChannel {
   struct ncclTree binTree;
   struct ncclNvls nvls;
   uint32_t* workFifoDone; // Location of done counter, device writes index+1 of last work processed
+  uint64_t workCounter;
+};
+
+#define MAX_PROFILER_EVENTS_PER_CHANNEL 64
+struct ncclDevProfiler {
+  struct {
+    uint64_t counter;
+    uint64_t timestamp;
+  } data[MAX_PROFILER_EVENTS_PER_CHANNEL];
 };
 
 struct ncclDevComm {
@@ -511,9 +570,6 @@ struct ncclDevComm {
   int isAllNvlink;
   int p2pnChannelsPerPeer;
 
-  // Work fifo return credits
-  uint32_t* workConsumed/*[MAXCHANNELS]*/;
-
   int* collNetDenseToUserRank;
 
   // Flag to ask NCCL kernels to abort
@@ -523,6 +579,10 @@ struct ncclDevComm {
   struct ncclDevChannel* channels/*[MAXCHANNELS]*/;
 
   int* rankToLocalRank;
+
+  // Profiler counters
+  struct ncclDevProfiler* workStarted/*[MAXCHANNELS]*/;
+  struct ncclDevProfiler* workCompleted/*[MAXCHANNELS]*/;
 
 #if defined(ENABLE_NPKIT)
   NpKitEventCollectContext* npKitEventCollectContexts;
@@ -622,7 +682,7 @@ __host__ __device__ constexpr int ncclCalcUnroll(int bytePerPack, int insns, int
 
 __host__ __device__ constexpr int ncclCollUnroll(int cudaArch = NCCL_CUDA_ARCH) {
   // Our collective unroll should move to the same bytes&insns model as NVLS.
-  return cudaArch >= 800 ? 8 : 4;
+  return cudaArch >= 800 ? (cudaArch / 100 == 12 ? 6 : 8) : 4;
 }
 
 __host__ __device__ constexpr int ncclNvlsUnrollBytes(int cudaArch = NCCL_CUDA_ARCH) { return 4*16; }
@@ -643,17 +703,20 @@ __device__ constexpr int ncclShmemScratchWarpSize(int cudaArch = NCCL_CUDA_ARCH)
     ) + 15) & -16; // pad to 16 bytes
 }
 
+// RCCL has its own varient of ncclShmemDynamicSize and ncclShmemScratchWarpSize
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#else
 // The amount of dynamic shmem per block
 __device__ constexpr int ncclShmemDynamicSize(int cudaArch = NCCL_CUDA_ARCH) {
   return cudaArch < 700 ? 0 : ncclShmemScratchWarpSize(cudaArch)*(NCCL_MAX_NTHREADS/WARP_SIZE);
 }
+#endif
 
 // Host-side table of kernel function pointers.
 extern int const ncclDevKernelCount;
 extern void* const ncclDevKernelList[/*ncclDevKernelCount*/];
 
 // Table of most specialized kernel function to run given func index.
-extern int const ncclDevFuncIdCount;
 extern int const ncclDevFuncRowToId[];
 extern void* const ncclDevKernelForFunc[/*funcIndex*/];
 extern bool const ncclDevKernelForFuncIsSpecialized[/*funcIndex*/];
@@ -679,61 +742,44 @@ inline bool ncclNvlsSupported(int devRedOp, int type) {
   }
 }
 
-// Map the rowIdx to funcIdx
-extern int const ncclDevFuncRowToId[];
+// Map the uint64_t key to funcIdx
+extern std::unordered_map<uint64_t, int> ncclDevFuncNameToId;
 
 // `ncclDevFuncId()` needs to be in sync with 'all_colls' in generate.py
-inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) {
-  int row = 0;
-  do {
-    // RING / <all_protos> / Sum / int8_t
-    if (coll == ncclFuncAllGather) {
-      row += proto;
-      break;
-    }
-    row += NCCL_NUM_PROTOCOLS;
-
-    // <all_algos> / <all_protos> / <all_redops> / <all_types>
-    if (coll == ncclFuncAllReduce) {
-      row += (((algo * NCCL_NUM_PROTOCOLS + proto) * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * (algo * NCCL_NUM_PROTOCOLS + proto);
-      break;
-    }
-    row += (NCCL_NUM_ALGORITHMS - 5) * NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
-
-    // RING / SIMPLE / Sum / int8_t
-    if (coll == ncclFuncAllToAllPivot) break;
-    row += 1;
-
-    // RING / <all_protos> / Sum / int8_t
-    if (coll == ncclFuncBroadcast) {
-      row += proto;
-      break;
-    }
-    row += NCCL_NUM_PROTOCOLS;
-
-    // RING / <all_protos> / <all_redops> / <all_types>
-    if (coll == ncclFuncReduce) {
-      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * proto;
-      break;
-    }
-    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
-
-    // RING / <all_protos> / <all_redops> / <all_types>
-    if (coll == ncclFuncReduceScatter) {
-      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * proto;
-      break;
-    }
-    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
-
-    // RING / SIMPLE / Sum / int8_t
-    if (coll == ncclFuncSendRecv) break;
-    row += 1;
-
-  } while (false);
-
-  return ncclDevFuncRowToId[row];
+inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto, int acc = 0, int pipeline = 0) {
+  int row = -1;
+  uint64_t key;
+  // Pack 4-bit fields from right (LSB) to left in order:
+  // coll, algo, proto, devRedOp, type, acc, pipeline
+  // This logic must be in sync with the key generation logic in generate.py
+  if (coll == ncclFuncBroadcast) {
+    key = ((uint64_t)(coll     & RCCL_FUNC_ID_MASK) << RCCL_COLL_SHIFT ) |
+          ((uint64_t)(proto    & RCCL_FUNC_ID_MASK) << RCCL_PROTO_SHIFT);
+  } else if (coll == ncclFuncSendRecv || coll == ncclFuncAllToAllPivot) {
+    key = ((uint64_t)(coll     & RCCL_FUNC_ID_MASK) << RCCL_COLL_SHIFT );
+  } else {
+    key = ((uint64_t)(coll     & RCCL_FUNC_ID_MASK) << RCCL_COLL_SHIFT ) |
+          ((uint64_t)(algo     & RCCL_FUNC_ID_MASK) << RCCL_ALGO_SHIFT ) |
+          ((uint64_t)(proto    & RCCL_FUNC_ID_MASK) << RCCL_PROTO_SHIFT) |
+          ((uint64_t)(devRedOp & RCCL_FUNC_ID_MASK) << RCCL_REDOP_SHIFT) |
+          ((uint64_t)(type     & RCCL_FUNC_ID_MASK) << RCCL_DTYPE_SHIFT) |
+          ((uint64_t)(acc      & RCCL_FUNC_ID_MASK) << RCCL_ACC_SHIFT)   |
+          ((uint64_t)(pipeline & RCCL_FUNC_ID_MASK) << RCCL_PIPELINE_SHIFT);
+  }
+  auto it = ncclDevFuncNameToId.find(key);
+  if (it != ncclDevFuncNameToId.end()) {
+    row = it->second;
+  }
+  if(row < 0) {
+    WARN("Fatal error: ncclDevFuncId: %lu not found for coll: %d, algo: %d, proto: %d, devRedOp: %d, type: %d, acc: %d, pipeline: %d", key, coll, algo, proto, devRedOp, type, acc, pipeline);
+    return -1;
+  }
+  return row;
 }
 
-inline int ncclDevFuncId_P2p() { return ncclDevFuncRowToId[FUNC_INDEX_TOTAL - NCCL_NUM_ONERANK - 1]; }
+inline int ncclDevFuncId_P2p() {
+  static int ncclDevFuncIdP2p = ncclDevFuncId(ncclFuncSendRecv, -1 , -1 , NCCL_ALGO_UNDEF, NCCL_PROTO_UNDEF);
+  return ncclDevFuncIdP2p;
+}
 
 #endif

@@ -9,7 +9,7 @@ interface. Any NCCL user can write profiler plugins to extract performance data 
 use it for debugging and analysis.
 
 Similarly to other plugins (e.g., network plugin), the profiler plugins come as a shared library
-called `libnccl-profiler.so`. That shared library contains one or more implementations of the
+called `lirccl-profiler.so`. That shared library contains one or more implementations of the
 NCCL PROFILER API, in the form of versioned structs, filled with pointers to all required
 functions.
 
@@ -17,15 +17,15 @@ functions.
 
 ## Plugin name and supporting multiple profiler plugins
 
-When NCCL is initialized, it will look for a `libnccl-profiler.so` library and dynamically load
+When NCCL is initialized, it will look for a `librccl-profiler.so` library and dynamically load
 it, then look for symbols inside the library.
 
 The `NCCL_PROFILER_PLUGIN` environment variable allows multiple plugins to coexist. If set, NCCL
-will look for a library with a name of `libnccl-profiler-${NCCL_PROFILER_PLUGIN}.so`. It is therefore
-advised to name the library following that pattern, with a symlink pointing `libnccl-profiler.so`
-to `libnccl-profiler-${NCCL_PROFILER_PLUGIN}.so`. That way, if there are multiple plugins in the
+will look for a library with a name of `librccl-profiler-${NCCL_PROFILER_PLUGIN}.so`. It is therefore
+advised to name the library following that pattern, with a symlink pointing `librccl-profiler.so`
+to `librccl-profiler-${NCCL_PROFILER_PLUGIN}.so`. That way, if there are multiple plugins in the
 path, setting `NCCL_PROFILER_PLUGIN` will allow users to select the right plugin. Alternatively,
-the user can also set `NCCL_PROFILER_PLUGIN` to the pathname of the `libnccl-profiler.so` library.
+the user can also set `NCCL_PROFILER_PLUGIN` to the pathname of the `librccl-profiler.so` library.
 
 ## Struct versioning
 
@@ -49,9 +49,9 @@ of newer ones.
 The `nccl/` directory is populated with `profiler_vX.h` files extracting all relevant definitions
 from old API versions. It also provides error codes in `err.h`.
 
-# API (v2)
+# API (v4)
 
-Below is the main `ncclProfiler_v2` struct. Each function is explained in later sections.
+Below is the main `ncclProfiler_v4` struct. Each function is explained in later sections.
 
 ```
 typedef struct {
@@ -60,9 +60,15 @@ typedef struct {
   // init - initialize the profiler plugin
   // Input
   //  - context        : opaque profiler context object for separating profiler behavior across comms
+  //  - commName       : user assigned communicator name
+  //  - commHash       : communicator id
+  //  - nNodes         : number of nodes in communicator
+  //  - nranks         : number of ranks in communicator
+  //  - rank           : rank identifier in communicator
+  //  - logfn          : logger function
   // Output
   //  - eActivationMask: bitmask of active events set by the plugin
-  ncclResult_t (*init)(void** context, int* eActivationMask);
+  ncclResult_t (*init)(void** context, int* eActivationMask, const char* commName, uint64_t commHash, int nNodes, int nranks, int rank, ncclDebugLogger_t logfn);
 
   // startEvent - initialize and start a new event for the supplied event descriptor inside the eventset
   // Input
@@ -70,7 +76,7 @@ typedef struct {
   //  - eDescr : pointer to ncclProfilerEventDescr_t object
   // Output
   //  - eHandle: return event handle for supplied event descriptor object
-  ncclResult_t (*startEvent)(void* context, void** eHandle, ncclProfilerEventDescr_v2_t* eDescr);
+  ncclResult_t (*startEvent)(void* context, void** eHandle, ncclProfilerEventDescr_v4_t* eDescr);
 
   // stopEvent - stop/finalize an event inside and event set
   // Input
@@ -82,13 +88,13 @@ typedef struct {
   //  - eHandle   : handle to event object created through startEvent
   //  - eStateArgs: optional argument used to capture event attribute updates associated with the state transition
   //  - eState    : event state transition
-  ncclResult_t (*recordEventState)(void* eHandle, ncclProfilerEventState_v2_t eState, ncclProfilerEventStateArgs_v2_t* eStateArgs);
+  ncclResult_t (*recordEventState)(void* eHandle, ncclProfilerEventState_v4_t eState, ncclProfilerEventStateArgs_v4_t* eStateArgs);
 
   // finalize - finalize the profiler plugin
   // Input
   //  - context: opaque profiler context object
   ncclResult_t (*finalize)(void* context);
-} ncclProfiler_v2_t;
+} ncclProfiler_v4_t;
 ```
 
 ## Error codes
@@ -147,8 +153,6 @@ typedef struct {
   int rank;                 // rank that generated the event
   union {
     struct {                // collective events metadata
-      const char* name;     // string containing name of the communicator
-      uint64_t commHash;    // unique hash/id for the communicator
       uint64_t seqNumber;   // sequence number of this collective operation in the communicator
       const char* func;     // string containing name of the collective
       void const* sendBuff; // address of send buffer
@@ -156,21 +160,19 @@ typedef struct {
       size_t count;         // data count
       int root;             // root rank
       const char* datatype; // string containing the name of the datatype
-      size_t trafficBytes;  // number of transfer bytes
-      uint8_t nMaxChannels; // max number of channels for this collective
+      uint8_t nChannels;    // number of channels for this collective
       uint8_t nWarps;       // number of GPU warps for this collective
       const char* algo;     // string containing name of the algorithm for this collective
       const char* proto;    // string containing name of the protocol for this collective
     } coll;
 
     struct {                // point-to-point events metadata
-      const char* name;
-      uint64_t commHash;
       const char* func;
       void* buff;
       const char* datatype;
       size_t count;
       int peer;             // peer rank for this point-to-point
+      uint8_t nChannels;    // number of channels for this p2p
     } p2p;
 
     struct {                // proxyOp events metadata
@@ -179,18 +181,29 @@ typedef struct {
       int peer;             // peer rank
       int nSteps;           // number of network transfers/steps required by the `ncclProxyOp`
       int chunkSize;        // chunk size for this `ncclProxyOp`
-      int isSend;           // set to 1 for sends and 0 for recvs
+      int isSend;           // type of network operation
     } proxyOp;
 
     struct {                // proxyStep events metadata
       int step;             // individual step in `ncclProxyOp`
     } proxyStep;
+
+    struct {
+      uint8_t channelId;    // id of the channel used by the kernel
+      uint64_t ptimer;      // kernel supplied timestamp
+    } kernelCh;
+
+    struct {
+      int64_t id;           // net plugin id (used by net and profiler plugins to agree on event definitions)
+      void* data;           // pointer to network plugin defined event
+    } netPlugin;
   };
-} ncclProfilerEventDescr_v2_t;
+} ncclProfilerEventDescr_v4_t;
 ```
 
 NCCL defines the following events: `ncclProfileGroup`, `ncclProfileColl`, `ncclProfileP2p`,
-`ncclProfileProxyOp`, `ncclProfileProxyStep`, and `ncclProfileProxyCtrl`.
+`ncclProfileProxyOp`, `ncclProfileProxyStep`, `ncclProfileProxyCtrl`, `ncclProfileKernelCh` and
+`ncclProfileNetPlugin`.
 
 #### stopEvent
 
@@ -203,45 +216,57 @@ handle after `eventStop` is undefined behavior.
 Some events can only be started and stopped. For example, `ncclProfileGroup`, `ncclProfileColl`,
 `ncclProfileP2p`, cannot be updated through calls to `recordEventState`.
 
-`ncclProfileProxyOp`, `ncclProfileProxyStep` and `ncclProfileProxyCtrl` can be updated through
-calls to `recordEventState`.
+`ncclProfileProxyOp`, `ncclProfileProxyStep`, `ncclProfileNetPlugin`, `ncclProfileKernelCh`, and
+`ncclProfileProxyCtrl` can be updated through calls to `recordEventState`.
 
-The state of proxy generated events can be updated, along with event attributes, using
-`recordEventState`. These events can go through several states during their lifecycle.
-The list of supported states for the proxy-defined events is reported below.
+The state of these events can be updated, along with event attributes, using `recordEventState`.
+These events can go through several states during their lifecycle.
+
+The list of supported states for the updatable events is reported below.
 
 ```
 typedef enum {
   // ncclProfileProxyOp event states
-  ncclProfilerProxyOpSendPosted,        // state marks the posting of send buffer to GPU for given network transfer/step
-  ncclProfilerProxyOpSendRemFifoWait,   // state marks the waiting of CTS credits from peer rank
-  ncclProfilerProxyOpSendTransmitted,   // state marks the sending of network transfer/step to peer rank
-  ncclProfilerProxyOpSendDone,          // state marks the ending  of network transfer/step
-  ncclProfilerProxyOpRecvPosted,        // state marks the posting of recv to network for given network transfer/step
-  ncclProfilerProxyOpRecvReceived,      // state marks the recving of network transfer/step from peer rank
-  ncclProfilerProxyOpRecvTransmitted,   // state marks the ending  of the network transfer/step
-  ncclProfilerProxyOpRecvDone,          // state marks the consuming of data from GPU
+  ncclProfilerProxyOpSendPosted        = 0, // deprecated in v4
+  ncclProfilerProxyOpSendRemFifoWait   = 1, // deprecated in v4
+  ncclProfilerProxyOpSendTransmitted   = 2, // deprecated in v4
+  ncclProfilerProxyOpSendDone          = 3, // deprecated in v4
+  ncclProfilerProxyOpRecvPosted        = 4, // deprecated in v4
+  ncclProfilerProxyOpRecvReceived      = 5, // deprecated in v4
+  ncclProfilerProxyOpRecvTransmitted   = 6, // deprecated in v4
+  ncclProfilerProxyOpRecvDone          = 7, // deprecated in v4
+  ncclProfilerProxyOpInProgress_v4     = 19,// state marks transition of proxy op to progress
 
   // ncclProfileProxyStep event states
-  ncclProfilerProxyStepSendGPUWait,     // state marks the waiting of send data from GPU for given network transfer/step
-  ncclProfilerProxyStepSendWait,        // state marks the waiting of send data from network for given network transfer/step
-  ncclProfilerProxyStepRecvWait,        // state marks the waiting of recv data from network for given network transfer/step
-  ncclProfilerProxyStepRecvFlushWait,   // state marks the waiting of recv data flush to GPU for given network transfer/step
-  ncclProfilerProxyStepRecvGPUWait,     // state marks the waiting of recv data consumption from GPU for given network transfer/step
+  ncclProfilerProxyStepSendGPUWait     = 8, // state marks the waiting of send data from GPU for given network transfer/step
+  ncclProfilerProxyStepSendPeerWait_v4 = 20,// state marks the waiting of recv clear to send credits for given network transfer/step
+  ncclProfilerProxyStepSendWait        = 9, // state marks the waiting of send data from network for given network transfer/step
+  ncclProfilerProxyStepRecvWait        = 10,// state marks the waiting of recv data from network for given network transfer/step
+  ncclProfilerProxyStepRecvFlushWait   = 11,// state marks the waiting of recv data flush to GPU for given network transfer/step
+  ncclProfilerProxyStepRecvGPUWait     = 12,// state marks the waiting of recv data consumption from GPU for given network transfer/step
 
   // ncclProfileProxyCtrl event states
-  ncclProfilerProxyCtrlIdle,            // state marks proxy progress thread idle
-  ncclProfilerProxyCtrlActive,          // state marks proxy progress thread active
-  ncclProfilerProxyCtrlSleep,           // state marks proxy progress thread sleeping
-  ncclProfilerProxyCtrlWakeup,          // state marks proxy progress thread waking up
-  ncclProfilerProxyCtrlAppend,          // state marks append of new network work item begin
-  ncclProfilerProxyCtrlAppendEnd,       // state marks append of new network work item end
-} ncclProfilerEventState_v2_t;
+  ncclProfilerProxyCtrlIdle            = 13,// state marks proxy progress thread idle
+  ncclProfilerProxyCtrlActive          = 14,// state marks proxy progress thread active
+  ncclProfilerProxyCtrlSleep           = 15,// state marks proxy progress thread sleeping
+  ncclProfilerProxyCtrlWakeup          = 16,// state marks proxy progress thread waking up
+  ncclProfilerProxyCtrlAppend          = 17,// state marks append of new network work item begin
+  ncclProfilerProxyCtrlAppendEnd       = 18,// state marks append of new network work item end
+
+  // ncclProfileNetPlugin event states
+  ncclProfilerNetPluginUpdate          = 21,// state marks update of network defined event
+
+  // ncclProfileKernelCh event states
+  ncclProfilerKernelChStop             = 22,// state marks stop of kernelCh event and timestamp update
+} ncclProfilerEventState_v4_t;
 ```
 
 `ncclProfileProxyOp` events are generated by the proxy progress thread while it is processing
 network requests for the GPU kernel. ProxyOp events are generated for every active channel and
-provide a summary of the activity of the proxy progress thread for that channel.
+provide a summary of the activity of the proxy progress thread for that channel. Most of the
+states for this event were duplicated with `ncclProfileProxyStep` events. Therefore, starting
+with version 4 of the profiler interface these states have been deprecated. The same level of
+information can still be obtained through the `ncclProfileProxyStep` events.
 
 `ncclProfileProxyStep` events are generated by the proxy progress thread while it is processing
 network requests for the GPU kernel. ProxyStep events describe individual network transfer in
@@ -251,20 +276,110 @@ the channel. Thus, they provide a more fine-grained view w.r.t. ProxyOp events.
 network requests for the GPU kernel. This includes everything else that the proxy thread might be
 doing, including appending new `ncclProxyOp` objects to the list of work elements to process.
 
+`ncclProfileKernelCh` events are generated by the profiler proxy progress function while the kernel
+processes work items for the enqueued NCCL operations.
+
+`ncclProfileNetPlugin` events are generated by the network plugin. Network plugins are free to define
+their own set of events and communicate them to the profiler plugin using `ncclProfileNetPlugin` and
+the `ncclProfilerCallback\_t` NCCL core callback. The network and profiler plugin can agree on the
+network defined event definition using the plugin id in the event descriptor. The plugin identifier
+is a 64-bit integer that has two parts: the 16 LSB are assigned to the plugin event version, the next
+16 bits are assigned to the plugin type (NCCL\_PROFILER\_NET\_TYPE\_IB, ...). The rest of the bits are
+unused and available for future extensions.
+
+A network IB plugin can use this infrastructure to define a QP event as:
+
+```C
+#define NCCL_PROFILER_NET_IB_VER 1
+
+enum {
+  ncclProfileQp = (1 << 0),
+};
+
+// The data structure version is encoded in the plugin identifier bitmask and
+// passed to NCCL core through the profiler callback. NCCL copies the plugin
+// identifier in the event descriptor before calling the profiler startEvent
+// function. The profiler should inspect the plugin id to find out the source
+// plugin as well as the version of the event struct
+typedef struct {
+  uint8_t type;        // event type (plugin defined)
+  union {
+    struct {
+      int device;      // network device id
+      uint64_t wr_id;  // work request id
+      int opcode;      // ibv opcode
+      int qpNum;       // QP number
+      size_t length;   // work request data length
+    } qp;
+  };
+} ncclProfilerNetIbDescr_v1_t;
+```
+
+The network event infrastructure is network agnostic. A different network socket plugin can
+use it to define a socket event as:
+
+```C
+#define NCCL_PROFILER_NET_SOCKET_VER 1
+
+enum {
+  ncclProfileSocket = (1 << 0),
+};
+
+// The data structure version is encoded in the plugin identifier bitmask and
+// passed to NCCL core through the profiler callback. NCCL copies the plugin
+// identifier in the event descriptor before calling the profiler startEvent
+// function. The profiler should inspect the plugin id to find out the source
+// plugin as well as the version of the event struct
+typedef struct {
+  uint8_t type;        // event type (plugin defined)
+  union {
+    struct {
+      int fd;
+      int op;
+      size_t length;
+    } sock;
+  };
+} ncclProfilerNetSockDescr_v1_t;
+```
+
+The network plugin creates an event (descriptor) and passes it to the profiler callback,
+along with the network type and version (plugin id). NCCL then creates a `ncclProfileNetPlugin`
+event descriptor, attaches the network plugin defined event as external data, and calls
+the profiler `startEvent` function.
+
+```C
+ncclResult_t isend(..., void* phandle, ...) {
+  ...
+  int pluginId = NCCL_PROFILER_NET_TYPE_IB | NCCL_PROFILER_NET_IB_VER;
+  ncclProfilerNetIbDescr_v1_t eDescr = { };
+  eDescr.type = ncclProfileQp;
+  eDescr.qp = { ... };
+  ncclProfilerCallback(&eHandle, 0 /* start net event */, phandle, pluginId, &eDescr);
+  ...
+}
+```
+
 State transitions for the events described can also come with event attribute updates. For this
 reason the profiler defines the `ncclProfilerEventStateArgs_t` struct, reported below.
 
 ```
 typedef union {
-  struct {                // attributes to update for ncclProfileProxyOp events
-    size_t transSize;     // data transferred thus far
-    int steps;            // network transfer/steps processed thus far
-  } proxyOp;
+  struct {                // attributes for update for ncclProfileProxyStep events
+    size_t transSize;     // transfer size field for this proxy step
+  } proxyStep;
 
-  struct {                // attributes to update for ncclProfileProxyCtrl
+  struct {                // attributes to update for ncclProfileProxyCtrl events
     int appendedProxyOps; // number of appended proxy ops thus far
   } proxyCtrl;
-} ncclProfilerEventStateArgs_v2_t;
+
+  struct {                // attributes to update for ncclProfileNetPlugin events
+    void* data;           // network plugin opaque update data field
+  } netPlugin;
+
+  struct {                // attribute to update for ncclProfileKernelCh events
+    uint64_t pTimer;      // timestamp provided by the NCCL kernel
+  } kernelCh;
+} ncclProfilerEventStateArgs_v4_t;
 ```
 
 The example profiler in `ext-profiler/example` contains details on how to capture and use the events above.
@@ -279,14 +394,22 @@ Group event
    +- Collective event
    |  |
    |  +- ProxyOp event
-   |     |
-   |     +- ProxyStep event
+   |  |  |
+   |  |  +- ProxyStep event
+   |  |     |
+   |  |     +- NetPlugin event
+   |  |
+   |  +- KernelCh event
    |
    +- Point-to-point event
       |
       +- ProxyOp event
-         |
-         +- ProxyStep event
+      |  |
+      |  +- ProxyStep event
+      |     |
+      |     +- NetPlugin event
+      |
+      +- KernelCh event
 
 ProxyCtrl event
 ```
@@ -296,12 +419,12 @@ ProxyCtrl event
 ## Profiling of collective and p2p operations
 
 The NCCL code is instrumented with profiler callbacks at different levels to capture start/stop of groups,
-collective and point-to-point operations, as well as proxy progress activity. Due to the asynchronous nature
+collective and point-to-point operations, as well as proxy, kernel and network activity. Due to the asynchronous nature
 of NCCL operations, events associated to collective and point-to-point operations are not easy to delimit
 precisely. For example, without both proxy and/or kernel activity it is impossible for the profiler to
 figure out when a collective operation completes. Therefore, `stopEvent` for collectives simply indicates to
-the profiler that the collective has been enqueued. The profiler can leverage proxy event information, if
-these are enabled, to estimate when the collective ends. In this case, the profiler can look at the `stopEvent`
+the profiler that the collective has been enqueued. The profiler can leverage proxy and/or kernel event information, if
+these are enabled, to estimate when the collective ends. For example, the profiler can look at the `stopEvent`
 call of the last `ncclProfileProxyOp` event to mark the completion of the associated collective event. This
 can be achieved by reference counting the collective event and letting calls to `startEvent` and `stopEvent`
 increment and decrement the reference counter, respectively.
@@ -316,3 +439,23 @@ thread originating the operation. To avoid the profiler instance in the remote p
 dereference a pointer from another address space the event descriptor includes the PID of the originator.
 The profiler plugin needs to check that the originator PID matches the local PID before dereferencing the
 parent event.
+
+# Known Limitations
+
+In intra-node communication, or whenever a rank does not have any network activity for which proxy events
+are unavailable, the profiler will only report the enqueue events (e.g., ncclAllReduce). The events from
+enqueue can be time stamped by the profiler (at start and stop) to reconstruct the execution time of the
+collective. However, this time only represents the launch time of the collective and not the actual
+execution time. To reconstruct the execution time more accurately proxy and kernel events are provided.
+
+With version 3 of the profiler interface network activity is no longer required to do intra-node profiling.
+Kernel events instrumentation leverages counters exposed by the kernel to the host and the proxy progress
+thread. Thus, the proxy progress thread infrastructure is shared between the network and the profiler. If
+the proxy is serving network requests the kernel profiling probing can be delayed, causing loss of
+accuracy. Similarly, if the CPU is under heavy load and the scheduling of the proxy progress thread is
+delayed, a similar loss of accuracy can be encountered.
+
+To mitigate this effect, with version 4 of the profiler NCCL uses a per-channel ring buffer of 64 elements.
+Every counter is complemented by two timestamps (ptimers) supplied by the NCCL kernel (one for start and one
+for stop of the operation in the kernel). NCCL propagates these timestamps to the profiler plugin that it can
+convert them to CPU time domain.

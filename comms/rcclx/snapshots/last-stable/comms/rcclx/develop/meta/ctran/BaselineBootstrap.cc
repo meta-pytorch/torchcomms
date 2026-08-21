@@ -14,11 +14,6 @@ folly::SemiFuture<int> BaselineBootstrap::allGather(
   return folly::makeSemiFuture<int>(static_cast<int>(res));
 }
 
-folly::SemiFuture<int> BaselineBootstrap::barrier(int rank, int nranks) {
-  auto res = bootstrapBarrier(comm_->bootstrap, rank, nranks, 0 /* tag */);
-  return folly::makeSemiFuture<int>(static_cast<int>(res));
-}
-
 folly::SemiFuture<int> BaselineBootstrap::allGatherNvlDomain(
     void* buf,
     int len,
@@ -32,6 +27,11 @@ folly::SemiFuture<int> BaselineBootstrap::allGatherNvlDomain(
       nvlNranks,
       buf,
       len);
+  return folly::makeSemiFuture<int>(static_cast<int>(res));
+}
+
+folly::SemiFuture<int> BaselineBootstrap::barrier(int rank, int nranks) {
+  auto res = bootstrapBarrier(comm_->bootstrap, rank, nranks, 0 /* tag */);
   return folly::makeSemiFuture<int>(static_cast<int>(res));
 }
 
