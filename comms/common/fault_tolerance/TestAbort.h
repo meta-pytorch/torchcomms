@@ -35,4 +35,7 @@ inline constexpr std::chrono::milliseconds kTestAbortTimeout{60000};
  */
 AbortDevice testAbortDevice();
 
+/** Returns a process-wide test handle using production `SKIP` behavior. */
+AbortDevice testSkipAbortDevice();
+
 } // namespace comms::fault_tolerance::testing

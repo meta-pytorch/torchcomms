@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
@@ -83,7 +84,9 @@ __device__ __forceinline__ void wait_until_reached(
     uint64_t expected,
     const Timeout& timeout) {
   while (!sequence_reached(signal.load(), expected)) {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+    // This void wait cannot propagate SKIP without reporting false completion,
+    // so preserve its trap-only contract until the public API returns status.
+    FT_ABORT_TRAP(
         timeout,
         "NVL signal wait for sequence=%llu",
         static_cast<unsigned long long>(expected));
@@ -240,7 +243,7 @@ __device__ __forceinline__ void wait_per_peer_serial(
         }
       }
       if (!complete) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        FT_ABORT_TRAP(
             timeout,
             "NVL serial per-peer wait for round=%llu",
             static_cast<unsigned long long>(round.value));
@@ -280,7 +283,7 @@ __device__ __forceinline__ void wait_per_peer_tree(
     }
     complete = completeByPeer[0] != 0;
     if (!complete && group.is_leader()) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      FT_ABORT_TRAP(
           timeout,
           "NVL tree per-peer wait for round=%llu",
           static_cast<unsigned long long>(round.value));
@@ -323,7 +326,7 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     group.sync();
     complete = completeByWarp[0] != 0 && completeByWarp[1] != 0;
     if (!complete && group.is_leader()) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      FT_ABORT_TRAP(
           timeout,
           "NVL butterfly per-peer wait for round=%llu",
           static_cast<unsigned long long>(round.value));
