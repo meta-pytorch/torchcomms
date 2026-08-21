@@ -62,6 +62,12 @@ if(spdlog_FOUND)
   endif()
 endif()
 
+if(CMAKE_HIP_COMPILER)
+  set(UNIFLOW_ENABLE_TCP_TRANSPORT ON)
+else()
+  set(UNIFLOW_ENABLE_TCP_TRANSPORT OFF)
+endif()
+
 # Sub-components
 add_subdirectory(executor)
 add_subdirectory(controller)
@@ -110,6 +116,12 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
 )
 
 target_compile_features(uniflow PUBLIC cxx_std_20)
+
+if(UNIFLOW_ENABLE_TCP_TRANSPORT)
+  target_sources(uniflow PRIVATE $<TARGET_OBJECTS:uniflow_tcp_transport>)
+  target_compile_definitions(
+      uniflow PUBLIC UNIFLOW_ENABLE_TCP_TRANSPORT=1)
+endif()
 
 target_include_directories(uniflow PUBLIC
     ${ROOT}
