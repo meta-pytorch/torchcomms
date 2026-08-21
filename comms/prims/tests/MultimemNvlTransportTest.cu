@@ -219,8 +219,9 @@ __global__ void multiChannelAggregateSignalKernel(
     MultimemNvlTransportDevice transport,
     uint64_t* out) {
   auto group = make_warp_group();
+  const auto layout = multimem::make_stage_layout<uint64_t>(transport, group);
   const StageRound round{
-      .channel = static_cast<uint32_t>(blockIdx.x),
+      .channel = group.group_id,
       .value = 1,
   };
   signal_publish_and_wait<
@@ -234,11 +235,10 @@ __global__ void multiChannelAggregateSignalKernel(
       Timeout{});
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
-    const uint64_t signalId =
-        static_cast<uint64_t>(round.channel) * transport.signalsPerChannel +
+    const uint64_t signalId = layout.signalBase +
         static_cast<uint64_t>(3 * transport.nvlRanks) + 4 * lane;
     const uint64_t outputBase =
-        static_cast<uint64_t>(round.channel) * 2 * transport.pipelineDepth;
+        static_cast<uint64_t>(group.group_id) * 2 * transport.pipelineDepth;
     out[outputBase + lane] = transport.internalLocalSignals[signalId].load();
     out[outputBase + transport.pipelineDepth + lane] =
         transport.internalLocalSignals[signalId + 1].load();
@@ -698,7 +698,7 @@ void launchMultiChannelAggregateSignal(
     uint32_t channels,
     uint64_t* out,
     cudaStream_t stream) {
-  multiChannelAggregateSignalKernel<<<channels, 32, 0, stream>>>(
+  multiChannelAggregateSignalKernel<<<1, channels * kWarpSize, 0, stream>>>(
       transport, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }

@@ -15,6 +15,11 @@ enum class NvlSignalTrapCase : uint32_t {
   WaitTimeout,
   ZeroRound,
   SignalsPerChannelMismatch,
+  DuplicateChannelOwner,
+  AggregatePartialWarp,
+  AggregateNon1DGrid,
+  PerPeerDuplicateChannelOwner,
+  PerPeerNon1DBlock,
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);
