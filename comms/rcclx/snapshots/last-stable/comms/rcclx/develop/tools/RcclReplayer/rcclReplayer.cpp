@@ -270,7 +270,7 @@ void Replayer::replay()
         graphLife[call.graphID].counter--;
         if (graphLife[call.graphID].starts.contains(lineNum))
         {
-          HIP_CALL(hipStreamBeginCapture(streams[call.stream].first, hipStreamCaptureModeGlobal));
+          HIP_CALL(hipStreamBeginCapture(streams[call.stream].first, hipStreamCaptureModeRelaxed));
           printf("[INFO    ] Rank %d - Line %d : starting capture graph %llu\n", myRank, lineNum, call.graphID);
         } else if (graphLife[call.graphID].stream != call.stream) {
           printf("[WARNING ] \x1b[31mRank %d - Line %d : multi-stream graph may not replay original dependency accurately\x1b[0m\n", myRank, lineNum);
@@ -487,6 +487,13 @@ void Replayer::replay()
       NCCL_CALL(ncclAllReduce(sbuffer, rbuffer, call.count, call.datatype, call.op, commMap[call.comm], streams[call.stream].first));
       break;
     }
+    case rrAllReduceWithBias:
+    {
+      std::vector<char> acc(call.count * ncclTypeSize(call.datatype));
+      NCCL_CALL(ncclAllReduceWithBias(sbuffer, rbuffer, call.count, call.datatype, call.op, commMap[call.comm], streams[call.stream].first, acc.data()));
+      HIP_CALL(hipStreamSynchronize(streams[call.stream].first)); // TODO: remove, and further verify behavior of fused AR
+      break;
+    }
     // a2av
     case rrAllToAllv:
     {
@@ -553,7 +560,9 @@ cleanup:
     }
     if (call.stream && lineNum == streams[call.stream].second)
     {
-      HIP_CALL(hipStreamSynchronize(streams[call.stream].first)); // ?
+      if (call.graphCaptured != 1) {
+        HIP_CALL(hipStreamSynchronize(streams[call.stream].first)); // ?
+      }
       HIP_CALL(hipStreamDestroy(streams[call.stream].first));
     }
     lineNum++; // change for a2av

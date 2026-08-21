@@ -27,12 +27,11 @@ inline __device__ int loadInt(int* ptr) {
   return v;
 }
 
-#ifndef RCCL_ENABLE_SW_PIPELINE
 template<typename RedFn, typename T, int Unroll, int BytePerPack,
          int MultimemSrcs, int MinSrcs, int MaxSrcs,
          int MultimemDsts, int MinDsts, int MaxDsts, int PreOpSrcs,
          typename IntBytes, typename SrcPtrFn, typename DstPtrFn>
-__device__ __forceinline__ void reduceCopyPacks(
+__device__ __forceinline__ static void reduceCopyPacks(
     int nThreads, int &thread,
     uint64_t redArg, uint64_t *preOpArgs, bool postOp,
     int nSrcs, SrcPtrFn const &srcPtrFn, int nDsts, DstPtrFn const &dstPtrFn,
@@ -207,15 +206,15 @@ __device__ __forceinline__ void reduceCopyPacks(
   warp = -nHunksAhead;
   thread = warp*WARP_SIZE + lane;
 }
-#else
+
 template <typename RedFn, typename SrcPtrFn, typename IntBytes, int MultimemSrcs, int MinSrcs, int MaxSrcs, int PreOpSrcs, int Unroll, int BytePerPack>
 __device__ __forceinline__ void loadSources(
-  const RedFn& redFn, 
-  const SrcPtrFn& srcPtrFn, 
-  IntBytes& globalOffset, 
-  uintptr_t* minSrcs, 
+  const RedFn& redFn,
+  const SrcPtrFn& srcPtrFn,
+  IntBytes& globalOffset,
+  uintptr_t* minSrcs,
   uint64_t *preOpArgs,
-  BytePack<BytePerPack> buff[MaxSrcs + !MaxSrcs][Unroll], 
+  BytePack<BytePerPack> buff[MaxSrcs + !MaxSrcs][Unroll],
   int nSrcs
 ) {
   #pragma unroll Unroll
@@ -294,7 +293,7 @@ template<typename RedFn, typename T, int Unroll, int BytePerPack,
          int MultimemSrcs, int MinSrcs, int MaxSrcs,
          int MultimemDsts, int MinDsts, int MaxDsts, int PreOpSrcs,
          typename IntBytes, typename SrcPtrFn, typename DstPtrFn>
-__device__ __forceinline__ void reduceCopyPacks(
+__device__ __forceinline__ static void reduceCopyPacksPipelined(
     int nThreads, int &thread,
     uint64_t redArg, uint64_t *preOpArgs, bool postOp,
     int nSrcs, SrcPtrFn const &srcPtrFn, int nDsts, DstPtrFn const &dstPtrFn,
@@ -417,7 +416,6 @@ __device__ __forceinline__ void reduceCopyPacks(
   warp = -nHunksAhead;
   thread = warp*WARP_SIZE + lane;
 }
-#endif
 
 template<typename RedFn, typename T, int Unroll, int BytePerPack,
          int MultimemSrcs, int MinSrcs, int MaxSrcs,
@@ -561,11 +559,10 @@ __device__ __forceinline__ void reduceCopyPacksWithBias(
         if (d < MultimemDsts) {
           multimem_st_global(minDsts[d], acc[u]);
         } else {
-          if (d == 0) {
+          if (d == 0)
             st_global<BytePerPack>(minDsts[d], applyReduce(redFn, acc[u], bias[u]));
-          } else {
+          else
             st_global<BytePerPack>(minDsts[d], acc[u]);
-          }
         }
         minDsts[d] += WARP_SIZE*BytePerPack;
       }
@@ -610,10 +607,10 @@ __device__ __forceinline__ void reduceCopyPacksWithBias(
   thread = warp*WARP_SIZE + lane;
 }
 
-template<int Unroll, typename RedFn, typename T,
+template<int Unroll, int  useAcc, typename RedFn, typename T,
          int MultimemSrcs, int MinSrcs, int MaxSrcs,
          int MultimemDsts, int MinDsts, int MaxDsts, int PreOpSrcs,
-         typename IntBytes, typename SrcPtrFn, typename DstPtrFn, typename AccPtrFn>
+         typename IntBytes, int Pipeline, typename SrcPtrFn, typename DstPtrFn, typename AccPtrFn>
 __device__ __forceinline__ void reduceCopy(
     int thread, int nThreads,
     uint64_t redArg, uint64_t *preOpArgs, bool postOp,
@@ -633,7 +630,7 @@ __device__ __forceinline__ void reduceCopy(
 
   IntBytes nBytesBehind = 0;
   IntBytes nBytesAhead = nElts*sizeof(T);
-  bool useAcc = accPtrFn() != nullptr;
+  // bool useAcc = accPtrFn() != nullptr;
 
   #if __cpp_if_constexpr
   if constexpr (BigPackSize > sizeof(T)) {
@@ -647,40 +644,56 @@ __device__ __forceinline__ void reduceCopy(
     aligned = !(__any(!aligned));
     if (aligned) {
 #if defined(__gfx90a__)
-      if (useAcc)
-      reduceCopyPacksWithBias<RedFn, T, ((MinSrcs > 1) ? 2 : Unroll), BigPackSize,
-        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-        (nThreads, thread, redArg, preOpArgs, postOp,
-         nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead, accPtrFn);
+      if constexpr (useAcc)
+        reduceCopyPacksWithBias<RedFn, T, ((MinSrcs > 1) ? 2 : Unroll), BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead, accPtrFn);
+      else if constexpr (Pipeline)
+        reduceCopyPacksPipelined<RedFn, T, ((MinSrcs > 1) ? 2 : Unroll), BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
       else
-      reduceCopyPacks<RedFn, T, ((MinSrcs > 1) ? 2 : Unroll), BigPackSize,
-        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-        (nThreads, thread, redArg, preOpArgs, postOp,
-         nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
+        reduceCopyPacks<RedFn, T, ((MinSrcs > 1) ? 2 : Unroll), BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
 #else
-      if (useAcc)
-      reduceCopyPacksWithBias<RedFn, T, Unroll*((MinSrcs == 1 && MinDsts == 1) ? 2 : 1), BigPackSize,
-        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-         nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
-      else
-      reduceCopyPacks<RedFn, T, Unroll*((MinSrcs == 1 && MinDsts == 1) ? 2 : 1), BigPackSize,
+      if constexpr (useAcc)
+        reduceCopyPacksWithBias<RedFn, T, Unroll*((MinSrcs == 1 && MinDsts == 1) ? 2 : 1), BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+      else if constexpr  (Pipeline)
+        reduceCopyPacksPipelined<RedFn, T, Unroll*((MinSrcs == 1 && MinDsts == 1) ? 2 : 1), BigPackSize,
         MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
         (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+      else
+        reduceCopyPacks<RedFn, T, Unroll*((MinSrcs == 1 && MinDsts == 1) ? 2 : 1), BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
 #endif
       if (nBytesAhead == 0) return;
 
-      if (useAcc)
-      reduceCopyPacksWithBias<RedFn, T, /*Unroll=*/1, BigPackSize,
-        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-         nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+      if constexpr (useAcc)
+        reduceCopyPacksWithBias<RedFn, T, /*Unroll=*/1, BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+      else if constexpr (Pipeline)
+        reduceCopyPacksPipelined<RedFn, T, /*Unroll=*/1, BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
       else
-      reduceCopyPacks<RedFn, T, /*Unroll=*/1, BigPackSize,
-        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-         nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+        reduceCopyPacks<RedFn, T, /*Unroll=*/1, BigPackSize,
+          MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+          (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+          nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+
       if (nBytesAhead == 0) return;
     }
   }
@@ -707,67 +720,90 @@ __device__ __forceinline__ void reduceCopy(
 */
 #if defined(__gfx90a__)
   if (MinSrcs > 1) {
-    if (useAcc)
-    reduceCopyPacksWithBias<RedFn, T, (Unroll*4 + sizeof(T) - 1)/sizeof(T), sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead, accPtrFn);
+    if constexpr (useAcc)
+      reduceCopyPacksWithBias<RedFn, T, (Unroll*4 + sizeof(T) - 1)/sizeof(T), sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead, accPtrFn);
+    else if constexpr (Pipeline)
+      reduceCopyPacksPipelined<RedFn, T, (Unroll*4 + sizeof(T) - 1)/sizeof(T), sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
     else
-    reduceCopyPacks<RedFn, T, (Unroll*4 + sizeof(T) - 1)/sizeof(T), sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
+      reduceCopyPacks<RedFn, T, (Unroll*4 + sizeof(T) - 1)/sizeof(T), sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, nBytesBehind, nBytesAhead);
   } else {
-    if (useAcc)
-    reduceCopyPacksWithBias<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+    if constexpr (useAcc)
+      reduceCopyPacksWithBias<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+    else if constexpr (Pipeline)
+      reduceCopyPacksPipelined<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
     else
-    reduceCopyPacks<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+      reduceCopyPacks<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+        MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+        (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+        nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
   }
 #else
-  if (useAcc)
-  reduceCopyPacksWithBias<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+  if constexpr (useAcc)
+    reduceCopyPacksWithBias<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+  else if constexpr (Pipeline)
+    reduceCopyPacksPipelined<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
   else
-  reduceCopyPacks<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+    reduceCopyPacks<RedFn, T, Unroll*(16/sizeof(T))/2, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+
 #endif
   if (nBytesAhead == 0) return;
 
-  if (useAcc)
-  reduceCopyPacksWithBias<RedFn, T, /*Unroll=*/1, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+  if constexpr (useAcc)
+    reduceCopyPacksWithBias<RedFn, T, /*Unroll=*/1, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead, accPtrFn);
+  else if constexpr (Pipeline)
+    reduceCopyPacksPipelined<RedFn, T, /*Unroll=*/1, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
   else
-  reduceCopyPacks<RedFn, T, /*Unroll=*/1, /*BytePerPack=*/sizeof(T),
-    MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
-    (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
-     nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+    reduceCopyPacks<RedFn, T, /*Unroll=*/1, /*BytePerPack=*/sizeof(T),
+      MultimemSrcs, MinSrcs, MaxSrcs, MultimemDsts, MinDsts, MaxDsts, PreOpSrcs>
+      (nThreads, /*&*/thread, redArg, preOpArgs, postOp,
+      nSrcs, srcPtrFn, nDsts, dstPtrFn, /*&*/nBytesBehind, /*&*/nBytesAhead);
+
 }
 
-template<int Unroll, typename RedFn, typename T,
+
+template<int Unroll, int useAcc, typename RedFn, typename T,
          int MultimemSrcs, int MinSrcs, int MaxSrcs,
          int MultimemDsts, int MinDsts, int MaxDsts, int PreOpSrcs,
-         typename IntBytes>
+         int Pipeline = 0, typename IntBytes>
 __device__ __forceinline__ void reduceCopy(
     int thread, int nThreads,
     uint64_t redArg, uint64_t *preOpArgs, bool postOp,
     int nSrcs, void** srcPtrs, int nDsts, void** dstPtrs,
     IntBytes nElts, void *accPtr = nullptr
   ) {
-  reduceCopy<Unroll, RedFn, T,
+  reduceCopy<Unroll, useAcc, RedFn, T,
              MultimemSrcs, MinSrcs, MaxSrcs,
-             MultimemDsts, MinDsts, MaxDsts, PreOpSrcs, IntBytes>
+             MultimemDsts, MinDsts, MaxDsts, PreOpSrcs, IntBytes, Pipeline>
     (thread, nThreads, redArg, preOpArgs, postOp,
      nSrcs, [=]__device__(int i) { return srcPtrs[i]; },
      nDsts, [=]__device__(int i) { return dstPtrs[i]; }, nElts, [=]__device__() { return accPtr; });

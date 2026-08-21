@@ -1,9 +1,19 @@
 # RCCLX Snapshot Metadata
-# This file records the source commit for this snapshot.
-# The rcclx/ directory contains sources extracted from this commit.
+# The rcclx/ directory holds the current stable snapshot sources.
+#
+# source_commit      the commit these sources were originally extracted from
+# fbsource_revision  the landed fbsource revision this snapshot was last
+#                    created or rotated at
+#
+# The tree is maintained in-repo, so patches may have landed on top of
+# source_commit. Run `sl log` on this directory to see them.
 
-commit: 6f840ba5d808af9407979bca2132790a72898887
-commit_date: 2026-01-30 10:51 -0800
-commit_description: DDA nranks check patch
-snapshot_created: 2026-02-01T16:26:17.476463
+source_commit: 6f840ba5d808af9407979bca2132790a72898887
+source_commit_date: 2026-01-30 10:51 -0800
+source_commit_description: DDA nranks check patch
+
+fbsource_revision: 34f53cfe1715f09b9c6750ed51e38e49eb204dfc
+fbsource_revision_date: 2026-08-20 11:14 -0700
+
+snapshot_created: 2026-08-20T12:52:23.373150
 created_by: create_snapshot.py
