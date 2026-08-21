@@ -24,10 +24,10 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -514,24 +514,6 @@ static QpExchangeInfo exchangeAndConnect(BenchmarkContext* ctx, int peerRank) {
 }
 
 //------------------------------------------------------------------------------
-// Poll completion queue helper
-//------------------------------------------------------------------------------
-
-static void pollCqUntilCompletion(BenchmarkContext* ctx) {
-  auto pollCqFn = ctx->endpoint->cq->context->ops.poll_cq;
-  while (true) {
-    int ne = pollCqFn(ctx->endpoint->cq, 1, &ctx->wc);
-    if (ne > 0) {
-      if (ctx->wc.status != ibverbx::IBV_WC_SUCCESS) {
-        XLOGF(ERR, "WC failed with status {}", ctx->wc.status);
-        throw std::runtime_error("Work completion failed");
-      }
-      break;
-    }
-  }
-}
-
-//------------------------------------------------------------------------------
 // Benchmark Result
 //------------------------------------------------------------------------------
 
@@ -575,7 +557,7 @@ class IbverbsBenchmarkFixture : public MpiBaseTestFixture {
     char* postBuf = ctx->sendBuf + ctx->msgSize - 1;
     volatile char* pollBuf = ctx->recvBuf + ctx->msgSize - 1;
 
-    XLOGF(INFO, "[Sender] Running ping-pong benchmark: {}", testName);
+    CTRAN_LOG(INFO, "[Sender] Running ping-pong benchmark: {}", testName);
 
     *postBuf = 0;
     *pollBuf = 0;
@@ -598,7 +580,8 @@ class IbverbsBenchmarkFixture : public MpiBaseTestFixture {
       }
     }
 
-    XLOG(INFO) << "[Sender] Warmup complete, starting measurement...";
+    CTRAN_LOG_STREAM(INFO)
+        << "[Sender] Warmup complete, starting measurement...";
 
     // Benchmark
     using Clock = std::chrono::high_resolution_clock;
@@ -649,7 +632,7 @@ class IbverbsBenchmarkFixture : public MpiBaseTestFixture {
     char* postBuf = ctx->sendBuf + ctx->msgSize - 1;
     volatile char* pollBuf = ctx->recvBuf + ctx->msgSize - 1;
 
-    XLOGF(INFO, "[Receiver] Running ping-pong benchmark: {}", testName);
+    CTRAN_LOG(INFO, "[Receiver] Running ping-pong benchmark: {}", testName);
 
     *postBuf = 0;
     *pollBuf = 0;
@@ -673,7 +656,7 @@ class IbverbsBenchmarkFixture : public MpiBaseTestFixture {
       }
     }
 
-    XLOGF(INFO, "[Receiver] Completed {} iterations", iterations);
+    CTRAN_LOG(INFO, "[Receiver] Completed {} iterations", iterations);
   }
 
   void printResultsTable(
@@ -799,7 +782,8 @@ class IbverbsBenchmarkFixture : public MpiBaseTestFixture {
 TEST_F(IbverbsBenchmarkFixture, CrossHostPingPongHalfRttLatency_RdmaWrite) {
   // Only test with 2 ranks (one per host)
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1251,7 +1235,8 @@ static BenchmarkResult runBandwidthBenchmark(
 
 TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaWrite) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1307,7 +1292,8 @@ TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaWrite) {
 
 TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaRead) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1384,7 +1370,8 @@ TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaRead) {
 
 TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaWriteWithImm) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1442,7 +1429,8 @@ TEST_F(IbverbsBenchmarkFixture, CrossHostFullRttLatency_RdmaWriteWithImm) {
 
 TEST_F(IbverbsBenchmarkFixture, CrossHostBandwidth_RdmaWrite) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 

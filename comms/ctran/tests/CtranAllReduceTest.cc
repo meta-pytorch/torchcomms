@@ -4,6 +4,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -71,7 +72,7 @@ class CtranAllReduceTest
       std::optional<std::chrono::milliseconds> timeout = std::nullopt) {
     validateConfigs(nElem);
 
-    CLOGF(INFO, "rank {} allReduce with {} elems", state.rank, nElem);
+    CTRAN_LOG(INFO, "rank {} allReduce with {} elems", state.rank, nElem);
 
     void* srcHandle;
     void* dstHandle;
@@ -89,7 +90,7 @@ class CtranAllReduceTest
       state.ctranComm->ctran_->commDeregister(srcHandle);
     };
 
-    CLOGF(INFO, "rank {} allReduce completed registration", state.rank);
+    CTRAN_LOG(INFO, "rank {} allReduce completed registration", state.rank);
 
     EXPECT_EQ(
         commSuccess,
@@ -107,7 +108,7 @@ class CtranAllReduceTest
       workEnqueued->post();
     }
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "rank {} allReduce scheduled, expecting {}",
         state.rank,
@@ -124,7 +125,7 @@ class CtranAllReduceTest
       EXPECT_EQ(commRemoteError, state.ctranComm->getAsyncResult());
     }
 
-    CLOGF(INFO, "rank {} allReduce task completed", state.rank);
+    CTRAN_LOG(INFO, "rank {} allReduce task completed", state.rank);
   }
 
   void runTestRanksAbsent(
@@ -544,7 +545,7 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
         state.ctranComm->ctran_->commDeregister(srcHandle);
       };
 
-      CLOGF(INFO, "rank {} allReduce completed registration", state.rank);
+      CTRAN_LOG(INFO, "rank {} allReduce completed registration", state.rank);
 
       EXPECT_EQ(
           commSuccess,
@@ -559,13 +560,13 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
               NCCL_ALLREDUCE_ALGO::ctring,
               /*timeout=*/std::nullopt));
 
-      CLOGF(INFO, "rank {} allReduce scheduled", state.rank);
+      CTRAN_LOG(INFO, "rank {} allReduce scheduled", state.rank);
 
       // ensure async execution completion and no error
       EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
       EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
 
-      CLOGF(INFO, "rank {} allReduce task completed", state.rank);
+      CTRAN_LOG(INFO, "rank {} allReduce task completed", state.rank);
 
       // validate results
       ASSERT_EQ(

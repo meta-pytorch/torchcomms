@@ -9,6 +9,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/TestUtils.h"
 
 class RegCacheBench : public ctran::CtranDistTestFixture {
@@ -72,7 +73,7 @@ TEST_P(RegCacheTestParam, RegMemAndSearchRegHandleTime) {
     allSegments.insert(allSegments.end(), segments.begin(), segments.end());
   }
 
-  XLOG(INFO) << fmt::format(
+  CTRAN_LOG_STREAM(INFO) << fmt::format(
       "offset={}, numSegments={}, segmentSize={}, allSegments.size={},"
       " allBufs.size={}",
       offset,
