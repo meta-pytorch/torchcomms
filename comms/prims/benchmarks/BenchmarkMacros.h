@@ -3,8 +3,8 @@
 #pragma once
 
 #include <cuda_runtime.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims::benchmark {
 
@@ -24,7 +24,7 @@ constexpr std::size_t kDefaultDataBufferSize = 8 * 1024 * 1024;
   do {                               \
     cudaError_t err = call;          \
     if (err != cudaSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "CUDA error at {}:{}: {}", \
           __FILE__,                  \
@@ -39,7 +39,7 @@ constexpr std::size_t kDefaultDataBufferSize = 8 * 1024 * 1024;
   do {                               \
     ncclResult_t res = call;         \
     if (res != ncclSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "NCCL error at {}:{}: {}", \
           __FILE__,                  \
@@ -54,7 +54,7 @@ constexpr std::size_t kDefaultDataBufferSize = 8 * 1024 * 1024;
   do {                               \
     cudaError_t err = call;          \
     if (err != cudaSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "CUDA error at {}:{}: {}", \
           __FILE__,                  \
@@ -69,7 +69,7 @@ constexpr std::size_t kDefaultDataBufferSize = 8 * 1024 * 1024;
   do {                               \
     ncclResult_t res = call;         \
     if (res != ncclSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "NCCL error at {}:{}: {}", \
           __FILE__,                  \
@@ -84,7 +84,7 @@ constexpr std::size_t kDefaultDataBufferSize = 8 * 1024 * 1024;
   do {                               \
     cudaError_t err = call;          \
     if (err != cudaSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "CUDA error at {}:{}: {}", \
           __FILE__,                  \

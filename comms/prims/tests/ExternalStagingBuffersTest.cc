@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <memory>
 #include <vector>
@@ -192,7 +192,7 @@ TEST_F(ExternalStagingBuffersTestFixture, IpcMemAccessThroughExternalBuffers) {
   auto remoteAddr =
       static_cast<int*>(static_cast<void*>(p2p.getRemoteState().dataBuffer));
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: localAddr={}, remoteAddr={}",
       globalRank,

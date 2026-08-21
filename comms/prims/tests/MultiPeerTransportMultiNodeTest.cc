@@ -10,7 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/prims/topology/NvmlFabricInfo.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
@@ -99,7 +99,7 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
       }
     }
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {} platform detection: isMnnvl={}, localSize={}",
         globalRank,
@@ -169,7 +169,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
   // Invariant: NVL peers are a subset of IBGDA peers.
   EXPECT_LE(nvlCount, ibgdaCount);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {} (localRank {}): isMnnvl={}, {} NVL peers, {} IBGDA peers",
       globalRank,
@@ -298,7 +298,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
     EXPECT_NE(p2p, nullptr) << "IBGDA transport device null for peer " << r;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: isMnnvl={}, validated {} NVL peers, {} IBGDA peers",
       globalRank,
