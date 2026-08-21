@@ -570,8 +570,9 @@ __device__ __forceinline__ void signal_publish_impl(
             nvl_signal_detail::aggregate_counter_id<phase>(
                 transport, round, lane);
         if constexpr (access == NvlSignalAccess::Multimem) {
-          transport.template signal_internal_scalar<SignalOp::SIGNAL_ADD>(
-              signalId, 1);
+          transport
+              .template signal_internal_scalar_prefenced<SignalOp::SIGNAL_ADD>(
+                  signalId, 1);
         } else {
           for (int destination = 0; destination < transport.nvlRanks;
                ++destination) {
@@ -588,8 +589,9 @@ __device__ __forceinline__ void signal_publish_impl(
           transport, round, transport.nvlRank);
       if constexpr (access == NvlSignalAccess::Multimem) {
         if (group.is_leader()) {
-          transport.template signal_internal_scalar<SignalOp::SIGNAL_SET>(
-              signalId, round.value);
+          transport
+              .template signal_internal_scalar_prefenced<SignalOp::SIGNAL_SET>(
+                  signalId, round.value);
         }
       } else {
         const int destination = static_cast<int>(group.thread_id_in_group);
