@@ -30,15 +30,24 @@ Usage:
         --snapshots-root fbcode/comms/rcclx/snapshots \\
         --repo-root /path/to/fbsource
 
+    # Rotate only: mirror stable → last-stable, leaving stable untouched
+    python3 create_snapshot.py \\
+        --rotate-only \\
+        --snapshots-root fbcode/comms/rcclx/snapshots \\
+        --repo-root /path/to/fbsource
+
 The snapshot structure is:
-    snapshots/stable/rcclx/          # Extracted rcclx sources
+    snapshots/stable/comms/rcclx/    # Extracted rcclx sources
     snapshots/stable/metadata.txt    # Commit hash, timestamp
-    snapshots/last-stable/rcclx/
+    snapshots/last-stable/comms/rcclx/
     snapshots/last-stable/metadata.txt
 """
 
+from __future__ import annotations
+
 import argparse
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +60,10 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger: logging.Logger = logging.getLogger(__name__)
+
+# `sl archive` preserves the repository path, so extracted sources always land at
+# <stage>/comms/rcclx/ rather than <stage>/rcclx/.
+SNAPSHOT_SRC_SUBDIR = "comms/rcclx"
 
 
 def get_current_commit(repo_root: Path) -> str:
@@ -75,6 +88,46 @@ def get_commit_info(commit: str, repo_root: Path) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+def get_landed_revision(repo_root: Path) -> str:
+    """
+    Get the latest landed (public) ancestor of the working copy.
+
+    The working copy revision is usually a draft commit whose hash is rewritten
+    on rebase, amend or land, so recording it would leave metadata pointing at a
+    hash that never reaches master. The newest public ancestor is stable and
+    identifies the fbsource state the snapshot was taken against.
+    """
+    result = subprocess.run(
+        ["sl", "log", "-r", "max(::. & public())", "-T", "{node}"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def read_metadata_value(metadata_path: Path, keys: list[str]) -> str | None:
+    """
+    Read the first of `keys` present in a metadata.txt.
+
+    `commit` is accepted alongside `source_commit` so snapshots written before
+    the two-hash format can still be rotated without losing their provenance.
+    """
+    if not metadata_path.exists():
+        return None
+
+    for line in metadata_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        name, sep, value = stripped.partition(":")
+        if sep and name.strip() in keys:
+            return value.strip() or None
+
+    return None
 
 
 def extract_rcclx_from_commit(
@@ -1093,64 +1146,177 @@ def _remove_manifold_comments(content: str) -> str:
 
 def write_metadata(
     metadata_path: Path,
-    commit: str,
+    source_commit: str,
     repo_root: Path,
+    description: str = "The rcclx/ directory contains sources extracted from source_commit.",
+    extra_fields: dict[str, str] | None = None,
 ) -> None:
-    """Write metadata file with commit hash and timestamp."""
-    commit_info = get_commit_info(commit, repo_root)
-    lines = commit_info.split("\n")
+    """
+    Write metadata recording both hashes that describe a snapshot.
 
-    full_hash = lines[0] if len(lines) > 0 else commit
-    commit_date = lines[1] if len(lines) > 1 else "unknown"
-    commit_desc = lines[2] if len(lines) > 2 else "unknown"
+    Two hashes are needed because a snapshot is not a frozen copy of one commit.
+    `source_commit` is the drop the sources were originally extracted from, and
+    `fbsource_revision` is the landed revision the snapshot was last created or
+    rotated at. Patches land on the tree in between, so recording only the first
+    understates the contents and recording only the second loses the drop it
+    came from.
+    """
+    source_info = get_commit_info(source_commit, repo_root).split("\n")
+    source_hash = source_info[0] if len(source_info) > 0 else source_commit
+    source_date = source_info[1] if len(source_info) > 1 else "unknown"
+    source_desc = source_info[2] if len(source_info) > 2 else "unknown"
+
+    revision_info = get_commit_info(get_landed_revision(repo_root), repo_root).split("\n")
+    revision_hash = revision_info[0] if len(revision_info) > 0 else "unknown"
+    revision_date = revision_info[1] if len(revision_info) > 1 else "unknown"
 
     metadata_content = f"""# RCCLX Snapshot Metadata
-# This file records the source commit for this snapshot.
-# The rcclx/ directory contains sources extracted from this commit.
+# {description}
+#
+# source_commit      the commit these sources were originally extracted from
+# fbsource_revision  the landed fbsource revision this snapshot was last
+#                    created or rotated at
+#
+# The tree is maintained in-repo, so patches may have landed on top of
+# source_commit. Run `sl log` on this directory to see them.
 
-commit: {full_hash}
-commit_date: {commit_date}
-commit_description: {commit_desc}
+source_commit: {source_hash}
+source_commit_date: {source_date}
+source_commit_description: {source_desc}
+
+fbsource_revision: {revision_hash}
+fbsource_revision_date: {revision_date}
+
 snapshot_created: {datetime.now().isoformat()}
 created_by: create_snapshot.py
 """
 
-    with open(metadata_path, "w") as f:
-        f.write(metadata_content)
+    for key, value in (extra_fields or {}).items():
+        metadata_content += f"{key}: {value}\n"
 
-    logger.info(f"Wrote metadata to {metadata_path}")
+    metadata_path.write_text(metadata_content)
+
+    logger.info(
+        f"Wrote metadata to {metadata_path} "
+        f"(source={source_hash[:12]}, fbsource={revision_hash[:12]})"
+    )
 
 
-def rotate_stable_to_last_stable(snapshots_root: Path) -> None:
+def _retarget_snapshot_stage(rcclx_dir: Path, from_stage: str, to_stage: str) -> None:
     """
-    Copy stable snapshot to last-stable.
+    Point a copied snapshot's Buck load paths and include paths at its new stage.
 
-    This preserves the previous stable snapshot before creating a new one.
+    Only path-like references are rewritten, i.e. "comms/rcclx/snapshots/<stage>"
+    followed by "/", ":" or a closing quote. Runtime package-name checks such as
+    `elif "snapshots/stable" in pkg:` in def_build.bzl must keep matching every
+    stage, so they are deliberately left alone.
+
+    Args:
+        rcclx_dir: Path to the rcclx directory within the destination snapshot
+        from_stage: Stage the sources were copied from ("stable")
+        to_stage: Stage the sources now live in ("last-stable")
     """
-    stable_rcclx = snapshots_root / "stable" / "rcclx"
-    stable_meta = snapshots_root / "stable" / "metadata.txt"
-    last_stable_rcclx = snapshots_root / "last-stable" / "rcclx"
-    last_stable_meta = snapshots_root / "last-stable" / "metadata.txt"
+    logger.info(f"Retargeting snapshot paths from {from_stage} to {to_stage}")
+
+    pattern = re.compile(rf'comms/rcclx/snapshots/{re.escape(from_stage)}(?=[/:"])')
+    replacement = f"comms/rcclx/snapshots/{to_stage}"
+
+    files_updated = 0
+    for path in sorted([*rcclx_dir.rglob("BUCK"), *rcclx_dir.rglob("*.bzl")]):
+        content = path.read_text()
+        new_content = pattern.sub(replacement, content)
+        if new_content != content:
+            path.write_text(new_content)
+            logger.info(f"  Retargeted {path.relative_to(rcclx_dir)}")
+            files_updated += 1
+
+    if files_updated == 0:
+        logger.warning(
+            f"  No {from_stage} paths found to retarget - the copy may not build under {to_stage}"
+        )
+    else:
+        logger.info(f"  Retargeted {files_updated} file(s)")
+
+    # Nothing should still point at the stage we copied from.
+    stale = [
+        str(path.relative_to(rcclx_dir))
+        for path in sorted([*rcclx_dir.rglob("BUCK"), *rcclx_dir.rglob("*.bzl")])
+        if pattern.search(path.read_text())
+    ]
+    if stale:
+        raise RuntimeError(
+            f"Files still reference the {from_stage} snapshot after retargeting: {stale}"
+        )
+
+
+def rotate_stable_to_last_stable(snapshots_root: Path, repo_root: Path) -> None:
+    """
+    Mirror the current stable snapshot into last-stable.
+
+    The stable tree is copied verbatim rather than re-extracted from its recorded
+    commit. Snapshots are maintained in-repo after creation (compatibility
+    patches, build fixes, ROCm bumps), so re-extracting would silently drop
+    everything applied since. Copying is the only faithful mirror.
+
+    After the copy, stage-specific Buck load paths and include paths are
+    retargeted so last-stable references its own sources instead of stable's.
+    """
+    stable_dir = snapshots_root / "stable"
+    last_stable_dir = snapshots_root / "last-stable"
+    stable_rcclx = stable_dir / SNAPSHOT_SRC_SUBDIR
+    last_stable_rcclx = last_stable_dir / SNAPSHOT_SRC_SUBDIR
 
     if not stable_rcclx.exists():
-        logger.warning("No stable snapshot exists, skipping rotation")
-        return
+        raise RuntimeError(f"No stable snapshot to rotate from: {stable_rcclx} does not exist")
 
-    logger.info("Rotating: copying stable → last-stable...")
+    logger.info("=" * 60)
+    logger.info("Rotating: mirroring stable -> last-stable")
+    logger.info("=" * 60)
 
-    # Remove existing last-stable
     if last_stable_rcclx.exists():
         logger.info(f"Removing existing last-stable: {last_stable_rcclx}")
         shutil.rmtree(last_stable_rcclx)
 
-    # Copy stable to last-stable
-    logger.info(f"Copying {stable_rcclx} → {last_stable_rcclx}")
-    shutil.copytree(stable_rcclx, last_stable_rcclx)
+    logger.info(f"Copying {stable_rcclx} -> {last_stable_rcclx}")
+    last_stable_rcclx.parent.mkdir(parents=True, exist_ok=True)
+    # symlinks=True keeps symlinks as symlinks instead of materializing their targets.
+    shutil.copytree(stable_rcclx, last_stable_rcclx, symlinks=True)
 
-    # Copy metadata
-    if stable_meta.exists():
-        shutil.copy(stable_meta, last_stable_meta)
-        logger.info(f"Copied metadata to {last_stable_meta}")
+    _retarget_snapshot_stage(last_stable_rcclx, "stable", "last-stable")
+
+    # The tree is copied from stable, so its provenance is stable's: carry the
+    # original source_commit across rather than regenerating it. Overwriting it
+    # with the current revision would destroy the record of which drop these
+    # sources came from, which no later run could recover.
+    stable_metadata = stable_dir / "metadata.txt"
+    source_commit = read_metadata_value(stable_metadata, ["source_commit", "commit"])
+    if source_commit is None:
+        raise RuntimeError(
+            f"Could not read source_commit from {stable_metadata}. Refusing to rotate, "
+            "because writing last-stable without it would lose the record of which "
+            "commit these sources came from."
+        )
+    logger.info(f"Carrying stable's source_commit {source_commit[:12]} into last-stable")
+
+    write_metadata(
+        last_stable_dir / "metadata.txt",
+        source_commit,
+        repo_root,
+        description=(
+            "The rcclx/ directory mirrors the stable snapshot as of fbsource_revision."
+        ),
+        extra_fields={"rotated_from": "stable"},
+    )
+    write_metadata(
+        stable_dir / "metadata.txt",
+        source_commit,
+        repo_root,
+        description=(
+            "The rcclx/ directory holds the current stable snapshot sources."
+        ),
+    )
+
+    run_arc_lint(last_stable_dir, repo_root)
 
     logger.info("Rotation complete")
 
@@ -1178,14 +1344,14 @@ def create_snapshot(
 
     # Handle rotation: stable → last-stable
     if rotate and stage == "stable":
-        rotate_stable_to_last_stable(snapshots_root)
+        rotate_stable_to_last_stable(snapshots_root, repo_root)
 
     # Prepare destination paths
     stage_dir = snapshots_root / stage
-    dest_rcclx = stage_dir / "rcclx"
+    dest_rcclx = stage_dir / SNAPSHOT_SRC_SUBDIR
     metadata_path = stage_dir / "metadata.txt"
 
-    # Remove old snapshot if exists
+    # Remove old snapshot if exists, so files deleted upstream do not survive
     if dest_rcclx.exists():
         logger.info(f"Removing existing snapshot: {dest_rcclx}")
         shutil.rmtree(dest_rcclx)
@@ -1205,7 +1371,7 @@ def create_snapshot(
     logger.info("")
     logger.info("=" * 60)
     logger.info(f"Successfully created {stage} snapshot")
-    logger.info(f"  Sources: {stage_dir}/rcclx/")
+    logger.info(f"  Sources: {dest_rcclx}/")
     logger.info(f"  Metadata: {metadata_path}")
     logger.info("=" * 60)
 
@@ -1220,7 +1386,7 @@ def run_arc_lint(stage_dir: Path, repo_root: Path) -> None:
         stage_dir: Path to the snapshot stage directory (e.g., snapshots/stable/)
         repo_root: Path to the repository root
     """
-    rcclx_dir = stage_dir / "comms" / "rcclx"
+    rcclx_dir = stage_dir / SNAPSHOT_SRC_SUBDIR
     if not rcclx_dir.exists():
         logger.warning(f"rcclx directory not found at {rcclx_dir}, skipping arc lint")
         return
@@ -1291,14 +1457,19 @@ Examples:
     python3 create_snapshot.py --stage stable --commit abc123def --rotate \\
         --snapshots-root fbcode/comms/rcclx/snapshots \\
         --repo-root /path/to/fbsource
+
+    # Rotate only: mirror stable → last-stable, leaving stable untouched
+    python3 create_snapshot.py --rotate-only \\
+        --snapshots-root fbcode/comms/rcclx/snapshots \\
+        --repo-root /path/to/fbsource
         """,
     )
     parser.add_argument(
         "--stage",
         type=str,
-        required=True,
+        default=None,
         choices=["stable", "last-stable"],
-        help="Snapshot stage: stable or last-stable",
+        help="Snapshot stage: stable or last-stable (required unless --rotate-only)",
     )
     parser.add_argument(
         "--commit",
@@ -1323,6 +1494,12 @@ Examples:
         action="store_true",
         help="If creating stable, first copy current stable to last-stable",
     )
+    parser.add_argument(
+        "--rotate-only",
+        action="store_true",
+        help="Only mirror the current stable snapshot into last-stable, then exit "
+        "(no new stable snapshot is created)",
+    )
 
     args = parser.parse_args()
 
@@ -1330,6 +1507,15 @@ Examples:
         # Validate paths
         if not args.repo_root.exists():
             parser.error(f"Repository root does not exist: {args.repo_root}")
+
+        if args.rotate_only:
+            if args.stage or args.commit or args.rotate:
+                parser.error("--rotate-only cannot be combined with --stage, --commit or --rotate")
+            rotate_stable_to_last_stable(args.snapshots_root, args.repo_root)
+            return 0
+
+        if not args.stage:
+            parser.error("--stage is required unless --rotate-only is given")
 
         # Resolve commit
         commit: str
