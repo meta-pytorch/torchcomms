@@ -1306,6 +1306,15 @@ __device__ __forceinline__ void send_impl(
                 protocolBytesThis);
           }
         }
+        // The backpressure wait may have given up rather than been satisfied.
+        // Leave before the put below, whose fused DATA_READY would tell the
+        // receiver a chunk had landed that we never sent -- releasing a peer
+        // that is correctly blocked and preventing it from ever reaching its
+        // own deadline. The slot epilogue after this loop still runs, so the
+        // progress slot is left idle for the next op.
+        if (groupAborted(group, timeout)) {
+          break;
+        }
 
         // (4) Leader-only single-WQE RDMA put with fused signal.
         if (group.is_leader()) {
@@ -1750,6 +1759,14 @@ __device__ __forceinline__ void recv_impl(
             timeout,
             traceContext,
             args...);
+        // The DATA_READY wait inside consumeRecvBuf may have given up rather
+        // than been satisfied, in which case this chunk was never written.
+        // Leave before the SLOT_FREE credit below: signalling it would tell the
+        // sender we consumed a chunk it never sent, releasing a peer that is
+        // correctly blocked and preventing it from reaching its own deadline.
+        if (groupAborted(group, timeout)) {
+          break;
+        }
 
         if (group.is_leader()) {
           trace_allreduce_event(
@@ -2081,6 +2098,14 @@ __device__ __forceinline__ void forward_impl(
           recvTraceContext,
           sendTraceContext,
           args...);
+      // The DATA_READY wait inside prepareForwardBuf may have given up, so this
+      // chunk was never written. Forward is the worst of the three paths to get
+      // wrong on abort: continuing would ACK the predecessor for a chunk we
+      // never consumed *and* hand the successor data that never arrived,
+      // releasing two correctly-blocked peers at once.
+      if (groupAborted(group, timeout)) {
+        break;
+      }
 
       transport.signal(
           group,
@@ -2107,6 +2132,12 @@ __device__ __forceinline__ void forward_impl(
               static_cast<uint8_t>(kPipesTraceQpLaneMask),
               fwdProtocolBytesThis);
         }
+      }
+      // As in send_impl: the successor backpressure wait may have given up, and
+      // the put below carries a fused DATA_READY that would release the
+      // successor on data we never wrote.
+      if (groupAborted(group, timeout)) {
+        break;
       }
 
       // (6) Leader-only RDMA put via the forwarding transport.
