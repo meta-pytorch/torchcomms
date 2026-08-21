@@ -1405,10 +1405,27 @@ MultiPeerIbTransportBase::lookupIbBulkBuffer(
     return std::nullopt;
   }
 
+  IbgdaBufferExchInfo exchangeInfo;
+  exchangeInfo.addr = reinterpret_cast<uint64_t>(ptr);
+  exchangeInfo.numNics = numNics_;
+  auto mrIt = registeredBuffers_.upper_bound(requestedBegin);
+  if (mrIt == registeredBuffers_.begin()) {
+    return std::nullopt;
+  }
+  --mrIt;
+  if (!rangeContains(
+          mrIt->first, mrIt->second.allocSize, requestedBegin, size)) {
+    return std::nullopt;
+  }
+  for (int n = 0; n < numNics_; ++n) {
+    exchangeInfo.rkey_per_device[n] = HostRKey(mrIt->second.mrs[n]->rkey);
+  }
+
   return IbBufferRegistrationView{
       .leaseGeneration = lease.generation(),
       .localBuffer =
           active.localBuffer.subBuffer(requestedBegin - registeredBegin),
+      .exchangeInfo = exchangeInfo,
       .size = size,
       .relaxedOrdering = active.relaxedOrdering,
   };
