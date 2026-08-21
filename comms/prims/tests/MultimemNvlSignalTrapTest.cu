@@ -2,6 +2,7 @@
 
 #include "comms/prims/tests/MultimemNvlSignalTrapTest.cuh"
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
@@ -12,7 +13,9 @@ namespace {
 __device__ alignas(SignalState) uint64_t
     trapSignalStorage[16 * sizeof(SignalState) / sizeof(uint64_t)];
 
-__global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
+__global__ void nvlSignalTrapKernel(
+    NvlSignalTrapCase testCase,
+    Timeout waitAbort) {
   auto* trapSignals = reinterpret_cast<SignalState*>(trapSignalStorage);
   SignalState* peerSignals[4] = {
       trapSignals, trapSignals, trapSignals, trapSignals};
@@ -44,23 +47,46 @@ __global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
       .channel = 0,
       .value = testCase == NvlSignalTrapCase::ZeroRound ? 0u : 1u,
   };
-  if (testCase == NvlSignalTrapCase::WaitTimeout) {
+  if (testCase == NvlSignalTrapCase::WaitTimeout ||
+      testCase == NvlSignalTrapCase::SerialMinWaitTimeout ||
+      testCase == NvlSignalTrapCase::TreeMinWaitTimeout ||
+      testCase == NvlSignalTrapCase::ButterflyMinWaitTimeout) {
     auto group = make_block_group();
-    Timeout timeout{1};
-    timeout.start();
-    signal_wait<
-        NvlSignalAccess::Unicast,
-        NvlSignalTopology::PerPeer,
-        NvlSignalPhase::Ready>(
-        transport,
-        round,
-        NvlSignalParticipants{
-            .publisherMask = uint64_t{1} << 1,
-            .waiterMask = 1,
-            .expectedArrivals = 1,
-        },
-        group,
-        timeout);
+    waitAbort.start();
+    const NvlSignalParticipants waitParticipants{
+        .publisherMask = uint64_t{1} << 1,
+        .waiterMask = 1,
+        .expectedArrivals = 1,
+    };
+    if (testCase == NvlSignalTrapCase::WaitTimeout) {
+      signal_wait<
+          NvlSignalAccess::Unicast,
+          NvlSignalTopology::PerPeer,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::WaitAll>(
+          transport, round, waitParticipants, group, waitAbort);
+    } else if (testCase == NvlSignalTrapCase::SerialMinWaitTimeout) {
+      signal_wait<
+          NvlSignalAccess::Unicast,
+          NvlSignalTopology::PerPeer,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::SerialMin>(
+          transport, round, waitParticipants, group, waitAbort);
+    } else if (testCase == NvlSignalTrapCase::TreeMinWaitTimeout) {
+      signal_wait<
+          NvlSignalAccess::Unicast,
+          NvlSignalTopology::PerPeer,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::TreeMin>(
+          transport, round, waitParticipants, group, waitAbort);
+    } else {
+      signal_wait<
+          NvlSignalAccess::Unicast,
+          NvlSignalTopology::PerPeer,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::ButterflyMin>(
+          transport, round, waitParticipants, group, waitAbort);
+    }
     return;
   }
   if (testCase == NvlSignalTrapCase::AggregateDepthTooLarge ||
@@ -85,8 +111,11 @@ __global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
 void launchNvlSignalTrap(NvlSignalTrapCase testCase) {
   const uint32_t threads =
       testCase == NvlSignalTrapCase::PerPeerGroupTooSmall ? 32 : 64;
+  auto waitAbort = comms::fault_tolerance::testing::testAbortDevice();
+  waitAbort.setOpTimeoutMs(1);
   nvlSignalTrapKernel<<<1, threads>>>(
-      testCase); // NOLINT(facebook-cuda-safe-kernel-call-check)
+      testCase,
+      waitAbort); // NOLINT(facebook-cuda-safe-kernel-call-check)
 }
 
 } // namespace comms::prims::test
