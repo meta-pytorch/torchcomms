@@ -14,8 +14,15 @@ enum class NvlSignalTrapCase : uint32_t {
   PerPeerGroupTooSmall,
   WaitTimeout,
   ZeroRound,
+  SignalsPerChannelMismatch,
+  DuplicateChannelOwner,
+  AggregatePartialWarp,
+  AggregateNon1DGrid,
+  PerPeerDuplicateChannelOwner,
+  PerPeerNon1DBlock,
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);
+void launchNvlSignalRankBoundary(int nvlRanks, uint64_t* output);
 
 } // namespace comms::prims::test

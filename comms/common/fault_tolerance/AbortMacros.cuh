@@ -10,16 +10,15 @@
  * Abort checks for device wait loops.
  *
  * `FT_ABORT_CHECK` is the primitive: it evaluates the handle once and reports
- * whether the caller must stop. `FT_ABORT_BREAK` and `FT_ABORT_RETURN` are the
- * two common shapes on top of it.
+ * whether the caller must stop. `FT_ABORT_BREAK`, `FT_ABORT_RETURN`, and
+ * `FT_ABORT_TRAP` provide the common control-flow shapes on top of it.
  *
- * Under `AbortBehavior::TRAP` all three log the *site* -- file, line and
- * function -- alongside the caller's message, so a log line says where the
- * abort or the timeout was observed rather than only that one happened. Under
- * the default `AbortBehavior::SKIP` they stay silent: a wait that aborts does
- * so on every thread that reached it, and one printf per thread per site would
- * bury the host-side diagnosis under device output. SKIP is the production
- * path; the reason is already recorded on the `Abort` for the host to report.
+ * Under `AbortBehavior::TRAP`, `FT_ABORT_CHECK`, `FT_ABORT_BREAK`, and
+ * `FT_ABORT_RETURN` log the *site* -- file, line and function -- alongside the
+ * caller's message. Under the default `AbortBehavior::SKIP`, those three stay
+ * silent because the reason is already recorded on the `Abort` for the host to
+ * report. `FT_ABORT_TRAP` is the explicit exception: it always logs and traps
+ * for legacy APIs that cannot safely propagate a soft-abort result.
  *
  * These live in the fault-tolerance module and deliberately depend on nothing
  * from Prims, so CTRAN and MCCL device code can use the same checks.
@@ -65,6 +64,28 @@ abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
   (void)fmt;
   ((void)args, ...);
   return false;
+#endif
+}
+
+/*
+ * Checks once, logs the caller's message for either terminal behavior, and
+ * traps. This preserves legacy trap-only APIs that cannot safely propagate a
+ * soft-abort completion status to their callers.
+ */
+template <typename... Args>
+__device__ __forceinline__ void
+abortTrapAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
+#if FT_IS_DEVICE_COMPILE
+  if (!abort.checkExpired()) {
+    return;
+  }
+  // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+  printf(fmt, args...);
+  FT_DEVICE_TRAP();
+#else
+  (void)abort;
+  (void)fmt;
+  ((void)args, ...);
 #endif
 }
 
@@ -133,4 +154,15 @@ abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
     if (FT_ABORT_CHECK(abort, fmt, ##__VA_ARGS__)) { \
       return value;                                  \
     }                                                \
+  } while (0)
+
+/* Logs and traps when an abort is visible, regardless of configured behavior.
+ */
+#define FT_ABORT_TRAP(abort, fmt, ...)                  \
+  do {                                                  \
+    ::comms::fault_tolerance::detail::abortTrapAndLog(  \
+        (abort),                                        \
+        "CUDA ABORT ERROR: " fmt FT_ABORT_SITE_SUFFIX_, \
+        ##__VA_ARGS__,                                  \
+        __func__);                                      \
   } while (0)
