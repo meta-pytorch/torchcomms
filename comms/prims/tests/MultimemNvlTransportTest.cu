@@ -108,11 +108,10 @@ __global__ void readPeerInternalSignalsKernel(
 
 __device__ NvlSignalParticipants
 makeTestParticipants(const MultimemNvlTransportDevice& transport, bool fanIn) {
-  const uint64_t allRanks = transport.nvlRanks == 64
-      ? ~uint64_t{0}
-      : (uint64_t{1} << transport.nvlRanks) - 1;
+  const auto allRanks =
+      NvlSignalRankMask::first(static_cast<uint32_t>(transport.nvlRanks));
   return NvlSignalParticipants{
-      .publisherMask = fanIn ? allRanks & ~uint64_t{1} : allRanks,
+      .publisherMask = fanIn ? allRanks.without(0) : allRanks,
       .waiterMask = fanIn ? uint64_t{1} : allRanks,
       .expectedArrivals = static_cast<uint32_t>(
           fanIn ? transport.nvlRanks - 1 : transport.nvlRanks),
@@ -121,9 +120,8 @@ makeTestParticipants(const MultimemNvlTransportDevice& transport, bool fanIn) {
 
 __device__ NvlSignalParticipants
 makeAckParticipants(const MultimemNvlTransportDevice& transport) {
-  const uint64_t allRanks = transport.nvlRanks == 64
-      ? ~uint64_t{0}
-      : (uint64_t{1} << transport.nvlRanks) - 1;
+  const auto allRanks =
+      NvlSignalRankMask::first(static_cast<uint32_t>(transport.nvlRanks));
   return NvlSignalParticipants{
       .publisherMask = 1,
       .waiterMask = allRanks,
@@ -291,11 +289,10 @@ __global__ void separatePublishAndWaitKernel(
     uint64_t roundValue,
     uint64_t* out) {
   auto group = make_block_group();
-  const uint64_t allRanks = transport.nvlRanks == 64
-      ? ~uint64_t{0}
-      : (uint64_t{1} << transport.nvlRanks) - 1;
+  const auto allRanks =
+      NvlSignalRankMask::first(static_cast<uint32_t>(transport.nvlRanks));
   const NvlSignalParticipants participants{
-      .publisherMask = allRanks & ~uint64_t{1},
+      .publisherMask = allRanks.without(0),
       .waiterMask = 1,
       .expectedArrivals = static_cast<uint32_t>(transport.nvlRanks - 1),
   };
@@ -375,7 +372,11 @@ void launchPerPeerSignalProtocolTyped(
     uint64_t* out,
     cudaStream_t stream) {
   perPeerSignalProtocolKernel<access, phase, waitPolicy>
-      <<<1, 64, 0, stream>>>(transport, fanIn, roundValue, out);
+      <<<1,
+         nvl_signal_per_peer_group_size(
+             static_cast<uint32_t>(transport.nvlRanks)),
+         0,
+         stream>>>(transport, fanIn, roundValue, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -715,8 +716,11 @@ void launchSeparatePublishAndWait(
     uint64_t roundValue,
     uint64_t* out,
     cudaStream_t stream) {
-  separatePublishAndWaitKernel<<<1, 64, 0, stream>>>(
-      transport, roundValue, out);
+  separatePublishAndWaitKernel<<<
+      1,
+      nvl_signal_per_peer_group_size(static_cast<uint32_t>(transport.nvlRanks)),
+      0,
+      stream>>>(transport, roundValue, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -735,7 +739,11 @@ void launchPerPeerWaitOnly(
     uint64_t roundValue,
     uint64_t* out,
     cudaStream_t stream) {
-  perPeerWaitOnlyKernel<<<1, 64, 0, stream>>>(transport, roundValue, out);
+  perPeerWaitOnlyKernel<<<
+      1,
+      nvl_signal_per_peer_group_size(static_cast<uint32_t>(transport.nvlRanks)),
+      0,
+      stream>>>(transport, roundValue, out);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
