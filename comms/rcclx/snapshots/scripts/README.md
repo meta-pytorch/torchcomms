@@ -20,6 +20,19 @@ snapshots/
 
 Note: The `sl archive` command preserves the `comms/rcclx/` path structure from the repository.
 
+### Snapshots Are Maintained In-Repo
+
+A snapshot is *not* a read-only mirror of its recorded commit. Once created, snapshots
+receive compatibility patches directly in the repo (ROCm version bumps, build fixes,
+backported upstream patches). This matters for rotation: `stable` → `last-stable` is a
+**tree copy**, not a re-extraction of `stable/metadata.txt`'s commit. Re-extracting would
+silently discard every patch applied since the snapshot was cut.
+
+Because of this, `metadata.txt` records **two** hashes: `source_commit`, the drop
+the sources were originally extracted from, and `fbsource_revision`, the landed
+revision the snapshot was last created or rotated at. Rotation carries
+`source_commit` across from stable rather than regenerating it.
+
 ## Quick Start
 
 All commands should be run from the `fbcode` directory.
@@ -54,27 +67,57 @@ python3 comms/rcclx/snapshots/scripts/create_snapshot.py \
     --repo-root /data/users/$USER/fbsource
 ```
 
+### Rotate Only (Mirror Stable into Last-Stable)
+
+Promotes the current `stable` tree into `last-stable` and stops. Use this when you want
+to archive the current stable without cutting a new one yet.
+
+```bash
+python3 comms/rcclx/snapshots/scripts/create_snapshot.py \
+    --rotate-only \
+    --snapshots-root comms/rcclx/snapshots \
+    --repo-root /data/users/$USER/fbsource
+```
+
 ## Command Reference
 
 ```
 Usage: create_snapshot.py [OPTIONS]
 
 Required:
-  --stage <stable|last-stable>    Snapshot stage to create
   --snapshots-root <path>         Path to snapshots directory
   --repo-root <path>              Path to repository root (for sl commands)
+  --stage <stable|last-stable>    Snapshot stage to create (not used with --rotate-only)
 
 Optional:
   --commit <hash>                 Commit hash to snapshot from (default: HEAD)
   --rotate                        If creating stable, first copy stable to last-stable
+  --rotate-only                   Only mirror stable into last-stable, then exit.
+                                  Cannot be combined with --stage/--commit/--rotate.
 ```
 
 ## How It Works
 
+### Creating a snapshot (`--stage`)
+
 1. **Extract Sources**: Uses `sl archive` to extract `fbcode/comms/rcclx/` from the specified commit
-2. **Store in Repo**: Sources are committed to `snapshots/{stage}/rcclx/`
-3. **Write Metadata**: Records commit hash and timestamp in `metadata.txt`
-4. **Build at Use Time**: When users build `rcclx-stable`, Buck compiles from the snapshot sources
+2. **Store in Repo**: Sources are committed to `snapshots/{stage}/comms/rcclx/`
+3. **Retarget Paths**: Rewrites Buck load paths and the `-I` include path to point inside the snapshot
+4. **Write Metadata**: Records commit hash and timestamp in `metadata.txt`
+5. **Build at Use Time**: When users build `rcclx-stable`, Buck compiles from the snapshot sources
+
+### Rotating (`--rotate` / `--rotate-only`)
+
+1. **Copy Tree**: `stable/comms/rcclx/` is copied verbatim to `last-stable/comms/rcclx/`,
+   preserving symlinks and file modes
+2. **Retarget Stage**: Path-like references to `comms/rcclx/snapshots/stable` are rewritten
+   to `last-stable` in `BUCK` and `.bzl` files, then verified to leave no stale references.
+   Runtime package-name checks such as `elif "snapshots/stable" in pkg:` in `def_build.bzl`
+   are deliberately left alone — they must keep matching every stage.
+3. **Write Metadata**: Both snapshots record `source_commit` (carried across from
+   stable) and `fbsource_revision` (the latest landed ancestor); `last-stable` also
+   gets `rotated_from: stable`
+4. **Lint**: `arc lint -a` runs over the rotated `BUCK`/`.bzl` files
 
 ## Benefits
 
@@ -90,12 +133,11 @@ Optional:
 
 | Script | Purpose |
 |--------|---------|
-| `create_snapshot.py` | Main script for creating source snapshots |
-| `constants.py` | Configuration constants |
+| `create_snapshot.py` | Main script for creating and rotating source snapshots |
 
 ## Related Files
 
 - `/comms/rcclx/BUCK` - Build targets including `rcclx-stable` and `rcclx-last-stable` aliases
-- `/comms/rcclx/snapshots/DESIGN_PRE_EXTRACTED_SOURCES.md` - Detailed design documentation
+- `/comms/rcclx/snapshots/README.md` - Snapshot system overview
 - `/comms/rcclx/snapshots/stable/metadata.txt` - Current stable snapshot info
 - `/comms/rcclx/snapshots/last-stable/metadata.txt` - Previous stable snapshot info
