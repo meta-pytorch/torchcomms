@@ -656,10 +656,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
 
 template <typename Transport>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
-progress_registered_send_once(
+progress_registered_send_once_impl(
     Transport& transport,
     ThreadGroup& group,
     const IbgdaLocalBuffer& src,
+    const IbgdaRemoteBuffer* directDst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
     const Timeout& timeout) {
@@ -766,10 +767,13 @@ progress_registered_send_once(
       __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+      const IbgdaRemoteBuffer destination = directDst == nullptr
+          ? remoteChannel.recvStaging.subBuffer(chunk.stagingOff)
+          : directDst->subBuffer(chunk.dataOff);
       const auto completion = transport.put(
           solo,
           src.subBuffer(chunk.dataOff),
-          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+          destination,
           validBytes,
           remoteChannel.dataReady,
           protocolBytesThis,
@@ -806,11 +810,39 @@ progress_registered_send_once(
   (void)transport;
   (void)group;
   (void)src;
+  (void)directDst;
   (void)nbytes;
   (void)max_signal_bytes;
   (void)timeout;
   return IbgdaRegisteredSendProgressStatus::Drained;
 #endif
+}
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_send_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+  return progress_registered_send_once_impl(
+      transport, group, src, nullptr, nbytes, max_signal_bytes, timeout);
+}
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_put_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    const IbgdaRemoteBuffer& dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes,
+    const Timeout& timeout) {
+  return progress_registered_send_once_impl(
+      transport, group, src, &dst, nbytes, max_signal_bytes, timeout);
 }
 
 template <typename Transport>

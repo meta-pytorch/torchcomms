@@ -306,6 +306,7 @@ class IbBufferRegistrationLease {
 struct IbBufferRegistrationView {
   uint64_t leaseGeneration{0};
   IbgdaLocalBuffer localBuffer;
+  IbgdaBufferExchInfo exchangeInfo;
   std::size_t size{0};
   bool relaxedOrdering{false};
 

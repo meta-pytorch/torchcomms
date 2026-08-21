@@ -325,6 +325,18 @@ TEST_P(MultiSegmentRegistrationTest, BulkLeaseBoundsContainedViews) {
   ASSERT_TRUE(tail.has_value());
   EXPECT_EQ(exact->localBuffer.ptr, leasePtr);
   EXPECT_EQ(contained->localBuffer.ptr, leasePtr + kViewOffset);
+  EXPECT_EQ(exact->exchangeInfo.addr, reinterpret_cast<uint64_t>(leasePtr));
+  EXPECT_EQ(
+      contained->exchangeInfo.addr,
+      reinterpret_cast<uint64_t>(leasePtr + kViewOffset));
+  EXPECT_EQ(
+      contained->exchangeInfo.numNics,
+      contained->localBuffer.lkey_per_device.size);
+  const auto remoteContained = contained->exchangeInfo.toRemoteBuffer();
+  EXPECT_EQ(remoteContained.ptr, contained->localBuffer.ptr);
+  EXPECT_EQ(
+      remoteContained.rkey_per_device.size,
+      contained->localBuffer.lkey_per_device.size);
   EXPECT_EQ(contained->size, kViewSize);
   EXPECT_EQ(contained->leaseGeneration, lease.generation());
   EXPECT_FALSE(before.has_value());
