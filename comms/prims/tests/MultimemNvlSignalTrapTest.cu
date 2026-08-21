@@ -10,8 +10,29 @@
 namespace comms::prims::test {
 namespace {
 
+constexpr auto kZeroRankMask = NvlSignalRankMask::first(0);
+constexpr auto kTooManyRankMask =
+    NvlSignalRankMask::first(kMaxNvlSignalRanks + 1);
+static_assert(kZeroRankMask.low == 0 && kZeroRankMask.high == 0);
+static_assert(kTooManyRankMask.low == 0 && kTooManyRankMask.high == 0);
+static_assert(
+    nvl_signal_per_peer_group_size(0) == kNvlSignalSmallPerPeerThreads);
+static_assert(
+    nvl_signal_per_peer_group_size(kMaxNvlSignalRanks + 1) ==
+    kNvlSignalLargePerPeerThreads);
+
 __device__ alignas(SignalState) uint64_t
     trapSignalStorage[16 * sizeof(SignalState) / sizeof(uint64_t)];
+
+constexpr int kBoundaryMaxRanks = static_cast<int>(kMaxNvlSignalRanks);
+constexpr uint32_t kBoundaryPipelineDepth = 1;
+constexpr uint32_t kBoundarySignalCount =
+    static_cast<uint32_t>(multimem_staging_signals_per_channel(
+        kBoundaryMaxRanks,
+        kBoundaryPipelineDepth));
+__device__ alignas(SignalState) uint64_t boundarySignalStorage
+    [kBoundarySignalCount * sizeof(SignalState) / sizeof(uint64_t)];
+__device__ SignalState* boundaryPeerSignals[kBoundaryMaxRanks];
 
 __global__ void nvlSignalTrapKernel(
     NvlSignalTrapCase testCase,
@@ -22,7 +43,8 @@ __global__ void nvlSignalTrapKernel(
   const bool tooManyRanks = testCase == NvlSignalTrapCase::RankCountTooLarge;
   const uint32_t pipelineDepth =
       testCase == NvlSignalTrapCase::AggregateDepthTooLarge ? 33 : 1;
-  const int nvlRanks = tooManyRanks ? 65 : 4;
+  const int nvlRanks =
+      tooManyRanks ? static_cast<int>(kMaxNvlSignalRanks + 1) : 4;
   uint32_t signalsPerChannel =
       static_cast<uint32_t>(3 * nvlRanks + 4 * pipelineDepth);
   if (testCase == NvlSignalTrapCase::SignalsPerChannelMismatch) {
@@ -86,6 +108,59 @@ __global__ void nvlSignalTrapKernel(
       NvlSignalPhase::Ready>(transport, round, participants, group);
 }
 
+__global__ void nvlSignalRankBoundaryKernel(int nvlRanks, uint64_t* output) {
+  auto group = make_block_group();
+  auto* signals = reinterpret_cast<SignalState*>(boundarySignalStorage);
+  for (int rank = static_cast<int>(threadIdx.x); rank < nvlRanks;
+       rank += static_cast<int>(blockDim.x)) {
+    boundaryPeerSignals[rank] = signals;
+  }
+  group.sync();
+
+  const int selectedRank = nvlRanks - 1;
+  const uint64_t roundValue = static_cast<uint64_t>(nvlRanks);
+  auto publishers =
+      NvlSignalRankMask::single(static_cast<uint32_t>(selectedRank));
+  publishers.low |= uint64_t{1};
+  if (group.is_leader()) {
+    signals[0].store(roundValue);
+  }
+  group.sync();
+  const auto selected =
+      NvlSignalRankMask::single(static_cast<uint32_t>(selectedRank));
+  const uint32_t signalsPerChannel = static_cast<uint32_t>(
+      multimem_staging_signals_per_channel(nvlRanks, kBoundaryPipelineDepth));
+  MultimemNvlTransportDevice transport{
+      .internalLocalSignals =
+          DeviceSpan<SignalState>(signals, signalsPerChannel),
+      .internalMultimemSignals =
+          DeviceSpan<SignalState>(signals, signalsPerChannel),
+      .nvlRank = selectedRank,
+      .nvlRanks = nvlRanks,
+      .pipelineDepth = kBoundaryPipelineDepth,
+      .maxChannels = 1,
+      .signalsPerChannel = signalsPerChannel,
+      .internalUnicastSignalsByRank =
+          DeviceSpan<SignalState*>(boundaryPeerSignals, nvlRanks),
+  };
+  signal_publish_and_wait<
+      NvlSignalAccess::Unicast,
+      NvlSignalTopology::PerPeer,
+      NvlSignalPhase::Ready>(
+      transport,
+      StageRound{.channel = 0, .value = roundValue},
+      NvlSignalParticipants{
+          .publisherMask = publishers,
+          .waiterMask = selected,
+          .expectedArrivals = nvl_signal_detail::mask_rank_count(publishers),
+      },
+      group,
+      Timeout{});
+  if (group.is_leader()) {
+    *output = signals[selectedRank].load();
+  }
+}
+
 } // namespace
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase) {
@@ -98,6 +173,13 @@ void launchNvlSignalTrap(NvlSignalTrapCase testCase) {
   }
   nvlSignalTrapKernel<<<1, threads>>>(
       testCase, timeout); // NOLINT(facebook-cuda-safe-kernel-call-check)
+}
+
+void launchNvlSignalRankBoundary(int nvlRanks, uint64_t* output) {
+  const uint32_t threads =
+      nvl_signal_per_peer_group_size(static_cast<uint32_t>(nvlRanks));
+  nvlSignalRankBoundaryKernel<<<1, threads>>>(
+      nvlRanks, output); // NOLINT(facebook-cuda-safe-kernel-call-check)
 }
 
 } // namespace comms::prims::test

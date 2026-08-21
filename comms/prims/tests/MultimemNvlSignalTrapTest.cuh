@@ -18,5 +18,6 @@ enum class NvlSignalTrapCase : uint32_t {
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);
+void launchNvlSignalRankBoundary(int nvlRanks, uint64_t* output);
 
 } // namespace comms::prims::test
