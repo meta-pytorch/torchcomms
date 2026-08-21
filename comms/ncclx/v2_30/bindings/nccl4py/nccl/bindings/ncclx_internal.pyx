@@ -15,13 +15,16 @@ from .ncclx_internal cimport (
     Hints as CppHints,
     LifecycleEvent as CppLifecycleEvent,
     LifecycleEventType as CppLifecycleEventType,
+    NCCL_TUNING_SIZE_POINTS,
     ncclAllToAllv as _ncclAllToAllv,
+    ncclCollTuning,
     ncclCommDump as _ncclCommDump,
     ncclCommDumpAll as _ncclCommDumpAll,
     ncclComm_t,
     ncclConfig_t,
     ncclDataType_t,
     ncclPut as _ncclPut,
+    ncclQueryCollTuning as _ncclQueryCollTuning,
     ncclRedOp_t,
     ncclReduceScatterQuantize as _ncclReduceScatterQuantize,
     ncclWindow_t,
@@ -192,6 +195,89 @@ cdef list _colltrace_events_to_python(vector[CppLifecycleEvent]& result):
             event.timestamp,
         ))
     return events
+
+
+cpdef dict query_coll_tuning(intptr_t comm):
+    """Snapshot of the communicator's collective tuning model.
+
+    Returns a dict:
+      - "version", "n_ranks", "n_nodes", "n_channels", "min_comp_cap",
+        "max_comp_cap": ints
+      - "functions", "algorithms", "protocols": name lists; indexes below
+        refer to these
+      - "bandwidths", "latencies": {function: [algorithm][protocol]} nested
+        lists -- the raw init-time model (GB/s and us; bandwidth 0 means the
+        combination is disabled). Per-size correction factors NOT included.
+      - "best_by_size": {function: [(size_bytes, algorithm, protocol,
+        n_channels, n_threads, time_us), ...]} -- the selection and predicted
+        time (all correction factors included) a collective of that size
+        would run with; algorithm/protocol are None and time_us is -1.0 when
+        no combination is available. Linear interpolation between adjacent
+        sizes reproduces the model within a selection regime.
+    """
+    cdef ncclCollTuning tuning
+    cdef int status
+    cdef int f, a, p, s
+    with nogil:
+        status = _ncclQueryCollTuning(<ncclComm_t>comm, &tuning)
+    check_status(status)
+
+    functions = [
+        (<bytes>tuning.functionNames[f]).decode("utf-8")
+        for f in range(tuning.numFunctions)
+    ]
+    algorithms = [
+        (<bytes>tuning.algorithmNames[a]).decode("utf-8")
+        for a in range(tuning.numAlgorithms)
+    ]
+    protocols = [
+        (<bytes>tuning.protocolNames[p]).decode("utf-8")
+        for p in range(tuning.numProtocols)
+    ]
+
+    bandwidths = {}
+    latencies = {}
+    best_by_size = {}
+    for f in range(tuning.numFunctions):
+        bandwidths[functions[f]] = [
+            [tuning.bandwidths[f][a][p] for p in range(tuning.numProtocols)]
+            for a in range(tuning.numAlgorithms)
+        ]
+        latencies[functions[f]] = [
+            [tuning.latencies[f][a][p] for p in range(tuning.numProtocols)]
+            for a in range(tuning.numAlgorithms)
+        ]
+        entries = []
+        for s in range(NCCL_TUNING_SIZE_POINTS):
+            if tuning.bestBySize[f][s].algorithm < 0:
+                entries.append(
+                    (tuning.messageSizes[s], None, None, 0, 0, -1.0)
+                )
+            else:
+                entries.append((
+                    tuning.messageSizes[s],
+                    algorithms[tuning.bestBySize[f][s].algorithm],
+                    protocols[tuning.bestBySize[f][s].protocol],
+                    tuning.bestBySize[f][s].nChannels,
+                    tuning.bestBySize[f][s].nThreads,
+                    tuning.bestBySize[f][s].timeUs,
+                ))
+        best_by_size[functions[f]] = entries
+
+    return {
+        "version": tuning.version,
+        "n_ranks": tuning.nRanks,
+        "n_nodes": tuning.nNodes,
+        "n_channels": tuning.nChannels,
+        "min_comp_cap": tuning.minCompCap,
+        "max_comp_cap": tuning.maxCompCap,
+        "functions": functions,
+        "algorithms": algorithms,
+        "protocols": protocols,
+        "bandwidths": bandwidths,
+        "latencies": latencies,
+        "best_by_size": best_by_size,
+    }
 
 
 cpdef uint64_t colltrace_get_comm_id(intptr_t comm) except? 0:
