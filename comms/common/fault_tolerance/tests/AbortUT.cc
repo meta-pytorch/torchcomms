@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -460,11 +461,21 @@ TEST(AbortTest, timedOutFalseForExplicitSet) {
 TEST(AbortTest, setAbortTimedOutRecordsTimeout) {
   Abort abort{/*enabled=*/true};
 
-  abort.setAbort(AbortReason::TIMED_OUT);
+  EXPECT_TRUE(abort.setAbort(AbortReason::TIMED_OUT));
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
   EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
+}
+
+TEST(AbortTest, reasonOnlySetAbortIsPreserved) {
+  Abort abort{/*enabled=*/true};
+
+  abort.setAbort(AbortReason::NETWORK_ERROR);
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{.reason = AbortReason::NETWORK_ERROR, .context = ""}));
 }
 
 TEST(AbortTest, setAbortRejectsNone) {
@@ -478,7 +489,7 @@ TEST(AbortTest, setAbortRejectsUnknownReason) {
   Abort abort{/*enabled=*/true};
 
   EXPECT_THROW(
-      abort.setAbort(static_cast<AbortReason>(3)), std::invalid_argument);
+      abort.setAbort(static_cast<AbortReason>(99)), std::invalid_argument);
   EXPECT_FALSE(abort.isAborted());
 
   abort.setAbort(AbortReason::ABORTED);
@@ -487,11 +498,110 @@ TEST(AbortTest, setAbortRejectsUnknownReason) {
   EXPECT_FALSE(abort.isTimedOut());
 }
 
+TEST(AbortTest, setAbortRejectsInvalidReasonsWhenDisabled) {
+  Abort abort{/*enabled=*/false};
+
+  EXPECT_THROW(abort.setAbort(AbortReason::NONE), std::invalid_argument);
+  EXPECT_THROW(
+      abort.setAbort(static_cast<AbortReason>(99)), std::invalid_argument);
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortInfoInitiallyEmpty) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortInfoDisabledRemainsEmpty) {
+  Abort abort{/*enabled=*/false};
+
+  EXPECT_FALSE(abort.setAbort(AbortReason::ABORTED, "ignored"));
+
+  EXPECT_EQ(abort.getAbortInfo(), std::nullopt);
+}
+
+TEST(AbortTest, abortInfoRecordsEveryTerminalReasonAndContext) {
+  const std::vector reasons{
+      AbortReason::ABORTED,
+      AbortReason::TIMED_OUT,
+      AbortReason::BOOTSTRAP_POLL,
+      AbortReason::NETWORK_ERROR,
+      AbortReason::INTERNAL_ERROR,
+  };
+
+  for (const auto reason : reasons) {
+    Abort abort{/*enabled=*/true};
+    EXPECT_TRUE(abort.setAbort(reason, "details"));
+    EXPECT_EQ(
+        abort.getAbortInfo(),
+        (AbortInfo{.reason = reason, .context = "details"}));
+  }
+}
+
+TEST(AbortTest, abortInfoPreservesEmbeddedNullInContext) {
+  Abort abort{/*enabled=*/true};
+  const std::string context{"prefix\0suffix", 13};
+
+  EXPECT_TRUE(abort.setAbort(AbortReason::INTERNAL_ERROR, context));
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::INTERNAL_ERROR,
+          .context = context,
+      }));
+}
+
+TEST(AbortTest, firstTerminalReasonAndContextWinTogether) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_TRUE(abort.setAbort(AbortReason::BOOTSTRAP_POLL, "first"));
+  EXPECT_FALSE(abort.setAbort(AbortReason::INTERNAL_ERROR, "second"));
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "first",
+      }));
+}
+
+TEST(AbortTest, expiredTimeoutRecordsContext) {
+  Abort abort{/*enabled=*/true};
+  abort.startTimeout(std::chrono::milliseconds{0});
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::TIMED_OUT, .context = "timeout expired"}));
+}
+
+TEST(AbortTest, concurrentWinnerKeepsMatchingContext) {
+  for (int iteration = 0; iteration < 100; ++iteration) {
+    Abort abort{/*enabled=*/true};
+    std::thread network(
+        [&]() { abort.setAbort(AbortReason::NETWORK_ERROR, "network"); });
+    std::thread internal(
+        [&]() { abort.setAbort(AbortReason::INTERNAL_ERROR, "internal"); });
+    network.join();
+    internal.join();
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    if (info->reason == AbortReason::NETWORK_ERROR) {
+      EXPECT_EQ(info->context, "network");
+    } else {
+      EXPECT_EQ(info->reason, AbortReason::INTERNAL_ERROR);
+      EXPECT_EQ(info->context, "internal");
+    }
+  }
+}
+
 TEST(AbortTest, firstTerminalReasonWins) {
   Abort abort{/*enabled=*/true};
 
-  abort.setAbort(AbortReason::TIMED_OUT);
-  abort.setAbort(AbortReason::ABORTED);
+  EXPECT_TRUE(abort.setAbort(AbortReason::TIMED_OUT));
+  EXPECT_FALSE(abort.setAbort(AbortReason::ABORTED));
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
@@ -502,7 +612,19 @@ TEST(AbortTest, abortReasonToString) {
   EXPECT_EQ(abortReasonToString(AbortReason::NONE), "none");
   EXPECT_EQ(abortReasonToString(AbortReason::ABORTED), "aborted");
   EXPECT_EQ(abortReasonToString(AbortReason::TIMED_OUT), "timed_out");
+  EXPECT_EQ(abortReasonToString(AbortReason::BOOTSTRAP_POLL), "bootstrap_poll");
+  EXPECT_EQ(abortReasonToString(AbortReason::NETWORK_ERROR), "network_error");
+  EXPECT_EQ(abortReasonToString(AbortReason::INTERNAL_ERROR), "internal_error");
   EXPECT_EQ(abortReasonToString(static_cast<AbortReason>(99)), "unknown");
+}
+
+TEST(AbortTest, abortInfoReasonStringIsComputedFromReason) {
+  const AbortInfo info{
+      .reason = AbortReason::NETWORK_ERROR,
+      .context = "",
+  };
+
+  EXPECT_EQ(info.reasonString(), "network_error");
 }
 
 TEST(AbortTest, timeRemainingNoTimeout) {
