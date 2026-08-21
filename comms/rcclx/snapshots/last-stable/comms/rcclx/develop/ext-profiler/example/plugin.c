@@ -12,7 +12,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#include <x86intrin.h>
+#include <time.h>
 #include "event.h"
 #include "print_event.h"
 
@@ -38,34 +38,26 @@ static int detachPoolIndex;
 static int detachPoolDone;
 static struct proxyOp* detachPool;
 
-static double freq = -1;
-__hidden void calibrate() {
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  uint64_t timeCycles = __rdtsc();
-  double time = - tv.tv_sec*1e6 - tv.tv_usec;
-  uint64_t total = 0ULL;
-  for (int i = 0; i < 10000; i++) total += __rdtsc();
-  gettimeofday(&tv, NULL);
-  timeCycles = __rdtsc() - timeCycles;
-  time += tv.tv_sec*1e6 + tv.tv_usec;
-  freq = timeCycles / time;
-}
+ncclDebugLogger_t logFn;
+#define INFO(FLAGS, ...) logFn(NCCL_LOG_INFO, (FLAGS), __func__, __LINE__, __VA_ARGS__)
 
 __hidden double gettime(void) {
-  return __rdtsc() / freq;
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (t.tv_sec*1e6 + (t.tv_nsec*1e-3));
 }
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pid_t pid;
+static int* eActivationMaskPtr;
 
-__hidden ncclResult_t exampleProfilerInit(void** context, int* eActivationMask) {
+__hidden ncclResult_t exampleProfilerInit(void** context, int* eActivationMask, const char* commName, uint64_t commHash, int nNodes, int nranks, int rank, ncclDebugLogger_t logfn) {
   pthread_mutex_lock(&lock);
   if (__atomic_fetch_add(&initialized, 1, __ATOMIC_RELAXED) == 0) {
     // first thread initializes event mask, environment and detach pool
     const char* str;
     str = getenv("NCCL_PROFILE_EVENT_MASK");
-    __atomic_store_n(eActivationMask, str ? atoi(str) : defaultEActivationMask, __ATOMIC_RELAXED);
+    __atomic_store_n(eActivationMask, str ? atoi(str) : 0, __ATOMIC_RELAXED);
 
     str = getenv("NCCL_PROFILE_GROUP_POOL_SIZE");
     groupPoolSize = str ? atoi(str) : defaultGroupPoolSize;
@@ -94,14 +86,22 @@ __hidden ncclResult_t exampleProfilerInit(void** context, int* eActivationMask) 
     // process address space.
     pid = getpid();
 
-    // calibrate and start timer
-    calibrate();
     startTime = gettime();
   }
   pthread_mutex_unlock(&lock);
 
+  // store pointer to activation mask globally
+  eActivationMaskPtr = eActivationMask;
+
   // pre-allocate memory for event object pools in dedicated profiler context
   struct context* ctx = (struct context *)calloc(1, sizeof(*ctx));
+  ctx->commName = commName;
+  ctx->commHash = commHash;
+  ctx->nranks = nranks;
+  ctx->rank = rank;
+  logFn = logfn;
+  INFO(NCCL_INIT, "PROFILER/Plugin: init commName: %s commHash: %lu nranks: %d rank: %d", commName ? commName : "", commHash, nranks, rank);
+
   ctx->groupPool = (struct group *)calloc(groupPoolSize, sizeof(*ctx->groupPool));
   if (ctx->groupPool == NULL) goto fail;
 
@@ -138,17 +138,16 @@ fail:
 __hidden ncclResult_t exampleProfilerFinalize(void* context) {
   FILE* fh = NULL;
   char filename[PATH_MAX] = { 0 };
-  char hostname[64] = { 0 };
-  gethostname(hostname, 64);
+  struct context* ctx = (struct context *)context;
   const char* dump = getenv("NCCL_PROFILE_DUMP_FILE");
   if (dump) {
-    sprintf(filename, "%s-%s-%ld.txt", dump, hostname, syscall(SYS_gettid));
+    sprintf(filename, "%s_%lu_%d.json", dump, ctx->commHash, ctx->rank);
     fh = fopen(filename, "w");
     fprintf(fh, "[\n");
   }
+  INFO(NCCL_INIT, "PROFILER/Plugin: finalize commName: %s commHash: %lu nranks: %d rank: %d", ctx->commName ? ctx->commName : "", ctx->commHash, ctx->nranks, ctx->rank);
 
   // print last N groups/collectives/p2ps
-  struct context* ctx = (struct context *)context;
   int start = (ctx->groupPoolIndex - groupPoolSize >= 0) ? ctx->groupPoolIndex - groupPoolSize : 0;
   int end = ctx->groupPoolIndex;
   for (int i = start; i < end; i++) {
@@ -199,8 +198,6 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
         if (base->type == ncclProfileColl) {
           struct collective* c = (struct collective *)base;
           // reset event proxyOps & proxySteps
-          memset(c->send, 0, sizeof(struct proxyOp)*MAX_CHANNELS*MAX_OPS);
-          memset(c->recv, 0, sizeof(struct proxyOp)*MAX_CHANNELS*MAX_OPS);
           memset(c->nProxyOps, 0, sizeof(int)*MAX_CHANNELS);
           // release collective events in the group and return them to the collective pool
           __atomic_fetch_add(&ctx->collPoolBase, 1, __ATOMIC_RELAXED);
@@ -241,8 +238,6 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
 
     event->base.type = ncclProfileColl;
     event->base.rank = eDescr->rank;
-    event->base.name = eDescr->coll.name;
-    event->base.commHash = eDescr->coll.commHash;
     event->base.func = eDescr->coll.func;
     event->base.startTs = gettime() - startTime;
     event->base.parent = parent;
@@ -252,8 +247,7 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
     event->count = eDescr->coll.count;
     event->root = eDescr->coll.root;
     event->datatype = eDescr->coll.datatype;
-    event->trafficBytes = eDescr->coll.trafficBytes;
-    event->nMaxChannels = eDescr->coll.nMaxChannels;
+    event->nChannels = eDescr->coll.nChannels;
     event->nWarps = eDescr->coll.nWarps;
     event->algo = eDescr->coll.algo;
     event->proto = eDescr->coll.proto;
@@ -280,8 +274,6 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
 
     event->base.type = ncclProfileP2p;
     event->base.rank = eDescr->rank;
-    event->base.name = eDescr->p2p.name;
-    event->base.commHash = eDescr->p2p.commHash;
     event->base.func = eDescr->p2p.func;
     event->base.next = parent->eventHead;
     event->base.startTs = gettime() - startTime;
@@ -290,6 +282,7 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
     event->count = eDescr->p2p.count;
     event->datatype = eDescr->p2p.datatype;
     event->peer = eDescr->p2p.peer;
+    event->nChannels = eDescr->p2p.nChannels;
     *eHandle = event;
     // increment the group ref counter so the event will staty open
     taskEventQueueEnqueue(parent, (struct taskEventBase *)event);
@@ -330,6 +323,7 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
       event->isSend = eDescr->proxyOp.isSend;
       event->startTs = gettime() - startTime;
       event->parent = NULL;
+      event->stepCount = 0;
       *eHandle = event;
       debugEvent(event, "PxnProxyOpStart");
       return ncclSuccess;
@@ -338,9 +332,7 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
     if (eventBase->type == ncclProfileColl) {
       struct collective* parent = (struct collective *)eDescr->parentObj;
       int channelId = eDescr->proxyOp.channelId;
-      struct proxyOp* event = (eDescr->proxyOp.isSend) ?
-        &parent->send[channelId][parent->nProxyOps[channelId]++] :
-        &parent->recv[channelId][parent->nProxyOps[channelId]++];
+      struct proxyOp* event = &parent->op[channelId][parent->nProxyOps[channelId]++];
 
       event->type = ncclProfileProxyOp;
       event->channelId = channelId;
@@ -352,6 +344,7 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
       event->isSend = eDescr->proxyOp.isSend;
       event->parent = eventBase;
       event->startTs = gettime() - startTime;
+      event->stepCount = 0;
       *eHandle = event;
       __atomic_fetch_add(&parent->base.refCount, 1, __ATOMIC_RELAXED);
       debugEvent(event, "ProxyOpStart");
@@ -369,11 +362,12 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
       event->isSend = eDescr->proxyOp.isSend;
       event->parent = eventBase;
       event->startTs = gettime() - startTime;
+      event->stepCount = 0;
       *eHandle = event;
       __atomic_fetch_add(&parent->base.refCount, 1, __ATOMIC_RELAXED);
       debugEvent(event, "ProxyOpStart");
     }
- } else if (eDescr->type == ncclProfileProxyStep) {
+  } else if (eDescr->type == ncclProfileProxyStep) {
     // the parent might be null if we run out of events
     struct proxyOp* parent = (struct proxyOp *)eDescr->parentObj;
     if (parent == NULL) return ncclSuccess;
@@ -381,12 +375,84 @@ __hidden ncclResult_t exampleProfilerStartEvent(void* context, void** eHandle, n
     int s = parent->stepCount++ % MAX_STEPS;
     struct proxyStep* event = &parent->step[s];
     event->type = ncclProfileProxyStep;
+    event->state = 0;
     event->step = eDescr->proxyStep.step;
-    event->isSend = parent->isSend;
     event->parent = parent;
+    event->isSend = parent->isSend;
     event->startTs = gettime() - startTime;
+    event->nNetEvents = 0;
     *eHandle = event;
     debugEvent(event, "ProxyStepStart");
+  } else if (eDescr->type == ncclProfileKernelCh) {
+    struct taskEventBase* eventBase = (struct taskEventBase *)eDescr->parentObj;
+    if (eventBase == NULL) return ncclSuccess;
+    if (eventBase->type == ncclProfileColl) {
+      struct collective* parent = (struct collective *)eDescr->parentObj;
+      struct kernelCh* event = &parent->kernel[eDescr->kernelCh.channelId];
+      event->type = ncclProfileKernelCh;
+      event->channelId = eDescr->kernelCh.channelId;
+      event->startGpuClk = eDescr->kernelCh.pTimer;
+      event->parent = eventBase;
+      event->startTs = gettime() - startTime;
+      *eHandle = event;
+      __atomic_fetch_add(&parent->base.refCount, 1, __ATOMIC_RELAXED);
+      debugEvent(event, "KernelChStart");
+    } else { // ncclProfileP2p
+      struct p2p* parent = (struct p2p *)eDescr->parentObj;
+      struct kernelCh* event = &parent->kernel[eDescr->kernelCh.channelId];
+      event->type = ncclProfileKernelCh;
+      event->channelId = eDescr->kernelCh.channelId;
+      event->startGpuClk = eDescr->kernelCh.pTimer;
+      event->parent = eventBase;
+      event->startTs = gettime() - startTime;
+      *eHandle = event;
+      __atomic_fetch_add(&parent->base.refCount, 1, __ATOMIC_RELAXED);
+      debugEvent(event, "KernelChStart");
+    }
+  } else if (eDescr->type == ncclProfileNetPlugin) {
+    struct proxyStep* parent = (struct proxyStep *)eDescr->parentObj;
+    if (parent == NULL) return ncclSuccess;
+
+    int64_t pluginId = eDescr->netPlugin.id;
+    int64_t type = pluginId & NCCL_PROFILER_NET_TYPE_MASK;
+    int64_t ver = pluginId & NCCL_PROFILER_NET_VER_MASK;
+    if (type == NCCL_PROFILER_NET_TYPE_IB) {
+      if (ver == 1) {
+        ncclProfilerNetIbDescr_v1_t* descr = (ncclProfilerNetIbDescr_v1_t *)eDescr->netPlugin.data;
+        struct netPlugin* event = parent->net + __atomic_fetch_add(&parent->nNetEvents, 1, __ATOMIC_RELAXED);
+        event->type = ncclProfileNetPlugin;
+        event->pluginType = type;
+        event->pluginVer = ver;
+        if (descr->type == ncclProfileQp) {
+          event->pluginEvent = ncclProfileQp;
+          event->qp.device = descr->qp.device;
+          event->qp.wr_id = descr->qp.wr_id;
+          event->qp.opcode = descr->qp.opcode;
+          event->qp.qpNum = descr->qp.qpNum;
+          event->qp.length = descr->qp.length;
+        }
+        event->startTs = gettime() - startTime;
+        *eHandle = event;
+        debugEvent(event, "NetPluginStart");
+      }
+    } else if (type == NCCL_PROFILER_NET_TYPE_SOCK) {
+      if (ver == 1) {
+        ncclProfilerNetSockDescr_v1_t* descr = (ncclProfilerNetSockDescr_v1_t *)eDescr->netPlugin.data;
+        struct netPlugin* event = parent->net + __atomic_fetch_add(&parent->nNetEvents, 1, __ATOMIC_RELAXED);
+        event->type = ncclProfileNetPlugin;
+        event->pluginType = type;
+        event->pluginVer = ver;
+        if (descr->type == ncclProfileSocket) {
+          event->pluginEvent = ncclProfileSocket;
+          event->sock.fd = descr->sock.fd;
+          event->sock.op = descr->sock.op;
+          event->sock.length = descr->sock.length;
+        }
+        event->startTs = gettime() - startTime;
+        *eHandle = event;
+        debugEvent(event, "NetPluginStart");
+      }
+    }
   }
   return ncclSuccess;
 }
@@ -445,6 +511,15 @@ void updateEvent(void* handle) {
     struct proxyCtrl* event = (struct proxyCtrl *)handle;
     event->stopTs = gettime() - startTime;
     debugEvent(event, "ProxyCtrlStop");
+  } else if (type == ncclProfileKernelCh) {
+    struct kernelCh* event = (struct kernelCh *)handle;
+    event->stopTs = gettime() - startTime;
+    updateEvent(event->parent);
+    debugEvent(event, "KernelChStop");
+  } else if (type == ncclProfileNetPlugin) {
+    struct netPlugin* event = (struct netPlugin *)handle;
+    event->stopTs = gettime() - startTime;
+    debugEvent(event, "NetPluginStop");
   }
 }
 
@@ -484,29 +559,57 @@ __hidden ncclResult_t exampleProfilerRecordEventState(void* eHandle, ncclProfile
   // the event handle might be null if we run out of events
   if (eHandle == NULL) return ncclSuccess;
 
-  debugEvent(eHandle, "RecordEventState");
   uint8_t type = *(uint8_t *)eHandle;
   if (type == ncclProfileProxyOp) {
     struct proxyOp* event = (struct proxyOp *)eHandle;
-    int steps = event->states[event->isSend ? PROXY_OP_SEND_STATE_IDX(eState) : PROXY_OP_RECV_STATE_IDX(eState)].steps;
-    if (eState == ncclProfilerProxyOpSendRemFifoWait && eStateArgs->proxyOp.steps == steps) return ncclSuccess;
-    event->states[event->isSend ? PROXY_OP_SEND_STATE_IDX(eState) : PROXY_OP_RECV_STATE_IDX(eState)].steps = eStateArgs->proxyOp.steps;
-    event->states[event->isSend ? PROXY_OP_SEND_STATE_IDX(eState) : PROXY_OP_RECV_STATE_IDX(eState)].timestamp = gettime() - startTime;
-    event->transSize = eStateArgs->proxyOp.transSize;
+    if (eState == ncclProfilerProxyOpInProgress_v4) {
+      event->progrTs = gettime() - startTime;
+    }
   } else if (type == ncclProfileProxyStep) {
     struct proxyStep* event = (struct proxyStep *)eHandle;
-    event->timestamp[event->isSend ? PROXY_STEP_SEND_STATE_IDX(eState) : PROXY_STEP_RECV_STATE_IDX(eState)] = gettime() - startTime;
+    struct proxyOp* parent = event->parent;
+    switch (eState) {
+      case ncclProfilerProxyStepSendGPUWait:
+        event->timestamp[PROXY_STEP_SEND_GPU_WAIT] = gettime() - startTime;
+        break;
+      case ncclProfilerProxyStepSendPeerWait_v4:
+        // do not update step event if in SendPeerWait
+        if (event->state == ncclProfilerProxyStepSendPeerWait_v4) break;
+        event->timestamp[PROXY_STEP_SEND_PEER_WAIT] = gettime() - startTime;
+        event->state = ncclProfilerProxyStepSendPeerWait_v4;
+        break;
+      case ncclProfilerProxyStepSendWait:
+        event->timestamp[PROXY_STEP_SEND_WAIT] = gettime() - startTime;
+        parent->transSize += eStateArgs->proxyStep.transSize;
+        break;
+      case ncclProfilerProxyStepRecvWait:
+        event->timestamp[PROXY_STEP_RECV_WAIT] = gettime() - startTime;
+        break;
+      case ncclProfilerProxyStepRecvFlushWait:
+        event->timestamp[PROXY_STEP_RECV_FLUSH_WAIT] = gettime() - startTime;
+        parent->transSize += eStateArgs->proxyStep.transSize;
+        break;
+      case ncclProfilerProxyStepRecvGPUWait:
+        event->timestamp[PROXY_STEP_RECV_GPU_WAIT] = gettime() - startTime;
+        break;
+    }
   } else if (type == ncclProfileProxyCtrl) {
     struct proxyCtrl* event = (struct proxyCtrl *)eHandle;
     if (eState == ncclProfilerProxyCtrlAppendEnd) {
       event->appended = eStateArgs->proxyCtrl.appendedProxyOps;
     }
     event->state = eState;
+  } else if (type == ncclProfileKernelCh) {
+    struct kernelCh* event = (struct kernelCh *)eHandle;
+    if (eState == ncclProfilerKernelChStop) {
+      event->stopGpuClk = eStateArgs->kernelCh.pTimer;
+    }
   }
+  debugEvent(eHandle, "RecordEventState");
   return ncclSuccess;
 }
 
-ncclProfiler_t ncclProfiler_v2 = {
+ncclProfiler_t ncclProfiler_v4 = {
   "Example-profiler",
   exampleProfilerInit,
   exampleProfilerStartEvent,
@@ -514,3 +617,17 @@ ncclProfiler_t ncclProfiler_v2 = {
   exampleProfilerRecordEventState,
   exampleProfilerFinalize,
 };
+
+int exampleProfilerStart(int eActivationMask) {
+  if (__atomic_load_n(&initialized, __ATOMIC_RELAXED)) {
+    __atomic_store_n(eActivationMaskPtr, eActivationMask, __ATOMIC_RELAXED);
+  }
+  return ncclSuccess;
+}
+
+int exampleProfilerStop(void) {
+  if (__atomic_load_n(&initialized, __ATOMIC_RELAXED)) {
+    __atomic_store_n(eActivationMaskPtr, 0, __ATOMIC_RELAXED);
+  }
+  return ncclSuccess;
+}

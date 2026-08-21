@@ -4,11 +4,13 @@
 
 #include "BaselineBootstrap.h"
 #include "comms/common/algorithms/AlgoFactory.cuh"
+#include "debug.h"
 #include "nccl.h"
 #include "param.h"
 
 // Meta custom algorithm configs
-RCCL_PARAM(EnableDdaAllReduce, "ENABLE_DDA_ALL_REDUCE", 0);
+RCCL_PARAM(DdaNRanks, "DDA_NRANKS", 8);
+RCCL_PARAM(EnableDdaAllReduce, "ENABLE_DDA_ALL_REDUCE", 1);
 RCCL_PARAM(
     DdaAllReduceSendbufBytes,
     "DDA_ALL_REDUCE_SENDBUF_BYTES",
@@ -25,6 +27,25 @@ RCCL_PARAM(
 RCCL_PARAM(DdaAllReduceMaxBlocks, "DDA_ALL_REDUCE_MAX_BLOCKS", 24);
 
 std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
+  // DDA (Direct Device Access) only works for single-node setups where all
+  // ranks share the same physical GPUs. Disable it for multi-node
+  // configurations.
+  if (comm->nNodes > 1) {
+    INFO(
+        NCCL_INIT,
+        "Disabling DDA for multi-node setup (nNodes=%d)",
+        comm->nNodes);
+    return nullptr;
+  }
+
+  if (comm->nRanks != rcclParamDdaNRanks()) {
+    INFO(
+        NCCL_INIT,
+        "Disabling DDA for single-node when nRanks != 8 setup (nRanks=%d)",
+        comm->nRanks);
+    return nullptr;
+  }
+
   return std::make_unique<::meta::comms::AlgoFactory>(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
       comm->nRanks,

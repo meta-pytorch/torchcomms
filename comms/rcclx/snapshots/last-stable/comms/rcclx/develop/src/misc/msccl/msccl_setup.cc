@@ -123,7 +123,6 @@ ncclResult_t mscclSetupConnections(struct mscclAlgo* hostAlgo, ncclComm_t comm) 
 
 static ncclResult_t mscclSetupProxyImpl(struct mscclAlgo* hostAlgo, ncclComm_t comm) {
   mscclStatus& status = mscclGetStatus(comm);
-  mscclThreadLocalStatus& threadLocalStatus = mscclGetThreadLocalStatus();
   struct ncclProxyOp proxyOp = {};
   proxyOp.connIndex = 0;
   proxyOp.sliceSteps = status.sliceSteps;
@@ -421,7 +420,7 @@ ncclResult_t mscclSetupKernel(const void* sendBuff, void* recvBuff, size_t count
 
   uint32_t numBlocks = (uint32_t)hostAlgo->nBlocks;
   dim3 grid = {numBlocks, 1, 1};
-  dim3 block = {NCCL_MAX_NTHREADS, 1, 1};
+  dim3 block = {MSCCL_MAX_NTHREADS, 1, 1};
   ncclDevRedOpFull opFull = {};
   NCCLCHECK(hostToDevRedOp(&opFull, op, dataType, comm));
 

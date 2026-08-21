@@ -12,11 +12,12 @@
 #include "timer.h"
 #include "transport.h"
 
-struct ncclTransport* ncclTransports[NTRANSPORTS] = {
+struct ncclTransport* ncclTransports[NTRANSPORTS+1] = {
   &p2pTransport,
   &shmTransport,
   &netTransport,
-  &collNetTransport
+  &collNetTransport,
+  &profilerTransport // Not really used for transport, only to create proxy ops polling on profiler counters.
 };
 
 template <int type>
@@ -87,7 +88,7 @@ NCCL_PARAM(ConnectRoundMaxPeers, "CONNECT_ROUND_MAX_PEERS", 128);
 NCCL_PARAM(ReportConnectProgress, "REPORT_CONNECT_PROGRESS", 0);
 #include <sys/time.h>
 
-ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* intraNodeP2pSupport, bool* directMode) {
+ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP2p, bool* directMode) {
   bool supportFlag = true;
   bool directFlag = false;
   if (comm->localRanks == 1) {
@@ -100,8 +101,9 @@ ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* intraNodeP2p
         struct ncclPeerInfo* ipeerInfo = &comm->peerInfo[ipeer];
         struct ncclPeerInfo* jpeerInfo = &comm->peerInfo[jpeer];
         int canConnect = 0;
-        NCCLCHECK(ncclTransports[0]->canConnect(&canConnect, comm, NULL, ipeerInfo, jpeerInfo));
-        if (!canConnect && supportFlag == true) {
+        int intermediateRank = -1;
+        NCCLCHECK(ncclTopoCheckP2p(comm, comm->topo, ipeerInfo->rank, jpeerInfo->rank, &canConnect, NULL, &intermediateRank));
+        if (!canConnect || intermediateRank != -1) {
           supportFlag = false;
         }
         if (ipeerInfo->hostHash == jpeerInfo->hostHash && ipeerInfo->pidHash == jpeerInfo->pidHash) directFlag = true;
@@ -109,9 +111,9 @@ ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* intraNodeP2p
       }
     }
   }
-  *intraNodeP2pSupport = supportFlag;
+  *isAllDirectP2p = supportFlag;
   *directMode = directFlag;
-  if (comm->rank == 0) INFO(NCCL_INIT, "Check P2P Type intraNodeP2pSupport %d directMode %d", supportFlag, directFlag);
+  if (comm->rank == 0) INFO(NCCL_INIT, "Check P2P Type isAllDirectP2p %d directMode %d", supportFlag, directFlag);
   return ncclSuccess;
 }
 
@@ -129,6 +131,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
   gettimeofday(&timeStart, NULL);
   timeLast = timeStart; // struct copy
   bool timeReported = false;
+  cudaStream_t hostStream, deviceStream;
 
   int count = 0;
   int num = MAXCHANNELS/64;
@@ -137,7 +140,8 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
   NCCLCHECKGOTO(ncclCalloc(&recvData, maxPeers), ret, fail);
   NCCLCHECKGOTO(ncclCalloc(&sendData, maxPeers), ret, fail);
 
-  NCCLCHECKGOTO(ncclStrongStreamAcquireUncaptured(&comm->sharedRes->hostStream), ret, fail);
+  NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(), &comm->sharedRes->hostStream, /*concurrent=*/false, &hostStream), ret, fail);
+  NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(), &comm->sharedRes->deviceStream, /*concurrent=*/false, &deviceStream), ret, fail);
   // First time initialization
   for (int i=1; i<comm->nRanks; i++) {
     int bootstrapTag = (i<<8) + (graph ? graph->id+1 : 0);
@@ -234,7 +238,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
                   /* comm->channels[c].devPeers[sendPeer]->send[connIndex] is a device memory access. */
-                  CUDACHECKGOTO(cudaMemcpyAsync(&comm->channels[c].devPeersHostPtr[sendPeer]->send[connIndex], &conn->conn, sizeof(struct ncclConnInfo), cudaMemcpyHostToDevice, comm->sharedRes->hostStream.cudaStream), ret, fail);
+                  CUDACHECKGOTO(cudaMemcpyAsync(&comm->channels[c].devPeersHostPtr[sendPeer]->send[connIndex], &conn->conn, sizeof(struct ncclConnInfo), cudaMemcpyHostToDevice, hostStream), ret, fail);
                 } else if (ret == ncclInProgress) {
                   allChannelsConnected = false;
                 }
@@ -254,7 +258,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
                   /* comm->channels[c].devPeers[recvPeer]->recv[connIndex] is a device memory access. */
-                  CUDACHECKGOTO(cudaMemcpyAsync(&comm->channels[c].devPeersHostPtr[recvPeer]->recv[connIndex], &conn->conn, sizeof(struct ncclConnInfo), cudaMemcpyHostToDevice, comm->sharedRes->hostStream.cudaStream), ret, fail);
+                  CUDACHECKGOTO(cudaMemcpyAsync(&comm->channels[c].devPeersHostPtr[recvPeer]->recv[connIndex], &conn->conn, sizeof(struct ncclConnInfo), cudaMemcpyHostToDevice, hostStream), ret, fail);
                 } else if (ret == ncclInProgress) {
                   allChannelsConnected = false;
                 }
@@ -282,7 +286,7 @@ ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* 
     }
   }
 
-  CUDACHECKGOTO(cudaStreamSynchronize(comm->sharedRes->hostStream.cudaStream), ret, fail);
+  CUDACHECKGOTO(cudaStreamSynchronize(hostStream), ret, fail);
 
   {
     struct timeval now;
@@ -331,8 +335,9 @@ exit:
   if (sendData) free(sendData);
   if (recvData) free(recvData);
 
-  NCCLCHECK(ncclStrongStreamWaitStream(ncclCudaGraphNone(), &comm->sharedRes->deviceStream, &comm->sharedRes->hostStream));
-  NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(), &comm->sharedRes->hostStream));
+  NCCLCHECK(ncclStreamWaitStream(deviceStream, hostStream, comm->sharedRes->scratchEvent));
+  NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(), &comm->sharedRes->hostStream, /*concurrent=*/false));
+  NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(), &comm->sharedRes->deviceStream, /*concurrent=*/false));
   return ret;
 fail:
   goto exit;

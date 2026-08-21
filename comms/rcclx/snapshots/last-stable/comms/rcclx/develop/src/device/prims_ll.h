@@ -10,9 +10,10 @@
 #include "npkit/npkit.h"
 #endif
 
-template<typename T, typename RedOp, typename Fan, int Direct, int P2p, bool isNetOffload>
-class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>:
-  public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>> {
+#include "rccl_ptr.h"
+template<typename T, typename RedOp, typename Fan, int Direct, int P2p, bool isNetOffload, int Metadata, int Pipeline, int useAcc>
+class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload, Metadata, Pipeline, useAcc>:
+    public PrimitivesWithoutDirect<Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload, Metadata, Pipeline, useAcc>> {
 
   // In the case of Fan::MaxRecv == 0, we need to force MaxRecv to 1 for this to compile
   // This is because of a recv buffer which is allocated to MaxRecv length in send-only cases
@@ -24,6 +25,7 @@ class Primitives<T, RedOp, Fan, Direct, ProtoLL, P2p, isNetOffload>:
   const int nthreads;
   const int wid;
   const int group;
+  const int threadsPerBlock;
   const int stepLines;
   Fan fan;
   T *userBufs[3];
@@ -71,10 +73,10 @@ private:
   inline __device__ void barrier() {
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
     if (nthreads != WARP_SIZE)
-      #if defined(__gfx942__)
-        barrier_by_group_block();
+      #if defined(__gfx942__) || (defined(__gfx950__) && defined(HIP_HOST_UNCACHED_MEMORY))
+        barrier_generic(__threadfence_block(), nthreads, barrier_next, barriers);
       #else
-        barrier_by_group();
+        barrier_generic(__threadfence(), nthreads, barrier_next, barriers);
       #endif
 #else
     if (nthreads == WARP_SIZE) {
@@ -85,15 +87,18 @@ private:
 #endif
   }
 
-  uint32_t abort = 0;
+  int abort = 0;
 
-  inline __device__ int checkAbort(int &spins, int send) {
-    spins++;
-    if (abort == 0 && spins == NCCL_SPINS_BEFORE_CHECK_ABORT) {
-      abort = __atomic_load_n((ncclShmem.comm.abortFlag), __ATOMIC_SEQ_CST);
+  __device__ inline int checkAbort(int &abortCache, const int abortValue, int &spins) {
+    if (abortCache == 0 && ++spins == NCCL_SPINS_BEFORE_CHECK_ABORT) {
+      int abort = __atomic_load_n((ncclShmem.comm.abortFlag), __ATOMIC_SEQ_CST);
       spins = 0;
+      if (abort) {
+        __atomic_store_n(&ncclShmem.aborted, abort, __ATOMIC_SEQ_CST);
+        abortCache |= abortValue;
+      }
     }
-    return abort;
+    return abortCache;
   }
 
   inline __device__ void waitSend(int nbytes) {
@@ -108,7 +113,7 @@ private:
       while (sendConnHeadCache + NCCL_STEPS < sendConnHead + 1) {
         __builtin_amdgcn_s_sleep(1);
         sendConnHeadCache = atomicAdd((unsigned long long *)sendConnHeadPtr, 0);
-        if (checkAbort(spins, 1)) break;
+        if (checkAbort(abort, 1, spins)) break;
       }
       if (sendConnFifo) {
         int size = ((sendConnHead & NCCL_LL_CLEAN_MASK) == NCCL_LL_CLEAN_MASK) ? stepLines*sizeof(union ncclLLFifoLine) : nbytes;
@@ -146,6 +151,7 @@ private:
     union ncclLLFifoLine* src = recvPtr(i) + offset;
     uint32_t flag = recvFlag(i);
     uint32_t data1, flag1, data2, flag2;
+    (void)data1; (void)flag1; (void)data2; (void)flag2; // unused variable - compiler warning
     int spins = 0;
 
 #if defined(ENABLE_NPKIT) && (defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT) || defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME))
@@ -162,13 +168,13 @@ private:
       asm volatile ("global_load_b128 %0, %1, off glc slc dlc\n"
         "s_waitcnt vmcnt(0)\n" : "=v"(i4.i4) : "v"(&src->i4));
 #else
-      i4.v[0] = __builtin_nontemporal_load(src->v);
-      i4.v[1] = __builtin_nontemporal_load(src->v+1);
+      *((u64_gptr)i4.v) = __builtin_nontemporal_load((u64_gptr)src->v);
+      *((u64_gptr)i4.v + 1) = __builtin_nontemporal_load((u64_gptr)src->v+1);
 #endif
 #if defined(ENABLE_NPKIT) && (defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT) || defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME))
       npkitWaitRecvSpins++;
 #endif
-      if (checkAbort(spins, 0)) break;
+      if (checkAbort(abort, 1, spins)) break;
     } while ((i4.flag1 != flag) || (i4.flag2 != flag));
     uint64_t val64 = (uint64_t)(i4.data1) + (((uint64_t)i4.data2) << 32);
 #else
@@ -177,7 +183,7 @@ private:
 #if defined(ENABLE_NPKIT) && (defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT) || defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME))
       npkitWaitRecvSpins++;
 #endif
-      if (checkAbort(spins, 0)) break;
+      if (checkAbort(abort, 1, spins)) break;
     } while ((flag1 != flag) || (flag2 != flag));
     uint64_t val64 = data1 + (((uint64_t)data2) << 32);
 #endif
@@ -232,8 +238,8 @@ private:
       asm volatile ("global_load_b128 %0, %1, off glc slc dlc\n"
         "s_waitcnt vmcnt(0)\n" : "=v"(line[i].i4) : "v"(&src->i4));
 #else
-      line[i].v[0] = __builtin_nontemporal_load(src->v);
-      line[i].v[1] = __builtin_nontemporal_load(src->v+1);
+      line[i].v[0] = __builtin_nontemporal_load((u64_gptr)src->v);
+      line[i].v[1] = __builtin_nontemporal_load((u64_gptr)src->v+1);
 #endif
 #else
       asm volatile("ld.volatile.global.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(line[i].data1), "=r"(line[i].flag1), "=r"(line[i].data2), "=r"(line[i].flag2) : "l"(&src->i4) : "memory");
@@ -241,7 +247,7 @@ private:
 #if defined(ENABLE_NPKIT) && (defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY) && defined(ENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT) || defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME))
       npkitWaitRecvSpins++;
 #endif
-      if (checkAbort(spins, 0)) break;
+      if (checkAbort(abort, 1, spins)) break;
     } while(line[i].flag1 != flag || line[i].flag2 != flag);
     uint64_t val64 = line[i].data1 + (((uint64_t)line[i].data2) << 32);
 
@@ -262,8 +268,11 @@ private:
     i4.flag1 = flag;
     i4.data2 = (val >> 32);
     i4.flag2 = flag;
-    __builtin_nontemporal_store(i4.v[0], dst->v);
-    __builtin_nontemporal_store(i4.v[1], dst->v+1);
+    *((u64_gptr) dst->v) = *((u64_gptr) i4.v);
+    *((u64_gptr) dst->v+1) = *((u64_gptr) i4.v+1);
+#if defined(__gfx950__) && ROCM_VERSION < 70002
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, ""); // flush cache on gfx950 if ROCr fix for hipHostMallocUncached is not available (ROCm version < 7.0.2)
+#endif
 #else
     asm volatile("st.volatile.global.v4.u32 [%0], {%1,%2,%3,%4};" :: "l"(&dst->i4), "r"((uint32_t)val), "r"(flag), "r"((uint32_t)(val >> 32)), "r"(flag) : "memory");
 #endif
@@ -285,25 +294,25 @@ private:
 #ifdef __GFX11__
       u1 = __atomic_load_n((uint8_t*)src, __ATOMIC_RELAXED);
 #else
-      u1 = __builtin_nontemporal_load((uint8_t*)src);
+      u1 = __builtin_nontemporal_load((u8_gptr)src);
 #endif
     else if(sizeof(U) == 2)
 #ifdef __GFX11__
       u2 = __atomic_load_n((uint16_t*)src, __ATOMIC_RELAXED);
 #else
-      u2 = __builtin_nontemporal_load((uint16_t*)src);
+      u2 = __builtin_nontemporal_load((u16_gptr)src);
 #endif
     else if(sizeof(U) == 4)
 #ifdef __GFX11__
       u4 = __atomic_load_n((uint32_t*)src, __ATOMIC_RELAXED);
 #else
-      u4 = __builtin_nontemporal_load((uint32_t*)src);
+      u4 = __builtin_nontemporal_load((u32_gptr)src);
 #endif
     else
 #ifdef __GFX11__
       u8 = __atomic_load_n((uint64_t*)src, __ATOMIC_RELAXED);
 #else
-      u8 = __builtin_nontemporal_load((uint64_t*)src);
+      u8 = __builtin_nontemporal_load((u64_gptr)src);
 #endif
 #else
     if(sizeof(U) == 1)
@@ -337,6 +346,9 @@ private:
       __builtin_nontemporal_store(u4, (uint32_t*)dst);
     else
       __builtin_nontemporal_store(u8, (uint64_t*)dst);
+#if defined(__gfx950__) && ROCM_VERSION < 70002
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, ""); // flush cache on gfx950 if ROCr fix for hipHostMallocUncached is not available (ROCm version < 7.0.2)
+#endif
 #else
     if(sizeof(U) == 1)
       asm volatile("st.volatile.global.b8 [%0],%1;" :: "l"(dst), "r"(u4) : "memory");
@@ -387,7 +399,12 @@ private:
     }
   };
 
+
   __device__ void storeData(T *dst, uint64_t val, int eltN) {
+    if (__all((reinterpret_cast<uintptr_t>(dst) & (sizeof(T) - 1)) == 0 && sizeof(T) * eltN == sizeof(val))){
+      *((u64_gptr) dst) = val;
+      return;
+    }
     union {
       uint64_t u8;
       T elt[EltPerLine];
@@ -403,27 +420,14 @@ private:
     }
   }
 
-  __device__ void mscclStoreData(T *dst, uint64_t val, int eltN) {
-    union {
-      uint64_t u8;
-      T elt[EltPerLine];
-    };
-    u8 = val;
-    #pragma unroll
-    for(int i=0; i < EltPerLine; i++) {
-      if (i==0 || i < eltN)
-        store(dst+i, elt[i]);
-        // dst[i] = elt[i];
-    }
-  }
-
   template <int RECV, int SEND, int SrcBuf, int DstBuf>
   __device__ void LLGenericOp(intptr_t srcIx, intptr_t dstIx, int nelem, bool postOp) {
     constexpr int SRC = SrcBuf != -1 ? 1 : 0;
     constexpr int DST = DstBuf != -1 ? 1 : 0;
     T *srcElts = SrcBuf == -1 ? nullptr : userBufs[SrcBuf] + srcIx;
     T *dstElts = DstBuf == -1 ? nullptr : userBufs[DstBuf] + dstIx;
-    T *accElts = (DstBuf == -1 || userBufs[Acc] == nullptr) ? nullptr : userBufs[Acc] + dstIx;
+    T *accElts = (DstBuf == -1 || !useAcc) ? nullptr : userBufs[Acc] + dstIx;
+    // T *accElts = (DstBuf == -1 || userBufs[Acc] == nullptr) ? nullptr : userBufs[Acc] + dstIx;
 
     // Always waitSend in case of cleanup
     nelem = nelem < 0 ? 0 : nelem;
@@ -504,6 +508,12 @@ private:
       nelem -= eltPerTrip;
       offset += nthreads;
     }
+    #ifdef __gfx950__
+    if constexpr (isMsccl(Metadata) && DST){
+      // Wait for pending vector loads and stores
+      __builtin_amdgcn_s_waitcnt((15 << 8) | (7 << 4)); // s_waitcnt vmcnt(0)
+    }
+    #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
     if (tid == 0) {
@@ -580,18 +590,18 @@ private:
             dataD = applyReduce(redOp, dataD, data);
           }
         }
-        mscclStoreData(dstElts, dataD, eltInLine);
+        storeData(dstElts, dataD, eltInLine);
         dstElts += eltPerTrip;
       }
       if (COPY){
-        mscclStoreData(dstElts, data, eltInLine);
+        storeData(dstElts, data, eltInLine);
         dstElts += eltPerTrip;
         if (MULTIDSTS){
           for (int i = 1; i < ndsts; i++){
             dl.loadBegin(srcs[i], eltInLine);
             srcs[i] += eltPerTrip;
             data = dl.loadFinish();
-            mscclStoreData(dsts[i], data, eltInLine);
+            storeData(dsts[i], data, eltInLine);
             dsts[i] += eltPerTrip;
           }
         }
@@ -643,7 +653,7 @@ public:
       bool ipcReg = false, bool netReg = false, int stepSize_ = 0
     ):
     redOp(redOpArg),
-    tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), group(group),
+    tid(tid), nthreads(nthreads), wid(tid%WARP_SIZE), group(group), threadsPerBlock(blockDim.x),
     stepLines(ncclShmem.comm.buffSizes[NCCL_PROTO_LL]/NCCL_STEPS/sizeof(ncclLLFifoLine)) {
     auto *channel = &ncclShmem.channel;
     barriers = &ncclShmem.groups[group].barrier;
