@@ -23,8 +23,11 @@ __global__ void nvlSignalTrapKernel(
   const uint32_t pipelineDepth =
       testCase == NvlSignalTrapCase::AggregateDepthTooLarge ? 33 : 1;
   const int nvlRanks = tooManyRanks ? 65 : 4;
-  const uint32_t signalsPerChannel =
+  uint32_t signalsPerChannel =
       static_cast<uint32_t>(3 * nvlRanks + 4 * pipelineDepth);
+  if (testCase == NvlSignalTrapCase::SignalsPerChannelMismatch) {
+    --signalsPerChannel;
+  }
   MultimemNvlTransportDevice transport{
       .internalLocalSignals =
           DeviceSpan<SignalState>(trapSignals, signalsPerChannel),
@@ -66,7 +69,8 @@ __global__ void nvlSignalTrapKernel(
     return;
   }
   if (testCase == NvlSignalTrapCase::AggregateDepthTooLarge ||
-      testCase == NvlSignalTrapCase::ArrivalCountMismatch) {
+      testCase == NvlSignalTrapCase::ArrivalCountMismatch ||
+      testCase == NvlSignalTrapCase::SignalsPerChannelMismatch) {
     auto group = make_warp_group();
     signal_publish_and_wait<
         NvlSignalAccess::Multimem,
