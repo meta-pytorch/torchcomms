@@ -125,15 +125,21 @@ The following combinations are rejected at compile time:
 - Split aggregate multimem publication or waiting.
 - A phase or access operation that has no storage or instruction mapping.
 
-Host launch validation rejects aggregate pipeline depth above one warp and per-peer teams above two warps.
+Host launch validation rejects aggregate pipeline depth above one warp and per-peer teams above four warps.
 Device validation traps on an out-of-range channel, lane, rank, or signal offset before issuing a signal operation.
 
 ## Execution Ownership
 
-One CUDA block owns one logical channel.
-A channel is the logical staging group selected by the block index.
+One cooperative `ThreadGroup` owns one logical channel.
+Signal kernels use one-dimensional grids and blocks, and both topologies
+require `group.group_id == channel`. The logical group id is authoritative even
+when a caller has deliberately renumbered groups; `block_id` continues to name
+the physical CUDA block rather than the channel.
+Concurrent operations may use separate streams only when they own disjoint
+channels; concurrent launches targeting the same channel are invalid.
 
-Aggregate topology uses one warp per channel.
+Aggregate topology uses one full owning warp per channel, so multiple warp
+groups in one CUDA block may own distinct channels.
 Pipeline depth determines the active lane owners:
 
 ```text
@@ -144,17 +150,20 @@ thread P - 1 owns pipeline lane P - 1
 threads P..31 do not publish or wait
 ```
 
-Per-peer topology uses two warps per channel:
+Per-peer topology uses one whole block per channel: two warps through 64
+ranks and four warps for 65-72 ranks:
 
 ```text
 thread 0     owns NVL peer 0
 thread 1     owns NVL peer 1
 ...
 thread R - 1 owns NVL peer R - 1
-threads R..63 own no peer slot
+threads R..127 own no peer slot
 ```
 
-All 64 threads participate in required block synchronization.
+Per-peer launches use 64 threads through 64 ranks and 128 threads for 65-72 ranks.
+The block contains exactly that many threads.
+Every launched thread participates in required block synchronization.
 `TreeMin` and `ButterflyMin` additionally use all threads for their reductions.
 
 Per-peer slots are shared across pipeline lanes, so per-peer operations use pipeline depth one.
@@ -185,6 +194,7 @@ Wait-policy selection changes observation geometry, not protocol semantics.
 
 Aggregate multicast publication issues one `multimem.red.release.sys.global.add.u64` for each active lane.
 Every publisher targets the counter owned by its channel and lane.
+Global warp group `C` owns aggregate channel `C`.
 The multicast instruction advances the corresponding counter on every rank, regardless of which ranks wait for that operation.
 Global completion advances each rank's counter by `R`.
 Fan-in completion advances each rank's counter by `R - 1`.
