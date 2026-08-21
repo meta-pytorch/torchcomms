@@ -1,7 +1,7 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 # NCCLx C++ namespace bindings (direct linkage, not dlsym)
 
-from libc.stdint cimport uint64_t
+from libc.stdint cimport int8_t, int16_t, uint64_t
 from libcpp.string cimport string
 from libcpp.unordered_map cimport unordered_map
 from libcpp.vector cimport vector
@@ -44,6 +44,40 @@ cdef extern from "nccl.h" nogil:
         ncclComm_t comm, unordered_map[string, string]& result)
     ncclResult_t ncclCommDumpAll(
         unordered_map[string, unordered_map[string, string]]& result)
+
+    enum: NCCL_COLL_TUNING_VERSION
+    enum: NCCL_TUNING_MAX_FUNCTIONS
+    enum: NCCL_TUNING_MAX_ALGORITHMS
+    enum: NCCL_TUNING_MAX_PROTOCOLS
+    enum: NCCL_TUNING_SIZE_POINTS
+    enum: NCCL_TUNING_NAME_LEN
+
+    ctypedef struct ncclCollTuningEntry:
+        int8_t algorithm
+        int8_t protocol
+        int16_t nChannels
+        int16_t nThreads
+        float timeUs
+
+    ctypedef struct ncclCollTuning:
+        int version
+        int nRanks
+        int nNodes
+        int nChannels
+        int minCompCap
+        int maxCompCap
+        int numFunctions
+        int numAlgorithms
+        int numProtocols
+        char functionNames[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_NAME_LEN]
+        char algorithmNames[NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_NAME_LEN]
+        char protocolNames[NCCL_TUNING_MAX_PROTOCOLS][NCCL_TUNING_NAME_LEN]
+        float bandwidths[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_MAX_PROTOCOLS]
+        float latencies[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_MAX_PROTOCOLS]
+        uint64_t messageSizes[NCCL_TUNING_SIZE_POINTS]
+        ncclCollTuningEntry bestBySize[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_SIZE_POINTS]
+
+    ncclResult_t ncclQueryCollTuning(ncclComm_t comm, ncclCollTuning* tuning)
 
     ctypedef struct ncclConfig_t:
         pass
