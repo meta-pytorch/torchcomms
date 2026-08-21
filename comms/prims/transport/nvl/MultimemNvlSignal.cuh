@@ -290,6 +290,7 @@ __device__ __forceinline__ void validate_common(
 template <NvlSignalAccess access>
 __device__ __forceinline__ void validate_per_peer(
     const MultimemNvlTransportDevice& transport,
+    const StageRound& round,
     const ThreadGroup& group) {
 #if defined(__CUDA_ARCH__)
   const uint64_t requiredSignals =
@@ -297,8 +298,10 @@ __device__ __forceinline__ void validate_per_peer(
       transport.signalsPerChannel;
   const uint32_t requiredGroupSize =
       nvl_signal_per_peer_group_size(static_cast<uint32_t>(transport.nvlRanks));
-  if (group.scope != SyncScope::BLOCK ||
+  if (blockDim.y != 1 || blockDim.z != 1 || gridDim.y != 1 || gridDim.z != 1 ||
+      blockDim.x != requiredGroupSize || group.scope != SyncScope::BLOCK ||
       group.group_size != requiredGroupSize ||
+      group.group_id != round.channel ||
       transport.nvlRanks > static_cast<int>(kMaxNvlSignalRanks) ||
       requiredSignals > transport.internalLocalSignals.size() ||
       requiredSignals > transport.internalMultimemSignals.size() ||
@@ -306,8 +309,19 @@ __device__ __forceinline__ void validate_per_peer(
        transport.internalUnicastSignalsByRank.size() !=
            static_cast<uint32_t>(transport.nvlRanks))) {
     printf(
-        "NVL per-peer signal invalid execution geometry: groupSize=%u "
-        "ranks=%d localSignals=%u multimemSignals=%u peers=%u\n",
+        "NVL per-peer signal invalid execution geometry: block=(%u,%u,%u) "
+        "grid=(%u,%u,%u) groupId=%u blockId=%u channel=%u groupSize=%u "
+        "ranks=%d "
+        "localSignals=%u multimemSignals=%u peers=%u\n",
+        static_cast<unsigned>(blockDim.x),
+        static_cast<unsigned>(blockDim.y),
+        static_cast<unsigned>(blockDim.z),
+        static_cast<unsigned>(gridDim.x),
+        static_cast<unsigned>(gridDim.y),
+        static_cast<unsigned>(gridDim.z),
+        static_cast<unsigned>(group.group_id),
+        static_cast<unsigned>(group.block_id),
+        static_cast<unsigned>(round.channel),
         static_cast<unsigned>(group.group_size),
         transport.nvlRanks,
         static_cast<unsigned>(transport.internalLocalSignals.size()),
@@ -317,6 +331,7 @@ __device__ __forceinline__ void validate_per_peer(
   }
 #else
   (void)transport;
+  (void)round;
   (void)group;
 #endif
 }
@@ -461,21 +476,40 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
 template <NvlSignalAccess access>
 __device__ __forceinline__ void validate_aggregate(
     const MultimemNvlTransportDevice& transport,
+    const StageRound& round,
     const ThreadGroup& group) {
 #if defined(__CUDA_ARCH__)
   const uint64_t requiredSignals =
       static_cast<uint64_t>(transport.maxChannels) *
       transport.signalsPerChannel;
-  if (group.scope != SyncScope::WARP || group.group_size != kWarpSize ||
-      transport.pipelineDepth == 0 || transport.pipelineDepth > kWarpSize ||
+  const uint32_t threadInBlock = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  const uint32_t warpInBlock = threadInBlock / kWarpSize;
+  if (blockDim.x < kWarpSize || blockDim.x % kWarpSize != 0 ||
+      blockDim.y != 1 || blockDim.z != 1 || gridDim.y != 1 || gridDim.z != 1 ||
+      group.scope != SyncScope::WARP || group.group_size != kWarpSize ||
+      group.group_id != round.channel || transport.pipelineDepth == 0 ||
+      transport.pipelineDepth > kWarpSize ||
       requiredSignals > transport.internalLocalSignals.size() ||
       requiredSignals > transport.internalMultimemSignals.size() ||
       (access == NvlSignalAccess::Unicast &&
        transport.internalUnicastSignalsByRank.size() !=
            static_cast<uint32_t>(transport.nvlRanks))) {
     printf(
-        "NVL aggregate signal invalid execution geometry: groupSize=%u "
+        "NVL aggregate signal invalid execution geometry: block=(%u,%u,%u) "
+        "grid=(%u,%u,%u) groupId=%u blockId=%u channel=%u warp=%u "
+        "groupSize=%u "
         "pipelineDepth=%u localSignals=%u multimemSignals=%u peers=%u\n",
+        static_cast<unsigned>(blockDim.x),
+        static_cast<unsigned>(blockDim.y),
+        static_cast<unsigned>(blockDim.z),
+        static_cast<unsigned>(gridDim.x),
+        static_cast<unsigned>(gridDim.y),
+        static_cast<unsigned>(gridDim.z),
+        static_cast<unsigned>(group.group_id),
+        static_cast<unsigned>(group.block_id),
+        static_cast<unsigned>(round.channel),
+        static_cast<unsigned>(warpInBlock),
         static_cast<unsigned>(group.group_size),
         static_cast<unsigned>(transport.pipelineDepth),
         static_cast<unsigned>(transport.internalLocalSignals.size()),
@@ -485,6 +519,7 @@ __device__ __forceinline__ void validate_aggregate(
   }
 #else
   (void)transport;
+  (void)round;
   (void)group;
 #endif
 }
@@ -519,9 +554,9 @@ __device__ __forceinline__ void signal_publish_impl(
   nvl_signal_detail::validate_protocol<access, topology, phase, waitPolicy>();
   nvl_signal_detail::validate_common(transport, round, participants);
   if constexpr (topology == NvlSignalTopology::Aggregate) {
-    nvl_signal_detail::validate_aggregate<access>(transport, group);
+    nvl_signal_detail::validate_aggregate<access>(transport, round, group);
   } else {
-    nvl_signal_detail::validate_per_peer<access>(transport, group);
+    nvl_signal_detail::validate_per_peer<access>(transport, round, group);
   }
 
   comms::device::fence_acq_rel_sys();
@@ -619,9 +654,9 @@ __device__ __forceinline__ void signal_wait_impl(
   nvl_signal_detail::validate_protocol<access, topology, phase, waitPolicy>();
   nvl_signal_detail::validate_common(transport, round, participants);
   if constexpr (topology == NvlSignalTopology::Aggregate) {
-    nvl_signal_detail::validate_aggregate<access>(transport, group);
+    nvl_signal_detail::validate_aggregate<access>(transport, round, group);
   } else {
-    nvl_signal_detail::validate_per_peer<access>(transport, group);
+    nvl_signal_detail::validate_per_peer<access>(transport, round, group);
   }
 
   const bool isWaiter = nvl_signal_detail::rank_selected(
