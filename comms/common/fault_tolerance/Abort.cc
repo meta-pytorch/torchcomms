@@ -12,21 +12,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 namespace comms::fault_tolerance {
-
-std::string_view abortReasonToString(AbortReason reason) {
-  switch (reason) {
-    case AbortReason::NONE:
-      return "none";
-    case AbortReason::ABORTED:
-      return "aborted";
-    case AbortReason::TIMED_OUT:
-      return "timed_out";
-  }
-  return "unknown";
-}
 
 Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   if (!enabled) {
@@ -74,12 +61,35 @@ Abort::~Abort() {
 #endif
 }
 
-void Abort::setAbort(AbortReason newReason) {
+bool Abort::setAbort(AbortReason newReason, std::string_view context) {
+  if (!isTerminalAbortReason(newReason)) {
+    throw std::invalid_argument("Invalid terminal abort reason");
+  }
   if (state_ == nullptr) {
-    return;
+    return false;
   }
 
-  markAbort(newReason);
+  // Own the caller's context before publishing the reason. This keeps the
+  // post-CAS path allocation-free and makes a transient caller buffer safe.
+  return trySetAbort(newReason, std::string{context.data(), context.size()});
+}
+
+std::optional<AbortInfo> Abort::getAbortInfo() {
+  if (state_ == nullptr) {
+    return std::nullopt;
+  }
+
+  (void)isAborted();
+  const auto reason = static_cast<AbortReason>(loadAbortReason());
+  if (reason == AbortReason::NONE) {
+    return std::nullopt;
+  }
+
+  std::string context;
+  if (contextReady_.load(std::memory_order_acquire)) {
+    context = context_;
+  }
+  return AbortInfo{.reason = reason, .context = std::move(context)};
 }
 
 bool Abort::isAborted() {
@@ -124,7 +134,7 @@ bool Abort::isTimedOut() {
 
   auto now = std::chrono::steady_clock::now();
   if (now >= deadline_.load(std::memory_order_acquire)) {
-    markAbort(AbortReason::TIMED_OUT);
+    trySetAbort(AbortReason::TIMED_OUT, "timeout expired");
     return loadAbortReason() == encode(AbortReason::TIMED_OUT);
   }
 
@@ -193,16 +203,23 @@ int Abort::loadAbortReason() const {
   return std::atomic_ref<int>{state_->abort}.load(std::memory_order_acquire);
 }
 
-void Abort::markAbort(AbortReason newReason) {
-  if (!isValidTerminalReason(newReason)) {
-    throw std::invalid_argument("Abort reason must be ABORTED or TIMED_OUT");
-  }
+bool Abort::trySetAbort(AbortReason newReason, std::string context) {
   int expected = encode(AbortReason::NONE);
-  std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
+  const bool won = std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
       expected,
       encode(newReason),
       std::memory_order_acq_rel,
       std::memory_order_acquire);
+  if (!won) {
+    return false;
+  }
+
+  // The reason CAS gives this call exclusive ownership of context_. Publishing
+  // happens afterwards on purpose: a racing reader may return the reason with
+  // empty context, but it never reads context_ while this swap is in progress.
+  context_.swap(context);
+  contextReady_.store(true, std::memory_order_release);
+  return true;
 }
 
 std::shared_ptr<Abort> createAbort(bool enabled, AbortBehavior behavior) {
