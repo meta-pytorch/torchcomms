@@ -43,6 +43,14 @@ namespace comms::prims::benchmark {
  *           model puts it BELOW them (1/L + 2/S against 2/L + 1/S) despite
  *           doing no arithmetic. It is the most store-heavy shape the ring
  *           executes and the only one with no direct measurement.
+ * BareStore Reference store loop with no abstraction: raw uint4 pointer
+ *           arithmetic, compile-time stride, no per-iteration bounds
+ *           predicate. Same geometry and buffer as WriteOnly, so the pair
+ *           isolates what tile_store's control flow costs. SASS for WriteOnly
+ *           shows six STG.E.128 separated by BSSY/BSYNC reconvergence pairs
+ *           plus an inlined scalar fallback that never executes; this shape is
+ *           the upper bound that overhead is measured against.
+ * BareCopy  The 1R+1W counterpart of BareStore, paired with Copy.
  */
 enum class CopyOpReduceShape {
   Unfused,
@@ -52,6 +60,8 @@ enum class CopyOpReduceShape {
   Copy,
   Pipelined,
   Forward,
+  BareStore,
+  BareCopy,
 };
 
 struct CopyOpReduceTiming {

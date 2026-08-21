@@ -48,6 +48,11 @@ __host__ __device__ inline float shape_multiplier(CopyOpReduceShape shape) {
     // Also 3, but composed 1 load + 2 stores rather than 2 loads + 1 store.
     case CopyOpReduceShape::Forward:
       return 3.0f;
+    // Reference shapes: same traffic as WriteOnly and Copy respectively.
+    case CopyOpReduceShape::BareStore:
+      return 1.0f;
+    case CopyOpReduceShape::BareCopy:
+      return 2.0f;
     default:
       return 3.0f;
   }
@@ -193,6 +198,63 @@ __device__ __forceinline__ void body_forward(
   }
 }
 
+/*
+ * Reference store loop: raw uint4 pointer arithmetic, compile-time stride, no
+ * per-iteration bounds predicate. Deliberately bypasses tile_store, whose SASS
+ * on sm_103a emits a BSSY/BSYNC reconvergence pair and an ISETP per unrolled
+ * iteration plus an inlined scalar fallback that never runs. Pairs with
+ * WriteOnly on identical geometry so the difference is that control flow.
+ *
+ * threadIdx.x rather than group.thread_id_in_group on purpose: the latter is a
+ * runtime struct field, so `k * group.group_size` costs an IMAD per iteration
+ * where the compile-time stride folds into the store's immediate offset.
+ */
+template <int kThreads, int kVpt>
+__device__ __forceinline__ void body_bare_store(
+    float* out,
+    const float* a,
+    const float* /*b*/,
+    std::size_t nbytes,
+    ThreadGroup& /*group*/) {
+  constexpr int kVecsPerTile = kThreads * kVpt;
+  const std::size_t nvecs = nbytes / sizeof(uint4);
+  uint4* dst = reinterpret_cast<uint4*>(out);
+  const uint4 v = reinterpret_cast<const uint4*>(a)[threadIdx.x];
+  for (std::size_t base = 0; base + kVecsPerTile <= nvecs;
+       base += kVecsPerTile) {
+#pragma unroll
+    for (int k = 0; k < kVpt; k++) {
+      dst[base + threadIdx.x + k * kThreads] = v;
+    }
+  }
+}
+
+// The 1R+1W counterpart of body_bare_store, paired with Copy.
+template <int kThreads, int kVpt>
+__device__ __forceinline__ void body_bare_copy(
+    float* out,
+    const float* a,
+    const float* /*b*/,
+    std::size_t nbytes,
+    ThreadGroup& /*group*/) {
+  constexpr int kVecsPerTile = kThreads * kVpt;
+  const std::size_t nvecs = nbytes / sizeof(uint4);
+  uint4* dst = reinterpret_cast<uint4*>(out);
+  const uint4* src = reinterpret_cast<const uint4*>(a);
+  for (std::size_t base = 0; base + kVecsPerTile <= nvecs;
+       base += kVecsPerTile) {
+    uint4 t[kVpt];
+#pragma unroll
+    for (int k = 0; k < kVpt; k++) {
+      t[k] = src[base + threadIdx.x + k * kThreads];
+    }
+#pragma unroll
+    for (int k = 0; k < kVpt; k++) {
+      dst[base + threadIdx.x + k * kThreads] = t[k];
+    }
+  }
+}
+
 // Fused with the next tile's loads issued before the current tile's store.
 template <int kThreads, int kVpt>
 __device__ __forceinline__ void body_pipelined(
@@ -248,6 +310,10 @@ __global__ __launch_bounds__(kThreads, 1) void roofline_kernel(
       body_copy<kThreads, kVpt>(out, a, b, nbytes, group);
     } else if constexpr (kShape == CopyOpReduceShape::Forward) {
       body_forward<kThreads, kVpt>(out, fwd, a, nbytes, group);
+    } else if constexpr (kShape == CopyOpReduceShape::BareStore) {
+      body_bare_store<kThreads, kVpt>(out, a, b, nbytes, group);
+    } else if constexpr (kShape == CopyOpReduceShape::BareCopy) {
+      body_bare_copy<kThreads, kVpt>(out, a, b, nbytes, group);
     } else {
       body_pipelined<kThreads, kVpt>(out, a, b, nbytes, group);
     }
@@ -292,6 +358,8 @@ void launch(
     COPY_OP_REDUCE_SHAPE_CASE(Copy, T, V)      \
     COPY_OP_REDUCE_SHAPE_CASE(Pipelined, T, V) \
     COPY_OP_REDUCE_SHAPE_CASE(Forward, T, V)   \
+    COPY_OP_REDUCE_SHAPE_CASE(BareStore, T, V) \
+    COPY_OP_REDUCE_SHAPE_CASE(BareCopy, T, V)  \
   }
   COPY_OP_REDUCE_CONFIGS(COPY_OP_REDUCE_DISPATCH)
 #undef COPY_OP_REDUCE_DISPATCH
