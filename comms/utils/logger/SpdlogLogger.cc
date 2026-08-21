@@ -26,6 +26,24 @@
 #include "comms/utils/logger/CommsLogFormatter.h"
 
 namespace meta::comms::logger {
+
+spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
+  switch (level) {
+    case LogLevel::NONE:
+    case LogLevel::VERSION:
+      return spdlog::level::off;
+    case LogLevel::ERROR:
+      return spdlog::level::err;
+    case LogLevel::WARN:
+      return spdlog::level::warn;
+    case LogLevel::INFO:
+      return spdlog::level::info;
+    case LogLevel::ABORT:
+    case LogLevel::TRACE:
+      return spdlog::level::debug;
+  }
+  return spdlog::level::off;
+}
 namespace {
 
 constexpr std::string_view kLoggerName = "comms";
