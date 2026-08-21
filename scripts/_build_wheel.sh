@@ -30,6 +30,11 @@ pip install pyyaml
 
 export NCCL_SKIP_CONDA_INSTALL=1
 export CLEAN_BUILD=1
+# Match the NCCLX feedstock and TorchComms iter build. NCCLX headers require
+# C++20, and fmt needs its NVCC C++20 compatibility patch applied after the
+# environment's dependency installation.
+export CXXSTD="-std=c++20"
+export NCCL_PATCH_FMT_NVCC_CXX20=1
 # NCCLX device compilation can exhaust memory at full host parallelism.
 export NCCL_BUILD_JOBS=16
 
