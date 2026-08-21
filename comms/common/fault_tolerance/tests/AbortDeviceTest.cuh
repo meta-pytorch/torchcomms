@@ -15,6 +15,12 @@ cudaError_t launchDeviceSetAbort(
     AbortReason reason,
     cudaStream_t stream);
 
+cudaError_t launchDeviceSetAbortWithContext(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner,
+    cudaStream_t stream);
+
 cudaError_t launchDeviceReadAbort(
     AbortDevice abort,
     int* observed,
