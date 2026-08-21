@@ -61,10 +61,21 @@ The abort reason is first-writer-wins:
 
 - `AbortReason::ABORTED` records an explicit user or transport abort.
 - `AbortReason::TIMED_OUT` records an expired timeout.
+- `AbortReason::BOOTSTRAP_POLL` records a failure detected by Bootstrap socket-health polling.
+- `AbortReason::NETWORK_ERROR` records a transport or peer-network failure.
+- `AbortReason::INTERNAL_ERROR` records an internal communication failure.
 - `AbortReason::NONE` means no terminal reason has been recorded.
 
 Host and device writers only transition from `NONE` to one terminal reason.
 Later writers cannot overwrite the recorded reason.
+
+`AbortInfo` pairs that winning reason with optional host diagnostic context.
+`AbortInfo::reasonString()` computes the stable lowercase reason label directly
+from the enum, so callers always have displayable text without duplicating it in
+the stored object. `Abort::getAbortInfo()` may materialize an expired host
+timeout before returning. A device-originated abort, or a host read that races
+the winning host writer before context publication, returns the winning reason
+with an empty context.
 
 ## Device `AbortDevice`
 
@@ -307,7 +318,9 @@ Host explicit abort:
 
 ```cpp
 auto abort = comm->getAbort();
-abort->setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+abort->setAbort(
+    comms::fault_tolerance::AbortReason::ABORTED,
+    "user requested abort");
 ```
 
 Host default timeout:
@@ -340,8 +353,14 @@ __global__ void kernel(KernArgs args) {
 Device explicit abort:
 
 ```cpp
-abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+abort.setAbort(
+    comms::fault_tolerance::AbortReason::ABORTED,
+    "device callsite");
 ```
+
+The host copies the context into host-only storage. The device never stores the
+string in mapped shared state; a device diagnostic may consume the
+device-accessible string only at the winning callsite.
 
 Device timeout:
 

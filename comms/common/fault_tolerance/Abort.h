@@ -8,22 +8,12 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 
+#include "comms/common/fault_tolerance/AbortTypes.h"
+
 namespace comms::fault_tolerance {
-
-enum class AbortReason : int {
-  NONE = 0,
-  ABORTED = 1,
-  TIMED_OUT = 2,
-};
-
-std::string_view abortReasonToString(AbortReason reason);
-
-enum class AbortBehavior : int {
-  SKIP = 0,
-  TRAP = 1,
-};
 
 enum class AbortCheckResult : int {
   CONTINUE = 0,
@@ -131,17 +121,35 @@ class Abort final {
   }
 
   /**
-   * Records the first abort reason.
+   * Records the first abort reason and optional diagnostic context.
    *
    * The abort state starts as `AbortReason::NONE` and can transition exactly
    * once to one valid terminal reason. The first writer wins. Later calls with
    * a different reason do not override the reason already visible to other host
-   * threads and device consumers. Valid terminal reasons are
-   * `AbortReason::ABORTED` and `AbortReason::TIMED_OUT`; `AbortReason::NONE`
-   * and unknown enum values are invalid input and are rejected before
-   * attempting to update shared state.
+   * threads and device consumers. `AbortReason::NONE` and unknown enum values
+   * are invalid input and are rejected before attempting to update shared
+   * state.
+   *
+   * The context is copied before attempting the transition. When this call
+   * wins, that owned string is published in host-only state and becomes
+   * available through `getAbortInfo()`. A racing reader may observe the winning
+   * reason before the context is published and receive an empty context.
+   * Device-originated aborts never publish host context.
+   *
+   * Returns whether this call performed the `NONE` to terminal transition.
    */
-  void setAbort(AbortReason newReason = AbortReason::ABORTED);
+  bool setAbort(
+      AbortReason newReason = AbortReason::ABORTED,
+      std::string_view context = {});
+
+  /**
+   * Returns an immutable snapshot of the winning abort reason and context, or
+   * std::nullopt when this controller has not been aborted.
+   *
+   * Like `isAborted()`, this materializes an expired host timeout before
+   * reading the snapshot. Device-originated aborts have an empty context.
+   */
+  std::optional<AbortInfo> getAbortInfo();
 
   /**
    * Returns true when an explicit abort or expired active timeout has aborted
@@ -236,25 +244,19 @@ class Abort final {
     return static_cast<int>(reason);
   }
 
-  static constexpr bool isValidTerminalReason(AbortReason reason) {
-    switch (reason) {
-      case AbortReason::ABORTED:
-      case AbortReason::TIMED_OUT:
-        return true;
-      case AbortReason::NONE:
-        return false;
-    }
-    return false;
-  }
-
   int loadAbortReason() const;
-  void markAbort(AbortReason newReason);
+  bool trySetAbort(AbortReason newReason, std::string context);
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};
   std::atomic<bool> hasTimeout_{false};
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
+  // Only the host reason-CAS winner writes context_. Readers copy it only after
+  // an acquire load observes contextReady_, so no mutex is needed. The flag is
+  // host-only and is never accessed by AbortDevice.
+  std::atomic<bool> contextReady_{false};
+  std::string context_;
   AbortBehavior behavior_{AbortBehavior::SKIP};
 
   static_assert(std::atomic<bool>::is_always_lock_free);
