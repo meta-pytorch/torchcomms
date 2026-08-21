@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "comms/prims/tests/MultimemNvlSignalTrapTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
@@ -20,9 +22,22 @@ TEST(MultimemNvlSignalTrapTest, InvalidGeometryTraps) {
   }
   CUDACHECK_TEST(cudaSetDevice(0));
 
-  test::launchNvlSignalTrap(
-      static_cast<test::NvlSignalTrapCase>(NVL_SIGNAL_TRAP_CASE));
+  constexpr auto testCase =
+      static_cast<test::NvlSignalTrapCase>(NVL_SIGNAL_TRAP_CASE);
+  if constexpr (testCase == test::NvlSignalTrapCase::WaitTimeout) {
+    testing::internal::CaptureStdout();
+  }
+  test::launchNvlSignalTrap(testCase);
   const auto error = cudaDeviceSynchronize();
+  if constexpr (testCase == test::NvlSignalTrapCase::WaitTimeout) {
+    const auto output = testing::internal::GetCapturedStdout();
+    EXPECT_NE(
+        output.find("CUDA ABORT ERROR: NVL signal wait for sequence=1"),
+        std::string::npos)
+        << output;
+    EXPECT_NE(output.find("MultimemNvlSignal.cuh:"), std::string::npos)
+        << output;
+  }
   EXPECT_TRUE(
       error == cudaErrorIllegalInstruction || error == cudaErrorAssert ||
       error == cudaErrorLaunchFailure)

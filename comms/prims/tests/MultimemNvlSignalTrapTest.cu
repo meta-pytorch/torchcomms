@@ -2,6 +2,7 @@
 
 #include "comms/prims/tests/MultimemNvlSignalTrapTest.cuh"
 
+#include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
@@ -12,7 +13,9 @@ namespace {
 __device__ alignas(SignalState) uint64_t
     trapSignalStorage[16 * sizeof(SignalState) / sizeof(uint64_t)];
 
-__global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
+__global__ void nvlSignalTrapKernel(
+    NvlSignalTrapCase testCase,
+    Timeout timeout) {
   auto* trapSignals = reinterpret_cast<SignalState*>(trapSignalStorage);
   SignalState* peerSignals[4] = {
       trapSignals, trapSignals, trapSignals, trapSignals};
@@ -46,7 +49,6 @@ __global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
   };
   if (testCase == NvlSignalTrapCase::WaitTimeout) {
     auto group = make_block_group();
-    Timeout timeout{1};
     timeout.start();
     signal_wait<
         NvlSignalAccess::Unicast,
@@ -85,8 +87,13 @@ __global__ void nvlSignalTrapKernel(NvlSignalTrapCase testCase) {
 void launchNvlSignalTrap(NvlSignalTrapCase testCase) {
   const uint32_t threads =
       testCase == NvlSignalTrapCase::PerPeerGroupTooSmall ? 32 : 64;
+  Timeout timeout;
+  if (testCase == NvlSignalTrapCase::WaitTimeout) {
+    timeout = comms::fault_tolerance::testing::testSkipAbortDevice();
+    timeout.setOpTimeoutMs(1);
+  }
   nvlSignalTrapKernel<<<1, threads>>>(
-      testCase); // NOLINT(facebook-cuda-safe-kernel-call-check)
+      testCase, timeout); // NOLINT(facebook-cuda-safe-kernel-call-check)
 }
 
 } // namespace comms::prims::test
