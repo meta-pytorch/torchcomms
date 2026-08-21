@@ -1,6 +1,10 @@
 # (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 # pyre-strict
 
+# Import torch first: it preloads the CUDA runtime libraries that _core
+# links against, so wheels work without a system-wide CUDA toolkit.
+import torch  # noqa: F401
+
 from uniflow._core import (
     Connection,
     CpuNicSelectionPolicy,

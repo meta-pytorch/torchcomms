@@ -18,7 +18,46 @@ else()
   set(UNIFLOW_STANDALONE OFF)
 endif()
 
+if(NOT UNIFLOW_STANDALONE)
+  # Intermediate static libs (uniflow, fetched spdlog) must not land in the
+  # parent's CMAKE_ARCHIVE_OUTPUT_DIRECTORY: setup.py points it at the
+  # packaged torchcomms/ dir and they would ship in the wheel.
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+
 find_package(Threads REQUIRED)
+
+# libibverbs/libmlx5 are dlopen'd at runtime, but rdma-core headers are
+# needed at build time (mlx5dv.h includes verbs.h).
+include(CheckIncludeFileCXX)
+check_include_file_cxx("infiniband/mlx5dv.h" UNIFLOW_HAS_RDMA_HEADERS)
+if(NOT UNIFLOW_HAS_RDMA_HEADERS)
+  message(FATAL_ERROR
+      "uniflow requires rdma-core headers (infiniband/verbs.h, mlx5dv.h). "
+      "Install libibverbs-dev / rdma-core-devel, or build with USE_UNIFLOW=OFF.")
+endif()
+
+# Enable position-independent code for all targets (including fetched
+# spdlog) so uniflow can be linked into shared libraries (e.g., the
+# uniflow._core Python extension).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# fmt: supplied by the parent torchcomms build (header-only); find or fetch
+# when building standalone. Must precede spdlog so a fetched spdlog uses the
+# same fmt (SPDLOG_FMT_EXTERNAL) instead of its bundled copy.
+if(NOT TARGET fmt::fmt)
+  find_package(fmt QUIET)
+  if(NOT fmt_FOUND)
+    message(STATUS "fmt not found on system, fetching from GitHub...")
+    include(FetchContent)
+    FetchContent_Declare(
+        fmt
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG 11.2.0
+    )
+    FetchContent_MakeAvailable(fmt)
+  endif()
+endif()
 
 # spdlog: use system install if available, otherwise fetch from GitHub.
 option(UNIFLOW_USE_SYSTEM_SPDLOG "Use system-installed spdlog instead of fetching" ON)
@@ -29,6 +68,7 @@ endif()
 
 if(NOT spdlog_FOUND)
   message(STATUS "spdlog not found on system, fetching from GitHub...")
+  set(SPDLOG_FMT_EXTERNAL ON)
   include(FetchContent)
   FetchContent_Declare(
       spdlog
@@ -44,10 +84,6 @@ message(STATUS "ROOT = ${ROOT}")
 message(STATUS "CMAKE_CURRENT_SOURCE_DIR = ${CMAKE_CURRENT_SOURCE_DIR}")
 include_directories(${ROOT})
 
-# Enable position-independent code for all targets so uniflow can be
-# linked into shared libraries (e.g., torchcomms _transport.so).
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
 # Add CUDA include path globally so all sub-targets can find cuda.h
 # and cuda_runtime_api.h, even when compiled via distcc.
 if(CUDAToolkit_FOUND)
@@ -55,7 +91,8 @@ if(CUDAToolkit_FOUND)
 endif()
 
 # Add spdlog include path globally for distcc compatibility.
-if(spdlog_FOUND)
+# Check the target, not spdlog_FOUND: fetched spdlog sets only the former.
+if(TARGET spdlog::spdlog)
   get_target_property(_spdlog_inc spdlog::spdlog INTERFACE_INCLUDE_DIRECTORIES)
   if(_spdlog_inc)
     include_directories(${_spdlog_inc})
@@ -106,6 +143,7 @@ add_library(uniflow ${UNIFLOW_LIB_TYPE}
     $<TARGET_OBJECTS:uniflow_nvml>
     $<TARGET_OBJECTS:uniflow_ibv>
     $<TARGET_OBJECTS:uniflow_sysfs>
+    $<TARGET_OBJECTS:uniflow_topology_discovery>
     $<TARGET_OBJECTS:uniflow_logging>
 )
 
@@ -118,11 +156,34 @@ target_include_directories(uniflow PUBLIC
 target_link_libraries(uniflow PUBLIC
     Threads::Threads
     spdlog::spdlog
+    fmt::fmt
     uniflow_executor
 )
 
 if(CUDAToolkit_FOUND)
     target_link_libraries(uniflow PUBLIC CUDA::cudart CUDA::cuda_driver)
+endif()
+
+# Extension: uniflow._core (built by the parent torchcomms build, which
+# provides the pybind11/Python helpers; the internal Buck build has its own
+# target)
+if(UNIFLOW_BUILD_PYTHON_EXT AND NOT UNIFLOW_STANDALONE)
+  add_library(uniflow_core MODULE
+      ${CMAKE_CURRENT_SOURCE_DIR}/UniflowPy.cpp
+  )
+  set_target_properties(uniflow_core PROPERTIES
+      PREFIX ""  # No 'lib' prefix for Python extension
+      OUTPUT_NAME "_core"
+      SUFFIX ".${Python3_SOABI}.so"
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  )
+  target_include_directories(uniflow_core PRIVATE ${Python3_INCLUDE_DIRS})
+  torchcomms_use_torch_pybind11(uniflow_core)
+  target_compile_features(uniflow_core PRIVATE cxx_std_20)
+  target_link_libraries(uniflow_core PRIVATE uniflow)
+  # CMAKE_INSTALL_PREFIX is the torchcomms package dir (see setup.py);
+  # the uniflow package is its sibling.
+  install(TARGETS uniflow_core LIBRARY DESTINATION ../uniflow)
 endif()
 
 # Tests (standalone builds or when BUILD_TESTING is ON)
