@@ -742,18 +742,19 @@ class P2pIbgdaTransportDevice {
    */
   __device__ void flush(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send) {
+      IbDirection direction = IbDirection::Send,
+      const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
       validate_group_scope(group);
-      drain_flush_lanes(group, direction);
+      drain_flush_lanes(group, direction, timeout);
     }
     group.sync();
   }
 
   /** flush (thread-scope) - Single-thread variant. */
-  __device__ void flush() {
+  __device__ void flush(const Timeout& timeout = Timeout()) {
     ThreadGroup solo = make_thread_solo();
-    flush(solo);
+    flush(solo, IbDirection::Send, timeout);
   }
 
   /**
@@ -766,13 +767,14 @@ class P2pIbgdaTransportDevice {
    */
   __device__ void fence(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send) {
-    flush(group, direction);
+      IbDirection direction = IbDirection::Send,
+      const Timeout& timeout = Timeout()) {
+    flush(group, direction, timeout);
   }
 
   /** fence (thread-scope) - Single-thread variant. */
-  __device__ void fence() {
-    flush();
+  __device__ void fence(const Timeout& timeout = Timeout()) {
+    flush(timeout);
   }
 
   // =========================================================================
@@ -1084,7 +1086,7 @@ class P2pIbgdaTransportDevice {
             DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
             doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
-          (void)FT_ABORT_CHECK(
+          FT_ABORT_BREAK(
               timeout,
               "wait_local_on_qp timed out (ticket=%llu)",
               static_cast<unsigned long long>(ticket));
@@ -1097,21 +1099,25 @@ class P2pIbgdaTransportDevice {
       uint32_t channelId,
       IbDirection direction,
       uint64_t mask,
-      const uint64_t* tickets) {
+      const uint64_t* tickets,
+      const Timeout& timeout = Timeout()) {
     const uint32_t numLanes = num_qp_lanes();
     for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
       if ((mask & (1ULL << laneId)) == 0) {
         continue;
       }
       IbgdaLane lane = lane_from_ordinal(channelId, direction, laneId);
-      wait_local_on_qp(lane.qp, tickets[laneId]);
+      wait_local_on_qp(lane.qp, tickets[laneId], timeout);
     }
   }
 
-  __device__ void drain_flush_lanes(ThreadGroup& group, IbDirection direction) {
+  __device__ void drain_flush_lanes(
+      ThreadGroup& group,
+      IbDirection direction,
+      const Timeout& timeout = Timeout()) {
     auto& state = qp_state(group.group_id, direction);
     const uint64_t mask = atomic_exchange_u64(&state.pendingFlushLanesMask, 0);
-    wait_lanes(group.group_id, direction, mask, state.lastFlushWqe);
+    wait_lanes(group.group_id, direction, mask, state.lastFlushWqe, timeout);
   }
 
   __device__ IbLocalCompletionTicket put_impl(
@@ -1251,7 +1257,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(signalBuf.ptr);
       while (current < expected) {
-        (void)FT_ABORT_CHECK(
+        FT_ABORT_BREAK(
             timeout,
             "wait_signal: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),
@@ -1272,7 +1278,7 @@ class P2pIbgdaTransportDevice {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(counterBuf.ptr);
       while (current < expected) {
-        (void)FT_ABORT_CHECK(
+        FT_ABORT_BREAK(
             timeout,
             "wait_counter: expected>=%llu, current=%llu",
             static_cast<unsigned long long>(expected),

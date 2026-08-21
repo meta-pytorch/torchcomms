@@ -31,10 +31,17 @@ enum class P2pIbBackendType : uint8_t {
   IBRC,
 };
 
+// `Aborted` is terminal and distinct from `Done`: the operation stopped because
+// the communicator aborted, so the bytes never arrived. Reporting `Done` would
+// advance the caller's cursors and release its slots, letting a driver claim
+// success on data that was never transferred. Drivers loop until a terminal
+// status, so honoring `Aborted` is what lets them exit without every call site
+// having to poll the abort handle itself.
 enum class IbgdaSendRecvProgressStatus : uint8_t {
   Waiting,
   Progressed,
   Done,
+  Aborted,
 };
 
 enum class IbgdaRegisteredSendProgressStatus : uint8_t {
@@ -42,6 +49,7 @@ enum class IbgdaRegisteredSendProgressStatus : uint8_t {
   Progressed,
   Posted,
   Drained,
+  Aborted,
 };
 
 namespace detail {
@@ -295,13 +303,16 @@ struct P2pIbTransportDevice {
 
   __device__ uint64_t read_counter(const IbgdaLocalBuffer& counterBuf) const;
 
-  __device__ void flush(ThreadGroup& group);
+  // Takes the abort handle so the drain terminates on abort instead of waiting
+  // on a NIC that will never complete. Stays void: the wait terminates itself,
+  // and a caller draining its own WQEs has nothing to do with a status.
+  __device__ void flush(ThreadGroup& group, const Timeout& timeout = Timeout());
 
-  __device__ void flush();
+  __device__ void flush(const Timeout& timeout = Timeout());
 
-  __device__ void fence(ThreadGroup& group);
+  __device__ void fence(ThreadGroup& group, const Timeout& timeout = Timeout());
 
-  __device__ void fence();
+  __device__ void fence(const Timeout& timeout = Timeout());
 
   __device__ __forceinline__ void require_ibgda(
       ThreadGroup& group,
