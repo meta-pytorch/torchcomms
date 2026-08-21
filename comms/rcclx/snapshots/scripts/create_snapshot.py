@@ -176,6 +176,8 @@ def extract_rcclx_from_commit(
             "--include",
             "fbcode/comms/rcclx/device_linker.bzl",
             "--include",
+            "fbcode/comms/rcclx/METADATA.bzl",
+            "--include",
             "fbcode/comms/rcclx/rccl_build_config.bzl",
             "--include",
             "fbcode/comms/rcclx/utils.bzl",
@@ -288,6 +290,9 @@ def fix_load_paths_in_snapshot(dest: Path, stage: str) -> None:
     # Remove obsolete manifold-related targets from BUCK file
     _remove_manifold_targets_from_buck(rcclx_dir)
 
+    # Point METADATA.bzl loads at the snapshot's own frozen copy
+    _fix_metadata_load_paths(rcclx_dir, snapshot_pkg)
+
     # Fix load paths in all BUCK files recursively (subdirectories like develop/meta/lib/BUCK)
     _fix_load_paths_in_all_buck_files(rcclx_dir, snapshot_pkg)
 
@@ -372,6 +377,39 @@ def _fix_load_paths(file_path: Path, snapshot_pkg: str) -> None:
         logger.info(f"  Updated load paths in {file_path.name}")
     else:
         logger.info(f"  No load path changes needed in {file_path.name}")
+
+
+def _fix_metadata_load_paths(rcclx_dir: Path, snapshot_pkg: str) -> None:
+    """
+    Point METADATA.bzl loads at the snapshot's own frozen copy.
+
+    def_build.bzl loads METADATA from the top-level rcclx package, and it is a
+    .bzl rather than a BUCK file so the other load-path passes do not reach it.
+    Left unrewritten, the snapshot would read its version metadata from HEAD.
+
+    Args:
+        rcclx_dir: Path to the rcclx directory within the snapshot
+        snapshot_pkg: The snapshot package path
+    """
+    logger.info("Fixing METADATA.bzl load paths")
+
+    replacements = [
+        ('"@fbcode//comms/rcclx:METADATA.bzl"', f'"{snapshot_pkg}:METADATA.bzl"'),
+        ('"//comms/rcclx:METADATA.bzl"', f'"{snapshot_pkg}:METADATA.bzl"'),
+    ]
+
+    files_updated = 0
+    for path in sorted([*rcclx_dir.rglob("BUCK"), *rcclx_dir.rglob("*.bzl")]):
+        content = path.read_text()
+        original = content
+        for old_str, new_str in replacements:
+            content = content.replace(old_str, new_str)
+        if content != original:
+            path.write_text(content)
+            logger.info(f"  Updated METADATA.bzl load in {path.relative_to(rcclx_dir)}")
+            files_updated += 1
+
+    logger.info(f"  Updated {files_updated} file(s)")
 
 
 def _fix_load_paths_in_all_buck_files(rcclx_dir: Path, snapshot_pkg: str) -> None:
@@ -841,6 +879,38 @@ def _fix_defs_bzl_compatibility(rcclx_dir: Path) -> None:
         logger.info(f"  No API compatibility fixes needed in defs.bzl")
 
 
+def _insert_into_starlark_list(
+    content: str,
+    list_name: str,
+    entries: str,
+    at_start: bool,
+) -> str | None:
+    """
+    Insert entries into a top-level Starlark list literal.
+
+    Anchors on the list name and its brackets rather than on whichever flag
+    happens to sit first or last. Those flags are upstream AMD content and get
+    reordered and appended over time, which silently broke the previous
+    exact-string anchors.
+
+    Returns the updated content, or None if the list could not be located.
+    """
+    open_match = re.search(rf"^{re.escape(list_name)} = \[\n", content, flags=re.MULTILINE)
+    if open_match is None:
+        return None
+
+    if at_start:
+        pos = open_match.end()
+    else:
+        # The list may close as "]" or "] + get_foo() + ...", so match "]" at line start.
+        close_match = re.search(r"^\]", content[open_match.end() :], flags=re.MULTILINE)
+        if close_match is None:
+            return None
+        pos = open_match.end() + close_match.start()
+
+    return content[:pos] + entries + content[pos:]
+
+
 def _add_snapshot_compiler_flags(file_path: Path) -> None:
     """
     Add compiler flags to suppress warnings that were not errors in older snapshots.
@@ -855,42 +925,32 @@ def _add_snapshot_compiler_flags(file_path: Path) -> None:
 
     logger.info(f"Adding snapshot compiler flags to {file_path}")
 
-    with open(file_path, "r") as f:
-        content = f.read()
+    content = file_path.read_text()
 
-    # Check if flags are already added (check for one of our snapshot flags)
-    if "-Wno-unused-exception-parameter" in content:
+    wanted_flags = [
+        "-Wno-deprecated-this-capture",
+        "-Wno-unused-exception-parameter",
+    ]
+    missing = [flag for flag in wanted_flags if f'"{flag}"' not in content]
+    if not missing:
         logger.info(f"  Snapshot compiler flags already present in {file_path.name}")
         return
 
-    # Flags to add for snapshot compatibility
-    snapshot_flags = (
-        '    # Snapshot compatibility: suppress warnings that were not errors in older code\n'
-        '    "-Wno-deprecated-this-capture",\n'
-        '    "-Wno-unused-exception-parameter",\n'
+    entries = "    # Snapshot compatibility: suppress warnings that were not errors in older code\n"
+    entries += "".join(f'    "{flag}",\n' for flag in missing)
+
+    updated = _insert_into_starlark_list(
+        content, "COMMON_COMPILER_FLAGS", entries, at_start=False
     )
+    if updated is None:
+        raise RuntimeError(
+            f"Could not locate COMMON_COMPILER_FLAGS in {file_path}. "
+            "The snapshot would build without the compatibility warning suppressions; "
+            "fix the insertion logic rather than shipping a broken snapshot."
+        )
 
-    # Try multiple possible ending patterns for COMMON_COMPILER_FLAGS list
-    # Different commit versions may have different last flags
-    possible_endings = [
-        '    "-Wno-pointer-bool-conversion",\n]',
-        '    "-Wno-cuda-compat",\n]',
-    ]
-
-    replaced = False
-    for old_pattern in possible_endings:
-        if old_pattern in content:
-            # Insert snapshot flags before the closing bracket
-            new_pattern = old_pattern[:-1] + snapshot_flags + ']'
-            content = content.replace(old_pattern, new_pattern)
-            replaced = True
-            with open(file_path, "w") as f:
-                f.write(content)
-            logger.info(f"  Added snapshot compatibility flags to COMMON_COMPILER_FLAGS in {file_path.name}")
-            break
-
-    if not replaced:
-        logger.warning(f"  Could not find COMMON_COMPILER_FLAGS pattern in {file_path.name}")
+    file_path.write_text(updated)
+    logger.info(f"  Added {', '.join(missing)} to COMMON_COMPILER_FLAGS in {file_path.name}")
 
 
 def _add_snapshot_include_path(file_path: Path, stage: str) -> None:
@@ -924,8 +984,7 @@ def _add_snapshot_include_path(file_path: Path, stage: str) -> None:
 
     logger.info(f"Adding snapshot include path to {file_path}")
 
-    with open(file_path, "r") as f:
-        content = f.read()
+    content = file_path.read_text()
 
     # Check if include path is already added
     snapshot_include_marker = f'# Snapshot include path for "{stage}"'
@@ -933,49 +992,31 @@ def _add_snapshot_include_path(file_path: Path, stage: str) -> None:
         logger.info(f"  Snapshot include path already present in {file_path.name}")
         return
 
-    # The include path flag to add - points to the snapshot root so
-    # "comms/rcclx/develop/..." resolves correctly
-    # Note: Must use "fbcode/" prefix because compilation runs from fbsource root
-    include_path_flag = f'"-I", "fbcode/comms/rcclx/snapshots/{stage}"'
-
-    modified = False
-
-    # Add to COMMON_PRE_COMPILER_FLAGS (after -DBUILD_META_INTERNAL)
-    old_pattern = '"-DBUILD_META_INTERNAL",'
-    new_pattern = (
-        '"-DBUILD_META_INTERNAL",\n'
-        f'    {snapshot_include_marker}\n'
-        f'    {include_path_flag},'
+    # Points at the snapshot root so "comms/rcclx/develop/..." resolves inside it.
+    # The "fbcode/" prefix is required because compilation runs from the fbsource root.
+    entries = (
+        f"    {snapshot_include_marker}\n"
+        f'    "-I",\n'
+        f'    "fbcode/comms/rcclx/snapshots/{stage}",\n'
     )
 
-    if old_pattern in content:
-        content = content.replace(old_pattern, new_pattern)
-        modified = True
-        logger.info(f"  Added snapshot include path to COMMON_PRE_COMPILER_FLAGS")
-    else:
-        logger.warning(f"  Could not find COMMON_PRE_COMPILER_FLAGS pattern")
+    # COMMON_PRE_COMPILER_FLAGS feeds preprocessor_flags on the main rccl targets;
+    # COMMON_COMPILER_FLAGS is all that auxiliary targets such as colltrace_utils get.
+    # Missing it on either one silently resolves "comms/rcclx/..." includes against
+    # HEAD instead of the snapshot, so treat a miss as fatal.
+    for list_name in ("COMMON_PRE_COMPILER_FLAGS", "COMMON_COMPILER_FLAGS"):
+        updated = _insert_into_starlark_list(content, list_name, entries, at_start=True)
+        if updated is None:
+            raise RuntimeError(
+                f"Could not locate {list_name} in {file_path}. Without the snapshot "
+                "include path, sources would compile against HEAD's headers instead "
+                "of the snapshot's; fix the insertion logic rather than shipping a "
+                "silently wrong snapshot."
+            )
+        content = updated
+        logger.info(f"  Added snapshot include path to {list_name}")
 
-    # Also add to COMMON_COMPILER_FLAGS (at the beginning after [)
-    # This is needed for auxiliary targets like colltrace_utils that only use COMMON_COMPILER_FLAGS
-    # The include path should be added at the start of COMMON_COMPILER_FLAGS
-    common_flags_pattern = 'COMMON_COMPILER_FLAGS = [\n    "-fPIC",'
-    common_flags_replacement = (
-        'COMMON_COMPILER_FLAGS = [\n'
-        f'    {snapshot_include_marker}\n'
-        f'    {include_path_flag},\n'
-        '    "-fPIC",'
-    )
-
-    if common_flags_pattern in content:
-        content = content.replace(common_flags_pattern, common_flags_replacement)
-        modified = True
-        logger.info(f"  Added snapshot include path to COMMON_COMPILER_FLAGS")
-    else:
-        logger.warning(f"  Could not find COMMON_COMPILER_FLAGS pattern")
-
-    if modified:
-        with open(file_path, "w") as f:
-            f.write(content)
+    file_path.write_text(content)
 
 
 def _remove_manifold_targets_from_buck(rcclx_dir: Path) -> None:
