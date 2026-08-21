@@ -31,29 +31,6 @@
 
 #include "cuda_runtime_api.h"
 
-namespace {
-
-spdlog::level::level_enum loggerLevelToSpdlogLevel(
-    meta::comms::logger::LogLevel level) {
-  switch (level) {
-    case meta::comms::logger::LogLevel::NONE:
-    case meta::comms::logger::LogLevel::VERSION:
-      return spdlog::level::off;
-    case meta::comms::logger::LogLevel::ERROR:
-      return spdlog::level::err;
-    case meta::comms::logger::LogLevel::WARN:
-      return spdlog::level::warn;
-    case meta::comms::logger::LogLevel::INFO:
-      return spdlog::level::info;
-    case meta::comms::logger::LogLevel::ABORT:
-    case meta::comms::logger::LogLevel::TRACE:
-      return spdlog::level::debug;
-  }
-  return spdlog::level::off;
-}
-
-} // namespace
-
 const char* userHomeDir() {
   struct passwd *pwUser = getpwuid(getuid());
   return pwUser == NULL ? NULL : pwUser->pw_dir;
@@ -198,6 +175,6 @@ void initNcclLogger() {
       },
       NCCL_DEBUG_LOGGING_ASYNC);
   meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
-      .set_level(loggerLevelToSpdlogLevel(
+      .set_level(meta::comms::logger::loggerLevelToSpdlogLevel(
           meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
 }
