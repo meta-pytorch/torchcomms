@@ -49,6 +49,12 @@ std::vector<int> identityRankMap(int size) {
   return rankMap;
 }
 
+std::vector<int> rotatedRankMap(int size) {
+  auto rankMap = identityRankMap(size);
+  std::rotate(rankMap.begin(), rankMap.begin() + 1, rankMap.end());
+  return rankMap;
+}
+
 // Collective check: returns true iff every rank reports that multimem is
 // eligible on the given CUDA device. Tests use this to skip cleanly on
 // non-NVLS hosts without leaving stragglers blocked in downstream collectives.
@@ -78,7 +84,8 @@ MultimemNvlTransportConfig makeConfig(
     std::size_t dataBufferSize,
     uint32_t userSignalCount = 1,
     std::size_t pipelineDepth = 0,
-    std::size_t maxChannels = 0) {
+    std::size_t maxChannels = 0,
+    bool enableUnicastPeerViews = false) {
   const std::size_t effectiveMaxChannels =
       std::max<std::size_t>(1, maxChannels);
   return make_multimem_nvl_transport_config({
@@ -87,6 +94,7 @@ MultimemNvlTransportConfig makeConfig(
       .maxChannels = effectiveMaxChannels,
       .maxBlocks = maxChannels,
       .userSignalCount = userSignalCount,
+      .enableUnicastPeerViews = enableUnicastPeerViews,
   });
 }
 
@@ -761,6 +769,7 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSetsUpDeviceHandle) {
   EXPECT_EQ(handle.pipelineDepth, 1);
   EXPECT_EQ(handle.maxChannels, 1);
   EXPECT_EQ(handle.signalsPerChannel, internalSignals);
+  EXPECT_TRUE(handle.internalUnicastSignalsByRank.empty());
 
   EXPECT_EQ(transport.getAllocatedDataBufferSize(), kDataBytes);
   EXPECT_EQ(
@@ -812,6 +821,61 @@ TEST_F(MultimemNvlTransportTestFixture, ExchangeSupportsDataOnlyConfiguration) {
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
+TEST_F(MultimemNvlTransportTestFixture, PeerViewKernelsCoverNvl72) {
+  constexpr int kNvlRanks = 72;
+  constexpr int kSourceRank = kNvlRanks - 1;
+  constexpr uint64_t kValue = 0x123456789ABCDEF0ULL;
+  const std::size_t signalCount =
+      static_cast<std::size_t>(kNvlRanks) * kNvlRanks;
+
+  SignalState* signals = nullptr;
+  SignalState** pointerTable = nullptr;
+  uint64_t* output = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&signals, signalCount * sizeof(SignalState)));
+  CUDACHECK_TEST(cudaMemset(signals, 0, signalCount * sizeof(SignalState)));
+  CUDACHECK_TEST(cudaMalloc(&pointerTable, kNvlRanks * sizeof(SignalState*)));
+  CUDACHECK_TEST(cudaMalloc(&output, kNvlRanks * sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMemset(output, 0, kNvlRanks * sizeof(uint64_t)));
+
+  std::vector<SignalState*> hostPointerTable(kNvlRanks);
+  for (int destination = 0; destination < kNvlRanks; ++destination) {
+    hostPointerTable[static_cast<std::size_t>(destination)] =
+        signals + static_cast<std::size_t>(destination) * kNvlRanks;
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      pointerTable,
+      hostPointerTable.data(),
+      hostPointerTable.size() * sizeof(SignalState*),
+      cudaMemcpyHostToDevice));
+
+  MultimemNvlTransportDevice transport{
+      .internalLocalSignals = DeviceSpan<SignalState>(
+          signals + static_cast<std::size_t>(kSourceRank) * kNvlRanks,
+          kNvlRanks),
+      .nvlRank = kSourceRank,
+      .nvlRanks = kNvlRanks,
+      .internalUnicastSignalsByRank =
+          DeviceSpan<SignalState*>(pointerTable, kNvlRanks),
+  };
+  test::launchSetAllPeerInternalSignals(transport, kValue);
+  test::launchReadPeerInternalSignals(transport, output);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> values(kNvlRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      values.data(),
+      output,
+      values.size() * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  std::vector<uint64_t> expected(kNvlRanks);
+  expected.back() = kValue;
+  EXPECT_EQ(values, expected);
+
+  CUDACHECK_TEST(cudaFree(output));
+  CUDACHECK_TEST(cudaFree(pointerTable));
+  CUDACHECK_TEST(cudaFree(signals));
+}
+
 TEST_F(
     MultimemNvlTransportTestFixture,
     ExchangeRejectsMismatchedStagingGeometry) {
@@ -838,9 +902,11 @@ TEST_F(
     EXPECT_NE(
         message.find("ranks disagree on multicast setup"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[2048, 2, 4, 4, 1]"), std::string::npos)
+    EXPECT_NE(
+        message.find("parameters=[2048, 2, 4, 4, 1, 0]"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[4096, 4, 2, 2, 1]"), std::string::npos)
+    EXPECT_NE(
+        message.find("parameters=[4096, 4, 2, 2, 1, 0]"), std::string::npos)
         << message;
   }
 
@@ -872,9 +938,47 @@ TEST_F(
     EXPECT_NE(
         message.find("ranks disagree on multicast setup"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[8192, 1, 1, 1, 1]"), std::string::npos)
+    EXPECT_NE(
+        message.find("parameters=[8192, 1, 1, 1, 1, 0]"), std::string::npos)
         << message;
-    EXPECT_NE(message.find("parameters=[8192, 1, 1, 1, 2]"), std::string::npos)
+    EXPECT_NE(
+        message.find("parameters=[8192, 1, 1, 1, 2, 0]"), std::string::npos)
+        << message;
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    ExchangeRejectsMismatchedUnicastPeerViewEnablement) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_exchange_mismatched_peer_views");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  const bool enableUnicastPeerViews = globalRank == 0;
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, 1, 1, enableUnicastPeerViews));
+  try {
+    transport.exchange();
+    FAIL() << "expected setup agreement to reject mismatched peer views";
+  } catch (const std::runtime_error& ex) {
+    const std::string message = ex.what();
+    EXPECT_NE(
+        message.find("ranks disagree on multicast setup"), std::string::npos)
+        << message;
+    EXPECT_NE(
+        message.find("parameters=[4096, 1, 1, 1, 0, 0]"), std::string::npos)
+        << message;
+    EXPECT_NE(
+        message.find("parameters=[4096, 1, 1, 1, 0, 1]"), std::string::npos)
         << message;
   }
 
@@ -1131,6 +1235,23 @@ struct DeviceUint64Slot {
   uint64_t* ptr_{nullptr};
 };
 
+template <typename Launch>
+std::vector<uint64_t> runSignalProtocol(std::size_t valueCount, Launch launch) {
+  uint64_t* deviceValues = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&deviceValues, valueCount * sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMemset(deviceValues, 0, valueCount * sizeof(uint64_t)));
+  launch(deviceValues);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  std::vector<uint64_t> values(valueCount);
+  CUDACHECK_TEST(cudaMemcpy(
+      values.data(),
+      deviceValues,
+      values.size() * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaFree(deviceValues));
+  return values;
+}
+
 // Convenience: construct + exchange a transport with the given signal
 // counts. Skips the caller test if the NVL team isn't multimem-eligible.
 std::unique_ptr<MultimemNvlTransport> makeExchangedTransport(
@@ -1154,7 +1275,622 @@ std::unique_ptr<MultimemNvlTransport> makeExchangedTransport(
   return transport;
 }
 
+void verifyUnicastPeerViews(
+    const std::shared_ptr<meta::comms::IBootstrap>& bootstrap,
+    int globalRank,
+    int numRanks,
+    const std::vector<int>& rankMap,
+    MultimemNvlTransport& transport) {
+  const auto handle = transport.getDeviceTransport();
+  ASSERT_EQ(handle.internalUnicastSignalsByRank.size(), numRanks);
+
+  const auto nvlRankIt = std::find(rankMap.begin(), rankMap.end(), globalRank);
+  ASSERT_NE(nvlRankIt, rankMap.end());
+  const int nvlRank = static_cast<int>(nvlRankIt - rankMap.begin());
+  EXPECT_EQ(handle.nvlRank, nvlRank);
+
+  test::launchSetAllPeerInternalSignals(
+      handle, static_cast<uint64_t>(nvlRank + 1));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  uint64_t* deviceValues = nullptr;
+  CUDACHECK_TEST(cudaMalloc(
+      &deviceValues, static_cast<std::size_t>(numRanks) * sizeof(uint64_t)));
+  test::launchReadPeerInternalSignals(handle, deviceValues);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  std::vector<uint64_t> values(static_cast<std::size_t>(numRanks));
+  CUDACHECK_TEST(cudaMemcpy(
+      values.data(),
+      deviceValues,
+      values.size() * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaFree(deviceValues));
+
+  std::vector<uint64_t> expected(static_cast<std::size_t>(numRanks));
+  for (int rank = 0; rank < numRanks; ++rank) {
+    expected[static_cast<std::size_t>(rank)] = static_cast<uint64_t>(rank + 1);
+  }
+  EXPECT_EQ(values, expected);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
 } // namespace
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    DeviceUnicastPeerViewsUseIdentityNvlRankOrder) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_unicast_peer_views_identity");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  const auto rankMap = identityRankMap(numRanks);
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      rankMap,
+      makeConfig(
+          /*dataBufferSize=*/4096,
+          /*userSignalCount=*/0,
+          1,
+          1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  verifyUnicastPeerViews(bootstrap, globalRank, numRanks, rankMap, transport);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    DeviceUnicastPeerViewsUseConfiguredNvlRankOrder) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_unicast_peer_views_rotated");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  const auto rankMap = rotatedRankMap(numRanks);
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      rankMap,
+      makeConfig(
+          /*dataBufferSize=*/4096,
+          /*userSignalCount=*/0,
+          1,
+          1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  verifyUnicastPeerViews(bootstrap, globalRank, numRanks, rankMap, transport);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalAggregateSupportsBothAccessPathsAndScopes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kPipelineDepth = 4;
+  uint32_t caseIndex = 0;
+  for (const auto access :
+       {NvlSignalAccess::Unicast, NvlSignalAccess::Multimem}) {
+    for (const bool fanIn : {false, true}) {
+      auto bootstrap = makeBootstrap(
+          "mmnvl_uniform_aggregate_matrix_" + std::to_string(caseIndex++));
+      if (!allRanksMultimemEligible(
+              bootstrap, globalRank, numRanks, localRank)) {
+        GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+      }
+      MultimemNvlTransport transport(
+          bootstrap,
+          globalRank,
+          identityRankMap(numRanks),
+          makeConfig(
+              4096,
+              0,
+              kPipelineDepth,
+              1,
+              /*enableUnicastPeerViews=*/true));
+      transport.exchange();
+      const auto values =
+          runSignalProtocol(2 * kPipelineDepth, [&](uint64_t* output) {
+            test::launchAggregateSignalProtocol(
+                transport.getDeviceTransport(),
+                access,
+                NvlSignalPhase::Ready,
+                fanIn,
+                /*roundValue=*/1,
+                output);
+          });
+      if (!fanIn || globalRank == 0) {
+        const std::vector<uint64_t> expected(
+            values.size(),
+            static_cast<uint64_t>(fanIn ? numRanks - 1 : numRanks));
+        EXPECT_EQ(values, expected);
+      }
+      ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    }
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalPerPeerCoversPhasePolicyAccessAndScope) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_per_peer_matrix");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          4096,
+          0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+
+  struct PerPeerProtocolCase {
+    NvlSignalAccess access;
+    NvlSignalPhase phase;
+    NvlPerPeerWaitPolicy waitPolicy;
+  };
+  // Access and phase affect publication and signal selection. Wait policy
+  // affects only observation. Cover those dimensions orthogonally instead of
+  // instantiating their full Cartesian product.
+  constexpr PerPeerProtocolCase kProtocols[] = {
+      {
+          NvlSignalAccess::Unicast,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Unicast,
+          NvlSignalPhase::Ack,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Unicast,
+          NvlSignalPhase::Consumed,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ack,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Consumed,
+          NvlPerPeerWaitPolicy::WaitAll,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::SerialMin,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::TreeMin,
+      },
+      {
+          NvlSignalAccess::Multimem,
+          NvlSignalPhase::Ready,
+          NvlPerPeerWaitPolicy::ButterflyMin,
+      },
+  };
+
+  uint64_t roundValue = 1;
+  for (const auto& protocol : kProtocols) {
+    for (const bool fanIn : {false, true}) {
+      const auto values = runSignalProtocol(
+          static_cast<std::size_t>(numRanks), [&](uint64_t* output) {
+            if (protocol.waitPolicy == NvlPerPeerWaitPolicy::WaitAll) {
+              test::launchPerPeerWaitAllSignalProtocol(
+                  transport.getDeviceTransport(),
+                  protocol.access,
+                  protocol.phase,
+                  fanIn,
+                  roundValue,
+                  output);
+            } else {
+              test::launchMultimemReadyPerPeerSignalProtocol(
+                  transport.getDeviceTransport(),
+                  protocol.waitPolicy,
+                  fanIn,
+                  roundValue,
+                  output);
+            }
+          });
+      if (!fanIn || globalRank == 0) {
+        std::vector<uint64_t> expected(static_cast<std::size_t>(numRanks), 0);
+        if (fanIn) {
+          expected[0] = roundValue - 1;
+        }
+        for (int source = fanIn ? 1 : 0; source < numRanks; ++source) {
+          expected[static_cast<std::size_t>(source)] = roundValue;
+        }
+        EXPECT_EQ(values, expected);
+      }
+      ++roundValue;
+      ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    }
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalRoundTripUsesOneMultimemAggregateAckPublisher) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kPipelineDepth = 4;
+  auto bootstrap = makeBootstrap("mmnvl_uniform_rtt");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, kPipelineDepth, 1));
+  transport.exchange();
+  const auto handle = transport.getDeviceTransport();
+  const auto values =
+      runSignalProtocol(4 * kPipelineDepth, [&](uint64_t* output) {
+        test::launchAggregateSignalProtocol(
+            handle,
+            NvlSignalAccess::Multimem,
+            NvlSignalPhase::Ready,
+            /*fanIn=*/true,
+            /*roundValue=*/1,
+            output);
+        test::launchAggregateAckSignalProtocol(
+            handle, /*roundValue=*/1, output + 2 * kPipelineDepth);
+      });
+  const std::vector<uint64_t> expectedAck(2 * kPipelineDepth, 1);
+  EXPECT_EQ(
+      std::vector<uint64_t>(values.begin() + 2 * kPipelineDepth, values.end()),
+      expectedAck);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalAggregateSupportsEveryPipelineDepth) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  for (const uint32_t pipelineDepth : {1, 2, 4, 8, 16, 32}) {
+    auto bootstrap =
+        makeBootstrap("mmnvl_uniform_depth_" + std::to_string(pipelineDepth));
+    if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+      GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+    }
+    MultimemNvlTransport transport(
+        bootstrap,
+        globalRank,
+        identityRankMap(numRanks),
+        makeConfig(4096, 0, pipelineDepth, 1));
+    transport.exchange();
+    const auto values =
+        runSignalProtocol(2 * pipelineDepth, [&](uint64_t* output) {
+          test::launchAggregateSignalProtocol(
+              transport.getDeviceTransport(),
+              NvlSignalAccess::Multimem,
+              NvlSignalPhase::Ready,
+              /*fanIn=*/false,
+              /*roundValue=*/1,
+              output);
+        });
+    const std::vector<uint64_t> expected(
+        values.size(), static_cast<uint64_t>(numRanks));
+    EXPECT_EQ(values, expected);
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalPerPeerRoundTripUsesAggregateAck) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_per_peer_rtt");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, /*pipelineDepth=*/1, /*maxChannels=*/1));
+  transport.exchange();
+
+  constexpr uint64_t kRoundValue = 1;
+  const auto handle = transport.getDeviceTransport();
+  const auto values = runSignalProtocol(
+      static_cast<std::size_t>(numRanks + 2), [&](uint64_t* output) {
+        test::launchPerPeerWaitAllSignalProtocol(
+            handle,
+            NvlSignalAccess::Multimem,
+            NvlSignalPhase::Ready,
+            /*fanIn=*/true,
+            kRoundValue,
+            output);
+        test::launchAggregateAckSignalProtocol(
+            handle, kRoundValue, output + numRanks);
+      });
+  EXPECT_EQ(values[static_cast<std::size_t>(numRanks)], kRoundValue);
+  EXPECT_EQ(values[static_cast<std::size_t>(numRanks + 1)], kRoundValue);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalKeepsChannelsAndLanesIndependent) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kChannels = 4;
+  constexpr uint32_t kPipelineDepth = 4;
+  auto bootstrap = makeBootstrap("mmnvl_uniform_channel_isolation");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(16384, 0, kPipelineDepth, kChannels));
+  transport.exchange();
+  const auto values =
+      runSignalProtocol(2 * kChannels * kPipelineDepth, [&](uint64_t* output) {
+        test::launchMultiChannelAggregateSignal(
+            transport.getDeviceTransport(), kChannels, output);
+      });
+  const std::vector<uint64_t> expected(
+      values.size(), static_cast<uint64_t>(numRanks));
+  EXPECT_EQ(values, expected);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalAggregateMultimemAccountsForWaiterTransitions) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kPipelineDepth = 4;
+  auto bootstrap = makeBootstrap("mmnvl_uniform_waiter_transition");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, kPipelineDepth, /*maxChannels=*/1));
+  transport.exchange();
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  const auto values =
+      runSignalProtocol(2 * kPipelineDepth, [&](uint64_t* output) {
+        test::launchAggregateMultimemWaiterTransition(
+            transport.getDeviceTransport(), output);
+      });
+  const uint64_t expected = static_cast<uint64_t>(2 * numRanks - 1);
+  EXPECT_EQ(values, std::vector<uint64_t>(values.size(), expected));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalPublishAndWaitComposeAcrossRanks) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_separate_publish_wait");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          4096,
+          0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  constexpr uint64_t kRound = 17;
+  const auto values = runSignalProtocol(
+      static_cast<std::size_t>(numRanks), [&](uint64_t* output) {
+        test::launchSeparatePublishAndWait(
+            transport.getDeviceTransport(), kRound, output);
+      });
+  if (globalRank == 0) {
+    std::vector<uint64_t> expected(static_cast<std::size_t>(numRanks), kRound);
+    expected[0] = 0;
+    EXPECT_EQ(values, expected);
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalPerPeerRoundValuesSkipReservedZero) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_per_peer_wrap");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          4096,
+          0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  test::launchSetAllPeerInternalSignals(
+      transport.getDeviceTransport(), ~uint64_t{0} - 1);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  for (const uint64_t roundValue : {~uint64_t{0}, uint64_t{1}}) {
+    const auto values = runSignalProtocol(
+        static_cast<std::size_t>(numRanks), [&](uint64_t* output) {
+          test::launchPerPeerWaitAllSignalProtocol(
+              transport.getDeviceTransport(),
+              NvlSignalAccess::Multimem,
+              NvlSignalPhase::Ready,
+              /*fanIn=*/false,
+              roundValue,
+              output);
+        });
+    EXPECT_EQ(
+        values,
+        std::vector<uint64_t>(static_cast<std::size_t>(numRanks), roundValue));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalAggregateCountersAndEpochsWrapToZero) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kPipelineDepth = 4;
+  auto bootstrap = makeBootstrap("mmnvl_uniform_aggregate_wrap");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, kPipelineDepth, /*maxChannels=*/1));
+  transport.exchange();
+  const uint64_t initial = ~uint64_t{0} - static_cast<uint64_t>(numRanks - 1);
+  test::launchInitializeAggregateSignals(
+      transport.getDeviceTransport(), initial, initial);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  const auto values =
+      runSignalProtocol(2 * kPipelineDepth, [&](uint64_t* output) {
+        test::launchAggregateSignalProtocol(
+            transport.getDeviceTransport(),
+            NvlSignalAccess::Multimem,
+            NvlSignalPhase::Ready,
+            /*fanIn=*/false,
+            /*roundValue=*/1,
+            output);
+      });
+  EXPECT_EQ(values, std::vector<uint64_t>(values.size(), 0));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalWaitAcceptsAlreadyAdvancedPeerRounds) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_per_peer_advanced");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          4096,
+          0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  constexpr uint64_t kExpectedRound = 41;
+  constexpr uint64_t kObservedRound = kExpectedRound + 1;
+  test::launchSetAllPeerInternalSignals(
+      transport.getDeviceTransport(), kObservedRound);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  const auto values = runSignalProtocol(
+      static_cast<std::size_t>(numRanks), [&](uint64_t* output) {
+        test::launchPerPeerWaitOnly(
+            transport.getDeviceTransport(), kExpectedRound, output);
+      });
+  EXPECT_EQ(
+      values,
+      std::vector<uint64_t>(
+          static_cast<std::size_t>(numRanks), kObservedRound));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalWaitAcceptsAlreadyAdvancedAggregateCounters) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  constexpr uint32_t kPipelineDepth = 4;
+  auto bootstrap = makeBootstrap("mmnvl_uniform_aggregate_advanced");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(4096, 0, kPipelineDepth, /*maxChannels=*/1));
+  transport.exchange();
+  const uint64_t arrivals = static_cast<uint64_t>(numRanks);
+  test::launchInitializeAggregateSignals(
+      transport.getDeviceTransport(), 2 * arrivals, /*epochValue=*/0);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  const auto values =
+      runSignalProtocol(2 * kPipelineDepth, [&](uint64_t* output) {
+        test::launchAggregateSignalProtocol(
+            transport.getDeviceTransport(),
+            NvlSignalAccess::Multimem,
+            NvlSignalPhase::Ready,
+            /*fanIn=*/false,
+            /*roundValue=*/1,
+            output);
+      });
+  for (uint32_t lane = 0; lane < kPipelineDepth; ++lane) {
+    EXPECT_GE(values[lane], 2 * arrivals);
+    EXPECT_LE(values[lane], 3 * arrivals);
+    EXPECT_EQ(values[kPipelineDepth + lane], arrivals);
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
 
 // signal(SET) from rank 0 must broadcast a value to every rank's local
 // signal state; every rank observes it through wait_signal_until +

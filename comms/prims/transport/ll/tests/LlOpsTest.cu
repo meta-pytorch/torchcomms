@@ -1,12 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll/LlOps.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
@@ -296,7 +297,9 @@ void test_ll_multi_step_send_recv_chunked(
   PIPES_CUDA_CHECK(cudaMemset(ll_buf, kLlMemsetInitByte, buf_size));
   PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 
-  auto timeout = makeTimeout(20000);
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{20000});
+  auto timeout = abort.getDeviceHandle();
 
   int total_blocks = 2 * num_blocks;
   ll_chunked_combined_kernel<<<total_blocks, block_size>>>(

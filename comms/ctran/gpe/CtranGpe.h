@@ -286,6 +286,8 @@ struct KernelConfig {
   } type;
   unsigned int numBlocks{1};
   unsigned int numThreads{1};
+  // Occupancy for the stats bucket; the GPE has no kernel pointer of its own.
+  unsigned int blocksPerSM{0};
 
   cudaStream_t stream;
   CtranKernelArgs args;
@@ -313,6 +315,13 @@ struct KernelConfig {
 
   // Dynamic shared memory size override. 0 = use sizeof(CtranAlgoDeviceState).
   size_t dynamicSharedMemBytes{0};
+
+  // The size the kernel is launched with. Anything reasoning about the launch
+  // (occupancy, the opt-in shared memory limit) must agree with it.
+  size_t launchSharedMemBytes() const {
+    return dynamicSharedMemBytes > 0 ? dynamicSharedMemBytes
+                                     : sizeof(CtranAlgoDeviceState);
+  }
 
   // Experimental: allows one-sided communications, waitSignal and
   // multiWaitSignal, to run in parallel with other kernels when
@@ -433,6 +442,10 @@ struct CtranCollectiveStatsKey {
   std::string collective;
   // "<collective>.<algo>.<bytes>", e.g. "allreduce.ctring.1048576".
   std::string key;
+  // Captured at submit; the GPE thread has no KernelConfig.
+  uint32_t numBlocks{0};
+  uint32_t blockSize{0};
+  uint32_t blocksPerSM{0};
 };
 
 // Built once at submit and cached on the cmd: the GPE thread re-runs on every
@@ -440,12 +453,13 @@ struct CtranCollectiveStatsKey {
 // A grouped submit is attributed to opGroup.front() and timed as a whole.
 inline CtranCollectiveStatsKey ctranCollectiveStatsKey(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup,
-    std::string_view algoName) {
+    const KernelConfig& kernelConfig) {
   if (opGroup.empty()) {
     return {};
   }
   const auto& op = *opGroup.front();
   const char* collective = ctranCollectiveOpName(op.type);
+  const std::string_view algoName = kernelConfig.algoName;
   return {
       collective,
       fmt::format(
@@ -453,7 +467,10 @@ inline CtranCollectiveStatsKey ctranCollectiveStatsKey(
           collective,
           algoName.empty() ? std::string_view{"unknown"}
                            : ctran::algoShortName(algoName),
-          ctranCollectiveMsgSize(op))};
+          ctranCollectiveMsgSize(op)),
+      kernelConfig.numBlocks,
+      kernelConfig.numThreads,
+      kernelConfig.blocksPerSM};
 }
 
 class CtranGpe {

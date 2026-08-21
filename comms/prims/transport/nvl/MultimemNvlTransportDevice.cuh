@@ -79,6 +79,9 @@ struct MultimemNvlTransportDevice {
   uint32_t pipelineDepth{0};
   uint32_t maxChannels{0};
   uint32_t signalsPerChannel{0};
+  // Indexed by NVL-local destination rank. Each entry addresses the base of
+  // that destination's internal signal slots through its unicast mapping.
+  DeviceSpan<SignalState*> internalUnicastSignalsByRank{};
 
   __device__ __forceinline__ char* local_data_ptr(std::size_t offset) const {
     return localData + offset;
@@ -105,7 +108,7 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     user_local_signal_ptr(signal_id)->wait_until(group, op, expected, timeout);
   }
 
@@ -115,6 +118,19 @@ struct MultimemNvlTransportDevice {
       SignalOp op,
       uint64_t value) const {
     signal_at(group, internal_multimem_signal_ptr(signal_id), op, value);
+  }
+
+  template <SignalOp op>
+  __device__ __forceinline__ void signal_internal_scalar(
+      uint64_t signal_id,
+      uint64_t value) const {
+    auto* signal = internal_multimem_signal_ptr(signal_id);
+    comms::device::fence_acq_rel_sys();
+    if constexpr (op == SignalOp::SIGNAL_SET) {
+      detail::multimem_store_release_sys_u64(&signal->signal_, value);
+    } else {
+      detail::multimem_red_release_sys_add_u64(&signal->signal_, value);
+    }
   }
 
   __device__ __forceinline__ uint64_t
@@ -127,7 +143,7 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& timeout = AbortDevice()) const {
     internal_local_signal_ptr(signal_id)->wait_until(
         group, op, expected, timeout);
   }

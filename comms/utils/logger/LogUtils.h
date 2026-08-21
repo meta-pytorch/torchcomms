@@ -7,6 +7,7 @@
 #include <folly/Format.h>
 #include <folly/logging/xlog.h>
 
+#include "comms/utils/logger/LogTypes.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "comms/utils/logger/RateLimit.h"
 
@@ -22,13 +23,6 @@
 namespace meta::comms::logger {
 
 constexpr std::string_view kCommsUtilsCategory = "comms.utils";
-
-/**
- * Bitwise OR of all sub-systems that needs to be enabled.
- */
-void setSubSystemMask(uint64_t subSystemMask);
-
-bool isEnabledSubSystemBitwise(uint64_t subSystem);
 
 /**
  * Initialize logging for Comms. By default it only initializes once globlally

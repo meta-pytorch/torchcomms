@@ -178,12 +178,25 @@ commResult_t wrap_ibv_close_device(
 commResult_t wrap_ibv_get_async_event(
     struct ibv_context* context,
     struct ibv_async_event* event) { /*returns 0 on success, and -1 on error*/
-  IBV_INT_CHECK(
-      ibvSymbols,
-      ibv_internal_get_async_event,
-      ibv_internal_get_async_event(context, event),
-      -1,
-      "ibv_get_async_event");
+  CHECK_NOT_NULL(ibvSymbols, ibv_internal_get_async_event);
+  while (true) {
+    const int ret = ibvSymbols.ibv_internal_get_async_event(context, event);
+    if (ret == 0) {
+      return commSuccess;
+    }
+    // Read errno before logging, which may clobber it.
+    const int callErrno = errno;
+    // A signal is benign; retry the blocking read.
+    if (callErrno == EINTR) {
+      continue;
+    }
+    CTRAN_ERR(
+        commSystemError,
+        "Call to {} failed with error {}",
+        "ibv_get_async_event",
+        strerror(callErrno));
+    return commSystemError;
+  }
 }
 
 commResult_t wrap_ibv_ack_async_event(struct ibv_async_event* event) {

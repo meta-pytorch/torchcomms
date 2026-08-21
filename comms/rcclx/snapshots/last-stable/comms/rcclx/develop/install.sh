@@ -19,6 +19,7 @@ build_tests=false
 build_verbose=false
 clean_build=true
 collective_trace=true
+dump_asm=false
 enable_code_coverage=false
 enable_ninja=""
 install_dependencies=false
@@ -26,16 +27,18 @@ install_library=false
 install_prefix="${ROCM_PATH}"
 log_trace=false
 msccl_kernel_enabled=true
-mscclpp_enabled=true
+mscclpp_enabled=false
 enable_mscclpp_clip=false
 num_parallel_jobs=$(nproc)
 npkit_enabled=false
 openmp_test_enabled=false
+kernel_resource_use=false
 roctx_enabled=true
 run_tests=false
 run_tests_all=false
 time_trace=false
 force_reduce_pipeline=false
+generate_sym_kernels=false
 
 # #################################################
 # helper functions
@@ -51,13 +54,15 @@ function display_help()
     echo "       --enable_backtrace      Build with custom backtrace support"
     echo "       --disable-colltrace     Build without collective trace"
     echo "       --disable-msccl-kernel  Build without MSCCL kernels"
-    echo "       --disable-mscclpp       Build without MSCCL++ support"
+    echo "       --dump-asm              Disassemble code and dump assembly with inline code"
+    echo "       --enable-mscclpp        Build with MSCCL++ support"
     echo "       --enable-mscclpp-clip   Build MSCCL++ with clip wrapper on bfloat16 and half addition routines"
     echo "       --disable-roctx         Build without ROCTX logging"
     echo "    -f|--fast                  Quick-build RCCL (local gpu arch only, no backtrace, and collective trace support)"
     echo "    -h|--help                  Prints this help message"
     echo "    -i|--install               Install RCCL library (see --prefix argument below)"
     echo "    -j|--jobs                  Specify how many parallel compilation jobs to run ($num_parallel_jobs by default)"
+    echo "       --kernel-resource-use   Dump GPU kernel resource usage (e.g., VGPRs, scratch, spill) at link stage"
     echo "    -l|--local_gpu_only        Only compile for local GPU architecture"
     echo "       --amdgpu_targets        Only compile for specified GPU architecture(s). For multiple targets, separate by ';' (builds for all supported GPU architectures by default)"
     echo "       --no_clean              Don't delete files if they already exist"
@@ -66,7 +71,6 @@ function display_help()
     echo "       --openmp-test-enable    Enable OpenMP in rccl unit tests"
     echo "    -p|--package_build         Build RCCL package"
     echo "       --prefix                Specify custom directory to install RCCL to (default: \`/opt/rocm\`)"
-    echo "       --rm-legacy-include-dir Remove legacy include dir Packaging added for file/folder reorg backward compatibility"
     echo "       --run_tests_all         Run all rccl unit tests (must be built already)"
     echo "    -r|--run_tests_quick       Run small subset of rccl unit tests (must be built already)"
     echo "       --static                Build RCCL as a static library instead of shared library"
@@ -74,6 +78,7 @@ function display_help()
     echo "       --time-trace            Plot the build time of RCCL (requires \`ninja-build\` package installed on the system)"
     echo "       --verbose               Show compile commands"
     echo "       --force-reduce-pipeline Force reduce_copy sw pipeline to be used for every reduce-based collectives and datatypes"
+    echo "       --generate-sym-kernels  Generate symmetric memory kernels"
 }
 
 # #################################################
@@ -83,7 +88,7 @@ function display_help()
 # check if we have a modern version of getopt that can handle whitespace and long parameters
 getopt -T
 if [[ "$?" -eq 4 ]]; then
-    GETOPT_PARSE=$(getopt --name "${0}" --options cdfhij:lprt --longoptions address-sanitizer,dependencies,debug,enable-code-coverage,enable_backtrace,disable-colltrace,disable-msccl-kernel,disable-mscclpp,fast,help,install,jobs:,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,verbose -- "$@")
+    GETOPT_PARSE=$(getopt --name "${0}" --options cdfhij:lprt --longoptions address-sanitizer,dependencies,debug,dump-asm,enable-code-coverage,enable_backtrace,disable-colltrace,disable-msccl-kernel,enable-mscclpp,fast,help,install,jobs:,kernel-resource-use,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,force-reduce-pipeline,generate-sym-kernels,verbose -- "$@")
 else
     echo "Need a new version of getopt"
     exit 1
@@ -105,13 +110,15 @@ while true; do
          --enable_backtrace)         build_bfd=true;                                                                                   shift ;;
          --disable-colltrace)        collective_trace=false;                                                                           shift ;;
          --disable-msccl-kernel)     msccl_kernel_enabled=false;                                                                       shift ;;
-         --disable-mscclpp)          mscclpp_enabled=false;                                                                            shift ;;
+         --dump-asm)                 dump_asm=true;                                                                                    shift ;;
+         --enable-mscclpp)           mscclpp_enabled=true;                                                                             shift ;;
          --enable-mscclpp-clip)      enable_mscclpp_clip=true;                                                                         shift ;;
          --disable-roctx)            roctx_enabled=false;                                                                              shift ;;
     -f | --fast)                     build_local_gpu_only=true; collective_trace=false; msccl_kernel_enabled=false;                    shift ;;
     -h | --help)                     display_help;                                                                                     exit 0 ;;
     -i | --install)                  install_library=true;                                                                             shift ;;
     -j | --jobs)                     num_parallel_jobs=${2};                                                                           shift 2 ;;
+         --kernel-resource-use)      kernel_resource_use=true;                                                                         shift ;;
     -l | --local_gpu_only)           build_local_gpu_only=true;                                                                        shift ;;
          --amdgpu_targets)           build_amdgpu_targets=${2};                                                                        shift 2 ;;
          --no_clean)                 clean_build=false;                                                                                shift ;;
@@ -120,14 +127,14 @@ while true; do
          --openmp-test-enable)       openmp_test_enabled=true;                                                                         shift ;;
     -p | --package_build)            build_package=true;                                                                               shift ;;
          --prefix)                   install_library=true; install_prefix=${2};                                                        shift 2 ;;
-         --rm-legacy-include-dir)    build_freorg_bkwdcomp=false;                                                                      shift ;;
     -r | --run_tests_quick)          run_tests=true;                                                                                   shift ;;
          --run_tests_all)            run_tests=true; run_tests_all=true;                                                               shift ;;
          --static)                   build_static=true;                                                                                shift ;;
     -t | --tests_build)              build_tests=true;                                                                                 shift ;;
          --time-trace)               time_trace=true;                                                                                  shift ;;
          --verbose)                  build_verbose=true;                                                                               shift ;;
-         --force-reduce-pipeline)    force_reduce_pipeline=true;                                                                        shift ;;
+         --force-reduce-pipeline)    force_reduce_pipeline=true;                                                                       shift ;;
+         --generate-sym-kernels)     generate_sym_kernels=true;                                                                        shift ;;
     --) shift ; break ;;
     *)  echo "Unexpected command line parameter received; aborting";
         exit 1
@@ -224,11 +231,6 @@ if [[ "${build_bfd}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DBUILD_BFD=ON"
 fi
 
-# Backward compatibility wrappers
-if [[ "${build_freorg_bkwdcomp}" == true ]]; then
-    cmake_common_options="${cmake_common_options} -DBUILD_FILE_REORG_BACKWARD_COMPATIBILITY=ON"
-fi
-
 # Build local GPU arch only
 if [[ "${build_local_gpu_only}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DBUILD_LOCAL_GPU_TARGET_ONLY=ON"
@@ -254,8 +256,8 @@ if [[ "${msccl_kernel_enabled}" == false ]]; then
     cmake_common_options="${cmake_common_options} -DENABLE_MSCCL_KERNEL=OFF"
 fi
 
-if [[ "${mscclpp_enabled}" == false ]]; then
-    cmake_common_options="${cmake_common_options} -DENABLE_MSCCLPP=OFF"
+if [[ "${mscclpp_enabled}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DENABLE_MSCCLPP=ON"
 fi
 
 if [[ "${enable_mscclpp_clip}" == true ]]; then
@@ -272,6 +274,10 @@ if [[ "${install_library}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DCMAKE_INSTALL_PREFIX=${install_prefix}"
 fi
 
+if [[ "${kernel_resource_use}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DREPORT_KERNEL_RESOURCE_USE=ON"
+fi
+
 # Enable trace debug level
 if [[ "${log_trace}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DTRACE=ON"
@@ -280,6 +286,11 @@ fi
 # Disable ROCTX
 if [[ "${roctx_enabled}" == false ]]; then
     cmake_common_options="${cmake_common_options} -DROCTX=OFF"
+fi
+
+# Dump ASM files from GPU compilation
+if [[ "${dump_asm}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DDUMP_ASM=ON"
 fi
 
 # Enable OpenMP in unit tests
@@ -292,123 +303,14 @@ if [[ "${force_reduce_pipeline}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DFORCE_REDUCE_PIPELINING=ON"
 fi
 
+# Generate symmetric memory kernels
+if [[ "${generate_sym_kernels}" == true ]]; then
+    cmake_common_options="${cmake_common_options} -DGENERATE_SYM_KERNELS=ON"
+fi
+
 # Enable NPKit
-npkit_options=""
 if [[ "${npkit_enabled}" == true ]]; then
-    npkit_options="-DENABLE_NPKIT \
-    -DENABLE_NPKIT_EVENT_TIME_SYNC_GPU \
-    -DENABLE_NPKIT_EVENT_TIME_SYNC_CPU \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_EXIT \
-    -DENABLE_NPKIT_EVENT_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_REDUCE_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_RECV_REDUCE_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_DIRECT_SEND_FROM_OUTPUT_ENTRY \
-    -DENABLE_NPKIT_EVENT_DIRECT_SEND_FROM_OUTPUT_EXIT \
-    -DENABLE_NPKIT_EVENT_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_RECV_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_RECV_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_COPY_ENTRY \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_COPY_EXIT \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_RECV_REDUCE_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_SEND_FROM_OUTPUT_ENTRY \
-    -DENABLE_NPKIT_EVENT_SEND_FROM_OUTPUT_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_SIMPLE_WAIT_PEER_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_SIMPLE_WAIT_PEER_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_LL_WAIT_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_LL_WAIT_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_LL_DATA_PROCESS_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_LL128_WAIT_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_LL128_WAIT_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_PRIM_LL128_DATA_PROCESS_ENTRY \
-    -DENABLE_NPKIT_EVENT_PRIM_LL128_DATA_PROCESS_EXIT \
-    -DENABLE_NPKIT_EVENT_NET_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_NET_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_NET_TEST_ENTRY \
-    -DENABLE_NPKIT_EVENT_NET_TEST_EXIT \
-    -DENABLE_NPKIT_EVENT_NET_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_NET_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_RECV_REDUCE_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_RECV_REDUCE_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_REDUCE_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_REDUCE_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_RING_DIRECT_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_REDUCE_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_REDUCE_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_BROADCAST_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_UPDOWN_BROADCAST_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_REDUCE_BROADCAST_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_REDUCE_BROADCAST_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_REDUCE_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_REDUCE_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_BROADCAST_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_REDUCE_TREE_SPLIT_BROADCAST_EXIT \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_LOCAL_COPY_ENTRY \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_LOCAL_COPY_EXIT \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_SEND_RECV_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_RECV_COPY_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_RECV_COPY_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_DIRECT_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_ALL_GATHER_RING_DIRECT_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_GENERIC_OP_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_GENERIC_OP_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_REDUCE_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_REDUCE_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_RECV_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_RECV_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_RUN_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_RUN_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_RECV_REDUCE_COPY_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_RECV_REDUCE_COPY_EXIT \
-    -DENABLE_NPKIT_EVENT_MSCCL_INIT_ENTRY \
-    -DENABLE_NPKIT_EVENT_MSCCL_INIT_EXIT \
-    -DENABLE_NPKIT_EVENT_BROADCAST_RING_ENTRY \
-    -DENABLE_NPKIT_EVENT_BROADCAST_RING_EXIT \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_ENTRY \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_EXIT \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_RECV_REDUCE_SEND_ENTRY \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_RECV_REDUCE_SEND_EXIT \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_RECV_REDUCE_COPY_ENTRY \
-    -DENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_RECV_REDUCE_COPY_EXIT \
-    -DENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME"
+    cmake_common_options="${cmake_common_options} -DENABLE_NPKIT=ON"
 fi
 
 check_exit_code "$?"
@@ -434,10 +336,13 @@ if [[ "${build_tests}" == true ]] || ([[ "${run_tests}" == true ]] && [[ ! -x ./
     cmake_common_options="${cmake_common_options} -DBUILD_TESTS=ON"
 fi
 
+# Add build directory to RPATH for packaging dependency resolution
+cmake_common_options="${cmake_common_options} -DCMAKE_EXE_LINKER_FLAGS=\"-Wl,-rpath,${PWD}\""
+
 # Initiate RCCL CMake
-# Passing NPKIT_FLAGS separately (not as part of ${cmake_common_options}) as
-# ${npkit_options} need to be passed "as-is" i.e. with `-D` to CMakeLists.txt
-${cmake_executable} ${cmake_common_options} -DNPKIT_FLAGS="${npkit_options}" -DONLY_FUNCS="${ONLY_FUNCS}" ../../.
+# Passing ONLY_FUNCS separately (not as part of ${cmake_common_options}) as
+# ${ONLY_FUNCS} is a debug-only feature
+${cmake_executable} ${cmake_common_options} -DONLY_FUNCS="${ONLY_FUNCS}" ../../.
 check_exit_code "$?"
 
 # Enable verbose output from Makefile
@@ -461,15 +366,25 @@ fi
 
 # Optionally, run RCCL-UnitTests, if they're enabled.
 if [[ "${run_tests}" == true ]]; then
-    if [[ -x "./test/rccl-UnitTests" ]]; then
-        if [[ "${run_tests_all}" == true ]]; then
+    if [[ ! -x "./test/rccl-UnitTests" ]]; then
+        echo "RCCL-UnitTests have not been built yet; Please re-run script with \"-t\" to build the binary."
+        exit 1
+    fi
+    if [[ "${build_release}" == false && ! -x "./test/rccl-UnitTestsFixtures" ]]; then
+        echo "RCCL-UnitTestsFixtures have not been built yet; Please re-run script with \"-t\" to build the binary."
+        exit 1
+    fi
+    if [[ "${run_tests_all}" == true ]]; then
+        if [[ -x "./test/rccl-UnitTests" ]]; then
             ./test/rccl-UnitTests
-        else
-            ./test/rccl-UnitTests --gtest_filter="AllReduce.*"
+        fi
+        if [[ "${build_release}" == false && -x "./test/rccl-UnitTestsFixtures" ]]; then
+            ./test/rccl-UnitTestsFixtures
         fi
     else
-        echo "RCCL-UnitTests have not been built yet; Please re-run script with \"-t\" to build RCCL-UnitTests."
-        exit 1
+        if [[ -x "./test/rccl-UnitTests" ]]; then
+            ./test/rccl-UnitTests --gtest_filter="AllReduce.*"
+        fi
     fi
 fi
 

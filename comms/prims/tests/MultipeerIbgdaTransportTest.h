@@ -203,6 +203,9 @@ void testTwoCallSendThenRecv(
 /**
  * Test kernel: Warp-proxy send or recv with queue-full observation.
  */
+// The device budget comes from `testAbortDevice()` inside the launcher, as with
+// the other kernels here; there is no caller-supplied cycle count since the
+// standalone Prims `Timeout` was replaced by the communicator abort handle.
 void testWarpProxySendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
@@ -210,8 +213,7 @@ void testWarpProxySendRecv(
     std::size_t maxSignalBytes,
     bool send,
     uint32_t queueDepth,
-    uint64_t* queueFullCount,
-    uint64_t timeoutCycles);
+    uint64_t* queueFullCount);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.

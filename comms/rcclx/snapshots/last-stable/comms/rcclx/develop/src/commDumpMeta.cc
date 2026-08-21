@@ -127,7 +127,7 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
 
   if (comm->proxyState->proxyTrace != nullptr) {
     map["ProxyTrace"] = comm->proxyState->proxyTrace->dump();
-    
+
     auto dump = comm->proxyState->proxyTrace->dumpFormatted(comm->commHash);
 
 

@@ -1,12 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll128/Ll128Ops.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
@@ -26,6 +27,26 @@ __global__ void ll128_forward_kernel(
     Ll128Packet* remote_ll128_buf) {
   auto group = make_warp_group();
   Timeout timeout;
+  timeout.start();
+  ll128_forward(group, dst, nbytes, local_ll128_buf, remote_ll128_buf, timeout);
+}
+
+// =============================================================================
+// Abort regression: ll128_forward must leave the successor's slot untouched.
+//
+// The predecessor never fills the local buffer, so Phase 1 spins and the
+// deadline releases it. Phase 3 must not run: it would store a stale packet
+// with lane 7 stamping the *current* flag onto it, so the successor would
+// accept never-arrived data as real and never learn a fault occurred.
+// =============================================================================
+__global__ void ll128_forward_abort_kernel(
+    char* dst,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    Ll128Packet* remote_ll128_buf,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_warp_group();
+  Timeout timeout = abort;
   timeout.start();
   ll128_forward(group, dst, nbytes, local_ll128_buf, remote_ll128_buf, timeout);
 }
@@ -107,6 +128,23 @@ void test_ll128_send_recv(
       /*num_steps=*/1,
       num_blocks,
       block_size);
+}
+
+// Runs ll128_forward against a local buffer that is never filled, with a short
+// device deadline as the only way out. Returns nothing: the assertion is that
+// the remote buffer is byte-identical to what the caller wrote before the call.
+void test_ll128_forward_abort_leaves_remote_untouched(
+    char* dst_d,
+    size_t nbytes,
+    Ll128Packet* local_ll128_buf,
+    Ll128Packet* remote_ll128_buf,
+    comms::fault_tolerance::AbortDevice abort,
+    int num_blocks,
+    int block_size) {
+  ll128_forward_abort_kernel<<<num_blocks, block_size>>>(
+      dst_d, nbytes, local_ll128_buf, remote_ll128_buf, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 void test_ll128_forward(
@@ -292,11 +330,12 @@ void test_ll128_multi_step_send_recv_chunked(
   PIPES_CUDA_CHECK(cudaMemset(ll128_buf, kLl128MemsetInitByte, buf_size));
   PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 
-  // 20s debug timeout — generous upper bound for a test completing in <100ms.
-  // On timeout, TIMEOUT_TRAP_IF_EXPIRED_SINGLE in ll128_send/ll128_recv prints
-  // which side is stuck, which packet, which buf_idx, and the current flag
-  // value.
-  auto timeout = makeTimeout(20000);
+  // 20s debug timeout - generous upper bound for a test completing in <100ms.
+  // On timeout, the LL128 wait loop prints which side is stuck, which packet,
+  // which buf_idx, and the current flag value.
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{20000});
+  auto timeout = abort.getDeviceHandle();
 
   int total_blocks = 2 * num_blocks;
   ll128_chunked_combined_kernel<<<total_blocks, block_size>>>(

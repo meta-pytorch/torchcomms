@@ -136,6 +136,12 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
 
   iPutCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
   iGetCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
+  ctrlMsgCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
+
+  // Sized up front and left all-false when same-host socket ctrl is disabled,
+  // so "no peer is routed to socket" is an explicit state rather than an empty
+  // vector that useSocketCtrl() has to interpret.
+  sameHostPeers_.assign(statex->nRanks(), false);
 
   std::vector<std::string> enableBackendsStrs;
   for (auto b : backendsToEnable) {
@@ -178,6 +184,34 @@ CtranMapper::CtranMapper(CtranComm* comm, ctran::Profiler* profiler) {
           INFO,
           INIT,
           "CTRAN-MAPPER: SOCKET backend not enabled, since IB backend is enabled");
+    }
+  }
+
+  // Same-host ctrl over the frontend NIC. Stand up a socket alongside ib and
+  // mark which peers it serves; enableBackends_[SOCKET] stays false so socket
+  // remains out of the data path and getBackend() is unchanged.
+  if (NCCL_CTRAN_LOCAL_CTRL_BACKEND == NCCL_CTRAN_LOCAL_CTRL_BACKEND::socket &&
+      this->ctranIb) {
+    const int nRanks = statex->nRanks();
+    const int myRank = statex->rank();
+    const std::string myHost = statex->host(myRank);
+    int nSameHost = 0;
+    for (int peer = 0; peer < nRanks; peer++) {
+      if (peer != myRank && statex->host(peer) == myHost) {
+        sameHostPeers_[peer] = true;
+        nSameHost++;
+      }
+    }
+    if (nSameHost > 0) {
+      if (!this->ctranSock) {
+        this->ctranSock = std::make_unique<class CtranSocket>(comm);
+      }
+      CTRAN_LOG_SUBSYS(
+          INFO,
+          INIT,
+          "CTRAN-MAPPER: NCCL_CTRAN_LOCAL_CTRL_BACKEND=socket, routing ctrl for {} same-host peer(s) on {} over SOCKET",
+          nSameHost,
+          myHost);
     }
   }
   if (enableBackends_[CtranMapperBackend::TCPDM]) {
@@ -890,7 +924,17 @@ commResult_t CtranMapper::icopy(
 
 commResult_t CtranMapper::preConnect(const std::unordered_set<int>& peerRanks) {
   if (this->ctranIb != nullptr) {
-    FB_COMMCHECK(this->ctranIb->preConnect(peerRanks));
+    // Split by the same control-backend rule the send/recv paths use, so a
+    // same-host peer does not also stand up an ib QP it will never send on.
+    std::unordered_set<int> ibPeers;
+    std::unordered_set<int> sockPeers;
+    for (int peer : peerRanks) {
+      (useSocketCtrl(peer) ? sockPeers : ibPeers).insert(peer);
+    }
+    FB_COMMCHECK(this->ctranIb->preConnect(ibPeers));
+    if (!sockPeers.empty() && this->ctranSock != nullptr) {
+      FB_COMMCHECK(this->ctranSock->preConnect(sockPeers));
+    }
   } else if (ctranSock != nullptr) {
     FB_COMMCHECK(this->ctranSock->preConnect(peerRanks));
   } else if (this->ctranTcpDm != nullptr) {

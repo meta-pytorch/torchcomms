@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -27,15 +28,28 @@ class PipesTrace {
   using Entry = typename Buffer::Entry;
   using Reader =
       ::hrdw_ring_buffer::HRDWRingBufferReader<comms::prims::PipesTraceEvent>;
+  /*
+   * An empty callback makes warnings fall back to stderr for both PipesTrace
+   * instances and the standalone normalizeRingSize helper.
+   * It may run on the internal poll thread, so captured state must remain valid
+   * for the lifetime of this object and support concurrent invocation.
+   * Exceptions are contained and reported to stderr rather than escaping a
+   * worker thread or destructor. A callback that emits and then throws may
+   * result in a duplicate stderr warning; preserving the diagnostic takes
+   * priority over deduplication.
+   */
+  using WarningCallback = std::function<void(std::string_view message)>;
 
-  PipesTrace();
+  explicit PipesTrace(WarningCallback warningCallback);
   ~PipesTrace();
   PipesTrace(const PipesTrace&) = delete;
   PipesTrace& operator=(const PipesTrace&) = delete;
   PipesTrace(PipesTrace&&) = delete;
   PipesTrace& operator=(PipesTrace&&) = delete;
 
-  static uint32_t normalizeRingSize(uint64_t ringSize);
+  static uint32_t normalizeRingSize(
+      uint64_t ringSize,
+      const WarningCallback& warningCallback);
 
   using EventCallback =
       std::function<void(const PipesTraceEvent& event, uint64_t slot)>;
@@ -74,7 +88,7 @@ class PipesTrace {
   void pollLoop();
   void startPollThread();
   void stopPollThread();
-
+  WarningCallback warningCallback_;
   std::unique_ptr<Buffer> buffer_;
   std::unique_ptr<Reader> reader_;
   mutable std::mutex drainMutex_;

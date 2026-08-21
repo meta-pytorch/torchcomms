@@ -3,6 +3,7 @@
 #pragma once
 
 #include <type_traits>
+#include <utility>
 
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
@@ -85,6 +86,22 @@ __device__ __forceinline__ void trace_ibgda_event(
  * policies are added in later diffs. Tags live in `protocol` to avoid
  * collisions with the generic name `Simple` at comms::prims scope.
  */
+/**
+ * Largest element a reducing CopyOp can be instantiated with: fp64 / int64.
+ * The fused AllReduce's set is fp16 and bf16 (2 B), fp32 (4 B), fp64 and int64
+ * (8 B) -- see isSupportedFusedType.
+ *
+ * Chunk sizing aligns to this so every chunk holds a whole number of elements.
+ * That works because the supported sizes are all powers of two dividing this
+ * one, which makes the maximum coincide with their least common multiple -- a
+ * chunk that is a multiple of 8 B is also a multiple of 4 B and 2 B. The
+ * requirement is divisibility, not magnitude: a 12 B chunk exceeds the widest
+ * element and still splits it. Adding a non-power-of-two element size (a 3 B
+ * type, say) would break that coincidence and this would have to become an
+ * explicit lcm.
+ */
+inline constexpr std::size_t kMaxReducedTypeBytes = 8;
+
 namespace protocol {
 struct Simple {
   // Resource slot this protocol owns on every channel. Slot 0 is the default
@@ -427,25 +444,70 @@ __device__ __forceinline__ SendRecvGeometry calcGeometry(
     }
     PIPES_DEVICE_TRAP();
   }
+  // Chunk size in PAYLOAD bytes, aligned down to whole packets AND whole
+  // reduced elements, not merely to kData.
+  //
+  // kData alone is not enough for a reducing CopyOp. A chunk must hold a whole
+  // number of elements, or LLImpl::unpack_reduce's wide-T branch splits one
+  // across the boundary: it truncates `nbytes / sizeof(T)` and drops the
+  // trailing half element, and the next chunk's dst lands 4 bytes off a natural
+  // 8-byte boundary. LL's kData is only 4, so a double/int64 element spans two
+  // packets and an odd packet count cuts it in half.
+  //
+  // A chunk holds whole elements iff the element size DIVIDES the chunk size --
+  // being merely larger than the element is not enough. So the chunk must be a
+  // multiple of both:
+  //   - kData, so it stays a whole number of packets (the original rule), and
+  //   - kMaxReducedTypeBytes, so it stays a whole number of elements.
+  // Both quantities are payload bytes, and both are powers of two, so their
+  // least common multiple is simply the larger. Note this is deliberately NOT
+  // kPacketBytes: that is a WIRE size (kData + kFlag) and only coincides with
+  // the right answer for today's geometries -- an LlxPacket<4, 8> would give
+  // kPacketBytes == 12, which does not divide 8 and would split a double.
+  //
+  // The alignment must NOT be derived from the CopyOp. The tree's send lane
+  // uses Memcpy while its recv lane uses IbReduceCopy<T>, so a CopyOp-keyed
+  // alignment would give the two sides different chunk boundaries -- the
+  // receiver would wait on a chunk the sender never produces. Keying it on the
+  // protocol keeps both sides in step by construction.
+  constexpr std::size_t kDataBytes = static_cast<std::size_t>(P::kData);
+  static_assert(
+      (kDataBytes & (kDataBytes - 1)) == 0,
+      "kData must be a power of two, so that max() is its lcm with "
+      "kMaxReducedTypeBytes");
+  constexpr std::size_t kChunkAlign =
+      kDataBytes > kMaxReducedTypeBytes ? kDataBytes : kMaxReducedTypeBytes;
+
   const std::size_t perBlockSlotWire = pipeline_chunk(channelLayout);
-  if (perBlockSlotWire == 0) {
+  const std::size_t perBlockSlotPayload = P::max_payload(perBlockSlotWire);
+  // Widened from `perBlockSlotWire == 0` to one aligned chunk unit: the sizing
+  // below rounds to kChunkAlign, so a slot that cannot hold one such unit would
+  // be overrun by the smallest legal chunk. Same single branch as before.
+  if (perBlockSlotPayload < kChunkAlign) {
     if (group.is_leader()) {
       printf(
-          "[PIPES] FATAL: send/recv perBlockSlot=0 "
-          "(perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          "[PIPES] FATAL: send/recv perBlockSlotPayload=%llu holds no whole "
+          "chunk unit (perChannelBufferSize=%llu, pipelineDepth=%d)\n",
+          (unsigned long long)perBlockSlotPayload,
           (unsigned long long)pipeline_window(channelLayout),
           channelLayout.pipelineDepth);
     }
     PIPES_DEVICE_TRAP();
   }
-  const std::size_t perBlockSlotPayload = P::max_payload(perBlockSlotWire);
-  // Chunk size in PAYLOAD bytes, aligned down to whole packets (kData).
+  // Guaranteed >= kChunkAlign by the slot check above.
+  const std::size_t alignedSlotPayload =
+      perBlockSlotPayload / kChunkAlign * kChunkAlign;
   std::size_t chunkPayload =
-      (max_signal_bytes > 0 && max_signal_bytes < perBlockSlotPayload)
-      ? (max_signal_bytes / P::kData * P::kData)
-      : perBlockSlotPayload;
+      (max_signal_bytes > 0 && max_signal_bytes < alignedSlotPayload)
+      ? (max_signal_bytes / kChunkAlign * kChunkAlign)
+      : alignedSlotPayload;
   if (chunkPayload == 0) {
-    chunkPayload = perBlockSlotPayload;
+    // max_signal_bytes is documented as a MAXIMUM, and a request below one
+    // aligned unit cannot be honoured exactly. Clamp to the finest granularity
+    // that still holds whole packets and whole elements, rather than falling
+    // back to the whole slot, which would overshoot the requested maximum
+    // enormously. Rounding up to the next unit would also exceed the maximum.
+    chunkPayload = kChunkAlign;
   }
   const std::size_t pipelineBytesWire = pipeline_window(channelLayout);
   // Payload bytes rounded up to a whole packet (kData). For Simple == round-16.
@@ -801,6 +863,9 @@ __device__ __forceinline__ void consumeRecvBuf(
   const std::size_t validBytes =
       valid_payload_bytes(dataOff, payloadBytes, nbytes);
   if (validBytes > 0) {
+    // recvLL terminates itself on abort and returns void; there is nothing to
+    // propagate. The decoded buffer is undefined after an abort, per the
+    // contract in FAULT_TOLERANCE.md.
     CopyOp::template recvLL<P>(
         group,
         dst,
@@ -1240,6 +1305,15 @@ __device__ __forceinline__ void send_impl(
                 static_cast<uint8_t>(kPipesTraceQpLaneMask),
                 protocolBytesThis);
           }
+        }
+        // The backpressure wait may have given up rather than been satisfied.
+        // Leave before the put below, whose fused DATA_READY would tell the
+        // receiver a chunk had landed that we never sent -- releasing a peer
+        // that is correctly blocked and preventing it from ever reaching its
+        // own deadline. The slot epilogue after this loop still runs, so the
+        // progress slot is left idle for the next op.
+        if (groupAborted(group, timeout)) {
+          break;
         }
 
         // (4) Leader-only single-WQE RDMA put with fused signal.
@@ -1685,6 +1759,14 @@ __device__ __forceinline__ void recv_impl(
             timeout,
             traceContext,
             args...);
+        // The DATA_READY wait inside consumeRecvBuf may have given up rather
+        // than been satisfied, in which case this chunk was never written.
+        // Leave before the SLOT_FREE credit below: signalling it would tell the
+        // sender we consumed a chunk it never sent, releasing a peer that is
+        // correctly blocked and preventing it from reaching its own deadline.
+        if (groupAborted(group, timeout)) {
+          break;
+        }
 
         if (group.is_leader()) {
           trace_allreduce_event(
@@ -2016,6 +2098,14 @@ __device__ __forceinline__ void forward_impl(
           recvTraceContext,
           sendTraceContext,
           args...);
+      // The DATA_READY wait inside prepareForwardBuf may have given up, so this
+      // chunk was never written. Forward is the worst of the three paths to get
+      // wrong on abort: continuing would ACK the predecessor for a chunk we
+      // never consumed *and* hand the successor data that never arrived,
+      // releasing two correctly-blocked peers at once.
+      if (groupAborted(group, timeout)) {
+        break;
+      }
 
       transport.signal(
           group,
@@ -2042,6 +2132,12 @@ __device__ __forceinline__ void forward_impl(
               static_cast<uint8_t>(kPipesTraceQpLaneMask),
               fwdProtocolBytesThis);
         }
+      }
+      // As in send_impl: the successor backpressure wait may have given up, and
+      // the put below carries a fused DATA_READY that would release the
+      // successor on data we never wrote.
+      if (groupAborted(group, timeout)) {
+        break;
       }
 
       // (6) Leader-only RDMA put via the forwarding transport.

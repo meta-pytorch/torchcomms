@@ -31,6 +31,9 @@ struct MultimemNvlTransportConfigParams {
   // Signal slots exposed through signal(), read_signal(), and
   // wait_signal_until(). This is orthogonal to staging geometry.
   uint32_t userSignalCount{0};
+
+  // Import and map every peer's backing allocation for unicast signaling.
+  bool enableUnicastPeerViews{false};
 };
 
 struct MultimemNvlTransportConfig {
@@ -42,13 +45,15 @@ struct MultimemNvlTransportConfig {
         pipelineDepth(params.pipelineDepth),
         maxChannels(params.maxChannels),
         maxBlocks(params.maxBlocks),
-        userSignalCount(params.userSignalCount) {}
+        userSignalCount(params.userSignalCount),
+        enableUnicastPeerViews(params.enableUnicastPeerViews) {}
 
   std::size_t perChannelSize{0};
   std::size_t pipelineDepth{0};
   std::size_t maxChannels{0};
   std::size_t maxBlocks{0};
   uint32_t userSignalCount{0};
+  bool enableUnicastPeerViews{false};
 
   bool operator==(const MultimemNvlTransportConfig&) const = default;
 };

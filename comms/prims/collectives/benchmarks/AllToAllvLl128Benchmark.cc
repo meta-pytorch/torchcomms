@@ -6,10 +6,10 @@
 #include <chrono>
 
 #include "comms/common/CudaWrap.h"
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
 #include "comms/prims/collectives/AllToAllv.h"
 #include "comms/prims/collectives/AllToAllvLl128.h"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/transport/ll128/Ll128AutoTune.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
@@ -263,11 +263,7 @@ class AllToAllvLl128BenchmarkFixture
         ? std::optional{defaultClusterDim}
         : std::nullopt;
 
-    // Pre-build Timeout once to avoid per-call
-    // cudaGetDevice/cudaDeviceGetAttribute overhead.
-    int device = 0;
-    CUDA_CHECK(cudaGetDevice(&device));
-    Timeout timeout_config = makeTimeout(0, device);
+    Timeout timeout_config;
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
@@ -374,11 +370,9 @@ class AllToAllvLl128BenchmarkFixture
     constexpr int kNIter = 100;
     constexpr int kNWarmup = 10;
 
-    // Create timeout ONCE outside the loop to avoid per-call
-    // cudaGetDevice/cudaDeviceGetAttribute overhead.
-    int device = 0;
-    CUDA_CHECK(cudaGetDevice(&device));
-    Timeout timeout_config = makeTimeout(5000, device);
+    comms::fault_tolerance::Abort abort{/*enabled=*/true};
+    abort.setDefaultTimeout(std::chrono::milliseconds{5000});
+    Timeout timeout_config = abort.getDeviceHandle();
 
     // Warmup: per-iteration sync to ensure each iteration completes
     bootstrap->barrierAll();

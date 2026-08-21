@@ -14,6 +14,11 @@
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#else
+#include "comms/utils/CudaRAII.h"
+#endif
 #include "comms/utils/checks.h"
 
 namespace comms::prims {
@@ -23,58 +28,6 @@ namespace {
 constexpr int kMultimemEligibilityError = -1;
 constexpr int kMultimemIneligible = 0;
 constexpr int kMultimemEligible = 1;
-
-class ScopedCudaDevice {
- public:
-  explicit ScopedCudaDevice(int device) {
-    auto status = cudaGetDevice(&previousDevice_);
-    if (status != cudaSuccess) {
-      throw std::runtime_error(
-          std::string("failed to query current CUDA device: ") +
-          cudaGetErrorString(status));
-    }
-    if (previousDevice_ != device) {
-      status = cudaSetDevice(device);
-      if (status != cudaSuccess) {
-        const auto selectionStatus = status;
-        const auto restoreStatus = cudaSetDevice(previousDevice_);
-        if (restoreStatus != cudaSuccess) {
-          throw std::runtime_error(
-              std::string("failed to select and restore CUDA device: ") +
-              cudaGetErrorString(selectionStatus) + "; " +
-              cudaGetErrorString(restoreStatus));
-        }
-        throw std::runtime_error(
-            std::string("failed to select CUDA device: ") +
-            cudaGetErrorString(selectionStatus));
-      }
-      restore_ = true;
-    }
-  }
-
-  ~ScopedCudaDevice() {
-    if (!restore_) {
-      return;
-    }
-    const auto status = cudaSetDevice(previousDevice_);
-    if (status != cudaSuccess) {
-      std::fprintf(
-          stderr,
-          "ScopedCudaDevice: failed to restore CUDA device %d: %s\n",
-          previousDevice_,
-          cudaGetErrorString(status));
-    }
-  }
-
-  ScopedCudaDevice(const ScopedCudaDevice&) = delete;
-  ScopedCudaDevice& operator=(const ScopedCudaDevice&) = delete;
-  ScopedCudaDevice(ScopedCudaDevice&&) = delete;
-  ScopedCudaDevice& operator=(ScopedCudaDevice&&) = delete;
-
- private:
-  int previousDevice_{-1};
-  bool restore_{false};
-};
 
 int currentCudaDevice() {
   int device = -1;
@@ -265,7 +218,7 @@ MultiPeerNvlTransport::~MultiPeerNvlTransport() {
     return;
   }
   try {
-    ScopedCudaDevice guard(multimemCudaDevice_);
+    meta::comms::CudaDeviceGuard guard(multimemCudaDevice_);
     multimemNvlTransport_.reset();
   } catch (const std::exception& error) {
     std::fprintf(
@@ -588,7 +541,7 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
 
   std::vector<int> multimemEligible(nRanks_, 0);
   std::vector<int> multimemReady(nRanks_, 0);
-  std::optional<ScopedCudaDevice> deviceGuard;
+  std::optional<meta::comms::CudaDeviceGuard> deviceGuard;
   if (!config_.enableMultimem) {
     // A disabled rank must still vote so enabled peers cannot hang in the
     // communicator-wide eligibility agreement.

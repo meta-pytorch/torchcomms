@@ -383,14 +383,11 @@ class P2pIbrcTransportDevice {
       while (static_cast<int64_t>(
                  load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
         check_status(queue);
-        if (timeout.checkExpired()) {
-          printf(
-              "P2pIbrcTransportDevice: wait_local timed out lane=%u "
-              "expected=%llu\n",
-              ticket.completionId,
-              static_cast<unsigned long long>(ticket.value));
-          PIPES_DEVICE_TRAP();
-        }
+        FT_ABORT_BREAK(
+            timeout,
+            "P2pIbrcTransportDevice: wait_local lane=%u expected=%llu",
+            ticket.completionId,
+            static_cast<unsigned long long>(ticket.value));
       }
     }
     group.sync();
@@ -856,11 +853,10 @@ class P2pIbrcTransportDevice {
 
   __device__ void drain_queue(const IbrcCmdQueueDevice& queue) const {
     const uint64_t target = load_acquire_system_u64(queue.pi);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
+    const uint64_t start = gpu_clock64();
     while (load_acquire_system_u64(queue.ci) < target) {
       check_status(queue);
-      if (timeout.checkExpired()) {
+      if (gpu_clock64() - start >= kIbrcDefaultDeviceTimeoutCycles) {
         printf("P2pIbrcTransportDevice: flush timed out\n");
         PIPES_DEVICE_TRAP();
       }
@@ -892,11 +888,10 @@ class P2pIbrcTransportDevice {
 
   __device__ __forceinline__ uint64_t reserve(IbrcCmdQueueDevice& queue) const {
     const uint64_t seq = fetch_add_system_u64(queue.pi, 1);
-    Timeout timeout{kIbrcDefaultDeviceTimeoutCycles};
-    timeout.start();
+    const uint64_t start = gpu_clock64();
     while (seq - load_acquire_system_u64(queue.ci) >= queue.depth) {
       check_status(queue);
-      if (timeout.checkExpired()) {
+      if (gpu_clock64() - start >= kIbrcDefaultDeviceTimeoutCycles) {
         printf("P2pIbrcTransportDevice: reserve timed out\n");
         PIPES_DEVICE_TRAP();
       }
@@ -942,13 +937,11 @@ class P2pIbrcTransportDevice {
       validate_group_scope(group);
       while (load_acquire_system_u64(ptr) < expected) {
         check_channel_status(group.group_id);
-        if (timeout.checkExpired()) {
-          printf(
-              "P2pIbrcTransportDevice: wait_%s timed out expected=%llu\n",
-              kind,
-              static_cast<unsigned long long>(expected));
-          PIPES_DEVICE_TRAP();
-        }
+        FT_ABORT_BREAK(
+            timeout,
+            "P2pIbrcTransportDevice: wait_%s expected=%llu",
+            kind,
+            static_cast<unsigned long long>(expected));
       }
     }
     group.sync();

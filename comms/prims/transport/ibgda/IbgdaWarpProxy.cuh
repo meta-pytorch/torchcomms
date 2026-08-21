@@ -458,7 +458,7 @@ class IbgdaWarpProxy {
       uint64_t currentSend = sendPosted.load(cuda::memory_order_acquire);
       uint64_t currentRecv = recvCredited.load(cuda::memory_order_acquire);
       while (currentSend < targetSend || currentRecv < targetRecv) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        FT_ABORT_BREAK(
             timeout,
             "IbgdaWarpProxy drain waiting for service progress "
             "send=%llu/%llu recv=%llu/%llu",
@@ -508,7 +508,7 @@ class IbgdaWarpProxy {
         queueFullCount.fetch_add(1, cuda::memory_order_relaxed);
       }
       while (currentTail - currentHead >= storage.queueDepth) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        FT_ABORT_BREAK(
             timeout,
             "IbgdaWarpProxy %s queue full channel=%u head=%llu tail=%llu",
             IsSend ? "send" : "recv",
@@ -534,7 +534,7 @@ class IbgdaWarpProxy {
       BlockAtomicU64 posted(storage.send.posted);
       uint64_t currentPosted = posted.load(cuda::memory_order_acquire);
       while (currentPosted < requiredPosted) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        FT_ABORT_BREAK(
             timeout,
             "IbgdaWarpProxy waiting for send WQE post channel=%u slot=%u "
             "posted=%llu required=%llu",
@@ -584,7 +584,7 @@ class IbgdaWarpProxy {
       BlockAtomicU64 ready(storage.recv.ready);
       uint64_t current = ready.load(cuda::memory_order_acquire);
       while (current <= sequence) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        FT_ABORT_BREAK(
             timeout,
             "IbgdaWarpProxy waiting for DATA_READY channel=%u ready=%llu "
             "required=%llu",
@@ -649,7 +649,9 @@ class IbgdaWarpProxy {
               command.protocolBytes,
               current,
               expected)) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        // CHECK rather than BREAK: the `break` below is unconditional, so this
+        // call is only here for the log-and-trap side effect on abort.
+        (void)FT_ABORT_CHECK(
             timeout,
             "IbgdaWarpProxy waiting for DATA_READY channel=%u "
             "expected=%llu current=%llu",
@@ -683,7 +685,9 @@ class IbgdaWarpProxy {
     BlockAtomicU64 credited(storage.recv.credited);
     const uint64_t creditedTail = credited.load(cuda::memory_order_acquire);
     if (creditedTail < command.requiredRecvCredit) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+      // Not a loop: `post_send_once` returns to its caller's polling loop, so
+      // this only needs the log-and-trap side effect on abort.
+      (void)FT_ABORT_CHECK(
           timeout,
           "IbgdaWarpProxy waiting for receive credit channel=%u "
           "credited=%llu required=%llu",
@@ -699,7 +703,8 @@ class IbgdaWarpProxy {
       const uint64_t current =
           command.transport->read_signal(localSlot.slotFree);
       if (current < command.slotFreeExpected) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        // As above: the return is unconditional; this is the log-and-trap.
+        (void)FT_ABORT_CHECK(
             timeout,
             "IbgdaWarpProxy waiting for SLOT_FREE channel=%u "
             "expected=%llu current=%llu",

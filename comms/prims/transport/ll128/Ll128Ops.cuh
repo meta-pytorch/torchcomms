@@ -210,25 +210,35 @@ __device__ __forceinline__ void ll128_send(
     // Only lane 7 reads the flag; the result is broadcast to all lanes.
     // Sender polls for -1 (slot free); receiver polls for pkt_flag_value
     // (data ready). ---
+    // -1 == aborted, 0 == not ready, 1 == ready. Declared outside `if (active)`
+    // so inactive lanes hold a defined value for the warp-wide vote below.
+    int ready = 1;
     if (active) {
-      int ready = 0;
+      ready = 0;
       do {
         if (lane_in_group == kLl128FlagLane) {
           ready = (remote_ll128_buf[buf_idx].load_flag() == kLl128ReadyToWrite)
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)",
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)remote_ll128_buf[buf_idx].load_flag());
+            if (FT_ABORT_CHECK(
+                    timeout,
+                    "ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)",
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)remote_ll128_buf[buf_idx].load_flag())) {
+              ready = -1;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
-      } while (!ready);
+      } while (ready == 0);
     }
+
+    // Sub-groups poll independently, so they can disagree about aborting --
+    // but the barrier at the end of this iteration is full-warp. Make the
+    // decision to stop warp-uniform before anyone acts on it.
+    const bool ftWarpAborted = __any_sync(0xFFFFFFFFU, ready < 0);
 
     // --- Write: volatile-store 16B per thread ---
     // Declare outside `if (active)` so they survive across the __syncwarp.
@@ -272,7 +282,7 @@ __device__ __forceinline__ void ll128_send(
     // reach store128 at the same PC — required for NVLink 128B coalescing.
     __syncwarp(subgroup_mask);
 
-    if (active) {
+    if (active && !ftWarpAborted) {
       comms::device::store128_volatile_global(slot, v0, v1);
     }
 
@@ -281,6 +291,12 @@ __device__ __forceinline__ void ll128_send(
     // kLl128PacketsPerWarp) prevents different sub-groups from colliding
     // on the same buf_idx across iterations.
     __syncwarp();
+
+    // Warp-uniform: every lane leaves at the same iteration, so no lane is
+    // named by a barrier it has already left.
+    if (ftWarpAborted) {
+      break;
+    }
   }
 #else
   (void)group;
@@ -380,31 +396,48 @@ __device__ __forceinline__ void ll128_recv(
 
     // --- Cooperative poll: all subgroup threads participate via __shfl_sync,
     // keeping them converged for the subsequent 128B load. ---
+    // -1 == aborted, 0 == not ready, 1 == ready. Declared outside `if (active)`
+    // so inactive lanes hold a defined value for the warp-wide vote below.
+    int ready = 1;
     if (active) {
-      int ready = 0;
+      ready = 0;
       do {
         if (lane_in_group == kLl128FlagLane) {
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
-                (long long)pkt_flag_value,
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)local_ll128_buf[buf_idx].load_flag());
+            if (FT_ABORT_CHECK(
+                    timeout,
+                    "ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
+                    (long long)pkt_flag_value,
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)local_ll128_buf[buf_idx].load_flag())) {
+              ready = -1;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
-      } while (!ready);
+      } while (ready == 0);
     }
+
+    // Sub-groups poll independently, so they can disagree about aborting --
+    // but the barrier at the end of this iteration is full-warp. Make the
+    // decision to stop warp-uniform before anyone acts on it.
+    const bool ftWarpAborted = __any_sync(0xFFFFFFFFU, ready < 0);
 
     // Ensure all threads converge before the 128B load.
     __syncwarp(subgroup_mask);
 
     // --- Read: volatile-load 16B per thread, then write to output ---
-    if (active) {
+    // Gated on the vote as well as `active`. LL128's cache-line atomicity means
+    // a torn packet is not the risk here; the packet simply was never written
+    // for this pass, so an ungated copy hands the caller a complete but stale
+    // one. `dst` is undefined after an abort by contract, so this is not
+    // required for correctness -- it keeps "on abort, touch nothing further"
+    // uniform with send and forward, where the equivalent store IS peer-visible
+    // and gating it is mandatory.
+    if (active && !ftWarpAborted) {
       Ll128Packet& local_pkt = local_ll128_buf[buf_idx];
       const size_t valid_payload = ll128_packet_payload_size(pkt_idx, nbytes);
       const size_t byte_offset_in_payload = lane_in_group * 16;
@@ -444,7 +477,7 @@ __device__ __forceinline__ void ll128_recv(
 
     // Ensure all threads in the group have consumed data before ACKing.
     __syncwarp(subgroup_mask);
-    if (active && lane_in_group == kLl128FlagLane) {
+    if (active && !ftWarpAborted && lane_in_group == kLl128FlagLane) {
       local_ll128_buf[buf_idx].ack();
     }
 
@@ -453,6 +486,12 @@ __device__ __forceinline__ void ll128_recv(
     // kLl128PacketsPerWarp) prevents different sub-groups from colliding
     // on the same buf_idx across iterations.
     __syncwarp();
+
+    // Warp-uniform: every lane leaves at the same iteration, so no lane is
+    // named by a barrier it has already left.
+    if (ftWarpAborted) {
+      break;
+    }
   }
 #else
   (void)group;
@@ -555,24 +594,43 @@ __device__ __forceinline__ void ll128_forward(
 
     // --- Phase 1: Cooperative poll local — all subgroup threads participate
     // via __shfl_sync, keeping them converged for the subsequent 128B load. ---
+    // -1 == aborted, 0 == not ready, 1 == ready. Declared outside `if (active)`
+    // so inactive lanes hold a defined value for the warp-wide vote below.
+    int ready = 1;
     if (active) {
-      int ready = 0;
+      ready = 0;
       do {
         if (lane_in_group == kLl128FlagLane) {
           ready =
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
-                (long long)pkt_flag_value,
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)local_ll128_buf[buf_idx].load_flag());
+            if (FT_ABORT_CHECK(
+                    timeout,
+                    "ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
+                    (long long)pkt_flag_value,
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)local_ll128_buf[buf_idx].load_flag())) {
+              ready = -1;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
-      } while (!ready);
+      } while (ready == 0);
+    }
+
+    // Sub-groups poll independently, so they can disagree about aborting --
+    // but the barrier at the end of this iteration is full-warp. Make the
+    // decision to stop warp-uniform before anyone acts on it.
+    bool ftWarpAborted = __any_sync(0xFFFFFFFFU, ready < 0);
+    // Nothing below can succeed once Phase 1 has given up: `v0`/`v1` would be
+    // loaded from a slot the predecessor never filled, and the Phase 2 remote
+    // poll would only abort again. Leaving here keeps the abort from depending
+    // on the deadline re-firing, and is warp-uniform because `ftWarpAborted`
+    // came from `__any_sync` -- every lane leaves at the same iteration, so no
+    // lane is named by a barrier it has already left.
+    if (ftWarpAborted) {
+      break;
     }
 
     // Ensure all threads converge before the 128B load.
@@ -588,25 +646,35 @@ __device__ __forceinline__ void ll128_forward(
     }
 
     // --- Cooperative poll remote — all subgroup threads participate. ---
+    // -1 == aborted, 0 == not ready, 1 == ready. Declared outside `if (active)`
+    // so inactive lanes hold a defined value for the warp-wide vote below.
+    ready = 1;
     if (active) {
-      int ready = 0;
+      ready = 0;
       do {
         if (lane_in_group == kLl128FlagLane) {
           ready = (remote_ll128_buf[buf_idx].load_flag() == kLl128ReadyToWrite)
               ? 1
               : 0;
           if (!ready) {
-            TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-                timeout,
-                "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)",
-                (unsigned long long)pkt_idx,
-                (unsigned long long)buf_idx,
-                (long long)remote_ll128_buf[buf_idx].load_flag());
+            if (FT_ABORT_CHECK(
+                    timeout,
+                    "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)",
+                    (unsigned long long)pkt_idx,
+                    (unsigned long long)buf_idx,
+                    (long long)remote_ll128_buf[buf_idx].load_flag())) {
+              ready = -1;
+            }
           }
         }
         ready = __shfl_sync(subgroup_mask, ready, flag_src_lane);
-      } while (!ready);
+      } while (ready == 0);
     }
+
+    // Sub-groups poll independently, so they can disagree about aborting --
+    // but the barrier at the end of this iteration is full-warp. Make the
+    // decision to stop warp-uniform before anyone acts on it.
+    ftWarpAborted = ftWarpAborted || __any_sync(0xFFFFFFFFU, ready < 0);
 
     // --- Phase 3: Forward to remote + copy to local + ACK ---
     volatile uint64_t* remote_slot = nullptr;
@@ -626,7 +694,19 @@ __device__ __forceinline__ void ll128_forward(
     // reach store128 at the same PC — required for NVLink 128B coalescing.
     __syncwarp(subgroup_mask);
 
-    if (active) {
+    // Gated on the vote, not just `active`. This store is peer-visible and lane
+    // 7 has just stamped the *current* `pkt_flag_value` into `v1`, so an
+    // ungated store ships a stale, never-validated packet carrying a valid
+    // current flag -- the successor accepts it as real data and never learns a
+    // fault occurred. Suppressing it is what lets the successor lapse on its
+    // own deadline instead. See principle 4 in
+    // comms/common/fault_tolerance/FAULT_TOLERANCE.md.
+    //
+    // The local `dst` copy below is inside the same guard. That part is not
+    // strictly required -- output is undefined after an abort by contract --
+    // but keeping "on abort, touch nothing further" uniform across send, recv
+    // and forward is worth more than the branch it saves.
+    if (active && !ftWarpAborted) {
       comms::device::store128_volatile_global(remote_slot, v0, v1);
 
       // Copy payload to local output buffer
@@ -663,7 +743,7 @@ __device__ __forceinline__ void ll128_forward(
 
     // Ensure all threads in the group have forwarded and copied before ACKing.
     __syncwarp(subgroup_mask);
-    if (active && lane_in_group == kLl128FlagLane) {
+    if (active && !ftWarpAborted && lane_in_group == kLl128FlagLane) {
       local_ll128_buf[buf_idx].ack();
     }
 
@@ -672,6 +752,12 @@ __device__ __forceinline__ void ll128_forward(
     // kLl128PacketsPerWarp) prevents different sub-groups from colliding
     // on the same buf_idx across iterations.
     __syncwarp();
+
+    // Warp-uniform: every lane leaves at the same iteration, so no lane is
+    // named by a barrier it has already left.
+    if (ftWarpAborted) {
+      break;
+    }
   }
 #else
   (void)group;

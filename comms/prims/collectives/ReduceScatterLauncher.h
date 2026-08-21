@@ -6,6 +6,7 @@
 
 #include <cstddef>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/collectives/ReduceScatterDirectTypes.h"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 
@@ -19,7 +20,7 @@ struct DirectReduceScatterNvlLaunchParams {
   const float* input{nullptr};
   float* output{nullptr};
   int num_blocks{16};
-  float timeout_ms{0.0f};
+  comms::fault_tolerance::AbortDevice abort{};
   cudaStream_t stream{nullptr};
   P2pNvlTransportDevice peers[kDirectNvlMaxRanks]{};
 };

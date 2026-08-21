@@ -1,10 +1,13 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <atomic>
 #include <chrono>
 #include <optional>
 #include <semaphore>
 #include <thread>
 
+#include <pthread.h>
+#include <signal.h>
 #include <sys/socket.h>
 
 #include <gtest/gtest.h>
@@ -812,4 +815,162 @@ TEST_F(AbortableSocketTest, AcceptAfterAbort) {
     auto maybeClient = server->acceptSocket();
     return maybeClient.hasError() ? maybeClient.error() : 0;
   });
+}
+
+//
+// Test Group #7: Signal Interruption
+//
+
+namespace {
+
+void noopSignalHandler(int /* signum */) {}
+
+// Installs a SIGUSR1 handler for the duration of a test. sigaction() is used
+// rather than signal(), which implies SA_RESTART on glibc.
+class ScopedInterruptingSignal {
+ public:
+  ScopedInterruptingSignal() {
+    struct sigaction sa{};
+    sa.sa_handler = noopSignalHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    EXPECT_EQ(0, ::sigaction(SIGUSR1, &sa, &prev_));
+  }
+
+  ~ScopedInterruptingSignal() {
+    ::sigaction(SIGUSR1, &prev_, nullptr);
+  }
+
+ private:
+  struct sigaction prev_{};
+};
+
+// Repeatedly delivers SIGUSR1 to a single target thread. The target must not
+// be joined until stop() returns, so that its pthread_t stays valid.
+class SignalStorm {
+ public:
+  explicit SignalStorm(pthread_t target)
+      : thread_([this, target]() {
+          while (!stop_.load()) {
+            ::pthread_kill(target, SIGUSR1);
+            std::this_thread::sleep_for(1ms);
+          }
+        }) {}
+
+  ~SignalStorm() {
+    stop();
+  }
+
+  void stop() {
+    if (thread_.joinable()) {
+      stop_ = true;
+      thread_.join();
+    }
+  }
+
+ private:
+  std::atomic<bool> stop_{false};
+  std::thread thread_;
+};
+
+// Long enough to interrupt the target many times over.
+constexpr auto kSignalStormDuration = 100ms;
+
+} // namespace
+
+// A signal delivered while acceptSocket() is parked must not be reported to the
+// caller as a socket error.
+TEST_F(AbortableServerSocketTest, AcceptSocketSurvivesSignalInterruption) {
+  ScopedInterruptingSignal signalGuard;
+
+  std::atomic<int> acceptError{-1};
+  std::atomic<bool> accepted{false};
+  folly::Baton<> parked;
+
+  std::thread acceptThread([&]() {
+    parked.post();
+    auto maybeClient = server->acceptSocket();
+    if (maybeClient.hasError()) {
+      acceptError = maybeClient.error();
+    } else {
+      accepted = maybeClient.value() != nullptr;
+      maybeClient.value()->close();
+    }
+  });
+
+  parked.wait();
+  SignalStorm storm(acceptThread.native_handle());
+  std::this_thread::sleep_for(kSignalStormDuration);
+
+  ctran::bootstrap::AbortableSocket client;
+  ASSERT_EQ(0, client.connect(serverAddr, "lo"));
+  std::this_thread::sleep_for(50ms);
+
+  storm.stop();
+  acceptThread.join();
+
+  EXPECT_TRUE(accepted.load());
+  EXPECT_EQ(acceptError.load(), -1);
+  EXPECT_FALSE(serverAbort->isAborted());
+  EXPECT_EQ(0, client.close());
+}
+
+// Retrying on EINTR must not defeat the abort: acceptSocket() still has to
+// return promptly while the interruptions keep coming.
+TEST_F(AbortableServerSocketTest, AcceptSocketAbortsWhileSignalInterrupted) {
+  ScopedInterruptingSignal signalGuard;
+
+  std::atomic<int> acceptError{-1};
+  folly::Baton<> parked;
+  folly::Baton<> finished;
+
+  std::thread acceptThread([&]() {
+    parked.post();
+    auto maybeClient = server->acceptSocket();
+    acceptError = maybeClient.hasError() ? maybeClient.error() : 0;
+    finished.post();
+  });
+
+  parked.wait();
+  SignalStorm storm(acceptThread.native_handle());
+  std::this_thread::sleep_for(kSignalStormDuration);
+
+  serverAbort->setAbort();
+  const bool returnedPromptly = finished.try_wait_for(1s);
+
+  storm.stop();
+  acceptThread.join();
+
+  EXPECT_TRUE(returnedPromptly);
+  EXPECT_EQ(acceptError.load(), ECONNABORTED);
+}
+
+// A signal delivered while recv() waits for readability must not truncate the
+// transfer into a spurious ETIMEDOUT.
+TEST_F(AbortableSocketTest, RecvSurvivesSignalInterruption) {
+  ScopedInterruptingSignal signalGuard;
+
+  const std::string payload = "interrupted-but-intact";
+  std::string received(payload.size(), '\0');
+  std::atomic<int> recvResult{-1};
+  folly::Baton<> parked;
+
+  std::thread recvThread([&]() {
+    parked.post();
+    recvResult = acceptedClient->recv(received.data(), received.size());
+  });
+
+  parked.wait();
+  SignalStorm storm(recvThread.native_handle());
+  std::this_thread::sleep_for(kSignalStormDuration);
+
+  ASSERT_EQ(0, client.send(payload.data(), payload.size()));
+  std::this_thread::sleep_for(50ms);
+
+  storm.stop();
+  recvThread.join();
+
+  EXPECT_EQ(recvResult.load(), 0);
+  EXPECT_EQ(received, payload);
+  EXPECT_FALSE(serverAbort->isAborted());
 }

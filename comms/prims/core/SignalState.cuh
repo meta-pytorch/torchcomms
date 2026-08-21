@@ -168,23 +168,6 @@ struct alignas(128) SignalState {
   }
 
  private:
-  /**
-   * checkTimeoutAndTrap - Helper to check timeout and trap with error message
-   *
-   * Used internally by wait_until to avoid code duplication.
-   */
-  __device__ __forceinline__ void checkTimeoutAndTrap(
-      const Timeout& timeout,
-      CmpOp op,
-      uint64_t expected) const {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-        timeout,
-        "SignalState::wait_until waiting for signal %s %llu (current=%llu)",
-        cmpOpToString(op),
-        static_cast<unsigned long long>(expected),
-        static_cast<unsigned long long>(load()));
-  }
-
  public:
   /**
    * wait_until - Wait until the signal counter satisfies a condition
@@ -204,32 +187,68 @@ struct alignas(128) SignalState {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
       case CmpOp::CMP_GT:
         while (load() <= expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
       case CmpOp::CMP_LT:
         while (load() >= expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
       case CmpOp::CMP_GE:
         while (load() < expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
       case CmpOp::CMP_LE:
         while (load() > expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
       case CmpOp::CMP_NE:
         while (load() == expected) {
-          checkTimeoutAndTrap(timeout, op, expected);
+          FT_ABORT_BREAK(
+              timeout,
+              "SignalState::wait_until waiting for signal %s %llu "
+              "(current=%llu)",
+              cmpOpToString(op),
+              static_cast<unsigned long long>(expected),
+              static_cast<unsigned long long>(load()));
         }
         break;
     }

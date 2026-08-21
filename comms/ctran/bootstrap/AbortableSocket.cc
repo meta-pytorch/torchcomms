@@ -354,14 +354,21 @@ bool AbortableSocket::waitForEvent(
       remaining = maxPollTimeout;
     }
 
-    int ret = ::poll(&pfd, 1, remaining.count());
+    const int ret = ::poll(&pfd, 1, remaining.count());
     if (ret < 0) {
+      // Read errno before logging, which may clobber it.
+      const int pollErrno = errno;
+      // A signal is benign; the retry is bounded by the loop's abort check and
+      // by `remaining`, which is recomputed against the caller's timeout.
+      if (pollErrno == EINTR) {
+        continue;
+      }
       CTRAN_LOG(
           ERR,
           "poll failed on fd={}. errno={}, {}",
           fd,
-          errno,
-          strerror(errno));
+          pollErrno,
+          strerror(pollErrno));
       return false;
     }
 
@@ -649,19 +656,26 @@ AbortableServerSocket::acceptSocket() {
 
     auto pollTimeout = std::chrono::milliseconds(10);
 
-    int ret = ::poll(&pfd, 1, pollTimeout.count());
+    const int ret = ::poll(&pfd, 1, pollTimeout.count());
 
     if (ret < 0) {
+      // Read errno before logging, which may clobber it.
+      const int pollErrno = errno;
+      // A signal is benign; the retry is bounded by the loop's abort check.
+      if (pollErrno == EINTR) {
+        continue;
+      }
+
       if (!hasShutDown_) {
         CTRAN_LOG(
             ERR,
             "poll failed on fd={}. errno={}, {}",
             fd_,
-            errno,
-            strerror(errno));
+            pollErrno,
+            strerror(pollErrno));
       }
 
-      return folly::makeUnexpected(errno);
+      return folly::makeUnexpected(pollErrno);
     }
 
     if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {

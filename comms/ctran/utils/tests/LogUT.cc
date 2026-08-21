@@ -25,6 +25,14 @@ class CtranUtilsLogTest : public ::testing::Test {
 
   void SetUp() {
     ctran::logging::initCtranLogging(true /*alwaysInit*/);
+    NcclLogger::init(
+        {.contextName = XLOG_GET_CATEGORY_NAME().str(),
+         .logPrefix = "CTRAN",
+         .threadContextFn = []() {
+           int cudaDev = -1;
+           (void)cudaGetDevice(&cudaDev);
+           return cudaDev;
+         }});
 
     // Set up a test category
     auto* category =

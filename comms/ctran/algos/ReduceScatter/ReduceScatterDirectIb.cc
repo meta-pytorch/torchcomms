@@ -310,7 +310,11 @@ static commResult_t ctranReduceScatterDirectIbImpl(
         statex->rank());
     params.num_blocks = numBlocks;
     params.use_tma = MCCL_PRIMS_TMA;
-    params.timeout_ms = MCCL_ABORT_TIMEOUT_MS;
+    // params.abort is left default-constructed, i.e. disabled. Fault tolerance
+    // is an MCCL-communicator feature and this is the NCCLX/CTRAN path, so the
+    // communicator abort is deliberately not wired in here. This does drop the
+    // MCCL_ABORT_TIMEOUT_MS watchdog this path used to carry; see *Scope* in
+    // comms/common/fault_tolerance/FAULT_TOLERANCE.md.
     params.stream = stream;
 
     for (int peer : peers) {

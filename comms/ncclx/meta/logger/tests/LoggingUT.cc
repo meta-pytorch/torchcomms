@@ -14,10 +14,12 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "meta/NcclxLogUtils.h"
+#include "meta/NcclxChecks.h"
 
 #include "debug.h" // @manual
 #include "param.h" // @manual
+
+extern "C" void ncclResetDebugInitInternal();
 
 namespace {
 void inline checkStringHasLogging(
@@ -53,7 +55,26 @@ class NcclLoggerTest : public ::testing::Test {
     ncclDebugLevel = -1;
     initNcclLogger();
   }
+
+  void initLegacyLogging() {
+    NcclLogger::init(
+        {.contextName = "comms.ncclx",
+         .logPrefix = "NCCL",
+         .logFilePath =
+             meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+         .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+             meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+         .threadContextFn = []() {
+           int cudaDev = -1;
+           (void)cudaGetDevice(&cudaDev);
+           return cudaDev;
+         }});
+  }
 };
+
+TEST_F(NcclLoggerTest, LegacyCloseIsSafeWhenNotInitialized) {
+  NcclLogger::close();
+}
 
 // Just for remembering the test format. Current test format example:
 // P1783645719
@@ -66,6 +87,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
   // auto fileGuard = EnvRAII(NCCL_DEBUG_FILE, std::string{"/tmp/debug.test3"});
 
   initLogging();
+  initLegacyLogging();
   NcclLogger::init(
       // TODO: Change the context name when ctran is refactored out of NCCLX
       // Otherwise the logging will no longer work as intended.
@@ -92,6 +114,46 @@ TEST_F(NcclLoggerTest, LogDisplay) {
   ERR(ncclInternalError, "%s", TestStr.c_str());
 
   finishLogging();
+}
+
+TEST_F(NcclLoggerTest, NcclxChecksPreserveResultsAndSingleEvaluation) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInitInternal();
+  initLogging();
+  auto loggingGuard = folly::makeGuard([&] { finishLogging(); });
+
+  int commEvaluations = 0;
+  EXPECT_NO_THROW(NCCLX_COMMCHECKTHROW((++commEvaluations, commSuccess)));
+  EXPECT_NO_THROW(NCCLX_COMMCHECKTHROW((++commEvaluations, commInProgress)));
+  EXPECT_THROW(
+      NCCLX_COMMCHECKTHROW((++commEvaluations, commInternalError)),
+      std::runtime_error);
+  EXPECT_EQ(commEvaluations, 3);
+
+  int messageEvaluations = 0;
+  EXPECT_THROW(
+      NCCLX_ERRORTHROW(
+          commInvalidUsage, "NCCLX error {}", ++messageEvaluations),
+      std::runtime_error);
+  EXPECT_EQ(messageEvaluations, 1);
+
+  int cudaEvaluations = 0;
+  EXPECT_NO_THROW(NCCLX_CUDACHECKTHROW((++cudaEvaluations, cudaSuccess)));
+  EXPECT_THROW(
+      NCCLX_CUDACHECKTHROW((++cudaEvaluations, cudaErrorInvalidValue)),
+      std::runtime_error);
+  EXPECT_EQ(cudaEvaluations, 2);
+
+  auto expectedCheck = [](cudaError_t error) -> meta::comms::CommsMaybeVoid {
+    NCCLX_CUDA_CHECK_EXPECTED(error);
+    return folly::unit;
+  };
+  EXPECT_TRUE(expectedCheck(cudaSuccess).hasValue());
+  const auto expectedError = expectedCheck(cudaErrorInvalidValue);
+  ASSERT_TRUE(expectedError.hasError());
+  EXPECT_EQ(expectedError.error().errorCode, commUnhandledCudaError);
+  EXPECT_THAT(
+      expectedError.error().message, testing::HasSubstr("CUDA error in"));
 }
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
@@ -194,6 +256,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTestXLOG) {
   ncclResetDebugInit();
 
   initLogging();
+  initLegacyLogging();
 
   // Create a long error message (but within the 1024 char buffer)
   std::string longError(500, 'X');
@@ -352,11 +415,69 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
   finishLogging();
 }
 
+TEST_F(NcclLoggerTest, PluginDebugBridgePreservesSourceMetadata) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+  setenv("NCCL_DEBUG", "INFO", 1);
+  ncclResetDebugInitInternal();
+
+  initLogging();
+  constexpr std::string_view message = "PLUGIN DEBUG BRIDGE";
+
+  testing::internal::CaptureStdout();
+  ncclDebugLog(
+      NCCL_LOG_INFO,
+      NCCL_ALL,
+      "transport/plugin.cc:pluginFunc",
+      321,
+      "%s",
+      message.data());
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, message, "INFO");
+  EXPECT_THAT(output, testing::HasSubstr("plugin.cc:pluginFunc:321]"));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, MetaDebugBridgePreservesTraceAndSourceMetadata) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
+  auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+  setenv("NCCL_DEBUG", "TRACE", 1);
+  ncclResetDebugInitInternal();
+
+  initLogging();
+  constexpr std::string_view message = "META DEBUG BRIDGE";
+
+  testing::internal::CaptureStdout();
+  ncclMetaDebugLog(
+      NCCL_LOG_TRACE,
+      NCCL_ALL,
+      "source.cc",
+      "sourceFunction",
+      654,
+      "%s",
+      message.data());
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  logger.flush();
+  const auto output = testing::internal::GetCapturedStdout();
+
+  checkStringHasLogging(output, message, "VERBOSE");
+  EXPECT_THAT(output, testing::HasSubstr("source.cc:654]"));
+
+  finishLogging();
+}
+
 TEST_F(NcclLoggerTest, SpdlogDebugMatchesLegacyDbg2) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
   auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
 
   initLogging();
+  initLegacyLogging();
   auto& logger =
       meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
   EXPECT_TRUE(logger.should_log(spdlog::level::debug));
@@ -455,6 +576,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
       folly::makeGuard([]() { unsetenv("NCCL_DEBUG_FILE"); });
   ncclResetDebugInit();
   initLogging();
+  initLegacyLogging();
 
   INFO(NCCL_ALL, "Trigger DebugInit");
 
@@ -735,7 +857,7 @@ TEST_F(NcclLoggerTest, SecondErrorUpdatesMessageKeepsAppendedStack) {
 
 #endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
 
-TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
+TEST_F(NcclLoggerTest, PreservesSharedUtilsLogHandler) {
   ncclResetDebugInit();
 
   ncclCvarInit();

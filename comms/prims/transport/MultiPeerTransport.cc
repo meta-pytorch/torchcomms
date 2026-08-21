@@ -225,6 +225,16 @@ std::optional<int> MultiPeerTransport::ibgda_pipeline_depth() const {
   return ibgdaTransport_->pipelineDepth();
 }
 
+std::optional<int> MultiPeerTransport::ib_max_num_channels() const {
+  if (ibgdaTransport_) {
+    return ibgdaTransport_->maxNumChannels();
+  }
+  if (ibrcTransport_) {
+    return ibrcTransport_->maxNumChannels();
+  }
+  return std::nullopt;
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {

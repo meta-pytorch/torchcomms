@@ -123,18 +123,25 @@ __device__ __forceinline__ void ll_send(
     // The || condition loops until BOTH flag1 and flag2 equal kLlReadyToWrite,
     // confirming the slot is in READY_TO_WRITE state. Dual-flag checking
     // matches NCCL LL protocol convention and guards against torn reads.
+    bool ftAborted = false;
     if (active) {
       LlLine poll;
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "ll_send: waiting for READY_TO_WRITE on line %llu (buf_idx=%llu)",
-              (unsigned long long)line_idx,
-              (unsigned long long)buf_idx);
+          if (FT_ABORT_CHECK(
+                  timeout,
+                  "ll_send: waiting for READY_TO_WRITE on line %llu (buf_idx=%llu)",
+                  (unsigned long long)line_idx,
+                  (unsigned long long)buf_idx)) {
+            ftAborted = true;
+            break;
+          }
         }
       } while (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite);
+    }
+    if (ftAborted) {
+      break;
     }
 
     // Pack user data into LlLine and write
@@ -226,20 +233,27 @@ __device__ __forceinline__ void ll_recv(
     // The || condition loops until BOTH flag1 and flag2 match the expected
     // value, confirming the sender's full 16B data store landed.
     LlLine in;
+    bool ftAborted = false;
     if (active) {
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "ll_recv: waiting for flag=%u on line %llu (buf_idx=%llu, got flag1=%u flag2=%u)",
-              (unsigned)pkt_flag_value,
-              (unsigned long long)line_idx,
-              (unsigned long long)buf_idx,
-              (unsigned)in.flag1,
-              (unsigned)in.flag2);
+          if (FT_ABORT_CHECK(
+                  timeout,
+                  "ll_recv: waiting for flag=%u on line %llu (buf_idx=%llu, got flag1=%u flag2=%u)",
+                  (unsigned)pkt_flag_value,
+                  (unsigned long long)line_idx,
+                  (unsigned long long)buf_idx,
+                  (unsigned)in.flag1,
+                  (unsigned)in.flag2)) {
+            ftAborted = true;
+            break;
+          }
         }
       } while (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value);
+    }
+    if (ftAborted) {
+      break;
     }
 
     // Copy payload to output
@@ -327,33 +341,48 @@ __device__ __forceinline__ void ll_forward(
 
     // Phase 1: Poll local buffer for data from predecessor
     LlLine in;
+    bool ftAborted = false;
     if (active) {
       do {
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "ll_forward: waiting for flag=%u on local line %llu (buf_idx=%llu)",
-              (unsigned)pkt_flag_value,
-              (unsigned long long)line_idx,
-              (unsigned long long)buf_idx);
+          if (FT_ABORT_CHECK(
+                  timeout,
+                  "ll_forward: waiting for flag=%u on local line %llu (buf_idx=%llu)",
+                  (unsigned)pkt_flag_value,
+                  (unsigned long long)line_idx,
+                  (unsigned long long)buf_idx)) {
+            ftAborted = true;
+            break;
+          }
         }
       } while (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value);
     }
+    if (ftAborted) {
+      break;
+    }
 
-    // Phase 2: Poll remote buffer for kLlReadyToWrite (slot free)
+    // Phase 2: Poll remote buffer for kLlReadyToWrite (slot free).
+    // No reset of `ftAborted` needed: the break above guarantees it is false
+    // here.
     if (active) {
       LlLine poll;
       do {
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "ll_forward: waiting for READY_TO_WRITE on remote line %llu (buf_idx=%llu)",
-              (unsigned long long)line_idx,
-              (unsigned long long)buf_idx);
+          if (FT_ABORT_CHECK(
+                  timeout,
+                  "ll_forward: waiting for READY_TO_WRITE on remote line %llu (buf_idx=%llu)",
+                  (unsigned long long)line_idx,
+                  (unsigned long long)buf_idx)) {
+            ftAborted = true;
+            break;
+          }
         }
       } while (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite);
+    }
+    if (ftAborted) {
+      break;
     }
 
     // Phase 3: Forward to remote + copy to local output + ACK local

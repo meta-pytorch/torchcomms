@@ -216,7 +216,7 @@ class MultiPeerTransport {
   /**
    * Return the device handle for the copy-based (staging) multimem NVL
    * transport. Delegates to
-   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the cnvlmm
+   * MultiPeerNvlTransport::getMultimemNvlTransportDevice(). Used by the nvlmm
    * staging path.
    *
    * Call initialize_multimem_nvl_transport() collectively before this cached
@@ -262,6 +262,12 @@ class MultiPeerTransport {
    * Resolved staging pipeline depth of the configured IBGDA transport.
    */
   std::optional<int> ibgda_pipeline_depth() const;
+
+  /*
+   * Channel capacity of whichever IB backend is configured. Empty when this
+   * rank has no IB peers.
+   */
+  std::optional<int> ib_max_num_channels() const;
 
   /*
    * Every requested edge must be requested by both endpoint ranks in the same

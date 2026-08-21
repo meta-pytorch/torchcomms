@@ -1388,14 +1388,6 @@ cvars:
      Maximum bytes per signaled sub-chunk for the cthierarchical_ring NVLink
      fanout phase. 0 means each block signals once per per-block staging slot.
 
- - name        : NCCL_CTRAN_HIER_AG_TIMEOUT_MS
-   type        : float
-   default     : 30000.0
-   description : |-
-     Timeout in milliseconds for the cthierarchical_ring AllGather kernel.
-     0 means no timeout.
-
-
  - name        : NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS
    type        : int
    default     : 32
@@ -1680,10 +1672,10 @@ cvars:
    type        : uint64_t
    default     : 33554432
    description : |-
-    Size in bytes of the cnvlmm (NVLink multimem) staging window, per rank.
+    Size in bytes of the nvlmm (NVLink multimem) staging window, per rank.
     This allocation is independent of
     NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE. A larger window means fewer staging
-    rounds, which is the dominant cnvlmm throughput lever at large message
+    rounds, which is the dominant nvlmm throughput lever at large message
     sizes. Set to 0 to disable the NVL multimem transport. Default 32 MiB.
 
  - name        : MCCL_NVL_MULTIMEM_PIPELINE_DEPTH
@@ -2042,6 +2034,15 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
+ - name        : MCCL_SENDRECV_ASYNC
+   type        : bool
+   default     : false
+   description : |-
+     Within an all-IB communicator, also use the batched path for the two-rank
+     case that normally takes the pair path. Has no effect when the
+     communicator has any NVLink peer. Must be set identically on every rank.
+     For benchmarking only.
+
  - name        : MCCL_NVL_FABRIC_ENABLE
    type        : bool
    default     : false
@@ -2164,6 +2165,26 @@ cvars:
      tcpdm - TCP device memory backend
      Usage: If the config is "ib, nvl, socket", the backend tries to enable
      ib first. If the ib initialization fails, the backend will enable socket.
+
+ - name        : NCCL_CTRAN_LOCAL_CTRL_BACKEND
+   type        : enum
+   default     : ib
+   choices     : ib, socket
+   description : |-
+     Transport used for control messages to peers on the same physical host.
+     Control messages always went over ib, even for a peer whose data path is
+     NVL. On a platform where host-local RDMA between NICs is unavailable --
+     GCP GB300, where two ranks on one host cannot reach each other through
+     their own HCAs even on the same plane -- those handshakes never complete
+     and communicator setup dies with 'transport retry counter exceeded'.
+     Set to "socket" to route same-host control traffic over the interface
+     NCCL_SOCKET_IFNAME resolves to instead. Peers on other hosts still use ib
+     and the data path is unchanged, so this only affects peers that ib cannot
+     serve anyway. Both the fixed-size ControlMsg path and the raw-payload path
+     (isendCtrlMsg/irecvCtrlMsg, used by intraNvlDomainAllGather and the
+     allGatherCtrl overflow segments) are routed.
+     Socket control is a TCP round trip rather than an RDMA one; the added
+     per-message latency has not been measured.
 
  - name        : NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET
    type        : bool
@@ -3412,6 +3433,17 @@ cvars:
    default     : 30000.0
    description : Timeout in milliseconds for MCCL device-side abort polling.
 
+ - name        : MCCL_ABORT_MODE
+   type        : enum
+   default     : skip
+   choices     : skip, trap, none
+   description : |-
+     MCCL fault-tolerance abort behavior. "skip" is the default and asks device
+     wait loops to return aborted work results without trapping. "trap" forces
+     device-trap behavior even when the caller requests skip. "skip" does not
+     downgrade a caller's trap request. "none" disables MCCL abort support for
+     the communicator.
+
  - name        : MCCL_TREE_FANOUT
    type        : int
    default     : 2
@@ -3437,6 +3469,32 @@ cvars:
      Maximum bytes per signaled sub-chunk for MCCL fused AllReduce IB phases.
      Applies to tree and ring. 0 preserves the transport default signaling
      cadence.
+
+ - name        : MCCL_ALLREDUCE_LL_MAX_BYTES
+   type        : int64_t
+   default     : 0
+   description : |-
+     Total message bytes strictly below which MCCL fused AllReduce runs its IB
+     phase on the LL (low-latency, inline-flag) wire format instead of Simple.
+     LL spends half of each 8 B packet on the flag, so it costs 2x on the wire
+     but drops the DATA_READY signal round trip -- a win only for small,
+     latency-bound messages.
+
+       0  (default) never use LL; every size stays on Simple.
+      -1  always use LL, at every size. Diagnostic only -- it forces LL past the
+          crossover where it is strictly slower.
+      >0  use LL strictly below this many bytes (16384 is the measured crossover
+          on GB300).
+
+     Tree only today; ring and direct always use Simple.
+
+ - name        : MCCL_ALLREDUCE_IB_VIRTUAL_STRIPES
+   type        : int
+   default     : 1
+   description : |-
+     Number of independent Phase-2 IB progress groups per physical CUDA block
+     in MCCL fused AllReduce. Ring supports 1, 2, 4, and 10; Tree supports 1
+     and 2. The default preserves the existing full-block protocol.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int

@@ -12,6 +12,11 @@
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 
+// Maximum payload any CTRAN control transport accepts. Shared by IB and Socket
+// so a control operation can be routed per peer without changing its wire-size
+// contract.
+constexpr std::size_t CTRAN_CTRL_MAX_PAYLOAD_SIZE{4096};
+
 /**
  * Define all control message types and packet format used in CTran backends.
  *

@@ -27,8 +27,9 @@
 typedef std::pair<int, int> QpUniqueId;
 
 // Fix-sized payload buffer for IB transport to prepare and register the
-// temporary buffers for control messages
-constexpr int MAX_PAYLOAD_SIZE{4096};
+// temporary buffers for control messages. Aliases the transport-shared limit so
+// IB and Socket stay in lockstep when a control op is routed per peer.
+constexpr int MAX_PAYLOAD_SIZE{static_cast<int>(CTRAN_CTRL_MAX_PAYLOAD_SIZE)};
 constexpr int MAX_SEND_WR{256};
 constexpr int MAX_RECV_WR{128};
 struct CtrlPacket {

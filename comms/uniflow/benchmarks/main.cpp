@@ -23,6 +23,12 @@
 #include "comms/uniflow/benchmarks/bench/ConnectionSetupBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NVLinkBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/NcclSendRecvBenchmark.h"
+#else
+// AMD intra-node tier (HIP IPC over XGMI). Its target is only in
+// uniflow_bench's deps under ovr_config//gpu:amd, so the include must be
+// guarded to match -- unguarded it breaks the NVIDIA build with a missing
+// header.
+#include "comms/uniflow/benchmarks/bench/XgmiBandwidthBenchmark.h"
 #endif
 
 namespace {
@@ -406,6 +412,9 @@ int main(int argc, char** argv) {
       std::make_unique<uniflow::benchmark::NVLinkBandwidthBenchmark>());
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::NcclSendRecvBenchmark>());
+#else
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::XgmiBandwidthBenchmark>());
 #endif
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::SendRecvBandwidthBenchmark>(

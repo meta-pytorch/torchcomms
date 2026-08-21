@@ -98,7 +98,6 @@ TEST_P(DirectAllGatherNvlTest, Correctness) {
   launchParams.recvbuf = static_cast<char*>(recvbuf.get());
   launchParams.in_place = params.in_place;
   launchParams.num_blocks = params.num_blocks;
-  launchParams.timeout_ms = 30000.0f;
 
   for (int peer = 0; peer < worldSize; ++peer) {
     if (peer == globalRank) {
@@ -152,7 +151,6 @@ TEST_P(DirectReduceScatterNvlTest, Correctness) {
   launchParams.input = static_cast<const float*>(inputBuf.get());
   launchParams.output = static_cast<float*>(outputBuf.get());
   launchParams.num_blocks = params.num_blocks;
-  launchParams.timeout_ms = 30000.0f;
 
   for (int peer = 0; peer < worldSize; ++peer) {
     if (peer == globalRank) {

@@ -17,8 +17,10 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
+#include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
@@ -427,7 +429,7 @@ static void BM_Ibverbx_IbEvent_RdmaWriteWithImm(benchmark::State& state) {
         &setup.sender->cq,
         [&](const ibv_wc& wc) {
           if (wc.status != IBV_WC_SUCCESS) {
-            XLOGF(FATAL, "WC failed with status {}", wc.status);
+            CTRAN_LOG(FATAL, "WC failed with status {}", wc.status);
             return;
           }
           if (wc.opcode == IBV_WC_RDMA_WRITE) {
@@ -441,7 +443,7 @@ static void BM_Ibverbx_IbEvent_RdmaWriteWithImm(benchmark::State& state) {
         &setup.receiver->cq,
         [&](const ibv_wc& wc) {
           if (wc.status != IBV_WC_SUCCESS) {
-            XLOGF(FATAL, "WC failed with status {}", wc.status);
+            CTRAN_LOG(FATAL, "WC failed with status {}", wc.status);
             return;
           }
           if (wc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
@@ -468,7 +470,7 @@ static void BM_Ibverbx_IbEvent_RdmaWriteWithImm(benchmark::State& state) {
 
     state.SetBytesProcessed(state.iterations() * bufferSize);
   } catch (const std::exception& e) {
-    XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
+    CTRAN_LOG(FATAL, "Benchmark setup failed: {}", e.what());
     return;
   }
 }

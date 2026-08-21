@@ -8,6 +8,28 @@ FOLLY_INIT_LOGGING_CONFIG(
 
 namespace ibverbx {
 
+TEST_F(IbverbxTestFixture, IbvQpGetQpNumFailsAfterMove) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  auto maybeCq = device.createCq(1, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeCq);
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+  auto initAttr = makeIbvQpInitAttr(maybeCq->cq());
+  auto maybeQp = pd->createQp(&initAttr);
+  ASSERT_TRUE(maybeQp);
+
+  auto qp = std::move(*maybeQp);
+  IbvQp movedQp(std::move(qp));
+  const auto deathTestStyle = ::testing::FLAGS_gtest_death_test_style;
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(qp.getQpNum(), "Check failed: qp_ != nullptr");
+  ::testing::FLAGS_gtest_death_test_style = deathTestStyle;
+  EXPECT_NE(movedQp.qp(), nullptr);
+}
+
 TEST_F(IbverbxTestFixture, IbvVirtualQp) {
   auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
   ASSERT_TRUE(devices);
@@ -670,12 +692,15 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdateWrState) {
     virtualQp.sendTracker_.remove(id);
   }
 
-  // Test 3: Not-found WR triggers CHECK failure
+  // Test 3: Not-found WR triggers a fatal failure
   {
-    ASSERT_DEATH(
+    const auto deathTestStyle = ::testing::FLAGS_gtest_death_test_style;
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    EXPECT_DEATH(
         virtualQp.updateWrState(
             virtualQp.sendTracker_, 99999, IBV_WC_SUCCESS, IBV_WC_SEND),
         "not found in tracker");
+    ::testing::FLAGS_gtest_death_test_style = deathTestStyle;
   }
 }
 

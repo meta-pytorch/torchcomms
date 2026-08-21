@@ -475,30 +475,36 @@ P2pIbTransportDevice::read_counter(const IbgdaLocalBuffer& counterBuf) const {
   return ibgda->read_counter(counterBuf);
 }
 
+// IBRC still drains under its own fixed device deadline; wiring it to the
+// abort handle is a separate change, so the handle stops at IBGDA for now.
 __device__ __forceinline__ void P2pIbTransportDevice::flush(
-    ThreadGroup& group) {
+    ThreadGroup& group,
+    const Timeout& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->flush(group);
   } else {
-    ibgda->flush(group);
+    ibgda->flush(group, IbDirection::Send, timeout);
   }
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::flush() {
+__device__ __forceinline__ void P2pIbTransportDevice::flush(
+    const Timeout& timeout) {
   if (type == P2pIbBackendType::IBRC) {
     ibrc->flush();
   } else {
-    ibgda->flush();
+    ibgda->flush(timeout);
   }
 }
 
 __device__ __forceinline__ void P2pIbTransportDevice::fence(
-    ThreadGroup& group) {
-  flush(group);
+    ThreadGroup& group,
+    const Timeout& timeout) {
+  flush(group, timeout);
 }
 
-__device__ __forceinline__ void P2pIbTransportDevice::fence() {
-  flush();
+__device__ __forceinline__ void P2pIbTransportDevice::fence(
+    const Timeout& timeout) {
+  flush(timeout);
 }
 
 // ===========================================================================

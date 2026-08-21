@@ -5,6 +5,7 @@
 #include <poll.h>
 
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
 #include <thread>
 
@@ -46,7 +47,11 @@ class IVerbsWrapper {
 class VerbsWrapper : public IVerbsWrapper {
  public:
   int ibv_poll_async_fd(struct pollfd* fds, nfds_t nfds, int timeout) {
-    return poll(fds, nfds, timeout);
+    int ret;
+    do {
+      ret = poll(fds, nfds, timeout);
+    } while (ret < 0 && errno == EINTR);
+    return ret;
   }
   commResult_t ibv_get_async_event(
       struct ibverbx::ibv_context* context,

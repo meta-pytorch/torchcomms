@@ -57,7 +57,7 @@ static bool hostNodeSideStreamEnabled() {
     return false;
   }
   if (NCCL_CTRAN_GRAPH_MIXING_SUPPORT != 0) {
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "CTRAN-GPE: NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM ignored because "
         "NCCL_CTRAN_GRAPH_MIXING_SUPPORT={} (requires 0)",
@@ -301,7 +301,7 @@ commResult_t CtranGpe::Impl::submit(
       cmd->coll.comm = comm;
       if (MCCL_COLLECTIVE_STATS_ENABLE) {
         cmd->coll.statsKey =
-            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig.algoName);
+            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig);
       }
     }
 
@@ -480,11 +480,10 @@ commResult_t CtranGpe::Impl::submit(
           CollTraceHandleTriggerState::BeforeEnqueueKernel);
     }
 
-    // Set the maximum dynamic shared memory size since CtranAlgoDeviceState
-    // (~67KB) exceeds the default limit (48KB)
-    size_t sharedMemBytes = kernelConfig.dynamicSharedMemBytes > 0
-        ? kernelConfig.dynamicSharedMemBytes
-        : sizeof(CtranAlgoDeviceState);
+    // Raise the opt-in dynamic shared memory limit: the 48KB default covers
+    // sizeof(CtranAlgoDeviceState), but a dynamicSharedMemBytes override
+    // need not.
+    const size_t sharedMemBytes = kernelConfig.launchSharedMemBytes();
     FB_CUDACHECKGOTO(
         cudaFuncSetAttribute(
             ncclKernel,
@@ -637,7 +636,7 @@ commResult_t CtranGpe::Impl::submitHost(
       cmd->coll.comm = comm;
       if (MCCL_COLLECTIVE_STATS_ENABLE) {
         cmd->coll.statsKey =
-            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig.algoName);
+            ctranCollectiveStatsKey(cmd->coll.opGroup, kernelConfig);
       }
       auto colltraceHandle = meta::comms::colltrace::getCollTraceHandle(
           comm, cmd->coll.opGroup, kernelConfig, false /* ifChecksum */);
@@ -940,7 +939,10 @@ void CtranGpe::Impl::gpeThreadFn() {
           collectiveStats_.record(
               cmd->coll.statsKey.collective,
               cmd->coll.statsKey.key,
-              static_cast<uint64_t>(durationUs));
+              static_cast<uint64_t>(durationUs),
+              cmd->coll.statsKey.numBlocks,
+              cmd->coll.statsKey.blockSize,
+              cmd->coll.statsKey.blocksPerSM);
         }
 
         if (cmd->persistent) {

@@ -538,6 +538,13 @@ class P2pNvlTransportDevice {
             protocolStreamEnd - layout.pipelineBytes,
             timeout);
       }
+      // Leave before the staging write and the DATA_READY signal below. The
+      // backpressure wait gave up, so the slot may still hold data the receiver
+      // has not consumed; worse, signalling DATA_READY would release a receiver
+      // that is correctly blocked and prevent it reaching its own deadline.
+      if (groupAborted(group, timeout)) {
+        break;
+      }
 
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, copyBytes, nbytes);
@@ -608,6 +615,14 @@ class P2pNvlTransportDevice {
           streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
       local_ch.data_ready.wait_until(group, CmpOp::CMP_GE, streamEnd, timeout);
+      // The wait above gave up rather than being satisfied, so this chunk was
+      // never written. Leave before the copy and, critically, before the
+      // SLOT_FREE credit below: signalling it would tell the sender we consumed
+      // a chunk it never sent, releasing a peer that is correctly blocked and
+      // stopping it from ever reaching its own deadline.
+      if (groupAborted(group, timeout)) {
+        break;
+      }
 
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, copyBytes, nbytes);
@@ -743,6 +758,16 @@ class P2pNvlTransportDevice {
             CmpOp::CMP_GE,
             sendProtocolStreamEnd - layout.pipelineBytes,
             timeout);
+      }
+
+      // Either wait may have given up. Leave before the copy and before both
+      // signals below -- forward is the worst of the three to get wrong, since
+      // continuing would hand the successor data the predecessor never sent
+      // *and* ACK the predecessor for a chunk we never consumed, releasing two
+      // correctly-blocked peers and stopping both from reaching their own
+      // deadlines.
+      if (groupAborted(group, timeout)) {
+        break;
       }
 
       // 3. Dual-dst copy: predecessor staging → local user buf +

@@ -1,11 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <cuda_runtime.h>
+#include <chrono>
 #include <cstddef>
 
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
-#include "comms/prims/core/TimeoutUtils.h"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll128/Ll128Ops.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
@@ -25,7 +26,7 @@ __global__ void ll128_send_no_recv_kernel(
   ll128_send(group, src, nbytes, remote_ll128_buf, timeout);
 }
 
-void launch_ll128_send_no_recv_timeout(int device, uint32_t timeout_ms) {
+cudaError_t launch_ll128_send_no_recv_timeout(int device, uint32_t timeout_ms) {
   PIPES_CUDA_CHECK(cudaSetDevice(device));
 
   constexpr size_t nbytes = 4096;
@@ -42,12 +43,15 @@ void launch_ll128_send_no_recv_timeout(int device, uint32_t timeout_ms) {
   PIPES_CUDA_CHECK(cudaMemset(ll128_buf, 0, buf_size));
   PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 
-  auto timeout = makeTimeout(timeout_ms, device);
+  comms::fault_tolerance::Abort abort{
+      /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
+  abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
+  auto timeout = abort.getDeviceHandle();
 
   ll128_send_no_recv_kernel<<<1, 256>>>(src_d, nbytes, ll128_buf, timeout);
   // Don't check launch — the kernel will trap.
 
-  cudaDeviceSynchronize();
+  const auto syncErr = cudaDeviceSynchronize();
   // Caller checks cudaGetLastError() for trap error.
 
   // Cleanup is best-effort since device may be corrupted after trap.
@@ -55,6 +59,7 @@ void launch_ll128_send_no_recv_timeout(int device, uint32_t timeout_ms) {
   cudaFree(src_d);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaFree(ll128_buf);
+  return syncErr;
 }
 
 // =============================================================================
@@ -80,7 +85,7 @@ __global__ void ll128_send_recv_undersized_buffer_kernel(
   }
 }
 
-void launch_ll128_send_recv_undersized_buffer(int device) {
+cudaError_t launch_ll128_send_recv_undersized_buffer(int device) {
   PIPES_CUDA_CHECK(cudaSetDevice(device));
 
   constexpr size_t nbytes = 4096;
@@ -103,7 +108,7 @@ void launch_ll128_send_recv_undersized_buffer(int device) {
   ll128_send_recv_undersized_buffer_kernel<<<2, 256>>>(
       src_d, dst_d, nbytes, ll128_buf, buffer_num_packets);
 
-  cudaDeviceSynchronize();
+  const auto syncErr = cudaDeviceSynchronize();
 
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaFree(src_d);
@@ -111,6 +116,7 @@ void launch_ll128_send_recv_undersized_buffer(int device) {
   cudaFree(dst_d);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaFree(ll128_buf);
+  return syncErr;
 }
 
 } // namespace comms::prims::test

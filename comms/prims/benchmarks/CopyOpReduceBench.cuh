@@ -36,6 +36,21 @@ namespace comms::prims::benchmark {
  *           store, i.e. the double-buffer idiom documented in CopyOp.cuh that
  *           TileReduceStaged::recv does not use. Tests whether the per-tile
  *           latency bubble, rather than issue rate, is what caps R_copy.
+ * Forward   One load, two stores to distinct destinations -- the ring's
+ *           all-gather hop, which lands a tile in recvbuff and re-stages the
+ *           same tile in fwdStaging. 3 bytes per payload byte like the reduce
+ *           shapes, but at a 1:2 load:store ratio instead of 2:1, so the port
+ *           model puts it BELOW them (1/L + 2/S against 2/L + 1/S) despite
+ *           doing no arithmetic. It is the most store-heavy shape the ring
+ *           executes and the only one with no direct measurement.
+ * BareStore Reference store loop with no abstraction: raw uint4 pointer
+ *           arithmetic, compile-time stride, no per-iteration bounds
+ *           predicate. Same geometry and buffer as WriteOnly, so the pair
+ *           isolates what tile_store's control flow costs. SASS for WriteOnly
+ *           shows six STG.E.128 separated by BSSY/BSYNC reconvergence pairs
+ *           plus an inlined scalar fallback that never executes; this shape is
+ *           the upper bound that overhead is measured against.
+ * BareCopy  The 1R+1W counterpart of BareStore, paired with Copy.
  */
 enum class CopyOpReduceShape {
   Unfused,
@@ -44,6 +59,9 @@ enum class CopyOpReduceShape {
   WriteOnly,
   Copy,
   Pipelined,
+  Forward,
+  BareStore,
+  BareCopy,
 };
 
 struct CopyOpReduceTiming {

@@ -210,8 +210,10 @@ static inline unsigned int getThreadBlockSize() {
   // If first time call, query cuda recommended blockSize
   if (bestThreadBlockSize == 0) {
     int minGridSize = 0;
-    XCHECK(kernFnMap.contains(commFloat32))
-        << "kernFnMap does not contain datatype";
+    CTRAN_LOG_IF(
+        FATAL,
+        !kernFnMap.contains(commFloat32),
+        "Check failed: kernFnMap.contains(commFloat32): kernFnMap does not contain datatype");
     FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
         &minGridSize,
         (int*)&bestThreadBlockSize,
@@ -304,8 +306,11 @@ commResult_t ctranAllGatherDirect(
       comm,
       stream));
   FB_COMMCHECK(setupPlan(comm, opGroup, config));
-  XCHECK(kernFnMap.contains(datatype))
-      << "kernFnMap does not contain datatype " << datatype;
+  CTRAN_LOG_IF(
+      FATAL,
+      !kernFnMap.contains(datatype),
+      "Check failed: kernFnMap.contains(datatype): kernFnMap does not contain datatype {}",
+      datatype);
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup), impl, config, kernFnMap.at(datatype)));
   if (extraCopyBuff != nullptr) {

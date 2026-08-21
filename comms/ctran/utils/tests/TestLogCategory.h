@@ -13,7 +13,6 @@
 #include <folly/logging/LoggerDB.h>
 #include <folly/logging/StandardLogHandler.h>
 #include <folly/logging/StandardLogHandlerFactory.h>
-#include <folly/logging/xlog.h>
 
 // Custom log handler to capture log messages for testing
 class CaptureLogHandler : public folly::LogHandler {
@@ -58,17 +57,12 @@ class TestLogCategory {
   TestLogCategory() = default;
 
   bool setup(folly::LogCategory* category) {
-    // Using the same formatter Ctran logging used
-    const auto ctranCategory = getCtranCategory();
-    if (!ctranCategory) {
-      return false;
-    }
-    if (ctranCategory->getHandlers().size() <= 0) {
+    if (category->getHandlers().empty()) {
       return false;
     }
 
     std::shared_ptr<folly::LogFormatter> formatter = nullptr;
-    auto& handler = *ctranCategory->getHandlers().front();
+    auto& handler = *category->getHandlers().front();
     if (typeid(handler) == typeid(folly::StandardLogHandler)) {
       formatter =
           static_cast<folly::StandardLogHandler&>(handler).getFormatter();
@@ -102,22 +96,6 @@ class TestLogCategory {
   }
 
  private:
-  folly::LogCategory* getCtranCategory() {
-    auto categoryName = XLOG_GET_CATEGORY_NAME();
-    while (true) {
-      auto category = folly::LoggerDB::get().getCategory(categoryName);
-      if (category->getHandlers().size() > 0) {
-        return category;
-      }
-      auto newCategoryName = folly::LogName::getParent(categoryName);
-      if (categoryName == newCategoryName) {
-        return nullptr;
-      }
-      categoryName = newCategoryName;
-    }
-    return nullptr;
-  }
-
   folly::LogCategory* category_{nullptr};
   std::shared_ptr<CaptureLogHandler> captureHandler_{nullptr};
   folly::LogLevel oldLevel_;

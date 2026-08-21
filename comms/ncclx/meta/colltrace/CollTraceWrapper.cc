@@ -9,7 +9,6 @@
 #include <folly/Synchronized.h>
 #include <folly/Unit.h>
 #include "comms/utils/RankUtils.h"
-#include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "meta/logger/DebugExt.h"
@@ -22,7 +21,7 @@
 #include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/NcclxLogger.h"
+#include "meta/NcclxChecks.h"
 #include "meta/hints/GlobalHints.h"
 #include "meta/wrapper/DataTypeConv.h"
 
@@ -443,11 +442,11 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
        cudaDev = comm->cudaDev]() -> CommsMaybeVoid {
         NCCL_NAMED_THREAD_START_EXT(
             "CollTrace", metadata.rank, metadata.commHash, metadata.commDesc);
-        CUDA_CHECK_EXPECTED(cudaSetDevice(cudaDev));
+        NCCLX_CUDA_CHECK_EXPECTED(cudaSetDevice(cudaDev));
         // Ensure we are using the thread local stream capture mode to avoid
         // getting error about stream capture mode.
         auto mode{cudaStreamCaptureMode::cudaStreamCaptureModeThreadLocal};
-        CUDA_CHECK_EXPECTED(cudaThreadExchangeStreamCaptureMode(&mode));
+        NCCLX_CUDA_CHECK_EXPECTED(cudaThreadExchangeStreamCaptureMode(&mode));
         return folly::unit;
       },
       std::move(plugins));

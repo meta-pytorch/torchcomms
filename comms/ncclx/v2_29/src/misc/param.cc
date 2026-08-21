@@ -23,36 +23,13 @@
 #include <unordered_set>
 #include "os.h"
 
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/InitFolly.h"
 #include "meta/NcclxLogger.h"
 
 #include "cuda_runtime_api.h"
-
-namespace {
-
-spdlog::level::level_enum loggerLevelToSpdlogLevel(
-    meta::comms::logger::LogLevel level) {
-  switch (level) {
-    case meta::comms::logger::LogLevel::NONE:
-    case meta::comms::logger::LogLevel::VERSION:
-      return spdlog::level::off;
-    case meta::comms::logger::LogLevel::ERROR:
-      return spdlog::level::err;
-    case meta::comms::logger::LogLevel::WARN:
-      return spdlog::level::warn;
-    case meta::comms::logger::LogLevel::INFO:
-      return spdlog::level::info;
-    case meta::comms::logger::LogLevel::ABORT:
-    case meta::comms::logger::LogLevel::TRACE:
-      return spdlog::level::debug;
-  }
-  return spdlog::level::off;
-}
-
-} // namespace
 
 const char* userHomeDir() {
   struct passwd *pwUser = getpwuid(getuid());
@@ -182,33 +159,8 @@ const char* ncclGetEnv(const char* name) {
 }
 
 void initNcclLogger() {
-  NcclLogger::init(NcclLoggerInitConfig{
-    .contextName = "comms.ncclx",
-    .logPrefix = "NCCL",
-    .logFilePath = meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-    .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-        meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-    .threadContextFn = []() {
-      int cudaDev = -1;
-      cudaGetDevice(&cudaDev);
-      return cudaDev;
-    }});
-    // Init logging for NCCL header inside meta directory.
-    // This is due to the buck2 behavior of copying the header files to the
-    // buck-out directory.
-    // For logging in src/include headers, they are using NCCL logging
-    // (INFO/WARN/ERROR) which will inherit the loggging category from debug.cc
-    NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = "meta",
-      .logPrefix = "NCCL",
-      .logFilePath = meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  // Shared CollTrace code still emits raw XLOG under comms.utils.
+  meta::comms::logger::initCommLogging();
   meta::comms::logger::configureSpdlogLogger(
       ncclx::logging::kNcclxLoggerName,
       "NCCL",
@@ -223,6 +175,6 @@ void initNcclLogger() {
       },
       NCCL_DEBUG_LOGGING_ASYNC);
   meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
-      .set_level(loggerLevelToSpdlogLevel(
+      .set_level(meta::comms::logger::loggerLevelToSpdlogLevel(
           meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
 }

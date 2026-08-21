@@ -12,6 +12,7 @@
 #include "bitops.h"
 #include "checks.h"
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 #include <sched.h>
 #include <algorithm>
@@ -43,9 +44,22 @@ static long log2i(long n) {
   return log2Down(n);
 }
 
+// Comparator function for qsort/bsearch to compare integers
+static int compareInts(const void *a, const void *b) {
+    int ia = *(const int*)a, ib = *(const int*)b;
+    return (ia > ib) - (ia < ib);
+}
+
 inline uint64_t clockNano() {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
+  return uint64_t(ts.tv_sec)*1000*1000*1000 + ts.tv_nsec;
+}
+
+// Wall-clock (epoch) time in nanoseconds for cross-host timestamp correlation
+inline uint64_t wallClockNano() {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
   return uint64_t(ts.tv_sec)*1000*1000*1000 + ts.tv_nsec;
 }
 
@@ -551,7 +565,7 @@ T* ncclIntruQueueMpscAbandon(ncclIntruQueueMpsc<T,next>* me) {
 size_t get_sc_page_size(void);
 
 /**
- * @brief function to get system's page size aligned memory address and buffersize 
+ * @brief function to get system's page size aligned memory address and buffersize
  *
  * Given a pointer `ptr` to a buffer of size `bufsize`, this function computes:
  *   1. A new pointer `aligned_ptr` which points to the start of the page-aligned memory region that includes `ptr`.

@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pNvlTransportDeviceTest.cuh"
@@ -56,6 +57,20 @@ __global__ void testDeviceSignalThenWaitKernel(
   p2p->wait_signal_until(group, signalId, waitOp, waitValue);
 }
 
+__global__ void testDeviceSignalThenWaitWithDisabledAbortKernel(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    SignalOp signalOp,
+    uint64_t signalValue,
+    CmpOp waitOp,
+    uint64_t waitValue,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p->signal(group, signalId, signalOp, signalValue);
+  comms::fault_tolerance::AbortDevice abort;
+  p2p->wait_signal_until(group, signalId, waitOp, waitValue, abort);
+}
+
 void testDeviceSignal(
     P2pNvlTransportDevice* p2p,
     uint64_t signalId,
@@ -93,6 +108,21 @@ void testDeviceSignalThenWait(
     int blockSize,
     GroupType groupType) {
   testDeviceSignalThenWaitKernel<<<numBlocks, blockSize>>>(
+      p2p, signalId, signalOp, signalValue, waitOp, waitValue, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testDeviceSignalThenWaitWithDisabledAbort(
+    P2pNvlTransportDevice* p2p,
+    uint64_t signalId,
+    SignalOp signalOp,
+    uint64_t signalValue,
+    CmpOp waitOp,
+    uint64_t waitValue,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testDeviceSignalThenWaitWithDisabledAbortKernel<<<numBlocks, blockSize>>>(
       p2p, signalId, signalOp, signalValue, waitOp, waitValue, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
