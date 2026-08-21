@@ -1,9 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <folly/logging/xlog.h>
 #include "comms/common/algorithms/AlgoFactory.cuh"
 #include "comms/utils/checks.h"
+#include "comms/utils/logger/CudaLog.h"
 
 namespace meta::comms {
 
@@ -14,7 +14,7 @@ AlgoFactory::AlgoFactory(
     int maxBlocks,
     const AllReduceOptions& allReduceOpts) {
   if (allReduceOpts.enableDda) {
-    XLOG(DBG) << "Initializing AllReduceAlgoManager";
+    COMMS_CUDA_LOG(DBG, "Initializing AllReduceAlgoManager");
     for (int i = 0; i < nRanks; ++i) {
       if (i == selfRank) {
         continue;
@@ -40,7 +40,7 @@ AlgoFactory::AlgoFactory(
         allReduceOpts.ddaSendbufSizeBytes,
         allReduceOpts.ddaFlatMaxThresholdBytes,
         allReduceOpts.ddaTreeMaxThresholdBytes);
-    XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+    COMMS_CUDA_LOG(DBG, "Successfully initialized AllReduceAlgoManager");
   }
 }
 
@@ -60,8 +60,9 @@ AlgoFactoryDev::AlgoFactoryDev(
       ddaSendbufSizeBytes_(ddaSendbufSizeBytes) {
   if (allReduceOpts.enableDda || allGatherOpts.enableDda ||
       reduceScatterOpts.enableDda || allToAllOpts.enableDda) {
-    XLOG(DBG)
-        << "Initializing AllReduce / AllGather / ReduceScatter / AllToAll AlgoManager";
+    COMMS_CUDA_LOG(
+        DBG,
+        "Initializing AllReduce / AllGather / ReduceScatter / AllToAll AlgoManager");
 
     for (int i = 0; i < nRanks; ++i) {
       if (i == selfRank) {

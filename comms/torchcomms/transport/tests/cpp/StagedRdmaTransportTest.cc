@@ -3,7 +3,6 @@
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <vector>
 
@@ -15,10 +14,6 @@
 // NOLINTNEXTLINE(google-build-using-namespace)
 using namespace torch::comms;
 using namespace meta::comms;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 // --- Fill mode for transfer helpers ---
 

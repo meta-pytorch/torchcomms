@@ -6,7 +6,7 @@
 #include <chrono>
 #include <thread>
 
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/tests/bootstrap/MockBootstrap.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -17,8 +17,6 @@
 #include "comms/ctran/utils/Utils.h"
 #include "comms/mccl/utils/Utils.h"
 #include "comms/utils/InitFolly.h"
-#include "comms/utils/logger/LogUtils.h"
-#include "comms/utils/logger/Logger.h"
 
 namespace ctran {
 
@@ -56,9 +54,9 @@ void logGpuMemoryStats(int gpu) {
   CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
   auto mbFree = static_cast<double>(free) / (1024 * 1024);
   auto mbTotal = static_cast<double>(total) / (1024 * 1024);
-  XLOG(DBG) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
-            << mbFree << "MB), " << "totalBytes=" << total << "(" << mbTotal
-            << "MB)";
+  CTRAN_LOG_STREAM(DBG) << "GPU " << gpu << " memory: " << "freeBytes=" << free
+                        << " (" << mbFree << "MB), " << "totalBytes=" << total
+                        << "(" << mbTotal << "MB)";
 }
 
 void commSetMyThreadLoggingName(std::string_view name) {
@@ -157,9 +155,9 @@ commResult_t commMemAllocDisjoint(
   for (int i = 0; i < numSegments; i++) {
     FB_CUCHECK(cuMemMap(curPtr, alignedSizes[i], 0, handles[i], 0));
     segments.emplace_back(reinterpret_cast<void*>(curPtr), alignedSizes[i]);
-    XLOG(DBG) << "ncclMemAllocDisjoint maps segments[" << i << "] ptr "
-              << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
-              << "/" << vaSize;
+    CTRAN_LOG_STREAM(DBG) << "ncclMemAllocDisjoint maps segments[" << i
+                          << "] ptr " << reinterpret_cast<void*>(curPtr)
+                          << " size " << alignedSizes[i] << "/" << vaSize;
 
     curPtr = ctran::utils::addDevicePtr(curPtr, alignedSizes[i]);
   }
@@ -223,9 +221,9 @@ commResult_t commMemFreeDisjoint(
   CUdeviceptr curPtr = (CUdeviceptr)ptr;
   for (int i = 0; i < alignedSizes.size(); i++) {
     FB_CUCHECK(cuMemRetainAllocationHandle(&handle, (void*)curPtr));
-    XLOG(DBG) << "ncclMemFreeDisjoint unmaps segments[" << i << "] ptr "
-              << reinterpret_cast<void*>(curPtr) << " size " << alignedSizes[i]
-              << "/" << vaSize;
+    CTRAN_LOG_STREAM(DBG) << "ncclMemFreeDisjoint unmaps segments[" << i
+                          << "] ptr " << reinterpret_cast<void*>(curPtr)
+                          << " size " << alignedSizes[i] << "/" << vaSize;
     FB_CUCHECK(cuMemRelease(handle));
     FB_CUCHECK(cuMemUnmap(curPtr, alignedSizes[i]));
     // call to cuMemRetainAllocationHandle increments reference count, requires
@@ -318,9 +316,9 @@ commResult_t commMemExpandBuffer(
     buf->segments.emplace_back(
         reinterpret_cast<void*>(curPtr), buf->segmentSize);
 
-    XLOG(DBG) << "commMemExpandBuffer maps new segment ptr "
-              << reinterpret_cast<void*>(curPtr) << " size "
-              << buf->segmentSize;
+    CTRAN_LOG_STREAM(DBG) << "commMemExpandBuffer maps new segment ptr "
+                          << reinterpret_cast<void*>(curPtr) << " size "
+                          << buf->segmentSize;
 
     curPtr = ctran::utils::addDevicePtr(curPtr, buf->segmentSize);
   }
@@ -407,7 +405,7 @@ void* commMemAlloc(
       segments.emplace_back(buf, bufSize);
       break;
     default:
-      XLOG(FATAL) << "Unsupported memType: " << memType;
+      CTRAN_LOG_STREAM(FATAL) << "Unsupported memType: " << memType;
       break;
   }
   return buf;
@@ -440,7 +438,7 @@ void commMemFree(
       free(buf);
       break;
     default:
-      XLOG(FATAL) << "Unsupported memType: " << memType;
+      CTRAN_LOG_STREAM(FATAL) << "Unsupported memType: " << memType;
       break;
   }
 }
@@ -517,7 +515,7 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
 
   EXPECT_EQ(ctranInit(ctranComm.get()), commSuccess);
 
-  CLOGF(INFO, "UT CTran initialized");
+  CTRAN_LOG(INFO, "UT CTran initialized");
 
   return ctranComm;
 }
@@ -589,7 +587,7 @@ void initCtranCommMultiRank(
 
   FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 
-  CLOGF(INFO, "UT MultiRank CTran initialized");
+  CTRAN_LOG(INFO, "UT MultiRank CTran initialized");
 }
 
 void workerRoutine(PerRankState& state) {
@@ -600,7 +598,7 @@ void workerRoutine(PerRankState& state) {
   SCOPE_EXIT {
     resetPerRankState(state);
   };
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "rank [{}/{}] worker started, cudaDev {}",
       rank,
@@ -630,17 +628,17 @@ void workerRoutine(PerRankState& state) {
           "UT_workerRoutine"),
       state.ctranComm->logMetaData_);
 
-  CLOGF(INFO, "rank [{}/{}] worker waiting for work", rank, state.nRanks);
+  CTRAN_LOG(INFO, "rank [{}/{}] worker waiting for work", rank, state.nRanks);
 
   auto& sf = state.workSemiFuture;
   sf.wait();
 
-  CLOGF(INFO, "rank [{}/{}] worker received work", rank, state.nRanks);
+  CTRAN_LOG(INFO, "rank [{}/{}] worker received work", rank, state.nRanks);
 
   auto work = sf.value();
   work(state);
 
-  CLOGF(INFO, "rank [{}/{}] worker completed work", rank, state.nRanks);
+  CTRAN_LOG(INFO, "rank [{}/{}] worker completed work", rank, state.nRanks);
 }
 
 } // namespace
@@ -795,7 +793,7 @@ void* CtranTestHelpers::prepareBuf(
     CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
     segments.emplace_back(buf, bufSize);
   } else {
-    XLOG(FATAL)
+    CTRAN_LOG_STREAM(FATAL)
         << "CtranTestHelpers only supports kMemCudaMalloc. "
         << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
   }
@@ -809,7 +807,7 @@ void CtranTestHelpers::releaseBuf(
   if (memType == kMemCudaMalloc) {
     CUDACHECK_TEST(cudaFree(buf));
   } else {
-    XLOG(FATAL)
+    CTRAN_LOG_STREAM(FATAL)
         << "CtranTestHelpers only supports kMemCudaMalloc. "
         << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
   }

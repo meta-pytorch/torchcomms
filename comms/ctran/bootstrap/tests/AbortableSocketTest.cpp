@@ -12,9 +12,9 @@
 
 #include <gtest/gtest.h>
 
-#include <folly/logging/xlog.h>
 #include <folly/synchronization/Baton.h>
 #include <folly/synchronization/Latch.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 
@@ -196,7 +196,7 @@ TEST_F(AbortableSocketTest, MultipleConnectionAttempts) {
   ctran::bootstrap::AbortableServerSocket server{1};
 
   // Bind server on the loopback interface but do not listen
-  XLOG(INFO) << "Binding server..";
+  CTRAN_LOG_STREAM(INFO) << "Binding server..";
   ASSERT_EQ(0, server.bind(folly::SocketAddress("::1", 0), "lo"));
   const auto& maybeServerAddr = server.getListenAddress();
   ASSERT_FALSE(maybeServerAddr.hasError());
@@ -204,7 +204,7 @@ TEST_F(AbortableSocketTest, MultipleConnectionAttempts) {
 
   // Connect client to the server. It may experience few connect errors but
   // retry will eventually make it succeed
-  XLOG(INFO) << "Connecting to server..";
+  CTRAN_LOG_STREAM(INFO) << "Connecting to server..";
   auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
   ctran::bootstrap::AbortableSocket client1(abortCtrl);
   std::atomic<int> result{-1};
@@ -223,7 +223,7 @@ TEST_F(AbortableSocketTest, ConnectionEventuallySucceeds) {
   ctran::bootstrap::AbortableServerSocket server{1};
 
   // Bind server on the loopback interface but do not listen
-  XLOG(INFO) << "Binding server..";
+  CTRAN_LOG_STREAM(INFO) << "Binding server..";
   ASSERT_EQ(0, server.bind(folly::SocketAddress("::1", 0), "lo"));
   const auto& maybeServerAddr = server.getListenAddress();
   ASSERT_FALSE(maybeServerAddr.hasError());
@@ -235,7 +235,7 @@ TEST_F(AbortableSocketTest, ConnectionEventuallySucceeds) {
   std::thread listenThread([&]() {
     connecting.wait();
     std::this_thread::sleep_for(100ms);
-    XLOG(INFO) << "Starting to listen on server";
+    CTRAN_LOG_STREAM(INFO) << "Starting to listen on server";
     ASSERT_EQ(0, server.listen());
   });
 
@@ -244,7 +244,7 @@ TEST_F(AbortableSocketTest, ConnectionEventuallySucceeds) {
   connecting.post();
 
   // Attempt to connect to server again .. we may succeed after few more retries
-  XLOG(INFO) << "Attempting to connect to server again..";
+  CTRAN_LOG_STREAM(INFO) << "Attempting to connect to server again..";
   ASSERT_EQ(
       0, client2.connect(serverAddr, "lo", 0ms /*ignored*/, 0 /*ignored*/));
   EXPECT_NE(client2.getFd(), -1);
@@ -446,7 +446,7 @@ TEST_F(AbortableSocketTest, CloseWhileOperationPending) {
     char buffer[100];
     int result = acceptedClient->recv(buffer, sizeof(buffer));
     EXPECT_NE(result, 0);
-    XLOG(INFO, "RecvThread is exiting");
+    CTRAN_LOG(INFO, "RecvThread is exiting");
   });
 
   std::this_thread::sleep_for(100ms);
@@ -489,7 +489,7 @@ TEST_F(AbortableSocketTest, CloseThreadSafety) {
     threads.emplace_back([this, &results, i, &successCount, &sync_point]() {
       sync_point.arrive_and_wait();
       results[i] = acceptedClient->close();
-      XLOGF(INFO, "Thread #{} closed socket with result={}", i, results[i]);
+      CTRAN_LOG(INFO, "Thread #{} closed socket with result={}", i, results[i]);
       if (results[i] == 0) {
         successCount++;
       }
@@ -709,8 +709,8 @@ TEST_F(AbortableSocketTest, AbortSendRecvConcurrent) {
       }
       std::this_thread::sleep_for(10ms);
       numSends += 1;
-      XLOG(INFO) << "Sent message #" << numSends.load()
-                 << ". sendResult=" << sendResult;
+      CTRAN_LOG_STREAM(INFO) << "Sent message #" << numSends.load()
+                             << ". sendResult=" << sendResult;
     } while (true);
   });
 
@@ -721,8 +721,8 @@ TEST_F(AbortableSocketTest, AbortSendRecvConcurrent) {
       char buffer[2048];
       recvResult = client.recv(buffer, sizeof(buffer));
       numRecvs += 1;
-      XLOG(INFO) << "Received message #" << numRecvs.load()
-                 << ". recvResult=" << recvResult;
+      CTRAN_LOG_STREAM(INFO) << "Received message #" << numRecvs.load()
+                             << ". recvResult=" << recvResult;
       if (recvResult.load() != 0 || numRecvs.load() >= messageLimit) {
         break;
       }

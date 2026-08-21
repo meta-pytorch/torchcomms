@@ -7,12 +7,13 @@
 
 #include <folly/logging/Init.h>
 #include <folly/logging/LoggerDB.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "comms/utils/logger/NcclWriterWrapper.h"
 #include "comms/utils/logger/ScubaLogger.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 std::atomic_flag NcclLogger::firstInit_;
 
@@ -28,7 +29,7 @@ std::string getHandlerNameWithCategory(
 void NcclLogger::init(const NcclLoggerInitConfig& config) {
   if (!firstInit_.test_and_set()) {
     folly::initLoggingOrDie();
-    DataTableWrapper::init();
+    meta::comms::logger::initCommLoggerRuntime();
     NcclLogFormatterFactory::registerThreadContextFn(
         config.logPrefix, config.threadContextFn);
     NcclLogger::registerHandler(
@@ -86,7 +87,7 @@ void NcclLogger::close() noexcept {
     NcclLogHandlerFactory::close();
     firstInit_.clear();
   }
-  DataTableWrapper::shutdown();
+  meta::comms::logger::shutdownCommLoggerRuntime();
 }
 
 std::shared_ptr<folly::LogWriter>
@@ -146,7 +147,7 @@ void NcclLogFormatterFactory::registerThreadContextFn(
     std::string_view name,
     std::function<int(void)> threadContextFn) {
   if (getPrefixToThreadContextFnMap().contains(std::string{name})) {
-    XLOGF(DBG1, "Prefix {} re-registering thread context fn", name);
+    COMMS_LOG(DBG, "Prefix {} re-registering thread context fn", name);
   }
   getPrefixToThreadContextFnMap().insert_or_assign(
       std::string{name}, threadContextFn);
@@ -166,7 +167,7 @@ bool NcclLogFormatterFactory::processOption(
   }
   curPrefix_ = value;
   if (!getPrefixToThreadContextFnMap().contains(std::string{value})) {
-    XLOGF(ERR, "Thread Context Fn dict does not contain prefix {}", value);
+    COMMS_LOG(ERR, "Thread Context Fn dict does not contain prefix {}", value);
   } else {
     curThreadContextFn_ =
         getPrefixToThreadContextFnMap().at(std::string{value});

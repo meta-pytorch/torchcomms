@@ -3,14 +3,15 @@
 #include <cuda_runtime.h>
 #include <folly/Random.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <folly/stop_watch.h>
 #include <gtest/gtest.h>
+
 #include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/IpcMemHandler.h"
 #include "comms/common/tests/TestBaselineBootstrap.h"
 #include "comms/rcclx/develop/meta/lib/tests/RcclxTestUtils.h"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/logger/CudaLog.h"
 
 using namespace meta::rcclx;
 using namespace meta::comms;
@@ -50,7 +51,8 @@ class DeviceMailboxTest : public RcclxBaseTestFixture,
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
     NCCL_CHECK(
         ncclCommInitRankConfig(&comm, numRanks, commId, localRank, &config));
-    XLOGF(INFO, "rank {} init done; total ranks: {}", localRank, numRanks);
+    COMMS_CUDA_LOG(
+        INFO, "rank %d init done; total ranks: %d", localRank, numRanks);
   }
 
   bool needMemFence;
@@ -143,7 +145,8 @@ class IpcGpuBarrierTest : public RcclxBaseTestFixture {
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
     NCCL_CHECK(
         ncclCommInitRankConfig(&comm, numRanks, commId, localRank, &config));
-    XLOGF(INFO, "rank {} init done; total ranks: {}", localRank, numRanks);
+    COMMS_CUDA_LOG(
+        INFO, "rank %d init done; total ranks: %d", localRank, numRanks);
   }
 
   bool needMemFence;

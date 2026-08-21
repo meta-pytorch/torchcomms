@@ -9,8 +9,8 @@
 
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
 #include "debug.h"
+#include "meta/NcclxLogger.h"
 
 class LogTest : public ::testing::Test {
  public:
@@ -18,7 +18,9 @@ class LogTest : public ::testing::Test {
 
   void finishLogging() {
     sleep(1); // wait for logging to finish
-    NcclLogger::close();
+    meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+        .flush();
+    meta::comms::logger::getSpdlogLogger().flush();
   }
 
   void initLogging() {
@@ -126,7 +128,7 @@ TEST_F(LogTest, InfoWarnToFile) {
   const std::string kTestInfoStr = "Testing INFO to FILE";
   const std::string kTestWarnStr = "Testing WARN to FILE";
 
-  XLOG(WARN) << kDebugFile;
+  NCCLX_LOG_STREAM(WARN) << kDebugFile;
   auto envGuard0 = EnvRAII(NCCL_DEBUG_FILE, kDebugFile);
   SysEnvRAII sysDebugFileGuard("NCCL_DEBUG_FILE", kDebugFile);
   auto envGuard1 = EnvRAII(NCCL_DEBUG, std::string("INFO"));

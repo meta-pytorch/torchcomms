@@ -6,10 +6,10 @@
 #include <filesystem>
 
 #include <fmt/format.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/StrUtils.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::logger {
 
@@ -36,8 +36,8 @@ std::optional<folly::File> createScubaFile(
     int flags = O_CREAT | O_WRONLY | (appendMode ? O_APPEND : 0);
     return folly::File(fileName, flags, 0644);
   } catch (const std::exception& e) {
-    XLOG(WARNING) << "Failed to create scuba file " << fileName << ": "
-                  << e.what();
+    COMMS_LOG_STREAM(WARN) << "Failed to create scuba file " << fileName << ": "
+                           << e.what();
   }
   return std::nullopt;
 }

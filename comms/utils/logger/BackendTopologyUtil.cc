@@ -7,7 +7,8 @@
 #include <folly/FileUtil.h>
 #include <folly/MapUtil.h>
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace {
 std::unordered_map<std::string, std::string> getKeyValuePairsFromFile(
@@ -15,7 +16,7 @@ std::unordered_map<std::string, std::string> getKeyValuePairsFromFile(
   std::unordered_map<std::string, std::string> keyValuePairs;
   std::string fileContents;
   if (!folly::readFile(fileName.c_str(), fileContents)) {
-    XLOG(ERR) << "Failed to read file: " << fileName;
+    COMMS_LOG_STREAM(ERR) << "Failed to read file: " << fileName;
     return keyValuePairs;
   }
 
@@ -28,7 +29,8 @@ std::unordered_map<std::string, std::string> getKeyValuePairsFromFile(
     std::vector<std::string> keyValuePair;
     folly::split('=', line, keyValuePair);
     if (keyValuePair.size() != 2) {
-      XLOG(ERR) << "Invalid line in file: " << fileName << ", line: " << line;
+      COMMS_LOG_STREAM(ERR)
+          << "Invalid line in file: " << fileName << ", line: " << line;
       continue;
     }
     keyValuePairs[keyValuePair[0]] = keyValuePair[1];
@@ -69,7 +71,8 @@ std::optional<BackendTopologyUtil::Topology>
 BackendTopologyUtil::getBackendTopology(const std::string& fileName) {
   auto keyValuePairs = getKeyValuePairsFromFile(fileName);
   if (keyValuePairs.empty()) {
-    XLOG(ERR) << "Failed to get backend topology from file: " << fileName;
+    COMMS_LOG_STREAM(ERR) << "Failed to get backend topology from file: "
+                          << fileName;
     return std::nullopt;
   }
 

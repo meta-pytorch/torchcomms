@@ -3,7 +3,7 @@
 #include <benchmark/benchmark.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
+#include <glog/logging.h>
 #include <unistd.h>
 #include <chrono>
 #include <iostream>
@@ -16,13 +16,10 @@
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 constexpr int kDummyRank = 0;
 
@@ -194,11 +191,11 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
 
 static void cleanupBenchmarkContext(BenchmarkContext& ctx) {
   if (CtranIb::deregMem(ctx.senderRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for senderRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for senderRegHdl");
   }
 
   if (CtranIb::deregMem(ctx.receiverRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for receiverRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for receiverRegHdl");
   }
 
   // Free each buffer on the device it was allocated on (CUDA VMM unmap is

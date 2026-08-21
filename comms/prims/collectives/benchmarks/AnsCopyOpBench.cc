@@ -8,11 +8,11 @@
 // AllToAllv-tile collective.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <cuda.h> // driver API: green contexts for SM partitioning
 
@@ -39,15 +39,16 @@ struct LocalCompStats {
 };
 
 // Driver-API error check (runtime calls use PIPES_CUDA_CHECK).
-#define PIPES_CU_CHECK(expr)                                           \
-  do {                                                                 \
-    CUresult _res = (expr);                                            \
-    if (_res != CUDA_SUCCESS) {                                        \
-      const char* _msg = nullptr;                                      \
-      cuGetErrorString(_res, &_msg);                                   \
-      XLOG(FATAL) << "[AnsCopyOpStandalone] CUDA driver error: " #expr \
-                  << " -> " << (_msg ? _msg : "unknown");              \
-    }                                                                  \
+#define PIPES_CU_CHECK(expr)                                             \
+  do {                                                                   \
+    CUresult _res = (expr);                                              \
+    if (_res != CUDA_SUCCESS) {                                          \
+      const char* _msg = nullptr;                                        \
+      cuGetErrorString(_res, &_msg);                                     \
+      COMMS_LOG_STREAM(FATAL)                                            \
+          << "[AnsCopyOpStandalone] CUDA driver error: " #expr << " -> " \
+          << (_msg ? _msg : "unknown");                                  \
+    }                                                                    \
   } while (0)
 
 // A stream confined to a green context spanning >= `numSms` SMs of the
@@ -78,7 +79,7 @@ GreenCtxStream makeGreenCtxStream(int numSms) {
   if (smRes != CUDA_SUCCESS) {
     const char* nm = nullptr;
     cuGetErrorName(smRes, &nm);
-    XLOG(FATAL)
+    COMMS_LOG_STREAM(FATAL)
         << "[AnsCopyOpStandalone] green-context SM partitioning unavailable "
         << "(cuDeviceGetDevResource -> " << (nm ? nm : "?") << "). "
         << "PIPES_COPYOP_BENCH_NUM_SMS requires CUDA driver >= 12.4 (R550); "
@@ -241,26 +242,26 @@ TEST_F(AnsCopyOpBenchFixture, AnsCopyOpStandalone) {
   const cudaStream_t benchStream =
       gctx.stream; // nullptr => default stream (whole GPU)
 
-  XLOG(INFO) << "\n=== ANS CopyOp Standalone Microbenchmark "
-             << "(single GPU) ===\n"
-             << "PIPES_COPYOP_BENCH_BLOCKS=" << kCopyOpBlocks
-             << " PIPES_COPYOP_BENCH_THREADS=" << kCopyOpThreads
-             << " PIPES_COPYOP_BENCH_MIN_BLOCKS_PER_SM="
-             << kCopyOpMinBlocksPerSM
-             << " PIPES_COPYOP_BENCH_NUM_SMS=" << kCopyOpNumSms
-             << (kCopyOpNumSms > 0 ? " (green-ctx SM-limited)" : " (full GPU)")
-             << "\n"
-             << kCopyOpBlocks << " threadblocks × " << kCopyOpThreads
-             << " threads/block, " << kCopyOpWarmupIter << " warmup + "
-             << kCopyOpMeasureIter << " timed iterations per cell\n"
-             << "Sweep: sizes {256KB, 512KB, 1MB, 2MB, 4MB} × "
-             << "sparsity 0%→100% step 10%\n"
-             << "BW = aggregate uncompressed bytes / measured kernel "
-             << "time (sum over all " << kCopyOpBlocks << " blocks)\n";
+  COMMS_LOG_STREAM(INFO)
+      << "\n=== ANS CopyOp Standalone Microbenchmark "
+      << "(single GPU) ===\n"
+      << "PIPES_COPYOP_BENCH_BLOCKS=" << kCopyOpBlocks
+      << " PIPES_COPYOP_BENCH_THREADS=" << kCopyOpThreads
+      << " PIPES_COPYOP_BENCH_MIN_BLOCKS_PER_SM=" << kCopyOpMinBlocksPerSM
+      << " PIPES_COPYOP_BENCH_NUM_SMS=" << kCopyOpNumSms
+      << (kCopyOpNumSms > 0 ? " (green-ctx SM-limited)" : " (full GPU)") << "\n"
+      << kCopyOpBlocks << " threadblocks × " << kCopyOpThreads
+      << " threads/block, " << kCopyOpWarmupIter << " warmup + "
+      << kCopyOpMeasureIter << " timed iterations per cell\n"
+      << "Sweep: sizes {256KB, 512KB, 1MB, 2MB, 4MB} × "
+      << "sparsity 0%→100% step 10%\n"
+      << "BW = aggregate uncompressed bytes / measured kernel "
+      << "time (sum over all " << kCopyOpBlocks << " blocks)\n";
 
   for (int sparsityPct = 0; sparsityPct <= 100; sparsityPct += 10) {
-    XLOG(INFO) << "\n--- Sparsity " << sparsityPct
-               << "% (zero-byte prefix of each block's input region) ---";
+    COMMS_LOG_STREAM(INFO)
+        << "\n--- Sparsity " << sparsityPct
+        << "% (zero-byte prefix of each block's input region) ---";
     printf(
         "%-10s  %14s  %16s  %10s  %11s\n",
         "Size",
@@ -327,23 +328,23 @@ TEST_F(AnsCopyOpBenchFixture, AnsCopyOpStandalone) {
       auto sync_check = [&](const char* phase) {
         const cudaError_t launchErr = cudaGetLastError();
         if (launchErr != cudaSuccess) {
-          XLOG(FATAL) << "[AnsCopyOpStandalone] launch error in " << phase
-                      << " sparsity=" << sparsityPct
-                      << "% size=" << format_bytes(inputBytes)
-                      << " blocks=" << kCopyOpBlocks
-                      << " threads=" << kCopyOpThreads
-                      << " stagingStride=" << stagingStride
-                      << " err=" << cudaGetErrorString(launchErr);
+          COMMS_LOG_STREAM(FATAL)
+              << "[AnsCopyOpStandalone] launch error in " << phase
+              << " sparsity=" << sparsityPct
+              << "% size=" << format_bytes(inputBytes)
+              << " blocks=" << kCopyOpBlocks << " threads=" << kCopyOpThreads
+              << " stagingStride=" << stagingStride
+              << " err=" << cudaGetErrorString(launchErr);
         }
         const cudaError_t syncErr = cudaDeviceSynchronize();
         if (syncErr != cudaSuccess) {
-          XLOG(FATAL) << "[AnsCopyOpStandalone] async error in " << phase
-                      << " sparsity=" << sparsityPct
-                      << "% size=" << format_bytes(inputBytes)
-                      << " blocks=" << kCopyOpBlocks
-                      << " threads=" << kCopyOpThreads
-                      << " stagingStride=" << stagingStride
-                      << " err=" << cudaGetErrorString(syncErr);
+          COMMS_LOG_STREAM(FATAL)
+              << "[AnsCopyOpStandalone] async error in " << phase
+              << " sparsity=" << sparsityPct
+              << "% size=" << format_bytes(inputBytes)
+              << " blocks=" << kCopyOpBlocks << " threads=" << kCopyOpThreads
+              << " stagingStride=" << stagingStride
+              << " err=" << cudaGetErrorString(syncErr);
         }
       };
 
@@ -499,12 +500,12 @@ TEST_F(AnsCopyOpBenchFixture, AnsCopyOpStandalone) {
           // row in the table makes clear which cell crashed.
           printf("%11s\n", "FAIL");
           fflush(stdout);
-          XLOG(FATAL) << "[AnsCopyOpStandalone] round-trip mismatch sparsity="
-                      << sparsityPct << "% size=" << format_bytes(inputBytes)
-                      << " block=" << b << " firstMismatch=" << firstMismatch
-                      << " in=" << static_cast<int>(host_input[firstMismatch])
-                      << " out="
-                      << static_cast<int>(host_output[firstMismatch]);
+          COMMS_LOG_STREAM(FATAL)
+              << "[AnsCopyOpStandalone] round-trip mismatch sparsity="
+              << sparsityPct << "% size=" << format_bytes(inputBytes)
+              << " block=" << b << " firstMismatch=" << firstMismatch
+              << " in=" << static_cast<int>(host_input[firstMismatch])
+              << " out=" << static_cast<int>(host_output[firstMismatch]);
         }
       }
       printf("%11s\n", "OK");

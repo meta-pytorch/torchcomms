@@ -4,9 +4,9 @@
 #include <cuda_runtime.h>
 #include <folly/container/F14Map.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -15,10 +15,6 @@
 
 using namespace ibverbx;
 using namespace meta::comms;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 namespace {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
@@ -466,7 +462,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
         MPI_COMM_WORLD));
     for (int i = 0; i < numRanks; ++i) {
       const auto& card = cards.at(i);
-      XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
+      CTRAN_LOG_STREAM(DBG) << "rank " << globalRank << ": got card " << card;
     }
     const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
 
@@ -765,7 +761,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     ASSERT_GE(numWc, 0);
     if (numWc == 0) {
       // CQ empty, sleep and retry
-      XLOGF(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
+      CTRAN_LOG(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
       /* sleep override */
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       continue;
@@ -782,7 +778,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     // layer (SPRAY uses it for notify signaling, DQPLB uses it for
     // sequence tracking). User-level immData is not forwarded through
     // the virtual completion path.
-    XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
+    CTRAN_LOG(DBG, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
     stop = true;
   }
 
@@ -808,7 +804,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     CUDA_CHECK(cudaDeviceSynchronize());
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
-  XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
+  CTRAN_LOG(DBG, "rank {} RDMA-WRITE OK", globalRank);
 
   // Clean up device buffer
   CUDA_CHECK(cudaFree(setup.devBuf));
@@ -859,7 +855,7 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
       ASSERT_GE(numWc, 0);
       if (numWc == 0) {
         // CQ empty, sleep and retry
-        XLOGF(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
+        CTRAN_LOG(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
         /* sleep override */
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         continue;
@@ -871,7 +867,7 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
       const auto wc = maybeWcsVector->at(0);
       ASSERT_EQ(wc.wrId, wr_id);
       ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
-      XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
+      CTRAN_LOG(DBG, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
       break;
     }
 
@@ -903,7 +899,7 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
   // are ready before continuing, since a control QP is not available.
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-  XLOGF(DBG1, "rank {} RDMA-READ OK", globalRank);
+  CTRAN_LOG(DBG, "rank {} RDMA-READ OK", globalRank);
 
   // Clean up device buffer
   CUDA_CHECK(cudaFree(setup.devBuf));
@@ -950,7 +946,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     ASSERT_GE(numWc, 0);
     if (numWc == 0) {
       // CQ empty, sleep and retry
-      XLOGF(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
+      CTRAN_LOG(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
       /* sleep override */
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       continue;
@@ -971,7 +967,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
       // byte_len here.
       ASSERT_EQ(wc.byteLen, devBufSize);
     }
-    XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
+    CTRAN_LOG(DBG, "Rank {} got a wc: wr_id {}", globalRank, wc.wrId);
     stop = true;
   }
 
@@ -997,7 +993,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     CUDA_CHECK(cudaDeviceSynchronize());
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
-  XLOGF(DBG1, "rank {} send/recv OK", globalRank);
+  CTRAN_LOG(DBG, "rank {} send/recv OK", globalRank);
 
   // Clean up device buffer
   CUDA_CHECK(cudaFree(setup.devBuf));

@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <folly/logging/xlog.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -39,10 +38,7 @@ TEST_F(CollTraceHandleTest, Constructor) {
       .WillOnce(Return(folly::unit));
   auto result =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result.error().message << std::endl;
-  }
-  ASSERT_TRUE(result.hasValue());
+  ASSERT_TRUE(result.hasValue()) << result.error().message;
   EXPECT_EQ(result.value(), folly::unit);
 }
 
@@ -77,38 +73,23 @@ TEST_F(CollTraceHandleTest, TriggerValidStateSequence) {
   // Trigger states in the correct sequence
   auto result1 =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result1.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result1.error().message << std::endl;
-  }
-  ASSERT_TRUE(result1.hasValue());
+  ASSERT_TRUE(result1.hasValue()) << result1.error().message;
 
   auto result2 =
       handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
-  if (!result2.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result2.error().message << std::endl;
-  }
-  ASSERT_TRUE(result2.hasValue());
+  ASSERT_TRUE(result2.hasValue()) << result2.error().message;
 
   auto result3 = handle->trigger(CollTraceHandleTriggerState::KernelStarted);
-  if (!result3.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result3.error().message << std::endl;
-  }
-  ASSERT_TRUE(result3.hasValue());
+  ASSERT_TRUE(result3.hasValue()) << result3.error().message;
 
   auto result4 = handle->trigger(CollTraceHandleTriggerState::KernelFinished);
-  if (!result4.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result4.error().message << std::endl;
-  }
-  ASSERT_TRUE(result4.hasValue());
+  ASSERT_TRUE(result4.hasValue()) << result4.error().message;
 }
 
 // Test trigger method with invalid state sequence
 TEST_F(CollTraceHandleTest, TriggerInvalidStateSequence) {
   // First trigger should be BeforeEnqueueKernel
   auto result1 = handle->trigger(CollTraceHandleTriggerState::KernelStarted);
-  if (!result1.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result1.error().message << std::endl;
-  }
   EXPECT_FALSE(result1.hasValue());
   EXPECT_EQ(result1.error().errorCode, commInvalidArgument);
 
@@ -123,10 +104,7 @@ TEST_F(CollTraceHandleTest, TriggerInvalidStateSequence) {
   // Trigger the first valid state
   auto result2 =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result2.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result2.error().message << std::endl;
-  }
-  EXPECT_TRUE(result2.hasValue());
+  ASSERT_TRUE(result2.hasValue()) << result2.error().message;
 }
 
 // Test triggering the same state multiple times
@@ -142,17 +120,11 @@ TEST_F(CollTraceHandleTest, TriggerSameStateMultipleTimes) {
   // Trigger the first state
   auto result1 =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result1.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result1.error().message << std::endl;
-  }
-  EXPECT_TRUE(result1.hasValue());
+  ASSERT_TRUE(result1.hasValue()) << result1.error().message;
 
   // Try to trigger the same state again
   auto result2 =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result2.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result2.error().message << std::endl;
-  }
   EXPECT_FALSE(result2.hasValue());
   EXPECT_EQ(result2.error().errorCode, commInvalidArgument);
 }
@@ -161,19 +133,11 @@ TEST_F(CollTraceHandleTest, TriggerSameStateMultipleTimes) {
 TEST_F(CollTraceHandleTest, Invalidate) {
   // Invalidate the handle
   auto invalidateResult = handle->invalidate();
-  if (!invalidateResult.hasValue()) {
-    XLOG(ERR) << "Received Error: " << invalidateResult.error().message
-              << std::endl;
-  }
-  ASSERT_TRUE(invalidateResult.hasValue());
+  ASSERT_TRUE(invalidateResult.hasValue()) << invalidateResult.error().message;
 
   // Try to trigger a state after invalidation
   auto triggerResult =
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!triggerResult.hasValue()) {
-    XLOG(ERR) << "Received Error: " << triggerResult.error().message
-              << std::endl;
-  }
   EXPECT_FALSE(triggerResult.hasValue());
   EXPECT_EQ(triggerResult.error().errorCode, commInvalidArgument);
 }
@@ -187,9 +151,6 @@ TEST_F(CollTraceHandleTest, NullCollTrace) {
   // Try to trigger a state
   auto result =
       nullHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result.error().message << std::endl;
-  }
   EXPECT_FALSE(result.hasValue());
   EXPECT_EQ(result.error().errorCode, commInternalError);
 }
@@ -203,9 +164,6 @@ TEST_F(CollTraceHandleTest, NullCollTraceEvent) {
   // Try to trigger a state
   auto result =
       nullHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
-  if (!result.hasValue()) {
-    XLOG(ERR) << "Received Error: " << result.error().message << std::endl;
-  }
   EXPECT_FALSE(result.hasValue());
   EXPECT_EQ(result.error().errorCode, commInternalError);
 }

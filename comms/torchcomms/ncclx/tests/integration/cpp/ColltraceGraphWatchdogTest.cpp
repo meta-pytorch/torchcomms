@@ -23,6 +23,7 @@
 #include "comms/mccl/integration_tests/CollectiveIntegrationTestMixin.h"
 #include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
+#include "comms/ncclx/meta/NcclxLogger.h"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
@@ -122,9 +123,8 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
     EXPECT_THAT(
         testDriverState.workerExitCodes, ::testing::Each(::testing::Ne(0)));
 
-    // Verify at least one NCCL debug log contains the colltrace watchdog
-    // timeout. Ranks 1-3 crash via XLOG(FATAL) in the test body (goes to
-    // stderr), so only rank 0's NCCL log will have the watchdog message.
+    // Verify at least one NCCL debug log contains the production colltrace
+    // watchdog timeout rather than only a peer-termination marker.
     bool foundWatchdogTimeout = false;
     for (const auto& entry : folly::fs::directory_iterator(tmpDir_.path())) {
       std::string fileContents;
@@ -173,7 +173,7 @@ TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
   // Trigger timeout: ranks 1-3 sleep while rank 0 issues AllReduce
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    NCCLX_LOG(FATAL, "COMM FATAL");
   } else {
     torchcomm->all_reduce(
         tensor, torch::comms::ReduceOp::SUM, /*async_op=*/false);
@@ -239,7 +239,7 @@ TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
   // Timeout replay — ranks 1-3 sleep while rank 0 replays
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    NCCLX_LOG(FATAL, "COMM FATAL");
   } else {
     ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.stream()), cudaSuccess);
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
@@ -309,7 +309,7 @@ TEST_F(
   // N+1th replay: ranks 1-3 sleep, rank 0 replays → timeout
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    NCCLX_LOG(FATAL, "COMM FATAL");
   } else {
     ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.stream()), cudaSuccess);
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});

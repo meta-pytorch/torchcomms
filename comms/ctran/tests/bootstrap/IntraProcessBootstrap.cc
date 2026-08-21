@@ -1,9 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::testing {
 
@@ -12,7 +12,7 @@ void IntraProcessBootstrap::barrierNamed(
     int nRanks,
     int timeoutSeconds,
     const std::string& name) {
-  CLOGF(INFO, "rank [{}/{}] barrier '{}' enter", rank, nRanks, name);
+  CTRAN_LOG(INFO, "rank [{}/{}] barrier '{}' enter", rank, nRanks, name);
   // Each thread gets its own sense
   bool local_sense = !state_->sense.load();
   // Atomically increment the count
@@ -41,7 +41,7 @@ void IntraProcessBootstrap::barrierNamed(
     }
   }
 
-  CLOGF(INFO, "rank [{}/{}] barrier '{}' leave", rank, nRanks, name);
+  CTRAN_LOG(INFO, "rank [{}/{}] barrier '{}' leave", rank, nRanks, name);
 }
 
 folly::SemiFuture<int>

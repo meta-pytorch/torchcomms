@@ -2,11 +2,11 @@
 
 #include <folly/init/Init.h>
 #include <folly/json/json.h>
-#include <folly/logging/xlog.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
 #include <thread>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
@@ -391,7 +391,7 @@ TEST_F(ctranAllToAllvIbTest, AllToAllvIbconfig) {
 
   if (this->globalRank == 0) {
     if (ctranComm->ctran_->algo == nullptr) {
-      XLOGF(INFO, "No ctran algo found, skip test");
+      CTRAN_LOG(INFO, "No ctran algo found, skip test");
     } else {
       CtranIbConfig* ctranIbConfigPtr =
           ctranComm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);

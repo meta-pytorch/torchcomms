@@ -7,8 +7,8 @@
 #include <gtest/gtest.h>
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
 
+#include "meta/NcclxLogger.h"
 #include "meta/logger/DebugExt.h"
 
 #include "debug.h" // @manual
@@ -25,8 +25,6 @@ class NcclLoggerTestEnv : public ::testing::Environment {
  public:
   void SetUp() override {
     initEnv();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
   }
 
   void TearDown() override {}
@@ -40,7 +38,8 @@ class DebugExtTest : public ::testing::Test {
   void TearDown() override {}
 
   void finishLogging() {
-    NcclLogger::close();
+    meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+        .flush();
   }
 
   void initLogging() {
