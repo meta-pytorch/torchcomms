@@ -6,7 +6,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -27,10 +26,6 @@ using ibverbx::kPortNum;
 using ibverbx::pollCqForCompletions;
 using ibverbx::transitionDCIToRts;
 using ibverbx::transitionDCTToRtr;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 class DcMultiRankTestFixture : public meta::comms::MpiBaseTestFixture {
  protected:

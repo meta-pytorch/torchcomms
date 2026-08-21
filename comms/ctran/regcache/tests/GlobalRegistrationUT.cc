@@ -21,8 +21,8 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace {
 
@@ -39,7 +39,7 @@ class GlobalRegistrationTest : public ::testing::Test {
     setenv("NCCL_CTRAN_REGISTER", "async", 1);
     ncclCvarInit();
 
-    meta::comms::logger::initCommLogging();
+    ctran::logging::initCtranLogging();
 
     // Initialize CUDA library (required for cuMem operations)
     ASSERT_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);

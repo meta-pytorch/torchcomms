@@ -22,7 +22,6 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -33,10 +32,6 @@
 using namespace ibverbx;
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 //------------------------------------------------------------------------------
 // Real-time Priority Helper

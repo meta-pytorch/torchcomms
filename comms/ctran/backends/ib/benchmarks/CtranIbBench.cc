@@ -3,7 +3,6 @@
 #include <benchmark/benchmark.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <glog/logging.h>
 #include <unistd.h>
 #include <chrono>
@@ -21,10 +20,6 @@
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 constexpr int kDummyRank = 0;
 

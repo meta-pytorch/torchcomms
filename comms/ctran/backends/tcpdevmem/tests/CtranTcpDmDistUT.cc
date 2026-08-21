@@ -21,7 +21,6 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using ctran::CtranTcpDm;
 using ctran::CtranTcpDmRequest;

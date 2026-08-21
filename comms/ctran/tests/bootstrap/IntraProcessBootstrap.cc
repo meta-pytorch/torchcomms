@@ -4,7 +4,6 @@
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::testing {
 
