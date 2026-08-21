@@ -12,6 +12,7 @@
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
+#include "comms/utils/RankUtils.h"
 #include "nccl.h" // @manual
 
 namespace torch::comms {
@@ -82,12 +83,27 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
       throw std::invalid_argument(
           "No CUDA devices found; please check your CUDA installation");
     }
-    TC_LOG(INFO, nullptr) << "Found " << device_count << " CUDA devices";
 
-    device_ = c10::Device(c10::kCUDA, rank_ % device_count);
+    auto local_rank = RankUtils::getLocalRank();
+    int resolved_device = rank_ % device_count;
+    if (local_rank.has_value()) {
+      if (local_rank.value() < 0 || local_rank.value() >= device_count) {
+        throw std::invalid_argument(
+            fmt::format(
+                "LOCAL_RANK {} is out of range for {} visible CUDA devices",
+                local_rank.value(),
+                device_count));
+      }
+      resolved_device = static_cast<int>(local_rank.value());
+    }
+
+    device_ = c10::Device(c10::kCUDA, resolved_device);
     TC_LOG(INFO, nullptr)
         << "User did not provide device ID; using device cuda:"
-        << static_cast<int>(device_.index());
+        << static_cast<int>(device_.index())
+        << (local_rank.has_value()
+                ? fmt::format(" from local rank {}", local_rank.value())
+                : fmt::format(" from global rank {}", rank_));
   }
 
   CUDA_CHECK(
@@ -355,7 +371,6 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
 
   // TODO: add logging on failures and successes
   // TODO: use scalable init
-  // TODO: get the local rank
   createStore(name);
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
