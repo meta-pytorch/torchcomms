@@ -9,9 +9,9 @@
 
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 #include <mpi.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/prims/topology/NvmlFabricInfo.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
@@ -86,7 +86,7 @@ class TopologyDiscoveryE2eFixture : public MpiBaseTestFixture {
       }
     }
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {} platform detection: isMnnvl={}, localSize={}",
         globalRank,
@@ -122,7 +122,7 @@ TEST_F(TopologyDiscoveryE2eFixture, BasicTopologyClassification) {
   int nvlNRanks = static_cast<int>(result.nvlPeerRanks.size()) + 1;
   EXPECT_EQ(static_cast<int>(result.globalToNvlLocal.size()), nvlNRanks);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: {} NVL peers, fabricAvailable={}",
       globalRank,
@@ -197,7 +197,7 @@ TEST_F(TopologyDiscoveryE2eFixture, PlatformNvlPeerCount) {
         << "Non-MNNVL: NVL peers should be same-host only";
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {} (localRank {}): isMnnvl={}, {} NVL peers (expected {})",
       globalRank,

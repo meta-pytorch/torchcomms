@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <optional>
 #include <string>
@@ -153,7 +153,7 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
 
     EXPECT_EQ(result_h, 1) << label << " Signal/Wait operation failed";
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: {} Signal/Wait test completed (isSignaler={})",
         globalRank,
@@ -263,7 +263,7 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
           << label << " data mismatch after put_signal";
     }
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: {} Put/Signal operation test completed (isWriter={})",
         globalRank,
@@ -309,7 +309,7 @@ TEST_F(
   EXPECT_EQ(results_h[2], numRanks - 1)
       << "numPeers() should return " << (numRanks - 1);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: MultiPeerDeviceTransport construction test completed (rank={}, nRanks={}, numPeers={})",
       globalRank,
@@ -377,7 +377,7 @@ TEST_F(
   EXPECT_EQ(results1_h, results3_h)
       << "Repeated DeviceWindow constructions returned different values";
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Repeated DeviceWindow construction test completed",
       globalRank);
@@ -451,7 +451,8 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
   EXPECT_EQ(result1_h, 1) << "Phase 1 Signal/Wait failed";
   EXPECT_EQ(result2_h, 1) << "Phase 2 Signal/Wait failed";
 
-  XLOGF(INFO, "Rank {}: Bidirectional Signal/Wait test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: Bidirectional Signal/Wait test completed", globalRank);
 }
 
 // =============================================================================
@@ -488,7 +489,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
 
   EXPECT_EQ(result_h, 1) << "Barrier operation failed";
 
-  XLOGF(INFO, "Rank {}: Barrier test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: Barrier test completed", globalRank);
 }
 
 // =============================================================================
@@ -533,7 +534,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
   EXPECT_EQ(result_h, 1) << "barrier_peer() operation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: BarrierPeer test completed (peerRank={})",
       globalRank,
@@ -586,7 +587,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
                            << slotIdx << ") failed on rank " << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Multiple Barriers test completed ({} iterations, {} slots)",
       globalRank,
@@ -641,7 +642,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleSignalSlots) {
                            << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Multiple signal slots test completed ({} slots)",
       globalRank,
@@ -698,7 +699,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
                            << " failed on rank " << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Concurrent signal slots test completed ({} slots)",
       globalRank,
@@ -744,7 +745,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
                            << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Multiple barrier slots test completed ({} slots)",
       globalRank,
@@ -789,7 +790,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
                            << slotIdx << ") failed on rank " << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Barrier slot stress test completed ({} iterations, {} slots)",
       globalRank,
@@ -835,7 +836,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMonotonicCounters) {
   EXPECT_EQ(result_h, 1) << "Barrier monotonic counters test failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Barrier monotonic counters test completed ({} phases)",
       globalRank,
@@ -886,7 +887,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
   EXPECT_EQ(results_h, expected)
       << "Not all blocks completed barrier successfully on rank " << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Barrier multi-block stress test completed ({} blocks, {} slots)",
       globalRank,
@@ -999,7 +1000,7 @@ TEST_F(
     EXPECT_EQ(result_h, 1) << "Phase 4 barrier failed";
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Combined signal/barrier config test completed ({} signal slots, {} barrier slots)",
       globalRank,
@@ -1056,7 +1057,7 @@ TEST_F(
 
   EXPECT_EQ(results_h, std::vector<int>(kNumBlocks, 1));
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Concurrent signal multi-block test completed ({} blocks)",
       globalRank,
@@ -1115,7 +1116,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalResetBetweenPhases) {
     // testSignalWait For explicit reset testing, we would call resetSignalFrom
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Signal reset between phases test completed ({} phases)",
       globalRank,
@@ -1179,7 +1180,7 @@ TEST_F(
         << "Iteration " << iter << " failed on rank " << globalRank;
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Concurrent signal stress extended test completed ({} iterations, {} blocks)",
       globalRank,
@@ -1241,7 +1242,7 @@ TEST_F(
   EXPECT_EQ(results_h, expected)
       << "Not all warps completed successfully on rank " << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Concurrent signal multi-warp test completed ({} warps)",
       globalRank,
@@ -1287,7 +1288,8 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, TransportAccessorTypes) {
         << "Transport type mismatch for peer " << peer;
   }
 
-  XLOGF(INFO, "Rank {}: Transport accessor types test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: Transport accessor types test completed", globalRank);
 }
 
 // =============================================================================
@@ -1362,7 +1364,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
   EXPECT_EQ(result_h, 1) << "signal_all() operation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: signal_all() test completed (signalerRank={})",
       globalRank,
@@ -1413,7 +1415,7 @@ TEST_F(
       << "read_signal() aggregate on rank " << globalRank
       << " should equal numRanks-1 (" << (numRanks - 1) << ")";
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: signal_all() aggregate test completed (aggregate={}, expected={})",
       globalRank,
@@ -1463,7 +1465,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromAll) {
   EXPECT_EQ(result_h, 1) << "wait_signal_from_all() operation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: wait_signal_from_all() test completed (targetRank={})",
       globalRank,
@@ -1515,7 +1517,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitWithCmpEq) {
   EXPECT_EQ(result_h, 1) << "CMP_EQ wait operation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: WaitWithCmpEq test completed (expectedValue={})",
       globalRank,
@@ -1568,7 +1570,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MonotonicWaitValues) {
   EXPECT_EQ(result_h, 1) << "Monotonic wait values test failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: MonotonicWaitValues test completed ({} iterations)",
       globalRank,
@@ -1620,7 +1622,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
   EXPECT_EQ(result_h, 1) << "SIGNAL_SET operation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: SignalWithSet test completed (setValue={})",
       globalRank,
@@ -1677,7 +1679,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
 
   EXPECT_EQ(result_h, 1) << "wait_signal_from() failed on rank " << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: WaitSignalFromPeer test completed (isSignaler={})",
       globalRank,
@@ -1729,7 +1731,7 @@ TEST_F(
   EXPECT_EQ(result_h, 1) << "WaitSignalFromMultiPeerIsolation failed on rank "
                          << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: WaitSignalFromMultiPeerIsolation test completed (targetRank={})",
       globalRank,
@@ -1781,7 +1783,7 @@ TEST_F(
   EXPECT_EQ(result_h, 1)
       << "WaitSignalAndWaitSignalFromBothWork failed on rank " << globalRank;
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: WaitSignalAndWaitSignalFromBothWork test completed (targetRank={})",
       globalRank,
@@ -1832,7 +1834,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
 
   EXPECT_EQ(result_h, 1) << "Signal/Wait (BLOCK scope) operation failed";
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Signal/Wait (BLOCK scope) test completed (isSignaler={})",
       globalRank,

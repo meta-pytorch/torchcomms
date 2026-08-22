@@ -6,7 +6,7 @@
 #include <cstddef>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <algorithm>
 
@@ -64,8 +64,8 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
   const int numBlocks = params.numBlocks;
   const int blockSize = params.blockSize;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, numIntsPerRank={}",
       globalRank,
       params.testName,
@@ -93,7 +93,7 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -178,7 +178,7 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
@@ -469,8 +469,8 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
   const int blockSize = params.blockSize;
   const size_t base_ints = params.base_ints;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, base_ints={}",
       globalRank,
       params.testName,
@@ -496,7 +496,7 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -603,7 +603,7 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
@@ -676,8 +676,8 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
   const int blockSize = params.blockSize;
   const size_t base_ints = params.base_ints;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with zero-byte peers",
       globalRank,
       params.testName);
@@ -702,7 +702,7 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -815,7 +815,7 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 10) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: Error at peer {} position {}: expected {}, got {}",
                 globalRank,
@@ -878,7 +878,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCall) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -958,7 +958,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCall) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 5) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: Iter {} error at peer {} pos {}: expected {}, got {}",
                 globalRank,
@@ -1014,7 +1014,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCallChunked) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1095,7 +1095,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCallChunked) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 5) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: Iter {} error at peer {} pos {}: expected {}, got {}",
                 globalRank,
@@ -1138,7 +1138,7 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
   const std::vector<int> blockCounts = {8, 16, 32, 64, 128, 256};
 
   for (int numBlocks : blockCounts) {
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: ChunkedBlockCountSweep numBlocks={}",
         globalRank,
@@ -1157,7 +1157,8 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
           globalRank, worldSize, bootstrap, config);
       transport->exchange();
     } catch (const std::runtime_error& e) {
-      XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+      COMMS_LOG(
+          ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
       std::abort();
     }
 
@@ -1233,7 +1234,7 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 5) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: numBlocks={} error at peer {} pos {}: expected {}, got {}",
                 globalRank,
@@ -1316,7 +1317,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1400,7 +1401,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 5) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: Iter {} ({}KB) error at peer {} pos {}: expected {}, got {}",
                 globalRank,
@@ -1456,7 +1457,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1537,7 +1538,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
         if (expected != actual) {
           h_errorCount++;
           if (h_errorCount <= 5) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: Iter {} ({}KB chunked) error at peer {} pos {}: expected {}, got {}",
                 globalRank,
@@ -1586,7 +1587,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1660,7 +1661,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: AutoDispatch 1KB error at peer {} pos {}: expected {}, got {}",
               globalRank,
@@ -1699,7 +1700,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1773,7 +1774,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: AutoDispatch 256KB error at peer {} pos {}: expected {}, got {}",
               globalRank,
@@ -1812,7 +1813,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -1886,7 +1887,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: AutoDispatch 512KB error at peer {} pos {}: expected {}, got {}",
               globalRank,

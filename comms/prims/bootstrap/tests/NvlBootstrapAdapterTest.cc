@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
@@ -63,8 +63,8 @@ TEST_F(NvlBootstrapAdapterTest, AllGatherNvlDomainAllRanks) {
  */
 TEST_F(NvlBootstrapAdapterTest, AllGatherNvlDomainSubset) {
   if (numRanks < 4) {
-    XLOGF(
-        WARNING, "Skipping subset test: requires >= 4 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping subset test: requires >= 4 ranks, got {}", numRanks);
     return;
   }
 
@@ -84,7 +84,7 @@ TEST_F(NvlBootstrapAdapterTest, AllGatherNvlDomainSubset) {
   }
 
   if (nvlLocalRank < 0) {
-    XLOGF(INFO, "Rank {} not in NVL domain, skipping", globalRank);
+    COMMS_LOG(INFO, "Rank {} not in NVL domain, skipping", globalRank);
     return;
   }
 
@@ -227,8 +227,8 @@ TEST_F(NvlBootstrapAdapterTest, AdapterSendRecvMapping) {
  */
 TEST_F(NvlBootstrapAdapterTest, AdapterSubsetMapping) {
   if (numRanks < 4) {
-    XLOGF(
-        WARNING,
+    COMMS_LOG(
+        WARN,
         "Skipping subset mapping test: requires >= 4 ranks, got {}",
         numRanks);
     return;
@@ -250,7 +250,7 @@ TEST_F(NvlBootstrapAdapterTest, AdapterSubsetMapping) {
   }
 
   if (nvlLocalRank < 0) {
-    XLOGF(INFO, "Rank {} not in odd NVL domain, skipping", globalRank);
+    COMMS_LOG(INFO, "Rank {} not in odd NVL domain, skipping", globalRank);
     return;
   }
 
