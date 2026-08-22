@@ -4,11 +4,22 @@
 
 #include <fmt/format.h>
 
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LogTypes.h"
+#include "comms/utils/logger/LoggingFormat.h"
 #include "meta/NcclxLogger.h"
 
-#define NCCLX_LOG_SUBSYS(level, subsys, ...) \
-  NCCLX_LOG_IF(level, CLOGF_ENABLED(subsys), __VA_ARGS__)
+#define NCCLX_LOG_SUBSYS(level, subsys, ...)            \
+  NCCLX_LOG_IF(                                         \
+      level,                                            \
+      ::meta::comms::logger::isEnabledSubSystemBitwise( \
+          static_cast<uint64_t>([]() {                  \
+            using namespace ::meta::comms::logger;      \
+            return subsys;                              \
+          }())),                                        \
+      __VA_ARGS__)
+
+#define NCCLX_LOG_STREAM_EVERY_MS(level, ms) \
+  COMMS_LOG_NAMED_STREAM_EVERY_MS(::ncclx::logging::kNcclxLoggerName, level, ms)
 
 #define NCCLX_ERR(code, ...)                                                  \
   do {                                                                        \

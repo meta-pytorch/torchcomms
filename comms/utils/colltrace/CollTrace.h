@@ -6,6 +6,7 @@
 #include <latch>
 #include <mutex>
 #include <set>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -26,6 +27,10 @@
 
 struct CUstream_st;
 
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
+
 namespace meta::comms::colltrace {
 
 struct GraphCollTraceState;
@@ -44,10 +49,13 @@ class GraphCudaWaitEvent;
 // the poll thread on drain. Both inputs are fixed for the process, so the
 // verdict is computed once and cached (this assumes a homogeneous-GPU host).
 // Exposed so tests can skip on hosts where graph timing cannot work.
-bool graphColltraceSupported(std::string_view logPrefix);
+bool graphColltraceSupported(
+    std::string_view logPrefix,
+    std::string_view loggerName = "comms");
 
 struct CollTraceConfig {
   static constexpr ::size_t kDefaultMaxPendingQueueSize{1024};
+  std::string loggerName{"comms"};
   // The max time CollTrace thread will be waiting before it can respond to
   // a cancellation request. This is to ensure that we don't wait forever and
   // will respond reasonably quickly during teardown. Default to 1 second.
@@ -164,6 +172,7 @@ class CollTrace : public ICollTrace {
 
   // **** Start of Private Member Variables ****
   CollTraceConfig config_;
+  logger::CommsSpdlogLogger* logger_{nullptr};
 
   // Represents the metadata of the communicator that is being traced.
   // This is used for logging purposes.

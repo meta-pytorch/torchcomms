@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
@@ -50,7 +50,7 @@ class P2pSignalBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -64,7 +64,7 @@ class P2pSignalBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0]; // Take rank 0's ID
@@ -77,7 +77,7 @@ class P2pSignalBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       comms::prims::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       int nSteps = 1000) {
-    XLOGF(DBG1, "=== Running Signal benchmark: {} ===", config.name);
+    COMMS_LOG(DBG, "=== Running Signal benchmark: {} ===", config.name);
 
     dim3 gridDim(config.numBlocks);
     dim3 blockDim(config.numThreads);
@@ -118,7 +118,8 @@ class P2pSignalBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
   // Only test with 2 ranks
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 

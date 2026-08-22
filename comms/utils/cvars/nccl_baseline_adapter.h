@@ -9,6 +9,8 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <folly/CppAttributes.h>
+
 namespace nccl_baseline_adapter {
 
 /**
@@ -23,7 +25,7 @@ int64_t ncclLoadParam(
 /**
  * Load a string-based CVAR.
  */
-const char* ncclGetEnvImpl(const char* name);
+const char* FOLLY_NULLABLE ncclGetEnvImpl(const char* name);
 } // namespace nccl_baseline_adapter
 
 #endif // NCCL_BASELINE_ADAPTER_H_INCLUDED

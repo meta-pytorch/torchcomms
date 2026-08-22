@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <algorithm>
 #include <chrono>
@@ -99,7 +99,8 @@ TEST_F(P2pNvlTransportTestFixture, PipelineGeometry) {
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -111,7 +112,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
-  XLOGF(INFO, "Rank {} created transport and exchanged IPC", globalRank);
+  COMMS_LOG(INFO, "Rank {} created transport and exchanged IPC", globalRank);
 
   // Get host-side copy to access buffer pointers from host
   auto p2p = transport.buildP2pTransportDevice(peerRank);
@@ -120,7 +121,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
       static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
   auto remoteAddr =
       static_cast<int*>(static_cast<void*>(p2p.getRemoteState().dataBuffer));
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: localAddr: {}, remoteAddr: {}",
       globalRank,
@@ -132,11 +133,12 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   int writeValue = globalRank;
   test::fillBuffer(localAddr, writeValue, numElements);
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  XLOGF(INFO, "Rank {} filled local buffer with {}", globalRank, writeValue);
+  COMMS_LOG(
+      INFO, "Rank {} filled local buffer with {}", globalRank, writeValue);
 
   // Barrier to ensure both ranks have written their data
   MPI_Barrier(MPI_COMM_WORLD);
-  XLOGF(INFO, "Rank {} passed barrier", globalRank);
+  COMMS_LOG(INFO, "Rank {} passed barrier", globalRank);
 
   // Now each rank reads from peer buffer and verifies
   // rank0 should read all 1s from rank1
@@ -156,7 +158,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   CUDACHECK_TEST(cudaMemcpy(
       &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {} verified peer buffer, errors: {}",
       globalRank,
@@ -242,7 +244,7 @@ class TransportTestHelper {
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -380,7 +382,7 @@ TEST_F(
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1502,7 +1504,7 @@ TEST_F(
     P2pNvlTransportTestFixture,
     TileSendRecvChangingLaunchedBlocksWithSameActiveBlocks) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2022,7 +2024,7 @@ void runPutTest(
       if (hostBuffer[i] != testValue) {
         ++errorCount;
         if (errorCount <= 5) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "{}: Mismatch at index {}: expected 0x{:02x}, got 0x{:02x}",
               testName,
@@ -2041,7 +2043,8 @@ void runPutTest(
 // Basic write() test with aligned pointers
 TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2058,7 +2061,7 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
 
   runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
 
-  XLOGF(INFO, "Rank {}: PutBasic test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: PutBasic test completed", globalRank);
 }
 
 // Parameterized test for write() with various transfer sizes
@@ -2079,12 +2082,13 @@ class PutTransferSizeTestFixture
 
 TEST_P(PutTransferSizeTestFixture, Put) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
   const auto& params = GetParam();
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Running write transfer size test: {} (nbytes={})",
       params.name,
@@ -2102,7 +2106,7 @@ TEST_P(PutTransferSizeTestFixture, Put) {
   runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Put transfer size test '{}' completed",
       globalRank,
@@ -2161,12 +2165,13 @@ class PutUnalignedTestFixture
 
 TEST_P(PutUnalignedTestFixture, Put) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
   const auto& params = GetParam();
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Running write unaligned test: {} (srcOffset={}, dstOffset={}, nbytes={})",
       params.name,
@@ -2197,7 +2202,7 @@ TEST_P(PutUnalignedTestFixture, Put) {
   runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Put unaligned test '{}' completed",
       globalRank,
@@ -2290,7 +2295,8 @@ INSTANTIATE_TEST_SUITE_P(
 // buffer overflows and data corruption.
 TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2367,7 +2373,8 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
 
 TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2392,12 +2399,14 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
       << "Rank " << globalRank
       << ": local and remote ll128Buffer should point to different ranks' buffers";
 
-  XLOGF(INFO, "Rank {}: Ll128BufferWiring_Enabled test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: Ll128BufferWiring_Enabled test completed", globalRank);
 }
 
 TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2424,7 +2433,8 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
       << "Rank " << globalRank
       << ": remoteState.llBuffer should be null when llBufferSize == 0";
 
-  XLOGF(INFO, "Rank {}: Ll128BufferWiring_Disabled test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: Ll128BufferWiring_Disabled test completed", globalRank);
 }
 
 // =============================================================================
@@ -2435,7 +2445,7 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2689,7 +2699,7 @@ static void runTileForwardTest(
 // Basic single-call test
 TEST_F(P2pNvlTransportTestFixture, TileForwardBasic) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping: requires 2 ranks, got {}", numRanks);
+    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
     return;
   }
   auto bs = std::make_shared<meta::comms::MpiBootstrap>();
@@ -3176,12 +3186,13 @@ class TileForwardUnalignedTestFixture
 
 TEST_P(TileForwardUnalignedTestFixture, TileForward) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
   const auto& params = GetParam();
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Running tile forward unaligned test: {} (nbytes={}, dstOffset={})",
       params.name,
@@ -3251,7 +3262,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3276,12 +3288,13 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
       << "Rank " << globalRank
       << ": local and remote llBuffer should point to different ranks' buffers";
 
-  XLOGF(INFO, "Rank {}: LlBufferWiring_Enabled test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: LlBufferWiring_Enabled test completed", globalRank);
 }
 
 TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3302,7 +3315,8 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
       << "Rank " << globalRank
       << ": remoteState.llBuffer should be null when llBufferSize == 0";
 
-  XLOGF(INFO, "Rank {}: LlBufferWiring_Disabled test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: LlBufferWiring_Disabled test completed", globalRank);
 }
 
 } // namespace comms::prims::tests
