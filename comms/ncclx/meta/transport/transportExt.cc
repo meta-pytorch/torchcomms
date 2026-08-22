@@ -1,12 +1,14 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "bootstrap.h"
+#include "meta/wrapper/NcclCommLogData.h"
 #include "transport.h"
 
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/transport/transportExt.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 namespace ncclx::transport {
 
@@ -249,7 +251,7 @@ ncclResult_t ncclTransportP2pSetupExt(
   std::lock_guard<std::mutex> lock(transportSetupMutex);
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
   sampleGuardBegin.sample().setCommunicatorMetadata(
-      comm ? &comm->logMetaData : nullptr);
+      comm ? &ncclCommLogData(comm) : nullptr);
   // Stream used during transport setup; need for P2P pre-connect + CUDA Graph
   ncclResult_t ret = ncclSuccess;
   struct ncclConnect**
@@ -674,8 +676,8 @@ ncclResult_t getP2pSyncBufPtr(
           ipcDesc,
           ptr,
           kP2pSyncBufKey,
-          comm->memCache,
-          &comm->logMetaData));
+          meta::comms::ncclx::ncclCommMemCache(comm),
+          &ncclCommLogData(comm)));
 
   *offset = getP2pSyncBufSlot(
       comm->maxLocalRanks, isSend, nMaxChannels, channelId, connIndex, rank);
