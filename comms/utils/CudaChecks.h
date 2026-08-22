@@ -8,7 +8,7 @@
 
 #include <fmt/format.h>
 
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #if CUDART_VERSION >= 11030
 #include <cudaTypedefs.h>
@@ -36,7 +36,7 @@ inline FuncPtr loadDriverFunction(const char* funcName, int version) {
       cudaEnableDefault,
       &driverStatus);
   if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) {
-    CLOGF(
+    COMMS_LOG(
         WARN,
         "Failed to load CUDA driver symbol {} version {} (cudaError={}, status={})",
         funcName,
@@ -54,7 +54,7 @@ inline FuncPtr loadDriverFunction(const char* funcName, int version) {
       cudaEnableDefault,
       &driverStatus);
   if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) {
-    CLOGF(
+    COMMS_LOG(
         WARN,
         "Failed to load CUDA driver symbol {} version {} (cudaError={}, status={})",
         funcName,
@@ -67,7 +67,7 @@ inline FuncPtr loadDriverFunction(const char* funcName, int version) {
   cudaError_t res = cudaGetDriverEntryPoint(
       funcName, reinterpret_cast<void**>(&func), cudaEnableDefault);
   if (res != cudaSuccess) {
-    CLOGF(
+    COMMS_LOG(
         WARN,
         "Failed to load CUDA driver symbol {} version {} (cudaError={})",
         funcName,
@@ -144,7 +144,7 @@ inline CUresult cuMemGetAddressRangeDynamic(
     CUresult err = cmd;                                                        \
     if (err != CUDA_SUCCESS) {                                                 \
       const char* errStr = ::comms::utils::cuda::getCuErrorString(err);        \
-      CLOGF(ERR, "Cuda failure {} '{}'", static_cast<int>(err), errStr);       \
+      COMMS_LOG(ERR, "Cuda failure {} '{}'", static_cast<int>(err), errStr);   \
       throw std::runtime_error(                                                \
           fmt::format("Cuda failure {} '{}'", static_cast<int>(err), errStr)); \
     }                                                                          \

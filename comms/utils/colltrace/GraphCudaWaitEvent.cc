@@ -5,11 +5,11 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include <folly/Unit.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/PrecisionClock.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace meta::comms::colltrace {
 
@@ -32,7 +32,8 @@ CommsMaybeVoid GraphCudaWaitEvent::beforeCollKernelScheduled() noexcept {
   // collective goes untimed. Warn a few times so that silent timing loss is
   // detectable rather than invisible, without spamming the log per collective.
   if (ringBuffer_ == nullptr) {
-    XLOG_FIRST_N(WARNING, 8)
+    auto& logger = logger_ != nullptr ? *logger_ : logger::getSpdlogLogger();
+    COMMS_LOGGER_STREAM_FIRST_N(logger, WARNING, 8)
         << "GraphCudaWaitEvent: no in-kernel colltrace ring attached (collId="
         << collId_
         << "); graph-captured collective timing is unavailable on this device.";

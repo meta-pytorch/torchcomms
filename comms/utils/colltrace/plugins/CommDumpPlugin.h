@@ -5,6 +5,8 @@
 #include <deque>
 #include <memory>
 #include <queue>
+#include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -12,6 +14,10 @@
 #include <folly/Synchronized.h>
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
+
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
 
 namespace meta::comms::colltrace {
 
@@ -26,6 +32,8 @@ struct CommDumpConfig {
   // Default timeout for waiting for the lock to be acquired for dump. We don't
   // want to block the dump thread if there is any issue with the lock.
   static constexpr auto kDumpLockAcquireTimeout = std::chrono::seconds(1);
+
+  std::string loggerName{"comms"};
 
   // Configures the size of the queue for past collective operations
   // (defaults to kDefaultPastQueueSize). They will be dumped as pastColls when
@@ -105,6 +113,7 @@ class CommDumpPlugin : public ICollTracePlugin {
   void evictPastColls(CollTraceDump& dump);
 
   CommDumpConfig config_;
+  logger::CommsSpdlogLogger* logger_{nullptr};
 
   folly::Synchronized<CollTraceDump> collTraceDump_;
 

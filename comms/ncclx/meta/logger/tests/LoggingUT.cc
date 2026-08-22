@@ -5,7 +5,6 @@
 #include <fmt/format.h>
 #include <folly/FileUtil.h>
 #include <folly/ScopeGuard.h>
-#include <folly/logging/LogMessage.h>
 #include <folly/testing/TestUtil.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -14,6 +13,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 #include "meta/NcclxChecks.h"
 
 #include "debug.h" // @manual
@@ -571,7 +571,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   // tempFile lives in a TemporaryDirectory that is deleted at test end, so the
   // OS env var must be unset on scope exit (even on the ASSERT_TRUE
   // early-return below) or a later test's ncclCvarInit() would reload this
-  // stale path and NcclLogger would fail to open the deleted file.
+  // stale path and the next logger initialization would fail to open it.
   auto debugFileEnvGuard =
       folly::makeGuard([]() { unsetenv("NCCL_DEBUG_FILE"); });
   ncclResetDebugInit();
@@ -583,6 +583,7 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   constexpr std::string_view TestStr = "RAW TESTING";
   constexpr std::string_view TestStr2 = "TESTING";
   constexpr std::string_view SpdlogTestStr = "SPDLOG TESTING";
+  constexpr std::string_view SharedSpdlogTestStr = "SHARED SPDLOG TESTING";
 
   testing::internal::CaptureStderr();
 
@@ -597,10 +598,16 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   NCCLX_LOG(INFO, "{}", SpdlogTestStr);
   NCCLX_LOG(WARN, "{}", SpdlogTestStr);
   NCCLX_LOG(ERR, "{}", SpdlogTestStr);
+  COMMS_LOG(INFO, "{}", SharedSpdlogTestStr);
+  COMMS_LOG(WARN, "{}", SharedSpdlogTestStr);
+  COMMS_LOG(ERR, "{}", SharedSpdlogTestStr);
   auto& spdlogLogger =
       meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName);
+  auto& sharedSpdlogLogger = meta::comms::logger::getSpdlogLogger();
   EXPECT_EQ(spdlogLogger.usesAsyncLogging(), NCCL_DEBUG_LOGGING_ASYNC);
+  EXPECT_EQ(sharedSpdlogLogger.usesAsyncLogging(), NCCL_DEBUG_LOGGING_ASYNC);
   spdlogLogger.flush();
+  sharedSpdlogLogger.flush();
 
   auto stderrOutput = testing::internal::GetCapturedStderr();
 
@@ -617,6 +624,10 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
     EXPECT_THAT(
         fileContents,
         testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
+    EXPECT_THAT(
+        fileContents,
+        testing::HasSubstr(
+            fmt::format("COMM {} {}", level, SharedSpdlogTestStr)));
     if (level != "INFO") {
       // When logging to file, we should also log to stderr for WARN and ERROR
       EXPECT_THAT(
@@ -628,6 +639,10 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
       EXPECT_THAT(
           stderrOutput,
           testing::HasSubstr(fmt::format("NCCL {} {}", level, SpdlogTestStr)));
+      EXPECT_THAT(
+          stderrOutput,
+          testing::HasSubstr(
+              fmt::format("COMM {} {}", level, SharedSpdlogTestStr)));
     }
   }
 }
@@ -856,57 +871,3 @@ TEST_F(NcclLoggerTest, SecondErrorUpdatesMessageKeepsAppendedStack) {
 }
 
 #endif // NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
-
-TEST_F(NcclLoggerTest, PreservesSharedUtilsLogHandler) {
-  ncclResetDebugInit();
-
-  ncclCvarInit();
-  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
-  setenv("NCCL_DEBUG", "INFO", 1);
-
-  initLogging();
-  auto utilsCategory = folly::LoggerDB::get().getCategory("comms.utils");
-  ASSERT_THAT(utilsCategory, ::testing::NotNull());
-  EXPECT_EQ(utilsCategory->getHandlers().size(), 1);
-
-  NcclLogger::init(
-      // TODO: Change the context name when ctran is refactored out of NCCLX
-      // Otherwise the logging will no longer work as intended.
-      {.contextName = "comms.ncclx.v2_25.meta.logger.tests",
-       .logPrefix = "LOGGER",
-       .logFilePath =
-           meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-       .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-           meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-       .threadContextFn = []() {
-         int cudaDev = -1;
-         cudaGetDevice(&cudaDev);
-         return cudaDev;
-       }});
-  auto utilsCategory2 = folly::LoggerDB::get().getCategory("comms.utils");
-  ASSERT_THAT(utilsCategory, ::testing::NotNull());
-  EXPECT_EQ(utilsCategory, utilsCategory2);
-  EXPECT_EQ(utilsCategory->getHandlers().size(), 1);
-
-  utilsCategory->admitMessage(
-      folly::LogMessage(
-          utilsCategory,
-          folly::LogLevel::INFO,
-          std::chrono::system_clock::now(),
-          "test",
-          123,
-          "UtilsTest",
-          "testing testing 123"));
-
-  std::string TestStr = "TESTING";
-
-  XLOG(INFO) << "RAW LOG TEST";
-  XLOG(WARN) << "RAW LOG TEST";
-  XLOG(ERR) << "RAW LOG TEST";
-
-  INFO(NCCL_ALL, "%s", TestStr.c_str());
-  WARN("%s", TestStr.c_str());
-  ERR(ncclInternalError, "%s", TestStr.c_str());
-
-  finishLogging();
-}

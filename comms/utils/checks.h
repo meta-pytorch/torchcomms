@@ -7,12 +7,10 @@
 #include <stdexcept>
 
 #include <fmt/format.h>
-#include <folly/String.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/Conversion.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LoggingFormat.h"
 
 // Base case
 template <typename... ErrorCodes>
@@ -49,7 +47,8 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   {                                                         \
     const auto res = cmd;                                   \
     if (!inCudaErrorCodes(res, cudaSuccess, __VA_ARGS__)) { \
-      XLOG(FATAL) << fmt::format(                           \
+      COMMS_LOG(                                            \
+          FATAL,                                            \
           "CUDA error: {}:{} {}",                           \
           __FILE__,                                         \
           __LINE__,                                         \
@@ -61,7 +60,8 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   {                                 \
     const auto err = cmd;           \
     if (err != cudaSuccess) {       \
-      XLOG(FATAL) << fmt::format(   \
+      COMMS_LOG(                    \
+          FATAL,                    \
           "CUDA error: {}:{} {}",   \
           __FILE__,                 \
           __LINE__,                 \
@@ -73,7 +73,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   {                                                                   \
     const auto err = cmd;                                             \
     if (err != cudaSuccess) {                                         \
-      CERR(commUnhandledCudaError, "Call for {} failed", #cmd);       \
+      COMMS_ERR(commUnhandledCudaError, "Call for {} failed", #cmd);  \
       return folly::makeUnexpected(                                   \
           getCommsErrorFromCudaError(err, __FILE__, __LINE__, #cmd)); \
     }                                                                 \
@@ -83,7 +83,8 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   {                                 \
     const auto err = cmd;           \
     if (err != ncclSuccess) {       \
-      XLOG(FATAL) << fmt::format(   \
+      COMMS_LOG(                    \
+          FATAL,                    \
           "NCCL error: {}:{} {}",   \
           __FILE__,                 \
           __LINE__,                 \
@@ -101,7 +102,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   do {                                                              \
     cudaError_t err = cmd;                                          \
     if (err != cudaSuccess) {                                       \
-      CERR(                                                         \
+      COMMS_ERR(                                                    \
           commUnhandledCudaError,                                   \
           "{}:{} Cuda failure {}",                                  \
           __FILE__,                                                 \
@@ -123,7 +124,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
 #define FOLLY_EXPECTED_CHECKTHROW(RES)                                  \
   do {                                                                  \
     if (RES.hasError()) {                                               \
-      CLOGF(                                                            \
+      COMMS_LOG(                                                        \
           ERR,                                                          \
           "{}:{} -> {} ({})",                                           \
           __FILE__,                                                     \
@@ -145,7 +146,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
   do {                                                 \
     commResult_t RES = cmd;                            \
     if (RES != commSuccess && RES != commInProgress) { \
-      CLOGF(                                           \
+      COMMS_LOG(                                       \
           ERR,                                         \
           "{}:{} -> {} ({})",                          \
           __FILE__,                                    \
@@ -170,7 +171,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
     if (!(statement)) {                                                        \
       auto errorMsg =                                                          \
           fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__);       \
-      CERR(commInternalError, "{}", errorMsg);                                 \
+      COMMS_ERR(commInternalError, "{}", errorMsg);                            \
       throw std::runtime_error(                                                \
           fmt::format(                                                         \
               "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
@@ -185,7 +186,7 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
  */
 #define FB_ERRORTHROW(error, ...)                \
   do {                                           \
-    CLOGF(ERR, ##__VA_ARGS__);                   \
+    COMMS_LOG(ERR, ##__VA_ARGS__);               \
     throw std::runtime_error(                    \
         std::string("COMM internal failure: ") + \
         ::meta::comms::commCodeToString(error)); \

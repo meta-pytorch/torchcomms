@@ -243,14 +243,16 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   auto srcRank = (rank - 1 + worldSize) % worldSize;
   auto dstRank = (rank + 1) % worldSize;
 
-  NCCLCHECK_FATAL(
+  // These calls intentionally provoke a GPE failure. Do not terminate on an
+  // immediate API error; the behavior under test is the communicator's async
+  // error being observed and reported by the production watchdog.
 #if NCCL_MINOR >= 29
-      ncclx::ncclPutSignal(
-          sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
+  (void)ncclx::ncclPutSignal(
+      sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw());
+  (void)ncclx::ncclWaitSignal(srcRank, win, stream.raw());
 #else
-      ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.raw()));
+  (void)ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw());
+  (void)ncclWaitSignal(srcRank, win, stream.raw());
 #endif
   waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
 }
