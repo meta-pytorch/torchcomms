@@ -230,11 +230,6 @@ $(INCDIR)/param/%.h: include/param/%.h
 	mkdir -p $(INCDIR)/param
 	install -m 644 $< $@
 
-$(INCDIR)/ncclx.h : include/ncclx.h
-	@printf "Grabbing   %-35s > %s\n" $< $@
-	mkdir -p $(INCDIR)
-	install -m 644 $< $@
-
 $(INCDIR)/nccl_device/%.h: include/nccl_device/%.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)/nccl_device
@@ -290,30 +285,11 @@ $(OBJDIR)/%.o : %.cc $(INCTARGETS)
                 sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
 	@rm -f $(@:%.o=%.d.tmp)
 
-$(OBJDIR)/%.o : %.cpp $(INCTARGETS)
-	@printf "Compiling  %-35s > %s\n" $< $@
-	mkdir -p `dirname $@`
-	$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
-	@$(CXX) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
-	@sed "0,/^.*:/s//$(subst /,\/,$@):/" $(@:%.o=%.d.tmp) > $(@:%.o=%.d)
-	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
-                sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
-	@rm -f $(@:%.o=%.d.tmp)
-
-$(OBJDIR)/%.o : %.c $(INCTARGETS)
-	@printf "Compiling  %-35s > %s\n" $< $@
-	mkdir -p `dirname $@`
-	$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
-	@$(CC) -I. -I$(INCDIR) -I$(OBJDIR)/include $(CXXFLAGS) $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -M $< > $(@:%.o=%.d.tmp)
-	@sed "0,/^.*:/s//$(subst /,\/,$@):/" $(@:%.o=%.d.tmp) > $(@:%.o=%.d)
-	@sed -e 's/.*://' -e 's/\\$$//' < $(@:%.o=%.d.tmp) | fmt -1 | \
-                sed -e 's/^ *//' -e 's/$$/:/' >> $(@:%.o=%.d)
-	@rm -f $(@:%.o=%.d.tmp)
-
-$(OBJDIR)/%.cu.o : %.cu $(INCTARGETS)
-	@printf "Compiling  %-35s > %s\n" $< $@
-	mkdir -p `dirname $@`
-	$(NVCC) $(NVCUFLAGS) -Xcompiler -fPIC -Xcompiler -fvisibility=hidden -I. -I$(INCDIR) -I$(OBJDIR)/include $(INCLUDES) -I$(INCPLUGIN) -I$(DOCA_HOME)/include -c $< -o $@
+# NCCLX-only object rules (.cpp/.c/.cu) for sources pulled in via
+# ncclx_sources.mk; kept in a seam so this forked makefile carries only
+# the include. Placed here (after OBJDIR is defined) so the $(OBJDIR)/%.o
+# pattern targets expand exactly as when these rules were inline.
+include ../makefiles/ncclx_rules.mk
 
 $(OBJDIR)/misc/git_version.o: $(GIT_VERSION_FILE)
 
