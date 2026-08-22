@@ -858,39 +858,15 @@ ncclResult_t ncclDevrWindowRegisterInGroup(
     NCCLCHECKGOTO(ncclSymkInitOnce(comm), ret, fail_locReg);
   }
 
-  // Handle local-only registration (non-collective, source buffers only).
-  // This path skips the collective allGather and only registers with local lkey.
+  // Local-only registration (non-collective, source buffers only) skips the
+  // collective allGather and registers with a local lkey. The extracted NCCLX
+  // path owns the CUDA stream + window lifecycle; on failure fall through to the
+  // shared localRegHandle cleanup at fail_locReg.
   if (winFlags & NCCL_WIN_LOCAL_ONLY) {
-    struct ncclDevrState* devr = &comm->devrState;
-
-    // GIN must already be connected via a prior collective window registration.
-    if (!devr->ginEnabled) {
-      ERR(ncclInvalidUsage, "NCCL_WIN_LOCAL_ONLY requires GIN to be enabled. Register a collective window first.");
-      ret = ncclInvalidUsage;
-      goto fail_locReg;
-    }
-
-    CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail_locReg);
-
-    NCCLCHECKGOTO(symLocalWindowCreate(
-        comm, userPtr, userSize, winFlags, localRegHandle, outWinDev, nullptr, stream
-      ), ret, fail_locReg_stream);
-
-    CUDACHECKGOTO(cudaStreamSynchronize(stream), ret, fail_locReg_stream_win);
-
-    // No barrier needed for local-only registration (it's non-collective).
-    cudaStreamDestroy(stream);
+    NCCLCHECKGOTO(symLocalWindowRegisterInGroup(
+        comm, userPtr, userSize, winFlags, localRegHandle, outWinDev), ret, fail_locReg);
     return ncclSuccess;
-
-  fail_locReg_stream_win:
-    symLocalWindowDestroy(comm, *outWinDev, stream);
-    *outWinDev = nullptr;
-    cudaStreamSynchronize(stream);
-  fail_locReg_stream:
-    cudaStreamDestroy(stream);
-    goto fail_locReg;
   }
-
 
   // Get underlying cumem base address and number of mapped physical segments that userPtr spans
   NCCLCHECKGOTO(ncclCuMemGetAddressRange(reinterpret_cast<CUdeviceptr>(userPtr), userSize, &memAddr, &memSize, &numSegments, &hasSysmemSegment), ret, fail_locReg);
@@ -1406,20 +1382,12 @@ ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_v
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), ret, fail_dev);
 
-  { // Determine if this is a local-only window or a regular window.
-    struct ncclDevrState* devr = &comm->devrState;
-    struct ncclWindow_vidmem* winDevHost;
-    NCCLCHECKGOTO(ncclShadowPoolToHost(&devr->shadows, winDev, &winDevHost), ret, fail_dev_stream);
-
-    // Check the winFlags to determine window type.
-    // For local-only windows, winHost points to ncclDevrLocalWindow.
-    // For regular windows, winHost points to ncclDevrWindow.
-    // We can check the winFlags field which is at the same offset in both structs.
-    struct ncclDevrLocalWindow* localWin = (struct ncclDevrLocalWindow*)winDevHost->winHost;
-    if (localWin->winFlags & NCCL_WIN_LOCAL_ONLY) {
-      NCCLCHECKGOTO(symLocalWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
-    } else {
-  NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
+  { // Dispatch local-only windows to the NCCLX destroy path; fall back to the
+    // upstream collective-window destroy otherwise.
+    bool localHandled = false;
+    NCCLCHECKGOTO(symLocalWindowDeregisterIfOwned(comm, winDev, stream, &localHandled), ret, fail_dev_stream);
+    if (!localHandled) {
+      NCCLCHECKGOTO(symWindowDestroy(comm, winDev, stream), ret, fail_dev_stream);
     }
   }
 
