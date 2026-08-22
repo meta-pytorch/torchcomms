@@ -63,6 +63,7 @@
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/logger/ScubaCommSampleScope.h"
+#include "meta/logger/ScubaInitScope.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
@@ -1912,10 +1913,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   NcclScubaEvent commInitFuncEvent(&commLogData);
   NcclScubaEvent initBootstrapEvent(&commLogData);
 
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", job->nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", job->myrank));
-  auto contextCudaDev = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::cuda_dev, fmt::format("{}", cudaDev));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, job->nranks, job->myrank, cudaDev);
   sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
   auto resultGuard = folly::makeGuard([&sampleGuardBegin, &res] {
     sampleGuardBegin.sample().setExecResult(ncclCodeToString(res));
@@ -2543,10 +2541,7 @@ static void ncclxSetFirstCommAsWorld(ncclComm_t* newcomm) {
 }
 
 static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId, ncclUniqueId* commId, int myrank, int cudaDev, ncclConfig_t *config, const char funcName[]) {
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", myrank));
-  auto contextCudaDev = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::cuda_dev, fmt::format("{}", cudaDev));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, nranks, myrank, cudaDev);
 
   if (nId <= 0 || nId > nranks) {
     ERR(ncclInvalidArgument, "improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
@@ -2750,9 +2745,7 @@ ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState) {
 
 NCCL_API(ncclResult_t, ncclCommInitRankConfig, ncclComm_t* comm, int nranks, ncclUniqueId commId, int myrank, ncclConfig_t *config);
 ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueId commId, int myrank, ncclConfig_t *config) {
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", myrank));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, nranks, myrank);
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
