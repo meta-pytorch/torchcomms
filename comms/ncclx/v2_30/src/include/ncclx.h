@@ -122,25 +122,6 @@ ncclResult_t pncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
     const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
     const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
 
-/*
- * [NCCLX] All-To-All
- * Device (i) sends count of data from offset sendbuff+count*j to device (j).
- * At the same time, device (i) receives count of data from device (j)
- * to be placed at recvbuff+count*j. Only out-of-place operation is allowed
- * (i.e., sendbuff != recvbuff).
- * Arguments:
- *    IN  sendbuff    - Pointer to sendbuf
- *    OUT recvbuff    - Pointer to recvbuf
- *    IN  count       - count of elements to send to (receive from) each rank
- *    IN  datatype      - Type of each data element
- *    IN  ncclComm* comm
- *    IN  cudaStream_t stream
- */
-ncclResult_t  ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
-ncclResult_t  pncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
-    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
-
 /* Pointer-based registration for all buffer types - no handle returned.
  * Supports both single-segment and multi-segment (expandable) buffers.
  * Use ncclGlobalDeregisterWithPtr(buf, len) to deregister.
