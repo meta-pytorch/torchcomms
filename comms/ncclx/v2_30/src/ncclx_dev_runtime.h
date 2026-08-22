@@ -12,11 +12,28 @@
 #include <cstdint>
 
 #include "nccl.h"
+#include "nccl_device.h"
 
 struct ncclComm;
 struct ncclWindow_vidmem;
-struct ncclDevrLocalWindow;
 struct ncclDevrWindow;
+
+// Local-only window for source buffers (non-collective registration). Uses the
+// parent's PD but skips the rkey allGather; usable only as the source of a put.
+// NOTE: the first 5 fields (memory through winFlags) must match ncclDevrWindow
+// (in dev_runtime.h) so winFlags can be read at a matching offset to distinguish
+// window types. See task T282779046 for enforcing this layout at compile time.
+struct ncclDevrLocalWindow {
+  void* memory;      // nullptr for local-only windows (no ncclDevrMemory)
+  void* userPtr;
+  size_t size;
+  size_t bigOffset;  // 0 for local-only windows (no big VA space mapping)
+  int winFlags;      // Must be at same offset as ncclDevrWindow::winFlags
+  void* localRegHandle;
+  struct ncclWindow_vidmem* vidmem;
+  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS];
+  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS];
+};
 
 // De-static'd upstream window-table init utility whose single definition lives
 // in the forked dev_runtime.cc; declared here so the extracted NCCLX local-only
