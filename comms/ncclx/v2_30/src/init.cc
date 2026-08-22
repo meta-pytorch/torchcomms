@@ -62,6 +62,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
+#include "meta/logger/ScubaCommSampleScope.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
@@ -618,8 +619,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 }
 
 static ncclResult_t devCommSetup(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
   struct ncclKernelCommAndChannels tmpCommAndChans;
@@ -1021,8 +1021,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
 }
 
 static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* parent, uint64_t timers[TIMERS_INIT_COUNT]) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   NcclScubaEvent initEvent(&ncclCommLogData(comm));
   initEvent.lapAndRecord("InitTransportsRank START");
   // We use 2 AllGathers
@@ -1816,8 +1815,7 @@ typedef struct{
   int color;
 } commSplitInfo;
 static ncclResult_t commGetSplitInfo(struct ncclComm* comm, struct ncclComm* parent, int color, int key, int* nRanksRet, int* myRankRet, int* parentRanksRet) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   int nRanks = 0, myRank = 0;
   ncclResult_t ret = ncclSuccess;
 
@@ -2857,8 +2855,7 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   struct ncclCommFinalizeAsyncJob* job = (struct ncclCommFinalizeAsyncJob*) job_;
   ncclComm_t comm = job->comm;
   ncclResult_t ret = ncclSuccess;
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
@@ -2904,8 +2901,7 @@ fail:
 }
 
 static ncclResult_t commCleanup(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (comm->tuner != NULL) {
     NCCLCHECK(comm->tuner->finalize(comm->tunerContext));
@@ -2917,8 +2913,7 @@ static ncclResult_t commCleanup(ncclComm_t comm) {
 
 NCCL_API(ncclResult_t, ncclCommFinalize, ncclComm_t comm);
 ncclResult_t ncclCommFinalize(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   NVTX3_RANGE(NcclNvtxParamsCommFinalize);
   NcclScubaEvent initEvent(nullptr);
 
@@ -2968,8 +2963,7 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
   struct ncclCommFinalizeAsyncJob* job = (struct ncclCommFinalizeAsyncJob*) job_;
   ncclComm_t comm = job->comm;
   ncclResult_t ret = ncclSuccess;
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
 
   if (comm->intraComm0 != NULL) {
     int curRankCnt;
@@ -3195,8 +3189,7 @@ static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
 
 NCCL_API(ncclResult_t, ncclCommAbort, ncclComm_t comm);
 ncclResult_t ncclCommAbort(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
 
   // NCCLX - Force abort logic.
