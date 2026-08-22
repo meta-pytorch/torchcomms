@@ -8,9 +8,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <thread>
 #include <vector>
+
+#include "comms/common/fault_tolerance/Abort.h"
 
 // On AMD (`__HIP_PLATFORM_AMD__`), this maps `cuda*` runtime APIs to
 // `hip*` and provides a HIP-backed `meta::comms::DeviceBuffer`. No-op
@@ -207,6 +211,108 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalGE(d_signalBuf, targetValue, d_success);
   });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalAcceptsDisabledAbort) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  runAndVerify([&](bool* d_success) {
+    runTestWaitSignalWithDisabledAbort(d_signalBuf, d_success);
+  });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalSkipsWhenPreAborted) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+  auto abortDevice = abort.getDeviceHandle();
+
+  runAndVerify([&](bool* d_success) {
+    runTestWaitSignalUntilAbort(d_signalBuf, abortDevice, d_success);
+  });
+}
+
+// Liveness on the IBGDA path: a wait already spinning on a signal that will
+// never arrive still exits once the host aborts, and once the device deadline
+// expires. Both go through the same shared abort state the kernel polls.
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalExitsOnAbortDuringWait) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  DeviceBuffer successBuf(sizeof(bool));
+  auto* d_success = static_cast<bool*>(successBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_success, 0, sizeof(bool)));
+
+  // Host-mapped so the host can watch the kernel reach the wait. A fixed sleep
+  // bounds only the host, so a slow launch would silently turn this into the
+  // pre-abort case with every assertion still passing.
+  uint32_t* h_entered = nullptr;
+  uint32_t* d_entered = nullptr;
+  CUDACHECK_TEST(cudaHostAlloc(
+      reinterpret_cast<void**>(&h_entered),
+      sizeof(uint32_t),
+      cudaHostAllocMapped));
+  *h_entered = 0;
+  CUDACHECK_TEST(cudaHostGetDevicePointer(
+      reinterpret_cast<void**>(&d_entered), h_entered, 0));
+
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  runTestWaitSignalUntilAbort(
+      d_signalBuf, abort.getDeviceHandle(), d_success, d_entered);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  bool entered = false;
+  while (!entered && std::chrono::steady_clock::now() < deadline) {
+    entered = __atomic_load_n(h_entered, __ATOMIC_ACQUIRE) != 0U;
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  // Abort and drain before asserting on the handshake. `setAbort()` is what
+  // releases the kernel, so failing out first would run the `DeviceBuffer` and
+  // `Abort` destructors -- freeing the signal buffer and unmapping the abort
+  // state -- while the kernel is still polling both, and would leak
+  // `h_entered` on top.
+  abort.setAbort();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  // Cast to void, not just NOLINT: this file is hipified for the AMD build,
+  // where `hipHostFree` is `[[nodiscard]]` and an ignored result is a
+  // `-Werror,-Wunused-value` build failure. The NOLINT suppresses the lint, not
+  // the compiler. Discarding is deliberate -- this is teardown on a path that
+  // is already unwinding, and there is nothing useful to do with a failure
+  // here. NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  (void)cudaFreeHost(h_entered);
+  ASSERT_TRUE(entered) << "kernel never reached the wait";
+
+  bool success = false;
+  CUDACHECK_TEST(
+      cudaMemcpy(&success, d_success, sizeof(bool), cudaMemcpyDeviceToHost));
+  // The kernel stores `!wait_signal(...)`, so true means the wait gave up.
+  EXPECT_TRUE(success);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_FALSE(abort.isTimedOut())
+      << "an explicit abort must win the first-writer race";
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalExitsOnDeviceTimeout) {
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setDefaultTimeout(std::chrono::milliseconds(500));
+  auto abortDevice = abort.getDeviceHandle();
+
+  runAndVerify([&](bool* d_success) {
+    runTestWaitSignalUntilAbort(d_signalBuf, abortDevice, d_success);
+  });
+  EXPECT_TRUE(abort.isTimedOut());
 }
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {

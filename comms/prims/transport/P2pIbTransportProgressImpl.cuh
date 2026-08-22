@@ -67,6 +67,11 @@ __device__ __forceinline__ void store_progress_state(
     IbChannelProgress& slot,
     const IbChannelProgress& state);
 
+__device__ __forceinline__ void abandon_progress_state(
+    ThreadGroup& group,
+    IbChannelProgress& slot,
+    IbChannelProgress& state);
+
 template <typename Proto = protocol::Simple>
 __device__ __forceinline__ ProgressGeometry make_progress_geometry(
     const IbChannelLayout& channelLayout,
@@ -458,9 +463,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
             chunk.wireBytes);
         traceState->localCompletionWaitOpen = true;
       }
-      return slotReadiness == kProgressAborted
-          ? IbgdaSendRecvProgressStatus::Aborted
-          : IbgdaSendRecvProgressStatus::Waiting;
+      if (slotReadiness == kProgressAborted) {
+        abandon_progress_state(group, progressSlot, state);
+        return IbgdaSendRecvProgressStatus::Aborted;
+      }
+      return IbgdaSendRecvProgressStatus::Waiting;
     }
     if (fine_trace_enabled(traceContext) && traceState != nullptr &&
         traceState->localCompletionWaitOpen && group.is_leader()) {
@@ -527,7 +534,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       }
       ready = group.broadcast<uint32_t>(ready);
       if (ready == kProgressAborted) {
-        store_progress_state(group, progressSlot, state);
+        abandon_progress_state(group, progressSlot, state);
         return IbgdaSendRecvProgressStatus::Aborted;
       }
       if (!ready) {
@@ -705,9 +712,11 @@ progress_registered_send_once(
     const uint32_t slotReadiness = try_prepare_send_slot<protocol::Simple>(
         transport, group, chunk.slotId, chunk.pipelineGeneration, timeout);
     if (slotReadiness != kProgressReady) {
-      return slotReadiness == kProgressAborted
-          ? IbgdaRegisteredSendProgressStatus::Aborted
-          : IbgdaRegisteredSendProgressStatus::Waiting;
+      if (slotReadiness == kProgressAborted) {
+        abandon_progress_state(group, progressSlot, state);
+        return IbgdaRegisteredSendProgressStatus::Aborted;
+      }
+      return IbgdaRegisteredSendProgressStatus::Waiting;
     }
     transition_progress_stage(
         group, state, detail::IbSendRecvProgressStage::WaitSlotFree);
@@ -742,7 +751,7 @@ progress_registered_send_once(
       }
       ready = group.broadcast<uint32_t>(ready);
       if (ready == kProgressAborted) {
-        store_progress_state(group, progressSlot, state);
+        abandon_progress_state(group, progressSlot, state);
         return IbgdaRegisteredSendProgressStatus::Aborted;
       }
       if (!ready) {
@@ -813,6 +822,30 @@ progress_registered_send_once(
 #endif
 }
 
+/**
+ * Drain outstanding local send completions for this channel, one bounded pass.
+ *
+ * Terminal once the abort is latched, which is the drain-side counterpart of
+ * `abandon_progress_state()`. Without it this call is not terminal at all: the
+ * abort path persists the lanes it did NOT drain (`slot.laneMask = pending`
+ * below) and stops the outer loop early, so every later call re-finds the same
+ * lanes and returns `Aborted` again forever. A caller that loops until
+ * `Drained`
+ * -- `ReduceScatterDirectIbV2.cu` does exactly that -- then spins for the life
+ * of the kernel. The `activeStage == Done` short-circuit that saves the other
+ * progress entry points has no analogue here, because the drain reads the
+ * completion lane masks rather than the progress slot.
+ *
+ * The masks are deliberately left ALONE rather than cleared. Clearing would
+ * tell `try_prepare_send_slot()` that those completions have landed when they
+ * have not, dropping the one guard that stops a later operation overwriting
+ * send-staging while the NIC is still reading out of it. Reporting `Drained`
+ * costs nothing by comparison: after an abort the channel is not expected to
+ * carry meaningful traffic anyway, and recovery is a `reconfigure()`.
+ *
+ * The call that first observes the abort mid-scan still reports `Aborted`, so
+ * the signal is not lost; only subsequent calls short-circuit.
+ */
 template <typename Transport>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
@@ -822,7 +855,7 @@ progress_registered_send_drain_once(
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t result =
       static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Drained);
-  if (group.is_leader()) {
+  if (group.is_leader() && !timeout.isAborted()) {
     bool foundPending = false;
     bool madeProgress = false;
     bool aborted = false;
@@ -1407,9 +1440,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
       traceState,
       qpLane);
   if (recvReadiness != kProgressReady) {
-    return recvReadiness == kProgressAborted
-        ? IbgdaSendRecvProgressStatus::Aborted
-        : IbgdaSendRecvProgressStatus::Waiting;
+    if (recvReadiness == kProgressAborted) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaSendRecvProgressStatus::Aborted;
+    }
+    return IbgdaSendRecvProgressStatus::Waiting;
   }
 
   progress_recv_consume_buf<CopyOp>(
@@ -1603,9 +1638,11 @@ progress_recv_acquire_once(
       nullptr,
       qpLane);
   if (recvReadiness != kProgressReady) {
-    return recvReadiness == kProgressAborted
-        ? IbgdaSendRecvProgressStatus::Aborted
-        : IbgdaSendRecvProgressStatus::Waiting;
+    if (recvReadiness == kProgressAborted) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaSendRecvProgressStatus::Aborted;
+    }
+    return IbgdaSendRecvProgressStatus::Waiting;
   }
 
   out.staging = channelLayout.recvStagingPtr + chunk.stagingOff;
@@ -1692,6 +1729,49 @@ __device__ __forceinline__ void store_progress_state(
     slot.activeStage = state.activeStage;
   }
   group.sync();
+#else
+  (void)group;
+  (void)slot;
+  (void)state;
+#endif
+}
+
+/**
+ * Drive an aborted progress slot to its terminal stage.
+ *
+ * A transfer that unwinds on abort leaves the slot mid-state machine, and
+ * `assert_progress_slot_idle()` traps on anything but `Done`. The next kernel
+ * queued on this channel would therefore trap inside init_send_progress() --
+ * turning a clean abort into a device fault one kernel later. Marking the slot
+ * terminal converts that into a clean exit, and keeps the collective path free
+ * of abort bookkeeping: every later progress call on this slot short-circuits
+ * to `Done`, so a driver loop simply drains and the kernel exits.
+ *
+ * This buys LIVENESS, not a usable channel. After an abort the DATA_READY /
+ * SLOT_FREE counters are skewed against the peer's, so traffic that follows on
+ * this channel is not meaningful -- which the abort contract already says
+ * ("results from work that completes after an abort should be treated as the
+ * reason for abort"). Recovery is still a `reconfigure()` that destroys and
+ * rebuilds the transport with zeroed state. What changes is that the host now
+ * reaches that point, instead of losing the CUDA context to a trap first.
+ *
+ * The reserved byte range is deliberately NOT returned to `slot.nextStep`. The
+ * peer may still land an RDMA write into it, so the cursor stays advanced and
+ * the range is abandoned rather than recycled.
+ *
+ * Bypasses transition_progress_stage() on purpose: abandoning is not a protocol
+ * transition, and it is legal from every stage.
+ */
+__device__ __forceinline__ void abandon_progress_state(
+    ThreadGroup& group,
+    IbChannelProgress& slot,
+    IbChannelProgress& state) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  state.activeStage = detail::IbSendRecvProgressStage::Done;
+  state.activeNextByte = 0;
+  state.activeTailPadding = 0;
+  state.activeBaseStep = 0;
+  store_progress_state(group, slot, state);
 #else
   (void)group;
   (void)slot;
