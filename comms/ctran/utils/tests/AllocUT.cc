@@ -2,6 +2,7 @@
 
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -21,7 +22,7 @@ class CommAllocTest : public ::testing::Test {
     cudaDeviceProp prop;
     CUDACHECK_TEST(cudaGetDeviceProperties(&prop, 0));
     gpuName_ = prop.name;
-    CLOGF(INFO, "GPU name: {}", gpuName_);
+    CTRAN_LOG(INFO, "GPU name: {}", gpuName_);
   }
 
   void TearDown() override {}

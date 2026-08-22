@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <cstddef>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -500,8 +501,9 @@ TEST_F(CtranWinDistTest, asymmetricWindowPutGet) {
   for (size_t i = 0; i < prevPeerCount; ++i) {
     int expected = prevPeer * 1000 + static_cast<int>(i);
     if (putRecvData[i] != expected && putErrs++ < 10) {
-      XLOG(ERR) << "PUT: Rank " << rank << ": data[" << i
-                << "] = " << putRecvData[i] << ", expected = " << expected;
+      CTRAN_LOG_STREAM(ERR)
+          << "PUT: Rank " << rank << ": data[" << i << "] = " << putRecvData[i]
+          << ", expected = " << expected;
     }
   }
   EXPECT_EQ(putErrs, 0) << "PUT verification failed";
@@ -536,8 +538,9 @@ TEST_F(CtranWinDistTest, asymmetricWindowPutGet) {
   for (size_t i = 0; i < localCount; ++i) {
     int expected = rank * 1000 + static_cast<int>(i);
     if (getRecvData[i] != expected && getErrs++ < 10) {
-      XLOG(ERR) << "GET: Rank " << rank << ": data[" << i
-                << "] = " << getRecvData[i] << ", expected = " << expected;
+      CTRAN_LOG_STREAM(ERR)
+          << "GET: Rank " << rank << ": data[" << i << "] = " << getRecvData[i]
+          << ", expected = " << expected;
     }
   }
   EXPECT_EQ(getErrs, 0) << "GET verification failed";
@@ -654,8 +657,9 @@ TEST_F(CtranWinDistTest, signalResetAcrossGraphReplays) {
     for (size_t i = 0; i < count; ++i) {
       int expected = prevPeer * 1000 + static_cast<int>(i);
       if (recvData[i] != expected && errs++ < 5) {
-        XLOG(ERR) << "Replay " << replay << ": Rank " << rank << ": data[" << i
-                  << "] = " << recvData[i] << ", expected = " << expected;
+        CTRAN_LOG_STREAM(ERR)
+            << "Replay " << replay << ": Rank " << rank << ": data[" << i
+            << "] = " << recvData[i] << ", expected = " << expected;
       }
     }
     EXPECT_EQ(errs, 0) << "Replay " << replay
