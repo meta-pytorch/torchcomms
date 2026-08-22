@@ -380,7 +380,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
       for (int c=0; c<MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
         if (comm->sharedRes->devPeers[c]) {
-          if (comm->channelMetadataOnHost) {
+          if (comm->ncclxExt->channelMetadataOnHost) {
             ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
           } else if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
             ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
@@ -2011,7 +2011,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     comm->ncclxExt->slabAllocator =
         std::make_unique<ncclx::memory::SlabAllocator>();
   }
-  comm->channelMetadataOnHost =
+  comm->ncclxExt->channelMetadataOnHost =
       ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
 
   // Set communicator attributes (overrides)

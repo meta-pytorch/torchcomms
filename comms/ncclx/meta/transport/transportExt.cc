@@ -8,6 +8,7 @@
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/transport/transportExt.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommChannelMetadata.h"
 #include "meta/wrapper/NcclCommMemCache.h"
 
 namespace ncclx::transport {
@@ -271,7 +272,7 @@ ncclResult_t ncclTransportP2pSetupExt(
   NCCLCHECKGOTO(ncclCalloc(&sendData, maxPeers), ret, fail);
   cudaStream_t hostStream, deviceStream;
 
-  if (!comm->channelMetadataOnHost) {
+  if (!meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
     NCCLCHECKGOTO(
         ncclStrongStreamAcquire(
 #if NCCL_MINOR >= 29
@@ -471,7 +472,7 @@ ncclResult_t ncclTransportP2pSetupExt(
                     fail);
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
-                  if (comm->channelMetadataOnHost) {
+                  if (meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
                     std::memcpy(
                         &comm->channels[c]
                              .devPeersHostPtr[sendPeer]
@@ -517,7 +518,7 @@ ncclResult_t ncclTransportP2pSetupExt(
                     fail);
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
-                  if (comm->channelMetadataOnHost) {
+                  if (meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
                     std::memcpy(
                         &comm->channels[c]
                              .devPeersHostPtr[recvPeer]
@@ -618,7 +619,7 @@ exit:
     free(recvData);
   }
 
-  if (!comm->channelMetadataOnHost) {
+  if (!meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
     NCCLCHECK(ncclStreamWaitStream(
         deviceStream, hostStream, comm->sharedRes->scratchEvent));
     NCCLCHECK(ncclStrongStreamRelease(
