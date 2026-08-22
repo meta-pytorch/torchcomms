@@ -57,7 +57,7 @@ NVCUFLAGS += -DENABLE_PRIMS
 endif
 
 ##### src files
-INCEXPORTS  := nccl.h nccl_device.h \
+INCEXPORTS  := nccl.h ncclx.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/nccl_device/*.h ${SRCDIR}/include/nccl_device/*/*.h ${SRCDIR}/include/nccl_device/*/*/*.h)) \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/param/*.h))
 
@@ -100,6 +100,7 @@ LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/logger/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/nvls/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/tcpstore/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/transport/*.cc)
+LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/socket_ext/*.cc)
 LIBSRCFILES += $(wildcard ${NCCLDIR}/meta/utilx/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/commstate/*.cc)
 LIBSRCFILES += $(wildcard ${SHAREDDIR}/meta/rma/*.cc)
@@ -418,6 +419,11 @@ $(INCDIR)/nccl_%.h : include/nccl_%.h
 $(INCDIR)/param/%.h: include/param/%.h
 	@printf "Grabbing   %-35s > %s\n" $< $@
 	mkdir -p $(INCDIR)/param
+	install -m 644 $< $@
+
+$(INCDIR)/ncclx.h : include/ncclx.h
+	@printf "Grabbing   %-35s > %s\n" $< $@
+	mkdir -p $(INCDIR)
 	install -m 644 $< $@
 
 $(INCDIR)/nccl_device/%.h: include/nccl_device/%.h
