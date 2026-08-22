@@ -28,32 +28,35 @@ INCEXPORTS  := nccl.h ncclx.h nccl_device.h \
 	$(patsubst ${SRCDIR}/include/%,%,$(wildcard ${SRCDIR}/include/param/*.h))
 
 # On Linux use real net_socket and net_ib; on Windows use stubs (avoid multiple definition)
-TRANSPORT_CC = $(wildcard ${SRCDIR}/transport/*.cc)
+TRANSPORT_CC = $(wildcard transport/*.cc)
 ifeq ($(NCCL_OS_LINUX), 1)
-TRANSPORT_CC := $(filter-out ${SRCDIR}/transport/net_socket_stub.cc ${SRCDIR}/transport/net_ib_stub.cc,$(TRANSPORT_CC))
+TRANSPORT_CC := $(filter-out transport/net_socket_stub.cc transport/net_ib_stub.cc,$(TRANSPORT_CC))
 endif
 
 LIBSRCFILES := \
-	$(filter-out ${SRCDIR}/enhcompat.cc ${SRCDIR}/init_nvtx.cc,$(wildcard ${SRCDIR}/*.cc)) \
-	$(wildcard ${SRCDIR}/graph/*.cc) \
-	$(wildcard ${SRCDIR}/misc/*.cc) \
+	$(filter-out enhcompat.cc init_nvtx.cc,$(wildcard *.cc)) \
+	$(wildcard graph/*.cc) \
+	$(wildcard misc/*.cc) \
 	$(TRANSPORT_CC) \
-	$(wildcard ${SRCDIR}/transport/net_ib/*.cc) \
-	$(wildcard ${SRCDIR}/transport/net_ib/gdaki/*.cc) \
-	$(wildcard ${SRCDIR}/register/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/net/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/gin/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/tuner/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/profiler/*.cc) \
-	$(wildcard ${SRCDIR}/plugin/env/*.cc) \
-	$(wildcard ${SRCDIR}/nccl_device/*.cc) \
-	$(wildcard ${SRCDIR}/scheduler/*.cc) \
-	$(wildcard ${SRCDIR}/gin/*.cc) \
-	$(wildcard ${SRCDIR}/rma/*.cc) \
-	$(wildcard ${SRCDIR}/devcomm/*.cc) \
-	$(filter-out ${SRCDIR}/param/ncclparam.cc,$(wildcard ${SRCDIR}/param/*.cc)) \
-	$(filter-out ${SRCDIR}/ras/client.cc,$(wildcard ${SRCDIR}/ras/*.cc))
+	$(wildcard transport/net_ib/*.cc) \
+	$(wildcard transport/net_ib/gdaki/*.cc) \
+	$(wildcard register/*.cc) \
+	$(wildcard plugin/*.cc) \
+	$(wildcard plugin/net/*.cc) \
+	$(wildcard plugin/gin/*.cc) \
+	$(wildcard plugin/tuner/*.cc) \
+	$(wildcard plugin/profiler/*.cc) \
+	$(wildcard plugin/env/*.cc) \
+	$(wildcard nccl_device/*.cc) \
+	$(wildcard scheduler/*.cc) \
+	$(wildcard gin/*.cc) \
+	$(wildcard rma/*.cc) \
+	$(wildcard devcomm/*.cc) \
+	$(filter-out param/ncclparam.cc,$(wildcard param/*.cc)) \
+	$(filter-out ras/client.cc,$(wildcard ras/*.cc))
+# NCCLX: re-root the (otherwise pristine-upstream) source list under ${SRCDIR}
+# for the out-of-tree build, so the list above stays byte-for-byte upstream.
+LIBSRCFILES := $(addprefix ${SRCDIR}/,$(LIBSRCFILES))
 
 # NCCLX source-file lists (see makefiles/ncclx_sources.mk).
 include ../makefiles/ncclx_sources.mk
