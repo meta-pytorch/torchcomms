@@ -34,7 +34,6 @@
 #include "mnnvl.h"
 #include <algorithm>
 #include <assert.h>
-#include <memory>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -63,7 +62,6 @@
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/logger/ScubaCommSampleScope.h"
 #include "meta/logger/ScubaInitScope.h"
-#include "comms/ctran/memory/Utils.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "meta/memory/NcclChannelMetadataAlloc.h"
 #include "meta/wrapper/CtranHooks.h"
@@ -2004,13 +2002,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   ncclCommLogData(comm).nRanks = comm->nRanks;
 
 
-  // NCCLX - NCCL_MEM_USE_SLAB_ALLOCATOR
-  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
-    comm->ncclxExt->slabAllocator =
-        std::make_unique<ncclx::memory::SlabAllocator>();
-  }
-  comm->ncclxExt->channelMetadataOnHost =
-      ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+  meta::comms::ncclx::initChannelMetadataPolicy(comm);
 
   // Set communicator attributes (overrides)
   sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);

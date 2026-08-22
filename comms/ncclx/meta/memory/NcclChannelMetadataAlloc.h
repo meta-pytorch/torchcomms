@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
@@ -12,10 +13,27 @@
 #include "checks.h"
 #include "comm.h"
 #include "meta/comm/NcclxCommExt.h"
+#include "meta/transport/transportExt.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "meta/wrapper/NcclCommLogData.h"
 
 namespace meta::comms::ncclx {
+
+// Selects the channel-metadata allocation strategy for a communicator, hoisted
+// out of the forked upstream `init.cc` so that file stays close to pristine
+// NCCL. Establishing the strategy here also puts it next to the
+// `allocChannelMetadata` / `freeChannelMetadata` paths that act on it.
+//
+// `::ncclx` is qualified because unqualified it resolves to the enclosing
+// `meta::comms::ncclx`.
+inline void initChannelMetadataPolicy(ncclComm* comm) {
+  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
+    comm->ncclxExt->slabAllocator =
+        std::make_unique<::ncclx::memory::SlabAllocator>();
+  }
+  comm->ncclxExt->channelMetadataOnHost =
+      ::ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+}
 
 // Allocates one `initChannel` channel-metadata buffer, hoisted out of the
 // forked upstream `channel.cc` so that file stays close to pristine NCCL.
