@@ -16,7 +16,7 @@
 #include "meta/DeviceRackSerial.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "device.h"
-#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/wrapper/NcclxCvars.h"
 
 // Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
 
@@ -391,7 +391,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   if (path->type <= p2pLevel) *p2p = 1;
 
   // [META] Check if multi-NVLink P2P is disabled and handle rack serial matching
-  if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
+  if (meta::comms::ncclx::mnnvlTrunkDisabled() && mnnvl) {
     INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
 
     if (comm->peerInfo[rank1].rackSerial[0] != '\0' && comm->peerInfo[rank2].rackSerial[0] != '\0') {
