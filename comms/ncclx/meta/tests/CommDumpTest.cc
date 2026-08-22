@@ -22,6 +22,7 @@
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 static bool VERBOSE = true;
 enum class sourceToDump { comm, telemetryData };
 
@@ -199,8 +200,9 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(this->comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(this->comm), nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(
+      *meta::comms::ncclx::ncclCommNewCollTrace(this->comm)));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -303,8 +305,9 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(this->comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(this->comm), nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(
+      *meta::comms::ncclx::ncclCommNewCollTrace(this->comm)));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -406,8 +409,9 @@ TEST_F(CommDumpTest, DumpAfterColl) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(this->comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*this->comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(this->comm), nullptr);
+  EXPECT_TRUE(waitForCollTraceDrain(
+      *meta::comms::ncclx::ncclCommNewCollTrace(this->comm)));
 
   res = ncclCommDump(this->comm, dump);
 
@@ -498,8 +502,11 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
   }
 
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(this->comm->newCollTrace, nullptr);
-  EXPECT_EQ(waitForCollTraceDrain(*this->comm->newCollTrace), true);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(this->comm), nullptr);
+  EXPECT_EQ(
+      waitForCollTraceDrain(
+          *meta::comms::ncclx::ncclCommNewCollTrace(this->comm)),
+      true);
 
   res = ncclCommDump(this->comm, dump);
 
@@ -565,8 +572,11 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
       this->sendBuf, this->recvBuf, count, ncclInt, this->comm, this->stream));
 
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(this->comm->newCollTrace, nullptr);
-  EXPECT_EQ(waitForCollTraceDrain(*this->comm->newCollTrace), true);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(this->comm), nullptr);
+  EXPECT_EQ(
+      waitForCollTraceDrain(
+          *meta::comms::ncclx::ncclCommNewCollTrace(this->comm)),
+      true);
 
   res = ncclCommDump(this->comm, dump);
 
@@ -783,8 +793,9 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   res = ncclCommDump(comm, dump);
 
@@ -878,8 +889,9 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   res = ncclCommDump(comm, dump);
 
@@ -1032,8 +1044,9 @@ TEST_F(CommDumpTest, DumpAllWithRequestFieldsCommInfoOnly) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
@@ -1082,8 +1095,9 @@ TEST_F(CommDumpTest, DumpAllWithRequestFieldsTotalCommDurPerIteration) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
@@ -1127,8 +1141,9 @@ TEST_F(CommDumpTest, DumpAllWithEmptyRequestFieldsDumpsEverything) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
@@ -1170,8 +1185,9 @@ TEST_F(CommDumpTest, DumpAllGlobalInfoOnlySkipsPerCommDump) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
@@ -1213,8 +1229,9 @@ TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
@@ -1258,8 +1275,9 @@ TEST_F(CommDumpTest, DumpAllMixedPerCommAndGlobalInfoKeys) {
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
-  ASSERT_NE(comm->newCollTrace, nullptr);
-  EXPECT_TRUE(waitForCollTraceDrain(*comm->newCollTrace));
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm), nullptr);
+  EXPECT_TRUE(
+      waitForCollTraceDrain(*meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
