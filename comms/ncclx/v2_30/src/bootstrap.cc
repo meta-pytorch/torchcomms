@@ -20,7 +20,6 @@
 #include <thread>
 
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 
 #define BOOTSTRAP_N_CHECK_ABORT           10000
 #define BOOTSTRAP_TAG_CONNECT             (0x1 << 31)
