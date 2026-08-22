@@ -4,6 +4,7 @@
 // "ncclCuMemHostAlloc" equivalent
 #include "alloc.h"
 #include "meta/NcclxConfig.h" // @manual
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
@@ -356,7 +357,7 @@ void TransportProxy::workerThreadFn() {
       "TransportProxy",
       parentComm_->rank,
       parentComm_->commHash,
-      parentComm_->logMetaData.commDesc);
+      ncclCommLogData(parentComm_).commDesc);
 
   NCCLX_CUDACHECKTHROW(cudaSetDevice(parentComm_->cudaDev));
 
