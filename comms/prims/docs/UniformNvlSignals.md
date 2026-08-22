@@ -125,8 +125,8 @@ The following combinations are rejected at compile time:
 - Split aggregate multimem publication or waiting.
 - A phase or access operation that has no storage or instruction mapping.
 
-Host launch validation rejects aggregate pipeline depth above one warp and per-peer teams above two warps.
-Device validation traps on an out-of-range channel, lane, rank, or signal offset before issuing a signal operation.
+Host launch sizing uses 64 threads through 64 ranks and 128 threads through 72 ranks.
+Device protocol validation rejects per-peer teams above 72 ranks and traps on an out-of-range channel, lane, rank, or signal offset before issuing a signal operation.
 
 ## Execution Ownership
 
@@ -144,17 +144,19 @@ thread P - 1 owns pipeline lane P - 1
 threads P..31 do not publish or wait
 ```
 
-Per-peer topology uses two warps per channel:
+Per-peer topology uses one whole block per channel: two warps through 64
+ranks and four warps for 65-72 ranks:
 
 ```text
 thread 0     owns NVL peer 0
 thread 1     owns NVL peer 1
 ...
 thread R - 1 owns NVL peer R - 1
-threads R..63 own no peer slot
+threads R..127 own no peer slot
 ```
 
-All 64 threads participate in required block synchronization.
+Per-peer launches use 64 threads through 64 ranks and 128 threads for 65-72 ranks.
+Every launched thread participates in required block synchronization.
 `TreeMin` and `ButterflyMin` additionally use all threads for their reductions.
 
 Per-peer slots are shared across pipeline lanes, so per-peer operations use pipeline depth one.
