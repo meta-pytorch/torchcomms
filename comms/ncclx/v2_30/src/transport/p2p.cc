@@ -5,8 +5,10 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "checks.h"
 #include "comm.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "graph.h"
 #include "utils.h"
@@ -18,7 +20,6 @@
 #include "shm.h"
 #include "register_inline.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ctran/utils/Utils.h"
 
@@ -137,7 +138,7 @@ extern int64_t ncclParamMNNVLEnable();
 ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* info1, struct ncclPeerInfo* info2) {
   initCeOperation();
 
-  if (comm->noLocal_) {
+  if (comm->ncclxExt->noLocal) {
     *ret = 0;
     return ncclSuccess;
   }
@@ -202,7 +203,7 @@ ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph
     // Check that legacy IPC support is available (WSL WAR)
     char *dummy;
     cudaIpcMemHandle_t ipc;
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCudaMalloc(&dummy, CUDA_IPC_MIN, comm->memManager, ncclMemOffload));
     if (!CUDASUCCESS(cudaIpcGetMemHandle(&ipc, dummy))) {
       INFO(NCCL_INIT|NCCL_P2P,"Legacy IPC not supported");
@@ -239,7 +240,7 @@ ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDe
 
     // cuMem API support
     CUmemGenericAllocationHandle handle;
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCuMemAlloc(ptr, &handle, type, size, manager, callsite, memtype));
     NCCLCHECK(ncclCudaMemset((uint8_t*)*ptr, 0, size));
     if (manager != nullptr && peerRank >= 0 && memtype != ncclMemPersist) {
@@ -260,7 +261,7 @@ ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDe
 #endif
   } else {
     // Allocate a CUDA buffer and generate an IPC handle for it
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCudaCalloc((char **)ptr, size, manager));
     cudaError_t res = cudaIpcGetMemHandle(&ipcDesc->devIpc, *ptr);
     if (res != cudaSuccess) {
@@ -680,7 +681,7 @@ static ncclResult_t p2pSendProxySetup(struct ncclProxyConnection* connection, st
     if (respSize != sizeof(struct p2pShmProxyInfo)) return ncclInternalError;
     NCCLCHECK(ncclCalloc(&proxyInfo, 1));
     connection->transportResources = proxyInfo;
-    memLogMetaData = proxyState->owner->logMetaData;
+    memLogMetaData = ncclCommLogData(proxyState->owner);
     NCCLCHECK(ncclCudaCalloc(&proxyInfo->ceDevBuff, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager));
 
     // Create a SHM segment for the peer to attach to
@@ -1154,7 +1155,7 @@ static ncclResult_t ipcRegisterBuffer(ncclComm* comm, const void* userbuff, size
         NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->hostStream, /*concurrent=*/false, &hostStream), ret, fail);
         NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->deviceStream, /*concurrent=*/false, &deviceStream), ret, fail);
         if (regRecord->regIpcAddrs.devPeerRmtAddrs == NULL) {
-          memLogMetaData = comm->logMetaData;
+          memLogMetaData = ncclCommLogData(comm);
           NCCLCHECKGOTO(ncclCudaCallocAsync(&regRecord->regIpcAddrs.devPeerRmtAddrs, ipcIndexSize, hostStream, comm->memManager), ret, fail);
         }
         NCCLCHECKGOTO(ncclCudaMemcpyAsync(regRecord->regIpcAddrs.devPeerRmtAddrs, regRecord->regIpcAddrs.hostPeerRmtAddrs, ipcIndexSize, hostStream), ret, fail);

@@ -13,7 +13,6 @@
 #include "rings.h"
 #include "topo.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
 
 /******************************************************************/
 /********************* Internode connection ***********************/

@@ -10,7 +10,6 @@
 
 #include <stdint.h>
 #include "compiler.h"
-#include "comms/utils/cvars/nccl_cvars.h"
 
 const char* userHomeDir();
 void setEnvFile(const char* fileName);
@@ -30,7 +29,5 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
     } \
     return cache; \
   }
-
-void initNcclLogger();
 
 #endif

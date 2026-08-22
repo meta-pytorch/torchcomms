@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include <assert.h>
 #include <cuda_runtime.h>
 #include <cuda.h>
@@ -125,11 +126,11 @@ static ncclResult_t ncclRmaProxyCtxAlloc(struct ncclComm* comm, ncclGin_t* ginCo
   // Allocate the sequence numbers for the per-rank network function descriptors
   // These are allocated as CPU-accessible memory (either GDR or host memory)
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->opSeqs, &rmaProxyCtx->opSeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->opSeqsGdrHandle, comm->memManager, comm->logMetaData));
+                                  comm->nRanks, 0, &rmaProxyCtx->opSeqsGdrHandle, comm->memManager, ncclCommLogData(comm)));
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->readySeqs, &rmaProxyCtx->readySeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->readySeqsGdrHandle, comm->memManager, comm->logMetaData));
+                                  comm->nRanks, 0, &rmaProxyCtx->readySeqsGdrHandle, comm->memManager, ncclCommLogData(comm)));
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->doneSeqs, &rmaProxyCtx->doneSeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->doneSeqsGdrHandle, comm->memManager, comm->logMetaData));
+                                  comm->nRanks, 0, &rmaProxyCtx->doneSeqsGdrHandle, comm->memManager, ncclCommLogData(comm)));
   // Sanitize and set up the lock-free circular buffer queue size
   uint64_t queueSize = ncclParamRmaProxyQueueSize();
   uint32_t maxRequests = NCCL_NET_MAX_REQUESTS * rmaProxyCtx->props.maxRecvs;
@@ -173,7 +174,7 @@ static ncclResult_t ncclRmaProxyCtxAllocGraph(struct ncclComm* comm, ncclGin_t* 
   size_t signalsBufSize = (comm->nRanks + 1) * sizeof(uint64_t);
   // Allocate the CPU-accessible signal for graph capture and then register the memory region with the GIN plugin.
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->cpuAccessSignals, &rmaProxyCtx->cpuAccessSignalsDev,
-                                  comm->nRanks + 1, 0, &rmaProxyCtx->cpuAccessSignalsGdrHandle, comm->memManager, comm->logMetaData));
+                                  comm->nRanks + 1, 0, &rmaProxyCtx->cpuAccessSignalsGdrHandle, comm->memManager, ncclCommLogData(comm)));
   NCCLCHECK(ncclRmaProxyRegMrSym(ginComm, rmaProxyCtx->ginCollComm, rmaProxyCtx->props, rmaProxyCtx->cpuAccessSignalsDev, signalsBufSize,
                                  NCCL_PTR_CUDA, NCCL_NET_MR_FLAG_FORCE_SO,
                                  &rmaProxyCtx->cpuAccessSignalsMhandle, &rmaProxyCtx->cpuAccessSignalsGinHandle));

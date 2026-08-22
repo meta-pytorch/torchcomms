@@ -2,6 +2,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/init/Init.h>
 
@@ -235,7 +236,8 @@ TEST_P(RMATestParam, winPut) {
 
 #ifdef TEST_ENABLE_CTRAN
   if (ctranAllReduce) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllReduce", "Ctran");
   }
 #endif
 
@@ -318,7 +320,8 @@ TEST_P(RMATestParam, winGet) {
 
 #ifdef TEST_ENABLE_CTRAN
   if (ctranAllReduce) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllReduce", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllReduce", "Ctran");
   }
 #endif
 
