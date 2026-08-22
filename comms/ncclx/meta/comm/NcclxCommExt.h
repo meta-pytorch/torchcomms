@@ -9,6 +9,7 @@
 
 #include "nccl_tuner.h" // @manual -- provides NCCL_NUM_ALGORITHMS
 
+#include "comms/ctran/CtranComm.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h" // CommLogData
@@ -72,4 +73,8 @@ struct ncclxCommExt {
   // the version-agnostic ncclCommLogData() accessor
   // (meta/wrapper/NcclCommLogData.h).
   CommLogData logMetaData;
+
+  // The per-communicator CTRAN integration handle; created at init when
+  // useCtran is set (see createCtranComm) and reset in the comm-free hook.
+  std::unique_ptr<CtranComm> ctranComm;
 };

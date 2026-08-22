@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
@@ -348,7 +349,8 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
       dumpProxyTrace(comm->proxyState->trace.get(), comm->commHash, map);
     }
 
-    auto mapperTrace = ncclx::colltrace::getMapperTrace(comm->ctranComm_.get());
+    auto mapperTrace = ncclx::colltrace::getMapperTrace(
+        meta::comms::ncclx::ncclCommCtran(comm).get());
     if (mapperTrace != nullptr) {
       dumpMapperTrace(*mapperTrace, map);
     } else {

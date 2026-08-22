@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 #include <unordered_map>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/init/Init.h>
 #include <folly/json/json.h>
@@ -292,8 +293,10 @@ TEST_F(CommDumpTest, DumpAfterCtranSendRecv) {
   int sendPeer = (this->globalRank + 1) % this->numRanks;
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
-  if (!ctranSendRecvSupport(sendPeer, comm->ctranComm_.get()) &&
-      !ctranSendRecvSupport(recvPeer, comm->ctranComm_.get())) {
+  if (!ctranSendRecvSupport(
+          sendPeer, meta::comms::ncclx::ncclCommCtran(comm).get()) &&
+      !ctranSendRecvSupport(
+          recvPeer, meta::comms::ncclx::ncclCommCtran(comm).get())) {
     GTEST_SKIP() << "Skip test because no ctran support.";
   }
 
@@ -481,7 +484,8 @@ TEST_F(CommDumpTest, DumpAfterCtranColl) {
   std::unordered_map<std::string, std::string> dump;
   constexpr int numColls = 10;
 
-  if (!ctranAllToAllvSupport(this->comm->ctranComm_.get())) {
+  if (!ctranAllToAllvSupport(
+          meta::comms::ncclx::ncclCommCtran(this->comm).get())) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran All to All support.";
   }
@@ -559,7 +563,8 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
   std::unordered_map<std::string, std::string> dump;
 
   if (!ctranAllGatherSupport(
-          this->comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
+          meta::comms::ncclx::ncclCommCtran(this->comm).get(),
+          NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran AllGather support.";
   }

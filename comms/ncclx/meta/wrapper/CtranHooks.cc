@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/wrapper/CtranHooks.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comm.h"
 
@@ -17,9 +18,11 @@ ncclResult_t runCtranGroupEndHook() {
 
 void ctranUpdateAsyncError(ncclComm* comm, ncclResult_t* asyncError) {
   // Check Ctran asyncError if no error happens in the baseline path
-  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
+  if (NCCL_CTRAN_ENABLE &&
+      ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()) &&
       (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
-    auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
+    auto ctranAsyncError = metaCommToNccl(
+        meta::comms::ncclx::ncclCommCtran(comm)->getAsyncResult());
     // Overwrite if ctranAsyncError is inProgress or error
     if (ctranAsyncError != ncclSuccess) {
       *asyncError = ctranAsyncError;

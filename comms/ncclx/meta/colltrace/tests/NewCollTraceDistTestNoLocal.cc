@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -203,7 +204,8 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   constexpr int count = 1048576;
   constexpr int nColl = 10;
 
-  if (!ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
+  if (!ctranAllGatherSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran AllGather support.";
   }
@@ -321,8 +323,10 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
   int sendPeer = (this->globalRank + 1) % this->numRanks;
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
-  if (!ctranSendRecvSupport(sendPeer, comm->ctranComm_.get()) ||
-      !ctranSendRecvSupport(recvPeer, comm->ctranComm_.get())) {
+  if (!ctranSendRecvSupport(
+          sendPeer, meta::comms::ncclx::ncclCommCtran(comm).get()) ||
+      !ctranSendRecvSupport(
+          recvPeer, meta::comms::ncclx::ncclCommCtran(comm).get())) {
     GTEST_SKIP()
         << "Skip test because this comm does not support ctran sendrecv.";
   }
@@ -453,8 +457,10 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   int sendPeer = (this->globalRank + 1) % this->numRanks;
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
-  if (!ctranSendRecvSupport(sendPeer, comm->ctranComm_.get()) &&
-      !ctranSendRecvSupport(recvPeer, comm->ctranComm_.get())) {
+  if (!ctranSendRecvSupport(
+          sendPeer, meta::comms::ncclx::ncclCommCtran(comm).get()) &&
+      !ctranSendRecvSupport(
+          recvPeer, meta::comms::ncclx::ncclCommCtran(comm).get())) {
     GTEST_SKIP() << "Skip test because no ctran support.";
   }
 
@@ -522,7 +528,7 @@ TEST_F(CollTraceTest, winPutWait) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -915,7 +921,7 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -933,7 +939,11 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
   ctran::CtranWin* win = nullptr;
   void* winBase = nullptr;
   auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
+      sizeBytes,
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
+      &winBase,
+      &win,
+      hints);
   ASSERT_EQ(res, ncclSuccess);
   ASSERT_NE(winBase, nullptr);
 
