@@ -16,6 +16,8 @@
 #include "comms/utils/logger/LoggingFormat.h"
 #include "meta/NcclxChecks.h"
 
+#include "meta/wrapper/NcclxRuntime.h"
+
 #include "debug.h" // @manual
 #include "param.h" // @manual
 
@@ -53,7 +55,12 @@ class NcclLoggerTest : public ::testing::Test {
 
   void initLogging() {
     ncclDebugLevel = -1;
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void initLegacyLogging() {
