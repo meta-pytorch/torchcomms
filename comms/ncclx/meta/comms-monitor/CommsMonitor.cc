@@ -10,6 +10,7 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 constexpr static auto kGlobalInfoDumpMapKey = "GlobalInfo";
 
@@ -45,10 +46,10 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
               .cliqueSize = comm->clique.size},
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
-      .newCollTrace = comm->newCollTrace,
+      .newCollTrace = meta::comms::ncclx::ncclCommNewCollTrace(comm),
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
           comm->logMetaData.commHash),
-      .algoStats = comm->algoStats};
+      .algoStats = meta::comms::ncclx::ncclCommAlgoStats(comm)};
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
