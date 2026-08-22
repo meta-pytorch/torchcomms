@@ -8,7 +8,6 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,6 +75,30 @@ void ncclSetMyThreadLoggingName(std::string_view name) {
   meta::comms::logger::initThreadMetaData(name);
 }
 
+// Shared terminal logging sink for both the forked upstream ncclDebugLog
+// (debug.cc) and ncclMetaDebugLog below: formats the printf message and emits
+// one line through the common NCCLX logger. See DebugExtInternal.h for the
+// contract.
+void ncclMetaEmitLog(
+    ncclDebugLogLevel level,
+    const char* file,
+    int line,
+    const char* func,
+    const char* fmt,
+    va_list vargs) {
+  va_list vargsLen;
+  va_copy(vargsLen, vargs);
+  const size_t logLen = std::vsnprintf(nullptr, 0, fmt, vargsLen);
+  va_end(vargsLen);
+
+  std::vector<char> buffer(logLen + 1); // +1 for null terminator
+  // vsnprintf copies at most buffer.size() - 1 characters, then
+  // null-terminates.
+  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
+
+  ncclx::logging::writeNcclLog(level, file, func, line, buffer.data());
+}
+
 /* Meta's logging function with separate file and func parameters.
  * Used by the VERSION, WARN, ERR, INFO, TRACE_CALL, and TRACE macros.
  * ncclDebugLog keeps file/func combined for OFI plugin compatibility.
@@ -121,22 +144,10 @@ void ncclMetaDebugLog(
     }
   }
 
-  std::stringstream logStream;
-  size_t logLen = 0;
   va_list vargs;
   va_start(vargs, fmt);
-  logLen += std::vsnprintf(nullptr, 0, fmt, vargs);
+  ncclMetaEmitLog(level, file, line, func, fmt, vargs);
   va_end(vargs);
-
-  std::vector<char> buffer(logLen + 1); // +1 for null terminator
-  va_start(vargs, fmt);
-  // vsnprintf copy at most buf_size - 1 characters
-  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
-  va_end(vargs);
-  logStream << buffer.data();
-
-  auto logStr = logStream.str();
-  ncclx::logging::writeNcclLog(level, file, func, line, logStr);
 }
 
 #endif
