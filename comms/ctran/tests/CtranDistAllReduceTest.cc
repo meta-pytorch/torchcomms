@@ -7,6 +7,7 @@
 #include <mpi.h>
 #include <stdlib.h>
 #include <thread>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
@@ -127,8 +128,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       // count errors
       if (observedVals[i] != exp) {
         if (error_count < 20) {
-          XLOG(WARN) << "error[" << error_count << "]: " << " data[" << i
-                     << "] " << observedVals[i] << " vs exp " << exp;
+          CTRAN_LOG_STREAM(WARN)
+              << "error[" << error_count << "]: " << " data[" << i << "] "
+              << observedVals[i] << " vs exp " << exp;
         }
         error_count++;
       }
