@@ -15,6 +15,7 @@
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/colltrace/tests/MockTypes.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 using namespace meta::comms;
 using namespace meta::comms::colltrace;
@@ -44,7 +45,7 @@ TEST_F(NewCollTraceUT, createColltrace) {
   ncclComm_t comm;
   ncclCommInitRank(&comm, 1, id, 0);
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
 
   ncclCommDestroy(comm);
 }
@@ -55,8 +56,8 @@ TEST_F(NewCollTraceUT, deleteColltrace) {
   ncclComm_t comm;
   ncclCommInitRank(&comm, 1, id, 0);
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto colltracePtr = comm->newCollTrace;
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto colltracePtr = meta::comms::ncclx::ncclCommNewCollTrace(comm);
   auto beforeDeleteCount = colltracePtr.use_count();
 
   ncclCommDestroy(comm);
@@ -72,8 +73,8 @@ TEST_F(NewCollTraceUT, dumpNewCollTraceWithCollectives) {
   ncclComm_t comm;
   ncclCommInitRank(&comm, 1, id, 0);
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto* collTrace = comm->newCollTrace.get();
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto* collTrace = meta::comms::ncclx::ncclCommNewCollTrace(comm).get();
 
   // Create metadata for a collective
   auto metadata = createMockCollMetadata();
