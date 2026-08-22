@@ -1127,6 +1127,67 @@ ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std:
 ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map,
     const std::unordered_map<std::string, std::string>& hints = {});
 
+/* Snapshot of a communicator's collective tuning model.
+ *
+ * The bandwidths/latencies tables are the raw model built once at communicator
+ * init by ncclTopoTuneModel(): algorithm bandwidth in GB/s (0 means the
+ * (function, algorithm, protocol) combination is disabled or unavailable,
+ * including NCCL_ALGO/NCCL_PROTO masks) and base latency in microseconds.
+ * They are uncorrected: the per-size correction factors that
+ * ncclTopoGetAlgoTime() applies are NOT reflected in them.
+ *
+ * bestBySize[f][s] is the evaluated model at messageSizes[s] bytes: the
+ * algorithm/protocol/channel/thread selection a real collective of that size
+ * would run with, and its predicted execution time in microseconds with all
+ * correction factors applied. It is produced by the same selection path real
+ * calls take (including an external tuner plugin when one is loaded), with
+ * numPipeOps = 1 and unregistered buffers (regBuff = 0). algorithm = -1 and
+ * timeUs = -1 mean no combination is available. Within an interval where the
+ * selection does not change, predicted time is affine in nBytes, so linear
+ * interpolation between adjacent entries reproduces the model.
+ *
+ * Not modeled: the fp8 ring relegation for comms larger than 8 ranks (a
+ * precision preference, not a time estimate), and per-call op aggregation
+ * (numPipeOps > 1 scales only the latency term).
+ */
+#define NCCL_COLL_TUNING_VERSION 1
+#define NCCL_TUNING_MAX_FUNCTIONS 8
+#define NCCL_TUNING_MAX_ALGORITHMS 16
+#define NCCL_TUNING_MAX_PROTOCOLS 8
+#define NCCL_TUNING_SIZE_POINTS 31
+#define NCCL_TUNING_NAME_LEN 16 /* incl. NUL; longest today is "ReduceScatter" */
+
+typedef struct {
+  int8_t algorithm;  /* index into algorithmNames, -1 if none available */
+  int8_t protocol;   /* index into protocolNames */
+  int16_t nChannels;
+  int16_t nThreads;
+  float timeUs;
+} ncclCollTuningEntry;
+
+typedef struct {
+  int version; /* NCCL_COLL_TUNING_VERSION */
+
+  int nRanks, nNodes, nChannels;
+  int minCompCap, maxCompCap;
+
+  int numFunctions, numAlgorithms, numProtocols;
+  char functionNames[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_NAME_LEN];
+  char algorithmNames[NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_NAME_LEN];
+  char protocolNames[NCCL_TUNING_MAX_PROTOCOLS][NCCL_TUNING_NAME_LEN];
+
+  float bandwidths[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_MAX_PROTOCOLS];
+  float latencies[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_MAX_ALGORITHMS][NCCL_TUNING_MAX_PROTOCOLS];
+
+  uint64_t messageSizes[NCCL_TUNING_SIZE_POINTS]; /* messageSizes[s] = 1 << s */
+  ncclCollTuningEntry bestBySize[NCCL_TUNING_MAX_FUNCTIONS][NCCL_TUNING_SIZE_POINTS];
+} ncclCollTuning;
+
+/* Fill `tuning` from the communicator's init-time tuning state. Read-only
+ * with respect to the communicator and callable from any thread once the
+ * communicator is initialized. */
+ncclResult_t ncclQueryCollTuning(ncclComm_t comm, ncclCollTuning* tuning);
+
 namespace ncclx::colltrace {
 
 inline constexpr uint64_t kInvalidReplayId = UINT64_MAX;

@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
@@ -83,10 +84,12 @@ __device__ __forceinline__ void wait_until_reached(
     uint64_t expected,
     const Timeout& timeout) {
   while (!sequence_reached(signal.load(), expected)) {
-    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-        timeout,
-        "NVL signal wait for sequence=%llu",
-        static_cast<unsigned long long>(expected));
+    if (FT_ABORT_CHECK(
+            timeout,
+            "NVL signal wait for sequence=%llu",
+            static_cast<unsigned long long>(expected))) {
+      FT_DEVICE_TRAP();
+    }
   }
 }
 
@@ -240,10 +243,12 @@ __device__ __forceinline__ void wait_per_peer_serial(
         }
       }
       if (!complete) {
-        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-            timeout,
-            "NVL serial per-peer wait for round=%llu",
-            static_cast<unsigned long long>(round.value));
+        if (FT_ABORT_CHECK(
+                timeout,
+                "NVL serial per-peer wait for round=%llu",
+                static_cast<unsigned long long>(round.value))) {
+          FT_DEVICE_TRAP();
+        }
       }
     }
   }
@@ -280,10 +285,12 @@ __device__ __forceinline__ void wait_per_peer_tree(
     }
     complete = completeByPeer[0] != 0;
     if (!complete && group.is_leader()) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-          timeout,
-          "NVL tree per-peer wait for round=%llu",
-          static_cast<unsigned long long>(round.value));
+      if (FT_ABORT_CHECK(
+              timeout,
+              "NVL tree per-peer wait for round=%llu",
+              static_cast<unsigned long long>(round.value))) {
+        FT_DEVICE_TRAP();
+      }
     }
     group.sync();
   }
@@ -323,10 +330,12 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     group.sync();
     complete = completeByWarp[0] != 0 && completeByWarp[1] != 0;
     if (!complete && group.is_leader()) {
-      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-          timeout,
-          "NVL butterfly per-peer wait for round=%llu",
-          static_cast<unsigned long long>(round.value));
+      if (FT_ABORT_CHECK(
+              timeout,
+              "NVL butterfly per-peer wait for round=%llu",
+              static_cast<unsigned long long>(round.value))) {
+        FT_DEVICE_TRAP();
+      }
     }
     group.sync();
   }

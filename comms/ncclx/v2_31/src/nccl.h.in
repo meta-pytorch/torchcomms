@@ -25,6 +25,41 @@
 #define NCCL_VERSION_CODE ${nccl:Version}
 #define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
 
+/* [META] Default the platform macro from the compiler's own predefines when the
+ * build has not supplied one.
+ *
+ * The build defines NCCL_OS_LINUX for libnccl itself, but targets that consume
+ * only the exported/private header set -- ncclx-private-headers, nccl<ver>-internal,
+ * and anything reaching them, e.g. the meta tests via comms/testinfra/TestUtils.h --
+ * do not inherit it, because compiler_flags are private to the declaring target in
+ * Buck. The same applies to any out-of-tree consumer of the installed headers.
+ *
+ * This has to live in nccl.h rather than os.h. os.h includes nccl.h first, so by
+ * the time os.h is reached nccl.h has already been fully processed behind its
+ * NCCL_H_ guard and will never be reprocessed -- meaning nccl.h's own
+ * `#ifdef NCCL_OS_LINUX` gate around ncclResetDebugInit/pncclResetDebugInit would
+ * still evaluate false for exactly the consumers this fixes. Defining it here
+ * covers the whole header set at once: os.h, core.h, alloc.h and socket.h all
+ * include nccl.h first.
+ *
+ * Defined to 1, not left empty as in v2_29/v2_30: 2.31 added bare
+ * `#if NCCL_OS_LINUX` / `#if NCCL_OS_WINDOWS` tests (src/include/socket.h and
+ * src/include/os.h) that need the macro to expand to a value, so the valueless
+ * spelling fails there with "expected value in expression". 1 is also what
+ * -D<name> yields, so a build that does pass the flag is unchanged, and the guard
+ * prevents any redefinition warning.
+ *
+ * _WIN32/_WIN64 are OS predefines, not architecture predefines -- MSVC defines
+ * them on ARM64 too -- so aarch64 Linux correctly falls through to NCCL_OS_LINUX.
+ */
+#if !defined(NCCL_OS_LINUX) && !defined(NCCL_OS_WINDOWS)
+#if defined(_WIN32) || defined(_WIN64)
+#define NCCL_OS_WINDOWS 1
+#else
+#define NCCL_OS_LINUX 1
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

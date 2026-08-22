@@ -1992,6 +1992,61 @@ static ncclResult_t updateCollCostTable(
   return ncclSuccess;
 }
 
+// Channel/thread selection for a given algorithm/protocol and size. Shared by
+// topoGetAlgoInfo() and ncclQueryCollTuning() so the query cannot drift from
+// the real selection.
+static void topoGetChannelThreadCount(
+    struct ncclComm* comm, int algorithm, int protocol, size_t nBytes,
+    int* nChannels, int* nThreads
+  ) {
+  int nc = comm->nChannels;
+  int nt = comm->maxThreads[algorithm][protocol];
+  int threadThreshold = comm->threadThresholds[algorithm][protocol];
+  if (algorithm == NCCL_ALGO_COLLNET_DIRECT) {
+    // CollNet channel tuning
+    int ncSwitch = 16;
+    bool flag = true;
+    while (ncSwitch >= 1 && flag) {
+      while ((flag = nBytes < nc*nt*comm->channels[0].collnetDirect.nHeads*threadThreshold) && nc > ncSwitch) {
+        if (nc == ncSwitch+ncSwitch/2) threadThreshold /= 2;
+        nc--;
+      }
+      ncSwitch /= 2;
+    }
+  } else if (algorithm == NCCL_ALGO_NVLS || algorithm == NCCL_ALGO_NVLS_TREE) {
+    // NVLS should not need more than 16 channels to get peak BW.
+    if (comm->nNodes > 1 && algorithm == NCCL_ALGO_NVLS) {
+      nc = std::min(comm->nvlsChannels, comm->nChannels);
+    } else {
+      nc = comm->nvlsChannels;
+    }
+  } else {
+    // Ring/Tree channel tuning
+    while (nBytes < nc * nt * threadThreshold) {
+      if (nc >= 2) nc--;
+      else break;
+    }
+  }
+
+  if (algorithm != NCCL_ALGO_NVLS && algorithm != NCCL_ALGO_NVLS_TREE &&
+    algorithm != NCCL_ALGO_COLLNET_DIRECT) {
+    while (nBytes < nc * nt * threadThreshold) {
+      if (nt % 128 == 0) nt /= 2;
+      else break;
+    }
+  }
+  if (protocol == NCCL_PROTO_SIMPLE) {
+    if (algorithm == NCCL_ALGO_RING) nt += WARP_SIZE; // Extra warp for sync
+    // More threads or sync warps needed due to split thread model
+    if (algorithm == NCCL_ALGO_TREE) nt += 4*WARP_SIZE;
+  }
+  nt = nt/WARP_SIZE < 3 ? 3*WARP_SIZE : nt;
+  if (algorithm == NCCL_ALGO_TREE) nt = NCCL_MAX_NTHREADS; // Tree now uses all threads always.
+  if (algorithm == NCCL_ALGO_PAT) nt = NCCL_MAX_NTHREADS;
+  *nChannels = nc;
+  *nThreads = nt;
+}
+
 static ncclResult_t topoGetAlgoInfo(
     struct ncclComm* comm, struct ncclTaskColl* info, size_t nBytes,
     float** collCostTable, ncclSimInfo_t* simInfo
@@ -2035,50 +2090,8 @@ static ncclResult_t topoGetAlgoInfo(
   if (simInfo) simInfo->estimatedTime = time;
   TRACE(NCCL_COLL, "%ld Bytes -> Algo %d proto %d time %f", nBytes, info->algorithm, info->protocol, time);
 
-  int nc = comm->nChannels;
-  int nt = comm->maxThreads[info->algorithm][info->protocol];
-  int threadThreshold = comm->threadThresholds[info->algorithm][info->protocol];
-  if (info->algorithm == NCCL_ALGO_COLLNET_DIRECT) {
-    // CollNet channel tuning
-    int ncSwitch = 16;
-    bool flag = true;
-    while (ncSwitch >= 1 && flag) {
-      while ((flag = nBytes < nc*nt*comm->channels[0].collnetDirect.nHeads*threadThreshold) && nc > ncSwitch) {
-        if (nc == ncSwitch+ncSwitch/2) threadThreshold /= 2;
-        nc--;
-      }
-      ncSwitch /= 2;
-    }
-  } else if (info->algorithm == NCCL_ALGO_NVLS || info->algorithm == NCCL_ALGO_NVLS_TREE) {
-    // NVLS should not need more than 16 channels to get peak BW.
-    if (comm->nNodes > 1 && info->algorithm == NCCL_ALGO_NVLS) {
-      nc = std::min(comm->nvlsChannels, comm->nChannels);
-    } else {
-      nc = comm->nvlsChannels;
-    }
-  } else {
-    // Ring/Tree channel tuning
-    while (nBytes < nc * nt * threadThreshold) {
-      if (nc >= 2) nc--;
-      else break;
-    }
-  }
-
-  if (info->algorithm != NCCL_ALGO_NVLS && info->algorithm != NCCL_ALGO_NVLS_TREE &&
-    info->algorithm != NCCL_ALGO_COLLNET_DIRECT) {
-    while (nBytes < nc * nt * threadThreshold) {
-      if (nt % 128 == 0) nt /= 2;
-      else break;
-    }
-  }
-  if (info->protocol == NCCL_PROTO_SIMPLE) {
-    if (info->algorithm == NCCL_ALGO_RING) nt += WARP_SIZE; // Extra warp for sync
-    // More threads or sync warps needed due to split thread model
-    if (info->algorithm == NCCL_ALGO_TREE) nt += 4*WARP_SIZE;
-  }
-  nt = nt/WARP_SIZE < 3 ? 3*WARP_SIZE : nt;
-  if (info->algorithm == NCCL_ALGO_TREE) nt = NCCL_MAX_NTHREADS; // Tree now uses all threads always.
-  if (info->algorithm == NCCL_ALGO_PAT) nt = NCCL_MAX_NTHREADS;
+  int nc, nt;
+  topoGetChannelThreadCount(comm, info->algorithm, info->protocol, nBytes, &nc, &nt);
   info->nMaxChannels = nc;
   info->nWarps = nt/WARP_SIZE;
   return ncclSuccess;
@@ -2144,6 +2157,107 @@ ncclResult_t ncclGetAlgoInfo(
   }
 
   info->nMaxChannels = nMaxChannels == 0 ? info->nMaxChannels : nMaxChannels;
+  return ncclSuccess;
+}
+
+__attribute__((visibility("default"))) ncclResult_t ncclQueryCollTuning(
+    ncclComm_t comm, ncclCollTuning* tuning) {
+  static_assert(NCCL_NUM_FUNCTIONS <= NCCL_TUNING_MAX_FUNCTIONS,
+      "ncclCollTuning function capacity too small");
+  static_assert(NCCL_NUM_ALGORITHMS <= NCCL_TUNING_MAX_ALGORITHMS,
+      "ncclCollTuning algorithm capacity too small");
+  static_assert(NCCL_NUM_PROTOCOLS <= NCCL_TUNING_MAX_PROTOCOLS,
+      "ncclCollTuning protocol capacity too small");
+
+  if (comm == NULL || tuning == NULL) return ncclInvalidArgument;
+
+  memset(tuning, 0, sizeof(*tuning));
+  tuning->version = NCCL_COLL_TUNING_VERSION;
+  tuning->nRanks = comm->nRanks;
+  tuning->nNodes = comm->nNodes;
+  tuning->nChannels = comm->nChannels;
+  tuning->minCompCap = comm->minCompCap;
+  tuning->maxCompCap = comm->maxCompCap;
+  tuning->numFunctions = NCCL_NUM_FUNCTIONS;
+  tuning->numAlgorithms = NCCL_NUM_ALGORITHMS;
+  tuning->numProtocols = NCCL_NUM_PROTOCOLS;
+  for (int f=0; f<NCCL_NUM_FUNCTIONS; f++) {
+    snprintf(tuning->functionNames[f], sizeof(tuning->functionNames[f]), "%s", ncclFuncStr[f]);
+  }
+  for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+    snprintf(tuning->algorithmNames[a], sizeof(tuning->algorithmNames[a]), "%s", ncclAlgoStr[a]);
+  }
+  for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+    snprintf(tuning->protocolNames[p], sizeof(tuning->protocolNames[p]), "%s", ncclProtoStr[p]);
+  }
+  for (int f=0; f<NCCL_NUM_FUNCTIONS; f++) {
+    for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+      for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+        tuning->bandwidths[f][a][p] = comm->bandwidths[f][a][p];
+        tuning->latencies[f][a][p] = comm->latencies[f][a][p];
+      }
+    }
+  }
+  for (int s=0; s<NCCL_TUNING_SIZE_POINTS; s++) {
+    tuning->messageSizes[s] = (uint64_t)1 << s;
+  }
+
+  for (int f=0; f<NCCL_NUM_FUNCTIONS; f++) {
+    // A synthetic float32 sum task: datatype and op only feed the collnet/nvls
+    // support checks and the fp8 relegation, none of which should shape the
+    // reported baseline.
+    struct ncclTaskColl info = {};
+    info.func = (ncclFunc_t)f;
+    info.datatype = ncclFloat32;
+    info.opHost = ncclSum;
+    info.opDev.op = ncclDevSum;
+    int collNetSupport = 0;
+    NCCLCHECK(ncclGetCollNetSupport(comm, &info, &collNetSupport));
+    int nvlsSupport = comm->nvlsSupport &&
+        (ncclNvlsSupported(info.opDev.op, info.datatype) || info.func == ncclFuncAllGather);
+    for (int s=0; s<NCCL_TUNING_SIZE_POINTS; s++) {
+      size_t nBytes = (size_t)1 << s;
+      float collCostTable[NCCL_NUM_ALGORITHMS][NCCL_NUM_PROTOCOLS];
+      initCollCostTable((float**)collCostTable);
+      NCCLCHECK(updateCollCostTable(
+          comm, &info, nBytes, collNetSupport, nvlsSupport, /*numPipeOps=*/1,
+          (float**)collCostTable));
+      int pluginNc = 0;
+      if (comm->tuner != NULL) {
+        NCCLCHECK(comm->tuner->getCollInfo(
+            comm->tunerContext, info.func, nBytes, /*numPipeOps=*/1,
+            (float**)collCostTable, NCCL_NUM_ALGORITHMS, NCCL_NUM_PROTOCOLS,
+            /*regBuff=*/0, &pluginNc));
+      }
+      float minTime = FLT_MAX;
+      int algorithm = -1, protocol = -1;
+      for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+        for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+          if (collCostTable[a][p] == NCCL_ALGO_PROTO_IGNORE) continue;
+          if (collCostTable[a][p] >= 0.0 && collCostTable[a][p] < minTime) {
+            algorithm = a;
+            protocol = p;
+            minTime = collCostTable[a][p];
+          }
+        }
+      }
+      ncclCollTuningEntry* entry = &tuning->bestBySize[f][s];
+      if (algorithm < 0) {
+        entry->algorithm = -1;
+        entry->protocol = -1;
+        entry->timeUs = -1.0f;
+        continue;
+      }
+      int nc, nt;
+      topoGetChannelThreadCount(comm, algorithm, protocol, nBytes, &nc, &nt);
+      if (pluginNc != 0) nc = pluginNc;
+      entry->algorithm = (int8_t)algorithm;
+      entry->protocol = (int8_t)protocol;
+      entry->nChannels = (int16_t)nc;
+      entry->nThreads = (int16_t)nt;
+      entry->timeUs = minTime;
+    }
+  }
   return ncclSuccess;
 }
 
