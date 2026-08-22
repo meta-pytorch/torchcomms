@@ -12,6 +12,7 @@
 
 #include "comm.h"
 #include "meta/NcclxConfig.h"
+#include "meta/transport/transportConnect.h"
 #include "nccl.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -136,16 +137,16 @@ class NcclxLazyConnectTestFixture
     if (algoShouldConnect != NCCL_NUM_ALGORITHMS) {
       // some channels should be initialized if we expect any algorithm to be
       // connected
-      EXPECT_NE(comm->nChannelsReady, 0);
+      EXPECT_NE(ncclx::lazyChannelState(comm).nChannelsReady, 0);
     }
     // FIXME: only check RING and TREE for now as COLLNET and NVLS are not
     // well supported for lazy connect and lazy channel features
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       if (a == algoShouldConnect) {
-        EXPECT_NE(comm->algoConnectedChannels[a], 0);
+        EXPECT_NE(ncclx::lazyChannelState(comm).algoConnectedChannels[a], 0);
       } else if (
           isLazyConnect && (a == NCCL_ALGO_RING || a == NCCL_ALGO_TREE)) {
-        EXPECT_EQ(comm->algoConnectedChannels[a], 0);
+        EXPECT_EQ(ncclx::lazyChannelState(comm).algoConnectedChannels[a], 0);
       }
     }
   }
@@ -155,11 +156,19 @@ TEST(
     NcclxLazyConnectTest,
     GroupedCollectiveNeedsAlgoConnectAfterChannelsReady) {
   ncclComm comm{};
+  // A stack-allocated comm has no NCCLX extension handle (a real communicator
+  // gets one at init), so attach one before reaching the lazy-channel state.
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  ncclxCommExt commExt{};
+  comm.ncclxExt = &commExt;
+#endif
   comm.nChannels = 32;
   comm.nChannelsReady = comm.nChannels;
   comm.planner.nTasksColl = 2;
-  comm.algoConnectedChannels[NCCL_ALGO_RING] = comm.nChannels;
-  comm.algoConnectedChannels[NCCL_ALGO_TREE] = 0;
+  ncclx::lazyChannelState(&comm).algoConnectedChannels[NCCL_ALGO_RING] =
+      comm.nChannels;
+  ncclx::lazyChannelState(&comm).algoConnectedChannels[NCCL_ALGO_TREE] = 0;
 
   ncclTaskColl task{};
   task.algorithm = NCCL_ALGO_TREE;
@@ -183,12 +192,12 @@ TEST_P(NcclxLazyConnectTestFixture, InitOnly) {
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // channels should not be initialized
-    EXPECT_EQ(rootComm->nChannelsReady, 0);
+    EXPECT_EQ(ncclx::lazyChannelState(rootComm).nChannelsReady, 0);
   }
   if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
-      EXPECT_EQ(rootComm->algoConnectedChannels[a], 0);
+      EXPECT_EQ(ncclx::lazyChannelState(rootComm).algoConnectedChannels[a], 0);
     }
   }
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -333,7 +342,7 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
   EXPECT_EQ(res, ncclSuccess);
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-  auto prevNchannelsReady = rootComm->nChannelsReady;
+  auto prevNchannelsReady = ncclx::lazyChannelState(rootComm).nChannelsReady;
   if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     checkAlgoInitState(rootComm, NCCL_NUM_ALGORITHMS);
@@ -351,7 +360,8 @@ TEST_P(NcclxLazyConnectTestFixture, Alltoall) {
 
   // more channels should initialized for large Alltoall, in lazy channel mode
   if (NCCL_LAZY_SETUP_CHANNELS && rootComm->nRanks > 1) {
-    EXPECT_GE(rootComm->nChannelsReady, prevNchannelsReady);
+    EXPECT_GE(
+        ncclx::lazyChannelState(rootComm).nChannelsReady, prevNchannelsReady);
   }
 
   for (int i = 0; i < rootComm->nRanks; ++i) {
@@ -521,7 +531,7 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //   }
 //   if (NCCL_LAZY_SETUP_CHANNELS) {
 //     // some channels should be initialized
-//     EXPECT_NE(rootComm->nChannelsReady, 0);
+//     EXPECT_NE(ncclx::lazyChannelState(rootComm).nChannelsReady, 0);
 //     // COLLNET should be connected in rootComm, if available
 //     if (rootComm->collNetSupport == 1) {
 //       checkAlgoChannelState(
@@ -585,7 +595,8 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommAllGather) {
 //   }
 //   if (NCCL_LAZY_SETUP_CHANNELS) {
 //     // some channels should be initialized
-//     EXPECT_GE(rootComm->nChannelsReady, expectedNchannels);
+//     EXPECT_GE(ncclx::lazyChannelState(rootComm).nChannelsReady,
+//     expectedNchannels);
 //     // Selected algo should be connected in rootComm
 //     checkAlgoChannelState(rootComm, expectedAlgo, LAZY_CONNECT_ENABLED);
 //   }
@@ -605,19 +616,19 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
   for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
     EXPECT_FALSE(childComm->initAlgoChannels[a]);
   }
-  EXPECT_EQ(childComm->nChannelsReady, 0);
+  EXPECT_EQ(ncclx::lazyChannelState(childComm).nChannelsReady, 0);
 
   // Nothing should be connected or initialized if no collective is called
   if (LAZY_CONNECT_ENABLED) {
     // Algorithms should not be connected
     for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
       EXPECT_FALSE(rootComm->initAlgoChannels[a]);
-      EXPECT_EQ(rootComm->algoConnectedChannels[a], 0);
+      EXPECT_EQ(ncclx::lazyChannelState(rootComm).algoConnectedChannels[a], 0);
     }
   }
   if (NCCL_LAZY_SETUP_CHANNELS) {
     // channels should not be initialized
-    EXPECT_EQ(rootComm->nChannelsReady, 0);
+    EXPECT_EQ(ncclx::lazyChannelState(rootComm).nChannelsReady, 0);
   }
   NCCLCHECK_TEST(ncclCommDestroy(rootComm));
 }

@@ -5,14 +5,13 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "channel.h"
 #include "param.h"
 #include "gdrwrap.h"
 #include "transport.h"
 
-#include "comms/ctran/memory/Utils.h"
-#include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/wrapper/MetaFactory.h"
+#include "meta/memory/NcclChannelMetadataAlloc.h"
 
 ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
   struct ncclChannel* channel = &comm->channels[channelId];
@@ -44,34 +43,22 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
 
   if (channel->devPeers == NULL) {
     if (sharedRes->devPeers[channelId] == NULL) {
-      if (comm->channelMetadataOnHost) {
-        NCCLCHECK(ncclCudaHostCalloc(sharedRes->devPeers + channelId, sharedRes->tpNRanks));
-      } else {
-        NCCLCHECK(metaCommToNccl(ncclx::memory::cudaCallocAsync(
+      NCCLCHECK(meta::comms::ncclx::allocChannelMetadata(
+          comm,
           sharedRes->devPeers + channelId,
           sharedRes->tpNRanks,
           deviceStream,
-          &comm->logMetaData,
           "initChannnelSharedResDevPeers",
-          comm->slabAllocator.get())));
-      }
+          /*pushFree=*/false));
     }
     /* channel->devPeers is not shared, so just free it when calling commFree() */
-    if (comm->channelMetadataOnHost) {
-      NCCLCHECK(ncclCudaHostCalloc(&channel->devPeers, nPeers));
-      ncclCommPushCudaHostFree(comm, channel->devPeers);
-    } else {
-      NCCLCHECK(metaCommToNccl(ncclx::memory::cudaCallocAsync(
+    NCCLCHECK(meta::comms::ncclx::allocChannelMetadata(
+        comm,
         &channel->devPeers,
         nPeers,
         deviceStream,
-        &comm->logMetaData,
         "initChannnelDevPeers",
-        comm->slabAllocator.get())));
-      if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
-        ncclCommPushCudaFree(comm, channel->devPeers);
-      }
-    }
+        /*pushFree=*/true));
     NCCLCHECK(ncclCalloc(&channel->devPeersHostPtr, nPeers));
     for (int r = 0; r < nRanks; r++) {
       uintptr_t addr = (uintptr_t)(comm->sharedRes->devPeers[channelId] + comm->topParentRanks[r]);
@@ -82,21 +69,13 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
 
   channel->ring.userRanks = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRanks);
   channel->ring.rankToIndex = ncclMemoryStackAlloc<int>(&comm->memPermanent, nRanks);
-  if (comm->channelMetadataOnHost) {
-    NCCLCHECK(ncclCudaHostCalloc(&channel->devRingUserRanks, nRanks));
-    ncclCommPushCudaHostFree(comm, channel->devRingUserRanks);
-  } else {
-    NCCLCHECK(metaCommToNccl(ncclx::memory::cudaCallocAsync(
+  NCCLCHECK(meta::comms::ncclx::allocChannelMetadata(
+      comm,
       &channel->devRingUserRanks,
       nRanks,
       deviceStream,
-      &comm->logMetaData,
       "initChannneldevRingUserRanks",
-      comm->slabAllocator.get())));
-    if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
-      ncclCommPushCudaFree(comm, channel->devRingUserRanks);
-    }
-  }
+      /*pushFree=*/true));
 
   /* guarantee addr has been copied into channel->devPeers */
   NCCLCHECK(ncclStrongStreamRelease(ncclCudaGraphNone(comm->config.graphUsageMode), &sharedRes->deviceStream, /*concurrent=*/false));
@@ -132,7 +111,7 @@ ncclResult_t initNvlsChannel(struct ncclComm* comm, int channelId, struct ncclCo
     }
   } else {
     NCCLCHECK(ncclCalloc(&channel->nvlsPeers, nvlsRanks));
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCudaCallocAsync(&channel->nvlsDevPeers, nvlsRanks, deviceStream, comm->memManager));
     for (int r = 0; r < nvlsRanks; ++r) {
       uintptr_t addr = (uintptr_t)(channel->nvlsDevPeers + r);
@@ -173,7 +152,7 @@ ncclResult_t initCollnetChannel(struct ncclComm* comm, int channelId, struct ncc
     ncclAtomicRefCountIncrement(&parent->channels[channelId].collnetPeers->refCount);
   } else {
     NCCLCHECK(ncclCalloc(&channel->collnetPeers, 1));
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECK(ncclCudaCallocAsync(&channel->collnetDevPeers, 1, deviceStream, comm->memManager));
     addr = (uintptr_t)channel->collnetDevPeers;
     channel->peers[comm->nRanks] = channel->collnetPeers;
