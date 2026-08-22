@@ -9,6 +9,13 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 
+// ncclxInitLogger() is defined in the shared ncclx runtime seam
+// (comms/ncclx/meta/wrapper/NcclxRuntime.cc) that this test already links, but
+// that header is not on this target's include path; forward-declare the symbol.
+namespace meta::comms::ncclx {
+void ncclxInitLogger();
+} // namespace meta::comms::ncclx
+
 class memoryUtilsTest : public ::testing::Test {
  public:
   int cudaDev = 0;
@@ -24,7 +31,12 @@ class memoryUtilsTest : public ::testing::Test {
     setenv("NCCL_DEBUG_SUBSYS", "ALLOC", 0);
     ncclCvarInit();
     ncclCudaLibraryInit();
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
 
     dummyLogData = CommLogData{
         .commId = 0,
