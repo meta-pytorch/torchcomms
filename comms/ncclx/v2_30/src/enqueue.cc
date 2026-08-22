@@ -2315,14 +2315,7 @@ static ncclResult_t calcCollChunking(
   // Buffer-based ceiling; plugins may increase chunk size up to this limit.
   int bufferMaxChunkSize = chunkSize;
 
-  // [NCCLX-Quantized]
-  // Quantized collectives (e.g., ReduceScatterQuantize) transport data in a
-  // smaller type (BF16, 2 bytes) than the input type (FP32, 4 bytes). The
-  // transport buffer step can hold 2x more elements, so double the chunk size
-  // to fully utilize the transport buffer and halve the number of PAT steps.
-  if (info->ext.has_value() && info->ext->quantizeRandomSeedPtr != nullptr) {
-    chunkSize *= 2;
-  }
+  chunkSize = ncclx::algoconf::adjustChunkSizeForExt(info->ext, chunkSize);
 
   if (info->algorithm == NCCL_ALGO_COLLNET_DIRECT) {
     // Optimize chunkSize / nSteps
