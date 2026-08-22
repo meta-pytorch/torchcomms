@@ -8,6 +8,7 @@
 #include "meta/NcclxLogger.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommUseCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/utils/ExtUtils.h"
@@ -89,7 +90,7 @@ static ncclResult_t ncclReduceScatterQuantizeInfoExt(
   constexpr auto kDirectIbAlgo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
   if (NCCL_REDUCESCATTER_QUANTIZED_ALGO ==
           NCCL_REDUCESCATTER_QUANTIZED_ALGO::ctdirect_ib &&
-      comm->useCtran_ && op == ncclSum &&
+      meta::comms::ncclx::ncclCommUseCtran(comm) && op == ncclSum &&
       ctranReduceScatterSupport(comm->ctranComm_.get(), kDirectIbAlgo)) {
     return metaCommToNccl(ctranReduceScatterQuantize(
         sendbuff,
