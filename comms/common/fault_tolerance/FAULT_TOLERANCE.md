@@ -45,6 +45,23 @@ rules the detail exists to serve.
     silently means "no override".
 11. **Fault tolerance is an MCCL-communicator feature.** Communicators created
     through the NCCLX/CTRAN factory get a disabled `Abort`; see *Scope*.
+12. **Terminate the kernel cleanly; never trap to do it.** A trap takes the CUDA
+    context down and loses every other stream on the device, which is a worse
+    outcome than the hang it replaces. Abort must unwind to a normal kernel
+    exit. `FT_DEVICE_TRAP()` stays reserved for the death tests that assert trap
+    semantics deliberately.
+13. **Contain the abort path in the transport.** The transport leaves its
+    per-channel state releasable on abort -- an unwinding operation drives its
+    progress slot to the terminal stage (`abandon_progress_state()`), so a
+    kernel already queued on the same channel re-initializes without tripping
+    `assert_progress_slot_idle()`, and any further progress call short-circuits
+    to `Done`. A collective therefore drains and exits on its existing loop
+    conditions. This is a liveness guarantee, not a promise that the channel
+    still carries meaningful data: after an abort the flow-control counters are
+    skewed against the peer's, and recovery is still `reconfigure()`. Do not add
+    group-uniform abort gates, entry guards, or slot bookkeeping to a
+    collective: if a collective needs one, the transport is leaving state behind
+    and that is where the fix belongs.
 
 ## Host `Abort`
 
@@ -250,6 +267,19 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    and the IB progress path returns `Aborted`; that lets callers stop sooner and
    more precisely. Callers are not *obliged* to consume it, so never rely on
    propagation for liveness.
+7. **Leave the channel state releasable.** A wait that unwinds must not strand
+   the resource it was waiting on. In the IB progress path this is
+   `abandon_progress_state()` (`P2pIbTransportProgressImpl.cuh`): every abort
+   exit drives the progress slot to `Done` before returning `Aborted`, so the
+   next `init_send_progress()` / `init_recv_progress()` on that channel passes
+   `assert_progress_slot_idle()` instead of trapping, and a driver loop that
+   keeps calling progress simply drains. The reserved byte range is abandoned
+   rather than returned to the channel cursor: a peer RDMA write may still land
+   in it, and the flow-control counters are skewed after an abort regardless —
+   the point is that the queued kernel exits instead of trapping, not that the
+   channel is fit to reuse. If a new wait acquires state of its own, releasing
+   it on abort is part of adding the wait — pushing that onto the collective
+   violates the containment principle.
 
 ### Collective Enablement — onboarding a collective
 
@@ -262,6 +292,9 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    **only** from a timeout the caller supplied on the collective API. Never seed
    it from the communicator default; see *Per-operation timeouts*.
 5. You do **not** need to check the return value of any wait to be hang-safe.
+6. You do **not** need an abort gate, an entry guard, or slot bookkeeping of your
+   own. The transport releases its state on abort (see *Principles*), so a loop that
+   already retires on `Done` retires on an aborted channel too.
 
 Steps 1–3 are the entire integration. Forgetting them means the collective runs
 with a disabled handle and silently has no fault tolerance.
