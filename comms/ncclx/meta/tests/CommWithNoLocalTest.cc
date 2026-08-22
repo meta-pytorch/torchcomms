@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <optional>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
@@ -21,6 +22,7 @@
 #include "VerifyAlgoStatsUtil.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "meta/wrapper/NcclCommNoLocal.h"
 
 // Hint lifecycle tests
 
@@ -41,7 +43,7 @@ TEST_F(CommWithNoLocalTest, NoLocalDisabledByDefault) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_FALSE(comm->noLocal_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm.get()));
 }
 
 namespace {
@@ -60,7 +62,7 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   ncclx::test::NcclCommRAII comm1{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm1.get(), nullptr);
-  EXPECT_FALSE(comm1->noLocal_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm1.get()));
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
@@ -93,14 +95,14 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
     } while (commStatus == ncclInProgress);
   }
 
-  EXPECT_TRUE(comm2->noLocal_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommNoLocal(comm2));
 
   // Now disabled again
   {
     ncclx::test::NcclCommRAII comm3{
         globalRank, numRanks, localRank, bootstrap_.get()};
     ASSERT_NE(comm3.get(), nullptr);
-    EXPECT_FALSE(comm3->noLocal_);
+    EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm3.get()));
   }
 }
 
@@ -196,7 +198,7 @@ class CommWithNoLocalCollTest
       ncclComm_t comm,
       bool expectNoLocal,
       CollectiveOp collectiveOp) {
-    if (!ctranInitialized(comm->ctranComm_.get())) {
+    if (!ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())) {
       return;
     }
 
@@ -204,18 +206,21 @@ class CommWithNoLocalCollTest
     switch (collectiveOp) {
       case CollectiveOp::kAllGather:
         supported = ctranAllGatherSupport(
-            comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO::ctran);
+            meta::comms::ncclx::ncclCommCtran(comm).get(),
+            NCCL_ALLGATHER_ALGO::ctran);
         break;
       case CollectiveOp::kReduceScatter:
         supported = ctranReduceScatterSupport(
-            comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO::ctran);
+            meta::comms::ncclx::ncclCommCtran(comm).get(),
+            NCCL_REDUCESCATTER_ALGO::ctran);
         break;
     }
     if (!supported) {
       return;
     }
 
-    auto* mapper = comm->ctranComm_->ctran_->mapper.get();
+    auto* mapper =
+        meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper.get();
     const int totalPuts = mapper->iPutCount[CtranMapperBackend::IB] +
         mapper->iPutCount[CtranMapperBackend::NVL];
     if (totalPuts == 0) {
@@ -228,7 +233,7 @@ class CommWithNoLocalCollTest
       EXPECT_GT(mapper->iPutCount[CtranMapperBackend::IB], 0)
           << "noLocal: expected IB puts";
     } else {
-      if (comm->ctranComm_->statex_->nLocalRanks() > 1) {
+      if (meta::comms::ncclx::ncclCommCtran(comm)->statex_->nLocalRanks() > 1) {
         EXPECT_GT(mapper->iPutCount[CtranMapperBackend::NVL], 0)
             << "default: expected NVL puts for local peers";
       }
@@ -326,7 +331,7 @@ TEST_P(CommWithNoLocalCollTest, BaselineRun) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_EQ(comm->noLocal_, noLocal);
+  EXPECT_EQ(meta::comms::ncclx::ncclCommNoLocal(comm.get()), noLocal);
 
   run(comm.get(), collectiveOp);
   const char* collectiveName = (collectiveOp == CollectiveOp::kAllGather)
@@ -349,7 +354,7 @@ TEST_P(CommWithNoLocalCollTest, CtranRun) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_TRUE(comm->noLocal_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommNoLocal(comm.get()));
 
   if (collectiveOp == CollectiveOp::kAllGather) {
     auto algoGuard = EnvRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctran);
