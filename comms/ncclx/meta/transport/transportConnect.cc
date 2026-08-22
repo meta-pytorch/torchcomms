@@ -17,6 +17,7 @@
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 #include "register.h"
 
 namespace ncclx {
@@ -510,12 +511,14 @@ ncclResult_t reserveReqBufs(
               comm, /*isSend=*/true, channelId, connIndex, peerRank);
           if (key.has_value()) {
             bool reserved = true;
-            auto res = comm->memCache->reserve(key.value());
+            auto res = meta::comms::ncclx::ncclCommMemCache(comm)->reserve(
+                key.value());
             if (res == commInProgress && skipReconnect) {
               // wait until the buffer is reserved if skipReconnect is true
               while (res == commInProgress) {
                 comm->transportProxy_->progress();
-                res = comm->memCache->reserve(key.value());
+                res = meta::comms::ncclx::ncclCommMemCache(comm)->reserve(
+                    key.value());
               }
             } else if (res != commSuccess) {
               myReconnInfo->mark(
@@ -532,12 +535,14 @@ ncclResult_t reserveReqBufs(
               comm, /*isSend=*/false, channelId, connIndex, peerRank);
           if (key.has_value()) {
             bool reserved = true;
-            auto res = comm->memCache->reserve(key.value());
+            auto res = meta::comms::ncclx::ncclCommMemCache(comm)->reserve(
+                key.value());
             if (res == commInProgress && skipReconnect) {
               // wait until the buffer is reserved if skipReconnect is true
               while (res == commInProgress) {
                 comm->transportProxy_->progress();
-                res = comm->memCache->reserve(key.value());
+                res = meta::comms::ncclx::ncclCommMemCache(comm)->reserve(
+                    key.value());
               }
             } else if (res != commSuccess) {
               myReconnInfo->mark(

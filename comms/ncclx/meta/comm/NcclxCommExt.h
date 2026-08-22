@@ -11,6 +11,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/memory/SlabAllocator.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h" // CommLogData
@@ -84,4 +85,9 @@ struct ncclxCommExt {
   // upstream ncclComm to keep that struct pristine; created in the NCCLX init
   // hook when the cvar is set, and destroyed with this handle.
   std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator;
+
+  // Per-communicator memory-cache allocator for the transport-ext P2P
+  // sync-buffer path (reserve/release). Relocated off the forked upstream
+  // ncclComm to keep that struct pristine.
+  std::shared_ptr<ncclx::memory::memCacheAllocator> memCache;
 };

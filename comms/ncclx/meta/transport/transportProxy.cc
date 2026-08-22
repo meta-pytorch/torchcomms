@@ -15,6 +15,7 @@
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportProxy.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 namespace ncclx::transport {
 
@@ -274,7 +275,9 @@ void TransportProxy::testAny() {
   for (const auto& req : activeOps_) {
     auto ptr = req->channelsReadyPtr;
     if (*ptr == 0) {
-      NCCLX_COMMCHECKTHROW(req->comm->memCache->release(req->bufKeys));
+      NCCLX_COMMCHECKTHROW(
+          meta::comms::ncclx::ncclCommMemCache(req->comm)->release(
+              req->bufKeys));
       NCCLX_LOG_SUBSYS(
           INFO,
           COLL,
