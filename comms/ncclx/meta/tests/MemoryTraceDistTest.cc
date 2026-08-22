@@ -25,6 +25,8 @@
 #include "comm.h" // @manual
 #include "comms/ncclx/meta/logger/tests/LoggerUtil.h"
 #include "debug.h" // @manual
+#include "meta/wrapper/NcclCommLogData.h" // @manual
+#include "meta/wrapper/NcclxRuntime.h"
 #include "nccl.h" // @manual
 
 class MemoryTraceTestFixture : public NcclxBaseTestFixture,
@@ -67,7 +69,12 @@ class MemoryTraceTestFixture : public NcclxBaseTestFixture,
     // force singleton init
     folly::Singleton<const DataTableAllTables, DataTableAllTablesTag>::
         try_get();
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
     auto logFileName = getMemoryEventScubaFile();
     std::cout << "Rank " << this->globalRank
               << " reading from memory logging file " << logFileName
@@ -521,7 +528,7 @@ void MemoryTraceTestFixture::runScopedRegisterLoggingTest() {
   EXPECT_NE(output, "");
 
   verifyScopedRegisterEvent(
-      output, comm->commHash, comm->logMetaData.commDesc, comm->rank);
+      output, comm->commHash, ncclCommLogData(comm).commDesc, comm->rank);
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
