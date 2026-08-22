@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
@@ -98,7 +98,7 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -111,7 +111,7 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0];
@@ -827,7 +827,8 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
 TEST_F(P2pLl128BenchmarkFixture, UnidirectionalBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -935,7 +936,8 @@ TEST_F(P2pLl128BenchmarkFixture, UnidirectionalBenchmark) {
 
 TEST_F(P2pLl128BenchmarkFixture, BidirectionalBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -1055,7 +1057,8 @@ TEST_F(P2pLl128BenchmarkFixture, BidirectionalBenchmark) {
 
 TEST_F(P2pLl128BenchmarkFixture, ChunkedUnidirectionalBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
   int peerRank = (globalRank == 0) ? 1 : 0;
@@ -1088,7 +1091,8 @@ TEST_F(P2pLl128BenchmarkFixture, ChunkedUnidirectionalBenchmark) {
 
 TEST_F(P2pLl128BenchmarkFixture, ChunkedBidirectionalBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
   int peerRank = (globalRank == 0) ? 1 : 0;
@@ -1121,7 +1125,8 @@ TEST_F(P2pLl128BenchmarkFixture, ChunkedBidirectionalBenchmark) {
 
 TEST_F(P2pLl128BenchmarkFixture, AutoTunedBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -1140,7 +1145,8 @@ TEST_F(P2pLl128BenchmarkFixture, AutoTunedBenchmark) {
 
 TEST_F(P2pLl128BenchmarkFixture, AutoTunedBidirectionalBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 

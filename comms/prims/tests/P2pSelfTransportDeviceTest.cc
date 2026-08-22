@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 
 #include <algorithm>
 #include <string>
