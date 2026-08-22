@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <stdexcept>
+#include "meta/wrapper/NcclCommCtran.h"
 #include "meta/wrapper/NcclCommLogData.h"
 
 #include "comm.h"
@@ -74,17 +75,22 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   if (!ncclCommVal) {
     return commInvalidArgument;
   }
-  ncclCommVal->ctranComm_ = std::make_unique<CtranComm>();
+  meta::comms::ncclx::ncclCommCtran(ncclCommVal) =
+      std::make_unique<CtranComm>();
 
   const auto tconfig = makeCtranConfigFrom(ncclCommVal);
-  ncclCommVal->ctranComm_->config_ = tconfig;
-  ncclCommVal->ctranComm_->opCount_ = &ncclCommVal->opCount;
-  ncclCommVal->ctranComm_->logMetaData_ = ncclCommLogData(ncclCommVal);
-  ncclCommVal->ctranComm_->runtimeConn_ = ncclCommVal->runtimeConn;
+  meta::comms::ncclx::ncclCommCtran(ncclCommVal)->config_ = tconfig;
+  meta::comms::ncclx::ncclCommCtran(ncclCommVal)->opCount_ =
+      &ncclCommVal->opCount;
+  meta::comms::ncclx::ncclCommCtran(ncclCommVal)->logMetaData_ =
+      ncclCommLogData(ncclCommVal);
+  meta::comms::ncclx::ncclCommCtran(ncclCommVal)->runtimeConn_ =
+      ncclCommVal->runtimeConn;
   if (ncclCommVal->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =
         static_cast<ncclx::Config*>(ncclCommVal->config.ncclxConfig);
-    ncclCommVal->ctranComm_->tmpbufEagerAlloc_ = ncclxCfg->tmpbufEagerAlloc;
+    meta::comms::ncclx::ncclCommCtran(ncclCommVal)->tmpbufEagerAlloc_ =
+        ncclxCfg->tmpbufEagerAlloc;
   }
 
   return commSuccess;
@@ -96,31 +102,33 @@ ncclResult_t createCtranComm(ncclComm* comm) {
   NCCLCHECK_COMM(setCtranCommBase(comm));
 
   if (NCCL_USE_MEM_CACHE) {
-    comm->ctranComm_->memCache_ =
+    meta::comms::ncclx::ncclCommCtran(comm)->memCache_ =
         ncclx::memory::memCacheAllocator::getInstance();
   }
 
-  comm->ctranComm_->bootstrap_ =
+  meta::comms::ncclx::ncclCommCtran(comm)->bootstrap_ =
       std::make_unique<ncclx::BaselineBootstrap>(comm);
 
-  NCCLCHECK(ncclx::initCommStateXFromNcclComm(comm, comm->ctranComm_.get()));
+  NCCLCHECK(
+      ncclx::initCommStateXFromNcclComm(
+          comm, meta::comms::ncclx::ncclCommCtran(comm).get()));
 
-  comm->ctranComm_->colltraceNew_ =
+  meta::comms::ncclx::ncclCommCtran(comm)->colltraceNew_ =
       meta::comms::ncclx::ncclCommNewCollTrace(comm);
 
-  NCCLCHECK_COMM(ctranInit(comm->ctranComm_.get()));
+  NCCLCHECK_COMM(ctranInit(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   return ncclSuccess;
 }
 
 ncclResult_t destroyCtranComm(ncclComm* comm) {
-  if (!comm || !comm->ctranComm_) {
+  if (!comm || !meta::comms::ncclx::ncclCommCtran(comm)) {
     return ncclSuccess;
   }
-  NCCLCHECK_COMM(ctranFinalize(comm->ctranComm_.get()));
+  NCCLCHECK_COMM(ctranFinalize(meta::comms::ncclx::ncclCommCtran(comm).get()));
   try {
-    comm->ctranComm_->destroy();
-    comm->ctranComm_.reset();
+    meta::comms::ncclx::ncclCommCtran(comm)->destroy();
+    meta::comms::ncclx::ncclCommCtran(comm).reset();
   } catch (const std::exception& e) {
     NCCLX_LOG(ERR, "CtranComm destruction failed: {}", e.what());
     return ncclInternalError;

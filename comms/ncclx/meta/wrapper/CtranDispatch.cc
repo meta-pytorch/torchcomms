@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/wrapper/CtranDispatch.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "checks.h"
 #include "comm.h"
@@ -24,7 +25,7 @@ std::optional<ncclResult_t> ctranTryAllGather(
   const auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
   if (algo != NCCL_ALLGATHER_ALGO::orig &&
       ctranAllGatherSupport(
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           algo,
           stream,
           recvbuff,
@@ -34,7 +35,7 @@ std::optional<ncclResult_t> ctranTryAllGather(
         recvbuff,
         sendcount,
         ncclToMetaComm(datatype),
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         algo));
   }
@@ -52,14 +53,15 @@ std::optional<ncclResult_t> ctranTryAllReduce(
   const auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
   // [NCCLX] Redirect to CTRAN if enabled and applicable
   if (algo != NCCL_ALLREDUCE_ALGO::orig &&
-      ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
+      ctranAllReduceSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), algo)) {
     return metaCommToNccl(ctranAllReduce(
         sendbuff,
         recvbuff,
         count,
         ncclToMetaComm(datatype),
         ncclToMetaComm(op),
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         algo));
   }
@@ -75,14 +77,15 @@ std::optional<ncclResult_t> ctranTryBroadcast(
     int root,
     cudaStream_t stream) {
   if (NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig &&
-      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
+      ctranBroadcastSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), NCCL_BROADCAST_ALGO)) {
     return metaCommToNccl(ctranBroadcast(
         sendbuff,
         recvbuff,
         count,
         ncclToMetaComm(datatype),
         root,
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         NCCL_BROADCAST_ALGO));
   }
@@ -99,14 +102,15 @@ std::optional<ncclResult_t> ctranTryReduceScatter(
     cudaStream_t stream) {
   if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
       ctranReduceScatterSupport(
-          comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
+          NCCL_REDUCESCATTER_ALGO)) {
     return metaCommToNccl(ctranReduceScatter(
         sendbuff,
         recvbuff,
         recvcount,
         ncclToMetaComm(datatype),
         ncclToMetaComm(op),
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         NCCL_REDUCESCATTER_ALGO));
   }
@@ -123,7 +127,8 @@ std::optional<ncclResult_t> ctranTrySend(
   const auto algo =
       NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
+      ctranSendRecvSupport(
+          peer, meta::comms::ncclx::ncclCommCtran(comm).get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
     // groups of ops will be issued separately.
@@ -134,7 +139,7 @@ std::optional<ncclResult_t> ctranTrySend(
         count,
         ncclToMetaComm(datatype),
         peer,
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         algo));
     NCCLCHECK(ncclGroupEnd());
@@ -153,7 +158,8 @@ std::optional<ncclResult_t> ctranTryRecv(
   const auto algo =
       NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo); // [META:PER_COMM_CONFIG]
   if ((algo != NCCL_SENDRECV_ALGO::orig) &&
-      ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
+      ctranSendRecvSupport(
+          peer, meta::comms::ncclx::ncclCommCtran(comm).get(), algo, stream)) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
     // groups of ops will be issued separately.
@@ -164,7 +170,7 @@ std::optional<ncclResult_t> ctranTryRecv(
         count,
         ncclToMetaComm(datatype),
         peer,
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         algo));
     NCCLCHECK(ncclGroupEnd());
@@ -185,7 +191,7 @@ std::optional<ncclResult_t> ctranTryAllToAll(
       ctranAllToAllSupport(
           count,
           ncclToMetaComm(datatype),
-          comm->ctranComm_.get(),
+          meta::comms::ncclx::ncclCommCtran(comm).get(),
           algo,
           stream,
           recvbuff)) {
@@ -194,7 +200,7 @@ std::optional<ncclResult_t> ctranTryAllToAll(
         recvbuff,
         count,
         ncclToMetaComm(datatype),
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream,
         algo));
   }
@@ -213,7 +219,7 @@ std::optional<ncclResult_t> ctranTryAllToAllv(
     cudaStream_t stream) {
   if ((NCCLX_CONFIG_FIELD(comm->config, alltoallvAlgo) ==
        NCCL_ALLTOALLV_ALGO::ctran) &&
-      ctranAllToAllvSupport(comm->ctranComm_.get())) {
+      ctranAllToAllvSupport(meta::comms::ncclx::ncclCommCtran(comm).get())) {
     return metaCommToNccl(ctranAllToAllv(
         sendbuff,
         sendcounts,
@@ -222,14 +228,14 @@ std::optional<ncclResult_t> ctranTryAllToAllv(
         recvcounts,
         rdispls,
         ncclToMetaComm(datatype),
-        comm->ctranComm_.get(),
+        meta::comms::ncclx::ncclCommCtran(comm).get(),
         stream));
   }
   return std::nullopt;
 }
 
 void ctranTrackDefaultSendRecv(ncclComm* comm) {
-  ctranGroupTrackDefaultOp(comm->ctranComm_.get());
+  ctranGroupTrackDefaultOp(meta::comms::ncclx::ncclCommCtran(comm).get());
 }
 
 ncclResult_t ctranRunDeviceAllToAllv(
@@ -244,7 +250,8 @@ ncclResult_t ctranRunDeviceAllToAllv(
     int64_t recvcountsMultiplier,
     const std::unordered_map<std::string, std::string>& hints) {
 #if defined(ENABLE_PRIMS)
-  if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
+  if (!ctranDeviceAllToAllvSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get())) {
     CERR(
         commInvalidUsage,
         "deviceAllToAllv requires ctran with pipes transport support");
@@ -256,7 +263,7 @@ ncclResult_t ctranRunDeviceAllToAllv(
       sendcounts_d,
       recvcounts_d,
       ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
       stream,
       sendcountsMultiplier,
       recvcountsMultiplier,

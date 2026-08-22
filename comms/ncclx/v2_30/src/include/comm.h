@@ -32,7 +32,6 @@
 
 #include <optional>
 
-#include "comms/ctran/CtranComm.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "meta/algoconf/InfoExt.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
@@ -830,9 +829,6 @@ struct ncclComm {
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
   std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
-
-  // This is the only bridge between ctran and baseline code
-  std::unique_ptr<CtranComm> ctranComm_;
 
   struct ncclMemManager* memManager;  // Memory manager
   struct ncclIntruQueue<struct ncclMemManagerTask, &ncclMemManagerTask::next> suspendTaskQueue;

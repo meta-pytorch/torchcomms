@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "meta/wrapper/NcclCommCtran.h"
 #include "meta/wrapper/NcclCommLogData.h"
 
 #include <folly/Singleton.h>
@@ -27,9 +28,11 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
 /*static*/ NcclCommMonitorInfo NcclCommMonitorInfo::fromNcclComm(
     ncclComm_t comm) {
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
-  if (comm->ctranComm_ && comm->ctranComm_->ctran_ &&
-      comm->ctranComm_->ctran_->isInitialized()) {
-    mapperTrace = comm->ctranComm_->ctran_->mapper->mapperTrace;
+  if (meta::comms::ncclx::ncclCommCtran(comm) &&
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_ &&
+      meta::comms::ncclx::ncclCommCtran(comm)->ctran_->isInitialized()) {
+    mapperTrace =
+        meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->mapperTrace;
   }
 
   std::shared_ptr<ProxyTrace> proxyTrace;

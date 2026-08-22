@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include "checks.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
@@ -141,7 +142,8 @@ TEST_F(AllToAllTest, Ctran) {
 
   run();
 
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 
 TEST_F(AllToAllTest, AllToAllWithHintOverride) {
@@ -159,7 +161,8 @@ TEST_F(AllToAllTest, AllToAllWithHintOverride) {
 
   run();
 
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 #endif
 
