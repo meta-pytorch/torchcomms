@@ -7,7 +7,7 @@
 
 #include "meta/wrapper/NcclCommLogData.h"
 #include "nccl.h"
-#include "meta/NcclxConfig.h" // @manual
+#include "meta/bootstrap/BootstrapStateInternal.h" // @manual
 #include "meta/ctran-integration/BootstrapCleanup.h" // @manual
 #include "utils.h"
 #include "bootstrap.h"
@@ -19,11 +19,8 @@
 #include "os.h"
 #include <thread>
 
-#include <folly/SocketAddress.h>
-
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/tcpstore/TCPStore.h"
 
 #define BOOTSTRAP_N_CHECK_ABORT           10000

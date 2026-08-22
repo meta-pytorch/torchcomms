@@ -8,6 +8,10 @@
 #include "debug.h"
 #include "socket.h"
 
+// Full bootstrapState definition: NCCLX-owned on 2.30+, still in the forked
+// bootstrap.h on older versions.
+#include "meta/bootstrap/BootstrapStateInternal.h"
+
 namespace ncclx {
 
 inline ncclResult_t abortBootstrapState(struct bootstrapState* state) {
