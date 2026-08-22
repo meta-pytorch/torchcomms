@@ -72,6 +72,10 @@ Config::Config(const ncclConfig_t* config) {
       conflict = true;
     }
   };
+  // TODO T279903668: Cleanup version check after v2_29 removal
+  // Fast Init's config field was the only checkIntConflict user; removed
+  // v2.30+.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   auto checkIntConflict = [&](const char* key, int flatVal) {
     if (flatVal != NCCL_CONFIG_UNDEF_INT && hasHint(key)) {
       WARN(
@@ -81,10 +85,15 @@ Config::Config(const ncclConfig_t* config) {
       conflict = true;
     }
   };
+#endif
 
   checkPtrConflict("commDesc", config->commDesc);
   checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
+  // TODO T279903668: Cleanup version check after v2_29 removal
+  // Fast Init is removed in NCCLX v2.30+ (use ncclCommInitRankScalable).
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   checkIntConflict("fastInitMode", config->fastInitMode);
+#endif
 
   if (conflict) {
     throw std::invalid_argument("field set in both ncclConfig_t and hints");
@@ -161,6 +170,10 @@ Config::Config(const ncclConfig_t* config) {
     }
   }
 
+  // TODO T279903668: Cleanup version check after v2_29 removal
+  // Fast Init is removed in NCCLX v2.30+ (use ncclCommInitRankScalable);
+  // fastInitMode stays at its default (false) there.
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   if (config->fastInitMode != NCCL_CONFIG_UNDEF_INT) {
     fastInitMode = config->fastInitMode != 0;
   } else {
@@ -168,6 +181,7 @@ Config::Config(const ncclConfig_t* config) {
     fastInitMode = parseHintBool(
         "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
   }
+#endif
   // Per-communicator pipes NVL transport config overrides
   {
     std::string val = getHintStr("pipesNvlChunkSize");
@@ -467,7 +481,10 @@ void ncclxLogCommConfig(ncclComm_t comm) {
   appendInt("graphUsageMode", cfg.graphUsageMode);
   appendInt("numRmaCtx", cfg.numRmaCtx);
   appendStr("commDesc", cfg.commDesc);
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
   appendInt("fastInitMode", cfg.fastInitMode);
+#endif
 
   // ncclx::Config fields
   if (cfg.ncclxConfig != NCCL_CONFIG_UNDEF_PTR && cfg.ncclxConfig != nullptr) {
@@ -576,7 +593,10 @@ ncclx::commSetConfig(ncclComm_t comm, const ncclConfig_t* config) {
       config->commDesc != nullptr ||
       config->splitGroupRanks != NCCL_CONFIG_UNDEF_PTR ||
       config->splitGroupSize != NCCL_CONFIG_UNDEF_INT ||
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
       config->fastInitMode != NCCL_CONFIG_UNDEF_INT ||
+#endif
       config->ncclxConfig != NCCL_CONFIG_UNDEF_PTR) {
     WARN(
         "ncclx::commSetConfig: ncclConfig_t fields are not mutable; "

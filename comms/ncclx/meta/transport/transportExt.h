@@ -7,6 +7,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclMemoryUtils.h"
 #include "meta/NcclxLogUtils.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 // [META]: Extension to store local/remote memory for synchronization, i.e.,
 // fifo information, used in p2p.cc
@@ -29,9 +30,12 @@ inline enum NCCL_CHANNEL_METADATA_LOCATION getChannelMetadataLoc() {
       INFO, ENV, "NCCL_CHANNEL_METADATA_LOCATION={}", static_cast<int>(val));
   return val;
 }
+inline bool channelMetadataOnHost() {
+  return getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+}
 inline bool useTransportExt() {
   return NCCL_USE_TRANSPORT_EXT || NCCL_USE_MEM_CACHE ||
-      getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+      channelMetadataOnHost();
 }
 } // namespace ncclx
 
@@ -77,8 +81,9 @@ inline size_t getP2pSyncBufSlot(
 }
 
 inline ncclResult_t releaseP2pSyncBuf(struct ncclComm* comm) {
-  return metaCommToNccl(comm->memCache->release(
-      {fmt::format("{}:{:#x}", kP2pSyncBufKey, comm->commHash)}));
+  return metaCommToNccl(
+      meta::comms::ncclx::ncclCommMemCache(comm)->release(
+          {fmt::format("{}:{:#x}", kP2pSyncBufKey, comm->commHash)}));
 }
 /* Get a peer sharable buffer pointer from internal pool used for p2p
  * transport's synchronization between peers. Each p2p connection will get a
