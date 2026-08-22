@@ -2,6 +2,7 @@
 
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <stdexcept>
 #include <string>
@@ -136,8 +137,9 @@ CudaDeviceGuard::~CudaDeviceGuard() {
   }
   const auto status = cudaSetDevice(previousDevice_);
   if (status != cudaSuccess) {
-    XLOG(ERR) << "CudaDeviceGuard: failed to restore CUDA device "
-              << previousDevice_ << ": " << cudaGetErrorString(status);
+    COMMS_LOG_STREAM(ERR) << "CudaDeviceGuard: failed to restore CUDA device "
+                          << previousDevice_ << ": "
+                          << cudaGetErrorString(status);
   }
 }
 

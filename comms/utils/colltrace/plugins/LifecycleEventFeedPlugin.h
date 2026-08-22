@@ -5,12 +5,17 @@
 #include <atomic>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
 #include <folly/concurrency/UnboundedQueue.h>
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
+
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
 
 namespace meta::comms::colltrace {
 
@@ -33,11 +38,13 @@ struct LifecycleEventRecord {
 
 struct LifecycleEventFeedConfig {
   uint64_t commId{0};
+  std::string loggerName{"comms"};
 };
 
 class LifecycleEventFeedPlugin : public ICollTracePlugin {
  public:
-  explicit LifecycleEventFeedPlugin(LifecycleEventFeedConfig config = {});
+  explicit LifecycleEventFeedPlugin(
+      const LifecycleEventFeedConfig& config = {});
 
   std::string_view getName() const noexcept override;
 
@@ -64,6 +71,7 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
       LifecycleEventType eventType) noexcept;
 
   uint64_t commId_{0};
+  logger::CommsSpdlogLogger* logger_{nullptr};
   folly::UMPMCQueue<LifecycleEventRecord, false> unreadEvents_;
   std::atomic<uint64_t> latestCollId_{0};
 };

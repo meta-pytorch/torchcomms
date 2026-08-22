@@ -13,16 +13,45 @@ inline constexpr std::string_view kNcclxLoggerName = "comms.ncclx";
 
 } // namespace ncclx::logging
 
-#define NCCLX_LOG(level, ...) \
-  COMMS_LOG_NAMED(::ncclx::logging::kNcclxLoggerName, level, __VA_ARGS__)
+#define NCCLX_LOG_IMPL(spdlog_level, spdlog_macro, ...)                  \
+  do {                                                                   \
+    static auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ncclx::logging::kNcclxLoggerName);                             \
+    if (_ncclx_logger.should_log(spdlog_level)) {                        \
+      spdlog_macro(&_ncclx_logger, __VA_ARGS__);                         \
+    }                                                                    \
+  } while (false)
 
-#define NCCLX_LOG_IF_IMPL(level, spdlog_level, condition, ...)    \
-  do {                                                            \
-    auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger( \
-        ::ncclx::logging::kNcclxLoggerName);                      \
-    if (_ncclx_logger.should_log(spdlog_level) && (condition)) {  \
-      NCCLX_LOG(level, __VA_ARGS__);                              \
-    }                                                             \
+#define NCCLX_LOG_DBG(...) \
+  NCCLX_LOG_IMPL(::spdlog::level::debug, COMMS_LOGGER_DEBUG, __VA_ARGS__)
+#define NCCLX_LOG_INFO(...) \
+  NCCLX_LOG_IMPL(::spdlog::level::info, SPDLOG_LOGGER_INFO, __VA_ARGS__)
+#define NCCLX_LOG_WARN(...) \
+  NCCLX_LOG_IMPL(::spdlog::level::warn, SPDLOG_LOGGER_WARN, __VA_ARGS__)
+#define NCCLX_LOG_ERR(...) \
+  NCCLX_LOG_IMPL(::spdlog::level::err, SPDLOG_LOGGER_ERROR, __VA_ARGS__)
+#define NCCLX_LOG_CRITICAL(...) \
+  NCCLX_LOG_IMPL(::spdlog::level::critical, SPDLOG_LOGGER_CRITICAL, __VA_ARGS__)
+#define NCCLX_LOG_FATAL(...)                                             \
+  do {                                                                   \
+    static auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ncclx::logging::kNcclxLoggerName);                             \
+    COMMS_LOG_FATAL_IMPL(_ncclx_logger, __VA_ARGS__);                    \
+  } while (false)
+#define NCCLX_LOG(level, ...) NCCLX_LOG_##level(__VA_ARGS__)
+#define NCCLX_LOG_STREAM_IF(level, condition) \
+  COMMS_LOG_NAMED_STREAM_IF(                  \
+      ::ncclx::logging::kNcclxLoggerName, level, condition)
+#define NCCLX_LOG_STREAM(level) \
+  COMMS_LOG_NAMED_STREAM(::ncclx::logging::kNcclxLoggerName, level)
+
+#define NCCLX_LOG_IF_IMPL(level, spdlog_level, condition, ...)           \
+  do {                                                                   \
+    static auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ncclx::logging::kNcclxLoggerName);                             \
+    if (_ncclx_logger.should_log(spdlog_level) && (condition)) {         \
+      NCCLX_LOG(level, __VA_ARGS__);                                     \
+    }                                                                    \
   } while (false)
 
 #define NCCLX_LOG_IF_WARN(condition, ...) \
@@ -47,7 +76,7 @@ inline constexpr std::string_view kNcclxLoggerName = "comms.ncclx";
 
 #define NCCLX_LOG_FIRST_N_IMPL(level, spdlog_level, n, ...)                    \
   do {                                                                         \
-    auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger(              \
+    static auto& _ncclx_logger = ::meta::comms::logger::getSpdlogLogger(       \
         ::ncclx::logging::kNcclxLoggerName);                                   \
     if (_ncclx_logger.should_log(spdlog_level) && [&] {                        \
           struct ncclx_log_first_n_tag {};                                     \
