@@ -13,6 +13,7 @@
 
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "meta/wrapper/MetaFactory.h"
 
 ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
@@ -54,7 +55,7 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
           deviceStream,
           &ncclCommLogData(comm),
           "initChannnelSharedResDevPeers",
-          comm->slabAllocator.get())));
+          comm->ncclxExt->slabAllocator.get())));
       }
     }
     /* channel->devPeers is not shared, so just free it when calling commFree() */
@@ -68,7 +69,7 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
         deviceStream,
         &ncclCommLogData(comm),
         "initChannnelDevPeers",
-        comm->slabAllocator.get())));
+        comm->ncclxExt->slabAllocator.get())));
       if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
         ncclCommPushCudaFree(comm, channel->devPeers);
       }
@@ -93,7 +94,7 @@ ncclResult_t initChannel(struct ncclComm* comm, int channelId) {
       deviceStream,
       &ncclCommLogData(comm),
       "initChannneldevRingUserRanks",
-      comm->slabAllocator.get())));
+      comm->ncclxExt->slabAllocator.get())));
     if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
       ncclCommPushCudaFree(comm, channel->devRingUserRanks);
     }
