@@ -24,6 +24,15 @@ struct BenchmarkConfig {
   bool useTiled = false; // Use tiled protocol (Triton-style head/tail)
   bool useBidirCta = false; // One block does both send+recv via half-block
                             // multiwarp groups. Requires useTiled = true.
+  bool useProgress = false; // Drive both directions from one block through the
+                            // resumable progress API instead of blocking
+                            // send()/recv(). Requires useTiled = true.
+  bool useProgressDrain = false; // Serial alternation, but each direction
+                                 // advances until it would block before
+                                 // yielding. Requires useProgress = true.
+  bool useProgressBidirCta = false; // Progress API with the two directions in
+                                    // concurrent half-block groups rather than
+                                    // alternating. Requires useProgress = true.
   int chunksPerSlot = 1; // Sub-chunks per pipeline slot for finer signaling
   std::string name;
 };
