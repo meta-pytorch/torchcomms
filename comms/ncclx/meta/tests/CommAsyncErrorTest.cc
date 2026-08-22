@@ -11,6 +11,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommCtran.h"
 #include "nccl.h"
 
 class CommAsyncErrorTest : public NcclxBaseTestFixture {
@@ -47,11 +48,11 @@ TEST_F(CommAsyncErrorTest, CtranErrorOnly) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   const auto ctranErr = commInvalidArgument;
   auto e = ctran::utils::Exception("test", ctranErr);
-  comm->ctranComm_->setAsyncException(e);
+  meta::comms::ncclx::ncclCommCtran(comm)->setAsyncException(e);
 
   // Except Ctran async error is propagated
   auto asyncError = ncclSuccess;
@@ -66,14 +67,14 @@ TEST_F(CommAsyncErrorTest, NcclCtranErrorTogether) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   const auto ncclErr = ncclInvalidUsage;
   ncclCommSetAsyncError(comm, ncclErr);
 
   const auto ctranErr = commInvalidArgument;
   auto e = ctran::utils::Exception("test", ctranErr);
-  comm->ctranComm_->setAsyncException(e);
+  meta::comms::ncclx::ncclCommCtran(comm)->setAsyncException(e);
 
   // Except NCCL error is propagated, and Ctran async error doesn't overwrite
   auto asyncError = ncclSuccess;
@@ -88,14 +89,14 @@ TEST_F(CommAsyncErrorTest, NcclInProgressCtranError) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
   const auto ncclErr = ncclInProgress;
   ncclCommSetAsyncError(comm, ncclErr);
 
   const auto ctranErr = commInvalidArgument;
   auto e = ctran::utils::Exception("test", ctranErr);
-  comm->ctranComm_->setAsyncException(e);
+  meta::comms::ncclx::ncclCommCtran(comm)->setAsyncException(e);
 
   // Except Ctran async error overwrites
   auto asyncError = ncclSuccess;

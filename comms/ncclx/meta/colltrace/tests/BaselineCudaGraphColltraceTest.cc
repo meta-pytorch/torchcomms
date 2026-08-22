@@ -20,6 +20,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 namespace {
 
@@ -61,13 +62,14 @@ class BaselineCudaGraphColltraceTest : public NcclxBaseTestFixture {
   }
 
   std::unordered_map<std::string, std::string> flushAndDump(ncclComm_t comm) {
-    EXPECT_NE(comm->newCollTrace, nullptr);
-    if (comm->newCollTrace == nullptr) {
+    auto& colltrace = meta::comms::ncclx::ncclCommNewCollTrace(comm);
+    EXPECT_NE(colltrace, nullptr);
+    if (colltrace == nullptr) {
       return {};
     }
-    comm->newCollTrace->waitFlush(comm->newCollTrace->requestFlush());
-    EXPECT_TRUE(meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
-    return meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+    colltrace->waitFlush(colltrace->requestFlush());
+    EXPECT_TRUE(meta::comms::ncclx::waitForCollTraceDrain(*colltrace));
+    return meta::comms::ncclx::dumpNewCollTrace(*colltrace);
   }
 
   // Warms the collective eagerly (establishes transport connections and a
@@ -139,7 +141,7 @@ TEST_F(BaselineCudaGraphColltraceTest, AllReduceOneRecordPerReplay) {
   auto algoGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm.get()) != nullptr);
 
   CUDACHECK_TEST(cudaMalloc(&sendBuf_, kCount * sizeof(int)));
   CUDACHECK_TEST(cudaMalloc(&recvBuf_, kCount * sizeof(int)));
@@ -158,7 +160,7 @@ TEST_F(BaselineCudaGraphColltraceTest, AllGatherOneRecordPerReplay) {
   auto algoGuard = EnvRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::orig);
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm.get()) != nullptr);
 
   CUDACHECK_TEST(cudaMalloc(&sendBuf_, kCount * sizeof(int)));
   CUDACHECK_TEST(cudaMalloc(&recvBuf_, kCount * numRanks * sizeof(int)));
