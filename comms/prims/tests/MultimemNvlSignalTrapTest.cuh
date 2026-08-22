@@ -17,6 +17,7 @@ enum class NvlSignalTrapCase : uint32_t {
   SerialMinWaitTimeout,
   TreeMinWaitTimeout,
   ButterflyMinWaitTimeout,
+  SignalsPerChannelMismatch,
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);
