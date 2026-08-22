@@ -1,12 +1,15 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "bootstrap.h"
+#include "meta/wrapper/NcclCommLogData.h"
 #include "transport.h"
 
 #include "comms/ctran/memory/Utils.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "meta/transport/transportExt.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/wrapper/NcclCommChannelMetadata.h"
+#include "meta/wrapper/NcclCommMemCache.h"
 
 namespace ncclx::transport {
 
@@ -249,7 +252,7 @@ ncclResult_t ncclTransportP2pSetupExt(
   std::lock_guard<std::mutex> lock(transportSetupMutex);
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
   sampleGuardBegin.sample().setCommunicatorMetadata(
-      comm ? &comm->logMetaData : nullptr);
+      comm ? &ncclCommLogData(comm) : nullptr);
   // Stream used during transport setup; need for P2P pre-connect + CUDA Graph
   ncclResult_t ret = ncclSuccess;
   struct ncclConnect**
@@ -269,7 +272,7 @@ ncclResult_t ncclTransportP2pSetupExt(
   NCCLCHECKGOTO(ncclCalloc(&sendData, maxPeers), ret, fail);
   cudaStream_t hostStream, deviceStream;
 
-  if (!comm->channelMetadataOnHost) {
+  if (!meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
     NCCLCHECKGOTO(
         ncclStrongStreamAcquire(
 #if NCCL_MINOR >= 29
@@ -469,7 +472,7 @@ ncclResult_t ncclTransportP2pSetupExt(
                     fail);
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
-                  if (comm->channelMetadataOnHost) {
+                  if (meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
                     std::memcpy(
                         &comm->channels[c]
                              .devPeersHostPtr[sendPeer]
@@ -515,7 +518,7 @@ ncclResult_t ncclTransportP2pSetupExt(
                     fail);
                 if (ret == ncclSuccess) {
                   conn->connected = 1;
-                  if (comm->channelMetadataOnHost) {
+                  if (meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
                     std::memcpy(
                         &comm->channels[c]
                              .devPeersHostPtr[recvPeer]
@@ -616,7 +619,7 @@ exit:
     free(recvData);
   }
 
-  if (!comm->channelMetadataOnHost) {
+  if (!meta::comms::ncclx::ncclCommChannelMetadataOnHost(comm)) {
     NCCLCHECK(ncclStreamWaitStream(
         deviceStream, hostStream, comm->sharedRes->scratchEvent));
     NCCLCHECK(ncclStrongStreamRelease(
@@ -674,8 +677,8 @@ ncclResult_t getP2pSyncBufPtr(
           ipcDesc,
           ptr,
           kP2pSyncBufKey,
-          comm->memCache,
-          &comm->logMetaData));
+          meta::comms::ncclx::ncclCommMemCache(comm),
+          &ncclCommLogData(comm)));
 
   *offset = getP2pSyncBufSlot(
       comm->maxLocalRanks, isSend, nMaxChannels, channelId, connIndex, rank);
