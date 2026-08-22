@@ -22,6 +22,11 @@ enum class NvlSignalTrapCase : uint32_t {
   UpperWordSerialMinTimeout,
   UpperWordTreeMinTimeout,
   UpperWordButterflyMinTimeout,
+  DuplicateChannelOwner,
+  AggregatePartialWarp,
+  AggregateNon1DGrid,
+  PerPeerDuplicateChannelOwner,
+  PerPeerNon1DBlock,
 };
 
 enum class NvlSignalRankBoundaryWaitPolicy : uint32_t {
