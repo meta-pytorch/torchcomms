@@ -18,6 +18,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/ProxyMock.h"
 #include "meta/colltrace/ProxyTrace.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 #include "comm.h"
 
@@ -658,12 +659,12 @@ TEST_F(ProxyTraceTest, CTAndPTOpCountsMatch) {
   }
 
   EXPECT_THAT(comm->proxyState->trace, ::testing::NotNull());
-  if (comm->newCollTrace == nullptr) {
+  if (meta::comms::ncclx::ncclCommNewCollTrace(comm) == nullptr) {
     GTEST_SKIP() << "CTAndPTOpCountsMatch requires newCollTrace";
   }
 
   auto* commDumpPlugin = dynamic_cast<meta::comms::colltrace::CommDumpPlugin*>(
-      comm->newCollTrace->getPluginByName(
+      meta::comms::ncclx::ncclCommNewCollTrace(comm)->getPluginByName(
           std::string{
               meta::comms::colltrace::CommDumpPlugin::kCommDumpPluginName}));
   if (commDumpPlugin == nullptr) {
