@@ -22,6 +22,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
+#include "meta/wrapper/NcclCommPatAvg.h"
 
 /**
  * Test suite for ReduceScatter PAT algorithm selection logic.
@@ -136,7 +137,7 @@ TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   // Create user-defined PreMulSum with scalar = 0.25
   // This is different from ncclAvg which uses 1/nRanks (0.5 for 2 ranks)
@@ -194,7 +195,7 @@ TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -293,7 +294,7 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ncclComm_t comm = commGuard.get();
-  ASSERT_EQ(comm->usePatAvg_, patAvgEnable);
+  ASSERT_EQ(meta::comms::ncclx::ncclCommUsePatAvg(comm), patAvgEnable);
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -358,7 +359,7 @@ TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   constexpr int kNumOpsInGroup = 3;
   const size_t count = 8000;
@@ -416,7 +417,7 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgCvarControl) {
   ncclComm_t comm = commGuard.get();
 
   // Verify CVAR enabled usePatAvg_
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -472,7 +473,7 @@ TEST_F(ReduceScatterPatSelectTest, UsePatAvgOnlyAffectsReduceScatterAvg) {
   ncclx::test::NcclCommRAII commGuard{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ncclComm_t comm = commGuard.get();
-  ASSERT_TRUE(comm->usePatAvg_);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommUsePatAvg(comm));
 
   const size_t count = 8000;
   const size_t allocSize = count * numRanks * sizeof(float);
@@ -626,6 +627,62 @@ TEST_F(ReduceScatterPatSelectTest, ComputePatAvgChannelsScalesWithMsgSize) {
   // Zero bytes: should reduce to 1 channel
   ncclx::computePatAvgChannelsAndWarps(comm, 0, &nc, &nWarps);
   EXPECT_EQ(nc, 1) << "0 byte message should use 1 channel";
+}
+
+/**
+ * Test: maybePatAvgInfoExt gates and encodes the PAT AVG override correctly.
+ *
+ * The consolidated host entry point must return an override only when PAT AVG
+ * is enabled for the comm, the op is ncclAvg, and the datatype is supported.
+ * When it does apply, the override must select PAT/SIMPLE with the
+ * ncclDevPatSumPostDiv reduction op and the (nRanks << 1 | isSigned) scalarArg
+ * encoding (isSigned set for signed integer datatypes).
+ */
+TEST_F(ReduceScatterPatSelectTest, MaybePatAvgInfoExtGatesAndEncodes) {
+  ncclx::test::NcclCommRAII commGuard{
+      globalRank, numRanks, localRank, bootstrap_.get()};
+  ncclComm_t comm = commGuard.get();
+  constexpr size_t kRecvCount = 1024;
+
+  // Feature disabled -> no override even for an otherwise-eligible call.
+  meta::comms::ncclx::ncclCommUsePatAvg(comm) = false;
+  EXPECT_FALSE(
+      ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclFloat32, ncclAvg)
+          .has_value());
+
+  meta::comms::ncclx::ncclCommUsePatAvg(comm) = true;
+
+  // Wrong op (not ncclAvg) -> no override.
+  EXPECT_FALSE(
+      ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclFloat32, ncclSum)
+          .has_value());
+
+  // Unsupported datatype (fp16 lacks exponent range) -> no override.
+  EXPECT_FALSE(
+      ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclFloat16, ncclAvg)
+          .has_value());
+
+  // Supported float type -> override selecting PAT/SIMPLE, unsigned encoding.
+  const auto floatExt =
+      ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclFloat32, ncclAvg);
+  ASSERT_TRUE(floatExt.has_value());
+  EXPECT_EQ(floatExt->algorithm, NCCL_ALGO_PAT);
+  EXPECT_EQ(floatExt->protocol, NCCL_PROTO_SIMPLE);
+  ASSERT_TRUE(floatExt->opDev.has_value());
+  EXPECT_EQ(floatExt->opDev->op, ncclDevPatSumPostDiv);
+  EXPECT_FALSE(floatExt->opDev->scalarArgIsPtr);
+  EXPECT_EQ(
+      floatExt->opDev->scalarArg,
+      static_cast<uint64_t>(comm->nRanks) << 1); // isSigned = 0
+
+  // Signed integer type -> isSigned bit set in the scalarArg encoding.
+  const auto intExt =
+      ncclx::maybePatAvgInfoExt(comm, kRecvCount, ncclInt32, ncclAvg);
+  ASSERT_TRUE(intExt.has_value());
+  ASSERT_TRUE(intExt->opDev.has_value());
+  EXPECT_EQ(
+      intExt->opDev->scalarArg,
+      (static_cast<uint64_t>(comm->nRanks) << 1) | 1ull); // isSigned = 1
 }
 
 int main(int argc, char* argv[]) {

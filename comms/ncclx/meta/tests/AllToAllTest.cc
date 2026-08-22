@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include "checks.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
@@ -17,6 +18,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclxConfig.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 static const int kTotalColls = 5;
 
@@ -93,11 +95,13 @@ class AllToAllTest : public NcclxBaseTestFixture {
 
 #ifdef TEST_ENABLE_CTRAN
 
-    if (comm->newCollTrace) {
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm)) {
       EXPECT_TRUE(
-          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+          meta::comms::ncclx::waitForCollTraceDrain(
+              *meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
-      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+          *meta::comms::ncclx::ncclCommNewCollTrace(comm));
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
         int totalColls = kTotalColls;
@@ -138,7 +142,8 @@ TEST_F(AllToAllTest, Ctran) {
 
   run();
 
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 
 TEST_F(AllToAllTest, AllToAllWithHintOverride) {
@@ -156,7 +161,8 @@ TEST_F(AllToAllTest, AllToAllWithHintOverride) {
 
   run();
 
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 #endif
 
