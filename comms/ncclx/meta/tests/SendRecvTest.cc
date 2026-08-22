@@ -15,6 +15,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/AlgoStrConv.h"
+#include "meta/wrapper/NcclCommNoLocal.h"
 
 static bool VERBOSE = true;
 
@@ -397,7 +398,7 @@ TEST_F(SendRecvTest, CtgraphGroupedSendRecv) {
 
   checkResults(recvPeer, commCount);
 
-  if (comm->noLocal_) {
+  if (meta::comms::ncclx::ncclCommNoLocal(comm)) {
     // nolocal: IB backend → ctgraph routes to ctran
     ctranAlgoStats_.verify(comm->ctranComm_.get(), "SendRecv", "Ctran");
   } else {
