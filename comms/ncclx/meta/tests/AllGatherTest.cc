@@ -16,6 +16,7 @@
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/algoconf/AlgoStrConv.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 class AllGatherTest : public NcclxBaseTestFixture {
  public:
@@ -65,13 +66,14 @@ class AllGatherTest : public NcclxBaseTestFixture {
     }
 
     if (algo != NCCL_ALLGATHER_ALGO::orig) {
-      if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+      if (!ctranAllGatherSupport(
+              meta::comms::ncclx::ncclCommCtran(comm).get(), algo)) {
         GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
       }
 
       // FIXME: this should be fixed in Ctran algo level!
       if (memType == kMemCudaMalloc &&
-          comm->ctranComm_->statex_->nLocalRanks() > 1) {
+          meta::comms::ncclx::ncclCommCtran(comm)->statex_->nLocalRanks() > 1) {
         GTEST_SKIP()
             << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
       }
@@ -149,7 +151,8 @@ class AllGatherTest : public NcclxBaseTestFixture {
 
 #ifdef TEST_ENABLE_CTRAN
     if (algo != NCCL_ALLGATHER_ALGO::orig) {
-      ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllGather", "Ctran");
+      ctranAlgoStats_.verify(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), "AllGather", "Ctran");
     }
 #endif
 
