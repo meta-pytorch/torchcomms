@@ -42,6 +42,7 @@
 
 // Forward declarations of ncclx classes to avoid circular dependencies
 class ICtran;
+struct ncclxCommExt;
 namespace meta::comms {
 class IBootstrap;
 } // namespace meta::comms
@@ -838,6 +839,8 @@ struct ncclComm {
   /**
    * NCCLX specific state
    */
+  // Opaque NCCLX-only per-comm state; see meta/comm/NcclxCommExt.h.
+  ncclxCommExt* ncclxExt{nullptr};
   struct CommLogData logMetaData;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
   std::shared_ptr<meta::comms::colltrace::AlgoStats> algoStats;
@@ -847,7 +850,6 @@ struct ncclComm {
   std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
 
   // This is the only bridge between ctran and baseline code
-  bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
   std::unique_ptr<CtranComm> ctranComm_;
 
   // [META:PAT_AVG] per-communicator control; set at init entry functions
