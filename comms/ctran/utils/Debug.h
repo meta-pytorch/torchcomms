@@ -4,6 +4,7 @@
 
 #include <sstream>
 
+#include <folly/String.h>
 #include <folly/system/ThreadName.h>
 
 #include "comms/ctran/utils/CtranLogUtils.h"

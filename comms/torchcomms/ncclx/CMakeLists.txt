@@ -124,6 +124,12 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
+# CudaRAII.cc includes SpdlogLogger.h directly, so this target must carry
+# the logger's compile-time configuration instead of relying on CTRAN.
+target_compile_definitions(torchcomms_comms_ncclx PRIVATE
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
+    SPDLOG_FMT_EXTERNAL
+)
 
 # Add device API compile definition if headers are available
 if(TORCHCOMMS_HAS_NCCL_DEVICE_API)

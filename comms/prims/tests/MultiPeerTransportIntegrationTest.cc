@@ -4,7 +4,6 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/tests/MultiPeerTransportKernelTest.cuh"

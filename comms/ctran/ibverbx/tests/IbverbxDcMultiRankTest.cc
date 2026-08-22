@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <optional>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -165,7 +166,7 @@ TEST_F(DcMultiRankTestFixture, RingRdmaWrite) {
 
   for (int i = 0; i < numRanks; i++) {
     const auto& card = cards.at(i);
-    XLOG(INFO) << "rank " << globalRank << ": got card " << card;
+    CTRAN_LOG_STREAM(INFO) << "rank " << globalRank << ": got card " << card;
   }
 
   // Send to next rank, receive from previous rank
@@ -173,7 +174,7 @@ TEST_F(DcMultiRankTestFixture, RingRdmaWrite) {
   int recvFromRank = (globalRank + numRanks - 1) % numRanks;
   const auto& targetCard = cards.at(sendToRank);
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "rank {}: sending to rank {}, receiving from rank {}",
       globalRank,
@@ -217,7 +218,8 @@ TEST_F(DcMultiRankTestFixture, RingRdmaWrite) {
   int ret = ibverbx::ibvSymbols.ibv_internal_wr_complete(exQp_);
   ASSERT_EQ(ret, 0) << "Failed to post DC RDMA write";
 
-  XLOGF(INFO, "Rank {}: Posted RDMA write to rank {}", globalRank, sendToRank);
+  CTRAN_LOG(
+      INFO, "Rank {}: Posted RDMA write to rank {}", globalRank, sendToRank);
 
   // Wait for send completion only (plain RDMA write has no receiver completion)
   auto pollResult = pollCqForCompletions(globalRank, *cq_, 1);
@@ -236,7 +238,7 @@ TEST_F(DcMultiRankTestFixture, RingRdmaWrite) {
   ASSERT_EQ(recvBuf, expectedBuf)
       << "Data mismatch: expected data from rank " << recvFromRank;
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Rank {}: Ring RDMA write test passed - verified data from rank {}",
       globalRank,
@@ -326,11 +328,12 @@ TEST_F(DcMultiRankTestFixture, AllToAllRdmaWrite) {
 
     int recvFromRank = i;
     int sendToRank = i;
-    XLOG(INFO) << "rank " << globalRank << ": sending to rank " << sendToRank
-               << ", receiving from rank " << recvFromRank;
+    CTRAN_LOG_STREAM(INFO) << "rank " << globalRank << ": sending to rank "
+                           << sendToRank << ", receiving from rank "
+                           << recvFromRank;
 
     const auto& card = cards.at(i);
-    XLOG(INFO) << "rank " << globalRank << ": got card " << card;
+    CTRAN_LOG_STREAM(INFO) << "rank " << globalRank << ": got card " << card;
 
     // Each sender writes to their designated slot in the receiver's buffer
     uint64_t targetAddr = card.remoteAddr + (globalRank * slotSize);
@@ -354,7 +357,7 @@ TEST_F(DcMultiRankTestFixture, AllToAllRdmaWrite) {
                       << recvFromRank;
   }
 
-  XLOGF(INFO, "Rank {}: Posted RDMA write to all other ranks", globalRank);
+  CTRAN_LOG(INFO, "Rank {}: Posted RDMA write to all other ranks", globalRank);
 
   // Wait for send completions only (plain RDMA write has no receiver
   // completion)
@@ -384,7 +387,7 @@ TEST_F(DcMultiRankTestFixture, AllToAllRdmaWrite) {
   ASSERT_EQ(recvHostBuf, expectedBuf)
       << "Data mismatch in all-to-all verification at rank " << globalRank;
 
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Rank {}: All-to-all RDMA write test passed - verified data from all {} peers",
       globalRank,

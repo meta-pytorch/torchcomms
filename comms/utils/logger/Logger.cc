@@ -10,6 +10,7 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/logger/LoggingFormat.h"
 #include "comms/utils/logger/NcclWriterWrapper.h"
 #include "comms/utils/logger/ScubaLogger.h"
@@ -28,7 +29,7 @@ std::string getHandlerNameWithCategory(
 void NcclLogger::init(const NcclLoggerInitConfig& config) {
   if (!firstInit_.test_and_set()) {
     folly::initLoggingOrDie();
-    DataTableWrapper::init();
+    meta::comms::logger::initCommLoggerRuntime();
     NcclLogFormatterFactory::registerThreadContextFn(
         config.logPrefix, config.threadContextFn);
     NcclLogger::registerHandler(
@@ -86,7 +87,7 @@ void NcclLogger::close() noexcept {
     NcclLogHandlerFactory::close();
     firstInit_.clear();
   }
-  DataTableWrapper::shutdown();
+  meta::comms::logger::shutdownCommLoggerRuntime();
 }
 
 std::shared_ptr<folly::LogWriter>

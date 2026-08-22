@@ -2,9 +2,8 @@
 
 #include "comms/utils/colltrace/GenericMetadata.h"
 
-#include <folly/logging/xlog.h>
-
 #include "comms/utils/Conversion.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace meta::comms::colltrace {
 
@@ -177,7 +176,7 @@ GroupedCollP2PMetaData GroupedCollP2PMetaData::fromDynamic(
   // TODO: Currently the from dynamic function is not functioning as expected.
   GroupedCollP2PMetaData metadata;
 
-  XLOG_FIRST_N(ERR, 1)
+  COMMS_LOGGER_STREAM_FIRST_N(logger::getSpdlogLogger(), ERR, 1)
       << "GroupedCollP2PMetaData::fromDynamic is not supported yet";
 
   return metadata;

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <atomic>
+#include <string_view>
 
 #include <cuda_runtime.h> // @manual
 
@@ -12,6 +13,10 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/colltrace/CollWaitEvent.h"
 #include "comms/utils/colltrace/CudaEventPool.h"
+
+namespace meta::comms::logger {
+class CommsSpdlogLogger;
+}
 
 namespace meta::comms::colltrace {
 
@@ -46,7 +51,7 @@ class CudaReferencePoint {
   // anchor is kept. Caller is responsible for rate-limiting; the colltrace
   // poll thread invokes this at ~1 Hz, bounding residual drift between
   // anchors below 100 ns at 100 ppm oscillator tolerance.
-  void refresh();
+  void refresh(logger::CommsSpdlogLogger& logger);
 
   // Returns the singleton if it has been constructed, otherwise nullptr.
   // Safe to call from any thread; never triggers construction. Used by the

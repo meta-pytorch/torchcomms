@@ -3,13 +3,14 @@
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
+
 #include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/algorithms/all_gather/all_gather_dda.cuh"
 #include "comms/common/tests/TestBaselineBootstrap.h"
 #include "comms/rcclx/develop/meta/lib/tests/RcclxTestUtils.h"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/logger/CudaLog.h"
 
 using namespace meta::rcclx;
 using namespace meta::comms;
@@ -30,7 +31,8 @@ class AllGatherDdaTest : public RcclxBaseTestFixture {
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
     NCCL_CHECK(
         ncclCommInitRankConfig(&comm, numRanks, commId, globalRank, &config));
-    XLOGF(INFO, "rank {} init done; total ranks: {}", globalRank, numRanks);
+    COMMS_CUDA_LOG(
+        INFO, "rank %d init done; total ranks: %d", globalRank, numRanks);
 
     ASSERT_EQ(numRanks, NUMRANKS);
     CUDA_CHECK(cudaSetDevice(globalRank));

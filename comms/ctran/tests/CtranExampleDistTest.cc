@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <vector>
 
@@ -44,7 +45,7 @@ TEST_F(CtranExampleDistTest, Basic) {
   auto devStated_d = algo->getDevState();
   ASSERT_NE(devStated_d, nullptr);
 
-  XLOG(WARN) << "Rank " << globalRank << ": ctran comm created";
+  CTRAN_LOG_STREAM(WARN) << "Rank " << globalRank << ": ctran comm created";
   size_t numElements = 10;
 
   // Create input/output device buffers
@@ -95,8 +96,8 @@ TEST_F(CtranExampleDistTest, Basic) {
         << expected << ", got " << output_h[i];
   }
 
-  XLOG(WARN) << "Rank " << globalRank
-             << ": AllGather Direct verification passed";
+  CTRAN_LOG_STREAM(WARN) << "Rank " << globalRank
+                         << ": AllGather Direct verification passed";
 }
 
 int main(int argc, char* argv[]) {
