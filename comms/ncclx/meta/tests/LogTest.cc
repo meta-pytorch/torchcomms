@@ -11,6 +11,8 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "debug.h"
+#include "meta/wrapper/NcclxRuntime.h"
+#include "nccl.h" // @manual
 
 class LogTest : public ::testing::Test {
  public:
@@ -24,7 +26,12 @@ class LogTest : public ::testing::Test {
   void initLogging() {
     ncclDebugLevel = -1;
     ncclDebugFile = nullptr;
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 };
 
