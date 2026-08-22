@@ -9,6 +9,9 @@
 #include "LoggerUtil.h"
 #include "ScubaLoggerTestMixin.h"
 #include "debug.h" // @manual
+#include "nccl.h" // @manual
+
+#include "meta/wrapper/NcclxRuntime.h"
 
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -175,14 +178,24 @@ class NcclLoggerBenchTest : public ::testing::Test {
 
 TEST_F(NcclLoggerBenchTest, CommBenchScubaLog) {
   setLogType(LogType::SCUBA);
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  meta::comms::ncclx::ncclxInitLogger();
+#else
   initNcclLogger();
+#endif
   ncclLoggerBenchTest();
   finishLogging();
 }
 
 TEST_F(NcclLoggerBenchTest, CommBenchScubaLogWithEventApi) {
   setLogType(LogType::SCUBA);
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  meta::comms::ncclx::ncclxInitLogger();
+#else
   initNcclLogger();
+#endif
   ncclLoggerBenchTest(true);
   finishLogging();
 }
@@ -193,7 +206,12 @@ TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
   EnvRAII env(NCCL_DEBUG_FILE, getTmpLogFile());
   // Reset ncclDebugLevel to force debug sub-system to be re-initialized
   ncclDebugLevel = -1;
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  meta::comms::ncclx::ncclxInitLogger();
+#else
   initNcclLogger();
+#endif
   ncclLoggerBenchTest();
   finishLogging();
 }
