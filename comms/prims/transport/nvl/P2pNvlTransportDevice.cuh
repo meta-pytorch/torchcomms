@@ -18,6 +18,7 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #include "comms/prims/transport/ll/LlOps.cuh"
 #include "comms/prims/transport/ll128/Ll128Ops.cuh"
+#include "comms/prims/transport/nvl/NvlChannelProgress.cuh"
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
 
 namespace comms::prims {
@@ -113,14 +114,18 @@ class P2pNvlTransportDevice {
       const LocalState& localState,
       const RemoteState& remoteState,
       NvlChannelState* localChannels = nullptr,
-      NvlChannelState* remoteChannels = nullptr)
+      NvlChannelState* remoteChannels = nullptr,
+      NvlChannelProgress* sendProgress = nullptr,
+      NvlChannelProgress* recvProgress = nullptr)
       : myRank_(myRank),
         peerRank_(peerRank),
         options_(options),
         localState_(localState),
         remoteState_(remoteState),
         local_channels_(localChannels),
-        remote_channels_(remoteChannels) {}
+        remote_channels_(remoteChannels),
+        send_progress_(sendProgress),
+        recv_progress_(recvProgress) {}
 
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
@@ -650,6 +655,444 @@ class P2pNvlTransportDevice {
       local_ch.recv_cursor = static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
+#endif
+  }
+
+  /**
+   * init_send_progress - begin a resumable send on this group's channel.
+   *
+   * Reserves the sender-side byte stream for `group.group_id` and records the
+   * geometry. The source pointer is not captured; it is passed to each
+   * progress_send_once() instead.
+   *
+   * Reserving here, rather than at completion as blocking send() does, is what
+   * lets init and every later progress call agree on the byte range. It is also
+   * why a channel cannot interleave a blocking send() with an in-flight
+   * progress send: both would claim from the same cursor.
+   *
+   * The send progress slot for this group must be idle; re-initializing while
+   * an operation is outstanding traps rather than silently overwriting it.
+   *
+   * @param group Thread group that will execute all later progress calls.
+   * @param nbytes User-buffer bytes to send for this group.
+   * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
+   */
+  __device__ __forceinline__ void init_send_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0) {
+#if PIPES_IS_DEVICE_COMPILE
+    if (nbytes == 0) {
+      return;
+    }
+
+    // Validate geometry before indexing progress storage, so a bad
+    // configuration produces make_channel_layout's diagnostic rather than an
+    // out-of-bounds access.
+    const NvlChannelLayout layout =
+        make_channel_layout(group, max_signal_bytes, "init_send_progress");
+    if (send_progress_ == nullptr) {
+      if (group.is_leader()) {
+        printf("init_send_progress: progress storage not configured\n");
+        PIPES_DEVICE_TRAP();
+      }
+      return;
+    }
+
+    const uint32_t channel = group.group_id;
+    NvlChannelProgress& prog = send_progress_[channel];
+
+    /*
+     * Inspecting and mutating the slot is leader-only, and the verdict is
+     * broadcast, because a non-leader reading `stage` here could observe the
+     * leader's own Active store from this same call. It would then take the
+     * early return, skip the barrier below, and spend the rest of the
+     * operation one barrier generation ahead of its group. The IB path's
+     * assert_progress_slot_idle() keeps the decision group-uniform the same
+     * way.
+     */
+    uint32_t idle = 1U;
+    if (group.is_leader()) {
+      if (prog.stage != NvlProgressStage::Idle) {
+        idle = 0U;
+        printf(
+            "init_send_progress: channel %u already has an in-flight send\n",
+            channel);
+      } else {
+        NvlChannelState& local_ch = local_channels_[channel];
+        const uint64_t baseByte = static_cast<uint64_t>(local_ch.send_cursor);
+        const std::size_t payloadProtocolBytes =
+            align_tile_protocol_bytes(nbytes);
+        const std::size_t protocolTailPadding =
+            tail_padding_for_signal_granularity(
+                baseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+        local_ch.send_cursor = static_cast<int64_t>(
+            baseByte + payloadProtocolBytes + protocolTailPadding);
+        prog.activeBaseByte = baseByte;
+        prog.activeNextByte = 0;
+        prog.activePayloadBytes = payloadProtocolBytes;
+        prog.activeTailPadding = protocolTailPadding;
+        prog.activeUserBytes = nbytes;
+        prog.activeMaxSignalBytes = max_signal_bytes;
+        prog.stage = NvlProgressStage::Active;
+      }
+    }
+    idle = group.template broadcast<uint32_t>(idle);
+    if (idle == 0U) {
+      PIPES_DEVICE_TRAP();
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)nbytes;
+    (void)max_signal_bytes;
+    (void)send_progress_;
+#endif
+  }
+
+  /**
+   * progress_send_once - advance a resumable send by at most one chunk.
+   *
+   * Non-blocking counterpart of the blocking send() loop body: instead of
+   * waiting on SLOT_FREE it polls once and reports Waiting, so a caller holding
+   * several operations in flight is never stuck on one peer.
+   *
+   * @return Done when the operation has completed (or aborted), Progressed when
+   *         a chunk was published, Waiting when backpressure blocked this call.
+   */
+  __device__ __forceinline__ NvlSendRecvProgressStatus progress_send_once(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+#if PIPES_IS_DEVICE_COMPILE
+    const NvlChannelLayout layout =
+        make_channel_layout(group, max_signal_bytes, "progress_send_once");
+    if (send_progress_ == nullptr) {
+      if (group.is_leader()) {
+        printf("progress_send_once: progress storage not configured\n");
+        PIPES_DEVICE_TRAP();
+      }
+      return NvlSendRecvProgressStatus::Done;
+    }
+
+    const uint32_t channel = group.group_id;
+    NvlChannelProgress& prog = send_progress_[channel];
+    if (prog.stage == NvlProgressStage::Idle) {
+      return NvlSendRecvProgressStatus::Done;
+    }
+    // The geometry recorded at init is authoritative; these parameters only
+    // mirror it. Changing them mid-operation would silently corrupt the byte
+    // stream, so trap instead.
+    if (prog.activeUserBytes != nbytes ||
+        prog.activeMaxSignalBytes != max_signal_bytes) {
+      if (group.is_leader()) {
+        printf(
+            "progress_send_once: geometry changed mid-operation on channel %u\n",
+            channel);
+        PIPES_DEVICE_TRAP();
+      }
+      return NvlSendRecvProgressStatus::Done;
+    }
+
+    NvlChannelState& local_ch = local_channels_[channel];
+    NvlChannelState& remote_ch = remote_channels_[channel];
+
+    const char* __restrict__ srcPtr = reinterpret_cast<const char*>(src);
+    char* __restrict__ stagBuf = remoteState_.dataBuffer;
+
+    const std::size_t dataOff = prog.activeNextByte;
+    const uint64_t streamStart = prog.activeBaseByte + dataOff;
+    const NvlPipelinePosition position = layout.position(streamStart);
+    const std::size_t dataRemaining = prog.activePayloadBytes - dataOff;
+    std::size_t copyBytes = layout.effectiveChunk < dataRemaining
+        ? layout.effectiveChunk
+        : dataRemaining;
+    copyBytes =
+        copyBytes < position.slotRemaining ? copyBytes : position.slotRemaining;
+    const bool isFinalChunk = dataOff + copyBytes >= prog.activePayloadBytes;
+    const uint64_t streamEnd = streamStart + copyBytes;
+    const uint64_t protocolStreamEnd =
+        streamEnd + (isFinalChunk ? prog.activeTailPadding : 0);
+
+    // Non-blocking form of blocking send()'s slot_free.wait_until(). The leader
+    // resolves ready / waiting / aborted in one step and broadcasts a single
+    // verdict, as the IB progress path does. On abort it clears the stage
+    // before broadcasting, so the broadcast's own barriers publish that write
+    // and no extra sync is needed.
+    if (protocolStreamEnd > layout.pipelineBytes) {
+      const uint64_t needed = protocolStreamEnd - layout.pipelineBytes;
+      uint32_t verdict = kNvlProgressReady;
+      if (group.is_leader() && local_ch.slot_free.load() < needed) {
+        // Same invariant blocking send() protects: leave before the staging
+        // write and the DATA_READY signal. Publishing either without credit
+        // would release a receiver that is correctly blocked.
+        verdict = FT_ABORT_CHECK(timeout, "progress_send_once observed abort")
+            ? kNvlProgressAborted
+            : kNvlProgressWaiting;
+      }
+      verdict = group.template broadcast<uint32_t>(verdict);
+      if (verdict == kNvlProgressAborted) {
+        // Reset only after the broadcast has rendezvoused the group, so no
+        // thread can still be reading `stage` for this call, then publish the
+        // reset before anyone can re-init. Abort-only, so this costs one
+        // barrier per aborted operation rather than per chunk.
+        if (group.is_leader()) {
+          prog.stage = NvlProgressStage::Idle;
+        }
+        group.sync();
+        return NvlSendRecvProgressStatus::Done;
+      }
+      if (verdict == kNvlProgressWaiting) {
+        return NvlSendRecvProgressStatus::Waiting;
+      }
+    }
+
+    const std::size_t validBytes =
+        valid_payload_bytes(dataOff, copyBytes, prog.activeUserBytes);
+    if (validBytes > 0) {
+      memcpy_vectorized(
+          layout.staging_ptr(stagBuf, position),
+          srcPtr + dataOff,
+          validBytes,
+          group);
+    }
+
+    /*
+     * Two barriers, and both are load-bearing. The first joins every thread's
+     * staging write before the peer-visible signal, and also guarantees every
+     * thread has finished reading `activeNextByte` for this call -- on the
+     * in-window path nothing else rendezvouses the group, so a fast leader
+     * could otherwise overwrite the cursor while a slow warp was still reading
+     * it. The second publishes the leader's cursor/stage update for the next
+     * call to read.
+     */
+    group.sync();
+    if (group.is_leader()) {
+      remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
+      prog.activeNextByte = dataOff + copyBytes;
+      if (prog.activeNextByte >= prog.activePayloadBytes) {
+        prog.stage = NvlProgressStage::Idle;
+      }
+    }
+    group.sync();
+
+    // No reload: `prog.stage` becomes Idle exactly when this was the final
+    // chunk, which every thread already holds in a register.
+    return isFinalChunk ? NvlSendRecvProgressStatus::Done
+                        : NvlSendRecvProgressStatus::Progressed;
+#else
+    (void)group;
+    (void)src;
+    (void)nbytes;
+    (void)max_signal_bytes;
+    (void)timeout;
+    return NvlSendRecvProgressStatus::Done;
+#endif
+  }
+
+  /**
+   * init_recv_progress - begin a resumable receive on this group's channel.
+   *
+   * Receiver-side counterpart of init_send_progress(); see it for the
+   * cursor-reservation contract and the concurrency restriction.
+   */
+  __device__ __forceinline__ void init_recv_progress(
+      ThreadGroup& group,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0) {
+#if PIPES_IS_DEVICE_COMPILE
+    if (nbytes == 0) {
+      return;
+    }
+
+    const NvlChannelLayout layout =
+        make_channel_layout(group, max_signal_bytes, "init_recv_progress");
+    if (recv_progress_ == nullptr) {
+      if (group.is_leader()) {
+        printf("init_recv_progress: progress storage not configured\n");
+        PIPES_DEVICE_TRAP();
+      }
+      return;
+    }
+
+    const uint32_t channel = group.group_id;
+    NvlChannelProgress& prog = recv_progress_[channel];
+
+    // Leader-only inspection and mutation, broadcast verdict: see the
+    // corresponding comment in init_send_progress().
+    uint32_t idle = 1U;
+    if (group.is_leader()) {
+      if (prog.stage != NvlProgressStage::Idle) {
+        idle = 0U;
+        printf(
+            "init_recv_progress: channel %u already has an in-flight recv\n",
+            channel);
+      } else {
+        NvlChannelState& local_ch = local_channels_[channel];
+        const uint64_t baseByte = static_cast<uint64_t>(local_ch.recv_cursor);
+        const std::size_t payloadProtocolBytes =
+            align_tile_protocol_bytes(nbytes);
+        const std::size_t protocolTailPadding =
+            tail_padding_for_signal_granularity(
+                baseByte, max_signal_bytes, layout.perChannelSlot, nbytes);
+        local_ch.recv_cursor = static_cast<int64_t>(
+            baseByte + payloadProtocolBytes + protocolTailPadding);
+        prog.activeBaseByte = baseByte;
+        prog.activeNextByte = 0;
+        prog.activePayloadBytes = payloadProtocolBytes;
+        prog.activeTailPadding = protocolTailPadding;
+        prog.activeUserBytes = nbytes;
+        prog.activeMaxSignalBytes = max_signal_bytes;
+        prog.stage = NvlProgressStage::Active;
+      }
+    }
+    idle = group.template broadcast<uint32_t>(idle);
+    if (idle == 0U) {
+      PIPES_DEVICE_TRAP();
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)nbytes;
+    (void)max_signal_bytes;
+    (void)recv_progress_;
+#endif
+  }
+
+  /**
+   * progress_recv_once - advance a resumable receive by at most one chunk.
+   *
+   * Non-blocking counterpart of the blocking recv() loop body: polls DATA_READY
+   * once and reports Waiting rather than spinning on it.
+   *
+   * @return Done when the operation has completed (or aborted), Progressed when
+   *         a chunk was consumed, Waiting when the chunk had not arrived.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ NvlSendRecvProgressStatus progress_recv_once(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout(),
+      Args... args) {
+#if PIPES_IS_DEVICE_COMPILE
+    const NvlChannelLayout layout =
+        make_channel_layout(group, max_signal_bytes, "progress_recv_once");
+    if (recv_progress_ == nullptr) {
+      if (group.is_leader()) {
+        printf("progress_recv_once: progress storage not configured\n");
+        PIPES_DEVICE_TRAP();
+      }
+      return NvlSendRecvProgressStatus::Done;
+    }
+
+    const uint32_t channel = group.group_id;
+    NvlChannelProgress& prog = recv_progress_[channel];
+    if (prog.stage == NvlProgressStage::Idle) {
+      return NvlSendRecvProgressStatus::Done;
+    }
+    if (prog.activeUserBytes != nbytes ||
+        prog.activeMaxSignalBytes != max_signal_bytes) {
+      if (group.is_leader()) {
+        printf(
+            "progress_recv_once: geometry changed mid-operation on channel %u\n",
+            channel);
+        PIPES_DEVICE_TRAP();
+      }
+      return NvlSendRecvProgressStatus::Done;
+    }
+
+    NvlChannelState& local_ch = local_channels_[channel];
+    NvlChannelState& remote_ch = remote_channels_[channel];
+
+    char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
+    char* __restrict__ stagBuf = localState_.dataBuffer;
+
+    const std::size_t dataOff = prog.activeNextByte;
+    const uint64_t streamStart = prog.activeBaseByte + dataOff;
+    const NvlPipelinePosition position = layout.position(streamStart);
+    const std::size_t dataRemaining = prog.activePayloadBytes - dataOff;
+    std::size_t copyBytes = layout.effectiveChunk < dataRemaining
+        ? layout.effectiveChunk
+        : dataRemaining;
+    copyBytes =
+        copyBytes < position.slotRemaining ? copyBytes : position.slotRemaining;
+    const bool isFinalChunk = dataOff + copyBytes >= prog.activePayloadBytes;
+    const uint64_t streamEnd = streamStart + copyBytes;
+    const uint64_t protocolStreamEnd =
+        streamEnd + (isFinalChunk ? prog.activeTailPadding : 0);
+
+    // Non-blocking form of blocking recv()'s data_ready.wait_until(). Note the
+    // wait target is streamEnd, not protocolStreamEnd: tail padding is credited
+    // in the SLOT_FREE signal below but never transferred.
+    // One leader-computed verdict, one broadcast -- see progress_send_once().
+    {
+      uint32_t verdict = kNvlProgressReady;
+      if (group.is_leader() && local_ch.data_ready.load() < streamEnd) {
+        // Same invariant blocking recv() protects: leave before the copy and,
+        // critically, before the SLOT_FREE credit. Signalling it would tell the
+        // sender we consumed a chunk it never sent, releasing a peer that is
+        // correctly blocked.
+        verdict = FT_ABORT_CHECK(timeout, "progress_recv_once observed abort")
+            ? kNvlProgressAborted
+            : kNvlProgressWaiting;
+      }
+      verdict = group.template broadcast<uint32_t>(verdict);
+      if (verdict == kNvlProgressAborted) {
+        // Reset only after the broadcast has rendezvoused the group, then
+        // publish it before anyone can re-init -- see progress_send_once().
+        if (group.is_leader()) {
+          prog.stage = NvlProgressStage::Idle;
+        }
+        group.sync();
+        return NvlSendRecvProgressStatus::Done;
+      }
+      if (verdict == kNvlProgressWaiting) {
+        return NvlSendRecvProgressStatus::Waiting;
+      }
+    }
+
+    const std::size_t validBytes =
+        valid_payload_bytes(dataOff, copyBytes, prog.activeUserBytes);
+    if (validBytes > 0) {
+      CopyOp::recv(
+          dstPtr + dataOff,
+          layout.staging_ptr(stagBuf, position),
+          validBytes,
+          group,
+          dataOff,
+          args...);
+    }
+
+    // Two barriers, both load-bearing -- see progress_send_once(). The first
+    // joins every thread's read of staging before the credit is returned and
+    // before the cursor moves; the second publishes the cursor/stage update.
+    group.sync();
+    if (group.is_leader()) {
+      if (position.chunkOff + copyBytes == layout.perChannelSlot ||
+          isFinalChunk) {
+        remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
+      }
+      prog.activeNextByte = dataOff + copyBytes;
+      if (prog.activeNextByte >= prog.activePayloadBytes) {
+        prog.stage = NvlProgressStage::Idle;
+      }
+    }
+    group.sync();
+
+    return isFinalChunk ? NvlSendRecvProgressStatus::Done
+                        : NvlSendRecvProgressStatus::Progressed;
+#else
+    (void)group;
+    (void)dst;
+    (void)nbytes;
+    (void)max_signal_bytes;
+    (void)timeout;
+    ((void)args, ...);
+    return NvlSendRecvProgressStatus::Done;
 #endif
   }
 
@@ -1187,6 +1630,12 @@ class P2pNvlTransportDevice {
   //   array; this rank's send / recv write into it to signal the remote rank.
   NvlChannelState* local_channels_{nullptr};
   NvlChannelState* remote_channels_{nullptr};
+
+  // Per-channel resumable state, sliced per peer by the transport. Null when
+  // the transport was built without progress storage, which the progress entry
+  // points trap on.
+  NvlChannelProgress* send_progress_{nullptr};
+  NvlChannelProgress* recv_progress_{nullptr};
 };
 
 } // namespace comms::prims
