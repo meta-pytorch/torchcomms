@@ -3,9 +3,9 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <array>
 #include <chrono>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <memory>
 #include <string>
@@ -252,8 +252,8 @@ class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
 
 TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
   if (numRanks < 2) {
-    XLOGF(
-        WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires at least 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -265,7 +265,7 @@ TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
     EXPECT_EQ(transport->numPeers(), numRanks - 1);
     EXPECT_NE(transport->getDeviceTransportPtr(), nullptr);
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: Transport created with GID index {}",
         globalRank,
@@ -276,7 +276,7 @@ TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  XLOGF(INFO, "Rank {}: ConstructAndExchange test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: ConstructAndExchange test completed", globalRank);
 }
 
 TEST_P(MultipeerIbTransportTestFixture, PipelineGeometry) {
@@ -339,7 +339,8 @@ TEST_P(MultipeerIbTransportTestFixture, PipelineGeometry) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -364,7 +365,7 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
     // Signal/counter buffers are transport-owned (numSignalSlots=1,
     // numCounterSlots=1)
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: localDataBuf ptr={} lkey={}, remoteDataBuf ptr={} rkey={}",
         globalRank,
@@ -442,7 +443,7 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: PutSignalBasic test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: PutSignalBasic test completed", globalRank);
 }
 
 // =============================================================================
@@ -451,7 +452,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBasic) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -528,7 +530,7 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBasic) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: PutSignalGroupBasic test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: PutSignalGroupBasic test completed", globalRank);
 }
 
 // =============================================================================
@@ -537,7 +539,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBasic) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupMultiWarp) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -622,7 +625,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupMultiWarp) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: PutSignalGroupMultiWarp test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: PutSignalGroupMultiWarp test completed", globalRank);
 }
 
 // =============================================================================
@@ -631,7 +635,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupMultiWarp) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBlock) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -715,7 +720,7 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalGroupBlock) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: PutSignalGroupBlock test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: PutSignalGroupBlock test completed", globalRank);
 }
 
 // =============================================================================
@@ -740,7 +745,8 @@ class TransferSizeTestFixture
 
 TEST_P(TransferSizeTestFixture, PutSignal) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -751,7 +757,7 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const uint8_t testPattern = static_cast<uint8_t>(globalRank + 0x10);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Running {} transfer size test {} with {} bytes",
       globalRank,
@@ -823,7 +829,7 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Transfer size test {} completed",
       globalRank,
@@ -903,7 +909,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_P(MultipeerIbTransportTestFixture, Bidirectional) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1028,7 +1035,7 @@ TEST_P(MultipeerIbTransportTestFixture, Bidirectional) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: Bidirectional test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: Bidirectional test completed", globalRank);
 }
 
 // =============================================================================
@@ -1037,7 +1044,8 @@ TEST_P(MultipeerIbTransportTestFixture, Bidirectional) {
 
 TEST_P(MultipeerIbTransportTestFixture, StressTest) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1114,7 +1122,7 @@ TEST_P(MultipeerIbTransportTestFixture, StressTest) {
 
         if (h_errorCount > 0) {
           totalErrors += h_errorCount;
-          XLOGF(ERR, "Iteration {}: Found {} errors", iter, h_errorCount);
+          COMMS_LOG(ERR, "Iteration {}: Found {} errors", iter, h_errorCount);
         }
       }
     }
@@ -1129,7 +1137,7 @@ TEST_P(MultipeerIbTransportTestFixture, StressTest) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: Stress test completed ({} iterations)",
       globalRank,
@@ -1142,7 +1150,8 @@ TEST_P(MultipeerIbTransportTestFixture, StressTest) {
 
 TEST_P(MultipeerIbTransportTestFixture, SignalOnly) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1176,7 +1185,7 @@ TEST_P(MultipeerIbTransportTestFixture, SignalOnly) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: SignalOnly test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: SignalOnly test completed", globalRank);
 }
 
 // =============================================================================
@@ -1185,7 +1194,8 @@ TEST_P(MultipeerIbTransportTestFixture, SignalOnly) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalCounter) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2737,7 +2747,8 @@ TEST_F(
 
 TEST_P(MultipeerIbTransportTestFixture, ResetSignal) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2786,7 +2797,7 @@ TEST_P(MultipeerIbTransportTestFixture, ResetSignal) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: ResetSignal test completed ({} iterations)",
       globalRank,
@@ -2799,7 +2810,8 @@ TEST_P(MultipeerIbTransportTestFixture, ResetSignal) {
 
 TEST_P(MultipeerIbTransportTestFixture, MultipleSignalSlots) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2848,7 +2860,7 @@ TEST_P(MultipeerIbTransportTestFixture, MultipleSignalSlots) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: MultipleSignalSlots test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: MultipleSignalSlots test completed", globalRank);
 }
 
 // =============================================================================
@@ -2857,7 +2869,8 @@ TEST_P(MultipeerIbTransportTestFixture, MultipleSignalSlots) {
 
 TEST_P(MultipeerIbTransportTestFixture, PutSignalWaitForReady) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -2946,7 +2959,7 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalWaitForReady) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: PutSignalWaitForReady test completed", globalRank);
+  COMMS_LOG(INFO, "Rank {}: PutSignalWaitForReady test completed", globalRank);
 }
 
 // =============================================================================
@@ -2955,7 +2968,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalWaitForReady) {
 
 TEST_P(MultipeerIbTransportTestFixture, BidirectionalConcurrent) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3028,7 +3042,8 @@ TEST_P(MultipeerIbTransportTestFixture, BidirectionalConcurrent) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(INFO, "Rank {}: BidirectionalConcurrent test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: BidirectionalConcurrent test completed", globalRank);
 }
 
 // =============================================================================
@@ -3037,8 +3052,8 @@ TEST_P(MultipeerIbTransportTestFixture, BidirectionalConcurrent) {
 
 TEST_P(MultipeerIbTransportTestFixture, AllToAll) {
   if (numRanks < 2) {
-    XLOGF(
-        WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires at least 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3143,7 +3158,7 @@ TEST_P(MultipeerIbTransportTestFixture, AllToAll) {
 
       if (h_errorCount > 0) {
         totalErrors += h_errorCount;
-        XLOGF(
+        COMMS_LOG(
             ERR,
             "Rank {}: {} byte mismatches receiving from rank {}",
             globalRank,
@@ -3161,7 +3176,7 @@ TEST_P(MultipeerIbTransportTestFixture, AllToAll) {
                  << " transport not available: " << e.what();
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: AllToAll test completed with {} peers",
       globalRank,
@@ -3174,8 +3189,8 @@ TEST_P(MultipeerIbTransportTestFixture, AllToAll) {
 
 TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
   if (numRanks < 2) {
-    XLOGF(
-        WARNING, "Skipping test: requires at least 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires at least 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3193,7 +3208,7 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
           << "getP2pTransportDevice(" << r << ") returned null";
     }
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: Multi-QP transport created with {} QPs/block/NIC",
         globalRank,
@@ -3225,7 +3240,8 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
 
 TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -3310,20 +3326,20 @@ TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
         static_cast<double>(nbytes) * static_cast<double>(measureIters);
     const double bwGbps = (totalBytes / elapsedSec) / 1e9;
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "MultiNicAggregateBandwidth: numNics={} qpsPerBlockPerNic={} numBlocks={}",
         detectedNics,
         numQps,
         numBlocks);
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "  transferred {:.2f} GB in {:.2f} ms ({} iters × {} MiB)",
         totalBytes / 1e9,
         elapsedSec * 1000.0,
         measureIters,
         nbytes >> 20);
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "  aggregate BW = {:.2f} GB/s (min expected = {:.0f} GB/s)",
         bwGbps,
@@ -3342,7 +3358,8 @@ TEST_P(MultipeerIbTransportTestFixture, MultiNicAggregateBandwidth) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   }
 
-  XLOGF(INFO, "Rank {}: MultiNicAggregateBandwidth test completed", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {}: MultiNicAggregateBandwidth test completed", globalRank);
 }
 
 // =============================================================================

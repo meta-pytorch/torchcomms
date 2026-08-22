@@ -2,9 +2,9 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <glog/logging.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <cstdlib>
 #include <iomanip>
@@ -69,7 +69,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -81,7 +81,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 all_ids.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     return all_ids[0];
@@ -103,7 +103,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     auto ncclCommGuard = folly::makeGuard([&] {
       const ncclResult_t res = ncclCommDestroy(nccl_comm);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclCommDestroy failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclCommDestroy failed: {}", ncclGetErrorString(res));
       }
     });
 
@@ -190,7 +190,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     auto rings_opt =
         make_standard_rings(worldSize, globalRank, config.num_rings);
     if (!rings_opt) {
-      XLOGF(
+      COMMS_LOG(
           ERR,
           "Cannot construct {} distinct rings for {} ranks",
           config.num_rings,
@@ -318,7 +318,7 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     ss << worldSize << " ranks, sendcount = per-rank message size\n";
     ss << "================================================================================\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   std::vector<RingAllGatherBenchmarkConfig> make_benchmark_configs(
@@ -441,7 +441,8 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
   void run_ibgda_vs_nccl_benchmark_suite() {
     if (globalRank == 0) {
-      XLOG(INFO) << "\n=== Ring AllGather (IBGDA) vs NCCL Comparison ===\n";
+      COMMS_LOG_STREAM(INFO)
+          << "\n=== Ring AllGather (IBGDA) vs NCCL Comparison ===\n";
     }
 
     std::vector<RingAllGatherBenchmarkResult> results;
@@ -462,7 +463,8 @@ class RingAllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
   void run_ibrc_vs_ibgda_benchmark_suite() {
     if (globalRank == 0) {
-      XLOG(INFO) << "\n=== Ring AllGather (IBRC) vs IBGDA Comparison ===\n";
+      COMMS_LOG_STREAM(INFO)
+          << "\n=== Ring AllGather (IBRC) vs IBGDA Comparison ===\n";
     }
 
     std::vector<RingAllGatherBenchmarkResult> results;
