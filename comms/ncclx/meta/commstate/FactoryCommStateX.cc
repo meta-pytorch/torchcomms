@@ -6,6 +6,7 @@
 #include "comms/ctran/commstate/CommStateX.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxLogger.h"
+#include "meta/wrapper/NcclCommNoLocal.h"
 
 #include "nvmlwrap.h"
 #include "transport.h"
@@ -89,6 +90,8 @@ ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
   CHECKABORT(comm->rankToNode, "rankToNode is nullptr");
   CHECKABORT(comm->localRankToRank, "localRankToRank is nullptr");
 
+  const bool noLocal = meta::comms::ncclx::ncclCommNoLocal(comm);
+
   auto* bootstrap = ctranComm->bootstrap_.get();
 
   const int vCliqueSize = NCCLX_CONFIG_FIELD(comm->config, vCliqueSize);
@@ -103,7 +106,7 @@ ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
       std::vector<RankTopology>(), /* rankTopologies */
       std::vector<int>(), /* commRanksToWorldRanks */
       NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      comm->noLocal_,
+      noLocal,
       vCliqueSize);
 
   try {
@@ -118,7 +121,7 @@ ncclResult_t initCommStateXFromNcclComm(void* _comm, CtranComm* ctranComm) {
   INFO(
       NCCL_INIT | NCCL_GRAPH,
       "CommStateX: set rankTopology with noLocal=%d, vCliqueSize=%d, commDesc=%s, commHash=0x%lx, rank=%d, nRanks=%d, nLocalRanks=%d",
-      comm->noLocal_,
+      noLocal,
       vCliqueSize,
       NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
       comm->commHash,
