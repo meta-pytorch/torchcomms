@@ -13,6 +13,8 @@
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/testinfra/IbverbMockTestUtils.h"
 
+#include "meta/wrapper/NcclCommCollTrace.h"
+
 namespace {
 struct GpuBuffer {
   explicit GpuBuffer(size_t size) : size_(size) {
@@ -175,7 +177,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
   NcclComm comm(worldSize, rank);
 
   // Ensure we are using new colltrace
-  ASSERT_NE(comm.raw()->newCollTrace, nullptr);
+  ASSERT_NE(meta::comms::ncclx::ncclCommNewCollTrace(comm.raw()), nullptr);
 
   // Allocate memory on the GPU
   constexpr int size = 32;

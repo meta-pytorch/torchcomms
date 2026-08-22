@@ -2,6 +2,7 @@
 
 #include <nccl.h>
 #include "comm.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/utils/Checks.h"
@@ -19,7 +20,7 @@ getValidatedNcclWin(ncclWindow_t win, ncclWin** outWin, const char* funcName) {
     ERR(ncclInvalidUsage, "Invalid window handle in %s", funcName);
     return ncclInvalidUsage;
   }
-  auto comm = ncclWinPtr->comm->ctranComm_.get();
+  auto comm = meta::comms::ncclx::ncclCommCtran(ncclWinPtr->comm).get();
   if (!ctranInitialized(comm)) {
     ERR(ncclInternalError, "%s requires Ctran support", funcName);
     return ncclInternalError;
@@ -126,7 +127,7 @@ ncclResult_t ncclGet(
     cudaStream_t stream) {
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclGet"));
-  auto comm = ncclWinPtr->comm->ctranComm_.get();
+  auto comm = meta::comms::ncclx::ncclCommCtran(ncclWinPtr->comm).get();
   return metaCommToNccl(ctranGet(
       target_buff,
       target_disp,
