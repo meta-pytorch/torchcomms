@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <string>
 
 #include <folly/Conv.h>
 #include <folly/Synchronized.h>
@@ -22,6 +23,7 @@
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/NcclxChecks.h"
+#include "meta/NcclxLogger.h"
 #include "meta/hints/GlobalHints.h"
 #include "meta/wrapper/DataTypeConv.h"
 
@@ -388,6 +390,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     auto commDumpPlugin =
         std::make_unique<meta::comms::colltrace::CommDumpPlugin>(
             meta::comms::colltrace::CommDumpConfig{
+                .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
                 .pastCollSize = NCCL_COLLTRACE_RECORD_MAX,
                 .pendingCollSize = NCCL_COLLTRACE_PENDING_QUEUE_SIZE,
             });
@@ -399,6 +402,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
         std::make_unique<meta::comms::colltrace::LifecycleEventFeedPlugin>(
             meta::comms::colltrace::LifecycleEventFeedConfig{
                 .commId = getNextLifecycleFeedCommId(),
+                .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
             }));
   }
 
@@ -415,6 +419,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     auto watchdogPlugin =
         std::make_unique<meta::comms::colltrace::WatchdogPlugin>(
             meta::comms::colltrace::WatchdogPluginConfig{
+                .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
                 .checkAsyncError = ifCheckAsync,
                 .funcIfError =
                     [comm]() {
@@ -434,6 +439,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
 
   auto colltraceNew = std::make_shared<meta::comms::colltrace::CollTrace>(
       meta::comms::colltrace::CollTraceConfig{
+          .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
           .maxCheckCancelInterval =
               std::chrono::milliseconds{NCCL_COLLTRACE_WAKEUP_INTERVAL_MS},
       },

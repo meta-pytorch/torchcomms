@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include "comms/utils/logger/CudaLog.h"
+
 using meta::comms::logger::getSpdlogLogger;
 
 class ScopedTestFile {
@@ -67,7 +69,13 @@ bool waitForFileToContain(
 class LogLevelRestoringTest : public testing::Test {
  protected:
   void TearDown() override {
-    getSpdlogLogger().set_level(spdlog::level::info);
+    const auto resetLogger = [](auto& logger, std::string prefix) {
+      logger.configure(std::move(prefix), []() { return 0; }, {}, false);
+      logger.set_level(spdlog::level::info);
+    };
+    resetLogger(getSpdlogLogger(), "COMMS");
+    resetLogger(getSpdlogLogger("comms.paired_test"), "PAIRED");
+    resetLogger(getSpdlogLogger("comms.named_only_test"), "NAMED_ONLY");
   }
 };
 
@@ -81,6 +89,53 @@ TEST(SpdlogLoggerTest, ReturnsStableLoggerPerContext) {
   EXPECT_EQ(&ctranLogger, &getSpdlogLogger("comms.ctran"));
   EXPECT_NE(&ctranLogger, &getSpdlogLogger("comms.ncclx"));
   EXPECT_EQ(ctranLogger.name(), "comms.ctran");
+}
+
+TEST_F(LogLevelRestoringTest, ConfiguresSharedAndNamedLoggersTogether) {
+  constexpr std::string_view kNamedLoggerName{"comms.paired_test"};
+  std::vector<std::string> errors;
+
+  meta::comms::logger::configureCommsAndNamedSpdlogLoggers(
+      kNamedLoggerName,
+      "NAMED",
+      "",
+      []() { return 0; },
+      [&](std::string_view message) { errors.emplace_back(message); },
+      false,
+      spdlog::level::err);
+
+  COMMS_LOG(ERR, "shared error");
+  COMMS_LOG_NAMED(kNamedLoggerName, ERR, "named error");
+
+  EXPECT_EQ(errors, (std::vector<std::string>{"shared error", "named error"}));
+}
+
+TEST_F(LogLevelRestoringTest, ConfiguresOnlyNamedLoggerWhenRequested) {
+  constexpr std::string_view kNamedLoggerName{"comms.named_only_test"};
+  std::vector<std::string> sharedErrors;
+  std::vector<std::string> namedErrors;
+  getSpdlogLogger().configure(
+      "SHARED",
+      []() { return 0; },
+      [&](std::string_view message) { sharedErrors.emplace_back(message); },
+      false);
+  getSpdlogLogger().set_level(spdlog::level::err);
+
+  meta::comms::logger::configureCommsAndNamedSpdlogLoggers(
+      kNamedLoggerName,
+      "NAMED_ONLY",
+      "",
+      []() { return 0; },
+      [&](std::string_view message) { namedErrors.emplace_back(message); },
+      false,
+      spdlog::level::err,
+      false);
+
+  COMMS_LOG(ERR, "shared error");
+  COMMS_LOG_NAMED(kNamedLoggerName, ERR, "named error");
+
+  EXPECT_EQ(sharedErrors, (std::vector<std::string>{"shared error"}));
+  EXPECT_EQ(namedErrors, (std::vector<std::string>{"named error"}));
 }
 
 TEST(SpdlogLoggerTest, MatchesLegacyStderrRouting) {
@@ -218,6 +273,31 @@ TEST_F(LogLevelRestoringTest, RuntimeGateSkipsArguments) {
 
   COMMS_LOG(WARN, "enabled at runtime: {}", ++evaluationCount);
   EXPECT_EQ(evaluationCount, 1);
+}
+
+TEST_F(LogLevelRestoringTest, CudaFacadeFormatsAndGatesMessages) {
+  const ScopedTestFile scopedLogFile{"comms_cuda_log.log"};
+  auto& logger = getSpdlogLogger();
+  logger.configureOutput(scopedLogFile.path().string());
+  logger.configure("TEST", []() { return 0; }, {}, false);
+  logger.set_level(spdlog::level::warn);
+
+  int evaluationCount = 0;
+  COMMS_CUDA_LOG(INFO, "filtered value %d", ++evaluationCount);
+  COMMS_CUDA_LOG(WARN, "cuda facade value %d", 7);
+  const std::string largeMessage(600, 'x');
+  COMMS_CUDA_LOG(WARN, "large cuda facade value %s", largeMessage.c_str());
+  logger.flush();
+
+  const auto output = readFile(scopedLogFile.path());
+  EXPECT_EQ(evaluationCount, 0);
+  EXPECT_NE(output.find("cuda facade value 7"), std::string::npos);
+  EXPECT_NE(
+      output.find("large cuda facade value " + largeMessage),
+      std::string::npos);
+
+  logger.configureOutput({});
+  logger.configure("COMMS", []() { return 0; });
 }
 
 TEST_F(LogLevelRestoringTest, EmptyThreadContextUsesDefault) {

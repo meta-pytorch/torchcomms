@@ -6,7 +6,6 @@
 
 #include <fmt/core.h>
 #include <folly/json.h>
-#include <folly/logging/xlog.h>
 #include <folly/stop_watch.h>
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
@@ -20,6 +19,7 @@
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace meta::comms::colltrace {
 
@@ -76,30 +76,31 @@ const std::string& graphColltraceUnsupportedReason() {
 
 } // namespace
 
-bool graphColltraceSupported(std::string_view logPrefix) {
+bool graphColltraceSupported(
+    std::string_view logPrefix,
+    std::string_view loggerName) {
   const auto& reason = graphColltraceUnsupportedReason();
   if (reason.empty()) {
     return true;
   }
-  XLOG_FIRST_N(WARNING, 1) << logPrefix << ": graph colltrace disabled -- "
-                           << reason;
+  auto& logger = logger::getSpdlogLogger(loggerName);
+  COMMS_LOGGER_STREAM_FIRST_N(logger, WARNING, 1)
+      << logPrefix << ": graph colltrace disabled -- " << reason;
   return false;
 }
 
 template <auto Method>
 void triggerPlugins(
+    logger::CommsSpdlogLogger& logger,
     std::vector<std::unique_ptr<ICollTracePlugin>>& plugins,
     CollTraceEvent& curEvent) noexcept {
   for (auto& plugin : plugins) {
     CommsMaybeVoid res = ((*plugin).*Method)(curEvent);
     if (res.hasError()) {
-      XLOG_FIRST_N(
-          ERR,
-          10,
-          "Exception thrown in plugin {} when calling method {}: {}",
-          plugin->getName(),
-          typeid(Method).name(),
-          res.error().message);
+      COMMS_LOGGER_STREAM_FIRST_N(logger, ERR, 10)
+          << "Exception thrown in plugin " << plugin->getName()
+          << " when calling method " << typeid(Method).name() << ": "
+          << res.error().message;
     }
   }
 }
@@ -110,6 +111,7 @@ CollTrace::CollTrace(
     std::function<CommsMaybeVoid(void)> threadSetupFunc,
     std::vector<std::unique_ptr<ICollTracePlugin>> plugins)
     : config_(std::move(config)),
+      logger_(&logger::getSpdlogLogger(config_.loggerName)),
       logMetaData_(std::move(logMetaData)),
       logPrefix_(
           fmt::format(
@@ -121,7 +123,8 @@ CollTrace::CollTrace(
           folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
               config_.maxPendingQueueSize}),
       plugins_(std::move(plugins)) {
-  if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH && graphColltraceSupported(logPrefix_)) {
+  if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH &&
+      graphColltraceSupported(logPrefix_, config_.loggerName)) {
     // Eagerly initialize the globaltimer calibration singleton now (outside
     // graph capture) so it is ready when GraphCudaWaitEvent is constructed
     // during capture.
@@ -136,8 +139,10 @@ CollTrace::CollTrace(
     }
     uint32_t ringSize =
         std::max(kDefaultRingSize, static_cast<uint32_t>(maxRetention) * 2);
-    XLOGF(
-        DBG0,
+    COMMS_LOG_IMPL(
+        *logger_,
+        ::spdlog::level::debug,
+        COMMS_LOGGER_DEBUG,
         "{}: graph ring buffer sized to {} entries (max plugin retention={}, "
         "default={})",
         logPrefix_,
@@ -149,8 +154,8 @@ CollTrace::CollTrace(
     if (ringBuffer_->valid()) {
       ringReader_.emplace(*ringBuffer_);
     } else {
-      XLOG_FIRST_N(ERR, 1) << logPrefix_
-                           << ": Failed to allocate shared ring buffer";
+      COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 1)
+          << logPrefix_ << ": Failed to allocate shared ring buffer";
       ringBuffer_.reset();
     }
   }
@@ -158,7 +163,8 @@ CollTrace::CollTrace(
   // pluginByName_ is not used in the colltrace thread. It is okay to initialize
   // it after the colltrace thread starts
   for (const auto& plugin : plugins_) {
-    XLOG(DBG0) << "Registering plugin " << plugin->getName();
+    COMMS_LOGGER_STREAM(*logger_, DBG)
+        << "Registering plugin " << plugin->getName();
     pluginByName_.emplace(plugin->getName(), *plugin);
   }
 
@@ -250,8 +256,9 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
 
   if (createRes != cudaSuccess) {
     delete prevent_free;
-    XLOG_FIRST_N(WARN, 1) << "Failed to create graph cleanup user object: "
-                          << cudaGetErrorString(createRes);
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, WARN, 1)
+        << "Failed to create graph cleanup user object: "
+        << cudaGetErrorString(createRes);
     return nullptr;
   }
 
@@ -262,8 +269,9 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
         cudaUserObjectRelease(userObject, 1),
         cudaErrorCudartUnloading,
         cudaErrorContextIsDestroyed);
-    XLOG_FIRST_N(WARN, 1) << "Failed to retain graph user object: "
-                          << cudaGetErrorString(retainRes);
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, WARN, 1)
+        << "Failed to retain graph user object: "
+        << cudaGetErrorString(retainRes);
     return nullptr;
   }
 
@@ -291,14 +299,11 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
   }
 
   if (pendingEnqueueColl_ != nullptr) {
-    XLOG_FIRST_N(
-        ERR,
-        1,
-        fmt::format(
-            "{}: Got another collective enqueued when a previous one haven't finished, colltrace result would be inaccurate. Previous: {}, Next:{}",
-            logPrefix_,
-            folly::toJson(pendingEnqueueColl_->collRecord->toDynamic()),
-            folly::toJson(metadata->toDynamic())));
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 1) << fmt::format(
+        "{}: Got another collective enqueued when a previous one haven't finished, colltrace result would be inaccurate. Previous: {}, Next:{}",
+        logPrefix_,
+        folly::toJson(pendingEnqueueColl_->collRecord->toDynamic()),
+        folly::toJson(metadata->toDynamic()));
     auto handlePtr = eventToHandleMap_.find(pendingEnqueueColl_.get());
     if (handlePtr != eventToHandleMap_.end()) {
       handlePtr->second->invalidate();
@@ -315,7 +320,7 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
   eventToHandleMap_.emplace(pendingEnqueueColl_.get(), handle);
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
-      plugins_, *pendingEnqueueColl_);
+      *logger_, plugins_, *pendingEnqueueColl_);
   return handle;
 }
 
@@ -335,7 +340,7 @@ CommsMaybeVoid CollTrace::triggerEventState(
       }
       auto beforeKernelRes = collEvent.waitEvent->beforeCollKernelScheduled();
       triggerPlugins<&ICollTracePlugin::beforeCollKernelScheduled>(
-          plugins_, collEvent); // Trigger plugins after calling waitEvent
+          *logger_, plugins_, collEvent); // Trigger after calling waitEvent
       EXPECT_CHECK_ALWAYS_RETURN(beforeKernelRes);
     }
     case CollTraceHandleTriggerState::AfterEnqueueKernel: {
@@ -345,7 +350,7 @@ CommsMaybeVoid CollTrace::triggerEventState(
             commInvalidUsage));
       }
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
-          plugins_, collEvent); // Trigger plugins before calling waitEvent
+          *logger_, plugins_, collEvent); // Trigger before calling waitEvent
       EXPECT_CHECK(collEvent.waitEvent->afterCollKernelScheduled());
       collEvent.collRecord->getTimingInfo().setCollEnqueueTs(precisionNow());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
@@ -363,10 +368,8 @@ CommsMaybeVoid CollTrace::triggerEventState(
             "Failed to write to pendingTraceColls_ queue", commInternalError));
       } else {
         // This code should not be reached
-        XLOG_FIRST_N(
-            DBG,
-            1,
-            "pendingEnqueueColl_ is nullptr after write to queue failed");
+        COMMS_LOGGER_STREAM_FIRST_N(*logger_, DBG, 1)
+            << "pendingEnqueueColl_ is nullptr after write to queue failed";
         return folly::makeUnexpected(CommsError(
             "pendingEnqueueColl_ is nullptr after write to pendingTraceColls_ queue",
             commInternalError));
@@ -399,6 +402,7 @@ CollTrace::recordGraphCollectiveImpl(
   // Assign a unique collId for this collective — used to tag entries in
   // the shared ring buffer so the poll thread can dispatch by collective.
   auto collIdVal = collId_.fetch_add(1);
+  rawWaitEvent->setLogger(*logger_);
   rawWaitEvent->setCollId(collIdVal);
 
   if (!ringBuffer_.has_value()) {
@@ -448,7 +452,7 @@ CollTrace::recordGraphCollectiveImpl(
     graphState->collectives.emplace(collId, std::move(collectiveEntry));
   }
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
-      plugins_, *registrationEvent);
+      *logger_, plugins_, *registrationEvent);
 
   return handle;
 }
@@ -551,7 +555,7 @@ void CollTrace::pollGraphEvents(
           // start timestamp and resets its timer automatically).
           if (auto [_, inserted] = progressingGraphCollectives_.insert(collId);
               !inserted) {
-            XLOG_EVERY_MS(WARN, 5000)
+            COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
                 << logPrefix_ << ": graph collective " << collId
                 << " saw a new start event before the previous end event"
                    " — the end event was likely overwritten (ring too small)";
@@ -595,7 +599,7 @@ void CollTrace::pollGraphEvents(
             graphReplayEvents_.push_back(std::move(replayIt->second));
             inFlightReplays_.erase(replayIt);
           } else {
-            XLOG_EVERY_MS(WARN, 5000)
+            COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
                 << logPrefix_ << ": graph collective " << collId
                 << " end event without matching start — dropped";
           }
@@ -604,7 +608,7 @@ void CollTrace::pollGraphEvents(
       /*timeout=*/config_.maxCheckCancelInterval);
 
   if (pollResult.entriesLost > 0) {
-    XLOG_EVERY_MS(WARN, 5000)
+    COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
         << logPrefix_ << ": missed " << pollResult.entriesLost
         << " graph replay timestamp(s) (overwritten)";
   }
@@ -693,9 +697,9 @@ void CollTrace::processCompletedEvents(
         // so we just fire the before/after callbacks here
         // in-case plugins depend on them
         triggerPlugins<&ICollTracePlugin::beforeCollKernelScheduled>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         [[fallthrough]];
       }
       case PendingActionType::kStart: {
@@ -704,7 +708,7 @@ void CollTrace::processCompletedEvents(
               lastCollEndTime_.value());
         }
         triggerPlugins<&ICollTracePlugin::afterCollKernelStart>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         break;
       }
       case PendingActionType::kEnd: {
@@ -714,16 +718,16 @@ void CollTrace::processCompletedEvents(
         // collEventProgressing was called unconditionally inside the
         // waitCollEnd loop.
         triggerPlugins<&ICollTracePlugin::collEventProgressing>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         triggerPlugins<&ICollTracePlugin::afterCollKernelEnd>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         lastCollEndTime_ =
             action.event->collRecord->getTimingInfo().getCollEndTs();
         break;
       }
       case PendingActionType::kProgressing: {
         triggerPlugins<&ICollTracePlugin::collEventProgressing>(
-            plugins_, *action.event);
+            *logger_, plugins_, *action.event);
         break;
       }
     }
@@ -752,11 +756,18 @@ void CollTrace::processCompletedEvents(
 
 void CollTrace::collTraceThread(
     const std::function<CommsMaybeVoid(void)>& threadSetupFunc) {
-  XLOGF(INFO, "{}: Colltrace thread INIT", logPrefix_);
+  COMMS_LOG_IMPL(
+      *logger_,
+      ::spdlog::level::info,
+      SPDLOG_LOGGER_INFO,
+      "{}: Colltrace thread INIT",
+      logPrefix_);
   auto res = threadSetupFunc();
   if (res.hasError()) {
-    XLOGF(
-        ERR,
+    COMMS_LOG_IMPL(
+        *logger_,
+        ::spdlog::level::err,
+        SPDLOG_LOGGER_ERROR,
         "{}: Error in calling colltrace thread setup function: {}",
         logPrefix_,
         res.error().message);
@@ -769,7 +780,12 @@ void CollTrace::collTraceThread(
     return;
   }
 
-  XLOGF(INFO, "{}: CollTrace thread STARTED", logPrefix_);
+  COMMS_LOG_IMPL(
+      *logger_,
+      ::spdlog::level::info,
+      SPDLOG_LOGGER_INFO,
+      "{}: CollTrace thread STARTED",
+      logPrefix_);
 
   bool initialized = false;
 
@@ -797,7 +813,7 @@ void CollTrace::collTraceThread(
           ::hrdw_ring_buffer::GlobaltimerCalibration::get().refresh();
         }
         if (auto* refpt = CudaReferencePoint::tryGet()) {
-          refpt->refresh();
+          refpt->refresh(*logger_);
         }
         lastReanchor = now;
       }
