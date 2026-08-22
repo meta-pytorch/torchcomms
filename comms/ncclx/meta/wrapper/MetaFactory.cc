@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <stdexcept>
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
@@ -78,7 +79,7 @@ commResult_t setCtranCommBase(ncclComm* ncclCommVal) {
   const auto tconfig = makeCtranConfigFrom(ncclCommVal);
   ncclCommVal->ctranComm_->config_ = tconfig;
   ncclCommVal->ctranComm_->opCount_ = &ncclCommVal->opCount;
-  ncclCommVal->ctranComm_->logMetaData_ = ncclCommVal->logMetaData;
+  ncclCommVal->ctranComm_->logMetaData_ = ncclCommLogData(ncclCommVal);
   ncclCommVal->ctranComm_->runtimeConn_ = ncclCommVal->runtimeConn;
   if (ncclCommVal->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =

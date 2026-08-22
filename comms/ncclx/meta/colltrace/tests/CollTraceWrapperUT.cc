@@ -20,6 +20,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 #include "meta/wrapper/NcclCommCollTrace.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 // TODO T279903668: Cleanup version check after v2_29 removal
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
@@ -448,7 +449,7 @@ TEST_F(CollTraceInitConfigTest, PullsIdsAndEventsAcrossLifecycleFeeds) {
       std::chrono::system_clock::time_point{std::chrono::milliseconds{100}};
   EnvRAII colltraceGuard(NCCL_COLLTRACE, std::vector<std::string>{"lifecycle"});
   ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
-  comm_->logMetaData.commId = 0;
+  ncclCommLogData(comm_).commId = 0;
   ASSERT_EQ(newCollTraceInit(comm_), ncclSuccess);
 
   ncclComm_t otherComm{nullptr};
@@ -461,7 +462,7 @@ TEST_F(CollTraceInitConfigTest, PullsIdsAndEventsAcrossLifecycleFeeds) {
     }
   });
   ASSERT_EQ(newCollTraceDestroy(otherComm), ncclSuccess);
-  otherComm->logMetaData = comm_->logMetaData;
+  ncclCommLogData(otherComm) = ncclCommLogData(comm_);
   ASSERT_EQ(newCollTraceInit(otherComm), ncclSuccess);
 
   auto getPlugin = [](ncclComm_t comm) {

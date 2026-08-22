@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include <folly/Singleton.h>
 
@@ -36,7 +37,7 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
     proxyTrace = comm->proxyState->trace;
   }
   return NcclCommMonitorInfo{
-      .logMetaData = comm->logMetaData,
+      .logMetaData = ncclCommLogData(comm),
       .stateInfo =
           CommStateInfo{
               .localRank = comm->localRank,
@@ -48,7 +49,7 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
       .proxyTrace = proxyTrace,
       .newCollTrace = meta::comms::ncclx::ncclCommNewCollTrace(comm),
       .memTracer = meta::comms::memtrace::MemoryTrace::getOrCreate(
-          comm->logMetaData.commHash),
+          ncclCommLogData(comm).commHash),
       .algoStats = meta::comms::ncclx::ncclCommAlgoStats(comm)};
 }
 

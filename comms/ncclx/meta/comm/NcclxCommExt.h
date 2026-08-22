@@ -11,6 +11,7 @@
 
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/utils/commSpecs.h" // CommLogData
 
 struct ncclKernelCommAndChannels;
 
@@ -65,4 +66,10 @@ struct ncclxCommExt {
   // ncclAvg ReduceScatter on supported datatypes. Populated from the parsed
   // ncclx::Config at communicator init.
   bool usePatAvg{false};
+
+  // Per-communicator logging/Scuba metadata (commId, commHash, commDesc, rank,
+  // nRanks). Hoisted off the forked upstream ncclComm struct; reached through
+  // the version-agnostic ncclCommLogData() accessor
+  // (meta/wrapper/NcclCommLogData.h).
+  CommLogData logMetaData;
 };

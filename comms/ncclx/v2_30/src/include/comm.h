@@ -826,7 +826,6 @@ struct ncclComm {
    */
   // Opaque NCCLX-only per-comm state; see meta/comm/NcclxCommExt.h.
   ncclxCommExt* ncclxExt{nullptr};
-  struct CommLogData logMetaData;
   std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;

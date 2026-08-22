@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "comm.h"
 #include "meta/comm/NcclxCommExt.h"
 #include "shmutils.h"
@@ -257,7 +258,7 @@ static ncclResult_t shmSendProxyConnect(struct ncclProxyConnection* connection, 
   proxyInfo->shmFifo = reqInfo->shmFifo;
   proxyInfo->sendMem = reqInfo->sendMem;
   proxyInfo->recvMem = reqInfo->recvMem;
-  memLogMetaData = proxyState->owner->logMetaData;
+  memLogMetaData = ncclCommLogData(proxyState->owner);
   NCCLCHECKGOTO(ncclCudaCalloc(&proxyInfo->devFifo, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager), ret, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&proxyInfo->ceRecvMem, 1), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&proxyInfo->stream, cudaStreamNonBlocking), ret, fail);
@@ -288,7 +289,7 @@ static ncclResult_t shmRecvProxyConnect(struct ncclProxyConnection* connection, 
   proxyInfo->shmFifo = reqInfo->shmFifo;
   proxyInfo->sendMem = reqInfo->sendMem;
   proxyInfo->recvMem = reqInfo->recvMem;
-  memLogMetaData = proxyState->owner->logMetaData;
+  memLogMetaData = ncclCommLogData(proxyState->owner);
   NCCLCHECKGOTO(ncclCudaCalloc(&proxyInfo->devFifo, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager), ret, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&proxyInfo->ceRecvMem, 1), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&proxyInfo->stream, cudaStreamNonBlocking), ret, fail);
