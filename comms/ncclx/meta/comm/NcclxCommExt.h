@@ -10,6 +10,7 @@
 #include "nccl_tuner.h" // @manual -- provides NCCL_NUM_ALGORITHMS
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h" // CommLogData
@@ -77,4 +78,10 @@ struct ncclxCommExt {
   // The per-communicator CTRAN integration handle; created at init when
   // useCtran is set (see createCtranComm) and reset in the comm-free hook.
   std::unique_ptr<CtranComm> ctranComm;
+
+  // Slab allocator for the batched initChannel channel-metadata device
+  // allocations (NCCL_MEM_USE_SLAB_ALLOCATOR). Relocated off the forked
+  // upstream ncclComm to keep that struct pristine; created in the NCCLX init
+  // hook when the cvar is set, and destroyed with this handle.
+  std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator;
 };
