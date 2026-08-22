@@ -109,17 +109,10 @@ include ../makefiles/ncclx_libobj.mk
 BINOBJ     := $(BINSRCFILES:%.cc=$(OBJDIR)/%.o)
 PARAMBINOBJ     := $(PARAMBINSRCFILES:%.cc=$(OBJDIR)/%.o)
 DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
-LDFLAGS    += -Wl,--no-undefined
-LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
-LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PRIMS),1)
-LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
-endif
-LDFLAGS    += -Wl,--version-script=version.script
-ifeq ($(CUDARTLIB), cudarthook)
-    # Ensure that cudart symbols are resolved within the module itself.
-	LDFLAGS += -Wl,-Bsymbolic
-endif
+# NCCLX link flags (extra -L dirs, prims libs, version script, cudarthook
+# Bsymbolic); see makefiles/ncclx_ldflags.mk. Kept as a seam so the forked
+# upstream makefile carries only this include.
+include ../makefiles/ncclx_ldflags.mk
 INCPLUGIN  := ${SRCDIR}/include/plugin
 
 DEVMANIFEST := $(BUILDDIR)/obj/device/manifest
