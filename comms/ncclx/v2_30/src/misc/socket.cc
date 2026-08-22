@@ -40,8 +40,6 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
 }
 
 static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
-  // FIXME[max7255]: skipping ncclx patch, ensure ncclParamPollTimeOut > 0
-  // for NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::none
   while (*offset < size) {
     NCCLCHECK(socketProgress(op, sock, ptr, size, offset));
     // If we have more data to read or write, use the poll system call to wait
@@ -549,9 +547,6 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
       char line[SOCKET_NAME_MAXLEN+1];
       ERR(ncclInternalError, "ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
           ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
-
-      WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.30 you will have ncclSocketInit errors. "
-           "We have deprecated NCCL_FASTINIT_MODE; set NCCL_FASTINIT_MODE=none and TORCH_NCCL_BCAST_UNIQUEID=1 to bootstrap NCCL");
       ret = ncclInternalError;
       goto exit;
     }
