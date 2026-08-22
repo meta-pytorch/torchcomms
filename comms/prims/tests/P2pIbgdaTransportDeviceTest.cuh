@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
@@ -44,6 +45,22 @@ void runTestWaitSignalMultipleSlots(
     uint64_t* d_signalBuf,
     int numSignals,
     bool* d_success);
+
+void runTestWaitSignalWithDisabledAbort(uint64_t* d_signalBuf, bool* d_success);
+
+// Waits on a signal that never arrives, so the wait can only end by observing
+// the abort handle. Used by three scenarios -- a handle aborted before launch,
+// one aborted mid-wait, and one whose device deadline expires -- which is why
+// it is not named after any single one of them.
+//
+// `d_enteredWait`, when non-null, must point at host-mapped memory. The kernel
+// raises it immediately before entering the wait so a test aborting mid-flight
+// can confirm the kernel got there instead of sleeping and hoping.
+void runTestWaitSignalUntilAbort(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* d_success,
+    uint32_t* d_enteredWait = nullptr);
 
 // =============================================================================
 // Group-level API tests
