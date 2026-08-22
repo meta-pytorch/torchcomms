@@ -25,6 +25,7 @@
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
+#include "meta/NcclxLogger.h"
 #include "meta/commDump.h"
 
 using ::meta::comms::colltrace::CollTraceConfig;
@@ -604,7 +605,7 @@ TEST_F(CollTraceTest, winPutWait) {
   EXPECT_EQ(pastCollsJson.size(), 3 * kNumIters);
 
   for (int i = 0; i < pastCollsJson.size(); i++) {
-    XLOGF(DBG, "coll {}: {}", i, pastCollsJson[i]["opName"].asString());
+    NCCLX_LOG(DBG, "coll {}: {}", i, pastCollsJson[i]["opName"].asString());
   }
 
   for (int i = 0; i < kNumIters; i++) {

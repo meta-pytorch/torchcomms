@@ -4,7 +4,8 @@
 
 #include <folly/String.h>
 #include <folly/json/json.h>
-#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/SpdlogLogger.h"
 
 void EventGlobalRankFilter::initialize(
     const std::vector<std::string>& rankListCvar,
@@ -14,7 +15,7 @@ void EventGlobalRankFilter::initialize(
 
   // If the rank list is empty, then allow all ranks.
   if (rankListCvar.empty()) {
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Empty rank list, skip {} initialization. isAllowed: {}",
         filterName_,
@@ -28,13 +29,13 @@ void EventGlobalRankFilter::initialize(
     try {
       globalRank_ = std::stoi(std::string(rankEnv));
     } catch (const std::exception& e) {
-      XLOGF(WARN, "Invalid RANK env: {}, error: {}", rankEnv, e.what());
+      COMMS_LOG(WARN, "Invalid RANK env: {}, error: {}", rankEnv, e.what());
       // Do not throw exception here, just skip this invalid RANK env.
     }
   }
 
   if (globalRank_ < 0) {
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Cannot get global rank, skip {} initialization. isAllowed: {}",
         filterName_,
@@ -53,12 +54,12 @@ void EventGlobalRankFilter::initialize(
         break;
       }
     } catch (const std::exception& e) {
-      XLOGF(WARN, "Invalid rank string: {}, error: {}", rankStr, e.what());
+      COMMS_LOG(WARN, "Invalid rank string: {}, error: {}", rankStr, e.what());
       // Do not throw exception here, just skip this invalid rank string.
     }
   }
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Initialized {}, globalRank: {}, isAllowed: {}",
       filterName_,

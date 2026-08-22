@@ -3,6 +3,7 @@
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <stdlib.h>
 
@@ -33,7 +34,7 @@
 
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/DataTableWrapper.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
 // Test sources uses ncclMemAlloc API from nccl.h/rccl.h, so adding this check
 // macro here so to avoid including TestUtils.h which doesn't support
@@ -513,7 +514,7 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
   const auto maxRecvCount = 8192 * numRanks;
   for (auto memType : memTypes) {
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
-      XLOG(INFO)
+      CTRAN_LOG_STREAM(INFO)
           << "CuMem not supported, skipping InvalidCount test with memType = kMemNcclMemAlloc";
       ;
       continue;
@@ -656,7 +657,7 @@ TEST_F(CtranAllgatherPTest, InternalRegisteredMemory) {
 TEST_F(CtranAllgatherPTest, StructuredLoggingRecordsAgpCreateFields) {
   // Stop the logger started during comm creation, then route the CommEvents
   // emitted by the AGP create path to a per-rank pipe file we read back below.
-  NcclLogger::close();
+  DataTableWrapper::shutdown();
 
   folly::test::TemporaryDirectory tmpDir;
   // Both cvars are read from the C++ globals at record time; the cudaMalloc
@@ -676,7 +677,7 @@ TEST_F(CtranAllgatherPTest, StructuredLoggingRecordsAgpCreateFields) {
 
   // Re-init the logger so a fresh nccl_structured_logging DataTableWrapper
   // resolves against the mock singleton on the first recorded event.
-  NcclLogger::init();
+  DataTableWrapper::init();
 
   EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
 
@@ -685,7 +686,7 @@ TEST_F(CtranAllgatherPTest, StructuredLoggingRecordsAgpCreateFields) {
   run(1024, 1024, kTestOutOfPlace, kMemCudaMalloc, ctranComm.get());
 
   // Flush the background logging thread and close the pipe file before reading.
-  NcclLogger::close();
+  DataTableWrapper::shutdown();
 
   const std::string logFile = findStructuredLoggingFile(tmpDir.path().string());
   ASSERT_FALSE(logFile.empty()) << "no nccl_structured_logging pipe file under "
@@ -754,7 +755,7 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   }
 
   if (ncclIsCuMemSupported() == false) {
-    XLOG(INFO)
+    CTRAN_LOG_STREAM(INFO)
         << "CuMem not supported, skipping SharePersistentBuffer test with memType = kMemNcclMemAlloc";
     return;
   }

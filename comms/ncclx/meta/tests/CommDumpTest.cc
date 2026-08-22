@@ -17,6 +17,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/NcclxLogger.h"
 
 #include "meta/NcclxConfig.h"
 #include "meta/colltrace/ProxyMock.h"
@@ -810,7 +811,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
   if (dump.count("CT_pastColls")) {
-    XLOG(DBG1) << "Entered CT_pastColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_pastColls if statement";
     auto ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
     EXPECT_EQ(ctPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
@@ -821,7 +822,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
 
   // Proxy trace would be empty if nNodes == 1
   if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    XLOG(DBG1) << "Entered PT_pastColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered PT_pastColls if statement";
     auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
     EXPECT_EQ(ptPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
@@ -832,18 +833,18 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
 
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
-    XLOG(DBG1) << "Entered CT_pendingColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_pendingColls if statement";
     auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
   if (dump.count("CT_currentColls")) {
-    XLOG(DBG1) << "Entered CT_currentColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
-    XLOG(DBG1) << "Entered PT_activeOps if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered PT_activeOps if statement";
     auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
@@ -905,7 +906,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
   // Check past collectives are dumped correctly and simply check if can be
   // parsed as json entries.
   if (dump.count("CT_pastColls")) {
-    XLOG(DBG1) << "Entered CT_pastColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_pastColls if statement";
     auto ctPastCollsObjs = folly::parseJson(dump["CT_pastColls"]);
     EXPECT_EQ(ctPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
@@ -919,7 +920,7 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
 
   // Proxy trace would be empty if nNodes == 1
   if (dump.count("PT_pastColls") && comm->nNodes > 1) {
-    XLOG(DBG1) << "Entered PT_pastColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered PT_pastColls if statement";
     auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
     EXPECT_EQ(ptPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
@@ -930,18 +931,18 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
 
   // Check no pending/current entries
   if (dump.count("CT_pendingColls")) {
-    XLOG(DBG1) << "Entered CT_pendingColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_pendingColls if statement";
     auto ctPendingCollsObjs = folly::parseJson(dump["CT_pendingColls"]);
     EXPECT_EQ(ctPendingCollsObjs.size(), 0);
   }
 
   if (dump.count("CT_currentColls")) {
-    XLOG(DBG1) << "Entered CT_currentColls if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered CT_currentColls if statement";
     EXPECT_EQ(dump["CT_currentColls"], "[]");
   }
 
   if (dump.count("PT_activeOps")) {
-    XLOG(DBG1) << "Entered PT_activeOps if statement";
+    NCCLX_LOG_STREAM(DBG) << "Entered PT_activeOps if statement";
     auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }

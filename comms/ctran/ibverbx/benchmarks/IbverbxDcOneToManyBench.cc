@@ -43,20 +43,16 @@
 
 #include <folly/Benchmark.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/benchmarks/IbverbxDcBenchUtils.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
+#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 DEFINE_bool(raw_only, true, "Print only RAW CSV results, suppress folly table");
 
@@ -92,7 +88,7 @@ bool initResources(
     folly::UserCounters& counters) {
   auto result = initRdmaResources(deviceIndex, kSharedCqDepth);
   if (!result) {
-    XLOGF(
+    CTRAN_LOG(
         ERR,
         "Failed to initialize RDMA resources for device {}: {}",
         deviceIndex,
@@ -1348,18 +1344,22 @@ BENCHMARK_DRAW_LINE();
 
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
 
-  XLOG(INFO) << "DC vs RC RDMA Scalability Benchmark";
-  XLOG(INFO) << "====================================";
-  XLOG(INFO) << "Total input size: " << kTotalInputSize << " bytes (128 MB)";
-  XLOG(INFO) << "Shared CQ depth: " << kSharedCqDepth;
-  XLOG(INFO) << "DCI SQ depth: " << kDciSqDepth;
-  XLOG(INFO) << "RC QP SQ depth: " << kRcQpSqDepth;
+  CTRAN_LOG_STREAM(INFO) << "DC vs RC RDMA Scalability Benchmark";
+  CTRAN_LOG_STREAM(INFO) << "====================================";
+  CTRAN_LOG_STREAM(INFO) << "Total input size: " << kTotalInputSize
+                         << " bytes (128 MB)";
+  CTRAN_LOG_STREAM(INFO) << "Shared CQ depth: " << kSharedCqDepth;
+  CTRAN_LOG_STREAM(INFO) << "DCI SQ depth: " << kDciSqDepth;
+  CTRAN_LOG_STREAM(INFO) << "RC QP SQ depth: " << kRcQpSqDepth;
 
   if (!g_rdmaAvailability.checkRdmaAvailable()) {
-    XLOG(ERR) << "RDMA not available - benchmarks will be skipped";
+    CTRAN_LOG_STREAM(ERR) << "RDMA not available - benchmarks will be skipped";
   } else {
-    XLOG(INFO) << "RDMA devices available";
+    CTRAN_LOG_STREAM(INFO) << "RDMA devices available";
   }
 
   // Suppress folly benchmark table when --raw_only is set

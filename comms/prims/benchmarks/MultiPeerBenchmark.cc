@@ -3,9 +3,9 @@
 #include <cuda_runtime.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <algorithm>
 #include <iomanip>
@@ -177,7 +177,7 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
     for (int i = 0; i < warmupIters; ++i) {
       cudaError_t err = launchKernel();
       if (err != cudaSuccess) {
-        XLOGF(
+        COMMS_LOG(
             ERR,
             "Kernel launch failed during warmup: {}",
             cudaGetErrorString(err));
@@ -186,7 +186,7 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
       }
       err = cudaStreamSynchronize(stream_);
       if (err != cudaSuccess) {
-        XLOGF(
+        COMMS_LOG(
             ERR,
             "Stream sync failed during warmup: {}",
             cudaGetErrorString(err));
@@ -198,7 +198,7 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
     // Verify no CUDA errors accumulated after warmup
     cudaError_t lastErr = cudaGetLastError();
     if (lastErr != cudaSuccess) {
-      XLOGF(
+      COMMS_LOG(
           ERR,
           "CUDA error detected after warmup: {}",
           cudaGetErrorString(lastErr));
@@ -302,7 +302,7 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
        << getStepsPerIter() << " steps/iter\n";
     ss << "========================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   cudaStream_t stream_{};

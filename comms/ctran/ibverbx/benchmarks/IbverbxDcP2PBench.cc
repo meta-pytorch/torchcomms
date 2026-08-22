@@ -28,20 +28,16 @@
 
 #include <folly/Benchmark.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/benchmarks/IbverbxDcBenchUtils.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
+#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 DEFINE_bool(raw_only, true, "Print only RAW CSV results, suppress folly table");
 DEFINE_int32(batch_size, 1, "Number of RDMA writes to batch before polling");
@@ -89,12 +85,13 @@ struct DcBenchmarkState {
     auto senderInitResult =
         sender->init(g_rdmaAvailability.dcCapableDevices()[0]);
     if (!senderInitResult) {
-      XLOGF(ERR, "Sender init failed: {}", senderInitResult.error().errStr);
+      CTRAN_LOG(ERR, "Sender init failed: {}", senderInitResult.error().errStr);
       return false;
     }
     auto senderDcResult = sender->initDc();
     if (!senderDcResult) {
-      XLOGF(ERR, "Sender DC init failed: {}", senderDcResult.error().errStr);
+      CTRAN_LOG(
+          ERR, "Sender DC init failed: {}", senderDcResult.error().errStr);
       return false;
     }
 
@@ -103,12 +100,13 @@ struct DcBenchmarkState {
     auto receiverInitResult =
         receiver->init(g_rdmaAvailability.dcCapableDevices()[1]);
     if (!receiverInitResult) {
-      XLOGF(ERR, "Receiver init failed: {}", receiverInitResult.error().errStr);
+      CTRAN_LOG(
+          ERR, "Receiver init failed: {}", receiverInitResult.error().errStr);
       return false;
     }
     auto receiverDcResult = receiver->initDc();
     if (!receiverDcResult) {
-      XLOGF(
+      CTRAN_LOG(
           ERR, "Receiver DC init failed: {}", receiverDcResult.error().errStr);
       return false;
     }
@@ -117,7 +115,7 @@ struct DcBenchmarkState {
     auto senderMrResult =
         sender->registerMr(senderBuf.data(), senderBuf.size());
     if (!senderMrResult) {
-      XLOGF(ERR, "Sender MR failed: {}", senderMrResult.error().errStr);
+      CTRAN_LOG(ERR, "Sender MR failed: {}", senderMrResult.error().errStr);
       return false;
     }
     senderMr = std::make_unique<IbvMr>(std::move(*senderMrResult));
@@ -125,7 +123,7 @@ struct DcBenchmarkState {
     auto receiverMrResult =
         receiver->registerMr(receiverBuf.data(), receiverBuf.size());
     if (!receiverMrResult) {
-      XLOGF(ERR, "Receiver MR failed: {}", receiverMrResult.error().errStr);
+      CTRAN_LOG(ERR, "Receiver MR failed: {}", receiverMrResult.error().errStr);
       return false;
     }
     receiverMr = std::make_unique<IbvMr>(std::move(*receiverMrResult));
@@ -139,7 +137,7 @@ struct DcBenchmarkState {
     // Create address handle from sender to receiver
     auto ahResult = sender->createAh(receiverCard);
     if (!ahResult) {
-      XLOGF(ERR, "AH creation failed: {}", ahResult.error().errStr);
+      CTRAN_LOG(ERR, "AH creation failed: {}", ahResult.error().errStr);
       return false;
     }
     ah = std::make_unique<IbvAh>(std::move(*ahResult));
@@ -195,12 +193,13 @@ struct RcBenchmarkState {
     sender = std::make_unique<RcEndPoint>();
     auto senderInitResult = sender->init(senderDevIdx);
     if (!senderInitResult) {
-      XLOGF(ERR, "Sender init failed: {}", senderInitResult.error().errStr);
+      CTRAN_LOG(ERR, "Sender init failed: {}", senderInitResult.error().errStr);
       return false;
     }
     auto senderRcResult = sender->initRc();
     if (!senderRcResult) {
-      XLOGF(ERR, "Sender RC init failed: {}", senderRcResult.error().errStr);
+      CTRAN_LOG(
+          ERR, "Sender RC init failed: {}", senderRcResult.error().errStr);
       return false;
     }
 
@@ -209,12 +208,13 @@ struct RcBenchmarkState {
     receiver = std::make_unique<RcEndPoint>();
     auto receiverInitResult = receiver->init(receiverDevIdx);
     if (!receiverInitResult) {
-      XLOGF(ERR, "Receiver init failed: {}", receiverInitResult.error().errStr);
+      CTRAN_LOG(
+          ERR, "Receiver init failed: {}", receiverInitResult.error().errStr);
       return false;
     }
     auto receiverRcResult = receiver->initRc();
     if (!receiverRcResult) {
-      XLOGF(
+      CTRAN_LOG(
           ERR, "Receiver RC init failed: {}", receiverRcResult.error().errStr);
       return false;
     }
@@ -223,7 +223,7 @@ struct RcBenchmarkState {
     auto senderMrResult =
         sender->registerMr(senderBuf.data(), senderBuf.size());
     if (!senderMrResult) {
-      XLOGF(ERR, "Sender MR failed: {}", senderMrResult.error().errStr);
+      CTRAN_LOG(ERR, "Sender MR failed: {}", senderMrResult.error().errStr);
       return false;
     }
     senderMr = std::make_unique<IbvMr>(std::move(*senderMrResult));
@@ -231,7 +231,7 @@ struct RcBenchmarkState {
     auto receiverMrResult =
         receiver->registerMr(receiverBuf.data(), receiverBuf.size());
     if (!receiverMrResult) {
-      XLOGF(ERR, "Receiver MR failed: {}", receiverMrResult.error().errStr);
+      CTRAN_LOG(ERR, "Receiver MR failed: {}", receiverMrResult.error().errStr);
       return false;
     }
     receiverMr = std::make_unique<IbvMr>(std::move(*receiverMrResult));
@@ -245,14 +245,14 @@ struct RcBenchmarkState {
     // Connect QPs (bidirectional)
     auto senderConnectResult = sender->connect(receiverCard);
     if (!senderConnectResult) {
-      XLOGF(
+      CTRAN_LOG(
           ERR, "Sender connect failed: {}", senderConnectResult.error().errStr);
       return false;
     }
 
     auto receiverConnectResult = receiver->connect(senderCard);
     if (!receiverConnectResult) {
-      XLOGF(
+      CTRAN_LOG(
           ERR,
           "Receiver connect failed: {}",
           receiverConnectResult.error().errStr);
@@ -723,14 +723,17 @@ BENCHMARK_MULTI_PARAM_COUNTERS(rcQpCreation, rc_qp_init);
 
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
 
-  XLOG(INFO) << "DC vs RC RDMA Single-Pair Benchmark";
-  XLOG(INFO) << "===================================";
+  CTRAN_LOG_STREAM(INFO) << "DC vs RC RDMA Single-Pair Benchmark";
+  CTRAN_LOG_STREAM(INFO) << "===================================";
 
   if (!g_rdmaAvailability.checkRdmaAvailable()) {
-    XLOG(ERR) << "RDMA not available - benchmarks will be skipped";
+    CTRAN_LOG_STREAM(ERR) << "RDMA not available - benchmarks will be skipped";
   } else {
-    XLOG(INFO) << "RDMA devices available - running benchmarks";
+    CTRAN_LOG_STREAM(INFO) << "RDMA devices available - running benchmarks";
   }
 
   // Suppress folly benchmark table when --raw_only is set

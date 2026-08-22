@@ -10,7 +10,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/CtranCtrl.h"
@@ -21,7 +21,6 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
 
 using ctran::CtranTcpDm;
 using ctran::CtranTcpDmRequest;
@@ -66,7 +65,7 @@ class CtranTcpTest : public ctran::CtranDistTestFixture {
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
     // NOTE: Printing it as WARN to make this log visible as our default setting
     // is to only print WARN and above logs.
-    CLOGF_IF(
+    CTRAN_LOG_IF(
         WARN,
         this->globalRank == 0,
         "{} numRanks {}. Description: {}",

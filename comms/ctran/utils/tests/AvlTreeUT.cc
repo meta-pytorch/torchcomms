@@ -8,8 +8,8 @@
 #include <unordered_set>
 
 #include "comms/ctran/utils/CtranAvlTree.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
 class Range {
@@ -150,14 +150,8 @@ class CtranUtilsAvlTreeTest : public ::testing::Test {
     *numOverlapsHint = numOverlaps;
   }
 
-  void SetUp() override {
-    // WARN: for now this will default to display WARN level+ messages only.
-    // Change NcclLoggerInitConfig.logLevel to change
-    NcclLogger::init();
-  }
-
-  void TearDown() override {
-    NcclLogger::close();
+  static void SetUpTestSuite() {
+    ctran::logging::initCtranLogging();
   }
 
  public:

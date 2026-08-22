@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/prims/collectives/AllGather.cuh"
 #include "comms/prims/tests/AllGatherTest.cuh"
@@ -35,8 +35,8 @@ void printDeviceBuffer(
       totalInts * sizeof(int32_t),
       cudaMemcpyDeviceToHost));
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: {} (showing {} values for each peer):",
       rank,
       label,
@@ -52,7 +52,7 @@ void printDeviceBuffer(
     if (!showAll && numIntsPerRank > 8) {
       line += "...";
     }
-    XLOG(DBG1) << line;
+    COMMS_LOG_STREAM(DBG) << line;
   }
 }
 } // namespace
@@ -85,8 +85,8 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   const int numBlocks = params.numBlocks;
   const int blockSize = params.blockSize;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, numIntsPerRank={}",
       globalRank,
       params.testName,
@@ -115,7 +115,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   // Create transport and exchange IPC handles
   MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
-  XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
+  COMMS_LOG(DBG, "Rank {} created transport and exchanged IPC", globalRank);
 
   auto transports_span = transport.getDeviceTransports();
 
@@ -144,7 +144,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   bootstrap->barrierAll();
 
   // Debug: Print send buffer before all_gather
-  XLOGF(DBG1, "Rank {}: Send buffer (my data): ", globalRank);
+  COMMS_LOG(DBG, "Rank {}: Send buffer (my data): ", globalRank);
   std::vector<int32_t> h_send_debug(numIntsPerRank);
   CUDACHECK_TEST(cudaMemcpy(
       h_send_debug.data(),
@@ -158,7 +158,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   if (numIntsPerRank > 8) {
     sendLine += "...";
   }
-  XLOG(DBG1) << sendLine;
+  COMMS_LOG_STREAM(DBG) << sendLine;
 
   // Debug: Print recv buffer before all_gather
   printDeviceBuffer(
@@ -168,7 +168,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       worldSize,
       numIntsPerRank);
 
-  XLOGF(DBG1, "Rank {}: calling all_gather", globalRank);
+  COMMS_LOG(DBG, "Rank {}: calling all_gather", globalRank);
 
   // Call all_gather with actual data transfer
   test::testAllGather(
@@ -212,7 +212,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) { // Only print first 10 errors
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at source_rank {} position {}: expected {}, got {}",
               globalRank,
@@ -225,8 +225,8 @@ TEST_P(AllGatherTest, AllGatherBasic) {
     }
   }
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: verification completed, errors = {}",
       globalRank,
       h_errorCount);
@@ -287,8 +287,8 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   const int numBlocks = params.numBlocks;
   const int blockSize = params.blockSize;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, numIntsPerRank={}",
       globalRank,
       params.testName,
@@ -355,7 +355,7 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at source_rank {} position {}: expected {}, got {}",
               globalRank,
