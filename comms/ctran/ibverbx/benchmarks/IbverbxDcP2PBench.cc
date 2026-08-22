@@ -28,7 +28,6 @@
 
 #include <folly/Benchmark.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gflags/gflags.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -36,12 +35,9 @@
 #include "comms/ctran/ibverbx/benchmarks/IbverbxDcBenchUtils.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
 #include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 DEFINE_bool(raw_only, true, "Print only RAW CSV results, suppress folly table");
 DEFINE_int32(batch_size, 1, "Number of RDMA writes to batch before polling");
@@ -727,6 +723,9 @@ BENCHMARK_MULTI_PARAM_COUNTERS(rcQpCreation, rc_qp_init);
 
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
 
   CTRAN_LOG_STREAM(INFO) << "DC vs RC RDMA Single-Pair Benchmark";
   CTRAN_LOG_STREAM(INFO) << "===================================";

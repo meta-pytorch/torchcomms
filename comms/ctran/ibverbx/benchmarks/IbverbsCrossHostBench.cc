@@ -23,11 +23,11 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -37,10 +37,6 @@ extern IbvSymbols ibvSymbols;
 
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 //------------------------------------------------------------------------------
 // Real-time Priority Helper
@@ -1493,5 +1489,8 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
   return RUN_ALL_TESTS();
 }

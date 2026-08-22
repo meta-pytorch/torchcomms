@@ -7,18 +7,14 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <glog/logging.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
 #if defined(__HIP_PLATFORM_AMD__) && !defined(USE_FE_NIC)
@@ -519,6 +515,8 @@ BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Dqplb)
 // Custom main function to handle initialization
 int main(int argc, char** argv) {
   ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
 
   // Check if we have multiple CUDA devices for transport benchmarks
   int deviceCount;

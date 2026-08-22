@@ -21,13 +21,14 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/benchmarks/IbverbxDcBenchUtils.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
+#include "comms/ctran/utils/CtranLogger.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -44,10 +45,6 @@ using ibverbx::kPortNum;
 using ibverbx::pollCqBusySpin;
 using ibverbx::transitionDCIToRts;
 using ibverbx::transitionDCTToRtr;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 namespace {
 
@@ -348,5 +345,8 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new meta::comms::MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::initCtranLogging();
+  spdlog::set_level(spdlog::level::err);
   return RUN_ALL_TESTS();
 }

@@ -4,7 +4,6 @@
 #include <cuda_runtime.h>
 #include <folly/container/F14Map.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
 #include "comms/ctran/utils/CtranLogger.h"
@@ -16,10 +15,6 @@
 
 using namespace ibverbx;
 using namespace meta::comms;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 namespace {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
