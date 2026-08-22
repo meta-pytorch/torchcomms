@@ -31,8 +31,7 @@ inline void initChannelMetadataPolicy(ncclComm* comm) {
     comm->ncclxExt->slabAllocator =
         std::make_unique<::ncclx::memory::SlabAllocator>();
   }
-  comm->ncclxExt->channelMetadataOnHost =
-      ::ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+  comm->ncclxExt->channelMetadataOnHost = ::ncclx::channelMetadataOnHost();
 }
 
 // Allocates one `initChannel` channel-metadata buffer, hoisted out of the
