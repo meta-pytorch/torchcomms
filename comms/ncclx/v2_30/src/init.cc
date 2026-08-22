@@ -1868,26 +1868,6 @@ static ncclResult_t getParentRanks(int parentRanks, int parentRank, int* exclude
   return ncclSuccess;
 }
 
-static ncclResult_t ncclxCommGetSplitInfo(struct ncclComm* comm, struct ncclComm* parent, int color, int key, int* nRanksRet, int* myRankRet, int* parentRanksRet) {
-  // meta-fast-init: leverage comm config hint from PyTorch Distributed to bypass global all-gather color/key
-  if (color == NCCL_SPLIT_NOCOLOR) {
-    return ncclSuccess;
-  }
-  CHECKABORT(
-      comm && !NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).empty(),
-      "Empty comm or undefined config of splitGroupRanks passed to ncclxCommGetSplitInfo");
-
-  *nRanksRet = static_cast<int>(NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size());
-  *myRankRet = -1;
-  for (size_t i = 0; i < NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size(); i++) {
-    parentRanksRet[i] = NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i];
-    if (parent->rank == NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i]) {
-      *myRankRet = static_cast<int>(i);
-    }
-  }
-  return ncclSuccess;
-}
-
 static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   struct ncclCommInitRankAsyncJob* job = (struct ncclCommInitRankAsyncJob*)job_;
   ncclComm_t comm = job->comm;
@@ -1939,11 +1919,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList, job->excludeRanksCount, &job->nranks, &job->myrank, parentRanks), res, fail);
     } else {
-      if (isFastInitRingMode(NCCLX_CONFIG_FIELD(job->parent->config, fastInitMode))) {
-        NCCLCHECKGOTO(ncclxCommGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
-      } else {
       NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
-      }
       // Negative color does not create a new comm object. We needed to take part in the allgather, but we're done now.
       if (job->color == NCCL_SPLIT_NOCOLOR) goto exit;
     }
@@ -1972,10 +1948,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       comm->commHash = commIdHash = hashCombine(baseMagic, job->nranks);
       INFO(NCCL_INIT, "Rank %d: Generated commHash 0x%lx from baseMagic 0x%lx and newNRanks %d",
            job->myrank, comm->commHash, baseMagic, job->nranks);
-    } else if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
-      // [Meta] Fast-init mode won't get unique commId for different communicators
-      // use ctran helper function to generate unique hash
-      comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     } else {
       // obtain a unique hash using the first commId
       comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);
@@ -2605,7 +2577,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
   commIdEnv = ncclGetEnv("NCCL_COMM_ID");
-  if (commIdEnv && myrank == 0 && !isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
+  if (commIdEnv && myrank == 0) {
     INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commIdEnv);
     if (nId > 1) {
       INFO(NCCL_INIT | NCCL_ENV, "NCCL_COMM_ID cannot be used with more than one ncclUniqueId");
@@ -2749,15 +2721,7 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  bool fastInitMode = NCCLX_CONFIG_FIELD(internalConfig, fastInitMode);
-  if (isFastInitRingMode(fastInitMode)) {
-    // in meta-fast-init mode, we don't need commId
-    if (uniqueIdIsInitialized) {
-      WARN("No need to broadcast uniqueId in meta-fast-init mode, please set TORCH_NCCL_BCAST_UNIQUEID=0");
-    }
-    // memset to 0 as it will be used to generate hostHash
-    memset(&commId, 0, sizeof(commId));
-  } else if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
+  if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
     ERR(ncclInvalidUsage, "No ncclUniqueId provided in nccl baseline init mode, please set TORCH_NCCL_BCAST_UNIQUEID=1 or set NCCL_COMM_ID env variable");
     return ncclInvalidUsage;
   }
