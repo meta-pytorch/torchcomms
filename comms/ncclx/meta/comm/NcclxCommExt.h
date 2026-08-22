@@ -60,4 +60,9 @@ struct ncclxCommExt {
   int nMaxChannelsNeedInit{0};
   // high-water mark of channels each algorithm needs to connect (across plans)
   std::array<int, NCCL_NUM_ALGORITHMS> algoMaxChannelsNeedConnect{0};
+
+  // Forces the deterministic PAT algorithm with ncclDevPatSumPostDiv for
+  // ncclAvg ReduceScatter on supported datatypes. Populated from the parsed
+  // ncclx::Config at communicator init.
+  bool usePatAvg{false};
 };
