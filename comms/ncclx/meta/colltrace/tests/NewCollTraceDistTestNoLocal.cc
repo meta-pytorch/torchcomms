@@ -26,6 +26,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclxRuntime.h"
 
 using ::meta::comms::colltrace::CollTraceConfig;
 
@@ -112,7 +113,12 @@ class CollTraceTest : public NcclxBaseTestFixture {
         NCCL_DEBUG_SUBSYS.empty() ? "INIT,BOOTSTRAP,ENV" : NCCL_DEBUG_SUBSYS;
     NCCL_DEBUG = "INFO";
     NCCL_DEBUG_SUBSYS = "INIT,COLL";
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void endVerboseLogging() {
@@ -120,7 +126,12 @@ class CollTraceTest : public NcclxBaseTestFixture {
     NcclLogger::close();
     NCCL_DEBUG = prevDebug;
     NCCL_DEBUG_SUBSYS = prevDebugSubsys;
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void barrier() {
