@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "nccl.h"
 #include "meta/DeviceRackSerial.h"
 #include "meta/NcclxConfig.h" // @manual
@@ -33,7 +34,6 @@
 #include "mnnvl.h"
 #include <algorithm>
 #include <assert.h>
-#include <memory>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -47,7 +47,6 @@
 #include "env.h"
 #include "rma/rma.h"
 
-#include "comms/ctran/Ctran.h"
 #include "meta/commstate/FactoryCommStateX.h"
 
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -61,8 +60,11 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
 #include "comms/utils/logger/LoggingFormat.h"
-#include "comms/ctran/memory/SlabAllocator.h"
-#include "comms/ctran/memory/Utils.h"
+#include "meta/logger/ScubaCommSampleScope.h"
+#include "meta/logger/ScubaInitScope.h"
+#include "meta/comm/NcclxCommExt.h"
+#include "meta/memory/NcclChannelMetadataAlloc.h"
+#include "meta/wrapper/CtranHooks.h"
 #include "meta/wrapper/MetaFactory.h"
 #include "meta/transport/transportExt.h"
 
@@ -299,6 +301,8 @@ static void ncclxCommFree(ncclComm_t comm) {
     delete static_cast<ncclx::Config*>(comm->config.ncclxConfig);
     comm->config.ncclxConfig = nullptr;
   }
+  delete comm->ncclxExt;
+  comm->ncclxExt = nullptr;
 }
 
 static ncclResult_t commFree(ncclComm_t comm) {
@@ -375,11 +379,8 @@ static ncclResult_t commFree(ncclComm_t comm) {
       for (int c=0; c<MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
         if (comm->sharedRes->devPeers[c]) {
-          if (comm->channelMetadataOnHost) {
-            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
-          } else if (!NCCL_MEM_USE_SLAB_ALLOCATOR) {
-            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
-          }
+          meta::comms::ncclx::freeChannelMetadata(
+              comm, comm->sharedRes->devPeers[c]);
         }
       }
       free(comm->sharedRes->tpRankToLocalRank);
@@ -548,7 +549,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   NCCLCHECK(ncclCudaContextTrack(&comm->context));
 
   // Add communicator attributes to scuba samples
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
 
   NCCLCHECK(getBusId(comm->cudaDev, &comm->busId));
   nvmlDevice_t nvmlDev;
@@ -614,8 +615,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 }
 
 static ncclResult_t devCommSetup(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   ncclResult_t ret = ncclSuccess;
   int nRanks = comm->nRanks;
   struct ncclKernelCommAndChannels tmpCommAndChans;
@@ -626,16 +626,16 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
 
   memset(&tmpCommAndChans, '\0', sizeof(tmpCommAndChans));
   NCCLCHECKGOTO(ncclStrongStreamAcquire(ncclCudaGraphNone(comm->config.graphUsageMode), &comm->sharedRes->deviceStream, /*concurrent=*/false, &deviceStream), ret, fail);
-  memLogMetaData = comm->logMetaData;
+  memLogMetaData = ncclCommLogData(comm);
   NCCLCHECKGOTO(ncclCudaCallocAsync(&devCommAndChans, 1, deviceStream, comm->memManager), ret, fail);
   ncclCommPushCudaFree(comm, devCommAndChans);
 
   // [META]: Cache devCommAndChans to be used later for lazily allocating channels
-  if (comm->lazySetupChannels) {
-    comm->devCommAndChans = devCommAndChans;
+  if (comm->ncclxExt->lazySetupChannels) {
+    comm->ncclxExt->devCommAndChans = devCommAndChans;
   }
 
-  memLogMetaData = comm->logMetaData;
+  memLogMetaData = ncclCommLogData(comm);
   NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.rankToLocalRank, comm->nRanks, deviceStream, comm->memManager), ret, fail);
   ncclCommPushCudaFree(comm, tmpCommAndChans.comm.rankToLocalRank);
   NCCLCHECKGOTO(ncclCudaMemcpyAsync(tmpCommAndChans.comm.rankToLocalRank, comm->rankToLocalRank, comm->nRanks, deviceStream), ret, fail);
@@ -675,7 +675,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
 
   if (ncclGdrCopy != NULL && ncclParamGdrCopyFifoEnable() == 1) {
     // The workFifoBuf lives in GDR mapped CUDA memory.
-    NCCLCHECKGOTO(ncclGdrCudaCalloc(&comm->workFifoBuf, &comm->workFifoBufDev, comm->workFifoBytes, &comm->workFifoBufGdrHandle, comm->memManager, comm->logMetaData), ret, fail);
+    NCCLCHECKGOTO(ncclGdrCudaCalloc(&comm->workFifoBuf, &comm->workFifoBufDev, comm->workFifoBytes, &comm->workFifoBufGdrHandle, comm->memManager, ncclCommLogData(comm)), ret, fail);
     ncclCommPushCudaGdrFree(comm, comm->workFifoBufGdrHandle);
   } else {
     // The workFifoBuf lives in cudaHost memory.
@@ -698,7 +698,7 @@ static ncclResult_t devCommSetup(ncclComm_t comm) {
   ncclCommPushCudaHostFree(comm, comm->profiler.workCompleted);
 
   if (comm->collNetDenseToUserRank != nullptr) {
-    memLogMetaData = comm->logMetaData;
+    memLogMetaData = ncclCommLogData(comm);
     NCCLCHECKGOTO(ncclCudaCallocAsync(&tmpCommAndChans.comm.collNetDenseToUserRank, nRanks, deviceStream, comm->memManager), ret, fail);
     ncclCommPushCudaFree(comm, tmpCommAndChans.comm.collNetDenseToUserRank);
     NCCLCHECKGOTO(ncclCudaMemcpyAsync(tmpCommAndChans.comm.collNetDenseToUserRank, comm->collNetDenseToUserRank, nRanks, deviceStream), ret, fail);
@@ -1017,9 +1017,8 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
 }
 
 static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* parent, uint64_t timers[TIMERS_INIT_COUNT]) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
-  NcclScubaEvent initEvent(&comm->logMetaData);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
+  NcclScubaEvent initEvent(&ncclCommLogData(comm));
   initEvent.lapAndRecord("InitTransportsRank START");
   // We use 2 AllGathers
   // 1. { peerInfo, comm, compCap}
@@ -1112,7 +1111,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
+  comm->ncclxExt->lazySetupChannels = comm->cuMemSupport && NCCL_LAZY_SETUP_CHANNELS;
 
   // Check for MNNVL support
   NCCLCHECKGOTO(ncclGetUserP2pLevel(&p2pLevel), ret, fail);
@@ -1595,16 +1594,16 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
 
   comm->runtimeConn = comm->cuMemSupport && ncclParamRuntimeConnect();
 
-  if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
+  if (comm->runtimeConn == 0 && comm->ncclxExt->lazySetupChannels == 1) {
     WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
   }
 
-  if (comm->lazySetupChannels) {
+  if (comm->ncclxExt->lazySetupChannels) {
     INFO(
         NCCL_INIT,
         "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str());
     // cache the ring info to be used for setupChannel later when needed
-    comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
+    comm->ncclxExt->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
     // Attempt to setup NVLS
     NCCLCHECKGOTO(ncclNvlsSetup(comm, parent), ret, fail);
   } else if (comm->runtimeConn) {
@@ -1812,8 +1811,7 @@ typedef struct{
   int color;
 } commSplitInfo;
 static ncclResult_t commGetSplitInfo(struct ncclComm* comm, struct ncclComm* parent, int color, int key, int* nRanksRet, int* myRankRet, int* parentRanksRet) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   int nRanks = 0, myRank = 0;
   ncclResult_t ret = ncclSuccess;
 
@@ -1870,26 +1868,6 @@ static ncclResult_t getParentRanks(int parentRanks, int parentRank, int* exclude
   return ncclSuccess;
 }
 
-static ncclResult_t ncclxCommGetSplitInfo(struct ncclComm* comm, struct ncclComm* parent, int color, int key, int* nRanksRet, int* myRankRet, int* parentRanksRet) {
-  // meta-fast-init: leverage comm config hint from PyTorch Distributed to bypass global all-gather color/key
-  if (color == NCCL_SPLIT_NOCOLOR) {
-    return ncclSuccess;
-  }
-  CHECKABORT(
-      comm && !NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).empty(),
-      "Empty comm or undefined config of splitGroupRanks passed to ncclxCommGetSplitInfo");
-
-  *nRanksRet = static_cast<int>(NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size());
-  *myRankRet = -1;
-  for (size_t i = 0; i < NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size(); i++) {
-    parentRanksRet[i] = NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i];
-    if (parent->rank == NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i]) {
-      *myRankRet = static_cast<int>(i);
-    }
-  }
-  return ncclSuccess;
-}
-
 static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   struct ncclCommInitRankAsyncJob* job = (struct ncclCommInitRankAsyncJob*)job_;
   ncclComm_t comm = job->comm;
@@ -1910,11 +1888,8 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   NcclScubaEvent commInitFuncEvent(&commLogData);
   NcclScubaEvent initBootstrapEvent(&commLogData);
 
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", job->nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", job->myrank));
-  auto contextCudaDev = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::cuda_dev, fmt::format("{}", cudaDev));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, job->nranks, job->myrank, cudaDev);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
   auto resultGuard = folly::makeGuard([&sampleGuardBegin, &res] {
     sampleGuardBegin.sample().setExecResult(ncclCodeToString(res));
   });
@@ -1944,11 +1919,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList, job->excludeRanksCount, &job->nranks, &job->myrank, parentRanks), res, fail);
     } else {
-      if (isFastInitRingMode(NCCLX_CONFIG_FIELD(job->parent->config, fastInitMode))) {
-        NCCLCHECKGOTO(ncclxCommGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
-      } else {
       NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
-      }
       // Negative color does not create a new comm object. We needed to take part in the allgather, but we're done now.
       if (job->color == NCCL_SPLIT_NOCOLOR) goto exit;
     }
@@ -1977,10 +1948,6 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
       comm->commHash = commIdHash = hashCombine(baseMagic, job->nranks);
       INFO(NCCL_INIT, "Rank %d: Generated commHash 0x%lx from baseMagic 0x%lx and newNRanks %d",
            job->myrank, comm->commHash, baseMagic, job->nranks);
-    } else if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
-      // [Meta] Fast-init mode won't get unique commId for different communicators
-      // use ctran helper function to generate unique hash
-      comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     } else {
       // obtain a unique hash using the first commId
       comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);
@@ -2000,23 +1967,18 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->cudaArch = cudaArch;
 
   // init this communicator's  Logger fields
-  comm->logMetaData.commId = commIdHash;
-  comm->logMetaData.commHash = comm->commHash;
-  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
-  comm->logMetaData.rank = comm->rank;
-  comm->logMetaData.nRanks = comm->nRanks;
+  ncclCommLogData(comm).commId = commIdHash;
+  ncclCommLogData(comm).commHash = comm->commHash;
+  ncclCommLogData(comm).commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  ncclCommLogData(comm).rank = comm->rank;
+  ncclCommLogData(comm).nRanks = comm->nRanks;
 
 
-  // NCCLX - NCCL_MEM_USE_SLAB_ALLOCATOR
-  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
-    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
-  }
-  comm->channelMetadataOnHost =
-      ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
+  meta::comms::ncclx::initChannelMetadataPolicy(comm);
 
   // Set communicator attributes (overrides)
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
-  commInitFuncEvent.setLogMetatData(&comm->logMetaData);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
+  commInitFuncEvent.setLogMetatData(&ncclCommLogData(comm));
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
 
   // update communicator state
@@ -2029,7 +1991,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   NCCLCHECKGOTO(meta::comms::ncclx::newCollTraceInit(comm), res, fail);
 
 
-  if (comm->useCtran_) {
+  if (comm->ncclxExt->useCtran) {
     NCCLCHECKGOTO(createCtranComm(comm), res, fail);
   }
   // --------------------- done
@@ -2541,10 +2503,7 @@ static void ncclxSetFirstCommAsWorld(ncclComm_t* newcomm) {
 }
 
 static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId, ncclUniqueId* commId, int myrank, int cudaDev, ncclConfig_t *config, const char funcName[]) {
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", myrank));
-  auto contextCudaDev = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::cuda_dev, fmt::format("{}", cudaDev));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, nranks, myrank, cudaDev);
 
   if (nId <= 0 || nId > nranks) {
     ERR(ncclInvalidArgument, "improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
@@ -2587,20 +2546,21 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->abortFlagRefCount, 1), res, fail);
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
+  NEW_NOTHROW_GOTO(comm->ncclxExt, ncclxCommExt, res, fail);
   // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
-  comm->useCtran_ = NCCLX_CONFIG_FIELD(*config, useCtran);
-  comm->usePatAvg_ = NCCLX_CONFIG_FIELD(*config, usePatAvg);
-  comm->noLocal_ = NCCLX_CONFIG_FIELD(*config, noLocal);
+  comm->ncclxExt->useCtran = NCCLX_CONFIG_FIELD(*config, useCtran);
+  comm->ncclxExt->usePatAvg = NCCLX_CONFIG_FIELD(*config, usePatAvg);
+  comm->ncclxExt->noLocal = NCCLX_CONFIG_FIELD(*config, noLocal);
   INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d",
        comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
        NCCLX_CONFIG_FIELD(*config, commDesc).c_str(),
-       comm->useCtran_, comm->usePatAvg_, comm->noLocal_);
+       comm->ncclxExt->useCtran, comm->ncclxExt->usePatAvg, comm->ncclxExt->noLocal);
   *comm->abortFlagRefCount = 1;
   NCCLCHECKGOTO(parseCommConfig(comm, config), res, fail);
   /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
   comm->initState = ncclInProgress;
   *newcomm = comm;
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm ? &comm->logMetaData: nullptr);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm ? &ncclCommLogData(comm): nullptr);
 
   NEW_NOTHROW_GOTO(job, ncclCommInitRankAsyncJob, res, fail);
   job->nId = nId;
@@ -2617,7 +2577,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
   commIdEnv = ncclGetEnv("NCCL_COMM_ID");
-  if (commIdEnv && myrank == 0 && !isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
+  if (commIdEnv && myrank == 0) {
     INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commIdEnv);
     if (nId > 1) {
       INFO(NCCL_INIT | NCCL_ENV, "NCCL_COMM_ID cannot be used with more than one ncclUniqueId");
@@ -2747,9 +2707,7 @@ ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState) {
 
 NCCL_API(ncclResult_t, ncclCommInitRankConfig, ncclComm_t* comm, int nranks, ncclUniqueId commId, int myrank, ncclConfig_t *config);
 ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueId commId, int myrank, ncclConfig_t *config) {
-  auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", nranks));
-  auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", myrank));
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  NCCLX_SCUBA_INIT_SCOPE(sampleGuardBegin, nranks, myrank);
   int cudaDev;
   ncclResult_t ret = ncclSuccess;
   ncclConfig_t internalConfig = NCCL_CONFIG_INITIALIZER;
@@ -2763,15 +2721,7 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  bool fastInitMode = NCCLX_CONFIG_FIELD(internalConfig, fastInitMode);
-  if (isFastInitRingMode(fastInitMode)) {
-    // in meta-fast-init mode, we don't need commId
-    if (uniqueIdIsInitialized) {
-      WARN("No need to broadcast uniqueId in meta-fast-init mode, please set TORCH_NCCL_BCAST_UNIQUEID=0");
-    }
-    // memset to 0 as it will be used to generate hostHash
-    memset(&commId, 0, sizeof(commId));
-  } else if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
+  if (!uniqueIdIsInitialized && NCCL_COMM_ID.empty()) {
     ERR(ncclInvalidUsage, "No ncclUniqueId provided in nccl baseline init mode, please set TORCH_NCCL_BCAST_UNIQUEID=1 or set NCCL_COMM_ID env variable");
     return ncclInvalidUsage;
   }
@@ -2852,8 +2802,7 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   struct ncclCommFinalizeAsyncJob* job = (struct ncclCommFinalizeAsyncJob*) job_;
   ncclComm_t comm = job->comm;
   ncclResult_t ret = ncclSuccess;
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
 
@@ -2899,8 +2848,7 @@ fail:
 }
 
 static ncclResult_t commCleanup(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (comm->tuner != NULL) {
     NCCLCHECK(comm->tuner->finalize(comm->tunerContext));
@@ -2912,8 +2860,7 @@ static ncclResult_t commCleanup(ncclComm_t comm) {
 
 NCCL_API(ncclResult_t, ncclCommFinalize, ncclComm_t comm);
 ncclResult_t ncclCommFinalize(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("INIT", comm);
   NVTX3_RANGE(NcclNvtxParamsCommFinalize);
   NcclScubaEvent initEvent(nullptr);
 
@@ -2925,7 +2872,7 @@ ncclResult_t ncclCommFinalize(ncclComm_t comm) {
   NCCLCHECK(ncclGroupStartInternal());
   if (comm == NULL) goto exit;
 
-  initEvent.setLogMetatData(&comm->logMetaData);
+  initEvent.setLogMetatData(&ncclCommLogData(comm));
   initEvent.lapAndRecord("ncclCommFinalize START");
   /* wait comm ready before finalize. */
   NCCLCHECKGOTO(ncclCommEnsureReady(comm), ret, fail);
@@ -2963,8 +2910,7 @@ static ncclResult_t commReclaim(struct ncclAsyncJob* job_) {
   struct ncclCommFinalizeAsyncJob* job = (struct ncclCommFinalizeAsyncJob*) job_;
   ncclComm_t comm = job->comm;
   ncclResult_t ret = ncclSuccess;
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
 
   if (comm->intraComm0 != NULL) {
     int curRankCnt;
@@ -3022,7 +2968,7 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
     return ncclSuccess;
   }
 
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &ncclCommLogData(comm): nullptr);
   ncclx::comms_monitor::CommsMonitor::deregisterComm(comm);
 
   int rank = comm->rank, nranks = comm->nRanks, cudaDev = comm->cudaDev;
@@ -3033,7 +2979,7 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
     NVTX3_PAYLOAD(comm->commHash, nranks, rank, cudaDev));
 
   TRACE(NCCL_DESTROY, "comm %p rank %d nRanks %d cudaDev %d busId %lx", comm, rank, nranks, cudaDev, comm->busId);
-  NcclScubaEvent destroyEvent(&comm->logMetaData);
+  NcclScubaEvent destroyEvent(&ncclCommLogData(comm));
   NCCLCHECK(ncclGroupStartInternal());
   // Try and prevent a double free of the comm struct (user error)
   if (comm->rank == -1 || comm->nRanks == -1 || comm->cudaDev == -1 || comm->busId == -1) {
@@ -3190,8 +3136,7 @@ static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
 
 NCCL_API(ncclResult_t, ncclCommAbort, ncclComm_t comm);
 ncclResult_t ncclCommAbort(ncclComm_t comm) {
-  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("TERMINATE");
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NCCLX_SCUBA_COMM_SAMPLE("TERMINATE", comm);
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
 
   // NCCLX - Force abort logic.
@@ -3210,7 +3155,7 @@ ncclResult_t ncclCommAbort(ncclComm_t comm) {
   if (comm == NULL) {
     return ncclSuccess;
   }
-  NcclScubaEvent abortEvent(&comm->logMetaData);
+  NcclScubaEvent abortEvent(&ncclCommLogData(comm));
   commAbortLog(comm, "START");
   abortEvent.lapAndRecord("Abort START");
 
@@ -3282,6 +3227,7 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   } else {
     NCCLCHECKGOTO(ncclCalloc(&childComm, 1), res, fail);
     childComm->startMagic = childComm->endMagic = NCCL_MAGIC;
+    NEW_NOTHROW_GOTO(childComm->ncclxExt, ncclxCommExt, res, fail);
 
     // Set the shareResource field, this is used throughout the init and must be reset every time.
     // Never share resources if the parent communicator has been revoked.
@@ -3311,12 +3257,12 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
     childComm->initState = ncclInternalError;
     // [META:PER_COMM_CONFIG] Read per-comm config from parsed ncclx::Config
-    childComm->useCtran_ = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
-    childComm->usePatAvg_ = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
-    childComm->noLocal_ = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
+    childComm->ncclxExt->useCtran = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
+    childComm->ncclxExt->usePatAvg = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
+    childComm->ncclxExt->noLocal = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
     INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d",
         childComm, NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str(),
-        childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_);
+        childComm->ncclxExt->useCtran, childComm->ncclxExt->usePatAvg, childComm->ncclxExt->noLocal);
   }
 
   NEW_NOTHROW_GOTO(job, ncclCommInitRankAsyncJob, res, fail);
@@ -3506,6 +3452,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   // All ranks allocate a NEW comm structure for the grown communicator
   NCCLCHECKGOTO(ncclCalloc(&newComm, 1), res, fail);
   newComm->startMagic = newComm->endMagic = NCCL_MAGIC;
+  NEW_NOTHROW_GOTO(newComm->ncclxExt, ncclxCommExt, res, fail);
 
   // All ranks allocate fresh resources for grown communicator
   NCCLCHECKGOTO(ncclCalloc(&newComm->abortFlag, 1), res, fail);
@@ -3691,15 +3638,9 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError) {
   //   comm->groupJob = NULL;
   // }
 
-  // Check Ctran asyncError if no error happens in the baseline path
-  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
-      (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
-    auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
-    // Overwrite if ctranAsyncError is inProgress or error
-    if (ctranAsyncError != ncclSuccess) {
-      *asyncError = ctranAsyncError;
-    }
-  }
+  // Fold any CTRAN async error into *asyncError (no-op unless CTRAN is enabled
+  // and initialized, and the baseline path reported success/in-progress).
+  ncclx::ctranUpdateAsyncError(comm, asyncError);
   return ncclSuccess;
 }
 
