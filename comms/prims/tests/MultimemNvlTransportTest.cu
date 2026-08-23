@@ -8,6 +8,7 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlRegistered.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlStageLayout.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlStore.cuh"
@@ -563,6 +564,31 @@ __global__ void loadReduceKernel(
       group, output, source, elems);
 }
 
+template <typename T, bool kAccF32>
+__global__ void reduceBroadcastKernel(
+    MultimemNvlTransportDevice transport,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems) {
+  auto block = make_block_group();
+  constexpr std::size_t kElementsPerPack = 16 / sizeof(T);
+  const std::size_t packs = elems / kElementsPerPack;
+  const std::size_t firstPack = packs * transport.nvlRank / transport.nvlRanks;
+  const std::size_t endPack =
+      packs * (transport.nvlRank + 1) / transport.nvlRanks;
+  const std::size_t first = firstPack * kElementsPerPack;
+  const std::size_t count = (endPack - firstPack) * kElementsPerPack;
+  auto* destination =
+      reinterpret_cast<T*>(transport.multimemData) + destinationOffsetElems;
+  const auto* source =
+      reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
+
+  nvl_block_barrier(transport, /*channel=*/0, block);
+  multimem::reduce_broadcast_at<T, 4, kAccF32>(
+      block, destination + first, source + first, count);
+  nvl_block_barrier(transport, /*channel=*/0, block);
+}
+
 template <int kUnroll>
 __global__ void multimemStoreKernel(
     MultimemNvlTransportDevice transport,
@@ -646,6 +672,24 @@ void launchFillReductionInputTyped(
     cudaStream_t stream) {
   fillReductionInputKernel<T>
       <<<1, 32, 0, stream>>>(transport, value, elems, sourceOffsetElems);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
+void launchReduceBroadcastTyped(
+    MultimemNvlTransportDevice transport,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream) {
+  if (accF32) {
+    reduceBroadcastKernel<T, true><<<1, 128, 0, stream>>>(
+        transport, sourceOffsetElems, destinationOffsetElems, elems);
+  } else {
+    reduceBroadcastKernel<T, false><<<1, 128, 0, stream>>>(
+        transport, sourceOffsetElems, destinationOffsetElems, elems);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -995,6 +1039,50 @@ void launchLoadReduce(
     case MultimemReductionTestType::Bfloat16:
       return launchLoadReduceTyped<__nv_bfloat16>(
           transport, accF32, output, elems, sourceOffsetElems, stream);
+  }
+}
+
+void launchReduceBroadcast(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float:
+      return launchReduceBroadcastTyped<float>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Int32:
+      return launchReduceBroadcastTyped<int32_t>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Float16:
+      return launchReduceBroadcastTyped<__half>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchReduceBroadcastTyped<__nv_bfloat16>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
   }
 }
 
