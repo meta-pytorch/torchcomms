@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/colltrace/ProxyTraceFunc.h"
+#include "meta/wrapper/NcclCommLogData.h"
 
 #include "comms/utils/colltrace/NetworkPerfMonitor.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -31,7 +32,7 @@ ncclResult_t proxyTraceInit(struct ncclProxyState* state, ncclComm* comm) {
       ncclx::colltrace::NetworkPerfMonitor::getInstance();
   if (networkPerfMonitorPtr != nullptr && comm != nullptr) {
     networkPerfMonitorPtr->storeCommInfo(
-        comm->logMetaData, comm->cudaDev, comm->busId);
+        ncclCommLogData(comm), comm->cudaDev, comm->busId);
   }
   try {
     state->trace = std::make_unique<ProxyTrace>();
