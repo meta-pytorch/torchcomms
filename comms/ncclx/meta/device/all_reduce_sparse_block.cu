@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "all_reduce_sparse_block.cuh"
+#include "meta/device/all_reduce_sparse_block.cuh"
 
 template <typename T>
 __global__ void ncclKernel_AllReduceSparseBlock_Unpack(
