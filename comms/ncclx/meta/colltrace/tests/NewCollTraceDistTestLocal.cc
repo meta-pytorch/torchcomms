@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <cstddef>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -73,7 +74,7 @@ TEST_F(CollTraceTestLocal, winSignal) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -92,7 +93,11 @@ TEST_F(CollTraceTestLocal, winSignal) {
   auto res = commSuccess;
   hints.set("window_buffer_location", "cpu");
   res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
+      sizeBytes,
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
+      (void**)&winBase,
+      &win,
+      hints);
   ASSERT_EQ(res, commSuccess);
   ASSERT_NE(winBase, nullptr);
 
@@ -149,8 +154,8 @@ TEST_F(CollTraceTestLocal, winSignal) {
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
   std::this_thread::sleep_for(std::chrono::seconds(2));
-  auto dumpMap =
-      meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommCtran(comm)->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
@@ -168,12 +173,12 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
 
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
-  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
+  if (!meta::comms::ncclx::ncclCommCtran(comm)->ctran_->mapper->hasBackend(
           globalRank, CtranMapperBackend::NVL)) {
     GTEST_SKIP() << "NVL not enabled, skip test";
   }
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -186,7 +191,11 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   ::ctran::CtranWin* win = nullptr;
   void* winBase = nullptr;
   auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
+      sizeBytes,
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
+      &winBase,
+      &win,
+      hints);
   ASSERT_EQ(res, ncclSuccess);
   ASSERT_NE(winBase, nullptr);
 
@@ -240,8 +249,8 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
 
   cudaDeviceSynchronize();
   std::this_thread::sleep_for(std::chrono::seconds(2));
-  auto dumpMap =
-      meta::comms::ncclx::dumpNewCollTrace(*comm->ctranComm_->colltraceNew_);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommCtran(comm)->colltraceNew_);
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
