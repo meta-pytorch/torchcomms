@@ -13,28 +13,57 @@ inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 
 } // namespace ctran::logging
 
-#define CTRAN_LOG(level, ...) \
-  COMMS_LOG_NAMED(::ctran::logging::kCtranLoggerName, level, __VA_ARGS__)
-
-#define CTRAN_LOG_SYNC_ERR(...)                                      \
-  do {                                                               \
-    auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger(    \
-        ::ctran::logging::kCtranLoggerName);                         \
-    if (_ctran_logger.should_log(::spdlog::level::err)) {            \
-      _ctran_logger.logSynchronous(                                  \
-          ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
-          ::spdlog::level::err,                                      \
-          __VA_ARGS__);                                              \
-    }                                                                \
+#define CTRAN_LOG_IMPL(spdlog_level, spdlog_macro, ...)                  \
+  do {                                                                   \
+    static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ctran::logging::kCtranLoggerName);                             \
+    if (_ctran_logger.should_log(spdlog_level)) {                        \
+      spdlog_macro(&_ctran_logger, __VA_ARGS__);                         \
+    }                                                                    \
   } while (false)
 
-#define CTRAN_LOG_IF_IMPL(level, spdlog_level, condition, ...)    \
-  do {                                                            \
-    auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
-        ::ctran::logging::kCtranLoggerName);                      \
-    if (_ctran_logger.should_log(spdlog_level) && (condition)) {  \
-      CTRAN_LOG(level, __VA_ARGS__);                              \
-    }                                                             \
+#define CTRAN_LOG_DBG(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::debug, COMMS_LOGGER_DEBUG, __VA_ARGS__)
+#define CTRAN_LOG_INFO(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::info, SPDLOG_LOGGER_INFO, __VA_ARGS__)
+#define CTRAN_LOG_WARN(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::warn, SPDLOG_LOGGER_WARN, __VA_ARGS__)
+#define CTRAN_LOG_ERR(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::err, SPDLOG_LOGGER_ERROR, __VA_ARGS__)
+#define CTRAN_LOG_CRITICAL(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::critical, SPDLOG_LOGGER_CRITICAL, __VA_ARGS__)
+#define CTRAN_LOG_FATAL(...)                                             \
+  do {                                                                   \
+    static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ctran::logging::kCtranLoggerName);                             \
+    COMMS_LOG_FATAL_IMPL(_ctran_logger, __VA_ARGS__);                    \
+  } while (false)
+#define CTRAN_LOG(level, ...) CTRAN_LOG_##level(__VA_ARGS__)
+#define CTRAN_LOG_STREAM_IF(level, condition) \
+  COMMS_LOG_NAMED_STREAM_IF(                  \
+      ::ctran::logging::kCtranLoggerName, level, condition)
+#define CTRAN_LOG_STREAM(level) \
+  COMMS_LOG_NAMED_STREAM(::ctran::logging::kCtranLoggerName, level)
+
+#define CTRAN_LOG_SYNC_ERR(...)                                          \
+  do {                                                                   \
+    static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ctran::logging::kCtranLoggerName);                             \
+    if (_ctran_logger.should_log(::spdlog::level::err)) {                \
+      _ctran_logger.logSynchronous(                                      \
+          ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION},     \
+          ::spdlog::level::err,                                          \
+          __VA_ARGS__);                                                  \
+    }                                                                    \
+  } while (false)
+
+#define CTRAN_LOG_IF_IMPL(level, spdlog_level, condition, ...)           \
+  do {                                                                   \
+    static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
+        ::ctran::logging::kCtranLoggerName);                             \
+    if (_ctran_logger.should_log(spdlog_level) && (condition)) {         \
+      CTRAN_LOG(level, __VA_ARGS__);                                     \
+    }                                                                    \
   } while (false)
 
 #define CTRAN_LOG_IF_WARN(condition, ...) \
@@ -59,7 +88,7 @@ inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 
 #define CTRAN_LOG_FIRST_N_IMPL(level, spdlog_level, n, ...)                    \
   do {                                                                         \
-    auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger(              \
+    static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger(       \
         ::ctran::logging::kCtranLoggerName);                                   \
     if (_ctran_logger.should_log(spdlog_level) && [&] {                        \
           struct ctran_log_first_n_tag {};                                     \
