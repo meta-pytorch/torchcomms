@@ -2,6 +2,7 @@
 
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -10,6 +11,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "meta/colltrace/CollTraceWrapper.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 #include "comm.h"
 #include "nccl.h"
@@ -23,8 +25,9 @@ class DumpAlgoStatCtranTest : public NcclxBaseTestFixture {
     setenv("NCCL_COLLTRACE", "algostat", 1);
     NcclxBaseTestFixture::SetUp();
     comm_.emplace(globalRank, numRanks, localRank, bootstrap_.get());
-    ASSERT_NE(comm()->ctranComm_, nullptr);
-    ASSERT_TRUE(comm()->ctranComm_->dumpAlgoStats().has_value());
+    ASSERT_NE(meta::comms::ncclx::ncclCommCtran(comm()), nullptr);
+    ASSERT_TRUE(
+        meta::comms::ncclx::ncclCommCtran(comm())->dumpAlgoStats().has_value());
   }
 
   ncclComm_t comm() const {
@@ -35,9 +38,12 @@ class DumpAlgoStatCtranTest : public NcclxBaseTestFixture {
 };
 
 TEST_F(DumpAlgoStatCtranTest, CtranStatsAppearInDump) {
-  comm()->ctranComm_->recordAlgoStat("SendRecv", "CtranSendRecv");
-  comm()->ctranComm_->recordAlgoStat("SendRecv", "CtranSendRecv");
-  comm()->ctranComm_->recordAlgoStat("SendRecv", "CtranSendRecv");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "SendRecv", "CtranSendRecv");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "SendRecv", "CtranSendRecv");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "SendRecv", "CtranSendRecv");
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;
   ncclx::colltrace::dumpAlgoStat(comm(), map);
@@ -47,13 +53,15 @@ TEST_F(DumpAlgoStatCtranTest, CtranStatsAppearInDump) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, MergeBaselineAndCtranStats) {
-  ASSERT_NE(comm()->algoStats, nullptr);
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
 
-  comm()->algoStats->record("AllReduce", "Baseline_Simple_Ring_8");
-  comm()->algoStats->record("AllReduce", "Baseline_Simple_Ring_8");
+  ncclCommAlgoStats(comm())->record("AllReduce", "Baseline_Simple_Ring_8");
+  ncclCommAlgoStats(comm())->record("AllReduce", "Baseline_Simple_Ring_8");
 
-  comm()->ctranComm_->recordAlgoStat("AllReduce", "CTRing_NVL_8");
-  comm()->ctranComm_->recordAlgoStat("SendRecv", "CtranSendRecv");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "AllReduce", "CTRing_NVL_8");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "SendRecv", "CtranSendRecv");
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;
   ncclx::colltrace::dumpAlgoStat(comm(), map);
@@ -67,14 +75,17 @@ TEST_F(DumpAlgoStatCtranTest, MergeBaselineAndCtranStats) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, AdditiveMergeSameAlgo) {
-  ASSERT_NE(comm()->algoStats, nullptr);
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
 
-  comm()->algoStats->record("AllGather", "SharedAlgo");
-  comm()->algoStats->record("AllGather", "SharedAlgo");
+  ncclCommAlgoStats(comm())->record("AllGather", "SharedAlgo");
+  ncclCommAlgoStats(comm())->record("AllGather", "SharedAlgo");
 
-  comm()->ctranComm_->recordAlgoStat("AllGather", "SharedAlgo");
-  comm()->ctranComm_->recordAlgoStat("AllGather", "SharedAlgo");
-  comm()->ctranComm_->recordAlgoStat("AllGather", "SharedAlgo");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "AllGather", "SharedAlgo");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "AllGather", "SharedAlgo");
+  meta::comms::ncclx::ncclCommCtran(comm())->recordAlgoStat(
+      "AllGather", "SharedAlgo");
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;
   ncclx::colltrace::dumpAlgoStat(comm(), map);
@@ -84,10 +95,10 @@ TEST_F(DumpAlgoStatCtranTest, AdditiveMergeSameAlgo) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, NullCtranComm) {
-  ASSERT_NE(comm()->algoStats, nullptr);
-  comm()->algoStats->record("ReduceScatter", "Baseline_LL_Tree_4");
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
+  ncclCommAlgoStats(comm())->record("ReduceScatter", "Baseline_LL_Tree_4");
 
-  comm()->ctranComm_.reset();
+  meta::comms::ncclx::ncclCommCtran(comm()).reset();
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;
   ncclx::colltrace::dumpAlgoStat(comm(), map);
@@ -103,8 +114,8 @@ TEST_F(DumpAlgoStatCtranTest, NullComm) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, BothNull) {
-  comm()->algoStats.reset();
-  comm()->ctranComm_.reset();
+  ncclCommAlgoStats(comm()).reset();
+  meta::comms::ncclx::ncclCommCtran(comm()).reset();
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;
   ncclx::colltrace::dumpAlgoStat(comm(), map);
