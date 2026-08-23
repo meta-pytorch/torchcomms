@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <string>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <fmt/format.h>
 #include <folly/init/Init.h>
@@ -41,9 +42,9 @@ TEST_F(CommStateXDistTest, CreateFromNcclComm) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
-  const auto* statex = comm->ctranComm_->statex_.get();
+  const auto* statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
 
   EXPECT_EQ(statex->rank(), globalRank);
@@ -64,9 +65,9 @@ TEST_F(CommStateXDistTest, CreateNoLocalFromNcclComm) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
-  const auto* statex = comm->ctranComm_->statex_.get();
+  const auto* statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
 
   EXPECT_EQ(statex->nLocalRanks(), 1);
@@ -88,9 +89,9 @@ TEST_F(CommStateXDistTest, CreateVCliqueSizeFromNcclComm) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  ASSERT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
 
-  const auto* statex = comm->ctranComm_->statex_.get();
+  const auto* statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
 
   EXPECT_EQ(statex->nLocalRanks(), 2);
