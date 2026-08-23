@@ -154,6 +154,16 @@ void launchAggregateMultimemWaiterTransition(
     uint64_t* out,
     cudaStream_t stream = nullptr);
 
+void launchAggregateMultimemRelaxedPayload(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload,
+    cudaStream_t stream = nullptr);
+
+void launchPerPeerMultimemRelaxedPayload(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload,
+    cudaStream_t stream = nullptr);
+
 void launchSeparatePublishAndWait(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,

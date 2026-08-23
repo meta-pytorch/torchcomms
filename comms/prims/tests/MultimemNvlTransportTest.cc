@@ -1606,6 +1606,75 @@ TEST_F(
 
 TEST_F(
     MultimemNvlTransportTestFixture,
+    UniformSignalAggregatePublishesRelaxedPayloadFromAnotherLane) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  for (const uint32_t pipelineDepth : {1u, 4u}) {
+    auto bootstrap = makeBootstrap(
+        "mmnvl_uniform_relaxed_payload_depth_" + std::to_string(pipelineDepth));
+    if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+      GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+    }
+    MultimemNvlTransport transport(
+        bootstrap,
+        globalRank,
+        identityRankMap(numRanks),
+        makeConfig(
+            4096,
+            0,
+            pipelineDepth,
+            /*maxChannels=*/1,
+            /*enableUnicastPeerViews=*/true));
+    transport.exchange();
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+    const auto values = runSignalProtocol(1, [&](uint64_t* output) {
+      test::launchAggregateMultimemRelaxedPayload(
+          transport.getDeviceTransport(), output);
+    });
+    if (globalRank == 0) {
+      EXPECT_EQ(values[0], 11) << "pipelineDepth=" << pipelineDepth;
+    }
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    UniformSignalPerPeerPublishesRelaxedPayloadFromAnotherWarp) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_uniform_per_peer_relaxed_payload");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          4096,
+          0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1,
+          /*enableUnicastPeerViews=*/true));
+  transport.exchange();
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  const auto values = runSignalProtocol(1, [&](uint64_t* output) {
+    test::launchPerPeerMultimemRelaxedPayload(
+        transport.getDeviceTransport(), output);
+  });
+  if (globalRank == 0) {
+    EXPECT_EQ(values[0], 22);
+  }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
     UniformSignalPerPeerRoundTripUsesAggregateAck) {
   if (numRanks < 3) {
     GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
