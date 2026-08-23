@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <cstddef>
 #include <cstdint>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "checks.h"
 #include "comms/ctran/Ctran.h"
@@ -21,6 +22,7 @@
 #include "meta/NcclxConfig.h"
 #include "meta/algoconf/AlgoStrConv.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 class AllToAllvTest
     : public NcclxBaseTestFixture,
@@ -242,11 +244,13 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    if (comm->newCollTrace) {
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm)) {
       EXPECT_TRUE(
-          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+          meta::comms::ncclx::waitForCollTraceDrain(
+              *meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
-      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+          *meta::comms::ncclx::ncclCommNewCollTrace(comm));
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
         EXPECT_EQ(ctPastColls.size(), 1);
@@ -546,11 +550,13 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    if (comm->newCollTrace) {
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm)) {
       EXPECT_TRUE(
-          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+          meta::comms::ncclx::waitForCollTraceDrain(
+              *meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
-      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+          *meta::comms::ncclx::ncclCommNewCollTrace(comm));
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
         // Don't assert exact size here because run<T>() can be called
@@ -706,7 +712,8 @@ TEST_F(AllToAllvTest, CtranInt) {
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
   this->comm = commRaii.get();
   run<int>();
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 
 TEST_F(AllToAllvTest, CtranUint8) {
@@ -717,7 +724,8 @@ TEST_F(AllToAllvTest, CtranUint8) {
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
   this->comm = commRaii.get();
   run<uint8_t>();
-  ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+  ctranAlgoStats_.verify(
+      meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 }
 #endif
 
@@ -732,7 +740,8 @@ TEST_P(AllToAllvTest, CanCopy16Mismatch) {
   runCanCopy16Mismatch();
 #ifdef TEST_ENABLE_CTRAN
   if (algo != NCCL_ALLTOALLV_ALGO::orig) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
   }
 #endif
 }
@@ -748,7 +757,8 @@ TEST_P(AllToAllvTest, ZeroByteSendRecv) {
   this->comm = commRaii.get();
   runZeroByteSendRecv(algo == NCCL_ALLTOALLV_ALGO::ctran);
   if (algo != NCCL_ALLTOALLV_ALGO::orig) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
   }
 }
 #endif
@@ -764,7 +774,8 @@ TEST_P(AllToAllvTest, ReuseSharedBuffer) {
   runReuseSharedBuffer();
 #ifdef TEST_ENABLE_CTRAN
   if (algo != NCCL_ALLTOALLV_ALGO::orig) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
   }
 #endif
 }
@@ -780,7 +791,8 @@ TEST_P(AllToAllvTest, SparseAlltoallvInt) {
   runSparseAlltoallv<int>(true /*registFlag*/);
 #ifdef TEST_ENABLE_CTRAN
   if (algo != NCCL_ALLTOALLV_ALGO::orig) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
   }
 #endif
 }
@@ -796,7 +808,8 @@ TEST_P(AllToAllvTest, SparseAlltoallvUint8) {
   runSparseAlltoallv<uint8_t>(true /*registFlag*/);
 #ifdef TEST_ENABLE_CTRAN
   if (algo != NCCL_ALLTOALLV_ALGO::orig) {
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
   }
 #endif
 }
@@ -923,7 +936,8 @@ TEST_F(AllToAllvTest, AllToAllvWithHintOverride) {
     this->comm = commRaii.get();
     run<int>();
 #ifdef TEST_ENABLE_CTRAN
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "AllToAll", "Ctran");
+    ctranAlgoStats_.verify(
+        meta::comms::ncclx::ncclCommCtran(comm).get(), "AllToAll", "Ctran");
 #endif
   }
 
