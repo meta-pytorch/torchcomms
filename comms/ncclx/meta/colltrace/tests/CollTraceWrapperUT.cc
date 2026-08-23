@@ -19,6 +19,13 @@
 #include "comms/utils/colltrace/tests/MockTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTraceWrapper.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
+#include "meta/wrapper/NcclCommLogData.h"
+
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+#include "meta/comm/NcclxCommExt.h"
+#endif
 
 using namespace meta::comms::ncclx;
 using namespace meta::comms::colltrace;
@@ -26,16 +33,39 @@ using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
 
+namespace {
+
+// A stack-allocated `ncclComm` carries none of the NCCLX per-communicator state
+// that a real communicator is given at init, so a test that reaches that state
+// through the version-gated accessors has to attach the extension handle
+// itself. Owns the handle for the lifetime of the comm under test.
+struct ScopedCommExt {
+  explicit ScopedCommExt([[maybe_unused]] ncclComm& comm) {
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    comm.ncclxExt = &ext;
+#endif
+  }
+
+  // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+  ncclxCommExt ext;
+#endif
+};
+
+} // namespace
+
 TEST(CollTraceWrapperRegistrationTest, GetsOneBasedLatestCollectiveId) {
   constexpr uint64_t kCommId = 17;
   constexpr uint64_t kInternalCollId = 0;
   constexpr uint64_t kExpectedCollId = 1;
   ncclComm comm{};
+  ScopedCommExt commExt{comm};
   LifecycleEventFeedPlugin plugin{LifecycleEventFeedConfig{.commId = kCommId}};
   auto colltrace = std::make_shared<NiceMock<MockCollTrace>>();
   ON_CALL(*colltrace, getPluginByName(_))
       .WillByDefault(Return(static_cast<ICollTracePlugin*>(&plugin)));
-  comm.newCollTrace = colltrace;
+  ncclCommNewCollTrace(&comm) = colltrace;
 
   uint64_t commId{0};
   uint64_t collId{99};
@@ -64,6 +94,7 @@ TEST(CollTraceWrapperRegistrationTest, GetsOneBasedLatestCollectiveId) {
 
 TEST(CollTraceWrapperLifecycleFeedTest, RejectsDisabledFeed) {
   ncclComm comm{};
+  ScopedCommExt commExt{comm};
   uint64_t commId{0};
   uint64_t collId{0};
 
@@ -283,7 +314,7 @@ TEST_F(CollTraceWrapperUT, PersistentPlanUsesGraphWaitEvent) {
   auto plan = createMockKernelPlanWithColl();
   plan.persistent = true;
   auto colltrace = std::make_shared<NiceMock<MockCollTrace>>();
-  comm_->newCollTrace = colltrace;
+  ncclCommNewCollTrace(comm_) = colltrace;
 
   EXPECT_CALL(*colltrace, recordCollective(_, _))
       .WillOnce(
@@ -418,7 +449,7 @@ TEST_F(CollTraceInitConfigTest, PullsIdsAndEventsAcrossLifecycleFeeds) {
       std::chrono::system_clock::time_point{std::chrono::milliseconds{100}};
   EnvRAII colltraceGuard(NCCL_COLLTRACE, std::vector<std::string>{"lifecycle"});
   ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
-  comm_->logMetaData.commId = 0;
+  ncclCommLogData(comm_).commId = 0;
   ASSERT_EQ(newCollTraceInit(comm_), ncclSuccess);
 
   ncclComm_t otherComm{nullptr};
@@ -431,12 +462,12 @@ TEST_F(CollTraceInitConfigTest, PullsIdsAndEventsAcrossLifecycleFeeds) {
     }
   });
   ASSERT_EQ(newCollTraceDestroy(otherComm), ncclSuccess);
-  otherComm->logMetaData = comm_->logMetaData;
+  ncclCommLogData(otherComm) = ncclCommLogData(comm_);
   ASSERT_EQ(newCollTraceInit(otherComm), ncclSuccess);
 
   auto getPlugin = [](ncclComm_t comm) {
     return dynamic_cast<LifecycleEventFeedPlugin*>(
-        comm->newCollTrace->getPluginByName(
+        ncclCommNewCollTrace(comm)->getPluginByName(
             std::string{
                 LifecycleEventFeedPlugin::kLifecycleEventFeedPluginName}));
   };
@@ -522,29 +553,31 @@ TEST_P(CollTraceInitConfigTest, ConfigCombinations) {
       });
 
   // Reset any existing state
-  comm_->algoStats.reset();
+  ncclCommAlgoStats(comm_).reset();
   ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
 
   auto result = newCollTraceInit(comm_);
 
   EXPECT_EQ(result, ncclSuccess);
-  EXPECT_EQ(comm_->algoStats != nullptr, expectAlgoStats);
-  EXPECT_EQ(comm_->newCollTrace != nullptr, expectNewCollTrace);
+  EXPECT_EQ(ncclCommAlgoStats(comm_) != nullptr, expectAlgoStats);
+  EXPECT_EQ(ncclCommNewCollTrace(comm_) != nullptr, expectNewCollTrace);
 }
 
 TEST_F(CollTraceInitConfigTest, AllAliasesEnableProductionFeatures) {
   for (const auto* mode : {"ALL", "all"}) {
     SCOPED_TRACE(mode);
     EnvRAII colltraceGuard(NCCL_COLLTRACE, std::vector<std::string>{mode});
-    comm_->algoStats.reset();
+    ncclCommAlgoStats(comm_).reset();
     ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
 
     ASSERT_EQ(newCollTraceInit(comm_), ncclSuccess);
-    EXPECT_NE(comm_->algoStats, nullptr);
-    ASSERT_NE(comm_->newCollTrace, nullptr);
-    EXPECT_NE(comm_->newCollTrace->getPluginByName("CommDumpPlugin"), nullptr);
+    EXPECT_NE(ncclCommAlgoStats(comm_), nullptr);
+    ASSERT_NE(ncclCommNewCollTrace(comm_), nullptr);
     EXPECT_NE(
-        comm_->newCollTrace->getPluginByName(
+        ncclCommNewCollTrace(comm_)->getPluginByName("CommDumpPlugin"),
+        nullptr);
+    EXPECT_NE(
+        ncclCommNewCollTrace(comm_)->getPluginByName(
             std::string{
                 LifecycleEventFeedPlugin::kLifecycleEventFeedPluginName}),
         nullptr);
@@ -554,12 +587,12 @@ TEST_F(CollTraceInitConfigTest, AllAliasesEnableProductionFeatures) {
 TEST_F(CollTraceInitConfigTest, RejectsUnknownModesWithoutPartialInit) {
   EnvRAII colltraceGuard(
       NCCL_COLLTRACE, std::vector<std::string>{"ALL", "bogus"});
-  comm_->algoStats.reset();
+  ncclCommAlgoStats(comm_).reset();
   ASSERT_EQ(newCollTraceDestroy(comm_), ncclSuccess);
 
   EXPECT_EQ(newCollTraceInit(comm_), ncclInvalidArgument);
-  EXPECT_EQ(comm_->algoStats, nullptr);
-  EXPECT_EQ(comm_->newCollTrace, nullptr);
+  EXPECT_EQ(ncclCommAlgoStats(comm_), nullptr);
+  EXPECT_EQ(ncclCommNewCollTrace(comm_), nullptr);
 }
 
 INSTANTIATE_TEST_SUITE_P(
