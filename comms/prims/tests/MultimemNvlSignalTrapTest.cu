@@ -138,6 +138,12 @@ __global__ void nvlSignalTrapKernel(
     return;
   }
   auto group = make_block_group();
+  if (testCase == NvlSignalTrapCase::BlockBarrierNon1DBlock ||
+      testCase == NvlSignalTrapCase::BlockBarrierDuplicateChannelOwner ||
+      testCase == NvlSignalTrapCase::BlockBarrierNon1DGrid) {
+    nvl_signal_detail::validate_block_barrier(transport, /*channel=*/0, group);
+    return;
+  }
   if (testCase == NvlSignalTrapCase::PerPeerDuplicateChannelOwner ||
       testCase == NvlSignalTrapCase::PerPeerNon1DBlock) {
     signal_publish<
@@ -267,6 +273,7 @@ dim3 signal_trap_threads(NvlSignalTrapCase testCase) {
     case NvlSignalTrapCase::DuplicateChannelOwner:
       return dim3(2 * kWarpSize);
     case NvlSignalTrapCase::PerPeerNon1DBlock:
+    case NvlSignalTrapCase::BlockBarrierNon1DBlock:
       return dim3(kNvlSignalSmallPerPeerThreads, 2);
     case NvlSignalTrapCase::AggregateDepthTooLarge:
     case NvlSignalTrapCase::ArrivalCountMismatch:
@@ -282,8 +289,10 @@ dim3 signal_trap_threads(NvlSignalTrapCase testCase) {
 dim3 signal_trap_blocks(NvlSignalTrapCase testCase) {
   switch (testCase) {
     case NvlSignalTrapCase::PerPeerDuplicateChannelOwner:
+    case NvlSignalTrapCase::BlockBarrierDuplicateChannelOwner:
       return dim3(2);
     case NvlSignalTrapCase::AggregateNon1DGrid:
+    case NvlSignalTrapCase::BlockBarrierNon1DGrid:
       return dim3(1, 2);
     default:
       return dim3(1);

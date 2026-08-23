@@ -182,6 +182,14 @@ void launchInitializeAggregateSignals(
     uint64_t epochValue,
     cudaStream_t stream = nullptr);
 
+void launchBlockAggregateBarrier(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues,
+    cudaStream_t stream = nullptr);
+
 void launchFillReductionInput(
     MultimemNvlTransportDevice transport,
     MultimemReductionTestType type,

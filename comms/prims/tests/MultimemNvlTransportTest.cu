@@ -404,6 +404,41 @@ __global__ void initializeAggregateSignalsKernel(
   }
 }
 
+__global__ void blockAggregateBarrierKernel(
+    MultimemNvlTransportDevice transport,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues) {
+  auto block = make_block_group();
+  auto* local = reinterpret_cast<int32_t*>(transport.localData);
+  const auto* multicast =
+      reinterpret_cast<const int32_t*>(transport.multimemData);
+  for (uint32_t epoch = 0; epoch < epochs; ++epoch) {
+    const std::size_t offset =
+        (static_cast<std::size_t>(epoch) * gridDim.x + blockIdx.x) * blockDim.x;
+    local[offset + threadIdx.x] = transport.nvlRank + 1 +
+        static_cast<int32_t>(10 * epoch + 100 * blockIdx.x);
+    nvl_block_barrier(
+        transport, static_cast<uint32_t>(blockIdx.x), block, Timeout{});
+    multimem::load_reduce_at<int32_t>(
+        block, reducedValues + offset, multicast + offset, blockDim.x);
+  }
+
+  block.sync();
+  if (threadIdx.x < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(blockIdx.x) * transport.signalsPerChannel +
+        static_cast<uint64_t>(3 * transport.nvlRanks) +
+        static_cast<uint64_t>(4 * threadIdx.x);
+    const std::size_t outputBase =
+        static_cast<std::size_t>(blockIdx.x) * 2 * transport.pipelineDepth;
+    signalValues[outputBase + threadIdx.x] =
+        transport.internalLocalSignals[signalId].load();
+    signalValues[outputBase + transport.pipelineDepth + threadIdx.x] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
 __global__ void perPeerWaitOnlyKernel(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,
@@ -828,6 +863,18 @@ void launchInitializeAggregateSignals(
     cudaStream_t stream) {
   initializeAggregateSignalsKernel<<<1, 32, 0, stream>>>(
       transport, counterValue, epochValue);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchBlockAggregateBarrier(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues,
+    cudaStream_t stream) {
+  blockAggregateBarrierKernel<<<channels, 128, 0, stream>>>(
+      transport, epochs, reducedValues, signalValues);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
