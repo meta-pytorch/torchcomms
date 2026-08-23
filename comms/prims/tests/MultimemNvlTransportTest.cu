@@ -284,6 +284,82 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
   }
 }
 
+__global__ void aggregateMultimemRelaxedPayloadKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload) {
+  auto group = make_warp_group();
+  const NvlSignalParticipants participants{
+      .publisherMask = NvlSignalRankMask::single(1),
+      .waiterMask = NvlSignalRankMask::single(0),
+      .expectedArrivals = 1,
+  };
+  const uint64_t payloadId = static_cast<uint64_t>(2) * transport.nvlRanks;
+  constexpr uint32_t kPayloadLane = kWarpSize - 1;
+  auto* remotePayload =
+      &transport.internalUnicastSignalsByRank[0][payloadId].signal_;
+  const auto* localPayload = &transport.internalLocalSignals[payloadId].signal_;
+
+  if (transport.nvlRank == 1 && group.thread_id_in_group == kPayloadLane) {
+    comms::device::st_relaxed_sys_global(remotePayload, 11);
+  }
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::Aggregate,
+      NvlSignalPhase::Ready>(
+      transport,
+      StageRound{.channel = 0, .value = 1},
+      participants,
+      group,
+      Timeout{});
+  if (transport.nvlRank == 0 && group.thread_id_in_group == kPayloadLane) {
+    *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
+  }
+}
+
+__global__ void perPeerMultimemRelaxedPayloadKernel(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload) {
+  auto group = make_block_group();
+  const NvlSignalParticipants participants{
+      .publisherMask = NvlSignalRankMask::single(1),
+      .waiterMask = NvlSignalRankMask::single(0),
+      .expectedArrivals = 1,
+  };
+  const uint64_t payloadId = static_cast<uint64_t>(2) * transport.nvlRanks;
+  const uint64_t waiterReadyId = payloadId + 1;
+  constexpr uint32_t kPayloadThread = kWarpSize;
+  auto* remotePayload =
+      &transport.internalUnicastSignalsByRank[0][payloadId].signal_;
+  const auto* localPayload = &transport.internalLocalSignals[payloadId].signal_;
+
+  if (transport.nvlRank == 0 && group.is_leader()) {
+    transport.internalUnicastSignalsByRank[1][waiterReadyId].store(1);
+  }
+  if (transport.nvlRank == 1) {
+    if (group.is_leader()) {
+      while (transport.internalLocalSignals[waiterReadyId].load() != 1) {
+      }
+    }
+    group.sync();
+  }
+  if (transport.nvlRank == 1 && group.thread_id_in_group == kPayloadThread) {
+    __nanosleep(100'000'000);
+    comms::device::st_relaxed_sys_global(remotePayload, 22);
+  }
+  signal_publish_and_wait<
+      NvlSignalAccess::Multimem,
+      NvlSignalTopology::PerPeer,
+      NvlSignalPhase::Ready>(
+      transport,
+      StageRound{.channel = 0, .value = 1},
+      participants,
+      group,
+      Timeout{});
+  if (transport.nvlRank == 0 && group.is_leader()) {
+    *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
+  }
+}
+
 __global__ void separatePublishAndWaitKernel(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,
@@ -708,6 +784,27 @@ void launchAggregateMultimemWaiterTransition(
     uint64_t* out,
     cudaStream_t stream) {
   aggregateMultimemWaiterTransitionKernel<<<1, 32, 0, stream>>>(transport, out);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchAggregateMultimemRelaxedPayload(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload,
+    cudaStream_t stream) {
+  aggregateMultimemRelaxedPayloadKernel<<<1, 32, 0, stream>>>(
+      transport, observedPayload);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchPerPeerMultimemRelaxedPayload(
+    MultimemNvlTransportDevice transport,
+    uint64_t* observedPayload,
+    cudaStream_t stream) {
+  perPeerMultimemRelaxedPayloadKernel<<<
+      1,
+      nvl_signal_per_peer_group_size(static_cast<uint32_t>(transport.nvlRanks)),
+      0,
+      stream>>>(transport, observedPayload);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
