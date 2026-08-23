@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "dev_runtime.h"
+#include "meta/wrapper/NcclCommCtran.h"
 #include "comm.h"
 #include "nccl_device/core.h"
 #include "nccl_device/gin_barrier.h"
@@ -1470,7 +1471,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     // NCCL_WIN_DEVICE_API flag bypasses CTRAN and forces NCCL orig path.
     // This is needed for device API (GIN support) which only exists in the orig path.
     bool forceOrigPath = (winFlags & NCCL_WIN_DEVICE_API) != 0;
-    if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+    if(!forceOrigPath && NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())){
       if (!ncclGetCuMemSysSupported()) {
         ERR(ncclInternalError, "ncclWin requires CUMEM support.");
         return ncclInternalError;
@@ -1503,7 +1504,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
           ctran::ctranWinRegister(
               buff,
               size,
-              comm->ctranComm_.get(),
+              meta::comms::ncclx::ncclCommCtran(comm).get(),
               &win_->ctranWindow,
               winHints)));
 
@@ -1558,13 +1559,13 @@ fail:
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclCommWindowDeregister(struct ncclComm* comm, struct ncclWindow_vidmem* winDev) {
 
-  if(NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+  if(NCCLX_CONFIG_FIELD(comm->config, rmaAlgo) != NCCL_RMA_ALGO::orig && ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get())){
     ncclWin* ncclWinPtr = ncclWinMap().find(winDev);
     // If window is found in CTRAN map, deregister via CTRAN path.
     // If not found (e.g., registered with NCCL_WIN_DEVICE_API), fall through
     // to symmetric/orig path deregistration below.
     if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
-      auto statex = comm->ctranComm_->statex_.get();
+      auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
       if (statex == nullptr) {
         ERR(ncclInternalError, "Empty communicator statex.");
         return ncclInternalError;

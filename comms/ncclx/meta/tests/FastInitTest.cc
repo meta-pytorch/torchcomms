@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <memory>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -39,13 +40,15 @@ void validateCtranInitialization(
   EXPECT_EQ(comm->nRanks, expectedNRanks);
   EXPECT_EQ(comm->cudaDev, expectedCudaDev);
 
-  ASSERT_NE(nullptr, comm->ctranComm_);
-  ASSERT_NE(nullptr, comm->ctranComm_->statex_);
-  ASSERT_NE(nullptr, comm->ctranComm_->bootstrap_);
-  ASSERT_NE(nullptr, comm->ctranComm_->colltraceNew_);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
-  EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
-  EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm));
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->statex_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->bootstrap_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->colltraceNew_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
+  EXPECT_TRUE(ctranInitialized(meta::comms::ncclx::ncclCommCtran(comm).get()));
+  EXPECT_EQ(
+      comm->commHash,
+      meta::comms::ncclx::ncclCommCtran(comm)->statex_->commHash());
 }
 
 // Each ncclCommInitRankConfig call needs a unique commDesc so that
@@ -81,7 +84,8 @@ TEST_P(FastInitTestFixture, NcclCommInitWorldAndDestroy) {
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
-  const auto statex = rootComm->ctranComm_->statex_.get();
+  const auto statex =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get();
   if (statex->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
     GTEST_SKIP() << "Skip test since only one node provided";
@@ -140,7 +144,8 @@ TEST_P(FastInitTestFixture, NcclCommSplit) {
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
   int color = globalRank % 2;
   std::string childCommDesc = "child_communicator_" + std::to_string(color);
-  int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
+  int groupSize =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
@@ -162,7 +167,8 @@ TEST_P(FastInitTestFixture, NcclCommSplit) {
       rootComm, color, globalRank / 2, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
 
-  const auto statex1 = childComm->ctranComm_->statex_.get();
+  const auto statex1 =
+      meta::comms::ncclx::ncclCommCtran(childComm)->statex_.get();
   if (statex1->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(childComm));
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -189,7 +195,8 @@ TEST_P(FastInitTestFixture, NcclCommSplitDuplicateGroups) {
       &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
-  const auto statex = rootComm->ctranComm_->statex_.get();
+  const auto statex =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get();
 
   if (statex->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -200,7 +207,8 @@ TEST_P(FastInitTestFixture, NcclCommSplitDuplicateGroups) {
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
   int color = globalRank % 2;
   std::string childCommDesc = "child_communicator_" + std::to_string(color);
-  int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
+  int groupSize =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
@@ -230,8 +238,10 @@ TEST_P(FastInitTestFixture, NcclCommSplitDuplicateGroups) {
       rootComm, color, globalRank / 2, &childComm2, &childCommConfig));
   ASSERT_NE(nullptr, childComm2);
 
-  const auto statex1 = childComm1->ctranComm_->statex_.get();
-  const auto statex2 = childComm2->ctranComm_->statex_.get();
+  const auto statex1 =
+      meta::comms::ncclx::ncclCommCtran(childComm1)->statex_.get();
+  const auto statex2 =
+      meta::comms::ncclx::ncclCommCtran(childComm2)->statex_.get();
 
   // hash should be different
   EXPECT_NE(statex1->commHash(), statex2->commHash());
@@ -248,7 +258,8 @@ TEST_P(FastInitTestFixture, WorldCommAllGather) {
       &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
-  const auto statex = rootComm->ctranComm_->statex_.get();
+  const auto statex =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get();
 
   if (statex->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
@@ -298,7 +309,8 @@ TEST_P(FastInitTestFixture, ChildCommAllGather) {
       &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
-  const auto statex = rootComm->ctranComm_->statex_.get();
+  const auto statex =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get();
   if (statex->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
     GTEST_SKIP() << "Skip test since only one node provided";
@@ -306,7 +318,8 @@ TEST_P(FastInitTestFixture, ChildCommAllGather) {
 
   ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
-  int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
+  int groupSize =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
@@ -385,7 +398,8 @@ TEST_P(FastInitTestFixture, NcclCommSplitNoColor) {
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
-  const auto statex = rootComm->ctranComm_->statex_.get();
+  const auto statex =
+      meta::comms::ncclx::ncclCommCtran(rootComm)->statex_.get();
   EXPECT_NE(statex, nullptr);
 
   EXPECT_EQ(statex->rank(), globalRank);
@@ -427,7 +441,8 @@ TEST_P(FastInitTestFixture, NcclCommSplitNoColor) {
     EXPECT_NE(childComm, (ncclComm_t)(NCCL_COMM_NULL));
 
     // check if statex is valid
-    const auto splitStatex = childComm->ctranComm_->statex_.get();
+    const auto splitStatex =
+        meta::comms::ncclx::ncclCommCtran(childComm)->statex_.get();
     EXPECT_EQ(splitStatex->nRanks(), this->numRanks / 2);
     EXPECT_EQ(splitStatex->rank(), this->globalRank / 2);
 
@@ -474,8 +489,8 @@ TEST_P(FastInitTestFixture, NcclCommInitWithDifferentCommDesc) {
   validateCtranInitialization(comm2, globalRank, numRanks, localRank);
 
   // Verify both comms are valid and have correct properties
-  const auto statex1 = comm1->ctranComm_->statex_.get();
-  const auto statex2 = comm2->ctranComm_->statex_.get();
+  const auto statex1 = meta::comms::ncclx::ncclCommCtran(comm1)->statex_.get();
+  const auto statex2 = meta::comms::ncclx::ncclCommCtran(comm2)->statex_.get();
 
   EXPECT_EQ(statex1->rank(), globalRank);
   EXPECT_EQ(statex1->nRanks(), numRanks);
