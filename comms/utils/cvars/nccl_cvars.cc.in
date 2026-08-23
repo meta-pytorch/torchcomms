@@ -15,7 +15,8 @@
 #include <cuda_runtime.h>
 
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #if defined(__HIP_PLATFORM_AMD__)
 static const std::string ncclConfigFileName = "rccl.conf";
@@ -35,19 +36,21 @@ static std::unordered_map<std::string, std::string>& nccl_config() {
 static void initEnvSet(std::unordered_set<std::string>& env);
 static void readCvarEnv();
 
-#define CVAR_INFO(fmt, ...)                 \
-  XLOGF_IF(                                 \
-      INFO,                                 \
-      logInfoLog,                           \
-      "[CudaDev: {}] NCCL INFO CVAR: " fmt, \
-      cudaDev,                              \
-      __VA_ARGS__);
+#define CVAR_INFO(format, ...)                                        \
+  do {                                                                \
+    if (logInfoLog) {                                                 \
+      COMMS_LOG(                                                      \
+          INFO, "[CudaDev: {}] NCCL INFO CVAR: " format, cudaDev, __VA_ARGS__); \
+    }                                                                 \
+  } while (false)
 
-#define CVAR_WARN(fmt, ...) \
-  XLOGF(WARN, "[CudaDev: {}] NCCL WARN CVAR: " fmt, cudaDev, __VA_ARGS__);
+#define CVAR_WARN(format, ...)                                        \
+  COMMS_LOG(                                                          \
+      WARN, "[CudaDev: {}] NCCL WARN CVAR: " format, cudaDev, __VA_ARGS__)
 
-#define CVAR_ERROR(fmt, ...) \
-  XLOGF(FATAL, "[CudaDev: {}] NCCL ERROR CVAR: " fmt, cudaDev, __VA_ARGS__);
+#define CVAR_ERROR(format, ...)                                       \
+  COMMS_LOG(                                                          \
+      FATAL, "[CudaDev: {}] NCCL ERROR CVAR: " format, cudaDev, __VA_ARGS__)
 
 #define CVAR_WARN_UNKNOWN_VALUE(name, value)               \
   do {                                                     \

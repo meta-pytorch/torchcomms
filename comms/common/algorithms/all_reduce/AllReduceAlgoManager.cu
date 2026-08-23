@@ -2,6 +2,8 @@
 
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
 
+#include "comms/utils/logger/CudaLog.h"
+
 namespace meta::comms {
 
 AllReduceAlgoManager::AllReduceAlgoManager(
@@ -40,7 +42,7 @@ AllReduceAlgoManager::AllReduceAlgoManager(
       ipcSendbufs.data(),
       sizeof(void*) * nRanks_,
       cudaMemcpyDefault));
-  XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+  COMMS_CUDA_LOG(DBG, "Successfully initialized AllReduceAlgoManager");
 }
 
 std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
@@ -70,7 +72,7 @@ AllReduceAlgoManagerDev::AllReduceAlgoManagerDev(
       ddaTreeMaxThresholdBytes_(ddaTreeMaxThresholdBytes),
       allRankDdaSendbuffs_(allRankDdaSendbuffs),
       barrier_(barrier) {
-  XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+  COMMS_CUDA_LOG(DBG, "Successfully initialized AllReduceAlgoManager");
 }
 
 std::unique_ptr<AlgoAllReduce> AllReduceAlgoManagerDev::getAllReduceAlgo(
@@ -82,42 +84,48 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManagerDev::getAllReduceAlgo(
     const void* acc) {
   if ((count * commTypeSize(datatype)) > ddaSendbufSizeBytes_) {
     // AllReduce: (count x datatype) size must fit into the dda sendbuf
-    XLOG(DBG) << "Not using custom all reduce algo because message size "
-              << count * commTypeSize(datatype)
-              << " is larger than ddaSendbufSizeBytes " << ddaSendbufSizeBytes_;
+    COMMS_CUDA_LOG(
+        DBG,
+        "Not using custom all reduce algo because message size %zu is larger than ddaSendbufSizeBytes %d",
+        count * commTypeSize(datatype),
+        ddaSendbufSizeBytes_);
     return nullptr;
   }
 
   if (((uintptr_t)sendbuff % 16) || ((uintptr_t)recvbuff % 16) ||
       ((count * commTypeSize(datatype)) % 16)) {
     // 16 byte alignment as we do 16-byte loads in DDA kernel
-    XLOG(DBG) << "Not using custom all reduce algo because send/recv buff "
-                 "or msg size is not 16-byte aligned";
+    COMMS_CUDA_LOG(
+        DBG,
+        "Not using custom all reduce algo because send/recv buff or msg size is not 16-byte aligned");
     return nullptr;
   }
 
   if (datatype != commBfloat16 && datatype != commFloat16 &&
       datatype != commFloat) {
     // we currently only support bf16, half, float
-    XLOG(DBG)
-        << "Not using custom all reduce algo because cudaDataType_t datatype "
-        << static_cast<int>(datatype) << " is not supported";
+    COMMS_CUDA_LOG(
+        DBG,
+        "Not using custom all reduce algo because cudaDataType_t datatype %d is not supported",
+        static_cast<int>(datatype));
     return nullptr;
   }
 
   std::unique_ptr<AlgoAllReduce> algo;
   if (count * commTypeSize(datatype) > ddaTreeMaxThresholdBytes_) {
-    XLOG(DBG) << "Not using custom all reduce algo because msg size "
-              << count * commTypeSize(datatype)
-              << " is larger than DDA algo threshold "
-              << ddaTreeMaxThresholdBytes_;
+    COMMS_CUDA_LOG(
+        DBG,
+        "Not using custom all reduce algo because msg size %zu is larger than DDA algo threshold %d",
+        count * commTypeSize(datatype),
+        ddaTreeMaxThresholdBytes_);
     return nullptr;
   } else if (count * commTypeSize(datatype) > ddaFlatMaxThresholdBytes_) {
     if (count % nRanks_ || ((count / nRanks_ * commTypeSize(datatype)) % 16)) {
       // In two-shot algo, each rank is reduces count/nRanks_ elements so we
       // need to make sure that is 16-byte aligned
-      XLOG(DBG) << "Not using DDA Tree all reduce algo because send/recv buff "
-                   "or msg size is not 16-byte aligned for each rank";
+      COMMS_CUDA_LOG(
+          DBG,
+          "Not using DDA Tree all reduce algo because send/recv buff or msg size is not 16-byte aligned for each rank");
       return nullptr;
     }
     algo = std::make_unique<AlgoAllReduceDdaTreeIpc>(

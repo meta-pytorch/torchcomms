@@ -13,6 +13,7 @@
 
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/LogTypes.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace meta::comms::logger {
 
@@ -80,10 +81,17 @@ class NcclLogFormatter : public folly::LogFormatter {
 
 } // namespace meta::comms::logger
 
+#define COMMS_ERR(code, ...)                                                  \
+  do {                                                                        \
+    const auto _comms_error_message = fmt::format(__VA_ARGS__);               \
+    COMMS_LOG(ERR, "{}", _comms_error_message);                               \
+    ::meta::comms::logger::logCommErrorToScuba((code), _comms_error_message); \
+  } while (false)
+
 #define COMMS_NAMED_THREAD_START_EXT(threadName, rank, commHash, commDesc)                \
   do {                                                                                    \
     meta::comms::logger::initThreadMetaData(threadName);                                  \
-    XLOGF(                                                                                \
+    COMMS_LOG(                                                                            \
         INFO,                                                                             \
         "[COMMS THREAD] Starting {} thread for rank {} commHash {:#x} commDesc {} at {}", \
         threadName,                                                                       \
