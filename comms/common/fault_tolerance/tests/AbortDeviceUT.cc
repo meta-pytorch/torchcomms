@@ -94,6 +94,35 @@ TEST(AbortDeviceTest, hostProducerDeviceConsumer) {
       readDeviceValue(observedMode), static_cast<int>(AbortReason::ABORTED));
 }
 
+TEST(AbortDeviceTest, deviceObservesDetailedHostReasonWithoutContext) {
+  Abort abort{/*enabled=*/true};
+  auto observed = makeDeviceValue<int>();
+  auto observedReason = makeDeviceValue<int>();
+  ASSERT_NE(observed, nullptr);
+  ASSERT_NE(observedReason, nullptr);
+
+  abort.setAbort(AbortReason::BOOTSTRAP_POLL, "socket health poll");
+
+  EXPECT_EQ(
+      launchDeviceReadAbort(
+          abort.getDeviceHandle(),
+          observed.get(),
+          observedReason.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(readDeviceValue(observed), 1);
+  EXPECT_EQ(
+      readDeviceValue(observedReason),
+      static_cast<int>(AbortReason::BOOTSTRAP_POLL));
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::BOOTSTRAP_POLL,
+          .context = "socket health poll",
+      }));
+}
+
 TEST(AbortDeviceTest, checkExpiredSeesHostAbort) {
   Abort abort{/*enabled=*/true};
   auto observedCheckExpired = makeDeviceValue<int>();
@@ -184,6 +213,128 @@ TEST(AbortDeviceTest, deviceProducerHostConsumer) {
 
   EXPECT_TRUE(abort.isAborted());
   EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+TEST(AbortDeviceTest, deviceProducerSupportsDetailedTerminalReasons) {
+  for (const auto reason : {
+           AbortReason::BOOTSTRAP_POLL,
+           AbortReason::NETWORK_ERROR,
+           AbortReason::INTERNAL_ERROR,
+       }) {
+    Abort abort{/*enabled=*/true};
+
+    EXPECT_EQ(
+        launchDeviceSetAbort(
+            abort.getDeviceHandle(), reason, /*stream=*/nullptr),
+        cudaSuccess);
+    EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->reason, reason);
+    EXPECT_TRUE(info->context.empty());
+  }
+}
+
+TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
+  Abort abort{/*enabled=*/true};
+  auto firstWon = makeDeviceValue<int>();
+  auto secondWon = makeDeviceValue<int>();
+  ASSERT_NE(firstWon, nullptr);
+  ASSERT_NE(secondWon, nullptr);
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithContext(
+          abort.getDeviceHandle(),
+          AbortReason::NETWORK_ERROR,
+          firstWon.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      launchDeviceSetAbortWithContext(
+          abort.getDeviceHandle(),
+          AbortReason::INTERNAL_ERROR,
+          secondWon.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(firstWon), 1);
+  EXPECT_EQ(readDeviceValue(secondWon), 0);
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "",
+      }));
+}
+
+TEST(AbortDeviceTest, deviceWinnerDoesNotExposeLosingHostContext) {
+  Abort abort{/*enabled=*/true};
+
+  EXPECT_EQ(
+      launchDeviceSetAbort(
+          abort.getDeviceHandle(),
+          AbortReason::INTERNAL_ERROR,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  abort.setAbort(AbortReason::NETWORK_ERROR, "losing host context");
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::INTERNAL_ERROR,
+          .context = "",
+      }));
+}
+
+TEST(AbortDeviceTest, hostWinnerPreservesContextAgainstDeviceAbort) {
+  Abort abort{/*enabled=*/true};
+  abort.setAbort(AbortReason::NETWORK_ERROR, "winning host context");
+
+  EXPECT_EQ(
+      launchDeviceSetAbort(
+          abort.getDeviceHandle(),
+          AbortReason::INTERNAL_ERROR,
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "winning host context",
+      }));
+}
+
+TEST(AbortDeviceTest, hostDeviceRaceNeverMismatchesContext) {
+  constexpr int kIterations = 100;
+  for (int i = 0; i < kIterations; ++i) {
+    Abort abort{/*enabled=*/true};
+
+    EXPECT_EQ(
+        launchDeviceSetAbort(
+            abort.getDeviceHandle(),
+            AbortReason::INTERNAL_ERROR,
+            /*stream=*/nullptr),
+        cudaSuccess);
+    abort.setAbort(AbortReason::NETWORK_ERROR, "host context");
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    if (info->reason == AbortReason::NETWORK_ERROR) {
+      EXPECT_EQ(info->context, "host context");
+    } else {
+      EXPECT_EQ(info->reason, AbortReason::INTERNAL_ERROR);
+      EXPECT_TRUE(info->context.empty());
+    }
+  }
 }
 
 TEST(AbortDeviceTest, deviceProducerDeviceConsumer) {

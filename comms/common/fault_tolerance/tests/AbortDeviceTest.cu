@@ -17,6 +17,16 @@ __global__ void deviceSetAbortKernel(AbortDevice abort, AbortReason reason) {
   }
 }
 
+__global__ void deviceSetAbortWithContextKernel(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *observedWinner =
+        abort.setAbort(reason, "AbortDeviceTest callsite") ? 1 : 0;
+  }
+}
+
 __global__ void
 deviceReadAbortKernel(AbortDevice abort, int* observed, int* observedMode) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -171,6 +181,16 @@ cudaError_t launchDeviceSetAbort(
     AbortReason reason,
     cudaStream_t stream) {
   deviceSetAbortKernel<<<1, 1, 0, stream>>>(abort, reason);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceSetAbortWithContext(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner,
+    cudaStream_t stream) {
+  deviceSetAbortWithContextKernel<<<1, 1, 0, stream>>>(
+      abort, reason, observedWinner);
   return cudaGetLastError();
 }
 
