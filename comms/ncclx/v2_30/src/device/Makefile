@@ -136,7 +136,7 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
-SRCS += all_reduce_sparse_block.cu
+SRCS += ${BASE_DIR}/comms/ncclx/meta/device/all_reduce_sparse_block.cu
 
 -include $(OBJDIR)/gensrc/ctran_rules.mk
 SRCS += $(CTRAN_GEN_SRCS)
