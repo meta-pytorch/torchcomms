@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -26,6 +27,8 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/Logger.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
+#include "meta/wrapper/NcclxRuntime.h"
 
 using ::meta::comms::colltrace::CollTraceConfig;
 
@@ -112,7 +115,12 @@ class CollTraceTest : public NcclxBaseTestFixture {
         NCCL_DEBUG_SUBSYS.empty() ? "INIT,BOOTSTRAP,ENV" : NCCL_DEBUG_SUBSYS;
     NCCL_DEBUG = "INFO";
     NCCL_DEBUG_SUBSYS = "INIT,COLL";
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void endVerboseLogging() {
@@ -120,7 +128,12 @@ class CollTraceTest : public NcclxBaseTestFixture {
     NcclLogger::close();
     NCCL_DEBUG = prevDebug;
     NCCL_DEBUG_SUBSYS = prevDebugSubsys;
+    // TODO T279903668: Cleanup version check after v2_29 removal
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 0)
+    meta::comms::ncclx::ncclxInitLogger();
+#else
     initNcclLogger();
+#endif
   }
 
   void barrier() {
@@ -159,8 +172,9 @@ TEST_F(CollTraceTest, NewCollTraceAllReduce) {
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -190,7 +204,8 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   constexpr int count = 1048576;
   constexpr int nColl = 10;
 
-  if (!ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
+  if (!ctranAllGatherSupport(
+          meta::comms::ncclx::ncclCommCtran(comm).get(), NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran AllGather support.";
   }
@@ -207,8 +222,9 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -260,7 +276,8 @@ TEST_F(CollTraceTest, GroupedSendRecv) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
@@ -306,8 +323,10 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
   int sendPeer = (this->globalRank + 1) % this->numRanks;
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
-  if (!ctranSendRecvSupport(sendPeer, comm->ctranComm_.get()) ||
-      !ctranSendRecvSupport(recvPeer, comm->ctranComm_.get())) {
+  if (!ctranSendRecvSupport(
+          sendPeer, meta::comms::ncclx::ncclCommCtran(comm).get()) ||
+      !ctranSendRecvSupport(
+          recvPeer, meta::comms::ncclx::ncclCommCtran(comm).get())) {
     GTEST_SKIP()
         << "Skip test because this comm does not support ctran sendrecv.";
   }
@@ -323,7 +342,8 @@ TEST_F(CollTraceTest, GroupedSendRecvCtran) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pastColls"]).size(), nColl);
@@ -380,7 +400,8 @@ TEST_F(CollTraceTest, SimulatePPSendRecv) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   if (this->globalRank == 0 || this->globalRank == comm->nRanks - 1) {
@@ -436,8 +457,10 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   int sendPeer = (this->globalRank + 1) % this->numRanks;
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
-  if (!ctranSendRecvSupport(sendPeer, comm->ctranComm_.get()) &&
-      !ctranSendRecvSupport(recvPeer, comm->ctranComm_.get())) {
+  if (!ctranSendRecvSupport(
+          sendPeer, meta::comms::ncclx::ncclCommCtran(comm).get()) &&
+      !ctranSendRecvSupport(
+          recvPeer, meta::comms::ncclx::ncclCommCtran(comm).get())) {
     GTEST_SKIP() << "Skip test because no ctran support.";
   }
 
@@ -455,7 +478,8 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
   EXPECT_EQ(folly::parseJson(dumpMap["CT_pendingColls"]).size(), 0);
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
   if (this->globalRank == 0 || this->globalRank == comm->nRanks - 1) {
@@ -504,7 +528,7 @@ TEST_F(CollTraceTest, winPutWait) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -591,7 +615,8 @@ TEST_F(CollTraceTest, winPutWait) {
 
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   // Parse the dumpMap JSON to check values, similar to previous tests
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
@@ -664,7 +689,8 @@ TEST_F(CollTraceTest, DumpWithUnfinished) {
   // Give CollTrace some time to start tracking next coll
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);
@@ -723,7 +749,8 @@ TEST_F(CollTraceTest, DumpWithUnfinishedCtran) {
   // Give CollTrace some time to start tracking next coll and exited wait once
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   auto pendingCollsJson = folly::parseJson(dumpMap["CT_pendingColls"]);
@@ -773,8 +800,9 @@ TEST_F(CollTraceTest, GroupedAllReduce) {
   // Sleep for a while to make sure all the colls are finished
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -821,8 +849,9 @@ TEST_F(CollTraceTest, GroupedSendRecvAllReduce) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -858,8 +887,9 @@ TEST_F(CollTraceTest, CollTraceQueryInCapture) {
   cudaGraph_t graph;
   CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
 
-  ASSERT_TRUE(comm->newCollTrace != nullptr);
-  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+  ASSERT_TRUE(meta::comms::ncclx::ncclCommNewCollTrace(comm) != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+      *meta::comms::ncclx::ncclCommNewCollTrace(comm));
 
   EXPECT_NE(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
@@ -891,7 +921,7 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
 
-  auto statex = comm->ctranComm_->statex_.get();
+  auto statex = meta::comms::ncclx::ncclCommCtran(comm)->statex_.get();
   ASSERT_NE(statex, nullptr);
   EXPECT_EQ(statex->nRanks(), this->numRanks);
 
@@ -909,7 +939,11 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
   ctran::CtranWin* win = nullptr;
   void* winBase = nullptr;
   auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
+      sizeBytes,
+      meta::comms::ncclx::ncclCommCtran(comm).get(),
+      &winBase,
+      &win,
+      hints);
   ASSERT_EQ(res, ncclSuccess);
   ASSERT_NE(winBase, nullptr);
 
