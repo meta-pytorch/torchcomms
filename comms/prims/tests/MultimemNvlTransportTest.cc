@@ -2388,6 +2388,64 @@ TEST_F(MultimemNvlTransportTestFixture, DeviceLoadReduceCoversPublicTypes) {
   }
 }
 
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    PhasedReduceBlockPreservesOwnedFp16AndBf16Lanes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_phased_reduce_block");
+  auto transport = makeExchangedTransport(
+      bootstrap,
+      globalRank,
+      numRanks,
+      localRank,
+      /*userSignalCount=*/0,
+      /*needsInternalSignals=*/true);
+  if (!transport) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kElements = 8;
+  const float expected = static_cast<float>(numRanks * (numRanks + 1) / 2);
+  const std::size_t firstLane = kElements *
+      static_cast<std::size_t>(globalRank) / static_cast<std::size_t>(numRanks);
+  const std::size_t endLane = kElements *
+      static_cast<std::size_t>(globalRank + 1) /
+      static_cast<std::size_t>(numRanks);
+  for (const auto type :
+       {test::MultimemReductionTestType::Float16,
+        test::MultimemReductionTestType::Bfloat16}) {
+    for (const bool accF32 : {false, true}) {
+      void* output = nullptr;
+      CUDACHECK_TEST(cudaMalloc(&output, 16));
+      CUDACHECK_TEST(cudaMemset(output, 0, 16));
+      test::launchPhasedReduceBlock(
+          transport->getDeviceTransport(), type, accF32, output);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      std::vector<uint16_t> values(kElements);
+      CUDACHECK_TEST(
+          cudaMemcpy(values.data(), output, 16, cudaMemcpyDeviceToHost));
+      CUDACHECK_TEST(cudaFree(output));
+      for (std::size_t lane = 0; lane < kElements; ++lane) {
+        float value = 0;
+        if (type == test::MultimemReductionTestType::Float16) {
+          __half raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          value = __half2float(raw);
+        } else {
+          __nv_bfloat16 raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          value = __bfloat162float(raw);
+        }
+        EXPECT_EQ(value, lane >= firstLane && lane < endLane ? expected : 0);
+      }
+      ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    }
+  }
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char* argv[]) {

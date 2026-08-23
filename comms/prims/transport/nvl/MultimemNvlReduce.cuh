@@ -231,6 +231,41 @@ namespace comms::prims::multimem {
 enum class MultimemRedOp { Add };
 
 /**
+ * Reduces one aligned 16-byte fp16 or bf16 block into registers.
+ *
+ * Keeping the reduced block separate from the eventual stores lets callers
+ * place a team barrier between the read and write phases when adjacent ranks
+ * own different lanes of the same 16-byte block.
+ */
+template <typename T, bool kAccF32 = true>
+__device__ __forceinline__ uint4 load_reduce_block16(const T* multicastBlock) {
+  static_assert(
+      std::is_same_v<T, __half> || std::is_same_v<T, __nv_bfloat16>,
+      "load_reduce_block16 supports fp16 and bf16");
+  const auto* source = reinterpret_cast<const uint4*>(multicastBlock);
+  if constexpr (std::is_same_v<T, __half>) {
+    return comms::prims::detail::multimem_ld_reduce_v4_f16x2<kAccF32>(source);
+  } else {
+    return comms::prims::detail::multimem_ld_reduce_v4_bf16x2<kAccF32>(source);
+  }
+}
+
+/** Stores a contiguous lane range from a previously reduced 16-byte block. */
+template <typename T>
+__device__ __forceinline__ void store_reduced_block16_range(
+    T* destination,
+    const uint4& block,
+    std::size_t firstLane,
+    std::size_t count) {
+  static_assert(
+      sizeof(T) == 2, "store_reduced_block16_range requires a 2-byte type");
+  const auto* lanes = reinterpret_cast<const T*>(&block);
+  for (std::size_t index = 0; index < count; ++index) {
+    destination[index] = lanes[firstLane + index];
+  }
+}
+
+/**
  * multimem.ld_reduce from an ARBITRARY multicast base pointer into `dst`.
  *
  * `mc` must point into a multicast VA; `dst` is local. Staging callers combine

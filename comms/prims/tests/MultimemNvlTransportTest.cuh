@@ -207,6 +207,13 @@ void launchLoadReduce(
     std::size_t sourceOffsetElems,
     cudaStream_t stream = nullptr);
 
+void launchPhasedReduceBlock(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    void* output,
+    cudaStream_t stream = nullptr);
+
 void launchStageLayout(
     MultimemNvlTransportDevice transport,
     StageLayoutResult* results,
