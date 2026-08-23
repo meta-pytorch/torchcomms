@@ -129,6 +129,37 @@ __global__ void testWaitSignalWithDisabledAbort(
   *success = true;
 }
 
+__global__ void testWaitSignalUntilAbort(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* success,
+    uint32_t* enteredWait) {
+  IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>{},
+      IbgdaRemoteBuffer{},
+      localSigBuf,
+      IbgdaLocalBuffer{},
+      1);
+
+  // Arm the deadline the way a production kernel does. Without this the
+  // handle observes explicit aborts only, and a communicator timeout never
+  // reaches the wait.
+  abort.start();
+  // Published after the handle is armed, so a host that sees it knows every
+  // precondition of the wait is already in place.
+  if (enteredWait != nullptr) {
+    __threadfence_system();
+    *static_cast<volatile uint32_t*>(enteredWait) = 1U;
+  }
+  transport.wait_signal(0, 1, abort);
+  // Reaching this line is the liveness guarantee: the wait reports no status,
+  // so one that failed to terminate hangs the kernel instead. The signal slot
+  // is what distinguishes the two ways out -- it is still short of the expected
+  // value here, so the abort released the wait rather than the signal landing.
+  *success = *static_cast<volatile uint64_t*>(localSigBuf.ptr) < 1;
+}
+
 // =============================================================================
 // Wrapper functions to launch the kernels (called from .cc test file)
 // =============================================================================
@@ -166,6 +197,15 @@ void runTestWaitSignalWithDisabledAbort(
     uint64_t* d_signalBuf,
     bool* d_success) {
   testWaitSignalWithDisabledAbort<<<1, 1>>>(d_signalBuf, d_success);
+}
+
+void runTestWaitSignalUntilAbort(
+    uint64_t* d_signalBuf,
+    comms::fault_tolerance::AbortDevice abort,
+    bool* d_success,
+    uint32_t* d_enteredWait) {
+  testWaitSignalUntilAbort<<<1, 1>>>(
+      d_signalBuf, abort, d_success, d_enteredWait);
 }
 
 // =============================================================================

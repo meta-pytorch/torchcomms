@@ -125,15 +125,21 @@ The following combinations are rejected at compile time:
 - Split aggregate multimem publication or waiting.
 - A phase or access operation that has no storage or instruction mapping.
 
-Host launch validation rejects aggregate pipeline depth above one warp and per-peer teams above two warps.
-Device validation traps on an out-of-range channel, lane, rank, or signal offset before issuing a signal operation.
+Host launch sizing uses 64 threads through 64 ranks and 128 threads through 72 ranks.
+Device protocol validation rejects per-peer teams above 72 ranks and traps on an out-of-range channel, lane, rank, or signal offset before issuing a signal operation.
 
 ## Execution Ownership
 
-One CUDA block owns one logical channel.
-A channel is the logical staging group selected by the block index.
+One cooperative `ThreadGroup` owns one logical channel.
+Signal kernels use one-dimensional grids and blocks, and both topologies
+require `group.group_id == channel`. The logical group id is authoritative even
+when a caller has deliberately renumbered groups; `block_id` continues to name
+the physical CUDA block rather than the channel.
+Concurrent operations may use separate streams only when they own disjoint
+channels; concurrent launches targeting the same channel are invalid.
 
-Aggregate topology uses one warp per channel.
+Aggregate topology uses one full owning warp per channel, so multiple warp
+groups in one CUDA block may own distinct channels.
 Pipeline depth determines the active lane owners:
 
 ```text
@@ -144,17 +150,20 @@ thread P - 1 owns pipeline lane P - 1
 threads P..31 do not publish or wait
 ```
 
-Per-peer topology uses two warps per channel:
+Per-peer topology uses one whole block per channel: two warps through 64
+ranks and four warps for 65-72 ranks:
 
 ```text
 thread 0     owns NVL peer 0
 thread 1     owns NVL peer 1
 ...
 thread R - 1 owns NVL peer R - 1
-threads R..63 own no peer slot
+threads R..127 own no peer slot
 ```
 
-All 64 threads participate in required block synchronization.
+Per-peer launches use 64 threads through 64 ranks and 128 threads for 65-72 ranks.
+The block contains exactly that many threads.
+Every launched thread participates in required block synchronization.
 `TreeMin` and `ButterflyMin` additionally use all threads for their reductions.
 
 Per-peer slots are shared across pipeline lanes, so per-peer operations use pipeline depth one.
@@ -185,6 +194,7 @@ Wait-policy selection changes observation geometry, not protocol semantics.
 
 Aggregate multicast publication issues one `multimem.red.release.sys.global.add.u64` for each active lane.
 Every publisher targets the counter owned by its channel and lane.
+Global warp group `C` owns aggregate channel `C`.
 The multicast instruction advances the corresponding counter on every rank, regardless of which ranks wait for that operation.
 Global completion advances each rank's counter by `R`.
 Fan-in completion advances each rank's counter by `R - 1`.
@@ -194,6 +204,70 @@ Fan-in publishers target the coordinator's lane counter.
 Global publishers update every destination's lane counter, including their local destination.
 
 Each active lane owner waits on the corresponding local counter with acquire semantics.
+Aggregate counters carry anonymous cumulative credits. They do not identify
+which publisher produced a credit or encode `StageRound::value`.
+
+The caller defines the credit contract for each acknowledged producer-consumer
+epoch. For epoch `k`, let `quota[k][publisher]` be the maximum number of Ready
+credits that publisher may contribute before Ack(k), and let
+`readyDelta[k]` be the sum of those quotas. A valid contract requires:
+
+```text
+budget:
+    every Ready publisher has a fixed credit quota for epoch k
+
+bound:
+    no publisher exceeds its quota before Ack(k)
+
+completion:
+    the consumer waits for previousReady + readyDelta[k]
+    the consumer performs the protected payload work
+
+acknowledgment:
+    publish Ack(k) only after Ready(k) and payload consumption complete
+
+turnstile:
+    every rank that may contribute to epoch k + 1
+    wait for Ack(k) before publishing the next Ready credit
+```
+
+Because each publisher cannot exceed its quota, reaching the sum of all quotas
+proves that every publisher met its assigned contribution. A total-credit
+threshold without per-publisher bounds is insufficient: one fast publisher
+could substitute extra credits for a delayed publisher. The Ack waiter mask
+must include every rank that may contribute to the next epoch, including ranks
+introduced by a participant-mask transition.
+
+For example, an `N`-producer-to-one-consumer protocol may assign two Ready
+credits to every producer before each Ack:
+
+```text
+initial state: Ready = 0, Ack = 0
+
+epoch 1:
+    each of N producers contributes at most 2 Ready credits
+    consumer waits for Ready >= 2 * N
+    consumer performs the protected work
+    consumer publishes Ack(1); every next-epoch producer waits for it
+
+epoch 2:
+    each of N producers contributes at most 2 more Ready credits
+    consumer waits for Ready >= 4 * N
+    consumer performs the protected work
+    consumer publishes Ack(2)
+```
+
+The quota may be one, two, or another caller-defined value, and may vary by
+publisher or epoch. Payload protected by the full epoch must not be consumed at
+an intermediate anonymous Ready threshold that does not establish the complete
+credit budget.
+
+Ready-only aggregate fan-in is unsupported when a publisher is not also a
+waiter and no external turnstile bounds its credits. Such a publisher could
+enter a later epoch and contribute another anonymous Ready credit before a
+delayed current-epoch publisher contributes.
+Ready-only aggregate barriers remain valid when every publisher is also a
+waiter for the same operation.
 For multicast access, every rank advances its local epoch by the expected arrival count for every operation.
 A selected waiter advances the epoch after observing the counter, while a nonwaiter reserves the same arrival count without blocking.
 This keeps each rank's counter and epoch accounting aligned when the waiter mask changes on a reused channel and lane.

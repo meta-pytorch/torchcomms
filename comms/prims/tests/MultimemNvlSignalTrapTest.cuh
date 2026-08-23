@@ -17,8 +17,30 @@ enum class NvlSignalTrapCase : uint32_t {
   SerialMinWaitTimeout,
   TreeMinWaitTimeout,
   ButterflyMinWaitTimeout,
+  SignalsPerChannelMismatch,
+  UpperWordWaitAllTimeout,
+  UpperWordSerialMinTimeout,
+  UpperWordTreeMinTimeout,
+  UpperWordButterflyMinTimeout,
+  DuplicateChannelOwner,
+  AggregatePartialWarp,
+  AggregateNon1DGrid,
+  PerPeerDuplicateChannelOwner,
+  PerPeerNon1DBlock,
+};
+
+enum class NvlSignalRankBoundaryWaitPolicy : uint32_t {
+  WaitAll,
+  SerialMin,
+  TreeMin,
+  ButterflyMin,
 };
 
 void launchNvlSignalTrap(NvlSignalTrapCase testCase);
+void launchNvlSignalRankBoundary(
+    int nvlRanks,
+    NvlSignalRankBoundaryWaitPolicy waitPolicy,
+    uint64_t roundValue,
+    uint64_t* output);
 
 } // namespace comms::prims::test
