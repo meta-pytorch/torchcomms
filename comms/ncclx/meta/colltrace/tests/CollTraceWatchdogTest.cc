@@ -273,16 +273,20 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   auto srcRank = (rank - 1 + worldSize) % worldSize;
   auto dstRank = (rank + 1) % worldSize;
 
-  // These calls intentionally provoke a GPE failure. Do not terminate on an
-  // immediate API error; the behavior under test is the communicator's async
-  // error being observed and reported by the production watchdog.
+  // These calls intentionally provoke a GPE failure after successful enqueue.
+  // An immediate API failure is a different regression and must not be
+  // mistaken for the watchdog's asynchronous error path.
 #if NCCL_MINOR >= 29
-  (void)ncclx::ncclPutSignal(
-      sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw());
-  (void)ncclx::ncclWaitSignal(srcRank, win, stream.raw());
+  ASSERT_EQ(
+      ncclSuccess,
+      ncclx::ncclPutSignal(
+          sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
+  ASSERT_EQ(ncclSuccess, ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
 #else
-  (void)ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw());
-  (void)ncclWaitSignal(srcRank, win, stream.raw());
+  ASSERT_EQ(
+      ncclSuccess,
+      ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
+  ASSERT_EQ(ncclSuccess, ncclWaitSignal(srcRank, win, stream.raw()));
 #endif
   waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
 }
