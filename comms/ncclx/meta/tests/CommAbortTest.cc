@@ -11,6 +11,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
+#include "meta/wrapper/NcclCommCtran.h"
 #include "nccl.h"
 
 class CommAbortTest : public NcclxBaseTestFixture {
@@ -33,7 +34,7 @@ TEST_F(CommAbortTest, CommScope) {
       globalRank, numRanks, localRank, bootstrap_.get());
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
 
   ASSERT_EQ(ncclCommAbort(comm), ncclSuccess);
   EXPECT_FALSE(ctran::utils::getSkipDestroyCtran());
@@ -45,7 +46,7 @@ TEST_F(CommAbortTest, NoneScope) {
   EnvRAII env(NCCL_COMM_ABORT_SCOPE, NCCL_COMM_ABORT_SCOPE::none);
 
   ASSERT_NE(nullptr, comm);
-  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  ASSERT_NE(nullptr, meta::comms::ncclx::ncclCommCtran(comm)->ctran_);
 
   ASSERT_EQ(ncclCommAbort(comm), ncclSuccess);
   EXPECT_TRUE(ctran::utils::getSkipDestroyCtran());

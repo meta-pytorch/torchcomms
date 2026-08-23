@@ -14,6 +14,7 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -102,12 +103,13 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
     }
 
     if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
-        !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
+        !ctranReduceScatterSupport(
+            meta::comms::ncclx::ncclCommCtran(comm).get(), algo)) {
       GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
     }
 
     if (memType == kMemCudaMalloc && algo != NCCL_REDUCESCATTER_ALGO::orig &&
-        comm->ctranComm_->statex_->nLocalRanks() > 1) {
+        meta::comms::ncclx::ncclCommCtran(comm)->statex_->nLocalRanks() > 1) {
       GTEST_SKIP()
           << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
     }
