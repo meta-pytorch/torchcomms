@@ -10,6 +10,7 @@
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlStageLayout.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlStore.cuh"
 
 namespace comms::prims::test {
 
@@ -562,6 +563,17 @@ __global__ void loadReduceKernel(
       group, output, source, elems);
 }
 
+template <int kUnroll>
+__global__ void multimemStoreKernel(
+    MultimemNvlTransportDevice transport,
+    std::size_t destinationOffset,
+    const void* source,
+    std::size_t bytes) {
+  auto group = make_warp_group();
+  multimem::store<kUnroll>(
+      group, transport.multimem_data_ptr(destinationOffset), source, bytes);
+}
+
 template <typename T, bool kAccF32>
 __global__ void phasedReduceBlockKernel(
     MultimemNvlTransportDevice transport,
@@ -984,6 +996,25 @@ void launchLoadReduce(
       return launchLoadReduceTyped<__nv_bfloat16>(
           transport, accF32, output, elems, sourceOffsetElems, stream);
   }
+}
+
+void launchMultimemStore(
+    MultimemNvlTransportDevice transport,
+    std::size_t destinationOffset,
+    const void* source,
+    std::size_t bytes,
+    int unroll,
+    cudaStream_t stream) {
+  if (unroll == 1) {
+    multimemStoreKernel<1>
+        <<<1, 32, 0, stream>>>(transport, destinationOffset, source, bytes);
+  } else if (unroll == 4) {
+    multimemStoreKernel<4>
+        <<<1, 32, 0, stream>>>(transport, destinationOffset, source, bytes);
+  } else {
+    throw std::invalid_argument("test supports unroll 1 or 4");
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void launchPhasedReduceBlock(

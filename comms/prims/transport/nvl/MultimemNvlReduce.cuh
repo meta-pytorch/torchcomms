@@ -5,9 +5,8 @@
 // Holds the reduce side of the NVLS staging model: the raw `multimem.ld_reduce`
 // PTX emitters (`comms::prims::detail`) and the public entry point
 // `multimem::load_reduce_at<>` that reads the cross-rank reduction of a
-// multicast VA into a local buffer. The store side (`multimem::store()`) and
-// the staging orchestration that composes both land later in the stack
-// (`MultimemNvlStore.cuh`, `MultimemNvlStaging.cuh`).
+// multicast VA into a local buffer. The store side (`multimem::store()`) lives
+// in `MultimemNvlStore.cuh`.
 
 // clang-tidy analyzes this .cuh as a standalone main file and misflags the
 // pragma; it is a genuine include-once header. False positive, so suppress it.
