@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <cstdlib>
 #include <iomanip>
@@ -85,7 +85,8 @@ class BenchIbTransport {
       int numRanks,
       const std::shared_ptr<meta::comms::IBootstrap>& bootstrap,
       const MultipeerIbTransportConfig& config) {
-    XLOGF(INFO, "BenchIbTransport: backend={}", benchIbBackendName(backend));
+    COMMS_LOG(
+        INFO, "BenchIbTransport: backend={}", benchIbBackendName(backend));
     if (backend == BenchIbBackend::IBRC) {
       ibrc_ = std::make_unique<MultipeerIbrcTransport>(
           globalRank, numRanks, bootstrap, config);
@@ -128,7 +129,7 @@ class BenchIbTransport {
   do {                               \
     cudaError_t err = call;          \
     if (err != cudaSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "CUDA error at {}:{}: {}", \
           __FILE__,                  \
@@ -143,7 +144,7 @@ class BenchIbTransport {
   do {                               \
     cudaError_t err = call;          \
     if (err != cudaSuccess) {        \
-      XLOGF(                         \
+      COMMS_LOG(                     \
           ERR,                       \
           "CUDA error at {}:{}: {}", \
           __FILE__,                  \
@@ -306,7 +307,7 @@ class IbgdaBenchmarkFixture
        << ", GPU clock: " << clockRateGHz_ << " GHz\n";
     ss << "================================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   // Standard message size configurations
@@ -391,7 +392,7 @@ class IbgdaBenchmarkFixture
       bool correct = true;
       for (std::size_t i = 0; i < nbytes; i++) {
         if (hostBuf[i] != fillPattern) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "{}: data mismatch at byte {}: expected 0x{:02X}, got 0x{:02X}",
               methodName,
@@ -405,7 +406,8 @@ class IbgdaBenchmarkFixture
       EXPECT_TRUE(correct) << methodName
                            << ": put data correctness check failed";
       if (correct) {
-        XLOGF(INFO, "{}: data correctness OK ({} bytes)", methodName, nbytes);
+        COMMS_LOG(
+            INFO, "{}: data correctness OK ({} bytes)", methodName, nbytes);
       }
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -415,7 +417,8 @@ class IbgdaBenchmarkFixture
 TEST_P(IbgdaBenchmarkFixture, PutFlush) {
   // Measures raw RDMA Write latency as put + flush.
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -459,7 +462,7 @@ TEST_P(IbgdaBenchmarkFixture, PutFlush) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: GPU clock rate = {:.2f} GHz",
         globalRank,
@@ -494,7 +497,7 @@ TEST_P(IbgdaBenchmarkFixture, PutFlush) {
 
         results.push_back(result);
 
-        XLOGF(
+        COMMS_LOG(
             INFO,
             "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
             globalRank,
@@ -520,7 +523,8 @@ TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   // block-private slice. This checks that thread-scope wrappers inherit the
   // physical block id instead of routing all blocks through block 0's QPs.
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -644,7 +648,8 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
   // Serialize every put with its completion wait to isolate the primitive
   // completion cost. This does not model pipelined send/recv overlap.
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -692,7 +697,7 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: GPU clock rate = {:.2f} GHz",
         globalRank,
@@ -729,7 +734,7 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
 
         counterResults.push_back(result);
 
-        XLOGF(
+        COMMS_LOG(
             INFO,
             "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
             globalRank,
@@ -760,7 +765,7 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
             (config.nBytes / 1e9f) / (localResult.latency / 1e6f);
         localResults.push_back(localResult);
 
-        XLOGF(
+        COMMS_LOG(
             INFO,
             "Rank {}: {} wait_local - Latency: {:.2f} us, BW: {:.2f} GB/s",
             globalRank,
@@ -786,7 +791,8 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
 TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
   // Measures RDMA Write + atomic signal latency (put + signal + counter wait)
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -835,7 +841,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: GPU clock rate = {:.2f} GHz",
         globalRank,
@@ -873,7 +879,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
 
         results.push_back(result);
 
-        XLOGF(
+        COMMS_LOG(
             INFO,
             "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
             globalRank,
@@ -898,7 +904,8 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
 TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
   // Measures atomic signal-only latency (no data transfer)
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -934,7 +941,7 @@ TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: GPU clock rate = {:.2f} GHz",
         globalRank,
@@ -964,13 +971,13 @@ TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
 
       latencyUs = cyclesToUs(totalCycles) / kIbgdaBatchIters;
 
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "\n=== {} Signal-Only Latency (Raw, no kernel launch overhead) ===",
           backendName());
-      XLOGF(INFO, "Average latency: {:.2f} us", latencyUs);
-      XLOGF(INFO, "Batch iterations: {}", kIbgdaBatchIters);
-      XLOGF(
+      COMMS_LOG(INFO, "Average latency: {:.2f} us", latencyUs);
+      COMMS_LOG(INFO, "Batch iterations: {}", kIbgdaBatchIters);
+      COMMS_LOG(
           INFO,
           "===========================================================\n");
     }
@@ -988,7 +995,8 @@ TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
 // Counter = put + signal + transport counter-slot completion + local poll.
 TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1056,7 +1064,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
       uint8_t basePattern = static_cast<uint8_t>((ci + 1) * 3);
 
       if (globalRank == 0) {
-        XLOGF(INFO, "Verifying put data correctness ({})...", cfg.name);
+        COMMS_LOG(INFO, "Verifying put data correctness ({})...", cfg.name);
       }
 
       verifyPutDataCorrectness(
@@ -1071,16 +1079,17 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
     }
 
     if (globalRank == 0) {
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "\n================================================================================");
-      XLOGF(INFO, "    {} put+signal+counter latency", backendName());
-      XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
-      XLOGF(
+      COMMS_LOG(INFO, "    {} put+signal+counter latency", backendName());
+      COMMS_LOG(
+          INFO, "    (Using batched kernels - no kernel launch overhead)");
+      COMMS_LOG(
           INFO,
           "================================================================================");
-      XLOGF(INFO, "{:>10} {:>18}", "Size", "Counter Lat (us)");
-      XLOGF(
+      COMMS_LOG(INFO, "{:>10} {:>18}", "Size", "Counter Lat (us)");
+      COMMS_LOG(
           INFO,
           "--------------------------------------------------------------------------------");
     }
@@ -1097,18 +1106,18 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
           counterLatency);
 
       if (globalRank == 0) {
-        XLOGF(INFO, "{:>10} {:>18.2f}", config.name, counterLatency);
+        COMMS_LOG(INFO, "{:>10} {:>18.2f}", config.name, counterLatency);
       }
     }
 
     if (globalRank == 0) {
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "================================================================================");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "Counter = put + signal + transport counter-slot completion + local poll");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "================================================================================\n");
     }
@@ -1134,7 +1143,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
 TEST_P(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
   const int numPeers = numRanks - 1;
   if (numPeers < 1) {
-    XLOGF(INFO, "Skipping test: requires >= 2 ranks, got {}", numRanks);
+    COMMS_LOG(INFO, "Skipping test: requires >= 2 ranks, got {}", numRanks);
     return;
   }
   if (backend() == BenchIbBackend::IBRC) {
@@ -1285,46 +1294,46 @@ TEST_P(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
 
     if (globalRank == 0) {
       float delta = fanOutLatency - serialLatency;
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "\n================================================================================");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "    {} Multi-Peer Counter Fan-Out ({} peers, {} per peer)",
           backendName(),
           numPeers,
           formatSize(kDataSize));
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "================================================================================");
-      XLOGF(
+      COMMS_LOG(
           INFO, "  Serial (N wait_counter calls): {:>8.2f} us", serialLatency);
-      XLOGF(
+      COMMS_LOG(
           INFO, "  FanOut (1 wait_counter call):  {:>8.2f} us", fanOutLatency);
-      XLOGF(INFO, "  Delta (FanOut - Serial):       {:>+8.2f} us", delta);
-      XLOGF(
+      COMMS_LOG(INFO, "  Delta (FanOut - Serial):       {:>+8.2f} us", delta);
+      COMMS_LOG(
           INFO,
           "  Serial / peer:                 {:>8.2f} us",
           serialLatency / numPeers);
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "  FanOut / peer (amortized):     {:>8.2f} us",
           fanOutLatency / numPeers);
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "--------------------------------------------------------------------------------");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "  Serial:  put+signal+counter (per-peer slot) + wait_counter per peer (O(N))");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "  FanOut:  put+signal+counter (shared slot) + single wait_counter (O(1))");
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "  Batch iterations: {}, GPU clock: {:.2f} GHz",
           kIbgdaBatchIters,
           clockRateGHz_);
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "================================================================================\n");
     }
@@ -1349,5 +1358,7 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
@@ -63,13 +63,13 @@ class P2pLlBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (ncclComm_ != nullptr) {
       ncclResult_t res = ncclCommDestroy(ncclComm_);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclCommDestroy failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclCommDestroy failed: {}", ncclGetErrorString(res));
       }
     }
     if (stream_ != nullptr) {
       cudaError_t err = cudaStreamDestroy(stream_);
       if (err != cudaSuccess) {
-        XLOGF(ERR, "cudaStreamDestroy failed: {}", cudaGetErrorString(err));
+        COMMS_LOG(ERR, "cudaStreamDestroy failed: {}", cudaGetErrorString(err));
       }
     }
     BenchmarkTestFixture::TearDown();
@@ -80,7 +80,7 @@ class P2pLlBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -93,7 +93,7 @@ class P2pLlBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0];
@@ -695,5 +695,7 @@ int main(int argc, char* argv[]) {
         new meta::comms::BenchmarkEnvironment());
   }
 
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

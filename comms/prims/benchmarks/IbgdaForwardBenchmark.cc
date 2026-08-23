@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <cstdint>
 #include <memory>
@@ -39,7 +39,7 @@ class IbgdaForwardBenchmarkTest : public BenchmarkTestFixture {
 
 TEST_F(IbgdaForwardBenchmarkTest, Correctness) {
   if (worldSize != 3) {
-    XLOGF(INFO, "Skipping: requires exactly 3 ranks, got {}", worldSize);
+    COMMS_LOG(INFO, "Skipping: requires exactly 3 ranks, got {}", worldSize);
     return;
   }
 
@@ -101,7 +101,7 @@ TEST_F(IbgdaForwardBenchmarkTest, Correctness) {
     for (std::size_t i = 0; i < kDataBytes; ++i) {
       if (hostBuf[i] != fillPattern) {
         if (errors < 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: byte {} expected 0x{:02X} got 0x{:02X}",
               globalRank,
@@ -119,7 +119,7 @@ TEST_F(IbgdaForwardBenchmarkTest, Correctness) {
 
 TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
   if (worldSize != 3) {
-    XLOGF(INFO, "Skipping: requires exactly 3 ranks, got {}", worldSize);
+    COMMS_LOG(INFO, "Skipping: requires exactly 3 ranks, got {}", worldSize);
     return;
   }
 
@@ -165,29 +165,29 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
   cudaEventCreate(&stop);
 
   if (globalRank == 0) {
-    XLOGF(INFO, "");
-    XLOGF(
+    COMMS_LOG(INFO, "");
+    COMMS_LOG(
         INFO,
         "================================================================");
-    XLOGF(
+    COMMS_LOG(
         INFO, "  recv_forward vs recv+send (3-rank chain: rank0→rank1→rank2)");
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "  numBlocks={}, slotSize={}MB, pipelineDepth={}",
         kNumBlocks,
         kSlotSize / (1024 * 1024),
         kPipelineDepth);
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "================================================================");
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "{:>10s}  {:>14s}  {:>14s}  {:>10s}",
         "MsgSize",
         "recv_fwd GB/s",
         "recv+snd GB/s",
         "Speedup");
-    XLOGF(
+    COMMS_LOG(
         INFO, "--------------------------------------------------------------");
   }
 
@@ -293,7 +293,7 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
         sizeStr = fmt::format("{}MB", nBytes >> 20);
       }
       float speedup = (recvSndBw > 0) ? (recvFwdBw / recvSndBw) : 0;
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "{:>10s}  {:>14.2f}  {:>14.2f}  {:>9.2f}x",
           sizeStr,
@@ -304,7 +304,7 @@ TEST_F(IbgdaForwardBenchmarkTest, Bandwidth) {
   }
 
   if (globalRank == 0) {
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "================================================================");
   }
@@ -321,5 +321,7 @@ int main(int argc, char* argv[]) {
   if (!meta::comms::isTcpEnvironment()) {
     ::testing::AddGlobalTestEnvironment(new BenchmarkEnvironment());
   }
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

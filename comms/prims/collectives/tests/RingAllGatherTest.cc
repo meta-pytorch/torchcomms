@@ -1,7 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/prims/collectives/RingAllgatherLauncher.h"
 #include "comms/prims/collectives/RingUtils.h"

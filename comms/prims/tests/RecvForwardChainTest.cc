@@ -4,9 +4,8 @@
 
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -60,7 +59,7 @@ class RecvForwardChainTest : public BenchmarkTestFixture {
 // Verify all ranks that receive data see the correct pattern.
 TEST_F(RecvForwardChainTest, ForwardWithCopy) {
   if (worldSize < 2) {
-    XLOGF(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
+    COMMS_LOG(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -119,7 +118,7 @@ TEST_F(RecvForwardChainTest, ForwardWithCopy) {
       for (std::size_t i = 0; i < kDataBytes; ++i) {
         if (hostBuf[i] != fillPattern) {
           if (errors < 10) {
-            XLOGF(
+            COMMS_LOG(
                 ERR,
                 "Rank {}: byte {} expected 0x{:02X} got 0x{:02X}",
                 globalRank,
@@ -142,7 +141,7 @@ TEST_F(RecvForwardChainTest, ForwardWithCopy) {
 // Only the last rank should have the data.
 TEST_F(RecvForwardChainTest, ForwardOnly) {
   if (worldSize < 3) {
-    XLOGF(INFO, "Skipping: requires >= 3 ranks for forward-only test");
+    COMMS_LOG(INFO, "Skipping: requires >= 3 ranks for forward-only test");
     return;
   }
 
@@ -213,7 +212,7 @@ TEST_F(RecvForwardChainTest, ForwardOnly) {
 // is compatible when recv_forward is not involved — just send + recv.
 TEST_F(RecvForwardChainTest, SendRecvDirect) {
   if (worldSize != 2) {
-    XLOGF(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(INFO, "Skipping: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -283,7 +282,7 @@ TEST_F(RecvForwardChainTest, SendRecvDirect) {
 // Multi-section test: transfer more data than one slot to exercise pipelining.
 TEST_F(RecvForwardChainTest, MultiSection) {
   if (worldSize < 2) {
-    XLOGF(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
+    COMMS_LOG(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
     return;
   }
 
