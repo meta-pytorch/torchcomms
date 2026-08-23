@@ -22,8 +22,6 @@
 #endif
 #endif
 
-#include <string>
-
 #define MAX_IFS 16
 #define MAX_IF_NAME_SIZE 16
 #if defined(__CUDA_ARCH__) || (!defined(NCCL_OS_WINDOWS) && !defined(NCCL_OS_LINUX))
@@ -135,8 +133,6 @@ ncclResult_t ncclSocketSendRecv(struct ncclSocket* sendSock, void* sendPtr, int 
 ncclResult_t ncclSocketMultiOp(struct ncclSocketOp* ops, int numOps);
 ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int* closed, bool blocking);
 ncclResult_t ncclSocketShutdown(struct ncclSocket* sock, int how);
-
-std::string ncclSocketToIPv6String(union ncclSocketAddress *addr);
 ncclResult_t ncclSocketClose(struct ncclSocket* sock, bool wait = false);
 uint16_t ncclSocketToPort(union ncclSocketAddress *addr);
 #endif
