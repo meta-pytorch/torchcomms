@@ -5,6 +5,7 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include "meta/wrapper/NcclCommLogData.h"
 #include "comm.h"
 #include "net.h"
 #include "graph.h"
@@ -679,7 +680,7 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
       auto callsite = fmt::format("sharedNetBuffersInit:{}/{}/{}", proxyState->owner->commHash, tpLocalRank, type);
       NCCLCHECK(ncclP2pAllocateShareableBuffer(state->size, 0, &state->ipcDesc, (void**)&state->cudaBuff, proxyState->owner, callsite.c_str()));
     } else {
-      memLogMetaData = proxyState->owner->logMetaData;
+      memLogMetaData = ncclCommLogData(proxyState->owner);
       NCCLCHECK(ncclCudaCalloc(&state->cudaBuff, state->size, proxyState->memManager));
     }
   }
@@ -932,7 +933,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
 
   if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
     if (resources->shared == 0) {
-      memLogMetaData = proxyState->owner->logMetaData;
+      memLogMetaData = ncclCommLogData(proxyState->owner);
       if (!map->sameProcess || ncclCuMemEnable()) {
         ALIGN_SIZE(map->mems[NCCL_NET_MAP_DEVMEM].size, CUDA_IPC_MIN);
         auto callsite = ncclx::memory::genKey(
@@ -962,7 +963,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   }
   if (ncclGdrCopy && map->sameProcess && ncclParamGdrCopySyncEnable() && resources->sameDevice) {
     uint64_t *cpuPtr, *gpuPtr;
-    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 1, &resources->gdrDesc, proxyState->memManager, proxyState->owner->logMetaData));
+    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 1, &resources->gdrDesc, proxyState->memManager, ncclCommLogData(proxyState->owner)));
 
     resources->gdcSync = cpuPtr;
     struct connectMapMem* gdcMem = map->mems+NCCL_NET_MAP_GDCMEM;
@@ -1106,7 +1107,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 
   if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
     if (resources->shared == 0) {
-      memLogMetaData = proxyState->owner->logMetaData;
+      memLogMetaData = ncclCommLogData(proxyState->owner);
       if (ncclCuMemEnable()) {
         std::string callsite = ncclx::memory::genKey(
           "ProxyConnect",
@@ -1129,7 +1130,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
     uint64_t *cpuPtr, *gpuPtr;
     uint32_t gdcFlag = ncclGdcPinFlag(resources->needFlush);
     NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc,
-                                proxyState->memManager, proxyState->owner->logMetaData, gdcFlag));
+                                proxyState->memManager, ncclCommLogData(proxyState->owner), gdcFlag));
 
     if (ncclParamGdrCopySyncEnable()) {
       // No flush needed if control flow is mapped on the PCIe instead of C2C

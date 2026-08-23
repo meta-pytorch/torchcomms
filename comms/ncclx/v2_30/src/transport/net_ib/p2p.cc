@@ -10,7 +10,6 @@
 #include "compiler.h"
 #include "p2p_resiliency.h"
 
-#include "comms/utils/cvars/nccl_cvars.h"
 
 NCCL_PARAM(IbArThreshold, "IB_AR_THRESHOLD", -2);
 int64_t ncclIbArThreshold = 8192;

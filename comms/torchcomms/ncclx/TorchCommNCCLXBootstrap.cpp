@@ -22,7 +22,10 @@ const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
 
-#ifdef NCCLX_CONFIG_SUPPORTED
+// TODO T279903668: Cleanup version check after v2_29 removal
+// Fast init is removed in NCCLX v2.30+ (use ncclCommInitRankScalable instead).
+#if defined(NCCLX_CONFIG_SUPPORTED) && \
+    NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
 bool isFastInitEnable(const ncclx::Hints& hints) {
   std::string fastInitVal;
   if (hints.get("ncclx::fastInitMode", fastInitVal) == ncclSuccess &&
@@ -320,7 +323,10 @@ void populateNcclConfig(
   }
 }
 
-#ifdef NCCLX_CONFIG_SUPPORTED
+// TODO T279903668: Cleanup version check after v2_29 removal
+// Fast init is removed in NCCLX v2.30+ (use ncclCommInitRankScalable instead).
+#if defined(NCCLX_CONFIG_SUPPORTED) && \
+    NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
 bool TorchCommNCCLXBootstrap::useFastInit(const ncclx::Hints& hints) {
   if (isFastInitEnable(hints)) {
     // Use raw dynamic_cast instead of c10::dynamic_intrusive_pointer_cast
@@ -366,7 +372,12 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   populateNcclConfig(config, options, name);
 #ifdef NCCLX_CONFIG_SUPPORTED
   hints.set("ncclx::commDesc", name);
+#endif
 
+// TODO T279903668: Cleanup version check after v2_29 removal
+#if defined(NCCLX_CONFIG_SUPPORTED) && \
+    NCCL_VERSION_CODE < NCCL_VERSION(2, 30, 0)
+  // Fast init (deprecated, v2.29 only) skips the uniqueId exchange.
   if (useFastInit(hints)) {
     uniqueId = ncclUniqueId{};
   } else {
