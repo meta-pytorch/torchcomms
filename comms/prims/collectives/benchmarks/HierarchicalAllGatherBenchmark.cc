@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -245,7 +245,7 @@ class HierarchicalAllGatherBenchmarkFixture
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -257,7 +257,7 @@ class HierarchicalAllGatherBenchmarkFixture
                 all_ids.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     return all_ids[0];
@@ -341,7 +341,7 @@ class HierarchicalAllGatherBenchmarkFixture
       ib_transport->exchange();
       ib_nics = ib_transport->numNics();
     } catch (const std::exception& e) {
-      XLOGF(ERR, "IBGDA transport not available: {}", e.what());
+      COMMS_LOG(ERR, "IBGDA transport not available: {}", e.what());
       latency_us = 0.0f;
       return 0.0f;
     }
@@ -367,7 +367,7 @@ class HierarchicalAllGatherBenchmarkFixture
             nvl_rank, config.nvl_size, nvl_bootstrap, transport_config);
         nvl_transport->exchange();
       } catch (const std::exception& e) {
-        XLOGF(ERR, "NVLink transport not available: {}", e.what());
+        COMMS_LOG(ERR, "NVLink transport not available: {}", e.what());
         latency_us = 0.0f;
         return 0.0f;
       }
@@ -390,7 +390,8 @@ class HierarchicalAllGatherBenchmarkFixture
     if (config.ib_size > 1) {
       auto ib_rings_opt = make_standard_rings(config.ib_size, ib_rank, 1);
       if (!ib_rings_opt) {
-        XLOGF(ERR, "Cannot construct IB ring for {} IB ranks", config.ib_size);
+        COMMS_LOG(
+            ERR, "Cannot construct IB ring for {} IB ranks", config.ib_size);
         latency_us = 0.0f;
         return 0.0f;
       }
@@ -509,7 +510,7 @@ class HierarchicalAllGatherBenchmarkFixture
     }
     ss << "================================================================================\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   ncclComm_t nccl_comm_{};
@@ -520,7 +521,7 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const int nvl_size = benchmark_nvl_size(worldSize);
   if (nvl_size <= 0 || nvl_size > kDirectNvlMaxRanks ||
       worldSize % nvl_size != 0) {
-    XLOGF(
+    COMMS_LOG(
         ERR,
         "Invalid HIER_AG_BENCH_NVL_SIZE={} for worldSize={}",
         nvl_size,
@@ -529,7 +530,7 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   }
 
   if (globalRank == 0) {
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "\n=== Hierarchical AllGather vs NCCL Comparison (IB groups={}, NVL groups={}) ===\n",
         worldSize / nvl_size,
@@ -543,15 +544,15 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const int pipeline_depth = benchmark_pipeline_depth();
   const std::string ib_hca = benchmark_ib_hca();
   if (ib_links <= 0) {
-    XLOGF(ERR, "Invalid HIER_AG_BENCH_IB_LINKS={}", ib_links);
+    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_IB_LINKS={}", ib_links);
     std::abort();
   }
   if (data_buffer_size == 0) {
-    XLOG(ERR, "Invalid HIER_AG_BENCH_DATA_BUFFER_SIZE=0");
+    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_DATA_BUFFER_SIZE=0");
     std::abort();
   }
   if (pipeline_depth <= 0) {
-    XLOGF(ERR, "Invalid HIER_AG_BENCH_PIPELINE_DEPTH={}", pipeline_depth);
+    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_PIPELINE_DEPTH={}", pipeline_depth);
     std::abort();
   }
   const std::size_t ib_signal_bytes =
@@ -562,7 +563,7 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const bool skip_nccl = benchmark_skip_nccl();
   for (std::size_t total_bytes : configured_benchmark_sizes()) {
     if (total_bytes % static_cast<std::size_t>(worldSize) != 0) {
-      XLOGF(
+      COMMS_LOG(
           ERR,
           "AllGather size {} is not divisible by {} ranks",
           total_bytes,
@@ -591,7 +592,7 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
 
   for (const auto& config : configs) {
     if (globalRank == 0) {
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "Running hierarchical AllGather {}: size={}, chunk={}, blocks={}, ib_size={}, nvl_size={}, ib_links_per_nic={}, ib_signal_bytes={}, nvl_signal_bytes={}",
           config.name,
@@ -617,7 +618,7 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
         run_hierarchical_benchmark(config, ib_nics, hierarchical_lat);
 
     if (globalRank == 0) {
-      XLOGF(
+      COMMS_LOG(
           INFO,
           "AllGather {} result: NCCL={:.2f} GB/s ({:.1f} us), Hier={:.2f} GB/s ({:.1f} us), Hier/NCCL={:.2f}x",
           config.name,
@@ -661,5 +662,7 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

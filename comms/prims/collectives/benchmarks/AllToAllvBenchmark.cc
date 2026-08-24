@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <chrono>
+#include "comms/utils/logger/SpdlogLogger.h"
 #ifndef __HIP_PLATFORM_AMD__
 #include <nccl.h>
 #endif
@@ -92,7 +92,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -106,7 +106,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0]; // Take rank 0's ID
@@ -120,8 +120,8 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   float runNcclAllToAllvBenchmark(
       const AllToAllvBenchmarkConfig& config,
       float& latencyUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Running NCCL AllToAllv benchmark: {}",
         globalRank,
         config.name);
@@ -218,8 +218,8 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   float runAllToAllvBenchmark(
       const AllToAllvBenchmarkConfig& config,
       float& latencyUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Running AllToAllv benchmark: {}",
         globalRank,
         config.name);
@@ -420,7 +420,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     ss << "================================================================================================================\n";
     ss << "\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
 #ifndef __HIP_PLATFORM_AMD__
@@ -460,7 +460,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
   // Optimal configurations for multiple message sizes
 
   if (globalRank == 0) {
-    XLOG(INFO)
+    COMMS_LOG_STREAM(INFO)
         << "\n=== OPTIMAL AllToAllv vs NCCL Comparison (All Message Sizes) ===\n";
   }
 
@@ -674,5 +674,7 @@ int main(int argc, char* argv[]) {
   // Set up distributed environment
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
 
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

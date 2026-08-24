@@ -4,7 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include <cstddef>
 #include <cstring>
@@ -51,7 +51,8 @@ class GpuMemHandlerTestFixture : public MpiBaseTestFixture {
 TEST_F(GpuMemHandlerTestFixture, RemoteWriteLocalRead) {
   // Only test with 2 ranks
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -63,19 +64,19 @@ TEST_F(GpuMemHandlerTestFixture, RemoteWriteLocalRead) {
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   GpuMemHandler handler(bootstrap, globalRank, numRanks, bufferSize);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {} created handler in {} mode",
       globalRank,
       handler.getMode() == MemSharingMode::kFabric ? "fabric" : "cudaIpc");
 
   handler.exchangeMemPtrs();
-  XLOGF(INFO, "Rank {} exchanged memory handles", globalRank);
+  COMMS_LOG(INFO, "Rank {} exchanged memory handles", globalRank);
 
   auto localAddr = static_cast<int*>(handler.getLocalDeviceMemPtr());
   auto remoteAddr = static_cast<int*>(handler.getPeerDeviceMemPtr(peerRank));
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {}: localAddr: {}, remoteAddr: {}",
       globalRank,
@@ -87,11 +88,12 @@ TEST_F(GpuMemHandlerTestFixture, RemoteWriteLocalRead) {
   int writeValue = globalRank;
   test::fillBuffer(localAddr, writeValue, numElements);
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  XLOGF(INFO, "Rank {} filled local buffer with {}", globalRank, writeValue);
+  COMMS_LOG(
+      INFO, "Rank {} filled local buffer with {}", globalRank, writeValue);
 
   // Barrier to ensure both ranks have written their data
   MPI_Barrier(MPI_COMM_WORLD);
-  XLOGF(INFO, "Rank {} passed barrier", globalRank);
+  COMMS_LOG(INFO, "Rank {} passed barrier", globalRank);
 
   // Each rank reads from peer's buffer and verifies
   // rank0 should read all 1s from rank1
@@ -111,7 +113,7 @@ TEST_F(GpuMemHandlerTestFixture, RemoteWriteLocalRead) {
   CUDACHECK_TEST(cudaMemcpy(
       &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "Rank {} verified peer buffer, errors: {}",
       globalRank,
@@ -129,7 +131,8 @@ TEST_F(GpuMemHandlerTestFixture, RemoteWriteLocalRead) {
 TEST_F(GpuMemHandlerTestFixture, SelfRankReturnsLocalPtr) {
   // Only test with 2 ranks
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -153,7 +156,8 @@ TEST_F(GpuMemHandlerTestFixture, SelfRankReturnsLocalPtr) {
 TEST_F(GpuMemHandlerTestFixture, ExplicitCudaIpcMode) {
   // Only test with 2 ranks
   if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -168,7 +172,8 @@ TEST_F(GpuMemHandlerTestFixture, ExplicitCudaIpcMode) {
       bootstrap, globalRank, numRanks, bufferSize, MemSharingMode::kCudaIpc);
 
   EXPECT_EQ(handler.getMode(), MemSharingMode::kCudaIpc);
-  XLOGF(INFO, "Rank {} created handler with explicit cudaIpc mode", globalRank);
+  COMMS_LOG(
+      INFO, "Rank {} created handler with explicit cudaIpc mode", globalRank);
 
   handler.exchangeMemPtrs();
 
@@ -216,14 +221,14 @@ TEST_F(GpuMemHandlerTestFixture, SingleRankExchange) {
   GpuMemHandler handler(
       bootstrap, 0 /* selfRank */, 1 /* nRanks */, bufferSize);
 
-  XLOGF(
+  COMMS_LOG(
       INFO,
       "MPI Rank {} testing single-rank exchange in {} mode",
       globalRank,
       handler.getMode() == MemSharingMode::kFabric ? "fabric" : "cudaIpc");
 
   handler.exchangeMemPtrs();
-  XLOGF(INFO, "MPI Rank {} completed single-rank exchange", globalRank);
+  COMMS_LOG(INFO, "MPI Rank {} completed single-rank exchange", globalRank);
 
   // Get local pointer
   auto localAddr = static_cast<int*>(handler.getLocalDeviceMemPtr());
@@ -254,7 +259,7 @@ TEST_F(GpuMemHandlerTestFixture, SingleRankExchange) {
 
   ASSERT_EQ(h_errorCount, 0) << "Single-rank exchange verification failed";
 
-  XLOGF(INFO, "MPI Rank {} single-rank exchange test passed", globalRank);
+  COMMS_LOG(INFO, "MPI Rank {} single-rank exchange test passed", globalRank);
 }
 
 TEST_F(GpuMemHandlerTestFixture, VmmImportFailurePropagatesToEveryRank) {

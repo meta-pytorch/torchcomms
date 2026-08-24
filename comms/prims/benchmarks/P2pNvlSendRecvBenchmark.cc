@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/benchmarks/BenchmarkKernel.cuh"
@@ -53,7 +53,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -67,7 +67,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0]; // Take rank 0's ID
@@ -76,7 +76,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
   // Helper function to run NCCL benchmark - returns bandwidth
   float runNcclBenchmark(const BenchmarkConfig& config, float& timeUs) {
-    XLOGF(DBG1, "=== Running NCCL benchmark: {} ===", config.name);
+    COMMS_LOG(DBG, "=== Running NCCL benchmark: {} ===", config.name);
 
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
@@ -176,7 +176,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           cudaMemcpyDeviceToHost));
       for (size_t i = 0; i < config.nBytes; i++) {
         if (static_cast<unsigned char>(hostBuf[i]) != testValue) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "VERIFY FAILED {}: byte {} expected 0x{:02X} got 0x{:02X}",
               config.name,
@@ -198,7 +198,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       comms::prims::P2pNvlTransportDevice* p2pDevicePtr,
       const BenchmarkConfig& config,
       float& timeUs) {
-    XLOGF(DBG1, "=== Running P2P NVL benchmark: {} ===", config.name);
+    COMMS_LOG(DBG, "=== Running P2P NVL benchmark: {} ===", config.name);
 
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
@@ -275,7 +275,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       comms::prims::P2pNvlTransportDevice* p2pDevicePtr,
       const BenchmarkConfig& config,
       float& timeUs) {
-    XLOGF(DBG1, "=== Running Tile benchmark: {} ===", config.name);
+    COMMS_LOG(DBG, "=== Running Tile benchmark: {} ===", config.name);
 
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
@@ -337,7 +337,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       for (size_t i = 0; i < config.nBytes; i++) {
         if (static_cast<unsigned char>(hostBuf[i]) !=
             static_cast<unsigned char>(peerPattern)) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "TILE VERIFY FAILED {}: byte {} expected 0x{:02X} got 0x{:02X}",
               config.name,
@@ -391,8 +391,8 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   float runNcclBidirectionalBenchmark(
       const BenchmarkConfig& config,
       float& timeUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Starting NCCL bidirectional benchmark: {}",
         globalRank,
         config.name);
@@ -409,7 +409,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     CudaEvent start, stop;
 
     // Warmup
-    XLOGF(DBG1, "Rank {}: NCCL bidi warmup starting", globalRank);
+    COMMS_LOG(DBG, "Rank {}: NCCL bidi warmup starting", globalRank);
     bootstrap->barrierAll();
     for (int i = 0; i < kWarmupIters; i++) {
       NCCL_CHECK(ncclGroupStart());
@@ -430,7 +430,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       NCCL_CHECK(ncclGroupEnd());
       CUDA_CHECK(cudaStreamSynchronize(stream_));
     }
-    XLOGF(DBG1, "Rank {}: NCCL bidi warmup complete", globalRank);
+    COMMS_LOG(DBG, "Rank {}: NCCL bidi warmup complete", globalRank);
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - rely on NCCL's internal synchronization
@@ -476,8 +476,8 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
       comms::prims::P2pNvlTransportDevice* p2pDevicePtr,
       const BenchmarkConfig& config,
       float& timeUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Starting P2P NVL bidirectional benchmark: {}",
         globalRank,
         config.name);
@@ -616,7 +616,8 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
   // Only test with 2 ranks
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -718,7 +719,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
 
     // Verify correctness before benchmarking
     if (!verifyP2pCorrectness(&p2pHost, config)) {
-      XLOGF(ERR, "CORRECTNESS CHECK FAILED for config: {}", config.name);
+      COMMS_LOG(ERR, "CORRECTNESS CHECK FAILED for config: {}", config.name);
       if (globalRank == 0) {
         std::cout << "*** VERIFY FAILED: " << config.name << " ***\n";
       }
@@ -746,7 +747,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
 TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // Only test with 2 ranks
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -1015,7 +1017,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
 TEST_F(P2pSendRecvBenchmarkFixture, MatchedBidirCtaBenchmark) {
   if (worldSize != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    COMMS_LOG(
+        DBG, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -1118,5 +1121,7 @@ int main(int argc, char* argv[]) {
         new meta::comms::BenchmarkEnvironment());
   }
 
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

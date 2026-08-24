@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
@@ -42,8 +42,8 @@ void printDeviceBuffer(
       totalInts * sizeof(int32_t),
       cudaMemcpyDeviceToHost));
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: {} (showing {} values for each peer):",
       rank,
       label,
@@ -59,7 +59,7 @@ void printDeviceBuffer(
     if (!showAll && numIntsPerRank > 8) {
       line += "...";
     }
-    XLOG(DBG1) << line;
+    COMMS_LOG_STREAM(DBG) << line;
   }
 }
 } // namespace
@@ -92,8 +92,8 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   const int numBlocks = params.numBlocks;
   const int blockSize = params.blockSize;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, numIntsPerRank={}",
       globalRank,
       params.testName,
@@ -114,7 +114,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   // Create transport and exchange IPC handles
   MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
-  XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
+  COMMS_LOG(DBG, "Rank {} created transport and exchanged IPC", globalRank);
 
   auto transports_span = transport.getDeviceTransports();
 
@@ -192,7 +192,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       worldSize,
       numIntsPerRank);
 
-  XLOGF(DBG1, "Rank {}: calling all_to_allv", globalRank);
+  COMMS_LOG(DBG, "Rank {}: calling all_to_allv", globalRank);
 
   // Call all_to_allv with actual data transfer
   test::testAllToAllv(
@@ -237,7 +237,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) { // Only print first 10 errors
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
@@ -250,8 +250,8 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
     }
   }
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: verification completed, errors = {}",
       globalRank,
       h_errorCount);
@@ -312,8 +312,8 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   const int blockSize = params.blockSize;
   const size_t base_ints = params.base_ints;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running {} with numBlocks={}, blockSize={}, base_ints={}",
       globalRank,
       params.testName,
@@ -330,7 +330,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   // Create transport and exchange IPC handles
   MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
-  XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
+  COMMS_LOG(DBG, "Rank {} created transport and exchanged IPC", globalRank);
 
   auto transports_span = transport.getDeviceTransports();
 
@@ -358,8 +358,8 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   const size_t sendBufferSize = send_offset;
   const size_t recvBufferSize = recv_offset;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: sendBufferSize = {}, recvBufferSize = {}",
       globalRank,
       sendBufferSize,
@@ -415,7 +415,8 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   // Barrier to ensure all ranks are ready
   bootstrap->barrierAll();
 
-  XLOGF(DBG1, "Rank {}: calling all_to_allv with variable sizes", globalRank);
+  COMMS_LOG(
+      DBG, "Rank {}: calling all_to_allv with variable sizes", globalRank);
 
   // Call all_to_allv with variable sizes
   test::testAllToAllv(
@@ -452,7 +453,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) { // Only print first 10 errors
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
@@ -466,8 +467,8 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
     int_offset += num_ints;
   }
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: verification completed, errors = {}",
       globalRank,
       h_errorCount);
