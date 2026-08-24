@@ -1,8 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/prims/benchmarks/BenchmarkMacros.h"
@@ -76,7 +76,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -89,7 +89,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0]; // Take rank 0's ID
@@ -103,8 +103,8 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   float runNcclAllGatherBenchmark(
       const AllGatherBenchmarkConfig& config,
       float& latencyUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Running NCCL AllGather benchmark: {}",
         globalRank,
         config.name);
@@ -180,8 +180,8 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
   float runAllGatherBenchmark(
       const AllGatherBenchmarkConfig& config,
       float& latencyUs) {
-    XLOGF(
-        DBG1,
+    COMMS_LOG(
+        DBG,
         "Rank {}: Running AllGather benchmark: {}",
         globalRank,
         config.name);
@@ -377,7 +377,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     ss << "================================================================================\n";
     ss << "\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   ncclComm_t ncclComm_{};
@@ -386,7 +386,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
 TEST_F(AllGatherBenchmarkFixture, OptimalConfigs) {
   if (globalRank == 0) {
-    XLOG(INFO)
+    COMMS_LOG_STREAM(INFO)
         << "\n=== OPTIMAL AllGather vs NCCL Comparison (All Message Sizes) ===\n";
   }
 
@@ -611,5 +611,7 @@ int main(int argc, char* argv[]) {
   // Set up distributed environment
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
 
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

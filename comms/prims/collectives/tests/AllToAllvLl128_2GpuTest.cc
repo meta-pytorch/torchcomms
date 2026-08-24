@@ -5,7 +5,7 @@
 #include <cstddef>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/prims/collectives/AllToAllvLl128.cuh"
 #include "comms/prims/collectives/tests/AllToAllvLl128Test.cuh"
@@ -46,8 +46,8 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
   const int numBlocks = 18;
   const int blockSize = 512;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running EqualSize_2GPU_4KB with worldSize={}",
       globalRank,
       worldSize);
@@ -69,7 +69,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -150,7 +150,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
@@ -173,8 +173,8 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
   const int numBlocks = 18;
   const int blockSize = 512;
 
-  XLOGF(
-      DBG1,
+  COMMS_LOG(
+      DBG,
       "Rank {}: Running EqualSize_2GPU_64KB with worldSize={}",
       globalRank,
       worldSize);
@@ -196,7 +196,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    XLOGF(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
+    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
     std::abort();
   }
 
@@ -277,7 +277,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
       if (expected != actual) {
         h_errorCount++;
         if (h_errorCount <= 10) {
-          XLOGF(
+          COMMS_LOG(
               ERR,
               "Rank {}: Error at peer {} position {}: expected {}, got {}",
               globalRank,
