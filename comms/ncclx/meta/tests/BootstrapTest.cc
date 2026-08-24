@@ -121,13 +121,11 @@ ncclResult_t closeListen(void*) {
   return ncclSuccess;
 }
 
-bootstrapState*
-allocateBootstrapState(ncclNet_t* net, bool fastInitMode, bool ringUsesOobNet) {
+bootstrapState* allocateBootstrapState(ncclNet_t* net, bool ringUsesOobNet) {
   auto* state =
       static_cast<bootstrapState*>(std::calloc(1, sizeof(bootstrapState)));
   if (state != nullptr) {
     state->net = net;
-    state->fastInitMode = fastInitMode;
     state->ringUsesOobNet = ringUsesOobNet;
   }
   return state;
@@ -174,7 +172,7 @@ TEST(BootstrapCleanupTest, OobNetFailureStillClosesRemainingEndpoints) {
   net.closeRecv = closeReceive;
   net.closeListen = closeListen;
 
-  auto* state = allocateBootstrapState(&net, true, true);
+  auto* state = allocateBootstrapState(&net, true);
   if (state == nullptr) {
     FAIL() << "Failed to allocate bootstrap state";
   }
@@ -191,7 +189,7 @@ TEST(BootstrapCleanupTest, NormalCloseUsesStoredOobNetTransport) {
   net.closeRecv = closeReceive;
   net.closeListen = closeListen;
 
-  auto* state = allocateBootstrapState(&net, true, true);
+  auto* state = allocateBootstrapState(&net, true);
   if (state == nullptr) {
     FAIL() << "Failed to allocate bootstrap state";
   }
@@ -208,7 +206,7 @@ TEST(BootstrapCleanupTest, StoredSocketTransportDoesNotUseNetCleanup) {
   net.closeRecv = closeReceive;
   net.closeListen = closeListen;
 
-  auto* state = allocateBootstrapState(&net, false, false);
+  auto* state = allocateBootstrapState(&net, false);
   if (state == nullptr) {
     FAIL() << "Failed to allocate bootstrap state";
   }
@@ -226,7 +224,7 @@ TEST(BootstrapCleanupTest, RingFailureCleanupIsIdempotent) {
   net.closeListen = closeListen;
 
   ncclComm comm{};
-  comm.bootstrap = allocateBootstrapState(&net, true, true);
+  comm.bootstrap = allocateBootstrapState(&net, true);
   if (comm.bootstrap == nullptr) {
     FAIL() << "Failed to allocate bootstrap state";
   }

@@ -12,6 +12,7 @@
 #include "transport.h"
 #include "xml.h"
 #include <math.h>
+#include "meta/wrapper/NcclxCvars.h"
 
 NCCL_PARAM(CrossNic, "CROSS_NIC", 2);
 
@@ -1102,7 +1103,7 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
     nspeeds = ccMin >= 100 ? NSPEEDSINTRA_SM100 : (ccMin >= 90 ? NSPEEDSINTRA_SM90 : NSPEEDSINTRA);
     speedArray = ccMin >= 100 ? sm100SpeedArrayIntra : (ccMin >= 90 ? sm90SpeedArrayIntra : speedArrayIntra);
   } else if (ccMin >= 100) {
-    const bool useV229 = NCCL_TOPO_BOND_V229;
+    const bool useV229 = meta::comms::ncclx::topoBondV229Enabled();
     nspeeds = useV229 ? NSPEEDSINTER_SM100_V229 : NSPEEDSINTER_SM100;
     speedArray = useV229 ? sm100SpeedArrayInterV229 : sm100SpeedArrayInter;
   } else {

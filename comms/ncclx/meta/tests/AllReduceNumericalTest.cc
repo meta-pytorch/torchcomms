@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "meta/wrapper/NcclCommCtran.h"
 
 #include "comms/ncclx/meta/algoconf/AlgoStrConv.h"
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -154,7 +155,7 @@ class AllReduceNumericalTest
       EXPECT_EQ(
           NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo),
           NCCL_ALLREDUCE_ALGO::ctdirect);
-      ASSERT_NE(comm->ctranComm_, nullptr);
+      ASSERT_NE(meta::comms::ncclx::ncclCommCtran(comm), nullptr);
     }
 
     const auto result = ncclAllReduce(
