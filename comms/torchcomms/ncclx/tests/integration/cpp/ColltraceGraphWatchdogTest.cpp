@@ -7,6 +7,8 @@
 // colltrace watchdog plugin via tryEnableColltraceTimeoutWatchdog() and detects
 // timeouts.
 
+#include <cstdlib>
+
 #include <folly/FileUtil.h>
 #include <folly/Random.h>
 #include <folly/stop_watch.h>
@@ -122,9 +124,8 @@ class ColltraceGraphWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
     EXPECT_THAT(
         testDriverState.workerExitCodes, ::testing::Each(::testing::Ne(0)));
 
-    // Verify at least one NCCL debug log contains the colltrace watchdog
-    // timeout. Ranks 1-3 crash via XLOG(FATAL) in the test body (goes to
-    // stderr), so only rank 0's NCCL log will have the watchdog message.
+    // Verify at least one NCCL debug log contains the production colltrace
+    // watchdog timeout rather than only a peer-termination marker.
     bool foundWatchdogTimeout = false;
     for (const auto& entry : folly::fs::directory_iterator(tmpDir_.path())) {
       std::string fileContents;
@@ -173,7 +174,7 @@ TEST_F(ColltraceGraphWatchdogTest, TestTimeoutViaTorchCommsInit) {
   // Trigger timeout: ranks 1-3 sleep while rank 0 issues AllReduce
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    std::abort();
   } else {
     torchcomm->all_reduce(
         tensor, torch::comms::ReduceOp::SUM, /*async_op=*/false);
@@ -239,7 +240,7 @@ TEST_F(ColltraceGraphWatchdogTest, TestGraphReplayTimeout) {
   // Timeout replay — ranks 1-3 sleep while rank 0 replays
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    std::abort();
   } else {
     ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.stream()), cudaSuccess);
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
@@ -309,7 +310,7 @@ TEST_F(
   // N+1th replay: ranks 1-3 sleep, rank 0 replays → timeout
   if (rank != 0) {
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
-    XLOG(FATAL, "COMM FATAL");
+    std::abort();
   } else {
     ASSERT_EQ(cudaGraphLaunch(graphExec, captureStream.stream()), cudaSuccess);
     std::this_thread::sleep_for(timeout + std::chrono::seconds{3});
