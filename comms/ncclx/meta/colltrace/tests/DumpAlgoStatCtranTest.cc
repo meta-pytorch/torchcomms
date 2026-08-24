@@ -10,6 +10,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "meta/colltrace/CollTraceWrapper.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 #include "comm.h"
 #include "nccl.h"
@@ -47,10 +48,10 @@ TEST_F(DumpAlgoStatCtranTest, CtranStatsAppearInDump) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, MergeBaselineAndCtranStats) {
-  ASSERT_NE(comm()->algoStats, nullptr);
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
 
-  comm()->algoStats->record("AllReduce", "Baseline_Simple_Ring_8");
-  comm()->algoStats->record("AllReduce", "Baseline_Simple_Ring_8");
+  ncclCommAlgoStats(comm())->record("AllReduce", "Baseline_Simple_Ring_8");
+  ncclCommAlgoStats(comm())->record("AllReduce", "Baseline_Simple_Ring_8");
 
   comm()->ctranComm_->recordAlgoStat("AllReduce", "CTRing_NVL_8");
   comm()->ctranComm_->recordAlgoStat("SendRecv", "CtranSendRecv");
@@ -67,10 +68,10 @@ TEST_F(DumpAlgoStatCtranTest, MergeBaselineAndCtranStats) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, AdditiveMergeSameAlgo) {
-  ASSERT_NE(comm()->algoStats, nullptr);
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
 
-  comm()->algoStats->record("AllGather", "SharedAlgo");
-  comm()->algoStats->record("AllGather", "SharedAlgo");
+  ncclCommAlgoStats(comm())->record("AllGather", "SharedAlgo");
+  ncclCommAlgoStats(comm())->record("AllGather", "SharedAlgo");
 
   comm()->ctranComm_->recordAlgoStat("AllGather", "SharedAlgo");
   comm()->ctranComm_->recordAlgoStat("AllGather", "SharedAlgo");
@@ -84,8 +85,8 @@ TEST_F(DumpAlgoStatCtranTest, AdditiveMergeSameAlgo) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, NullCtranComm) {
-  ASSERT_NE(comm()->algoStats, nullptr);
-  comm()->algoStats->record("ReduceScatter", "Baseline_LL_Tree_4");
+  ASSERT_NE(ncclCommAlgoStats(comm()), nullptr);
+  ncclCommAlgoStats(comm())->record("ReduceScatter", "Baseline_LL_Tree_4");
 
   comm()->ctranComm_.reset();
 
@@ -103,7 +104,7 @@ TEST_F(DumpAlgoStatCtranTest, NullComm) {
 }
 
 TEST_F(DumpAlgoStatCtranTest, BothNull) {
-  comm()->algoStats.reset();
+  ncclCommAlgoStats(comm()).reset();
   comm()->ctranComm_.reset();
 
   std::unordered_map<std::string, std::unordered_map<std::string, int64_t>> map;

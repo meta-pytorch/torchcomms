@@ -14,6 +14,7 @@
 #include "channel.h"
 #include "transport.h"
 #include "meta/DeviceRackSerial.h"
+#include "meta/comm/NcclxCommExt.h"
 #include "device.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -1007,7 +1008,7 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
 
   // Only init channels now if lazySetupChannels is disabled.
   // Otherwise, they will be delayed until needed
-  if (!comm->lazySetupChannels) {
+  if (!comm->ncclxExt->lazySetupChannels) {
   // Init channels that weren't used so far
   for (int c=comm->nChannels; c<comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
   }

@@ -21,6 +21,7 @@
 #include "VerifyAlgoStatsUtil.h"
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
+#include "meta/wrapper/NcclCommNoLocal.h"
 
 // Hint lifecycle tests
 
@@ -41,7 +42,7 @@ TEST_F(CommWithNoLocalTest, NoLocalDisabledByDefault) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_FALSE(comm->noLocal_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm.get()));
 }
 
 namespace {
@@ -60,7 +61,7 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   ncclx::test::NcclCommRAII comm1{
       globalRank, numRanks, localRank, bootstrap_.get()};
   ASSERT_NE(comm1.get(), nullptr);
-  EXPECT_FALSE(comm1->noLocal_);
+  EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm1.get()));
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
@@ -93,14 +94,14 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
     } while (commStatus == ncclInProgress);
   }
 
-  EXPECT_TRUE(comm2->noLocal_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommNoLocal(comm2));
 
   // Now disabled again
   {
     ncclx::test::NcclCommRAII comm3{
         globalRank, numRanks, localRank, bootstrap_.get()};
     ASSERT_NE(comm3.get(), nullptr);
-    EXPECT_FALSE(comm3->noLocal_);
+    EXPECT_FALSE(meta::comms::ncclx::ncclCommNoLocal(comm3.get()));
   }
 }
 
@@ -326,7 +327,7 @@ TEST_P(CommWithNoLocalCollTest, BaselineRun) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_EQ(comm->noLocal_, noLocal);
+  EXPECT_EQ(meta::comms::ncclx::ncclCommNoLocal(comm.get()), noLocal);
 
   run(comm.get(), collectiveOp);
   const char* collectiveName = (collectiveOp == CollectiveOp::kAllGather)
@@ -349,7 +350,7 @@ TEST_P(CommWithNoLocalCollTest, CtranRun) {
   ncclx::test::NcclCommRAII comm{
       globalRank, numRanks, localRank, bootstrap_.get(), false, &config};
   ASSERT_NE(comm.get(), nullptr);
-  EXPECT_TRUE(comm->noLocal_);
+  EXPECT_TRUE(meta::comms::ncclx::ncclCommNoLocal(comm.get()));
 
   if (collectiveOp == CollectiveOp::kAllGather) {
     auto algoGuard = EnvRAII(NCCL_ALLGATHER_ALGO, NCCL_ALLGATHER_ALGO::ctran);
