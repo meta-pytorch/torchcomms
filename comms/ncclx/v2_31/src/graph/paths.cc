@@ -13,6 +13,8 @@
 #include "channel.h"
 #include "transport.h"
 #include "device.h"
+#include "meta/DeviceRackSerial.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 // Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
 
@@ -393,6 +395,20 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
 
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
+
+  // [META] Check if multi-NVLink P2P is disabled and handle rack serial matching
+  if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
+    INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
+
+    if (comm->peerInfo[rank1].rackSerial[0] != '\0' && comm->peerInfo[rank2].rackSerial[0] != '\0') {
+      *p2p = ncclx::isSameRackSerial(comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH,
+           "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %s rackSerial2: %s",
+           *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+    } else {
+      WARN("No rack serial information available, skipping rack serial check");
+    }
+  }
 
   // Use parent pointer comparison to handle multi-rank-per-GPU case:
   // Different topology indices (g1 != g2) may point to the same physical GPU
