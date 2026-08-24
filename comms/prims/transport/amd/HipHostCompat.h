@@ -23,7 +23,7 @@
 // cross-platform plumbing stays scoped to this directory.
 //
 // For AMD GCN device-side intrinsic shims (used by IBGDA WQE construction
-// + `pipes_gda_*` device code), see `HipDeviceCompat.h` instead.
+// + `prims_amd_gda_*` device code), see `HipDeviceCompat.h` instead.
 // =============================================================================
 
 #pragma once

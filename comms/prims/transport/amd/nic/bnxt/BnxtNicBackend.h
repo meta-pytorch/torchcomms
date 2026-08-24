@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// BNXT (Broadcom) NIC Backend for pipes-gda
+// BNXT (Broadcom) NIC Backend for prims-amd-gda
 // =============================================================================
 //
 // Device-side WQE construction, doorbell, and CQ polling for Broadcom BNXT
@@ -28,9 +28,9 @@
 
 #include "HipDeviceCompat.h" // @manual
 #include "nic/bnxt/BnxtHsi.h" // @manual
-#include "pipes_gda/PipesGdaDev.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDev.h" // @manual
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 struct BnxtNicBackend {
   static constexpr const char* vendorPrefix() {
@@ -51,7 +51,7 @@ struct BnxtNicBackend {
   // the lock corrupt the MSN-table tail and produce doorbell values with
   // the wrong epoch, which surfaces on the device as `Memory access fault
   // by GPU on address (nil)`.
-  __device__ void lockQp(pipes_gda_gpu_dev_verbs_qp* qp) {
+  __device__ void lockQp(prims_amd_gda_gpu_dev_verbs_qp* qp) {
     int expected;
     do {
       expected = 0;
@@ -65,7 +65,7 @@ struct BnxtNicBackend {
                  __HIP_MEMORY_SCOPE_SYSTEM));
   }
 
-  __device__ void unlockQp(pipes_gda_gpu_dev_verbs_qp* qp) {
+  __device__ void unlockQp(prims_amd_gda_gpu_dev_verbs_qp* qp) {
     __hip_atomic_store(
         &qp->nic.bnxt.sq_lock, 0, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
   }
@@ -77,7 +77,7 @@ struct BnxtNicBackend {
   // as `Memory access fault by GPU on address (nil)`.
   // Caller must hold the QP spinlock.
   __device__ void waitForSqSlots(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint32_t requestedSlots) {
     uint32_t sqDepth = qp->nic.bnxt.sq_depth;
     if (sqDepth == 0) {
@@ -85,15 +85,16 @@ struct BnxtNicBackend {
     }
     volatile char* cqeBase =
         reinterpret_cast<volatile char*>(qp->cq_sq.cqe_daddr);
-    volatile pipes_gda_bnxt_req_cqe* cqe =
-        reinterpret_cast<volatile pipes_gda_bnxt_req_cqe*>(cqeBase);
+    volatile prims_amd_gda_bnxt_req_cqe* cqe =
+        reinterpret_cast<volatile prims_amd_gda_bnxt_req_cqe*>(cqeBase);
     // Bounded spin: an SQ that never drains means the NIC has stopped
     // completing WQEs (link down or QP in error), so an unbounded spin would
     // hang the kernel forever. Trap once exhausted so the stall surfaces.
     constexpr uint64_t kMaxSpins = 10000000ULL;
     for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
       uint32_t conIdx = cqe->con_indx & 0xFFFF;
-      uint32_t sqHead = (conIdx * PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT) % sqDepth;
+      uint32_t sqHead =
+          (conIdx * PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT) % sqDepth;
       uint32_t sqTail = qp->nic.bnxt.sq_tail;
       uint32_t consumed = (sqTail - sqHead + sqDepth) % sqDepth;
       uint32_t available = sqDepth - consumed;
@@ -115,7 +116,7 @@ struct BnxtNicBackend {
   }
 
   __device__ void* getBnxtWqeSlot(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint32_t slotIdx) const {
     // Wrap per slot so WQEs that straddle the SQ buffer end don't write
     // past it into the MSN-table region. Without this wrap a 3-slot WQE
@@ -126,32 +127,33 @@ struct BnxtNicBackend {
       slotIdx -= qp->nic.bnxt.sq_depth;
     }
     return reinterpret_cast<uint8_t*>(qp->sq_wqe_daddr) +
-        static_cast<size_t>(slotIdx) * PIPES_GDA_BNXT_SLOT_SIZE_BB;
+        static_cast<size_t>(slotIdx) * PRIMS_AMD_GDA_BNXT_SLOT_SIZE_BB;
   }
 
   __device__ uint32_t
-  bnxtWqeIdxToSlot(pipes_gda_gpu_dev_verbs_qp* qp, uint64_t wqeIdx) const {
+  bnxtWqeIdxToSlot(prims_amd_gda_gpu_dev_verbs_qp* qp, uint64_t wqeIdx) const {
     return static_cast<uint32_t>(
-        (wqeIdx * PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT) % qp->nic.bnxt.sq_depth);
+        (wqeIdx * PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT) %
+        qp->nic.bnxt.sq_depth);
   }
 
-  __device__ pipes_gda_gpu_dev_verbs_wqe* getWqePtr(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+  __device__ prims_amd_gda_gpu_dev_verbs_wqe* getWqePtr(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t wqeIdx) const {
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
-    return reinterpret_cast<pipes_gda_gpu_dev_verbs_wqe*>(
+    return reinterpret_cast<prims_amd_gda_gpu_dev_verbs_wqe*>(
         reinterpret_cast<uint8_t*>(qp->sq_wqe_daddr) +
-        static_cast<size_t>(slotIdx) * PIPES_GDA_BNXT_SLOT_SIZE_BB);
+        static_cast<size_t>(slotIdx) * PRIMS_AMD_GDA_BNXT_SLOT_SIZE_BB);
   }
 
   __device__ uint64_t
-  reserveWqSlots(pipes_gda_gpu_dev_verbs_qp* qp, uint32_t numWqes) {
+  reserveWqSlots(prims_amd_gda_gpu_dev_verbs_qp* qp, uint32_t numWqes) {
     return amd_atomic_add_device(
         &qp->sq_rsvd_index, static_cast<uint64_t>(numWqes));
   }
 
   __device__ void markWqesReady(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
@@ -161,12 +163,12 @@ struct BnxtNicBackend {
   }
 
   __device__ void bnxtIncrTail(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint32_t slotCount) {
     uint32_t newTail = qp->nic.bnxt.sq_tail + slotCount;
     if (newTail >= qp->nic.bnxt.sq_depth) {
       newTail %= qp->nic.bnxt.sq_depth;
-      qp->nic.bnxt.sq_flags ^= 1UL << PIPES_GDA_BNXT_FLAG_EPOCH_TAIL_SHIFT;
+      qp->nic.bnxt.sq_flags ^= 1UL << PRIMS_AMD_GDA_BNXT_FLAG_EPOCH_TAIL_SHIFT;
     }
     qp->nic.bnxt.sq_tail = newTail;
   }
@@ -191,17 +193,19 @@ struct BnxtNicBackend {
     constexpr uint64_t kPsnBits = 0xFFFFFFULL;
     const uint64_t startIdxField =
         (static_cast<uint64_t>(slotIdx) & kStartIdxBits)
-        << PIPES_GDA_BNXT_MSN_START_IDX_SHIFT;
+        << PRIMS_AMD_GDA_BNXT_MSN_START_IDX_SHIFT;
     const uint64_t nextPsnField = (static_cast<uint64_t>(nextPsn) & kPsnBits)
-        << PIPES_GDA_BNXT_MSN_NEXT_PSN_SHIFT;
+        << PRIMS_AMD_GDA_BNXT_MSN_NEXT_PSN_SHIFT;
     const uint64_t startPsnField = (static_cast<uint64_t>(startPsn) & kPsnBits)
-        << PIPES_GDA_BNXT_MSN_START_PSN_SHIFT;
+        << PRIMS_AMD_GDA_BNXT_MSN_START_PSN_SHIFT;
     return startIdxField | nextPsnField | startPsnField;
   }
 
   // Advance qp->nic.bnxt.{psn,msn} and write one packed MSN entry at the
   // current msn cursor. Caller has already prepared the WQE at sq_tail.
-  __device__ void bnxtFillMsn(pipes_gda_gpu_dev_verbs_qp* qp, uint32_t msgLen) {
+  __device__ void bnxtFillMsn(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      uint32_t msgLen) {
     auto& bnxt = qp->nic.bnxt;
 
     const uint32_t startPsn = bnxt.psn;
@@ -229,24 +233,25 @@ struct BnxtNicBackend {
     // Low half holds sq_tail in [23:0] and the epoch bit at [24]. The epoch
     // bit toggles every time the tail wraps and the NIC uses it to
     // distinguish "wrap-completed" from "wrap-pending" doorbells.
-    const uint32_t epochBit = (sqFlags & PIPES_GDA_BNXT_FLAG_EPOCH_TAIL_MASK)
-        << PIPES_GDA_BNXT_DB_EPOCH_TAIL_SHIFT;
+    const uint32_t epochBit =
+        (sqFlags & PRIMS_AMD_GDA_BNXT_FLAG_EPOCH_TAIL_MASK)
+        << PRIMS_AMD_GDA_BNXT_DB_EPOCH_TAIL_SHIFT;
     const uint32_t low = sqTail | epochBit;
 
     // High half encodes the QP id, queue type (SQ here), and a valid bit.
     constexpr uint32_t kTypeSqShifted =
-        (static_cast<uint32_t>(PIPES_GDA_BNXT_QUE_TYPE_SQ) &
-         PIPES_GDA_BNXT_DB_TYP_MASK)
-        << PIPES_GDA_BNXT_DB_TYP_SHIFT;
-    constexpr uint32_t kValidBit = 1u << PIPES_GDA_BNXT_DB_VALID_SHIFT;
+        (static_cast<uint32_t>(PRIMS_AMD_GDA_BNXT_QUE_TYPE_SQ) &
+         PRIMS_AMD_GDA_BNXT_DB_TYP_MASK)
+        << PRIMS_AMD_GDA_BNXT_DB_TYP_SHIFT;
+    constexpr uint32_t kValidBit = 1u << PRIMS_AMD_GDA_BNXT_DB_VALID_SHIFT;
     const uint32_t high =
-        (sqId & PIPES_GDA_BNXT_DB_QID_MASK) | kTypeSqShifted | kValidBit;
+        (sqId & PRIMS_AMD_GDA_BNXT_DB_QID_MASK) | kTypeSqShifted | kValidBit;
 
     return static_cast<uint64_t>(low) | (static_cast<uint64_t>(high) << 32U);
   }
 
   __device__ void ringDoorbell(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t /* nextWqeIdx */) {
     const auto& bnxt = qp->nic.bnxt;
     const uint64_t doorbellWord =
@@ -265,8 +270,8 @@ struct BnxtNicBackend {
   }
 
   __device__ void prepareRdmaWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -275,45 +280,45 @@ struct BnxtNicBackend {
       uint32_t localKey,
       std::size_t size) {
     // Back-pressure to keep producer behind NIC consumer (caller holds lock).
-    waitForSqSlots(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    waitForSqSlots(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
-    pipes_gda_bnxt_bsqe* hdr =
-        reinterpret_cast<pipes_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
-    pipes_gda_bnxt_rdma* rdma =
-        reinterpret_cast<pipes_gda_bnxt_rdma*>(getBnxtWqeSlot(qp, slotIdx + 1));
+    prims_amd_gda_bnxt_bsqe* hdr =
+        reinterpret_cast<prims_amd_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
+    prims_amd_gda_bnxt_rdma* rdma = reinterpret_cast<prims_amd_gda_bnxt_rdma*>(
+        getBnxtWqeSlot(qp, slotIdx + 1));
     void* sgeSlot = getBnxtWqeSlot(qp, slotIdx + 2);
 
     // Use INLINE encoding for payloads <= 16B (one WQE slot). NIC reads
     // data directly from the WQE; no SGE-based PCIe fetch from local
     // memory. The inline length goes in the IL field of `rsv_ws_fl_wt`,
     // NOT in `qkey_len`.
-    bool useInline = (size <= PIPES_GDA_BNXT_SLOT_SIZE_BB);
+    bool useInline = (size <= PRIMS_AMD_GDA_BNXT_SLOT_SIZE_BB);
 
     uint32_t wqeType =
-        PIPES_GDA_BNXT_HDR_WT_MASK & PIPES_GDA_BNXT_WR_OPCD_RDMA_WRITE;
+        PRIMS_AMD_GDA_BNXT_HDR_WT_MASK & PRIMS_AMD_GDA_BNXT_WR_OPCD_RDMA_WRITE;
     uint32_t wqeSize =
-        PIPES_GDA_BNXT_HDR_WS_MASK & PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT;
-    uint8_t hdrFlags = PIPES_GDA_BNXT_WR_FLAGS_SIGNALED;
+        PRIMS_AMD_GDA_BNXT_HDR_WS_MASK & PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT;
+    uint8_t hdrFlags = PRIMS_AMD_GDA_BNXT_WR_FLAGS_SIGNALED;
     if (useInline) {
-      hdrFlags |= PIPES_GDA_BNXT_WR_FLAGS_INLINE;
+      hdrFlags |= PRIMS_AMD_GDA_BNXT_WR_FLAGS_INLINE;
     }
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE) {
-      hdrFlags |= PIPES_GDA_BNXT_WR_FLAGS_RD_FENCE;
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FENCE) {
+      hdrFlags |= PRIMS_AMD_GDA_BNXT_WR_FLAGS_RD_FENCE;
     }
 
-    pipes_gda_bnxt_bsqe hdrVal = {};
-    hdrVal.rsv_ws_fl_wt = (wqeSize << PIPES_GDA_BNXT_HDR_WS_SHIFT) |
-        (hdrFlags << PIPES_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType;
+    prims_amd_gda_bnxt_bsqe hdrVal = {};
+    hdrVal.rsv_ws_fl_wt = (wqeSize << PRIMS_AMD_GDA_BNXT_HDR_WS_SHIFT) |
+        (hdrFlags << PRIMS_AMD_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType;
     if (useInline) {
       hdrVal.rsv_ws_fl_wt |=
-          ((static_cast<uint32_t>(size) & PIPES_GDA_BNXT_HDR_IL_MASK)
-           << PIPES_GDA_BNXT_HDR_IL_SHIFT);
+          ((static_cast<uint32_t>(size) & PRIMS_AMD_GDA_BNXT_HDR_IL_MASK)
+           << PRIMS_AMD_GDA_BNXT_HDR_IL_SHIFT);
     }
     hdrVal.key_immd = 0;
     hdrVal.lhdr.qkey_len = static_cast<uint64_t>(size);
 
-    pipes_gda_bnxt_rdma rdmaVal = {};
+    prims_amd_gda_bnxt_rdma rdmaVal = {};
     rdmaVal.rva = remoteAddr;
     rdmaVal.rkey = remoteKey;
     rdmaVal.bytes = 0;
@@ -330,20 +335,20 @@ struct BnxtNicBackend {
       }
       (void)localKey;
     } else {
-      pipes_gda_bnxt_sge sgeVal = {};
+      prims_amd_gda_bnxt_sge sgeVal = {};
       sgeVal.pa = localAddr;
       sgeVal.lkey = localKey;
       sgeVal.length = static_cast<uint32_t>(size);
-      *static_cast<pipes_gda_bnxt_sge*>(sgeSlot) = sgeVal;
+      *static_cast<prims_amd_gda_bnxt_sge*>(sgeSlot) = sgeVal;
     }
 
     bnxtFillMsn(qp, static_cast<uint32_t>(size));
-    bnxtIncrTail(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    bnxtIncrTail(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
   }
 
   __device__ void prepareAtomicFaWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -352,20 +357,21 @@ struct BnxtNicBackend {
       uint32_t localKey,
       uint64_t addVal) {
     // Back-pressure to keep producer behind NIC consumer (caller holds lock).
-    waitForSqSlots(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    waitForSqSlots(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
-    pipes_gda_bnxt_bsqe* hdr =
-        reinterpret_cast<pipes_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
-    pipes_gda_bnxt_atomic* atomic = reinterpret_cast<pipes_gda_bnxt_atomic*>(
-        getBnxtWqeSlot(qp, slotIdx + 1));
-    pipes_gda_bnxt_sge* sge =
-        reinterpret_cast<pipes_gda_bnxt_sge*>(getBnxtWqeSlot(qp, slotIdx + 2));
+    prims_amd_gda_bnxt_bsqe* hdr =
+        reinterpret_cast<prims_amd_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
+    prims_amd_gda_bnxt_atomic* atomic =
+        reinterpret_cast<prims_amd_gda_bnxt_atomic*>(
+            getBnxtWqeSlot(qp, slotIdx + 1));
+    prims_amd_gda_bnxt_sge* sge = reinterpret_cast<prims_amd_gda_bnxt_sge*>(
+        getBnxtWqeSlot(qp, slotIdx + 2));
 
     uint32_t wqeType =
-        PIPES_GDA_BNXT_HDR_WT_MASK & PIPES_GDA_BNXT_WR_OPCD_ATOMIC_FA;
+        PRIMS_AMD_GDA_BNXT_HDR_WT_MASK & PRIMS_AMD_GDA_BNXT_WR_OPCD_ATOMIC_FA;
     uint32_t wqeSize =
-        PIPES_GDA_BNXT_HDR_WS_MASK & PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT;
+        PRIMS_AMD_GDA_BNXT_HDR_WS_MASK & PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT;
     // ALWAYS set RD_FENCE on atomic FA. The companion-QP "put-with-counter"
     // pattern requires the atomic to fire only after the preceding RDMA
     // WRITE has been retired by the local NIC. For 8B/64B writes the WRITE
@@ -374,21 +380,21 @@ struct BnxtNicBackend {
     // draining and the atomic completes against stale ordering, which on
     // BNXT manifests as the atomic CQE never being retired and the
     // wait_counter loop spinning forever.
-    uint8_t hdrFlags =
-        PIPES_GDA_BNXT_WR_FLAGS_SIGNALED | PIPES_GDA_BNXT_WR_FLAGS_RD_FENCE;
+    uint8_t hdrFlags = PRIMS_AMD_GDA_BNXT_WR_FLAGS_SIGNALED |
+        PRIMS_AMD_GDA_BNXT_WR_FLAGS_RD_FENCE;
     (void)ctrlFlags;
 
-    pipes_gda_bnxt_bsqe hdrVal = {};
-    hdrVal.rsv_ws_fl_wt = (wqeSize << PIPES_GDA_BNXT_HDR_WS_SHIFT) |
-        (hdrFlags << PIPES_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType;
+    prims_amd_gda_bnxt_bsqe hdrVal = {};
+    hdrVal.rsv_ws_fl_wt = (wqeSize << PRIMS_AMD_GDA_BNXT_HDR_WS_SHIFT) |
+        (hdrFlags << PRIMS_AMD_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType;
     hdrVal.key_immd = remoteKey;
     hdrVal.lhdr.rva = remoteAddr;
 
-    pipes_gda_bnxt_atomic atomicVal = {};
+    prims_amd_gda_bnxt_atomic atomicVal = {};
     atomicVal.swp_dt = addVal;
     atomicVal.cmp_dt = 0;
 
-    pipes_gda_bnxt_sge sgeVal = {};
+    prims_amd_gda_bnxt_sge sgeVal = {};
     sgeVal.pa = localAddr;
     sgeVal.lkey = localKey;
     sgeVal.length = sizeof(uint64_t);
@@ -398,62 +404,63 @@ struct BnxtNicBackend {
     *sge = sgeVal;
 
     bnxtFillMsn(qp, sizeof(uint64_t));
-    bnxtIncrTail(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    bnxtIncrTail(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
   }
 
   __device__ void prepareNopWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx) {
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
-    pipes_gda_bnxt_bsqe* hdr =
-        reinterpret_cast<pipes_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
-    pipes_gda_bnxt_rdma* rdma =
-        reinterpret_cast<pipes_gda_bnxt_rdma*>(getBnxtWqeSlot(qp, slotIdx + 1));
-    pipes_gda_bnxt_sge* sge =
-        reinterpret_cast<pipes_gda_bnxt_sge*>(getBnxtWqeSlot(qp, slotIdx + 2));
+    prims_amd_gda_bnxt_bsqe* hdr =
+        reinterpret_cast<prims_amd_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
+    prims_amd_gda_bnxt_rdma* rdma = reinterpret_cast<prims_amd_gda_bnxt_rdma*>(
+        getBnxtWqeSlot(qp, slotIdx + 1));
+    prims_amd_gda_bnxt_sge* sge = reinterpret_cast<prims_amd_gda_bnxt_sge*>(
+        getBnxtWqeSlot(qp, slotIdx + 2));
 
     uint32_t wqeType =
-        PIPES_GDA_BNXT_HDR_WT_MASK & PIPES_GDA_BNXT_WR_OPCD_RDMA_WRITE;
+        PRIMS_AMD_GDA_BNXT_HDR_WT_MASK & PRIMS_AMD_GDA_BNXT_WR_OPCD_RDMA_WRITE;
     uint32_t wqeSize =
-        PIPES_GDA_BNXT_HDR_WS_MASK & PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT;
+        PRIMS_AMD_GDA_BNXT_HDR_WS_MASK & PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT;
 
-    pipes_gda_bnxt_bsqe hdrVal = {};
-    hdrVal.rsv_ws_fl_wt = (wqeSize << PIPES_GDA_BNXT_HDR_WS_SHIFT) |
-        (PIPES_GDA_BNXT_WR_FLAGS_SIGNALED << PIPES_GDA_BNXT_HDR_FLAGS_SHIFT) |
+    prims_amd_gda_bnxt_bsqe hdrVal = {};
+    hdrVal.rsv_ws_fl_wt = (wqeSize << PRIMS_AMD_GDA_BNXT_HDR_WS_SHIFT) |
+        (PRIMS_AMD_GDA_BNXT_WR_FLAGS_SIGNALED
+         << PRIMS_AMD_GDA_BNXT_HDR_FLAGS_SHIFT) |
         wqeType;
     hdrVal.key_immd = 0;
     hdrVal.lhdr.qkey_len = 0;
 
-    pipes_gda_bnxt_rdma rdmaVal = {};
-    pipes_gda_bnxt_sge sgeVal = {};
+    prims_amd_gda_bnxt_rdma rdmaVal = {};
+    prims_amd_gda_bnxt_sge sgeVal = {};
 
     *hdr = hdrVal;
     *rdma = rdmaVal;
     *sge = sgeVal;
 
     bnxtFillMsn(qp, 0);
-    bnxtIncrTail(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    bnxtIncrTail(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
   }
 
-  __device__ void bnxtUpdateCqDbrec(pipes_gda_gpu_dev_verbs_qp* qp) {
+  __device__ void bnxtUpdateCqDbrec(prims_amd_gda_gpu_dev_verbs_qp* qp) {
     uint32_t cqConsIdx = static_cast<uint32_t>(qp->cq_sq.cqe_ci);
     uint32_t cqDepth = qp->nic.bnxt.cq_depth;
     if (cqDepth == 0)
       cqDepth = 1;
 
     uint32_t cycle = (cqConsIdx / cqDepth);
-    uint32_t epoch = (cycle & 0x1) << PIPES_GDA_BNXT_DB_EPOCH_TAIL_SHIFT;
+    uint32_t epoch = (cycle & 0x1) << PRIMS_AMD_GDA_BNXT_DB_EPOCH_TAIL_SHIFT;
     uint32_t cqIdx = cqConsIdx % cqDepth;
 
     uint64_t keyLo = static_cast<uint64_t>(cqIdx | epoch);
-    uint64_t keyHi =
-        (static_cast<uint64_t>(qp->cq_sq.cq_num) & PIPES_GDA_BNXT_DB_QID_MASK) |
-        ((static_cast<uint64_t>(PIPES_GDA_BNXT_QUE_TYPE_CQ) &
-          PIPES_GDA_BNXT_DB_TYP_MASK)
-         << PIPES_GDA_BNXT_DB_TYP_SHIFT) |
-        (0x1ULL << PIPES_GDA_BNXT_DB_VALID_SHIFT);
+    uint64_t keyHi = (static_cast<uint64_t>(qp->cq_sq.cq_num) &
+                      PRIMS_AMD_GDA_BNXT_DB_QID_MASK) |
+        ((static_cast<uint64_t>(PRIMS_AMD_GDA_BNXT_QUE_TYPE_CQ) &
+          PRIMS_AMD_GDA_BNXT_DB_TYP_MASK)
+         << PRIMS_AMD_GDA_BNXT_DB_TYP_SHIFT) |
+        (0x1ULL << PRIMS_AMD_GDA_BNXT_DB_VALID_SHIFT);
 
     uint64_t dbVal = keyLo | (keyHi << 32);
 
@@ -472,11 +479,11 @@ struct BnxtNicBackend {
   // the WQE completed locally even though the NIC actually failed (no
   // remote ACK). Force-inlined for caller spin loops.
   __device__ __forceinline__ int pollOneCqAt(
-      pipes_gda_gpu_dev_verbs_cq* cq,
+      prims_amd_gda_gpu_dev_verbs_cq* cq,
       uint64_t consIndex) {
     volatile char* cqeBase = reinterpret_cast<volatile char*>(cq->cqe_daddr);
-    volatile pipes_gda_bnxt_req_cqe* cqe =
-        reinterpret_cast<volatile pipes_gda_bnxt_req_cqe*>(cqeBase);
+    volatile prims_amd_gda_bnxt_req_cqe* cqe =
+        reinterpret_cast<volatile prims_amd_gda_bnxt_req_cqe*>(cqeBase);
     uint32_t conIdx = cqe->con_indx & 0xFFFF;
     uint32_t target = static_cast<uint32_t>((consIndex + 1) & 0xFFFF);
     // Signed 16-bit diff handles wraparound up to ~32K WQEs between polls.
@@ -485,13 +492,13 @@ struct BnxtNicBackend {
       return EBUSY;
     }
     // CQE arrived — verify status. bcqe lives right after the req_cqe.
-    volatile pipes_gda_bnxt_bcqe* bcqe =
-        reinterpret_cast<volatile pipes_gda_bnxt_bcqe*>(
-            cqeBase + sizeof(pipes_gda_bnxt_req_cqe));
+    volatile prims_amd_gda_bnxt_bcqe* bcqe =
+        reinterpret_cast<volatile prims_amd_gda_bnxt_bcqe*>(
+            cqeBase + sizeof(prims_amd_gda_bnxt_req_cqe));
     uint32_t flg = bcqe->flg_st_typ_ph;
-    uint8_t status = (flg >> PIPES_GDA_BNXT_BCQE_STATUS_SHIFT) &
-        PIPES_GDA_BNXT_BCQE_STATUS_MASK;
-    if (status != PIPES_GDA_BNXT_REQ_ST_OK) {
+    uint8_t status = (flg >> PRIMS_AMD_GDA_BNXT_BCQE_STATUS_SHIFT) &
+        PRIMS_AMD_GDA_BNXT_BCQE_STATUS_MASK;
+    if (status != PRIMS_AMD_GDA_BNXT_REQ_ST_OK) {
       printf(
           "BNXT CQE error: status=%u con_indx=%u target=%u\n",
           status,
@@ -508,8 +515,8 @@ struct BnxtNicBackend {
   // signature; value is copied into slot 2 of the WQE.
   template <typename T>
   __device__ void prepareInlineWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t /* ctrlFlags */,
       uint64_t remoteAddr,
@@ -519,28 +526,28 @@ struct BnxtNicBackend {
     std::size_t size = sizeof(T);
     uint32_t slotIdx = bnxtWqeIdxToSlot(qp, wqeIdx);
 
-    pipes_gda_bnxt_bsqe* hdr =
-        reinterpret_cast<pipes_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
-    pipes_gda_bnxt_rdma* rdma =
-        reinterpret_cast<pipes_gda_bnxt_rdma*>(getBnxtWqeSlot(qp, slotIdx + 1));
+    prims_amd_gda_bnxt_bsqe* hdr =
+        reinterpret_cast<prims_amd_gda_bnxt_bsqe*>(getBnxtWqeSlot(qp, slotIdx));
+    prims_amd_gda_bnxt_rdma* rdma = reinterpret_cast<prims_amd_gda_bnxt_rdma*>(
+        getBnxtWqeSlot(qp, slotIdx + 1));
     void* sgeSlot = getBnxtWqeSlot(qp, slotIdx + 2);
 
     uint32_t wqeType =
-        PIPES_GDA_BNXT_HDR_WT_MASK & PIPES_GDA_BNXT_WR_OPCD_RDMA_WRITE;
+        PRIMS_AMD_GDA_BNXT_HDR_WT_MASK & PRIMS_AMD_GDA_BNXT_WR_OPCD_RDMA_WRITE;
     uint32_t wqeSize =
-        PIPES_GDA_BNXT_HDR_WS_MASK & PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT;
-    uint8_t hdrFlags =
-        PIPES_GDA_BNXT_WR_FLAGS_SIGNALED | PIPES_GDA_BNXT_WR_FLAGS_INLINE;
+        PRIMS_AMD_GDA_BNXT_HDR_WS_MASK & PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT;
+    uint8_t hdrFlags = PRIMS_AMD_GDA_BNXT_WR_FLAGS_SIGNALED |
+        PRIMS_AMD_GDA_BNXT_WR_FLAGS_INLINE;
 
-    pipes_gda_bnxt_bsqe hdrVal = {};
-    hdrVal.rsv_ws_fl_wt = (wqeSize << PIPES_GDA_BNXT_HDR_WS_SHIFT) |
-        (hdrFlags << PIPES_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType |
-        ((static_cast<uint32_t>(size) & PIPES_GDA_BNXT_HDR_IL_MASK)
-         << PIPES_GDA_BNXT_HDR_IL_SHIFT);
+    prims_amd_gda_bnxt_bsqe hdrVal = {};
+    hdrVal.rsv_ws_fl_wt = (wqeSize << PRIMS_AMD_GDA_BNXT_HDR_WS_SHIFT) |
+        (hdrFlags << PRIMS_AMD_GDA_BNXT_HDR_FLAGS_SHIFT) | wqeType |
+        ((static_cast<uint32_t>(size) & PRIMS_AMD_GDA_BNXT_HDR_IL_MASK)
+         << PRIMS_AMD_GDA_BNXT_HDR_IL_SHIFT);
     hdrVal.key_immd = 0;
     hdrVal.lhdr.qkey_len = static_cast<uint64_t>(size);
 
-    pipes_gda_bnxt_rdma rdmaVal = {};
+    prims_amd_gda_bnxt_rdma rdmaVal = {};
     rdmaVal.rva = remoteAddr;
     rdmaVal.rkey = remoteKey;
 
@@ -549,12 +556,13 @@ struct BnxtNicBackend {
     // Inline payload in slot 2.
     const uint8_t* src = static_cast<const uint8_t*>(localData);
     uint8_t* dst = static_cast<uint8_t*>(sgeSlot);
-    for (std::size_t i = 0; i < size && i < PIPES_GDA_BNXT_SLOT_SIZE_BB; ++i) {
+    for (std::size_t i = 0; i < size && i < PRIMS_AMD_GDA_BNXT_SLOT_SIZE_BB;
+         ++i) {
       dst[i] = src[i];
     }
 
     bnxtFillMsn(qp, static_cast<uint32_t>(size));
-    bnxtIncrTail(qp, PIPES_GDA_BNXT_GDA_WQE_SLOT_COUNT);
+    bnxtIncrTail(qp, PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT);
   }
 
   // Wait-on-counter WQE. BNXT has no native wait-WQE primitive (mlx5
@@ -562,8 +570,8 @@ struct BnxtNicBackend {
   // index advances; real wait semantics would need a different mechanism
   // (host-side polling or a custom RDMA-read pattern).
   __device__ void prepareWaitWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t /* ctrlFlags */,
       uint32_t /* targetCqNum */,
@@ -577,11 +585,12 @@ struct BnxtNicBackend {
   // cq_sq.cqe_ci and ring the CQ doorbell so the NIC can overwrite the
   // (single, ncqe=1) CQE slot for the next completion.
   __device__ __forceinline__ int pollCqAt(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_cq* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_cq* /* unused */,
       uint64_t consIndex) {
-    volatile pipes_gda_bnxt_req_cqe* cqe =
-        reinterpret_cast<volatile pipes_gda_bnxt_req_cqe*>(qp->nic.bnxt.cq_buf);
+    volatile prims_amd_gda_bnxt_req_cqe* cqe =
+        reinterpret_cast<volatile prims_amd_gda_bnxt_req_cqe*>(
+            qp->nic.bnxt.cq_buf);
     uint32_t target = static_cast<uint32_t>((consIndex + 1) & 0xFFFF);
 
     constexpr uint64_t kMaxSpins = 10000000ULL;
@@ -607,4 +616,4 @@ struct BnxtNicBackend {
   }
 };
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda

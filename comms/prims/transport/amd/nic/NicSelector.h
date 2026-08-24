@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// NIC Backend Selector for pipes-gda
+// NIC Backend Selector for prims-amd-gda
 // =============================================================================
 //
 // This is the ONLY file in the project that uses #ifdef NIC_* to select the
@@ -26,7 +26,7 @@
 #include "nic/mlx5/Mlx5NicBackend.h" // @manual
 #endif
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 #if defined(NIC_BNXT)
 using ActiveNicBackend = BnxtNicBackend;
@@ -36,4 +36,4 @@ using ActiveNicBackend = IonicNicBackend;
 using ActiveNicBackend = Mlx5NicBackend;
 #endif
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda

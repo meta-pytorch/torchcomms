@@ -4,7 +4,7 @@
 // NIC Selection Configuration
 // =============================================================================
 //
-// Compile-time NIC selection for pipes-gda. Exactly one NIC type must be
+// Compile-time NIC selection for prims-amd-gda. Exactly one NIC type must be
 // defined via BUCK compiler_flags (e.g., -DNIC_MLX5 or -DNIC_BNXT).
 //
 // If no NIC is specified, NIC_MLX5 is used as the default for backward

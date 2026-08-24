@@ -1,7 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// IONIC Direct Verbs (ionic_dv) runtime loader for pipes-gda
+// IONIC Direct Verbs (ionic_dv) runtime loader for prims-amd-gda
 // =============================================================================
 //
 // Function-pointer typedefs and the runtime function table for the AMD Pensando

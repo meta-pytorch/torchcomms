@@ -35,26 +35,26 @@
  *
  * @{
  */
-#ifndef PIPES_GDA_VERBS_DEV_H
-#define PIPES_GDA_VERBS_DEV_H
+#ifndef PRIMS_AMD_GDA_VERBS_DEV_H
+#define PRIMS_AMD_GDA_VERBS_DEV_H
 
 #include "nic/mlx5/Mlx5Hsi.h" // @manual
-#include "pipes_gda/PipesGdaDef.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDef.h" // @manual
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @typedef pipes_gda_gpu_dev_verbs_ticket_t
+ * @typedef prims_amd_gda_gpu_dev_verbs_ticket_t
  * @brief Ticket type used in one-sided APIs.
  */
-typedef uint64_t pipes_gda_gpu_dev_verbs_ticket_t;
+typedef uint64_t prims_amd_gda_gpu_dev_verbs_ticket_t;
 
 /**
  * Describes IBGDA dev WQE crtl segment.
  */
-struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg {
+struct prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg {
   __be32 opmod_idx_opcode; /**< opcode + wqe idx */
   __be32 qpn_ds; /**< qp number */
   union {
@@ -74,17 +74,17 @@ struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg {
 /**
  * Describes IBGDA dev WQE crtl segment.
  */
-struct pipes_gda_gpu_dev_verbs_wqe_wait_seg {
+struct prims_amd_gda_gpu_dev_verbs_wqe_wait_seg {
   uint32_t resv[2];
   __be32 max_index;
   __be32 qpn_cqn;
 } __attribute__((__packed__)) __attribute__((__aligned__(8)));
 
 /**
- * @struct pipes_gda_gpu_dev_verbs_addr
+ * @struct prims_amd_gda_gpu_dev_verbs_addr
  * @brief This structure holds the address and key of a memory region.
  */
-struct pipes_gda_gpu_dev_verbs_addr {
+struct prims_amd_gda_gpu_dev_verbs_addr {
   uint64_t addr;
   __be32 key;
 };
@@ -92,7 +92,7 @@ struct pipes_gda_gpu_dev_verbs_addr {
 /**
  * Describes IBGDA dev general WQE.
  */
-struct pipes_gda_gpu_dev_verbs_wqe {
+struct prims_amd_gda_gpu_dev_verbs_wqe {
   union {
     /* Generic inline Data */
     struct {
@@ -101,42 +101,42 @@ struct pipes_gda_gpu_dev_verbs_wqe {
 
     /* Generic Data */
     struct {
-      struct pipes_gda_ib_mlx5_wqe_data_seg dseg0;
-      struct pipes_gda_ib_mlx5_wqe_data_seg dseg1;
-      struct pipes_gda_ib_mlx5_wqe_data_seg dseg2;
-      struct pipes_gda_ib_mlx5_wqe_data_seg dseg3;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg dseg0;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg dseg1;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg dseg2;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg dseg3;
     };
 
     /* Read/Write */
     struct {
-      struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg rw_cseg;
-      struct pipes_gda_ib_mlx5_wqe_raddr_seg rw_rseg;
-      struct pipes_gda_ib_mlx5_wqe_data_seg rw_dseg0;
-      struct pipes_gda_ib_mlx5_wqe_data_seg rw_dseg1;
+      struct prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg rw_cseg;
+      struct prims_amd_gda_ib_mlx5_wqe_raddr_seg rw_rseg;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg rw_dseg0;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg rw_dseg1;
     };
 
     /* Atomic */
     struct {
-      struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg at_cseg;
-      struct pipes_gda_ib_mlx5_wqe_raddr_seg at_rseg;
-      struct pipes_gda_ib_mlx5_wqe_atomic_seg at_seg;
-      struct pipes_gda_ib_mlx5_wqe_data_seg at_dseg;
+      struct prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg at_cseg;
+      struct prims_amd_gda_ib_mlx5_wqe_raddr_seg at_rseg;
+      struct prims_amd_gda_ib_mlx5_wqe_atomic_seg at_seg;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg at_dseg;
     };
 
     /* Send */
     struct {
-      struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg snd_cseg;
-      struct pipes_gda_ib_mlx5_wqe_data_seg snd_dseg0;
-      struct pipes_gda_ib_mlx5_wqe_data_seg snd_dseg1;
-      struct pipes_gda_ib_mlx5_wqe_data_seg snd_dseg2;
+      struct prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg snd_cseg;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg snd_dseg0;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg snd_dseg1;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg snd_dseg2;
     };
 
     /* Wait */
     struct {
-      struct pipes_gda_gpu_dev_verbs_wqe_ctrl_seg wait_cseg;
-      struct pipes_gda_gpu_dev_verbs_wqe_wait_seg wait_dseg;
-      struct pipes_gda_ib_mlx5_wqe_data_seg padding0;
-      struct pipes_gda_ib_mlx5_wqe_data_seg padding1;
+      struct prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg wait_cseg;
+      struct prims_amd_gda_gpu_dev_verbs_wqe_wait_seg wait_dseg;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg padding0;
+      struct prims_amd_gda_ib_mlx5_wqe_data_seg padding1;
     };
   };
 } __attribute__((__aligned__(8)));
@@ -144,7 +144,7 @@ struct pipes_gda_gpu_dev_verbs_wqe {
 /**
  * Describes IBGDA dev CQ
  */
-struct pipes_gda_gpu_dev_verbs_cq {
+struct prims_amd_gda_gpu_dev_verbs_cq {
   uint8_t* cqe_daddr; /**< CQE address */
   uint32_t cq_num; /**< CQ number */
   uint32_t cqe_num; /**< Total number of CQEs in CQ */
@@ -153,7 +153,7 @@ struct pipes_gda_gpu_dev_verbs_cq {
   uint32_t cqe_mask; /**< Mask of total number of CQEs in CQ */
   uint8_t cqe_size; /**< Single CQE size (64B default) */
   uint64_t cqe_rsvd; /**< All previous CQEs are polled */
-  enum pipes_gda_gpu_dev_verbs_mem_type
+  enum prims_amd_gda_gpu_dev_verbs_mem_type
       mem_type; ///< Memory type of the completion queue
 };
 
@@ -167,7 +167,7 @@ struct pipes_gda_gpu_dev_verbs_cq {
 /**
  * BNXT-specific QP extension fields.
  */
-struct pipes_gda_gpu_dev_verbs_qp_bnxt {
+struct prims_amd_gda_gpu_dev_verbs_qp_bnxt {
   uint32_t sq_depth; ///< SQ depth in slots (not WQEs)
   uint32_t sq_head; ///< Consumer head pointer (in slots)
   uint32_t sq_tail; ///< Producer tail pointer (in slots)
@@ -193,7 +193,7 @@ struct pipes_gda_gpu_dev_verbs_qp_bnxt {
  * MLX5-specific QP extension fields (placeholder for future use).
  * Currently mlx5 uses the common QP fields directly.
  */
-struct pipes_gda_gpu_dev_verbs_qp_mlx5 {
+struct prims_amd_gda_gpu_dev_verbs_qp_mlx5 {
   uint8_t reserved; ///< Placeholder (mlx5 uses common QP fields)
 };
 
@@ -202,7 +202,7 @@ struct pipes_gda_gpu_dev_verbs_qp_mlx5 {
  * Ionic uses color-bit CQ polling and MSN-based completion tracking.
  * Doorbell is a 64-bit write to a memory-mapped register.
  */
-struct pipes_gda_gpu_dev_verbs_qp_ionic {
+struct prims_amd_gda_gpu_dev_verbs_qp_ionic {
   // SQ doorbell register (GPU-mapped via HSA)
   volatile uint64_t* sq_dbreg; ///< SQ doorbell register pointer
   uint64_t sq_dbval; ///< SQ base doorbell value (OR'd with masked position)
@@ -233,7 +233,7 @@ struct pipes_gda_gpu_dev_verbs_qp_ionic {
 /**
  * Describes IBGDA dev QP
  */
-struct pipes_gda_gpu_dev_verbs_qp {
+struct prims_amd_gda_gpu_dev_verbs_qp {
   uint64_t sq_rsvd_index; ///< All WQE slots prior to this index are reserved
   uint64_t sq_ready_index; ///< All WQE slots prior to this index are ready
   uint64_t sq_wqe_pi; /**< SQ WQE producer index */
@@ -263,11 +263,11 @@ struct pipes_gda_gpu_dev_verbs_qp {
   uint64_t rq_ready_index; /**< All previous WQEs are ready */
   int rq_lock; /**< RQ lock */
 
-  struct pipes_gda_gpu_dev_verbs_cq cq_sq; /**< SQ CQ connected to QP */
-  struct pipes_gda_gpu_dev_verbs_cq cq_rq; /**< RQ CQ connected to QP */
+  struct prims_amd_gda_gpu_dev_verbs_cq cq_sq; /**< SQ CQ connected to QP */
+  struct prims_amd_gda_gpu_dev_verbs_cq cq_rq; /**< RQ CQ connected to QP */
 
-  enum pipes_gda_gpu_dev_verbs_nic_handler nic_handler; ///< NIC handler
-  enum pipes_gda_gpu_dev_verbs_mem_type
+  enum prims_amd_gda_gpu_dev_verbs_nic_handler nic_handler; ///< NIC handler
+  enum prims_amd_gda_gpu_dev_verbs_mem_type
       mem_type; ///< Memory type of the completion
 
   /**
@@ -275,9 +275,9 @@ struct pipes_gda_gpu_dev_verbs_qp {
    * Access via qp->nic.bnxt, qp->nic.mlx5, etc.
    */
   union {
-    struct pipes_gda_gpu_dev_verbs_qp_bnxt bnxt;
-    struct pipes_gda_gpu_dev_verbs_qp_mlx5 mlx5;
-    struct pipes_gda_gpu_dev_verbs_qp_ionic ionic;
+    struct prims_amd_gda_gpu_dev_verbs_qp_bnxt bnxt;
+    struct prims_amd_gda_gpu_dev_verbs_qp_mlx5 mlx5;
+    struct prims_amd_gda_gpu_dev_verbs_qp_ionic ionic;
   } nic;
 } __attribute__((__aligned__(8)));
 
@@ -285,6 +285,6 @@ struct pipes_gda_gpu_dev_verbs_qp {
 }
 #endif
 
-#endif /* PIPES_GDA_VERBS_DEV_H */
+#endif /* PRIMS_AMD_GDA_VERBS_DEV_H */
 
 /** @} */
