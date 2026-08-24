@@ -18,6 +18,7 @@
 #include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
 #include "comms/utils/colltrace/tests/MockTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/NcclxLogger.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 
 using namespace meta::comms::ncclx;
@@ -123,7 +124,7 @@ class CollTraceWrapperUT : public ::testing::Test {
     // Create a mock collective task
     auto* collTask = createNewCollTask();
     if (collTask == nullptr) {
-      XLOG(FATAL) << "Failed to create new collective task" << std::endl;
+      NCCLX_LOG_STREAM(FATAL) << "Failed to create new collective task";
     }
     collTask->func = ncclFuncAllReduce;
     collTask->algorithm = NCCL_ALGO_RING;
