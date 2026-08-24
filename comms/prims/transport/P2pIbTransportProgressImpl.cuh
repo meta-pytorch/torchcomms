@@ -1210,15 +1210,6 @@ __device__ __forceinline__ void progress_recv_consume_buf(
 #endif
 }
 
-// Group-wide AND, used by the LL readiness poll to fold each thread's local
-// packet-flag check into one collective decision. Delegates to
-// ThreadGroup::all() so the scratch index stays tied to the group's barrier;
-// keeping a second copy of that indexing here is what let it drift from
-// ThreadGroup::broadcast().
-__device__ __forceinline__ bool group_all_ready(ThreadGroup& group, bool pred) {
-  return group.all(pred);
-}
-
 // Non-blocking readiness check for one recv chunk (LL: cooperative,
 // non-spinning poll of every packet's inline flag == chunk.flagVal, then a
 // group AND-reduce). There is no DATA_READY counter for LL, so
@@ -1256,22 +1247,14 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   (void)traceState;
   (void)qpLane;
   const char* staging = channelLayout.recvStagingPtr + chunk.stagingOff;
-  const std::size_t nPackets =
-      chunk.wireBytes / static_cast<std::size_t>(P::kPacketBytes);
-  const auto flagVal = static_cast<typename P::FlagType>(chunk.flagVal);
-  // Each thread inspects the packets it owns (grid-strided, mirroring
-  // LLImpl::unpack) with early-exit, then the group AND-reduces so all threads
-  // agree to decode or to return Waiting -- no spin.
-  uint32_t myReady = 1;
-  for (std::size_t i = group.thread_id_in_group; i < nPackets;
-       i += group.group_size) {
-    if (!LLImpl<P>::is_flag_set(
-            staging + i * static_cast<std::size_t>(P::kPacketBytes), flagVal)) {
-      myReady = 0;
-      break;
-    }
-  }
-  if (group_all_ready(group, myReady != 0U)) {
+  // Packet geometry lives in LLImpl, which owns the format; this seam only
+  // decides what to do with the verdict -- report not-ready on false, rather
+  // than spin.
+  if (LLImpl<P>::all_flags_set(
+          group,
+          staging,
+          P::max_payload(chunk.wireBytes),
+          static_cast<typename P::FlagType>(chunk.flagVal))) {
     if (group.is_leader()) {
       // LL carries no DATA_READY, but its put still advanced the sender's
       // IbQpState::cursor -- select_put_lane_ordinal() increments that cursor

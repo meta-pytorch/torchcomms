@@ -21,6 +21,23 @@ void test_ll_pack_unpack(
 /// I/O uses global volatile ops, which are illegal on shared memory.
 void test_ll_flag_roundtrip(void* p8_d, uint32_t* errorCount_d);
 
+/// pack(src) into `staging_d` under `flagVal`, then ask
+/// `LLImpl::all_flags_set` whether the whole chunk has landed.
+///
+/// `corruptPacket >= 0` first rewrites that one packet's flag to a DIFFERENT
+/// generation, which is what a not-yet-arrived packet looks like. The check
+/// must then report false -- and must REPORT it, not spin: this entry point
+/// exists precisely for callers that cannot block, so a hang here is the
+/// failure, and the test would time out rather than assert.
+///
+/// Writes 1/0 to `ready_d`.
+void test_ll_all_flags_set(
+    const char* src_d,
+    char* staging_d,
+    std::size_t nbytes,
+    int corruptPacket,
+    uint32_t* ready_d);
+
 /// Reduce op selector for the unpack_reduce launchers below.
 enum class ReduceKind { Sum, Max, Min };
 
