@@ -57,6 +57,54 @@ void test_ll_pack_unpack(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+// pack the chunk, optionally break one packet's flag, then ask all_flags_set.
+template <typename P>
+__global__ void all_flags_set_kernel(
+    const char* src,
+    char* staging,
+    std::size_t nbytes,
+    int corruptPacket,
+    uint32_t* ready) {
+  ThreadGroup g{
+      threadIdx.x,
+      blockDim.x,
+      blockIdx.x,
+      blockIdx.x,
+      gridDim.x,
+      SyncScope::BLOCK};
+
+  const auto flagVal = static_cast<typename P::FlagType>(7);
+
+  LLImpl<P>::pack(g, staging, src, nbytes, flagVal);
+  g.sync();
+  if (corruptPacket >= 0 && threadIdx.x == 0) {
+    // A different generation is exactly what an un-arrived packet looks like:
+    // the memory holds whatever the previous ring pass left there.
+    LLImpl<P>::store_flag(
+        staging +
+            static_cast<std::size_t>(corruptPacket) *
+                static_cast<std::size_t>(P::kPacketBytes),
+        static_cast<typename P::FlagType>(flagVal + 1));
+  }
+  g.sync();
+
+  const bool r = LLImpl<P>::all_flags_set(g, staging, nbytes, flagVal);
+  if (threadIdx.x == 0) {
+    *ready = r ? 1u : 0u;
+  }
+}
+
+void test_ll_all_flags_set(
+    const char* src_d,
+    char* staging_d,
+    std::size_t nbytes,
+    int corruptPacket,
+    uint32_t* ready_d) {
+  all_flags_set_kernel<LlxPacketGeometry>
+      <<<1, 256>>>(src_d, staging_d, nbytes, corruptPacket, ready_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 // LLImpl::store_flag/load_flag/is_flag_set round-trip over a single global
 // packet. `pkt` is GLOBAL memory -> flag I/O uses global volatile ops.
 template <typename P>

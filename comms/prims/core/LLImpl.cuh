@@ -128,6 +128,52 @@ struct LLImpl {
 #endif
   }
 
+  /// True once EVERY packet covering `nbytes` of payload in `staging` carries
+  /// `flagVal`. Cooperative across `group`: each thread checks the packets it
+  /// owns (the same grid-stride mapping `unpack` uses) with early exit, then
+  /// the group AND-reduces so all threads reach the same verdict.
+  ///
+  /// The non-spinning counterpart to `unpack`'s per-packet wait, for callers
+  /// that must not block inside the codec -- the resumable recv path returns
+  /// `Waiting` on false rather than spinning.
+  ///
+  /// Lives here rather than in the transport because deciding which packets
+  /// cover `nbytes`, and where each one sits, is packet-format knowledge --
+  /// the same knowledge `pack` and `unpack` below encode. A copy of this walk
+  /// outside this class is a second place for that layout to drift.
+  ///
+  /// Takes PAYLOAD bytes, like every other entry point here; callers holding a
+  /// wire length must convert with `P::max_payload()`.
+  template <typename Group>
+  __device__ __forceinline__ static bool all_flags_set(
+      Group& group,
+      const void* staging,
+      std::size_t nbytes,
+      FlagType flagVal) {
+#ifdef __CUDA_ARCH__
+    const std::size_t nPackets = P::packet_count(nbytes);
+    const auto* base = reinterpret_cast<const char*>(staging);
+    bool myReady = true;
+    for (std::size_t i = group.thread_id_in_group; i < nPackets;
+         i += group.group_size) {
+      if (!is_flag_set(
+              base + i * static_cast<std::size_t>(P::kPacketBytes), flagVal)) {
+        myReady = false;
+        break;
+      }
+    }
+    // group.all() rather than a hand-rolled reduction: it keeps the scratch
+    // index tied to the group's own barrier.
+    return group.all(myReady);
+#else
+    (void)group;
+    (void)staging;
+    (void)nbytes;
+    (void)flagVal;
+    return true;
+#endif
+  }
+
   /// Encode `nbytes` of `src` into consecutive packets in `staging`, stamping
   /// every packet's trailing flag with `flagVal`. Cooperative across `group`.
   template <typename Group>
