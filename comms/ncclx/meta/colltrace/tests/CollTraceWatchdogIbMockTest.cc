@@ -12,6 +12,7 @@
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
 #include "comms/testinfra/IbverbMockTestUtils.h"
+#include "meta/NcclxLogger.h"
 
 namespace {
 struct GpuBuffer {
@@ -33,20 +34,20 @@ struct GpuBuffer {
 };
 } // namespace
 
-#define NCCLCHECK_FATAL(cmd)                                            \
-  do {                                                                  \
-    ncclResult_t res = cmd;                                             \
-    if (res != ncclSuccess) {                                           \
-      XLOGF(FATAL, "NCCL error {} '{}'", res, ncclGetErrorString(res)); \
-    }                                                                   \
+#define NCCLCHECK_FATAL(cmd)                                                \
+  do {                                                                      \
+    ncclResult_t res = cmd;                                                 \
+    if (res != ncclSuccess) {                                               \
+      NCCLX_LOG(FATAL, "NCCL error {} '{}'", res, ncclGetErrorString(res)); \
+    }                                                                       \
   } while (0)
 
-#define CUDACHECK_FATAL(cmd)                                            \
-  do {                                                                  \
-    cudaError_t err = cmd;                                              \
-    if (err != cudaSuccess) {                                           \
-      XLOGF(FATAL, "CUDA error {} '{}'", err, cudaGetErrorString(err)); \
-    }                                                                   \
+#define CUDACHECK_FATAL(cmd)                                                \
+  do {                                                                      \
+    cudaError_t err = cmd;                                                  \
+    if (err != cudaSuccess) {                                               \
+      NCCLX_LOG(FATAL, "CUDA error {} '{}'", err, cudaGetErrorString(err)); \
+    }                                                                       \
   } while (0)
 
 // RAII for NCCL Communicator
@@ -168,7 +169,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
   mccl::cuda::CudaStream stream;
 
   // Initialize NCCL communicator
