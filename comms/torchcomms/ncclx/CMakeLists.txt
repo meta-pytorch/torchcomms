@@ -107,6 +107,10 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
+    # libnccl hides meta::comms::logger behind its version script, so this
+    # module must carry its own copy of the shared logger implementation.
+    comms/utils/logger/SpdlogLogger.cc
+    comms/utils/logger/CommsLogFormatter.cc
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
@@ -124,8 +128,13 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
 )
 torchcomms_use_torch_pybind11(torchcomms_comms_ncclx)
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
-# CudaRAII.cc includes SpdlogLogger.h directly, so this target must carry
-# the logger's compile-time configuration instead of relying on CTRAN.
+# CudaRAII.cc logs through COMMS_LOG, so this module needs both the logger's
+# compile-time configuration and its implementation (added to the sources
+# above). These two definitions without SPDLOG_COMPILED_LIB are header-only
+# spdlog -- the same configuration NCCLX itself builds these sources under
+# (comms/ncclx/*/src/Makefile). Do not link spdlog::spdlog here: it sets
+# SPDLOG_COMPILED_LIB PUBLIC, which would flip every TU in this module to
+# compiled mode and add a libspdlog.a dependency.
 target_compile_definitions(torchcomms_comms_ncclx PRIVATE
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
     SPDLOG_FMT_EXTERNAL
