@@ -12,10 +12,12 @@
 #include "comms/mccl/integration_tests/McclIntegrationTestUtil.h"
 #include "comms/mccl/tests/CudaStream.h"
 #include "comms/mccl/tests/CudaTestUtil.h"
-#include "comms/ncclx/meta/NcclxLogger.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
+#include "meta/NcclxLogger.h"
 
 namespace {
+constexpr std::string_view kLogFilePrefix{"logfile"};
+
 struct GpuBuffer {
   explicit GpuBuffer(size_t size) : size_(size) {
     cudaMalloc(&ptr_, size);
@@ -35,20 +37,20 @@ struct GpuBuffer {
 };
 } // namespace
 
-#define NCCLCHECK_FATAL(cmd)                                            \
-  do {                                                                  \
-    ncclResult_t res = cmd;                                             \
-    if (res != ncclSuccess) {                                           \
-      XLOGF(FATAL, "NCCL error {} '{}'", res, ncclGetErrorString(res)); \
-    }                                                                   \
+#define NCCLCHECK_FATAL(cmd)                                                \
+  do {                                                                      \
+    ncclResult_t res = cmd;                                                 \
+    if (res != ncclSuccess) {                                               \
+      NCCLX_LOG(FATAL, "NCCL error {} '{}'", res, ncclGetErrorString(res)); \
+    }                                                                       \
   } while (0)
 
-#define CUDACHECK_FATAL(cmd)                                            \
-  do {                                                                  \
-    cudaError_t err = cmd;                                              \
-    if (err != cudaSuccess) {                                           \
-      XLOGF(FATAL, "CUDA error {} '{}'", err, cudaGetErrorString(err)); \
-    }                                                                   \
+#define CUDACHECK_FATAL(cmd)                                                \
+  do {                                                                      \
+    cudaError_t err = cmd;                                                  \
+    if (err != cudaSuccess) {                                               \
+      NCCLX_LOG(FATAL, "CUDA error {} '{}'", err, cudaGetErrorString(err)); \
+    }                                                                       \
   } while (0)
 
 // RAII for NCCL Communicator
@@ -102,7 +104,7 @@ void waitStreamWithTimeout(
       return;
     }
     if (res != cudaErrorNotReady) {
-      XLOGF(
+      NCCLX_LOG(
           FATAL, "Unexpected CUDA error {} '{}'", res, cudaGetErrorString(res));
     }
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -139,7 +141,8 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
                     "NCCL_DEBUG=INFO",
                     fmt::format(
                         "NCCL_DEBUG_FILE={}",
-                        (tmpDir_.path() / "logfile%p").string()),
+                        (tmpDir_.path() / (std::string{kLogFilePrefix} + "%p"))
+                            .string()),
                 },
         });
   }
@@ -160,7 +163,7 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
         testDriverState.workerExitCodes, ::testing::Each(::testing::Eq(0)));
   }
 
-  void testDriverCheckCrashedWithWatchdog() {
+  void testDriverCheckCrashedWithWatchdog(bool expectPeerTerminations = false) {
     ASSERT_TRUE(
         std::holds_alternative<
             mccl::CollectiveIntegrationTestMixin::TestDriverState>(
@@ -172,14 +175,41 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
     EXPECT_THAT(
         testDriverState.workerExitCodes, ::testing::Each(::testing::Ne(0)));
 
-    int count = 0;
+    const auto expectedFileCount = testDriverState.workerExitCodes.size();
+    ASSERT_GT(expectedFileCount, 0);
+    size_t fileCount = 0;
+    size_t nonEmptyFileCount = 0;
+    size_t watchdogFatalCount = 0;
+    size_t peerFatalCount = 0;
     for (const auto& entry : folly::fs::directory_iterator(tmpDir_.path())) {
+      const auto fileName = entry.path().filename().string();
+      if (fileName.compare(0, kLogFilePrefix.size(), kLogFilePrefix) != 0) {
+        continue;
+      }
       std::string fileContents;
       ASSERT_TRUE(folly::readFile(entry.path().c_str(), fileContents));
-      EXPECT_THAT(fileContents, ::testing::HasSubstr("COMM FATAL"));
-      count++;
+      if (!fileContents.empty()) {
+        ++nonEmptyFileCount;
+      }
+      if (fileContents.find("COMM FATAL: FatalError: Collective") !=
+          std::string::npos) {
+        ++watchdogFatalCount;
+      }
+      if (fileContents.find("Peer terminated after rank 0 watchdog timeout") !=
+          std::string::npos) {
+        ++peerFatalCount;
+      }
+      ++fileCount;
     }
-    EXPECT_EQ(count, 4);
+    EXPECT_EQ(fileCount, expectedFileCount);
+    EXPECT_EQ(nonEmptyFileCount, expectedFileCount);
+    if (expectPeerTerminations) {
+      EXPECT_GE(watchdogFatalCount, 1);
+      EXPECT_EQ(peerFatalCount, expectedFileCount - 1);
+    } else {
+      EXPECT_GT(watchdogFatalCount, 0);
+      EXPECT_EQ(peerFatalCount, 0);
+    }
   }
 };
 
@@ -217,7 +247,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
   mccl::cuda::CudaStream stream;
 
   // Initialize NCCL communicator
@@ -243,14 +273,20 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   auto srcRank = (rank - 1 + worldSize) % worldSize;
   auto dstRank = (rank + 1) % worldSize;
 
-  NCCLCHECK_FATAL(
+  // These calls intentionally provoke a GPE failure after successful enqueue.
+  // An immediate API failure is a different regression and must not be
+  // mistaken for the watchdog's asynchronous error path.
 #if NCCL_MINOR >= 29
+  ASSERT_EQ(
+      ncclSuccess,
       ncclx::ncclPutSignal(
           sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
+  ASSERT_EQ(ncclSuccess, ncclx::ncclWaitSignal(srcRank, win, stream.raw()));
 #else
+  ASSERT_EQ(
+      ncclSuccess,
       ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
-  NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.raw()));
+  ASSERT_EQ(ncclSuccess, ncclWaitSignal(srcRank, win, stream.raw()));
 #endif
   waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
 }
@@ -270,7 +306,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -311,7 +347,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -342,7 +378,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
 
 TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   if (isTestDriverProcess()) {
-    testDriverCheckCrashedWithWatchdog();
+    testDriverCheckCrashedWithWatchdog(true /*expectPeerTerminations*/);
     return;
   }
 
@@ -362,7 +398,7 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -379,8 +415,9 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   if (rank != 0) {
     // Sleep long enough to make other ranks timeout
     std::this_thread::sleep_for(timeoutSec + std::chrono::seconds{3});
-    // Hacky way to make the driver process believe rank 0 is faulty as well.
-    NCCLX_LOG(FATAL, "COMM FATAL");
+    // Rank 0 owns the collective that times out. Terminate the peer ranks after
+    // it has had enough time to emit the production watchdog diagnostic.
+    NCCLX_LOG(FATAL, "Peer terminated after rank 0 watchdog timeout");
   } else {
     NcclAllReduce allReduce(comm.raw(), stream, 32);
     std::this_thread::sleep_for(timeoutSec + std::chrono::seconds{3});
@@ -411,7 +448,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);
@@ -459,7 +496,7 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
-  XLOG(INFO) << "CUDA device id: " << deviceId;
+  NCCLX_LOG_STREAM(INFO) << "CUDA device id: " << deviceId;
 
   // Initialize NCCL communicator
   NcclComm comm(worldSize, rank);

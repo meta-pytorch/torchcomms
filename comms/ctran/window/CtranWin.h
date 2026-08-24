@@ -156,6 +156,16 @@ struct CtranWin {
 
   commResult_t free(bool skipBarrier = false);
 
+  // Retain ordinary RegCache segment references for a caller-owned data
+  // buffer. These references make explicit window registration independent of
+  // allocator hooks and are released by free() after scoped registrations and
+  // imported peer mappings are gone.
+  commResult_t retainDataSegments();
+
+  inline bool ownsDataSegmentRefs() const {
+    return !ownedDataSegHdls_.empty();
+  }
+
   bool nvlEnabled(int rank) const;
 
   // Get data size for specific rank
@@ -263,6 +273,10 @@ struct CtranWin {
   // peerBase + (buf - localBase). Records the upstream NCCL_WIN_COLL_SYMMETRIC
   // hint; consumed by a later window-based allgather. Cached only for now.
   bool symmetric_{false};
+  // Ordinary RegCache references retained for a caller-owned data buffer.
+  // They are released non-forced so an allocator hook or another explicit
+  // owner of the same physical segment remains valid.
+  std::vector<void*> ownedDataSegHdls_;
   // The standalone NVL CE-multicast object for this window's data buffer, set
   // in exchange() and read via multicastWriteBase(). Self-owning; released with
   // the window. null unless multicast engaged.

@@ -6,6 +6,7 @@
 #include "comms/ctran/utils/Alloc.h" // isCuMemFabricEnabled
 #include "comms/ctran/utils/Checks.h" // FB_COMMCHECK
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/ctran/utils/ExtUtils.h"
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12010
 #include "comms/ctran/utils/CtranLogger.h"
 #endif
@@ -20,6 +21,7 @@ CtranMulticast::CtranMulticast(int nvlLocalRank, int nLocalRanks, int cudaDev)
       cudaDev_(cudaDev) {}
 
 CtranMulticast::~CtranMulticast() {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   // Safe teardown: cuMulticastUnbind can return an RM error if the backing
   // buffer was already freed by the user (see NCCL's "safe to ignore" note);
   // ignore all teardown errors so a partially-created or user-freed overlay
@@ -59,6 +61,7 @@ bool CtranMulticast::isSupported(int cudaDev) {
   // multicast-capable/incapable split within a process). Also logs the
   // unsupported reason at most once.
   static const bool supported = [cudaDev]() -> bool {
+    SetCudaDevRAII setCudaDev(cudaDev);
     // Driver-version gate: the multicast entry points are loaded (non-null).
     if (FB_CUPFN(cuMulticastCreate) == nullptr ||
         FB_CUPFN(cuMulticastAddDevice) == nullptr ||
@@ -111,7 +114,7 @@ bool CtranMulticast::isSupported(int cudaDev) {
 
 commResult_t
 CtranMulticast::granularity(int cudaDev, int nLocalRanks, size_t& gran) {
-  (void)cudaDev;
+  SetCudaDevRAII setCudaDev(cudaDev);
   CUmulticastObjectProp prop = {};
   prop.numDevices = static_cast<unsigned int>(nLocalRanks);
   prop.size = 0;
@@ -130,6 +133,7 @@ commResult_t CtranMulticast::createRoot(
     size_t mcSize,
     CUmemAllocationHandleType handleType,
     CUmemGenericAllocationHandle& outHandle) {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   // Release anything we already hold before creating a new one, so a misuse
   // (double createRoot, or createRoot after adoptImported) cannot silently drop
   // -- and leak -- the previously-held multicast object. Zero each first so a
@@ -160,6 +164,7 @@ commResult_t CtranMulticast::createRoot(
 }
 
 void CtranMulticast::adoptImported(CUmemGenericAllocationHandle handle) {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   // mcHandle_ is only ever non-zero once we have already adopted, so this is a
   // double-adopt: release the old reference rather than silently dropping --
   // and leaking -- it. A root's create reference lives in createdHandle_ and is
@@ -172,6 +177,7 @@ void CtranMulticast::adoptImported(CUmemGenericAllocationHandle handle) {
 }
 
 commResult_t CtranMulticast::retainSegments(const void* dptr, size_t len) {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   // Single-use: one instance retains exactly one buffer's segments (like
   // createRoot/adoptImported). Re-retaining would silently drop the prior
   // call's segments, so reject it as an explicit misuse.
@@ -230,6 +236,7 @@ bool CtranMulticast::segmentsAlignedTo(size_t gran) const {
 }
 
 commResult_t CtranMulticast::addDeviceAndBind() {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   // Every rank, the root included, binds and maps through its IMPORTED handle,
   // so adoptImported() must have run: createRoot() alone leaves mcHandle_ at 0.
   if (mcHandle_ == 0) {
@@ -252,6 +259,7 @@ commResult_t CtranMulticast::addDeviceAndBind() {
 }
 
 commResult_t CtranMulticast::mapVA(size_t mcSize, size_t gran) {
+  SetCudaDevRAII setCudaDev(cudaDev_);
   FB_CUCHECK(cuMemAddressReserve(
       &mcVA_, mcSize, /*alignment=*/gran, /*addr=*/0, /*flags=*/0));
   // Record the reserved size now so a failure in the map/setAccess below leaves

@@ -7,7 +7,8 @@
 
 #include <folly/Optional.h>
 #include <folly/Range.h>
-#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/SpdlogLogger.h"
 
 /**
  * FB Infra is not fully in conda environment and we build NCCLX in conda
@@ -23,8 +24,8 @@
 class DataSink {
  public:
   explicit DataSink(folly::StringPiece dataset) {
-    XLOG(WARNING) << "Empty sink for dataset: " << dataset << ". "
-                  << "No logging will be done.";
+    COMMS_LOG_STREAM(WARN) << "Empty sink for dataset: " << dataset << ". "
+                           << "No logging will be done.";
   }
 
   size_t addRawData(

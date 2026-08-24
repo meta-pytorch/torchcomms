@@ -1,9 +1,9 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 #include <nccl.h>
 #include <chrono>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/common/CudaWrap.h"
 #include "comms/common/fault_tolerance/Abort.h"
@@ -78,7 +78,7 @@ class AllToAllvLl128BenchmarkFixture
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        XLOGF(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
+        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
         std::abort();
       }
     }
@@ -90,7 +90,7 @@ class AllToAllvLl128BenchmarkFixture
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
       std::abort();
     }
     id = allIds[0];
@@ -135,8 +135,9 @@ class AllToAllvLl128BenchmarkFixture
       bootstrap->barrierAll();
 
       if (globalRank == 0) {
-        XLOG(INFO) << "Global warmup complete (" << kGlobalWarmupIters
-                   << " NCCL iterations at 16KB/peer)";
+        COMMS_LOG_STREAM(INFO)
+            << "Global warmup complete (" << kGlobalWarmupIters
+            << " NCCL iterations at 16KB/peer)";
       }
     }
   }
@@ -490,7 +491,7 @@ class AllToAllvLl128BenchmarkFixture
     ss << "LL128/NCCL = LL128 BW / NCCL BW, LL128/Simp = LL128 BW / Simple BW\n";
     ss << std::string(125, '=') << "\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 
   ncclComm_t ncclComm_{};
@@ -499,7 +500,8 @@ class AllToAllvLl128BenchmarkFixture
 
 TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
   if (globalRank == 0) {
-    XLOG(INFO) << "\n=== LL128 vs Simple vs NCCL AllToAllv Comparison ===\n";
+    COMMS_LOG_STREAM(INFO)
+        << "\n=== LL128 vs Simple vs NCCL AllToAllv Comparison ===\n";
   }
 
   std::vector<Ll128BenchmarkConfig> configs;
@@ -674,7 +676,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128VsSimpleVsNccl) {
 
 TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
   if (globalRank == 0) {
-    XLOG(INFO)
+    COMMS_LOG_STREAM(INFO)
         << "\n=== LL128 vs Simple vs NCCL Latency Sweep (for Triton comparison) ===\n";
   }
 
@@ -815,7 +817,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
     ss << "LL128/NCCL and LL128/Simple are speedup ratios (higher is better)\n";
     ss << std::string(90, '=') << "\n";
 
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
 
     // CSV output to file if BENCH_CSV_OUTPUT is set
     const char* csvPath = std::getenv("BENCH_CSV_OUTPUT");
@@ -832,9 +834,9 @@ TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
           csvFile << "\n";
         }
         csvFile.close();
-        XLOG(INFO) << "CSV results written to: " << csvPath;
+        COMMS_LOG_STREAM(INFO) << "CSV results written to: " << csvPath;
       } else {
-        XLOG(ERR) << "Failed to open CSV output file: " << csvPath;
+        COMMS_LOG_STREAM(ERR) << "Failed to open CSV output file: " << csvPath;
       }
     }
 
@@ -851,13 +853,14 @@ TEST_F(AllToAllvLl128BenchmarkFixture, LatencySweep) {
       ss << "\n";
     }
     ss << "--- CSV END ---";
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 }
 
 TEST_F(AllToAllvLl128BenchmarkFixture, Ll128BlockThreadSweep) {
   if (globalRank == 0) {
-    XLOG(INFO) << "\n=== LL128 AllToAllv Block Count Sweep (threads=512) ===\n";
+    COMMS_LOG_STREAM(INFO)
+        << "\n=== LL128 AllToAllv Block Count Sweep (threads=512) ===\n";
   }
 
   // Message sizes that span medium-to-large range where block count matters
@@ -952,13 +955,13 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128BlockThreadSweep) {
     }
 
     ss << std::string(80, '=') << "\n";
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 }
 
 TEST_F(AllToAllvLl128BenchmarkFixture, Ll128ThreadSweep) {
   if (globalRank == 0) {
-    XLOG(INFO)
+    COMMS_LOG_STREAM(INFO)
         << "\n=== LL128 AllToAllv Thread Count Sweep (256 vs 512 threads) ===\n";
   }
 
@@ -1047,7 +1050,7 @@ TEST_F(AllToAllvLl128BenchmarkFixture, Ll128ThreadSweep) {
     }
 
     ss << std::string(80, '=') << "\n";
-    XLOG(INFO) << ss.str();
+    COMMS_LOG_STREAM(INFO) << ss.str();
   }
 }
 
@@ -1059,5 +1062,7 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
-  return RUN_ALL_TESTS();
+  const auto result = RUN_ALL_TESTS();
+  spdlog::shutdown();
+  return result;
 }

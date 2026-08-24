@@ -1221,11 +1221,10 @@ TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
   // discovery takes the cumem path; a cudaMalloc/host over-range buffer does
   // not reliably error there.
   //
-  // Note: the user buffer registers via acquireScopedRegister, whose
-  // regRangeCached runs pinRange (the over-range step above) BEFORE its
-  // allocator-cached-segment check, so the over-range failure still triggers
-  // here and is surfaced as commInvalidUsage. The oversizedBytes trigger stays
-  // required; no globalRegister/CCA-hook simulation is needed for this path.
+  // Note: ctranWinRegister retains the user buffer's physical segments before
+  // exchange. That retention runs pinRange over the oversized range and fails
+  // before any scoped registration is acquired. The oversizedBytes trigger
+  // stays required; no globalRegister/CCA-hook simulation is needed.
   //
   // With the RAII guard fix, the failed register frees the window (and its
   // signal-buffer segment), so getSegments() returns to baseline.
@@ -1272,12 +1271,12 @@ TEST_F(CtranWinTest, RegisterOverRangeUserBufferNoLeak) {
       segments.end());
 }
 
-TEST_F(CtranWinTest, RegisterUncachedUserBufferReturnsInvalidUsageNoLeak) {
+TEST_F(CtranWinTest, RegisterUncachedUserBufferOwnsAndReleasesSegment) {
   auto comm = makeCtranComm();
   ASSERT_NE(comm, nullptr);
 
   constexpr size_t sizeBytes = 8192 * sizeof(int);
-  const MemAllocType bufType = MemAllocType::kMemCudaMalloc;
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
   void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
   ASSERT_NE(userBuf, nullptr);
 
@@ -1286,13 +1285,109 @@ TEST_F(CtranWinTest, RegisterUncachedUserBufferReturnsInvalidUsageNoLeak) {
 
   CtranWin* win = nullptr;
   meta::comms::Hints hints;
-  const auto res =
-      ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
-  EXPECT_EQ(res, commInvalidUsage);
-  EXPECT_EQ(win, nullptr);
-  EXPECT_EQ(regCache->getSegments().size(), segsBefore)
-      << "ctranWinRegister leaked RegCache segments on uncached user buffer";
+  ASSERT_EQ(hints.set("win_register_ipc_only", "1"), commSuccess);
+  ASSERT_EQ(hints.set("win_register_enable_signal", "0"), commSuccess);
+  auto res = ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints);
+  ASSERT_EQ(res, commSuccess);
+  ASSERT_NE(win, nullptr);
+  EXPECT_TRUE(win->ownsDataSegmentRefs());
 
+  std::vector<void*> segHdls;
+  std::vector<ctran::regcache::RegElem*> regElems;
+  ASSERT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          userBuf, sizeBytes, comm->statex_->cudaDev(), segHdls, regElems),
+      commSuccess);
+  EXPECT_FALSE(segHdls.empty());
+
+  oobBarrier();
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, commSuccess);
+
+  segHdls.clear();
+  regElems.clear();
+  ASSERT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          userBuf, sizeBytes, comm->statex_->cudaDev(), segHdls, regElems),
+      commSuccess);
+  EXPECT_TRUE(segHdls.empty());
+  EXPECT_TRUE(regElems.empty());
+  EXPECT_EQ(regCache->getSegments().size(), segsBefore)
+      << "ctranWinFree leaked its caller-owned RegCache segment";
+
+  commMemFree(userBuf, sizeBytes, bufType);
+  segments.erase(
+      std::remove_if(
+          segments.begin(),
+          segments.end(),
+          [userBuf](const TestMemSegment& seg) { return seg.ptr == userBuf; }),
+      segments.end());
+}
+
+TEST_F(CtranWinTest, RegisterPreservesAllocatorOwnedSegment) {
+  auto comm = makeCtranComm();
+  ASSERT_NE(comm, nullptr);
+
+  constexpr size_t sizeBytes = 8192 * sizeof(int);
+  const MemAllocType bufType = MemAllocType::kMemCuMemAlloc;
+  void* userBuf = commMemAlloc(sizeBytes, bufType, segments);
+  ASSERT_NE(userBuf, nullptr);
+
+  auto regCache = ctran::RegCache::getInstance();
+  ASSERT_NE(regCache, nullptr);
+  ASSERT_EQ(
+      regCache->globalRegister(
+          userBuf,
+          sizeBytes,
+          /*forceReg=*/false,
+          /*ncclManaged=*/false,
+          comm->statex_->cudaDev()),
+      commSuccess);
+
+  std::vector<void*> allocatorSegHdls;
+  std::vector<ctran::regcache::RegElem*> regElems;
+  ASSERT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          userBuf,
+          sizeBytes,
+          comm->statex_->cudaDev(),
+          allocatorSegHdls,
+          regElems),
+      commSuccess);
+  ASSERT_FALSE(allocatorSegHdls.empty());
+
+  CtranWin* win = nullptr;
+  meta::comms::Hints hints;
+  ASSERT_EQ(hints.set("win_register_ipc_only", "1"), commSuccess);
+  ASSERT_EQ(hints.set("win_register_enable_signal", "0"), commSuccess);
+  ASSERT_EQ(
+      ctranWinRegister(userBuf, sizeBytes, comm.get(), &win, hints),
+      commSuccess);
+  ASSERT_NE(win, nullptr);
+
+  oobBarrier();
+  ASSERT_EQ(ctranWinFree(win), commSuccess);
+
+  std::vector<void*> remainingSegHdls;
+  regElems.clear();
+  ASSERT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          userBuf,
+          sizeBytes,
+          comm->statex_->cudaDev(),
+          remainingSegHdls,
+          regElems),
+      commSuccess);
+  EXPECT_EQ(remainingSegHdls, allocatorSegHdls)
+      << "Window teardown removed the allocator-owned RegCache reference";
+
+  ASSERT_EQ(
+      regCache->globalDeregister(
+          userBuf,
+          sizeBytes,
+          /*skipRemRelease=*/false,
+          comm->statex_->cudaDev()),
+      commSuccess);
   commMemFree(userBuf, sizeBytes, bufType);
   segments.erase(
       std::remove_if(

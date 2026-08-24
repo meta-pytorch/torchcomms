@@ -4,7 +4,7 @@
 
 #include <chrono>
 
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 DataTableWrapper* getTablePtrFromEvent(LoggerEventType event) {
   switch (event) {
@@ -25,7 +25,7 @@ DataTableWrapper* getTablePtrFromEvent(LoggerEventType event) {
     case LoggerEventType::CommEventType:
       return SCUBA_nccl_structured_logging_ptr.get();
     default:
-      XLOG(ERR) << "Invalid event type";
+      COMMS_LOG_STREAM(ERR) << "Invalid event type";
       break;
   }
   throw std::runtime_error("Invalid event type");
