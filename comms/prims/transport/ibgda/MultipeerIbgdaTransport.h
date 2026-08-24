@@ -256,7 +256,7 @@ class MultipeerIbgdaTransport
   doca_gpu* docaGpu_{nullptr};
 
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
-  // nicDevices_.size() == numNics_ after openIbDevice().
+  // nicDoca_.size() == numNics_ after openIbDevice().
 
   // Per-NIC host-side IB verbs resources. blockQpGroups and
   // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0
