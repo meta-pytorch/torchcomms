@@ -45,7 +45,12 @@
 #include "rma/rma.h"
 #include "tuning.h"
 
+#include "comms/ctran/Ctran.h"
+#include "comms/ctran/utils/SkipDestroyUtil.h"
+#include "meta/wrapper/MetaFactory.h"
+
 #include <cinttypes>
+#include <string>
 
 #define STR2(v) #v
 #define STR(v) STR2(v)
@@ -2059,11 +2064,21 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   }
   comm->cudaArch = cudaArch;
 
+  comm->logMetaData.commId = commIdHash;
+  comm->logMetaData.commHash = comm->commHash;
+  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
+  comm->logMetaData.rank = comm->rank;
+  comm->logMetaData.nRanks = comm->nRanks;
+
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
 
   // update communicator state
   comm->initState = ncclSuccess;
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
+
+  if (comm->useCtran_) {
+    NCCLCHECKGOTO(createCtranComm(comm), res, fail);
+  }
 
   // Trace this call for replay tool
   if (job->parent) {
@@ -2748,6 +2763,9 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCudaHostCalloc(&comm->abortFlagDev, 1), res, fail);
   NCCLCHECKGOTO(ncclCalloc(&comm->abortFlagRefCount, 1), res, fail);
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
+  comm->useCtran_ = NCCLX_CONFIG_FIELD(*config, useCtran);
+  comm->usePatAvg_ = NCCLX_CONFIG_FIELD(*config, usePatAvg);
+  comm->noLocal_ = NCCLX_CONFIG_FIELD(*config, noLocal);
   *comm->abortFlagRefCount = 1;
   for (int i = 0; i < ncclGroupTaskTypeNum; i++) {
     comm->groupNext[i] = reinterpret_cast<struct ncclComm*>(NCCL_COMM_GROUP_INVALID);
@@ -3009,6 +3027,8 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   ncclResult_t ret = ncclSuccess;
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
+
+  NCCLCHECKGOTO(destroyCtranComm(comm), ret, fail);
 
   TRACE(NCCL_DESTROY, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank, *comm->abortFlag,
         comm->asyncResult);
@@ -3364,9 +3384,37 @@ fail:
   goto exit;
 }
 
+static bool skipDestroyFlag = false;
+
+bool skipDestroy() {
+  return skipDestroyFlag;
+}
+
+static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
+  if (comm == nullptr) {
+    INFO(NCCL_INIT, "comm %p - Abort %s", comm, abortScope.c_str());
+  } else {
+    INFO(NCCL_INIT, "comm %p commHash %lx commDesc %s rank %d nRanks %d cudaDev %d busId %lx - Abort %s", comm,
+         comm->commHash, NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(), comm->rank, comm->nRanks, comm->cudaDev,
+         comm->busId, abortScope.c_str());
+  }
+}
+
 NCCL_API(ncclResult_t, ncclCommAbort, ncclComm_t comm);
 ncclResult_t ncclCommAbort(ncclComm_t comm) {
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
+
+  if (NCCL_COMM_ABORT_SCOPE != NCCL_COMM_ABORT_SCOPE::comm) {
+    skipDestroyFlag = true;
+    ctran::utils::setSkipDestroyCtran(skipDestroyFlag);
+  }
+  if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::none) {
+    commAbortLog(comm, "SKIP");
+    return ncclSuccess;
+  } else if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::job) {
+    commAbortLog(comm, "EXIT");
+    exit(1);
+  }
 
   if (comm == NULL) {
     return ncclSuccess;
@@ -3494,6 +3542,9 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
     childComm->initState = ncclInternalError;
+    childComm->useCtran_ = NCCLX_CONFIG_FIELD(childComm->config, useCtran);
+    childComm->usePatAvg_ = NCCLX_CONFIG_FIELD(childComm->config, usePatAvg);
+    childComm->noLocal_ = NCCLX_CONFIG_FIELD(childComm->config, noLocal);
   }
 
   NEW_NOTHROW_GOTO(job, ncclCommInitRankAsyncJob, res, fail);
@@ -3701,6 +3752,10 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
     NCCLCHECKGOTO(parseCommConfig(newComm, &growInternalConfig), res, fail);
   }
 
+  newComm->useCtran_ = NCCLX_CONFIG_FIELD(newComm->config, useCtran);
+  newComm->usePatAvg_ = NCCLX_CONFIG_FIELD(newComm->config, usePatAvg);
+  newComm->noLocal_ = NCCLX_CONFIG_FIELD(newComm->config, noLocal);
+
   newComm->initState = ncclInProgress;
   *newcomm = newComm;
 
@@ -3864,6 +3919,14 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t* asyncError) {
   if (*asyncError == ncclSuccess && comm->groupJob) {
     NCCLCHECK(ncclGroupJobComplete(comm->groupJob));
     comm->groupJob = NULL;
+  }
+
+  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
+      (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
+    const auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
+    if (ctranAsyncError != ncclSuccess) {
+      *asyncError = ctranAsyncError;
+    }
   }
   return ncclSuccess;
 }

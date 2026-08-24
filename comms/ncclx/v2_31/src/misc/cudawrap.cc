@@ -12,6 +12,8 @@
 #include "cudawrap.h"
 #include <mutex>
 
+#include "comms/ctran/utils/CudaWrap.h"
+
 // This env var (NCCL_CUMEM_ENABLE) toggles cuMem API usage
 NCCL_PARAM(CuMemEnable, "CUMEM_ENABLE", -2);
 NCCL_PARAM(CuMemHostEnable, "CUMEM_HOST_ENABLE", -1);
@@ -354,6 +356,8 @@ error:
 
 ncclResult_t ncclCudaLibraryInit() {
   std::call_once(initOnceFlag, initOnceFunc);
+  const auto res = ctran::utils::commCudaLibraryInit();
+  if (res != commSuccess) return ncclSystemError;
   return initResult;
 }
 

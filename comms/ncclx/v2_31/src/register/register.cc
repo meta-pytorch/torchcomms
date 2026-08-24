@@ -13,7 +13,13 @@
 #include "transport.h"
 #include "group.h"
 
-NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 1);
+#include "comms/ctran/Ctran.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/memtrace/MemoryTrace.h"
+#include "meta/wrapper/MetaFactory.h"
+
+// conflict with ctran, disable for now.
+NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 0);
 
 ncclResult_t ncclRegLocalIsValid(struct ncclReg* reg, bool* isValid) {
   if (reg && isValid) {
@@ -153,12 +159,35 @@ ncclResult_t ncclRegCleanup(struct ncclComm* comm) {
 
 NCCL_API(ncclResult_t, ncclCommRegister, const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle) {
-  if (!ncclParamLocalRegister() || ncclP2pUsesMemcpy()) {
+  auto timerBegin = std::chrono::steady_clock::now();
+  // FIXME: we should eventually support hybrid registration.
+  // Disable it for now to avoid undefined behavior due to handle conflict.
+  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
+    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(commInvalidUsage);
+  }
+
+  if (ctranInitialized(comm->ctranComm_.get()) && NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
+    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commRegister(buff, size, handle)));
+  } else if (!ncclParamLocalRegister() || ncclP2pUsesMemcpy()) {
     *handle = NULL;
     INFO(NCCL_REG, "Skipping registration for buffer %p size %zi (LocalRegister=%ld, P2pUsesMemcpy=%d)", buff, size,
          ncclParamLocalRegister(), ncclP2pUsesMemcpy());
   } else {
     NCCLCHECK(ncclRegister(comm, buff, size, false, handle));
+  }
+
+  INFO(NCCL_ALLOC, "REGISTER: user registered buffer %p len %ld hdl %p with commHash %lx commDesc %s", buff, size,
+       *handle, comm->logMetaData.commHash, comm->logMetaData.commDesc.c_str());
+  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+    meta::comms::memtrace::recordReg(
+        comm->logMetaData,
+        "",
+        "ncclCommRegister",
+        reinterpret_cast<uintptr_t>(*handle),
+        size,
+        0,
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - timerBegin).count());
   }
   return ncclSuccess;
 }
@@ -201,11 +230,57 @@ exit:
 
 NCCL_API(ncclResult_t, ncclCommDeregister, const ncclComm_t comm, void* handle);
 ncclResult_t ncclCommDeregister(const ncclComm_t comm, void* handle) {
-  NCCLCHECK(commDeregister(comm, false, (struct ncclReg*)handle));
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // FIXME: we should eventually support hybrid registration.
+  // Disable it for now to avoid undefined behavior due to handle conflict.
+  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && ncclParamLocalRegister()) {
+    ERR(ncclInvalidUsage, "Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(commInvalidUsage);
+  }
+
+  if ((ctranInitialized(comm->ctranComm_.get()) && NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) ||
+      ncclParamLocalRegister()) {
+    NCCLCHECK(CommCheck(comm, "ncclCommRegister", "comm"));
+    NCCLCHECK(PtrCheck(handle, "ncclCommDeregister", "handle"));
+  }
+
+  if (ctranInitialized(comm->ctranComm_.get()) && NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
+    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commDeregister(handle)));
+  } else if (ncclParamLocalRegister()) {
+    NCCLCHECK(commDeregister(comm, false, (struct ncclReg*)handle));
+  }
+
+  INFO(NCCL_ALLOC, "REGISTER: user deregistered hdl %p with commHash %lx commDesc %s", handle,
+       comm->logMetaData.commHash, comm->logMetaData.commDesc.c_str());
+  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+    meta::comms::memtrace::recordReg(
+        comm->logMetaData,
+        "",
+        "ncclCommDeregister",
+        reinterpret_cast<uintptr_t>(handle),
+        0,
+        0,
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - timerBegin).count());
+  }
   return ncclSuccess;
 }
 
 ncclResult_t ncclCommGraphDeregister(const ncclComm_t comm, struct ncclReg* handle) {
   NCCLCHECK(commDeregister(comm, true, handle));
   return ncclSuccess;
+}
+
+// Global pointer-based registration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalRegisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalRegisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalRegisterWithPtr(buff, size);
+  return metaCommToNccl(res);
+}
+
+// Global pointer-based deregistration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalDeregisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalDeregisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalDeregisterWithPtr(buff, size);
+  return metaCommToNccl(res);
 }
