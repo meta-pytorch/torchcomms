@@ -21,6 +21,7 @@
 #include "meta/NcclxConfig.h"
 #include "meta/algoconf/AlgoStrConv.h"
 #include "meta/commDump.h"
+#include "meta/wrapper/NcclCommCollTrace.h"
 
 class AllToAllvTest
     : public NcclxBaseTestFixture,
@@ -242,11 +243,13 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    if (comm->newCollTrace) {
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm)) {
       EXPECT_TRUE(
-          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+          meta::comms::ncclx::waitForCollTraceDrain(
+              *meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
-      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+          *meta::comms::ncclx::ncclCommNewCollTrace(comm));
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
         EXPECT_EQ(ctPastColls.size(), 1);
@@ -546,11 +549,13 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaFree(recvBuf));
 
 #ifdef TEST_ENABLE_CTRAN
-    if (comm->newCollTrace) {
+    if (meta::comms::ncclx::ncclCommNewCollTrace(comm)) {
       EXPECT_TRUE(
-          meta::comms::ncclx::waitForCollTraceDrain(*comm->newCollTrace));
+          meta::comms::ncclx::waitForCollTraceDrain(
+              *meta::comms::ncclx::ncclCommNewCollTrace(comm)));
 
-      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+      auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(
+          *meta::comms::ncclx::ncclCommNewCollTrace(comm));
       if (dumpMap.count("CT_pastColls")) {
         auto ctPastColls = folly::parseJson(dumpMap["CT_pastColls"]);
         // Don't assert exact size here because run<T>() can be called
