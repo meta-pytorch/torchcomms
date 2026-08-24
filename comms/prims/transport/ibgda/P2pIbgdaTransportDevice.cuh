@@ -1443,9 +1443,9 @@ class P2pIbgdaTransportDevice {
         .addr = 0, .key = nic.sink_lkey.value};
 
 #ifdef __HIP_PLATFORM_AMD__
-    pipes_gda::ActiveNicBackend amdNic{};
+    prims_amd_gda::ActiveNicBackend amdNic{};
     uint64_t ticket = 0;
-    pipes_gda::pipes_gda_gpu_dev_verbs_put_signal(
+    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put_signal(
         amdNic,
         lane.qp,
         remoteAddr,
@@ -1540,12 +1540,12 @@ class P2pIbgdaTransportDevice {
 #ifdef __HIP_PLATFORM_AMD__
     // AMD: route data + local counter through put_signal_counter with the
     // signal disabled (sigRemoteAddr.addr == 0 short-circuits the atomic-FA
-    // WQE in pipes_gda_gpu_dev_verbs_put_signal_counter).
+    // WQE in prims_amd_gda_gpu_dev_verbs_put_signal_counter).
     doca_gpu_dev_verbs_addr noSigRemoteAddr = {.addr = 0, .key = 0};
     doca_gpu_dev_verbs_addr noSigSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
-    pipes_gda::ActiveNicBackend amdNic{};
-    pipes_gda::pipes_gda_gpu_dev_verbs_put_signal_counter(
+    prims_amd_gda::ActiveNicBackend amdNic{};
+    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put_signal_counter(
         amdNic,
         lane.qp,
         remoteAddr,
@@ -1792,7 +1792,7 @@ class P2pIbgdaTransportDevice {
         .addr = 0, .key = nic.sink_lkey.value};
 
 #ifdef __HIP_PLATFORM_AMD__
-    // AMD: pipes_gda doesn't expose inter-QP wait WQEs at the public API,
+    // AMD: prims_amd_gda doesn't expose inter-QP wait WQEs at the public API,
     // and signal_counter waits on mainQp's last reserved WQE — which is
     // exactly the most recent put issued before this call. Routing through
     // signal_counter with sig disabled (sigRemoteAddr.addr == 0) gives us
@@ -1802,8 +1802,8 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_addr noSigRemoteAddr = {.addr = 0, .key = 0};
     doca_gpu_dev_verbs_addr noSigSinkAddr = {
         .addr = 0, .key = nic.sink_lkey.value};
-    pipes_gda::ActiveNicBackend amdNic{};
-    pipes_gda::pipes_gda_gpu_dev_verbs_signal_counter(
+    prims_amd_gda::ActiveNicBackend amdNic{};
+    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_signal_counter(
         amdNic,
         lane.qp,
         noSigRemoteAddr,

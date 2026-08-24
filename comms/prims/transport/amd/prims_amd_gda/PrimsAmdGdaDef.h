@@ -58,44 +58,44 @@ extern "C" {
 // Common Macros
 // =============================================================================
 
-#define PIPES_GDA_VOLATILE(x) (*(volatile typeof(x)*)&(x))
+#define PRIMS_AMD_GDA_VOLATILE(x) (*(volatile typeof(x)*)&(x))
 
-#define PIPES_GDA_VERBS_WARP_SIZE 32
-#define PIPES_GDA_VERBS_WARP_FULL_MASK 0xffffffff
-#define PIPES_GDA_VERBS_PAGE_SIZE 65536
+#define PRIMS_AMD_GDA_VERBS_WARP_SIZE 32
+#define PRIMS_AMD_GDA_VERBS_WARP_FULL_MASK 0xffffffff
+#define PRIMS_AMD_GDA_VERBS_PAGE_SIZE 65536
 
-#define PIPES_GDA_VERBS_CQE_CI_MASK 0xFFFFFF
-#define PIPES_GDA_VERBS_WQE_PI_MASK 0xFFFF
+#define PRIMS_AMD_GDA_VERBS_CQE_CI_MASK 0xFFFFFF
+#define PRIMS_AMD_GDA_VERBS_WQE_PI_MASK 0xFFFF
 
-#define PIPES_GDA_VERBS_MKEY_SWAPPED 1
+#define PRIMS_AMD_GDA_VERBS_MKEY_SWAPPED 1
 
-#ifndef PIPES_GDA_VERBS_ENABLE_DEBUG
-#define PIPES_GDA_VERBS_ENABLE_DEBUG 0
+#ifndef PRIMS_AMD_GDA_VERBS_ENABLE_DEBUG
+#define PRIMS_AMD_GDA_VERBS_ENABLE_DEBUG 0
 #endif
 
-#if PIPES_GDA_VERBS_ENABLE_DEBUG == 1
+#if PRIMS_AMD_GDA_VERBS_ENABLE_DEBUG == 1
 #include <assert.h>
-#define PIPES_GDA_VERBS_ASSERT(x) assert(x)
+#define PRIMS_AMD_GDA_VERBS_ASSERT(x) assert(x)
 #else
-#define PIPES_GDA_VERBS_ASSERT(x) \
-  do {                            \
+#define PRIMS_AMD_GDA_VERBS_ASSERT(x) \
+  do {                                \
   } while (0)
 #endif
 
-#define PIPES_GDA_VERBS_MAX_INLINE_SIZE 28
-#define PIPES_GDA_VERBS_CQE_SIZE 64
-#define PIPES_GDA_VERBS_WQE_IDX_SHIFT 8
+#define PRIMS_AMD_GDA_VERBS_MAX_INLINE_SIZE 28
+#define PRIMS_AMD_GDA_VERBS_CQE_SIZE 64
+#define PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT 8
 
 // Per-WQE max RDMA WRITE size; larger transfers chunk in
-// `pipes_gda_gpu_dev_verbs_put`. BNXT caps lower than mlx5.
+// `prims_amd_gda_gpu_dev_verbs_put`. BNXT caps lower than mlx5.
 #ifdef NIC_BNXT
-#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 24
-#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE \
-  (1ULL << PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 16MiB
+#define PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 24
+#define PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE \
+  (1ULL << PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 16MiB
 #else
-#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 30
-#define PIPES_GDA_VERBS_MAX_TRANSFER_SIZE \
-  (1ULL << PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 1GiB
+#define PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT 30
+#define PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE \
+  (1ULL << PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT) // 1GiB
 #endif
 
 #ifndef ACCESS_ONCE
@@ -114,52 +114,52 @@ extern "C" {
 // Common Enums (NIC-agnostic)
 // =============================================================================
 
-enum pipes_gda_gpu_dev_verbs_mem_type {
-  PIPES_GDA_VERBS_MEM_TYPE_AUTO = 0,
-  PIPES_GDA_VERBS_MEM_TYPE_HOST = 1,
-  PIPES_GDA_VERBS_MEM_TYPE_GPU = 2,
-  PIPES_GDA_VERBS_MEM_TYPE_MAX = INT_MAX
+enum prims_amd_gda_gpu_dev_verbs_mem_type {
+  PRIMS_AMD_GDA_VERBS_MEM_TYPE_AUTO = 0,
+  PRIMS_AMD_GDA_VERBS_MEM_TYPE_HOST = 1,
+  PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU = 2,
+  PRIMS_AMD_GDA_VERBS_MEM_TYPE_MAX = INT_MAX
 };
 
-enum pipes_gda_gpu_dev_verbs_qp_type {
-  PIPES_GDA_VERBS_QP_SQ = 0,
+enum prims_amd_gda_gpu_dev_verbs_qp_type {
+  PRIMS_AMD_GDA_VERBS_QP_SQ = 0,
 };
 
-enum pipes_gda_gpu_dev_verbs_exec_scope {
-  PIPES_GDA_VERBS_EXEC_SCOPE_THREAD = 0,
-  PIPES_GDA_VERBS_EXEC_SCOPE_WARP
+enum prims_amd_gda_gpu_dev_verbs_exec_scope {
+  PRIMS_AMD_GDA_VERBS_EXEC_SCOPE_THREAD = 0,
+  PRIMS_AMD_GDA_VERBS_EXEC_SCOPE_WARP
 };
 
-enum pipes_gda_gpu_dev_verbs_sync_scope {
-  PIPES_GDA_VERBS_SYNC_SCOPE_SYS = 0,
-  PIPES_GDA_VERBS_SYNC_SCOPE_GPU = 1,
-  PIPES_GDA_VERBS_SYNC_SCOPE_CTA = 2,
-  PIPES_GDA_VERBS_SYNC_SCOPE_MAX = INT_MAX
+enum prims_amd_gda_gpu_dev_verbs_sync_scope {
+  PRIMS_AMD_GDA_VERBS_SYNC_SCOPE_SYS = 0,
+  PRIMS_AMD_GDA_VERBS_SYNC_SCOPE_GPU = 1,
+  PRIMS_AMD_GDA_VERBS_SYNC_SCOPE_CTA = 2,
+  PRIMS_AMD_GDA_VERBS_SYNC_SCOPE_MAX = INT_MAX
 };
 
-enum pipes_gda_gpu_dev_verbs_resource_sharing_mode {
-  PIPES_GDA_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE = 0,
-  PIPES_GDA_VERBS_RESOURCE_SHARING_MODE_CTA = 1,
-  PIPES_GDA_VERBS_RESOURCE_SHARING_MODE_GPU = 2,
-  PIPES_GDA_VERBS_RESOURCE_SHARING_MODE_MAX = INT_MAX
+enum prims_amd_gda_gpu_dev_verbs_resource_sharing_mode {
+  PRIMS_AMD_GDA_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE = 0,
+  PRIMS_AMD_GDA_VERBS_RESOURCE_SHARING_MODE_CTA = 1,
+  PRIMS_AMD_GDA_VERBS_RESOURCE_SHARING_MODE_GPU = 2,
+  PRIMS_AMD_GDA_VERBS_RESOURCE_SHARING_MODE_MAX = INT_MAX
 };
 
-enum pipes_gda_gpu_dev_verbs_nic_handler {
-  PIPES_GDA_VERBS_NIC_HANDLER_AUTO = 0,
-  PIPES_GDA_VERBS_NIC_HANDLER_CPU_PROXY = 1,
-  PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_DB = 2,
-  PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_BF = 3,
-  PIPES_GDA_VERBS_NIC_HANDLER_TYPE_MAX,
+enum prims_amd_gda_gpu_dev_verbs_nic_handler {
+  PRIMS_AMD_GDA_VERBS_NIC_HANDLER_AUTO = 0,
+  PRIMS_AMD_GDA_VERBS_NIC_HANDLER_CPU_PROXY = 1,
+  PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_DB = 2,
+  PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_BF = 3,
+  PRIMS_AMD_GDA_VERBS_NIC_HANDLER_TYPE_MAX,
 };
 
-enum pipes_gda_gpu_dev_verbs_gpu_code_opt {
-  PIPES_GDA_VERBS_GPU_CODE_OPT_DEFAULT = 0,
-  PIPES_GDA_VERBS_GPU_CODE_OPT_ASYNC_STORE_RELEASE = (1 << 0),
-  PIPES_GDA_VERBS_GPU_CODE_OPT_MAX = INT_MAX
+enum prims_amd_gda_gpu_dev_verbs_gpu_code_opt {
+  PRIMS_AMD_GDA_VERBS_GPU_CODE_OPT_DEFAULT = 0,
+  PRIMS_AMD_GDA_VERBS_GPU_CODE_OPT_ASYNC_STORE_RELEASE = (1 << 0),
+  PRIMS_AMD_GDA_VERBS_GPU_CODE_OPT_MAX = INT_MAX
 };
 
-enum pipes_gda_gpu_dev_verbs_signal_op {
-  PIPES_GDA_VERBS_SIGNAL_OP_ADD = 0,
+enum prims_amd_gda_gpu_dev_verbs_signal_op {
+  PRIMS_AMD_GDA_VERBS_SIGNAL_OP_ADD = 0,
 };
 
 #ifdef __cplusplus
