@@ -6,9 +6,9 @@
 
 #include <folly/Singleton.h>
 #include <folly/String.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace {
 constexpr std::string_view k_nccl_memory_logging = "nccl_memory_logging";
@@ -36,15 +36,15 @@ DataTableAllTables createAllTables() {
     std::vector<std::string> tokens;
     folly::split(':', tableTypeName, tokens, true /* ignoreEmpty */);
     if (tokens.size() != 2) {
-      XLOG(ERR) << "Invalid table type and name: " << tableTypeName
-                << ". Ignoring";
+      COMMS_LOG_STREAM(ERR)
+          << "Invalid table type and name: " << tableTypeName << ". Ignoring";
       continue;
     }
     auto& tableType = tokens.at(0);
     auto& tableName = tokens.at(1);
     if (tableType != "pipe" && tableType != "scuba") {
-      XLOG(ERR) << "Invalid table type: " << tableType
-                << " for table: " << tableName << ". Ignoring";
+      COMMS_LOG_STREAM(ERR) << "Invalid table type: " << tableType
+                            << " for table: " << tableName << ". Ignoring";
       continue;
     }
 
@@ -88,7 +88,7 @@ void DataTableWrapper::addSample(NcclScubaSample sample) {
     table_ = folly::get_default(allTables->tables, tableName_, nullptr);
 
     if (!table_) {
-      XLOG(WARNING) << "Could not find table name: " << tableName_ << std::endl;
+      COMMS_LOG_STREAM(WARN) << "Could not find table name: " << tableName_;
     }
   });
 

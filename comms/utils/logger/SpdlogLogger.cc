@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -27,6 +28,16 @@
 
 namespace meta::comms::logger {
 
+void reportCommsLoggingFailureToStderr(const char* level) noexcept {
+  std::fprintf(stderr, "%s: communications logging failed\n", level);
+  std::fflush(stderr);
+}
+
+[[noreturn]] void abortAfterCommsLoggingFailure() noexcept {
+  reportCommsLoggingFailureToStderr("FATAL");
+  std::abort();
+}
+
 spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
   switch (level) {
     case LogLevel::NONE:
@@ -46,7 +57,6 @@ spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
 }
 namespace {
 
-constexpr std::string_view kLoggerName = "comms";
 constexpr size_t kAsyncQueueSize = 8192;
 constexpr size_t kAsyncThreadCount = 1;
 /*
@@ -243,7 +253,7 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage) {
 }
 
 CommsSpdlogLogger::CommsSpdlogLogger()
-    : CommsSpdlogLogger(std::string{kLoggerName}) {}
+    : CommsSpdlogLogger(std::string{kCommsLoggerName}) {}
 
 CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
     : logger_(createLogger(std::move(name))),
@@ -254,6 +264,54 @@ CommsSpdlogLogger::CommsSpdlogLogger(std::string name)
       std::make_shared<spdlog::logger>(logger_->name(), outputSink_);
   synchronousLogger_->set_level(spdlog::level::trace);
   storeConfiguration(std::make_shared<const Configuration>());
+}
+
+CommsLogStreamBase::CommsLogStreamBase(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level)
+    : logger_(logger), location_(location), level_(level) {}
+
+std::ostream& CommsLogStreamBase::stream() {
+  return stream_;
+}
+
+void CommsLogStreamBase::log() {
+  logger_.log(location_, level_, stream_.str());
+}
+
+[[noreturn]] void CommsLogStreamBase::logFatalAndAbort() noexcept {
+  try {
+    logger_.flush();
+    spdlog::shutdown();
+    logger_.logFatal(location_, stream_.str());
+  } catch (...) {
+    abortAfterCommsLoggingFailure();
+  }
+  std::abort();
+}
+
+CommsLogStream::CommsLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location,
+    spdlog::level::level_enum level)
+    : CommsLogStreamBase(logger, location, level) {}
+
+CommsLogStream::~CommsLogStream() noexcept {
+  try {
+    log();
+  } catch (...) {
+    reportCommsLoggingFailureToStderr("ERROR");
+  }
+}
+
+CommsFatalLogStream::CommsFatalLogStream(
+    CommsSpdlogLogger& logger,
+    spdlog::source_loc location)
+    : CommsLogStreamBase(logger, location, spdlog::level::critical) {}
+
+[[noreturn]] CommsFatalLogStream::~CommsFatalLogStream() noexcept {
+  logFatalAndAbort();
 }
 
 std::string_view CommsSpdlogLogger::getLevelName(
@@ -428,7 +486,7 @@ CommsSpdlogLogger& getSpdlogLogger() {
 }
 
 CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
-  if (loggerName == kLoggerName) {
+  if (loggerName == kCommsLoggerName) {
     return getSpdlogLogger();
   }
   static std::shared_mutex mutex;
@@ -448,6 +506,15 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
   auto logger = std::make_unique<CommsSpdlogLogger>(name);
   const auto it = loggers.emplace(std::move(name), std::move(logger)).first;
   return *it->second;
+}
+
+CommsSpdlogLogger& getSpdlogLoggerForFatal(
+    std::string_view loggerName) noexcept {
+  try {
+    return getSpdlogLogger(loggerName);
+  } catch (...) {
+    abortAfterCommsLoggingFailure();
+  }
 }
 
 void configureSpdlogLogger(
@@ -470,6 +537,38 @@ void configureSpdlogLogger(
       std::move(errorCallback),
       asyncLogging);
   logger.configureOutput(logFilePath);
+}
+
+void configureCommsAndNamedSpdlogLoggers(
+    std::string_view loggerName,
+    std::string logPrefix,
+    std::string_view logFilePath,
+    std::function<int(void)> threadContextFn,
+    std::function<void(std::string_view)> errorCallback,
+    bool asyncLogging,
+    spdlog::level::level_enum logLevel,
+    bool configureCommsLogger) {
+  if (configureCommsLogger || loggerName == kCommsLoggerName) {
+    configureSpdlogLogger(
+        kCommsLoggerName,
+        "COMM",
+        logFilePath,
+        threadContextFn,
+        errorCallback,
+        asyncLogging);
+    getSpdlogLogger().set_level(logLevel);
+  }
+
+  if (loggerName != kCommsLoggerName) {
+    configureSpdlogLogger(
+        loggerName,
+        std::move(logPrefix),
+        logFilePath,
+        std::move(threadContextFn),
+        std::move(errorCallback),
+        asyncLogging);
+    getSpdlogLogger(loggerName).set_level(logLevel);
+  }
 }
 
 void setSpdlogThreadName(std::string_view name) {

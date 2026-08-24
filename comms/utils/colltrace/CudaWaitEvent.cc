@@ -8,7 +8,7 @@
 #include <folly/Unit.h>
 #include <folly/stop_watch.h>
 
-#include <folly/logging/xlog.h>
+#include "comms/utils/logger/SpdlogLogger.h"
 
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/PrecisionClock.h"
@@ -71,7 +71,7 @@ CudaReferencePoint::CudaReferencePoint() {
   return g_referencePointInstance.load(std::memory_order_acquire);
 }
 
-void CudaReferencePoint::refresh() {
+void CudaReferencePoint::refresh(logger::CommsSpdlogLogger& logger) {
   // Try-and-skip: if another thread is already refreshing, short-circuit
   // without touching the dedicated CUDA stream. Multiple CollTrace
   // instances exist per process (one per NCCL communicator) and each calls
@@ -85,14 +85,14 @@ void CudaReferencePoint::refresh() {
 
   cudaEvent_t newEvent = nullptr;
   if (auto err = cudaEventCreate(&newEvent); err != cudaSuccess) {
-    XLOG_EVERY_MS(WARN, 5000)
+    COMMS_LOGGER_STREAM_EVERY_MS(logger, WARN, 5000)
         << "CudaReferencePoint::refresh: cudaEventCreate failed: "
         << cudaGetErrorString(err) << " — keeping previous anchor";
     return;
   }
   CHECK(newEvent != nullptr);
   if (auto err = cudaEventRecord(newEvent, stream_); err != cudaSuccess) {
-    XLOG_EVERY_MS(WARN, 5000)
+    COMMS_LOGGER_STREAM_EVERY_MS(logger, WARN, 5000)
         << "CudaReferencePoint::refresh: cudaEventRecord failed: "
         << cudaGetErrorString(err) << " — keeping previous anchor";
     // Best-effort cleanup of an event we just created; any destroy error
@@ -102,7 +102,7 @@ void CudaReferencePoint::refresh() {
     return;
   }
   if (auto err = cudaStreamSynchronize(stream_); err != cudaSuccess) {
-    XLOG_EVERY_MS(WARN, 5000)
+    COMMS_LOGGER_STREAM_EVERY_MS(logger, WARN, 5000)
         << "CudaReferencePoint::refresh: cudaStreamSynchronize failed: "
         << cudaGetErrorString(err) << " — keeping previous anchor";
     // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
