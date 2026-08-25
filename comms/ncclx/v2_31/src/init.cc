@@ -9,6 +9,8 @@
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
 #include "meta/DeviceRackSerial.h" // @manual
+#include "meta/transport/transportExt.h" // @manual
+#include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
@@ -50,6 +52,7 @@
 #include "meta/wrapper/MetaFactory.h"
 
 #include <cinttypes>
+#include <memory>
 #include <string>
 
 #define STR2(v) #v
@@ -371,7 +374,13 @@ static ncclResult_t commFree(ncclComm_t comm) {
       NCCLCHECK(ncclGinFinalize(comm));
       for (int c = 0; c < MAXCHANNELS; c++) {
         if (comm->sharedRes->peers[c]) free(comm->sharedRes->peers[c]);
-        if (comm->sharedRes->devPeers[c]) ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
+        if (comm->sharedRes->devPeers[c]) {
+          if (comm->channelMetadataOnHost) {
+            ncclCudaHostFree(comm->sharedRes->devPeers[c]);
+          } else if (!comm->slabAllocator) {
+            ncclCudaFree(comm->sharedRes->devPeers[c], comm->memManager);
+          }
+        }
       }
       free(comm->sharedRes->tpRankToLocalRank);
       NCCLCHECK(ncclStrongStreamDestruct(&comm->sharedRes->hostStream));
@@ -2069,6 +2078,13 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
+
+  // [META:MEMCACHE_SLAB] Select channel metadata allocation before initChannel runs.
+  if (NCCL_MEM_USE_SLAB_ALLOCATOR) {
+    comm->slabAllocator = std::make_unique<ncclx::memory::SlabAllocator>();
+  }
+  comm->channelMetadataOnHost =
+      ncclx::getChannelMetadataLoc() == NCCL_CHANNEL_METADATA_LOCATION::host;
 
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
 
