@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <sys/uio.h>
+
 #include <atomic>
 #include <chrono>
 #include <concepts>
@@ -136,6 +138,9 @@ class TcpConn : public Conn {
   TcpConn(int sock, IOPolicy io) : sock_(sock), io_(std::move(io)) {}
 
   bool sendAll(const void* buf, size_t len);
+  /// Vectored sendAll: one syscall for the length prefix plus payload. Mutates
+  /// @p iov to track partial writes, so it must not be reused by the caller.
+  bool sendAllVec(iovec* iov, int iovCnt);
   bool recvAll(void* buf, size_t len);
   bool exchangeMagic();
   Result<size_t> syncSend(std::span<const uint8_t> data);
