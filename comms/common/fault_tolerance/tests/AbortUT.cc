@@ -528,6 +528,7 @@ TEST(AbortTest, abortInfoRecordsEveryTerminalReasonAndContext) {
       AbortReason::BOOTSTRAP_POLL,
       AbortReason::NETWORK_ERROR,
       AbortReason::INTERNAL_ERROR,
+      AbortReason::IBRC_PROXY_TIMEOUT,
   };
 
   for (const auto reason : reasons) {
@@ -615,6 +616,9 @@ TEST(AbortTest, abortReasonToString) {
   EXPECT_EQ(abortReasonToString(AbortReason::BOOTSTRAP_POLL), "bootstrap_poll");
   EXPECT_EQ(abortReasonToString(AbortReason::NETWORK_ERROR), "network_error");
   EXPECT_EQ(abortReasonToString(AbortReason::INTERNAL_ERROR), "internal_error");
+  EXPECT_EQ(
+      abortReasonToString(AbortReason::IBRC_PROXY_TIMEOUT),
+      "ibrc_proxy_timeout");
   EXPECT_EQ(abortReasonToString(static_cast<AbortReason>(99)), "unknown");
 }
 

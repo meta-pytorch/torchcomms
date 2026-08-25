@@ -25,10 +25,15 @@
 
 namespace comms::prims {
 
-// Default bound for device-side waits on the CPU progress thread (flush /
-// reserve). Mirrors IBGDA's kDefaultDeviceTimeoutCycles: converts an indefinite
-// hang (a stalled progress thread that never publishes an error) into a bounded
-// trap.
+// Legacy bound for device-side waits on the CPU progress thread (flush /
+// reserve), used only when no abort handle is wired. Mirrors IBGDA's
+// kDefaultDeviceTimeoutCycles: it converts an indefinite hang (a stalled
+// progress thread that never publishes an error) into a bounded trap.
+//
+// With a handle wired, the abort supersedes it and these waits unwind instead
+// of trapping -- see the fault-vs-assertion note on `reserve()`. The trap is
+// kept for the disabled case because silently dropping a put with no abort
+// signal to report would be undetectable data loss, which is worse.
 inline constexpr uint64_t kIbrcDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
 
 #if PIPES_IS_DEVICE_COMPILE
@@ -83,7 +88,8 @@ class P2pIbrcTransportDevice {
       IbgdaLocalBuffer ownedCounterHostBuf = {},
       int numSignalSlots = 0,
       int numCounterSlots = 0,
-      IbChannelLayout channelLayout = {})
+      IbChannelLayout channelLayout = {},
+      AbortDevice abort = {})
       : cmdQueues(queues),
         numNics(nics),
         maxChannels_(maxChannels),
@@ -95,7 +101,8 @@ class P2pIbrcTransportDevice {
         ownedCounterHostBuf_(ownedCounterHostBuf),
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
-        channelLayout_(channelLayout) {}
+        channelLayout_(channelLayout),
+        abort_(abort) {}
 
   // IBRC round-robins each send/recv chunk's RDMA_WRITE + DATA_READY fetch-add
   // across per-lane command queues / QPs when numLanes > 1 (select_put_queue_id
@@ -344,10 +351,15 @@ class P2pIbrcTransportDevice {
       }
 
       const uint64_t seq = enqueue(queueId, desc);
-      completion = IbLocalCompletionTicket{
-          .completionId = laneOrdinal,
-          .value = seq + 1,
-      };
+      if (seq != kIbrcInvalidReadySeq) {
+        completion = IbLocalCompletionTicket{
+            .completionId = laneOrdinal,
+            .value = seq + 1,
+        };
+      }
+      // A skipped enqueue leaves `completion` default-constructed, whose value
+      // of 0 is already below every ci, so a later wait_local() on it returns
+      // at once instead of blocking on a transfer that was never posted.
     }
     group.sync();
     return completion;
@@ -412,14 +424,11 @@ class P2pIbrcTransportDevice {
     while (static_cast<int64_t>(
                load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
       check_status(queue);
-      if (timeout.checkExpired()) {
-        printf(
-            "P2pIbrcTransportDevice: local completion timed out lane=%u "
-            "expected=%llu\n",
-            ticket.completionId,
-            static_cast<unsigned long long>(ticket.value));
-        PIPES_DEVICE_TRAP();
-      }
+      FT_ABORT_BREAK(
+          timeout,
+          "P2pIbrcTransportDevice: local completion lane=%u expected=%llu",
+          ticket.completionId,
+          static_cast<unsigned long long>(ticket.value));
     }
   }
 
@@ -851,12 +860,30 @@ class P2pIbrcTransportDevice {
     return queueId % numNics;
   }
 
+  // Stays void on abort: a drain that stops early has nothing to report to a
+  // caller that is itself about to unwind, and the abort is already recorded
+  // for the host.
+  // Bounded by the fixed proxy watchdog, not by any caller deadline. This wait
+  // is the contract between one rank's SM and its host proxy, and that contract
+  // has its own duration; the enclosing collective's deadline is a different
+  // bound with a different owner. A cycle compare is a register op, whereas the
+  // abort flag lives in mapped host memory, so the loop never reads it.
   __device__ void drain_queue(const IbrcCmdQueueDevice& queue) const {
     const uint64_t target = load_acquire_system_u64(queue.pi);
     const uint64_t start = gpu_clock64();
+    const bool ftEnabled = abort_.isEnabled();
     while (load_acquire_system_u64(queue.ci) < target) {
       check_status(queue);
       if (gpu_clock64() - start >= kIbrcDefaultDeviceTimeoutCycles) {
+        if (ftEnabled) {
+          // The proxy stopped draining. Latching the reason is what lets the
+          // rest of the kernel unwind: every other wait observes it through
+          // shared state on its own next poll.
+          abort_.setAbort(
+              comms::fault_tolerance::AbortReason::IBRC_PROXY_TIMEOUT,
+              "IBRC proxy watchdog: flush drain");
+          return;
+        }
         printf("P2pIbrcTransportDevice: flush timed out\n");
         PIPES_DEVICE_TRAP();
       }
@@ -886,12 +913,71 @@ class P2pIbrcTransportDevice {
     }
   }
 
+  // Claims one command-queue slot, spinning while the ring is full.
+  //
+  // Returns kIbrcInvalidReadySeq when the wait ended in an abort. A full ring
+  // means the CPU proxy is behind or stopped, which is a *fault*, not a
+  // programming error, so it must not trap: a device trap kills the CUDA
+  // context for the whole process, which is precisely the outcome fault
+  // tolerance exists to avoid. Reporting the failure instead lets enqueue()
+  // skip the descriptor, put() hand back a ticket that is already satisfied,
+  // and the block unwind to the end of the kernel on its own.
+  //
+  // The abort is checked before the fetch_add so an already-aborted producer
+  // claims nothing. Aborting *during* the wait still leaves the claimed
+  // sequence unpublished, which wedges this queue's proxy cursor -- acceptable
+  // because a latched abort is terminal for the communicator, and the progress
+  // thread is stopped by teardown rather than by draining.
+  //
+  // The bound is a *cycle* watchdog, not an abort poll, and it is armed in
+  // every mode. That is deliberate on two counts.
+  //
+  // First, it is the contract between this kernel and the host proxy: a
+  // submitted descriptor must be consumed within a bounded time, and that
+  // obligation does not change because fault tolerance happens to be on.
+  // Gating the watchdog on `!isEnabled()` -- which is what this used to do --
+  // meant enabling FT *removed* the only bound, leaving an explicit host abort
+  // as the sole exit.
+  //
+  // Second, polling the abort here would cost a mapped-host read per stalled
+  // iteration, and the throttle that would otherwise amortise it cannot live
+  // in `abort_` (see the member). A `clock64()` delta is a register compare and
+  // is accurate enough for a multi-second bound.
+  //
+  // So this loop never reads shared state; on expiry it *writes* it, latching
+  // IBRC_PROXY_TIMEOUT so every other wait in the kernel unwinds through the
+  // normal path. The trade: a block parked here does not observe someone
+  // else's abort promptly -- it leaves on its own budget instead. Liveness is
+  // what the contract requires, and that is bounded either way.
   __device__ __forceinline__ uint64_t reserve(IbrcCmdQueueDevice& queue) const {
+    // One-shot, before anything is claimed: a producer on an already-aborted
+    // communicator must leave the wire untouched, so no sequence number is
+    // taken and no descriptor is published. This is the only shared-state read
+    // on the producer path, and it is not in a loop.
+    if (abort_.isAborted()) {
+      return kIbrcInvalidReadySeq;
+    }
     const uint64_t seq = fetch_add_system_u64(queue.pi, 1);
+    if (seq - load_acquire_system_u64(queue.ci) < queue.depth) {
+      // Fast path: ring has space. No clock read, no abort read, no copy --
+      // this is the whole cost of FT on the healthy producer path.
+      return seq;
+    }
+    // Bounded by the fixed proxy watchdog: this is the SM-to-proxy contract and
+    // it is honoured on its own terms, not rescaled by whatever deadline the
+    // enclosing collective happens to carry. One shared read for `isEnabled()`,
+    // then pure register compares for the rest of the stall.
     const uint64_t start = gpu_clock64();
+    const bool ftEnabled = abort_.isEnabled();
     while (seq - load_acquire_system_u64(queue.ci) >= queue.depth) {
       check_status(queue);
       if (gpu_clock64() - start >= kIbrcDefaultDeviceTimeoutCycles) {
+        if (ftEnabled) {
+          abort_.setAbort(
+              comms::fault_tolerance::AbortReason::IBRC_PROXY_TIMEOUT,
+              "IBRC proxy watchdog: reserve on a full ring");
+          return kIbrcInvalidReadySeq;
+        }
         printf("P2pIbrcTransportDevice: reserve timed out\n");
         PIPES_DEVICE_TRAP();
       }
@@ -899,29 +985,43 @@ class P2pIbrcTransportDevice {
     return seq;
   }
 
+  // Returns kIbrcInvalidReadySeq when the command was skipped because the
+  // communicator aborted. Nothing is published in that case, so the CPU proxy
+  // never sees a partially written descriptor.
   __device__ __forceinline__ uint64_t
   enqueue(uint32_t queueId, const IbrcDesc& desc) const {
     IbrcCmdQueueDevice& queue = cmdQueues[queueId];
     check_status(queue);
     const uint64_t seq = reserve(queue);
+    if (seq == kIbrcInvalidReadySeq) {
+      return kIbrcInvalidReadySeq;
+    }
     IbrcDesc& slot = queue.descs[seq & queue.mask];
     slot = desc;
     store_release_system_u64(&slot.ready_seq, seq);
     return seq;
   }
 
+  // An error published by the CPU proxy is a remote fault, not a local bug, so
+  // with a handle wired it is latched on the abort and every wait in this
+  // kernel unwinds. Without one there is nowhere to record it and no way for
+  // the host to learn why, so the legacy trap stands.
   __device__ __forceinline__ void check_status(
       const IbrcCmdQueueDevice& queue) const {
     if (queue.status == nullptr) {
       return;
     }
-    if (load_acquire_system_u32(&queue.status->error) != 0) {
-      printf(
-          "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
-          load_acquire_system_u32(&queue.status->error_queue),
-          load_acquire_system_u32(&queue.status->error_code));
+    if (load_acquire_system_u32(&queue.status->error) == 0) {
+      return;
+    }
+    printf(
+        "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
+        load_acquire_system_u32(&queue.status->error_queue),
+        load_acquire_system_u32(&queue.status->error_code));
+    if (!abort_.isEnabled()) {
       PIPES_DEVICE_TRAP();
     }
+    abort_.setAbort(comms::fault_tolerance::AbortReason::ABORTED);
   }
 
   __device__ void wait_local(
@@ -1074,6 +1174,32 @@ class P2pIbrcTransportDevice {
   int numSignalSlots_{0};
   int numCounterSlots_{0};
   IbChannelLayout channelLayout_{};
+
+  // Communicator abort handle, baked in when the host writes this device slot.
+  //
+  // Held as a member rather than threaded through put()/signal()/flush()
+  // because the waits that need it -- reserve() and drain_queue() -- sit behind
+  // APIs that take no timeout. Passing it per call would push an abort
+  // parameter onto every IBRC producer, and the callers have nothing to do with
+  // the answer: these waits terminate themselves. Default-constructed (no
+  // handle) keeps the legacy cycle-deadline trap.
+  //
+  // `AbortFlag`, not `AbortDevice`, and the type is the point.
+  //
+  // This object lives in device memory, one slot per peer, and every block
+  // talking to that peer sees the same one. An `AbortDevice` here would carry
+  // mutable poll-throttle state into shared memory: several blocks writing
+  // `nextPollCycles_` non-atomically, each gating its polls on an absolute
+  // `clock64()` stamped by whichever SM wrote last. `clock64()` is per-SM on
+  // NVIDIA, so a block on a lagging SM could sit below a leading SM's throttle
+  // and stop polling for far longer than the interval -- missing the abort it
+  // was parked waiting for. `AbortFlag` has no such state and no way to poll,
+  // so that cannot be written here at all.
+  //
+  // What remains is what a shared handle can legitimately do: report whether
+  // FT is on, and *write* a terminal reason via a system-scope CAS. The waits
+  // bound themselves on the device clock instead of on shared reads.
+  AbortFlag abort_{};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);

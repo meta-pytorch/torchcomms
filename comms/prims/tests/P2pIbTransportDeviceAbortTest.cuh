@@ -43,6 +43,62 @@ void launchIbrcWaitSignal(
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait = nullptr);
 
+/*
+ * Depth of the command queue backing `launchIbrcPutUntilQueueFull`, so the test
+ * can assert exactly how many puts fit before the ring blocks.
+ */
+uint32_t ibrcTestQueueDepth();
+
+/*
+ * Issues `attempts` puts into a command queue that no CPU proxy ever drains,
+ * and stores how many produced a real completion ticket in `postedOut`.
+ *
+ * The first `ibrcTestQueueDepth()` puts fill the ring. The next one has nowhere
+ * to go and can only leave `reserve()` by observing the abort, so this is the
+ * queue-full path that used to trap the device. Every put after that is skipped
+ * on the latched abort without touching the ring at all.
+ *
+ * Asynchronous, like the wait launchers: the caller aborts the handle while the
+ * kernel is blocked and then synchronizes.
+ */
+void launchIbrcPutUntilQueueFull(
+    uint64_t* dataBuf,
+    uint32_t* postedOut,
+    uint32_t attempts,
+    comms::fault_tolerance::AbortDevice abort);
+
+/*
+ * Same queue-full stall, released by a collective deadline instead of by an
+ * explicit host abort.
+ *
+ * Launches two blocks. Block 0 plays the IBRC producer and parks in `reserve()`
+ * on a full ring holding a flag-only handle, which cannot latch a timeout of
+ * its own. Block 1 plays the collective: it arms the only started handle in the
+ * launch and waits on `signal`, which never arrives.
+ *
+ * Pass a handle with a configured timeout and never call `setAbort()`: the
+ * expiry of block 1's deadline is the only thing that can end the launch, which
+ * is what makes this a test of the deadline path rather than of the abort flag.
+ */
+void launchIbrcQueueFullReleasedByCollectiveDeadline(
+    uint64_t* dataBuf,
+    uint32_t* postedOut,
+    uint32_t attempts,
+    uint64_t* signal,
+    comms::fault_tolerance::AbortDevice abort);
+
+/*
+ * A kernel that ends in `flush()` on a queue the proxy never drains.
+ *
+ * Pass a handle with a configured timeout and never call `setAbort()`: the only
+ * thing that can end this launch is the drain bound. With FT enabled and no
+ * bound, it hangs -- which is what it is here to catch.
+ */
+void launchIbrcFlushNeverDrains(
+    uint64_t* dataBuf,
+    uint32_t* postedOut,
+    comms::fault_tolerance::AbortDevice abort);
+
 } // namespace comms::prims::test
 
 #endif // COMMS_PRIMS_TESTS_P2P_IB_TRANSPORT_DEVICE_ABORT_TEST_CUH_

@@ -159,6 +159,81 @@ Transport handles must not embed started abort timeout state. NVL, IBGDA, and
 IBRC waits consume the operation-local `AbortDevice` passed by the collective or
 kernel.
 
+### Proxy-facing waits: bounded by the clock, never by polling
+
+IBRC is the exception to "pass the operation-local handle in", and deliberately
+so. Its producer-side waits — `reserve()` on a full command ring and
+`drain_queue()` — are reached from `put()` / `signal()`, which carry no
+deadline. Threading one down would put an abort parameter on every producer for
+a value none of them consume.
+
+**These loops do not poll the abort at all.** They bound themselves on
+`deviceClock()` and, on expiry, *write* the shared state rather than reading it:
+
+```cpp
+while (/* ring full */) {
+  if (gpu_clock64() - start >= kIbrcDefaultDeviceTimeoutCycles) {
+    abort_.setAbort(AbortReason::IBRC_PROXY_TIMEOUT, "...");
+    return kIbrcInvalidReadySeq;
+  }
+}
+```
+
+Three properties follow, and each replaces a defect this design used to have.
+
+**1. The bound is unconditional.** It used to be gated on
+`!abort.isEnabled()`, so *enabling* fault tolerance removed the only bound a
+proxy-facing wait had. Combined with `P2pIbTransportDevice::flush()` dropping
+the caller's deadline on the IBRC branch, a kernel that ended in `flush()` had
+no watchdog, no deadline, and only an explicit host abort as an exit. The
+watchdog is the contract between this kernel and the host proxy — a submitted
+descriptor is consumed within a bounded time — and that obligation does not
+change because FT is on.
+
+**2. The bound is the fixed watchdog, not the collective's deadline.** These two
+are different obligations with different owners, and the wait honours its own.
+`kIbrcDefaultDeviceTimeoutCycles` bounds one rank's SM against its own host
+proxy; the communicator timeout bounds the collective across ranks. So
+`reserve()`, `drain_queue()` and `flush()` take no deadline argument and read no
+timeout — the budget is a compile-time constant compared against `deviceClock()`,
+which keeps the stall path free of mapped-host traffic and the producer
+signatures free of an abort parameter. A caller that sets a shorter per-operation
+deadline does not shorten the proxy watchdog, and a longer one does not extend
+it.
+
+**3. Poll state cannot be shared, by type.** The member is an `AbortFlag`, not
+an `AbortDevice`. `AbortDevice` carries mutable throttle state
+(`nextPollCycles_`, an absolute per-SM `clock64()`), and this object lives in
+device memory that every block sees — so several blocks would write one field
+non-atomically, and a value stamped by a leading SM could suppress a lagging
+SM's polls far past the interval, hiding the abort it was parked on.
+`AbortFlag` holds nothing mutable and exposes no poll, so that is unwritable
+here. What a shared handle *may* do — report whether FT is on, and record a
+terminal reason via a system-scope CAS — is all it offers.
+
+Do not "fix" any of this by arming a copy in the wait. `startTimeout()` is
+relative to the moment of the call, so every entry into `reserve()` would get a
+fresh full budget and N stalled reserves would cost N × timeout.
+
+**The reason is its own.** A stalled proxy latches
+`AbortReason::IBRC_PROXY_TIMEOUT`, not `TIMED_OUT`. They are different faults
+with different owners — the host proxy thread versus the collective's own
+deadline — and the host log should say which. `isTimedOut()` stays exact and
+does not report a proxy stall; `isAborted()` covers both.
+
+**The residual trade, stated plainly.** Because these loops never read shared
+state and their budget is the fixed watchdog, a block parked in one does not
+observe *another* wait's abort promptly, and a collective deadline shorter than
+the watchdog does not pull it out early — it leaves on the watchdog instead.
+Liveness is what the contract requires and it is bounded either way, but unwind
+is not instantaneous across a kernel whose producer is parked, and the worst-case
+unwind for such a kernel is the watchdog rather than the configured timeout. The
+single one-shot exception is the check before
+`reserve()` claims a sequence number, which does read shared state so that a
+producer on an already-aborted communicator leaves the wire untouched; it is
+once per descriptor and never in a loop.
+
+
 ## MCCL Collective Integration
 
 MCCL and CTRAN already share the same host `Abort`. MCCL collective code should
