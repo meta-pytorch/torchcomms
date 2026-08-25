@@ -405,9 +405,15 @@ class P2pIbrcTransportDevice {
     group.sync();
   }
 
+  // The `timeout` parameter exists for signature parity with the IBGDA
+  // transport: the progress path is templated on the transport type and passes
+  // it to whichever one it has. IBRC does not need it -- `check_status()` below
+  // already latches the abort on the communicator-scoped `abort_` member -- so
+  // it is accepted and ignored rather than threaded through.
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
-      const IbLocalCompletionTicket& ticket) const {
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& /*timeout*/ = Timeout()) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     check_status(queue);
@@ -702,10 +708,11 @@ class P2pIbrcTransportDevice {
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& timeout,
       const detail::RecvChunkAcquisition& view) {
     detail::
         progress_recv_release_once<P2pIbrcTransportDevice, protocol::Simple>(
-            *this, group, view);
+            *this, group, timeout, view);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>

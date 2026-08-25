@@ -101,6 +101,7 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void progress_recv_release_once(
     Transport& transport,
     ThreadGroup& group,
+    const AbortDevice& timeout,
     const RecvChunkAcquisition& view);
 
 template <typename Transport>
@@ -428,6 +429,7 @@ struct P2pIbTransportDevice {
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& timeout,
       const detail::RecvChunkAcquisition& view);
 
   template <
