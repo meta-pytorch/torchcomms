@@ -88,6 +88,7 @@ __device__ __forceinline__ bool deviceIsValidTerminalReason(
     case AbortReason::BOOTSTRAP_POLL:
     case AbortReason::NETWORK_ERROR:
     case AbortReason::INTERNAL_ERROR:
+    case AbortReason::IBRC_PROXY_TIMEOUT:
       return true;
     case AbortReason::NONE:
       return false;
@@ -156,6 +157,15 @@ struct AbortDevice final {
    */
   __host__ __device__ AbortBehavior behavior() const {
     return behavior_;
+  }
+
+  /**
+   * Raw shared-state pointer, for constructing an `AbortFlag` view of this
+   * handle. Not part of the general API -- everything else goes through the
+   * typed accessors.
+   */
+  __host__ __device__ AbortState* stateForFlag() const {
+    return state_;
   }
 
   /**
@@ -501,6 +511,84 @@ struct AbortDevice final {
    * the copied handle and is not part of the host-owned shared state.
    */
   uint64_t deadlineCycles_{0};
+};
+
+/**
+ * A poll-state-free view of the shared abort state, safe to store in device
+ * memory that many blocks read.
+ *
+ * `AbortDevice` is designed to be copied per thread: it carries mutable poll
+ * throttle state (`nextPollCycles_`, `sawTerminalReason_`) whose whole purpose
+ * is to be private to one poller. Placing one in device global memory breaks
+ * that assumption in two ways at once -- several blocks write the throttle
+ * non-atomically, and the absolute `clock64()` it stores is per-SM, so a value
+ * stamped by a leading SM can suppress a lagging SM's polls for far longer than
+ * the interval and hide the abort it is waiting for.
+ *
+ * This type makes that unrepresentable rather than merely discouraged: it holds
+ * no mutable state and exposes no way to poll. A transport that needs a
+ * communicator-scoped handle in device memory stores one of these, and bounds
+ * its waits on the device clock instead of on shared reads.
+ */
+struct AbortFlag final {
+  __host__ __device__ AbortFlag() = default;
+
+  __host__ __device__ explicit AbortFlag(const AbortDevice& handle)
+      : state_(handle.stateForFlag()), behavior_(handle.behavior()) {}
+
+  __host__ __device__ bool isEnabled() const {
+    return state_ != nullptr;
+  }
+
+  __host__ __device__ AbortBehavior behavior() const {
+    return behavior_;
+  }
+
+  /**
+   * Records a terminal reason, first-writer-wins. Returns whether this call
+   * performed the transition.
+   *
+   * Writing shared state is safe to do from a shared handle -- it is a
+   * system-scope CAS, which is exactly what the shared state is for. Only
+   * *polling* needs per-thread throttle state, and this type has none.
+   */
+  __device__ bool setAbort(
+      AbortReason newReason = AbortReason::ABORTED,
+      const char* context = nullptr) const {
+    if (!isEnabled()) {
+      return false;
+    }
+    (void)context;
+    const bool validReason = detail::deviceIsValidTerminalReason(newReason);
+    assert(validReason);
+    if (!validReason) {
+      return false;
+    }
+    int expected = static_cast<int>(AbortReason::NONE);
+    return detail::deviceCompareExchangeSystem(
+        &state_->abort, &expected, static_cast<int>(newReason));
+  }
+
+  /**
+   * Whether a terminal reason has been recorded. One system-scope load from
+   * mapped host state, every call -- there is deliberately no throttle here,
+   * because throttle state is exactly what must not live in a shared handle.
+   *
+   * Use this for one-shot decisions ("should this operation start at all?"),
+   * never inside a spin loop. A loop should bound itself on the device clock
+   * against a fixed budget instead.
+   */
+  __device__ bool isAborted() const {
+    if (!isEnabled()) {
+      return false;
+    }
+    return static_cast<AbortReason>(detail::deviceLoadAcquireSystem(
+               &state_->abort)) != AbortReason::NONE;
+  }
+
+ private:
+  AbortState* state_{nullptr};
+  AbortBehavior behavior_{AbortBehavior::SKIP};
 };
 
 /**

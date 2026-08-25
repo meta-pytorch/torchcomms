@@ -21,6 +21,11 @@ enum class AbortReason : int {
   BOOTSTRAP_POLL = 3,
   NETWORK_ERROR = 4,
   INTERNAL_ERROR = 5,
+  // The IBRC host CPU proxy stopped making progress and a device-side wait hit
+  // its watchdog. Distinct from TIMED_OUT, which is the enclosing collective's
+  // own deadline expiring: this one names the proxy thread as the stalled
+  // component, which is a different fault with a different owner.
+  IBRC_PROXY_TIMEOUT = 6,
 };
 
 constexpr bool isTerminalAbortReason(AbortReason reason) {
@@ -30,6 +35,7 @@ constexpr bool isTerminalAbortReason(AbortReason reason) {
     case AbortReason::BOOTSTRAP_POLL:
     case AbortReason::NETWORK_ERROR:
     case AbortReason::INTERNAL_ERROR:
+    case AbortReason::IBRC_PROXY_TIMEOUT:
       return true;
     case AbortReason::NONE:
       return false;
@@ -51,6 +57,8 @@ constexpr std::string_view abortReasonToString(AbortReason reason) {
       return "network_error";
     case AbortReason::INTERNAL_ERROR:
       return "internal_error";
+    case AbortReason::IBRC_PROXY_TIMEOUT:
+      return "ibrc_proxy_timeout";
   }
   return "unknown";
 }

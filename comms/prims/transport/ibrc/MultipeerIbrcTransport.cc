@@ -267,12 +267,14 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     int myRank,
     int nRanks,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-    const MultipeerIbTransportConfig& config)
+    const MultipeerIbTransportConfig& config,
+    comms::fault_tolerance::AbortDevice abort)
     : MultiPeerIbTransport<MultipeerIbrcTransport>(
           myRank,
           nRanks,
           std::move(bootstrap),
-          config) {
+          config),
+      abortDevice_(abort) {
   const int numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   if (config_.max_num_channels < 1) {
     throw std::invalid_argument("max_num_channels must be >= 1");
@@ -1013,7 +1015,8 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       counterHostBuf,
       config_.numSignalSlots,
       config_.numCounterSlots,
-      channelLayoutForPeer(peerIndex));
+      channelLayoutForPeer(peerIndex),
+      abortDevice_);
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
@@ -44,6 +45,7 @@ void writeIbrcDeviceSlot(
     IbgdaLocalBuffer counterHostBuf,
     int numSignalSlots,
     int numCounterSlots,
-    IbChannelLayout channelLayout);
+    IbChannelLayout channelLayout,
+    comms::fault_tolerance::AbortDevice abort);
 
 } // namespace comms::prims

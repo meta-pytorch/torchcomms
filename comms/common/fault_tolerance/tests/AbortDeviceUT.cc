@@ -220,6 +220,7 @@ TEST(AbortDeviceTest, deviceProducerSupportsDetailedTerminalReasons) {
            AbortReason::BOOTSTRAP_POLL,
            AbortReason::NETWORK_ERROR,
            AbortReason::INTERNAL_ERROR,
+           AbortReason::IBRC_PROXY_TIMEOUT,
        }) {
     Abort abort{/*enabled=*/true};
 
