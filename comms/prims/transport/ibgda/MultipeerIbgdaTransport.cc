@@ -29,7 +29,7 @@
 // NVIDIA-only host-side helpers. On AMD their functionality is provided
 // by `comms/prims/transport/amd/DocaCompat.h` (already included via
 // `MultipeerIbgdaTransport.h`) which translates `doca_*` to the
-// `pipes_gda_*` host APIs in `amd/pipes_gda/PipesGdaHost.{h,cc}`.
+// `prims_amd_gda_*` host APIs in `amd/prims_amd_gda/PrimsAmdGdaHost.{h,cc}`.
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"

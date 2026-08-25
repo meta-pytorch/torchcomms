@@ -919,7 +919,7 @@ list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultimemHandler\\.")
 # Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
 # Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
-# (pipes_gda, mlx5/bnxt nic backends) is only consumed by the excluded
+# (prims_amd_gda, mlx5/bnxt nic backends) is only consumed by the excluded
 # MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
 # (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
 list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/amd/.*")

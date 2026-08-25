@@ -32,7 +32,7 @@
 // Modifications: (c) Meta Platforms, Inc. and affiliates.
 
 // =============================================================================
-// MLX5 (Mellanox/NVIDIA ConnectX) Hardware-Software Interface for pipes-gda
+// MLX5 (Mellanox/NVIDIA ConnectX) Hardware-Software Interface for prims-amd-gda
 // =============================================================================
 //
 // MLX5 NIC WQE, CQE, and doorbell structures for GPU-initiated RDMA.
@@ -58,35 +58,35 @@ extern "C" {
 // MLX5 WQE Constants
 // =============================================================================
 
-#define PIPES_GDA_IB_MLX5_WQE_SQ_SHIFT 6
+#define PRIMS_AMD_GDA_IB_MLX5_WQE_SQ_SHIFT 6
 
 // =============================================================================
 // MLX5 WQE Opcodes
 // =============================================================================
 
 enum {
-  PIPES_GDA_IB_MLX5_OPCODE_NOP = 0x00,
-  PIPES_GDA_IB_MLX5_OPCODE_SEND_INVAL = 0x01,
-  PIPES_GDA_IB_MLX5_OPCODE_RDMA_WRITE = 0x08,
-  PIPES_GDA_IB_MLX5_OPCODE_RDMA_WRITE_IMM = 0x09,
-  PIPES_GDA_IB_MLX5_OPCODE_SEND = 0x0a,
-  PIPES_GDA_IB_MLX5_OPCODE_SEND_IMM = 0x0b,
-  PIPES_GDA_IB_MLX5_OPCODE_TSO = 0x0e,
-  PIPES_GDA_IB_MLX5_OPCODE_RDMA_READ = 0x10,
-  PIPES_GDA_IB_MLX5_OPCODE_ATOMIC_CS = 0x11,
-  PIPES_GDA_IB_MLX5_OPCODE_ATOMIC_FA = 0x12,
-  PIPES_GDA_IB_MLX5_OPCODE_ATOMIC_MASKED_CS = 0x14,
-  PIPES_GDA_IB_MLX5_OPCODE_ATOMIC_MASKED_FA = 0x15,
-  PIPES_GDA_IB_MLX5_OPCODE_FMR = 0x19,
-  PIPES_GDA_IB_MLX5_OPCODE_LOCAL_INVAL = 0x1b,
-  PIPES_GDA_IB_MLX5_OPCODE_WAIT = 0x0f,
-  PIPES_GDA_IB_MLX5_OPCODE_CONFIG_CMD = 0x1f,
-  PIPES_GDA_IB_MLX5_OPCODE_SET_PSV = 0x20,
-  PIPES_GDA_IB_MLX5_OPCODE_DUMP = 0x23,
-  PIPES_GDA_IB_MLX5_OPCODE_UMR = 0x25,
-  PIPES_GDA_IB_MLX5_OPCODE_TAG_MATCHING = 0x28,
-  PIPES_GDA_IB_MLX5_OPCODE_FLOW_TBL_ACCESS = 0x2c,
-  PIPES_GDA_IB_MLX5_OPCODE_MMO = 0x2F,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_NOP = 0x00,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_SEND_INVAL = 0x01,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_RDMA_WRITE = 0x08,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_RDMA_WRITE_IMM = 0x09,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_SEND = 0x0a,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_SEND_IMM = 0x0b,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_TSO = 0x0e,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_RDMA_READ = 0x10,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_ATOMIC_CS = 0x11,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_ATOMIC_FA = 0x12,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_ATOMIC_MASKED_CS = 0x14,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_ATOMIC_MASKED_FA = 0x15,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_FMR = 0x19,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_LOCAL_INVAL = 0x1b,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_WAIT = 0x0f,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_CONFIG_CMD = 0x1f,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_SET_PSV = 0x20,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_DUMP = 0x23,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_UMR = 0x25,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_TAG_MATCHING = 0x28,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_FLOW_TBL_ACCESS = 0x2c,
+  PRIMS_AMD_GDA_IB_MLX5_OPCODE_MMO = 0x2F,
 };
 
 // =============================================================================
@@ -94,35 +94,35 @@ enum {
 // =============================================================================
 
 enum {
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_CQE_ERROR = 0x0,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_FIRST_CQE_ERROR = 0x1,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ALWAYS = 0x2,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_AND_EQE = 0x3,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_CQE_ERROR = 0x0,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_FIRST_CQE_ERROR = 0x1,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ALWAYS = 0x2,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_AND_EQE = 0x3,
 };
 
 enum {
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_NO_FENCE = 0x0,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_INITIATOR_SMALL_FENCE = 0x1,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_FENCE = 0x2,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_STRONG_ORDERING = 0x3,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_FENCE_AND_INITIATOR_SMALL_FENCE = 0x4,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FM_CUSTOM = 0x100,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_NO_FENCE = 0x0,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_INITIATOR_SMALL_FENCE = 0x1,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_FENCE = 0x2,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_STRONG_ORDERING = 0x3,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_FENCE_AND_INITIATOR_SMALL_FENCE = 0x4,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_CUSTOM = 0x100,
 };
 
-enum pipes_gda_gpu_dev_verbs_wqe_ctrl_flags {
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ALWAYS << 2,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_ERROR_UPDATE =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_CQE_ERROR << 2,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_FIRST_CQE_ERROR =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_FIRST_CQE_ERROR << 2,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_SOLICITED = 1 << 1,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_FM_FENCE_AND_INITIATOR_SMALL_FENCE << 5,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_INITIATOR_SMALL_FENCE =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_FM_INITIATOR_SMALL_FENCE << 5,
-  PIPES_GDA_IB_MLX5_WQE_CTRL_STRONG_ORDERING =
-      PIPES_GDA_IB_MLX5_WQE_CTRL_FM_STRONG_ORDERING << 5
+enum prims_amd_gda_gpu_dev_verbs_wqe_ctrl_flags {
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ALWAYS << 2,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_ERROR_UPDATE =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_CQE_ERROR << 2,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_FIRST_CQE_ERROR =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CE_CQE_ON_FIRST_CQE_ERROR << 2,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_SOLICITED = 1 << 1,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FENCE =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_FENCE_AND_INITIATOR_SMALL_FENCE << 5,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_INITIATOR_SMALL_FENCE =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_INITIATOR_SMALL_FENCE << 5,
+  PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_STRONG_ORDERING =
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FM_STRONG_ORDERING << 5
 };
 
 // =============================================================================
@@ -130,8 +130,8 @@ enum pipes_gda_gpu_dev_verbs_wqe_ctrl_flags {
 // =============================================================================
 
 enum {
-  PIPES_GDA_IB_MLX5_RCV_DBR = 0,
-  PIPES_GDA_IB_MLX5_SND_DBR = 1,
+  PRIMS_AMD_GDA_IB_MLX5_RCV_DBR = 0,
+  PRIMS_AMD_GDA_IB_MLX5_SND_DBR = 1,
 };
 
 // =============================================================================
@@ -139,48 +139,48 @@ enum {
 // =============================================================================
 
 enum {
-  PIPES_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MIN = 3,
-  PIPES_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MAX = 4,
-  PIPES_GDA_VERBS_WQE_SEG_CNT_ATOMIC_FA_CAS = 4,
-  PIPES_GDA_VERBS_WQE_SEG_CNT_WAIT = 2
+  PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MIN = 3,
+  PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MAX = 4,
+  PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_ATOMIC_FA_CAS = 4,
+  PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_WAIT = 2
 };
 
 enum {
-  PIPES_GDA_IB_MLX5_INLINE_SEG = 0x80000000,
+  PRIMS_AMD_GDA_IB_MLX5_INLINE_SEG = 0x80000000,
 };
 
 // =============================================================================
 // MLX5 CQE Status Codes
 // =============================================================================
 
-#define PIPES_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT 4
+#define PRIMS_AMD_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT 4
 
 enum {
-  PIPES_GDA_IB_MLX5_CQE_OWNER_MASK = 1,
-  PIPES_GDA_IB_MLX5_CQE_REQ = 0,
-  PIPES_GDA_IB_MLX5_CQE_RESP_WR_IMM = 1,
-  PIPES_GDA_IB_MLX5_CQE_RESP_SEND = 2,
-  PIPES_GDA_IB_MLX5_CQE_RESP_SEND_IMM = 3,
-  PIPES_GDA_IB_MLX5_CQE_RESP_SEND_INV = 4,
-  PIPES_GDA_IB_MLX5_CQE_RESIZE_CQ = 5,
-  PIPES_GDA_IB_MLX5_CQE_NO_PACKET = 6,
-  PIPES_GDA_IB_MLX5_CQE_SIG_ERR = 12,
-  PIPES_GDA_IB_MLX5_CQE_REQ_ERR = 13,
-  PIPES_GDA_IB_MLX5_CQE_RESP_ERR = 14,
-  PIPES_GDA_IB_MLX5_CQE_INVALID = 15,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_OWNER_MASK = 1,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_REQ = 0,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESP_WR_IMM = 1,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESP_SEND = 2,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESP_SEND_IMM = 3,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESP_SEND_INV = 4,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESIZE_CQ = 5,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_NO_PACKET = 6,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_SIG_ERR = 12,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_REQ_ERR = 13,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_RESP_ERR = 14,
+  PRIMS_AMD_GDA_IB_MLX5_CQE_INVALID = 15,
 };
 
 // =============================================================================
 // MLX5 WQE Segment Structures
 // =============================================================================
 
-struct pipes_gda_ib_mlx5_wqe_data_seg {
+struct prims_amd_gda_ib_mlx5_wqe_data_seg {
   __be32 byte_count;
   __be32 lkey;
   __be64 addr;
 };
 
-struct pipes_gda_ib_mlx5_wqe_ctrl_seg {
+struct prims_amd_gda_ib_mlx5_wqe_ctrl_seg {
   __be32 opmod_idx_opcode;
   __be32 qpn_ds;
   uint8_t signature;
@@ -189,18 +189,18 @@ struct pipes_gda_ib_mlx5_wqe_ctrl_seg {
   __be32 imm;
 } __attribute__((__packed__)) __attribute__((__aligned__(4)));
 
-struct pipes_gda_ib_mlx5_wqe_raddr_seg {
+struct prims_amd_gda_ib_mlx5_wqe_raddr_seg {
   __be64 raddr;
   __be32 rkey;
   __be32 reserved;
 };
 
-struct pipes_gda_ib_mlx5_wqe_atomic_seg {
+struct prims_amd_gda_ib_mlx5_wqe_atomic_seg {
   __be64 swap_add;
   __be64 compare;
 };
 
-struct pipes_gda_ib_mlx5_wqe_inl_data_seg {
+struct prims_amd_gda_ib_mlx5_wqe_inl_data_seg {
   uint32_t byte_count;
 };
 
@@ -208,20 +208,20 @@ struct pipes_gda_ib_mlx5_wqe_inl_data_seg {
 // MLX5 CQE Structures
 // =============================================================================
 
-struct pipes_gda_ib_mlx5_tm_cqe {
+struct prims_amd_gda_ib_mlx5_tm_cqe {
   __be32 success;
   __be16 hw_phase_cnt;
   uint8_t rsvd0[12];
 };
 
-struct pipes_gda_ib_ibv_tmh {
+struct prims_amd_gda_ib_ibv_tmh {
   uint8_t opcode;
   uint8_t reserved[3];
   __be32 app_ctx;
   __be64 tag;
 };
 
-struct pipes_gda_ib_mlx5_cqe64 {
+struct prims_amd_gda_ib_mlx5_cqe64 {
   union {
     struct {
       uint8_t rsvd0[2];
@@ -235,8 +235,8 @@ struct pipes_gda_ib_mlx5_cqe64 {
       uint8_t l4_hdr_type_etc;
       __be16 vlan_info;
     };
-    struct pipes_gda_ib_mlx5_tm_cqe tm_cqe;
-    struct pipes_gda_ib_ibv_tmh tmh;
+    struct prims_amd_gda_ib_mlx5_tm_cqe tm_cqe;
+    struct prims_amd_gda_ib_ibv_tmh tmh;
   };
   __be32 srqn_uidx;
   __be32 imm_inval_pkey;
@@ -251,7 +251,7 @@ struct pipes_gda_ib_mlx5_cqe64 {
   uint8_t op_own;
 };
 
-struct pipes_gda_ib_mlx5_err_cqe_ex {
+struct prims_amd_gda_ib_mlx5_err_cqe_ex {
   uint8_t rsvd0[32];
   __be32 srqn;
   uint8_t rsvd1[16];

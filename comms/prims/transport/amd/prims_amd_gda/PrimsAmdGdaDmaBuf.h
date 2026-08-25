@@ -1,11 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-// PipesGdaDmaBuf - GPU DMA-BUF export for AMD/HIP builds.
+// PrimsAmdGdaDmaBuf - GPU DMA-BUF export for AMD/HIP builds.
 //
 // HSA equivalent of NVIDIA's `cuMemGetAddressRange + doca_gpu_dmabuf_fd`
-// pipeline (`platform/DocaHostUtils.h`). Kept out of `PipesGdaHost.{h,cc}`
+// pipeline (`platform/DocaHostUtils.h`). Kept out of `PrimsAmdGdaHost.{h,cc}`
 // (which mirror `doca_*` 1:1) because it is a Meta helper, not part of the
-// `pipes_gda_*` / DOCA host API surface.
+// `prims_amd_gda_*` / DOCA host API surface.
 
 #pragma once
 

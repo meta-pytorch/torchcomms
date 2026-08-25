@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "pipes_gda/PipesGdaDmaBuf.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDmaBuf.h" // @manual
 
 #ifdef __HIP_PLATFORM_AMD__
 

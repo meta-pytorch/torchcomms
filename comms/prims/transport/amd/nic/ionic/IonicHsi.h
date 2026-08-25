@@ -7,7 +7,7 @@
 // Modifications: (c) Meta Platforms, Inc. and affiliates.
 
 // =============================================================================
-// IONIC (AMD Pensando AI NIC) Hardware-Software Interface for pipes-gda
+// IONIC (AMD Pensando AI NIC) Hardware-Software Interface for prims-amd-gda
 // =============================================================================
 //
 // IONIC NIC WQE, CQE, doorbell, and direct-verbs (ionic_dv) structures for
@@ -19,7 +19,7 @@
 // are reproduced unchanged so the on-wire ABI matches. The direct-verbs structs
 // (`ionic_dv_*`) are copied from `ionic_dv.h`; they describe the GDA handles
 // the host extracts via `ionic_dv_get_{ctx,qp,cq}()` and are consumed by the
-// host setup path (`IonicReDv.h` / `PipesGdaHost.cc`).
+// host setup path (`IonicReDv.h` / `PrimsAmdGdaHost.cc`).
 //
 // Key properties (vs mlx5 / bnxt):
 //   - Keys / addresses are big-endian on the wire (like mlx5), but pipes
@@ -384,28 +384,28 @@ struct ionic_cq_init_attr_ex {
 #if defined(__HIP_PLATFORM_AMD__) && defined(__cplusplus)
 
 __device__ __forceinline__ uint32_t
-pipes_gda_ionic_cqe_qtf_raw(const struct ionic_v1_cqe* cqe) {
+prims_amd_gda_ionic_cqe_qtf_raw(const struct ionic_v1_cqe* cqe) {
   // Coherent system-scope read so the GPU observes the NIC's latest write.
   return amd_load_relaxed_sys(
       const_cast<uint32_t*>(
           reinterpret_cast<const uint32_t*>(&cqe->qid_type_flags)));
 }
 
-__device__ __forceinline__ bool pipes_gda_ionic_cqe_color(
+__device__ __forceinline__ bool prims_amd_gda_ionic_cqe_color(
     const struct ionic_v1_cqe* cqe) {
-  return (pipes_gda_ionic_cqe_qtf_raw(cqe) &
+  return (prims_amd_gda_ionic_cqe_qtf_raw(cqe) &
           __builtin_bswap32(IONIC_V1_CQE_COLOR)) != 0;
 }
 
-__device__ __forceinline__ bool pipes_gda_ionic_cqe_error(
+__device__ __forceinline__ bool prims_amd_gda_ionic_cqe_error(
     const struct ionic_v1_cqe* cqe) {
-  return (pipes_gda_ionic_cqe_qtf_raw(cqe) &
+  return (prims_amd_gda_ionic_cqe_qtf_raw(cqe) &
           __builtin_bswap32(IONIC_V1_CQE_ERROR)) != 0;
 }
 
 // Latest completed 24-bit MSN reported by a send CQE (converted to host order).
 __device__ __forceinline__ uint32_t
-pipes_gda_ionic_cqe_msn(const struct ionic_v1_cqe* cqe) {
+prims_amd_gda_ionic_cqe_msn(const struct ionic_v1_cqe* cqe) {
   uint32_t be = amd_load_relaxed_sys(
       const_cast<uint32_t*>(
           reinterpret_cast<const uint32_t*>(&cqe->send.msg_msn)));

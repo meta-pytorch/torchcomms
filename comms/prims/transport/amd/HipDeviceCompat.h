@@ -6,7 +6,7 @@
 //
 // Provides AMD-side equivalents of the CUDA device intrinsics that pipes
 // device code uses (originally written for CUDA PTX). Lives in `amd/`
-// and is consumed by `pipes_gda_*` device APIs and the IBGDA WQE
+// and is consumed by `prims_amd_gda_*` device APIs and the IBGDA WQE
 // construction path.
 //
 // CUDA → AMD mapping:

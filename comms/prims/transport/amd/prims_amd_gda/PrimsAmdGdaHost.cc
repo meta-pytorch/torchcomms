@@ -1,10 +1,10 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// PipesGdaHost - host-side `pipes_gda_*` impl for AMD/HIP
+// PrimsAmdGdaHost - host-side `prims_amd_gda_*` impl for AMD/HIP
 // =============================================================================
-// Implements the host-side `pipes_gda_*` API for two NIC backends, selected at
-// build time:
+// Implements the host-side `prims_amd_gda_*` API for two NIC backends, selected
+// at build time:
 //   - mlx5 (default):  uses mlx5 direct verbs (mlx5dv_*) and the static
 //                      libibverbs.
 //   - bnxt:            uses Broadcom direct verbs (bnxt_re_dv_*) loaded from
@@ -14,16 +14,17 @@
 //
 // What's NIC-agnostic (shared code, ~50% of the file):
 //   - HSA agent / pool discovery + `hsa_amd_memory_lock_to_pool`
-//   - `pipes_gda_gpu_*` lifecycle (HIP device tracking, host-pinned alloc)
+//   - `prims_amd_gda_gpu_*` lifecycle (HIP device tracking, host-pinned alloc)
 //   - QP / AH attribute setters (build IBV_QP_* mask incrementally)
 //   - DMA-buf export via `hsa_amd_portable_export_dmabuf`
 //
 // What's NIC-specific (gated by `#ifdef NIC_BNXT`):
 //   - ibverbs wrappers (BNXT routes through SysIbv → system libibverbs;
 //     mlx5 calls the static libibverbs directly).
-//   - `pipes_gda_verbs_qp_modify` (BNXT uses bnxt_re_dv.modify_qp's extended
+//   - `prims_amd_gda_verbs_qp_modify` (BNXT uses bnxt_re_dv.modify_qp's
+//   extended
 //     5-arg signature; mlx5 calls plain ibv_modify_qp).
-//   - `pipes_gda_gpu_verbs_create_qp_hl`:
+//   - `prims_amd_gda_gpu_verbs_create_qp_hl`:
 //       BNXT  - bnxt_re_dv (cq_mem_alloc → umem_reg → create_cq → qp_mem_alloc
 //               → alloc_db_region → create_qp → init_obj). SQ/CQ/RQ buffers in
 //               GPU uncached memory; MSN table at SQ tail.
@@ -35,11 +36,11 @@
 
 #ifdef __HIP_PLATFORM_AMD__
 
-#include "pipes_gda/PipesGdaHost.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaHost.h" // @manual
 
-// pipes_gda_gpu_dev_verbs_qp is declared in this header; needed for
+// prims_amd_gda_gpu_dev_verbs_qp is declared in this header; needed for
 // constructing the device-side QP descriptor below.
-#include "pipes_gda/PipesGdaDev.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDev.h" // @manual
 
 #ifdef NIC_BNXT
 // BNXT direct-verbs typedefs (struct definitions and function pointer types).
@@ -226,7 +227,7 @@ static SysIbv* getSysIbv() {
     if (!lib) {
       fprintf(
           stderr,
-          "PipesGdaHost(BNXT): dlopen libibverbs.so.1 failed: %s\n",
+          "PrimsAmdGdaHost(BNXT): dlopen libibverbs.so.1 failed: %s\n",
           dlerror());
       return;
     }
@@ -297,7 +298,7 @@ struct bnxt_re_dv_funcs* getBnxtReDv() {
     if (!lib) {
       fprintf(
           stderr,
-          "PipesGdaHost(BNXT): failed to dlopen libbnxt_re-rdmav34.so: %s\n",
+          "PrimsAmdGdaHost(BNXT): failed to dlopen libbnxt_re-rdmav34.so: %s\n",
           dlerror());
       return;
     }
@@ -332,7 +333,7 @@ struct bnxt_re_dv_funcs* getBnxtReDv() {
         !s_funcs.create_qp || !s_funcs.modify_qp) {
       fprintf(
           stderr,
-          "PipesGdaHost(BNXT): libbnxt_re missing required bnxt_re_dv_* "
+          "PrimsAmdGdaHost(BNXT): libbnxt_re missing required bnxt_re_dv_* "
           "symbols\n");
       s_funcs = bnxt_re_dv_funcs{};
       return;
@@ -387,7 +388,7 @@ struct ionic_dv_funcs* getIonicDv() {
     if (!lib) {
       fprintf(
           stderr,
-          "PipesGdaHost(IONIC): failed to dlopen libionic.so: %s\n",
+          "PrimsAmdGdaHost(IONIC): failed to dlopen libionic.so: %s\n",
           dlerror());
       return;
     }
@@ -414,7 +415,7 @@ struct ionic_dv_funcs* getIonicDv() {
         !s_funcs.pd_set_udma_mask) {
       fprintf(
           stderr,
-          "PipesGdaHost(IONIC): libionic missing required ionic_dv_* "
+          "PrimsAmdGdaHost(IONIC): libionic missing required ionic_dv_* "
           "symbols\n");
       dlclose(lib);
       s_funcs = ionic_dv_funcs{};
@@ -580,20 +581,20 @@ struct AmdQpInternal {
 
 // ===========================================================================
 // AMD-internal QP attribute / address-handle structs — IDENTICAL layout
-// across backends so the (opaque) `pipes_gda_verbs_qp_attr*` /
-// `pipes_gda_verbs_ah_attr*` produced by either backend are
+// across backends so the (opaque) `prims_amd_gda_verbs_qp_attr*` /
+// `prims_amd_gda_verbs_ah_attr*` produced by either backend are
 // indistinguishable at the call site.
 // ===========================================================================
 
 struct AmdQpAttrImpl {
   ibv_qp_attr attr{};
   int attr_mask{0};
-  pipes_gda_verbs_ah_attr* ah_attr_ref{nullptr};
+  prims_amd_gda_verbs_ah_attr* ah_attr_ref{nullptr};
 };
 
 struct AmdAhAttrImpl {
-  pipes_gda_verbs_addr_type addr_type{PIPES_GDA_VERBS_ADDR_TYPE_IPv6};
-  pipes_gda_verbs_gid gid{};
+  prims_amd_gda_verbs_addr_type addr_type{PRIMS_AMD_GDA_VERBS_ADDR_TYPE_IPv6};
+  prims_amd_gda_verbs_gid gid{};
   uint16_t dlid{0};
   int sgid_index{0};
   uint8_t hop_limit{0};
@@ -601,54 +602,54 @@ struct AmdAhAttrImpl {
   uint8_t traffic_class{0};
 };
 
-inline AmdQpAttrImpl* castQpAttr(pipes_gda_verbs_qp_attr* a) {
+inline AmdQpAttrImpl* castQpAttr(prims_amd_gda_verbs_qp_attr* a) {
   return reinterpret_cast<AmdQpAttrImpl*>(a);
 }
-inline AmdAhAttrImpl* castAhAttr(pipes_gda_verbs_ah_attr* a) {
+inline AmdAhAttrImpl* castAhAttr(prims_amd_gda_verbs_ah_attr* a) {
   return reinterpret_cast<AmdAhAttrImpl*>(a);
 }
 
 } // namespace
 
 // ===========================================================================
-// pipes_gda_gpu - GPU context
+// prims_amd_gda_gpu - GPU context
 // ===========================================================================
 
-struct pipes_gda_gpu {
+struct prims_amd_gda_gpu {
   int hip_device_id{0};
 };
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
-pipes_gda_error_t pipes_gda_gpu_create(
+prims_amd_gda_error_t prims_amd_gda_gpu_create(
     const char* /*gpu_pci_bus_id*/,
-    pipes_gda_gpu** out_gpu) {
+    prims_amd_gda_gpu** out_gpu) {
   if (!out_gpu) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   if (!ensureHsaInitialized()) {
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
   int devId = -1;
   if (hipGetDevice(&devId) != hipSuccess) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  auto* gpu = new (std::nothrow) pipes_gda_gpu();
+  auto* gpu = new (std::nothrow) prims_amd_gda_gpu();
   if (!gpu) {
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   gpu->hip_device_id = devId;
   *out_gpu = gpu;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_gpu_destroy(pipes_gda_gpu* gpu) {
+prims_amd_gda_error_t prims_amd_gda_gpu_destroy(prims_amd_gda_gpu* gpu) {
   delete gpu;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_gpu_mem_alloc(
-    pipes_gda_gpu* /*gpu*/,
+prims_amd_gda_error_t prims_amd_gda_gpu_mem_alloc(
+    prims_amd_gda_gpu* /*gpu*/,
     std::size_t size,
     std::size_t /*alignment*/,
     int /*mem_type*/,
@@ -659,7 +660,7 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
   void* p = nullptr;
   hipError_t err = hipHostMalloc(&p, size, hipHostMallocDefault);
   if (err != hipSuccess) {
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   if (out_ptr) {
     *out_ptr = p;
@@ -667,7 +668,7 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
   if (out_gpu_ptr) {
     *out_gpu_ptr = p;
   }
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 // ===========================================================================
@@ -679,140 +680,143 @@ pipes_gda_error_t pipes_gda_gpu_mem_alloc(
 // mlx5: direct calls into the statically-linked libibverbs.
 // ===========================================================================
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_list(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_get_device_list(
     int* num_devices,
     ibv_device*** out_list) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   *out_list = iv->get_device_list(num_devices);
 #else
   *out_list = ibv_get_device_list(num_devices);
 #endif
-  return *out_list ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return *out_list ? PRIMS_AMD_GDA_SUCCESS : PRIMS_AMD_GDA_ERROR_DRIVER;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_free_device_list(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_free_device_list(
     ibv_device** list) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->free_device_list) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   iv->free_device_list(list);
 #else
   ibv_free_device_list(list);
 #endif
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_get_device_name(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_get_device_name(
     ibv_device* dev,
     const char** out_name) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->get_device_name) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   *out_name = iv->get_device_name(dev);
 #else
   *out_name = ibv_get_device_name(dev);
 #endif
-  return *out_name ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return *out_name ? PRIMS_AMD_GDA_SUCCESS : PRIMS_AMD_GDA_ERROR_DRIVER;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_open_device(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_open_device(
     ibv_device* dev,
     ibv_context** out_ctx) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   *out_ctx = iv->open_device(dev);
 #else
   *out_ctx = ibv_open_device(dev);
 #endif
-  return *out_ctx ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return *out_ctx ? PRIMS_AMD_GDA_SUCCESS : PRIMS_AMD_GDA_ERROR_DRIVER;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_close_device(ibv_context* ctx) {
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_close_device(
+    ibv_context* ctx) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->close_device) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->close_device(ctx) == 0 ? PIPES_GDA_SUCCESS
-                                    : PIPES_GDA_ERROR_DRIVER;
+  return iv->close_device(ctx) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                    : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_close_device(ctx) == 0 ? PIPES_GDA_SUCCESS
-                                    : PIPES_GDA_ERROR_DRIVER;
+  return ibv_close_device(ctx) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                    : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_alloc_pd(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_alloc_pd(
     ibv_context* ctx,
     ibv_pd** out_pd) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   *out_pd = iv->alloc_pd(ctx);
 #else
   *out_pd = ibv_alloc_pd(ctx);
 #endif
-  return *out_pd ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return *out_pd ? PRIMS_AMD_GDA_SUCCESS : PRIMS_AMD_GDA_ERROR_DRIVER;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd) {
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_dealloc_pd(ibv_pd* pd) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->dealloc_pd) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->dealloc_pd(pd) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return iv->dealloc_pd(pd) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                 : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_dealloc_pd(pd) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return ibv_dealloc_pd(pd) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                 : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_device(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_query_device(
     ibv_context* ctx,
     ibv_device_attr* attr) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->query_device) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->query_device(ctx, attr) == 0 ? PIPES_GDA_SUCCESS
-                                          : PIPES_GDA_ERROR_DRIVER;
+  return iv->query_device(ctx, attr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                          : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_query_device(ctx, attr) == 0 ? PIPES_GDA_SUCCESS
-                                          : PIPES_GDA_ERROR_DRIVER;
+  return ibv_query_device(ctx, attr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                          : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_port(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_query_port(
     ibv_context* ctx,
     uint8_t port,
     ibv_port_attr* attr) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->query_port(ctx, port, attr) == 0 ? PIPES_GDA_SUCCESS
-                                              : PIPES_GDA_ERROR_DRIVER;
+  return iv->query_port(ctx, port, attr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                              : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_query_port(ctx, port, attr) == 0 ? PIPES_GDA_SUCCESS
-                                              : PIPES_GDA_ERROR_DRIVER;
+  return ibv_query_port(ctx, port, attr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                              : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_gid(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_query_gid(
     ibv_context* ctx,
     uint8_t port,
     int index,
@@ -820,17 +824,17 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_query_gid(
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->query_gid(ctx, port, index, gid) == 0 ? PIPES_GDA_SUCCESS
-                                                   : PIPES_GDA_ERROR_DRIVER;
+  return iv->query_gid(ctx, port, index, gid) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                                   : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_query_gid(ctx, port, index, gid) == 0 ? PIPES_GDA_SUCCESS
-                                                   : PIPES_GDA_ERROR_DRIVER;
+  return ibv_query_gid(ctx, port, index, gid) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                                                   : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_reg_mr(
     ibv_pd* pd,
     void* addr,
     std::size_t length,
@@ -839,24 +843,26 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_reg_mr(
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   *out_mr = iv->reg_mr(pd, addr, length, access);
 #else
   *out_mr = ibv_reg_mr(pd, addr, length, access);
 #endif
-  return *out_mr ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return *out_mr ? PRIMS_AMD_GDA_SUCCESS : PRIMS_AMD_GDA_ERROR_DRIVER;
 }
 
-pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr) {
+prims_amd_gda_error_t prims_amd_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr) {
 #if defined(NIC_BNXT) || defined(NIC_IONIC)
   auto* iv = getSysIbv();
   if (!iv || !iv->dereg_mr) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
-  return iv->dereg_mr(mr) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return iv->dereg_mr(mr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                               : PRIMS_AMD_GDA_ERROR_DRIVER;
 #else
-  return ibv_dereg_mr(mr) == 0 ? PIPES_GDA_SUCCESS : PIPES_GDA_ERROR_DRIVER;
+  return ibv_dereg_mr(mr) == 0 ? PRIMS_AMD_GDA_SUCCESS
+                               : PRIMS_AMD_GDA_ERROR_DRIVER;
 #endif
 }
 
@@ -864,117 +870,117 @@ pipes_gda_error_t pipes_gda_verbs_wrapper_ibv_dereg_mr(ibv_mr* mr) {
 // QP attribute setters (NIC-agnostic — forward to ibv_qp_attr)
 // ===========================================================================
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_create(
-    pipes_gda_verbs_qp_attr** out_attr) {
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_create(
+    prims_amd_gda_verbs_qp_attr** out_attr) {
   if (!out_attr) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   auto* impl = new (std::nothrow) AmdQpAttrImpl();
   if (!impl) {
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
-  *out_attr = reinterpret_cast<pipes_gda_verbs_qp_attr*>(impl);
-  return PIPES_GDA_SUCCESS;
+  *out_attr = reinterpret_cast<prims_amd_gda_verbs_qp_attr*>(impl);
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_destroy(
-    pipes_gda_verbs_qp_attr* attr) {
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_destroy(
+    prims_amd_gda_verbs_qp_attr* attr) {
   delete castQpAttr(attr);
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_next_state(
-    pipes_gda_verbs_qp_attr* attr,
-    pipes_gda_verbs_qp_state state) {
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_next_state(
+    prims_amd_gda_verbs_qp_attr* attr,
+    prims_amd_gda_verbs_qp_state state) {
   auto* impl = castQpAttr(attr);
   impl->attr.qp_state = static_cast<ibv_qp_state>(state);
   impl->attr_mask |= IBV_QP_STATE;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_path_mtu(
-    pipes_gda_verbs_qp_attr* attr,
-    pipes_gda_mtu mtu) {
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_path_mtu(
+    prims_amd_gda_verbs_qp_attr* attr,
+    prims_amd_gda_mtu mtu) {
   auto* impl = castQpAttr(attr);
   impl->attr.path_mtu = static_cast<ibv_mtu>(mtu);
   impl->attr_mask |= IBV_QP_PATH_MTU;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_port_num(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_port_num(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint8_t port) {
   auto* impl = castQpAttr(attr);
   impl->attr.port_num = port;
   impl->attr_mask |= IBV_QP_PORT;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_dest_qp_num(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_dest_qp_num(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint32_t dest_qp_num) {
   auto* impl = castQpAttr(attr);
   impl->attr.dest_qp_num = dest_qp_num;
   impl->attr_mask |= IBV_QP_DEST_QPN;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_rq_psn(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_rq_psn(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint32_t psn) {
   auto* impl = castQpAttr(attr);
   impl->attr.rq_psn = psn;
   impl->attr_mask |= IBV_QP_RQ_PSN;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_sq_psn(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_sq_psn(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint32_t psn) {
   auto* impl = castQpAttr(attr);
   impl->attr.sq_psn = psn;
   impl->attr_mask |= IBV_QP_SQ_PSN;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_min_rnr_timer(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_min_rnr_timer(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint8_t v) {
   auto* impl = castQpAttr(attr);
   impl->attr.min_rnr_timer = v;
   impl->attr_mask |= IBV_QP_MIN_RNR_TIMER;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_ack_timeout(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_ack_timeout(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint8_t v) {
   auto* impl = castQpAttr(attr);
   impl->attr.timeout = v;
   impl->attr_mask |= IBV_QP_TIMEOUT;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_retry_cnt(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_retry_cnt(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint8_t v) {
   auto* impl = castQpAttr(attr);
   impl->attr.retry_cnt = v;
   impl->attr_mask |= IBV_QP_RETRY_CNT;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_rnr_retry(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_rnr_retry(
+    prims_amd_gda_verbs_qp_attr* attr,
     uint8_t v) {
   auto* impl = castQpAttr(attr);
   impl->attr.rnr_retry = v;
   impl->attr_mask |= IBV_QP_RNR_RETRY;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_allow_remote_read(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_allow_remote_read(
+    prims_amd_gda_verbs_qp_attr* attr,
     bool allow) {
   auto* impl = castQpAttr(attr);
   if (allow) {
@@ -983,11 +989,11 @@ pipes_gda_error_t pipes_gda_verbs_qp_attr_set_allow_remote_read(
     impl->attr.qp_access_flags &= ~IBV_ACCESS_REMOTE_READ;
   }
   impl->attr_mask |= IBV_QP_ACCESS_FLAGS;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_allow_remote_write(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_allow_remote_write(
+    prims_amd_gda_verbs_qp_attr* attr,
     bool allow) {
   auto* impl = castQpAttr(attr);
   if (allow) {
@@ -996,171 +1002,172 @@ pipes_gda_error_t pipes_gda_verbs_qp_attr_set_allow_remote_write(
     impl->attr.qp_access_flags &= ~IBV_ACCESS_REMOTE_WRITE;
   }
   impl->attr_mask |= IBV_QP_ACCESS_FLAGS;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_allow_remote_atomic(
-    pipes_gda_verbs_qp_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_allow_remote_atomic(
+    prims_amd_gda_verbs_qp_attr* attr,
     int atomic_mode) {
   auto* impl = castQpAttr(attr);
-  if (atomic_mode != PIPES_GDA_VERBS_QP_ATOMIC_MODE_NONE) {
+  if (atomic_mode != PRIMS_AMD_GDA_VERBS_QP_ATOMIC_MODE_NONE) {
     impl->attr.qp_access_flags |= IBV_ACCESS_REMOTE_ATOMIC;
   } else {
     impl->attr.qp_access_flags &= ~IBV_ACCESS_REMOTE_ATOMIC;
   }
   impl->attr_mask |= IBV_QP_ACCESS_FLAGS;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_attr_set_ah_attr(
-    pipes_gda_verbs_qp_attr* attr,
-    pipes_gda_verbs_ah_attr* ah_attr) {
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_attr_set_ah_attr(
+    prims_amd_gda_verbs_qp_attr* attr,
+    prims_amd_gda_verbs_ah_attr* ah_attr) {
   castQpAttr(attr)->ah_attr_ref = ah_attr;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 // ===========================================================================
 // Address handle attribute setters (NIC-agnostic)
 // ===========================================================================
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_create(
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_create(
     ibv_context* /*ctx*/,
-    pipes_gda_verbs_ah_attr** out_attr) {
+    prims_amd_gda_verbs_ah_attr** out_attr) {
   if (!out_attr) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   auto* impl = new (std::nothrow) AmdAhAttrImpl();
   if (!impl) {
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
-  *out_attr = reinterpret_cast<pipes_gda_verbs_ah_attr*>(impl);
-  return PIPES_GDA_SUCCESS;
+  *out_attr = reinterpret_cast<prims_amd_gda_verbs_ah_attr*>(impl);
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_destroy(
-    pipes_gda_verbs_ah_attr* attr) {
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_destroy(
+    prims_amd_gda_verbs_ah_attr* attr) {
   delete castAhAttr(attr);
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_addr_type(
-    pipes_gda_verbs_ah_attr* attr,
-    pipes_gda_verbs_addr_type t) {
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_addr_type(
+    prims_amd_gda_verbs_ah_attr* attr,
+    prims_amd_gda_verbs_addr_type t) {
   castAhAttr(attr)->addr_type = t;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_dlid(
-    pipes_gda_verbs_ah_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_dlid(
+    prims_amd_gda_verbs_ah_attr* attr,
     uint16_t dlid) {
   castAhAttr(attr)->dlid = dlid;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_gid(
-    pipes_gda_verbs_ah_attr* attr,
-    const pipes_gda_verbs_gid& gid) {
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_gid(
+    prims_amd_gda_verbs_ah_attr* attr,
+    const prims_amd_gda_verbs_gid& gid) {
   castAhAttr(attr)->gid = gid;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_sgid_index(
-    pipes_gda_verbs_ah_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_sgid_index(
+    prims_amd_gda_verbs_ah_attr* attr,
     int idx) {
   castAhAttr(attr)->sgid_index = idx;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_hop_limit(
-    pipes_gda_verbs_ah_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_hop_limit(
+    prims_amd_gda_verbs_ah_attr* attr,
     uint8_t hop) {
   castAhAttr(attr)->hop_limit = hop;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_sl(
-    pipes_gda_verbs_ah_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_sl(
+    prims_amd_gda_verbs_ah_attr* attr,
     uint8_t sl) {
   castAhAttr(attr)->sl = sl;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_verbs_ah_attr_set_traffic_class(
-    pipes_gda_verbs_ah_attr* attr,
+prims_amd_gda_error_t prims_amd_gda_verbs_ah_attr_set_traffic_class(
+    prims_amd_gda_verbs_ah_attr* attr,
     uint8_t tc) {
   castAhAttr(attr)->traffic_class = tc;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 // ===========================================================================
 // QP modify
 // ===========================================================================
 
-// Translate PIPES_GDA_VERBS_QP_ATTR_* (caller's DOCA-style mask) to the
+// Translate PRIMS_AMD_GDA_VERBS_QP_ATTR_* (caller's DOCA-style mask) to the
 // corresponding IBV_QP_* bits. Each enum lives in its own bit-position space,
 // so we can't just OR the caller's mask into the kernel mask.
-static int translatePipesGdaMaskToIbv(int pipesMask) {
+static int translatePrimsAmdGdaMaskToIbv(int pipesMask) {
   int ibvMask = 0;
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_NEXT_STATE) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_NEXT_STATE) {
     ibvMask |= IBV_QP_STATE;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_PKEY_INDEX) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_PKEY_INDEX) {
     ibvMask |= IBV_QP_PKEY_INDEX;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_PORT_NUM) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_PORT_NUM) {
     ibvMask |= IBV_QP_PORT;
   }
   if (pipesMask &
-      (PIPES_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
-       PIPES_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_READ |
-       PIPES_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_ATOMIC)) {
+      (PRIMS_AMD_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
+       PRIMS_AMD_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_READ |
+       PRIMS_AMD_GDA_VERBS_QP_ATTR_ALLOW_REMOTE_ATOMIC)) {
     ibvMask |= IBV_QP_ACCESS_FLAGS;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_PATH_MTU) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_PATH_MTU) {
     ibvMask |= IBV_QP_PATH_MTU;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_DEST_QP_NUM) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_DEST_QP_NUM) {
     ibvMask |= IBV_QP_DEST_QPN;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_RQ_PSN) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_RQ_PSN) {
     ibvMask |= IBV_QP_RQ_PSN;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_AH_ATTR) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_AH_ATTR) {
     ibvMask |= IBV_QP_AV;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_MIN_RNR_TIMER) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_MIN_RNR_TIMER) {
     ibvMask |= IBV_QP_MIN_RNR_TIMER;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_SQ_PSN) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_SQ_PSN) {
     ibvMask |= IBV_QP_SQ_PSN;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_ACK_TIMEOUT) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_ACK_TIMEOUT) {
     ibvMask |= IBV_QP_TIMEOUT;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_RETRY_CNT) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_RETRY_CNT) {
     ibvMask |= IBV_QP_RETRY_CNT;
   }
-  if (pipesMask & PIPES_GDA_VERBS_QP_ATTR_RNR_RETRY) {
+  if (pipesMask & PRIMS_AMD_GDA_VERBS_QP_ATTR_RNR_RETRY) {
     ibvMask |= IBV_QP_RNR_RETRY;
   }
   return ibvMask;
 }
 
-pipes_gda_error_t pipes_gda_verbs_qp_modify(
+prims_amd_gda_error_t prims_amd_gda_verbs_qp_modify(
     ibv_qp* qp,
-    pipes_gda_verbs_qp_attr* attr,
+    prims_amd_gda_verbs_qp_attr* attr,
     int attr_mask) {
   auto* impl = castQpAttr(attr);
   ibv_qp_attr ibvAttr = impl->attr;
   // Combine setter-accumulated IBV_QP_* flags with the user-supplied
-  // PIPES_GDA mask (translated to IBV space).
-  int mask =
-      impl->attr_mask | translatePipesGdaMaskToIbv(static_cast<int>(attr_mask));
+  // PRIMS_AMD_GDA mask (translated to IBV space).
+  int mask = impl->attr_mask |
+      translatePrimsAmdGdaMaskToIbv(static_cast<int>(attr_mask));
 
   // Apply the AH only when the caller explicitly includes AH_ATTR in the
   // current modify. The AH pointer is stored on the attr struct by an
   // earlier `set_ah_attr` call but stays live across subsequent modifies.
-  if (impl->ah_attr_ref && (attr_mask & PIPES_GDA_VERBS_QP_ATTR_AH_ATTR) != 0) {
+  if (impl->ah_attr_ref &&
+      (attr_mask & PRIMS_AMD_GDA_VERBS_QP_ATTR_AH_ATTR) != 0) {
     auto* ah = castAhAttr(impl->ah_attr_ref);
     ibvAttr.ah_attr.is_global = 1;
     ibvAttr.ah_attr.dlid = ah->dlid;
@@ -1197,7 +1204,7 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
   // type=0, value=0 → no extension fields applied.
   auto* dv = getBnxtReDv();
   if (!dv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   int rc = dv->modify_qp(qp, &ibvAttr, mask, 0, 0);
 #elif defined(NIC_IONIC)
@@ -1205,7 +1212,7 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
   // through the same library (the static libibverbs is the wrong instance).
   auto* iv = getSysIbv();
   if (!iv || !iv->modify_qp) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   int rc = iv->modify_qp(qp, &ibvAttr, mask);
 #else
@@ -1214,7 +1221,7 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
   if (rc != 0) {
     fprintf(
         stderr,
-        "pipes_gda_verbs_qp_modify: modify_qp failed rc=%d errno=%d (%s) "
+        "prims_amd_gda_verbs_qp_modify: modify_qp failed rc=%d errno=%d (%s) "
         "qp_state=%d mask=0x%x port=%u pkey=%u path_mtu=%d dest_qpn=%u "
         "rq_psn=%u sq_psn=%u\n",
         rc,
@@ -1229,14 +1236,14 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
         ibvAttr.rq_psn,
         ibvAttr.sq_psn);
     fflush(stderr);
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   // Clear the setter-accumulated mask + AH ref so a subsequent modify on
-  // the same `pipes_gda_verbs_qp_attr` only includes flags the caller re-
+  // the same `prims_amd_gda_verbs_qp_attr` only includes flags the caller re-
   // sets.
   impl->attr_mask = 0;
   impl->ah_attr_ref = nullptr;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 // ===========================================================================
@@ -1245,18 +1252,18 @@ pipes_gda_error_t pipes_gda_verbs_qp_modify(
 
 #ifdef NIC_BNXT
 
-pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
-    const pipes_gda_gpu_verbs_qp_init_attr_hl* attr,
-    pipes_gda_gpu_verbs_qp_hl** out_qp) {
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
+    const prims_amd_gda_gpu_verbs_qp_init_attr_hl* attr,
+    prims_amd_gda_gpu_verbs_qp_hl** out_qp) {
   if (!attr || !out_qp || !attr->ibpd) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   if (!ensureHsaInitialized()) {
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
   auto* dv = getBnxtReDv();
   if (!dv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   ibv_pd* pd = attr->ibpd;
@@ -1321,7 +1328,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (!cqMemHandle) {
     fprintf(stderr, "[BNXT] cq_mem_alloc failed (sq_nwqe=%u)\n", attr->sq_nwqe);
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   cqAttr.ncqe = 1;
   cqBufSize = static_cast<size_t>(cqAttr.ncqe) * cqAttr.cqe_size;
@@ -1339,7 +1346,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         cqBufSize,
         hipGetErrorString(herr));
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   (void)hipMemset(cqBuf, 0, cqBufSize);
 
@@ -1364,7 +1371,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 3: Create CQ via bnxt_re_dv ----
@@ -1381,7 +1388,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 4: Allocate QP memory descriptor (returns SQ size incl. MSN
@@ -1404,7 +1411,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // BNXT hardware tracks the SQ tail with a single epoch bit that toggles
@@ -1448,7 +1455,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         sqBufSize,
         hipGetErrorString(herr));
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   (void)hipMemset(sqBuf, 0, sqBufSize);
 
@@ -1461,7 +1468,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
           rqBufSize,
           hipGetErrorString(herr));
       unwind();
-      return PIPES_GDA_ERROR_NO_MEMORY;
+      return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
     }
     (void)hipMemset(rqBuf, 0, rqBufSize);
   }
@@ -1489,7 +1496,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   }
   if (!sqUmem) {
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   if (rqBuf) {
@@ -1508,7 +1515,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
     }
     if (!rqUmem) {
       unwind();
-      return PIPES_GDA_ERROR_DRIVER;
+      return PRIMS_AMD_GDA_ERROR_DRIVER;
     }
   }
 
@@ -1516,7 +1523,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   dbRegion = dv->alloc_db_region(ctx);
   if (!dbRegion || !dbRegion->dbr) {
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 7: Create QP via bnxt_re_dv ----
@@ -1554,7 +1561,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 8: Initialize obj (populate CQN + QP exports) ----
@@ -1572,7 +1579,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 9: SQ/CQ are already GPU device pointers from
@@ -1601,7 +1608,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         pageSizeForDbr,
         hipGetErrorString(dbrRegErr));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   dbrRegistered = true;
   void* gpuDbrPtr = nullptr;
@@ -1614,7 +1621,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         hipGetErrorString(dbrGetErr),
         gpuDbrPtr);
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   uint64_t* gpuDbr = reinterpret_cast<uint64_t*>(gpuDbrPtr);
 
@@ -1630,7 +1637,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   }
 
   // ---- Step 11: Build the device-side QP descriptor ----
-  pipes_gda_gpu_dev_verbs_qp hostQp{};
+  prims_amd_gda_gpu_dev_verbs_qp hostQp{};
   hostQp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(gpuSqBuf);
   hostQp.sq_db = nullptr; // unused on BNXT (we use nic.bnxt.dbr)
   hostQp.sq_dbrec = nullptr; // unused on BNXT
@@ -1641,8 +1648,8 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.sq_num_shift8_be = __builtin_bswap32(hostQp.sq_num_shift8 | 3);
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
-  hostQp.nic_handler = PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
-  hostQp.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
+  hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
   hostQp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(gpuCqBuf);
   hostQp.cq_sq.cq_num = dvCqOut.cqn;
@@ -1652,7 +1659,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.cq_sq.cqe_mask = cqAttr.ncqe ? (cqAttr.ncqe - 1) : 0;
   hostQp.cq_sq.cqe_size = cqAttr.cqe_size;
   hostQp.cq_sq.cqe_rsvd = 0;
-  hostQp.cq_sq.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.cq_sq.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
   // BNXT-specific QP extension fields.
   hostQp.nic.bnxt.sq_depth = memInfo.sq_slots;
@@ -1670,14 +1677,14 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   // multi-packet writes and forces NIC retransmits.
   ibv_port_attr portAttr{};
   uint32_t activeMtuBytes = 4096;
-  // BNXT: route through `pipes_gda_verbs_wrapper_ibv_query_port` (which
+  // BNXT: route through `prims_amd_gda_verbs_wrapper_ibv_query_port` (which
   // dispatches to `SysIbv->query_port`) rather than calling the
   // statically-linked `ibv_query_port` directly — `ctx` was created via the
   // SysIbv (system `libibverbs.so.1`, PABI 34) path, so calling the
   // statically-linked libibverbs (PABI 59) on it risks an ABI mismatch.
   if (ctx &&
-      pipes_gda_verbs_wrapper_ibv_query_port(ctx, /*port_num=*/1, &portAttr) ==
-          PIPES_GDA_SUCCESS) {
+      prims_amd_gda_verbs_wrapper_ibv_query_port(
+          ctx, /*port_num=*/1, &portAttr) == PRIMS_AMD_GDA_SUCCESS) {
     switch (portAttr.active_mtu) {
       case IBV_MTU_256:
         activeMtuBytes = 256;
@@ -1702,19 +1709,19 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.nic.bnxt.cq_depth = cqAttr.ncqe;
   hostQp.nic.bnxt.sq_lock = 0;
 
-  pipes_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
-  if (hipMalloc(&gpuQp, sizeof(pipes_gda_gpu_dev_verbs_qp)) != hipSuccess) {
+  prims_amd_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
+  if (hipMalloc(&gpuQp, sizeof(prims_amd_gda_gpu_dev_verbs_qp)) != hipSuccess) {
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   if (hipMemcpy(
           gpuQp,
           &hostQp,
-          sizeof(pipes_gda_gpu_dev_verbs_qp),
+          sizeof(prims_amd_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 12: Assemble the public handle ----
@@ -1722,7 +1729,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (!internal) {
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   internal->sq_umem = sqUmem;
   internal->rq_umem = rqUmem;
@@ -1736,18 +1743,18 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   internal->rq_buf_size = rqBufSize;
   internal->dbr_host_registered = dbrRegistered;
 
-  auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
+  auto* out = new (std::nothrow) prims_amd_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   out->qp = qp;
   out->cq = cq;
   out->gpu_qp = gpuQp;
   out->amd_internal = internal;
-  out->qp_gverbs = reinterpret_cast<pipes_gda_gpu_verbs_qp*>(out);
+  out->qp_gverbs = reinterpret_cast<prims_amd_gda_gpu_verbs_qp*>(out);
   *out_qp = out;
 
   // We've taken ownership of these via `internal`; clear locals so unwind
@@ -1762,7 +1769,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   cqBuf = nullptr;
   rqBuf = nullptr;
   dbrRegistered = false; // ownership transferred to `internal`
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 #elif defined(NIC_MLX5) // mlx5
@@ -1771,15 +1778,15 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
 // mlx5dv inspection to grab the SQ/CQ buffers and BlueFlame UAR + HSA
 // mapping of the UAR page to GPU address space + hipHostRegister of the
 // SQ/CQ buffers + construction of the device-side
-// `pipes_gda_gpu_dev_verbs_qp` descriptor.
-pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
-    const pipes_gda_gpu_verbs_qp_init_attr_hl* attr,
-    pipes_gda_gpu_verbs_qp_hl** out_qp) {
+// `prims_amd_gda_gpu_dev_verbs_qp` descriptor.
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
+    const prims_amd_gda_gpu_verbs_qp_init_attr_hl* attr,
+    prims_amd_gda_gpu_verbs_qp_hl** out_qp) {
   if (!attr || !out_qp || !attr->ibpd) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   if (!ensureHsaInitialized()) {
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
 
   // ---- Step 1: create CQ + QP via libibverbs ----
@@ -1788,7 +1795,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
 
   ibv_cq* cq = ibv_create_cq(ctx, attr->sq_nwqe, nullptr, nullptr, 0);
   if (!cq) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   ibv_qp_init_attr qpInitAttr = {};
@@ -1804,7 +1811,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   ibv_qp* qp = ibv_create_qp(pd, &qpInitAttr);
   if (!qp) {
     ibv_destroy_cq(cq);
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 2: query mlx5dv to get raw QP/CQ layout ----
@@ -1818,7 +1825,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (mlx5dv_init_obj(&dvObj, MLX5DV_OBJ_QP | MLX5DV_OBJ_CQ) != 0) {
     ibv_destroy_qp(qp);
     ibv_destroy_cq(cq);
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 3: map BlueFlame UAR page to GPU via HSA ----
@@ -1826,12 +1833,12 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (hipGetDevice(&hipDevId) != hipSuccess) {
     ibv_destroy_qp(qp);
     ibv_destroy_cq(cq);
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   if (!dvQp.bf.reg || dvQp.bf.size == 0) {
     ibv_destroy_qp(qp);
     ibv_destroy_cq(cq);
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   void* uarBfHost = dvQp.bf.reg;
@@ -1840,7 +1847,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (!hsaMemoryLockToGpu(uarBfHost, uarBfSize, &gpuUarBf, hipDevId)) {
     ibv_destroy_qp(qp);
     ibv_destroy_cq(cq);
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
 
   // ---- Step 4: initialize CQ owner bits ----
@@ -1893,34 +1900,34 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (hipHostRegister(dvQp.sq.buf, sqSize, hipHostRegisterDefault) !=
       hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   sqBufReg = true;
   if (hipHostGetDevicePointer(&gpuSqBuf, dvQp.sq.buf, 0) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   if (hipHostRegister(dvCq.buf, cqSize, hipHostRegisterDefault) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   cqBufReg = true;
   if (hipHostGetDevicePointer(&gpuCqBuf, dvCq.buf, 0) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   if (hipHostRegister(sqDbrecPage, pageSize, hipHostRegisterDefault) !=
       hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   sqDbrecReg = true;
   void* gpuSqDbrecPage = nullptr;
   if (hipHostGetDevicePointer(&gpuSqDbrecPage, sqDbrecPage, 0) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   size_t sqDbrecOffset = reinterpret_cast<uintptr_t>(dvQp.dbrec) -
       reinterpret_cast<uintptr_t>(sqDbrecPage);
@@ -1931,14 +1938,14 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
     if (hipHostRegister(cqDbrecPage, pageSize, hipHostRegisterDefault) !=
         hipSuccess) {
       unwindOnError();
-      return PIPES_GDA_ERROR_DRIVER;
+      return PRIMS_AMD_GDA_ERROR_DRIVER;
     }
     cqDbrecReg = true;
   }
   void* gpuCqDbrecPage = nullptr;
   if (hipHostGetDevicePointer(&gpuCqDbrecPage, cqDbrecPage, 0) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   size_t cqDbrecOffset = reinterpret_cast<uintptr_t>(dvCq.dbrec) -
       reinterpret_cast<uintptr_t>(cqDbrecPage);
@@ -1946,7 +1953,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
       reinterpret_cast<uintptr_t>(gpuCqDbrecPage) + cqDbrecOffset);
 
   // ---- Step 6: build the device-side QP descriptor ----
-  pipes_gda_gpu_dev_verbs_qp hostQp = {};
+  prims_amd_gda_gpu_dev_verbs_qp hostQp = {};
   hostQp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(gpuSqBuf);
   hostQp.sq_dbrec = reinterpret_cast<__be32*>(gpuSqDbrec);
   hostQp.sq_db = reinterpret_cast<uint64_t*>(gpuUarBf);
@@ -1957,8 +1964,8 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.sq_num_shift8_be = __builtin_bswap32(hostQp.sq_num_shift8 | 3);
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
-  hostQp.nic_handler = PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_BF;
-  hostQp.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_BF;
+  hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
   hostQp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(gpuCqBuf);
   hostQp.cq_sq.cq_num = dvCq.cqn;
@@ -1968,21 +1975,21 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.cq_sq.cqe_mask = dvCq.cqe_cnt - 1;
   hostQp.cq_sq.cqe_size = dvCq.cqe_size;
   hostQp.cq_sq.cqe_rsvd = 0;
-  hostQp.cq_sq.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.cq_sq.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
-  pipes_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
-  if (hipMalloc(&gpuQp, sizeof(pipes_gda_gpu_dev_verbs_qp)) != hipSuccess) {
+  prims_amd_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
+  if (hipMalloc(&gpuQp, sizeof(prims_amd_gda_gpu_dev_verbs_qp)) != hipSuccess) {
     unwindOnError();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   if (hipMemcpy(
           gpuQp,
           &hostQp,
-          sizeof(pipes_gda_gpu_dev_verbs_qp),
+          sizeof(prims_amd_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
     (void)hipFree(gpuQp);
     unwindOnError();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 7: assemble the public handle ----
@@ -1990,7 +1997,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (!internal) {
     (void)hipFree(gpuQp);
     unwindOnError();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   internal->uar_bf_host = uarBfHost;
   internal->uar_bf_size = uarBfSize;
@@ -2000,20 +2007,20 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   internal->registered_cq_dbrec_page =
       cqDbrecPageIsDifferent ? cqDbrecPage : nullptr;
 
-  auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
+  auto* out = new (std::nothrow) prims_amd_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
     (void)hipFree(gpuQp);
     unwindOnError();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   out->qp = qp;
   out->cq = cq;
   out->gpu_qp = gpuQp;
   out->amd_internal = internal;
-  out->qp_gverbs = reinterpret_cast<pipes_gda_gpu_verbs_qp*>(out);
+  out->qp_gverbs = reinterpret_cast<prims_amd_gda_gpu_verbs_qp*>(out);
   *out_qp = out;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 #else // NIC_IONIC
@@ -2022,26 +2029,26 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
 // allocator + ionic_dv_create_cq_ex (CCQE) + basic create_qp (RC), then
 // ionic_dv_get_{ctx,qp,cq} to recover the raw SQ/CQ rings and doorbell page,
 // the doorbell page HSA-mapped to the GPU, and construction of the device-side
-// `pipes_gda_gpu_dev_verbs_qp` descriptor.
-pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
-    const pipes_gda_gpu_verbs_qp_init_attr_hl* attr,
-    pipes_gda_gpu_verbs_qp_hl** out_qp) {
+// `prims_amd_gda_gpu_dev_verbs_qp` descriptor.
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_hl(
+    const prims_amd_gda_gpu_verbs_qp_init_attr_hl* attr,
+    prims_amd_gda_gpu_verbs_qp_hl** out_qp) {
   if (!attr || !out_qp || !attr->ibpd) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   // sq_nwqe feeds both the CQ depth (cqAttr.cqe) and the SQ depth
   // (cap.max_send_wr); a zero depth yields empty rings whose device-side
   // sq_mask/cqe_mask (depth-1) then drive out-of-bounds ring indices.
   if (attr->sq_nwqe == 0) {
     fprintf(stderr, "[IONIC] create_qp_hl: sq_nwqe must be > 0\n");
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
   if (!ensureHsaInitialized()) {
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
   auto* dv = getIonicDv();
   if (!dv) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   // QP/CQ/PD are created through the system libibverbs (SysIbv): fbcode's
   // static libibverbs is the wrong instance for the ctx the transport opened
@@ -2054,16 +2061,16 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
       !iv->destroy_cq || !iv->dealloc_pd) {
     fprintf(
         stderr,
-        "PipesGdaHost(IONIC): system libibverbs missing required symbols "
+        "PrimsAmdGdaHost(IONIC): system libibverbs missing required symbols "
         "(create_qp/create_cq/...)\n");
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   ibv_pd* pd = attr->ibpd;
   ibv_context* ctx = pd->context;
   int hipDevId = -1;
   if (hipGetDevice(&hipDevId) != hipSuccess) {
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   ibv_cq* cq = nullptr;
@@ -2095,7 +2102,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         "[IONIC] getIonicParentDomain failed errno=%d (%s)\n",
         errno,
         std::strerror(errno));
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   // NOTE: do NOT call pd_set_sqcmb/rqcmb/udma_mask here. getIonicParentDomain
   // already pins each cached domain to one udma pipeline (mask 1<<i) and turns
@@ -2134,7 +2141,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   // ibv_cq_ex_to_cq is a header-only downcast (ibv_cq is the common prefix of
   // ibv_cq_ex); no library symbol needed.
@@ -2162,7 +2169,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   fprintf(stderr, "[IONIC] QP OK qp_num=%u\n", qp->qp_num);
 
@@ -2175,13 +2182,13 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   size_t pageSize = sysconf(_SC_PAGESIZE);
   if (!hsaMemoryLockToGpu(dvctx.db_page, pageSize, &gpuDbPage, hipDevId)) {
     fprintf(stderr, "[IONIC] hsaMemoryLockToGpu(db_page) failed\n");
     unwind();
-    return PIPES_GDA_ERROR_INITIALIZATION;
+    return PRIMS_AMD_GDA_ERROR_INITIALIZATION;
   }
   dbLocked = true;
   dbHostPtr = dvctx.db_page;
@@ -2202,7 +2209,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   ionic_dv_qp dvqp{};
   if (dv->get_qp(&dvqp, qp) != 0) {
@@ -2212,7 +2219,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         errno,
         std::strerror(errno));
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
   fprintf(
       stderr,
@@ -2234,19 +2241,19 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
         "[IONIC] unexpected SQ stride_log2=%u (expected 6 / 64B)\n",
         dvqp.sq.stride_log2);
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 6: build the device-side QP descriptor ----
-  pipes_gda_gpu_dev_verbs_qp hostQp{};
+  prims_amd_gda_gpu_dev_verbs_qp hostQp{};
   hostQp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(dvqp.sq.ptr);
   hostQp.sq_wqe_num = static_cast<uint32_t>(1u) << dvqp.sq.depth_log2;
   hostQp.sq_wqe_mask = dvqp.sq.mask;
   hostQp.sq_num = qp->qp_num;
   hostQp.sq_rsvd_index = 0;
   hostQp.sq_ready_index = 0;
-  hostQp.nic_handler = PIPES_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
-  hostQp.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.nic_handler = PRIMS_AMD_GDA_VERBS_NIC_HANDLER_GPU_SM_DB;
+  hostQp.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
   hostQp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(dvcq.q.ptr);
   hostQp.cq_sq.cq_num =
@@ -2255,7 +2262,7 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.cq_sq.cqe_ci = 0;
   hostQp.cq_sq.cqe_mask = dvcq.q.mask;
   hostQp.cq_sq.cqe_size = static_cast<uint8_t>(1u << dvcq.q.stride_log2);
-  hostQp.cq_sq.mem_type = PIPES_GDA_VERBS_MEM_TYPE_GPU;
+  hostQp.cq_sq.mem_type = PRIMS_AMD_GDA_VERBS_MEM_TYPE_GPU;
 
   hostQp.nic.ionic.sq_dbreg = gpuDbSq;
   hostQp.nic.ionic.sq_dbval = dvqp.sq.db_val;
@@ -2270,19 +2277,19 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   hostQp.nic.ionic.cq_dbpos = 0;
   hostQp.nic.ionic.sq_msn = 0;
 
-  pipes_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
-  if (hipMalloc(&gpuQp, sizeof(pipes_gda_gpu_dev_verbs_qp)) != hipSuccess) {
+  prims_amd_gda_gpu_dev_verbs_qp* gpuQp = nullptr;
+  if (hipMalloc(&gpuQp, sizeof(prims_amd_gda_gpu_dev_verbs_qp)) != hipSuccess) {
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   if (hipMemcpy(
           gpuQp,
           &hostQp,
-          sizeof(pipes_gda_gpu_dev_verbs_qp),
+          sizeof(prims_amd_gda_gpu_dev_verbs_qp),
           hipMemcpyHostToDevice) != hipSuccess) {
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_DRIVER;
+    return PRIMS_AMD_GDA_ERROR_DRIVER;
   }
 
   // ---- Step 7: assemble the public handle ----
@@ -2290,37 +2297,37 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_hl(
   if (!internal) {
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   internal->db_page_host = dvctx.db_page;
 
-  auto* out = new (std::nothrow) pipes_gda_gpu_verbs_qp_hl();
+  auto* out = new (std::nothrow) prims_amd_gda_gpu_verbs_qp_hl();
   if (!out) {
     delete internal;
     (void)hipFree(gpuQp);
     unwind();
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
   out->qp = qp;
   out->cq = cq;
   out->gpu_qp = gpuQp;
   out->amd_internal = internal;
-  out->qp_gverbs = reinterpret_cast<pipes_gda_gpu_verbs_qp*>(out);
+  out->qp_gverbs = reinterpret_cast<prims_amd_gda_gpu_verbs_qp*>(out);
   *out_qp = out;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 #endif // NIC_BNXT / NIC_MLX5 / NIC_IONIC
 
-pipes_gda_error_t pipes_gda_gpu_verbs_get_qp_dev(
-    pipes_gda_gpu_verbs_qp* qp_gverbs,
-    pipes_gda_gpu_dev_verbs_qp** out_dev_qp) {
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_get_qp_dev(
+    prims_amd_gda_gpu_verbs_qp* qp_gverbs,
+    prims_amd_gda_gpu_dev_verbs_qp** out_dev_qp) {
   if (!qp_gverbs || !out_dev_qp) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
-  auto* qp_hl = reinterpret_cast<pipes_gda_gpu_verbs_qp_hl*>(qp_gverbs);
+  auto* qp_hl = reinterpret_cast<prims_amd_gda_gpu_verbs_qp_hl*>(qp_gverbs);
   *out_dev_qp = qp_hl->gpu_qp;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
 namespace {
@@ -2329,7 +2336,7 @@ namespace {
 // destroy_qp_hl and destroy_qp_group_hl. Does NOT free the qp_hl handle
 // itself — caller decides whether to delete or treat it as embedded in a
 // group.
-static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
+static void freeQpResources(prims_amd_gda_gpu_verbs_qp_hl* qp) {
   if (!qp) {
     return;
   }
@@ -2431,37 +2438,38 @@ static void freeQpResources(pipes_gda_gpu_verbs_qp_hl* qp) {
 
 } // namespace
 
-pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_hl(
-    pipes_gda_gpu_verbs_qp_hl* qp) {
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_destroy_qp_hl(
+    prims_amd_gda_gpu_verbs_qp_hl* qp) {
   if (!qp) {
-    return PIPES_GDA_SUCCESS;
+    return PRIMS_AMD_GDA_SUCCESS;
   }
   freeQpResources(qp);
   delete qp;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_group_hl(
-    const pipes_gda_gpu_verbs_qp_init_attr_hl* attr,
-    pipes_gda_gpu_verbs_qp_group_hl** out_grp) {
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_create_qp_group_hl(
+    const prims_amd_gda_gpu_verbs_qp_init_attr_hl* attr,
+    prims_amd_gda_gpu_verbs_qp_group_hl** out_grp) {
   if (!out_grp) {
-    return PIPES_GDA_ERROR_INVALID_VALUE;
+    return PRIMS_AMD_GDA_ERROR_INVALID_VALUE;
   }
-  auto* grp = new (std::nothrow) pipes_gda_gpu_verbs_qp_group_hl();
+  auto* grp = new (std::nothrow) prims_amd_gda_gpu_verbs_qp_group_hl();
   if (!grp) {
-    return PIPES_GDA_ERROR_NO_MEMORY;
+    return PRIMS_AMD_GDA_ERROR_NO_MEMORY;
   }
 
-  pipes_gda_gpu_verbs_qp_hl* mainQp = nullptr;
-  pipes_gda_error_t err = pipes_gda_gpu_verbs_create_qp_hl(attr, &mainQp);
-  if (err != PIPES_GDA_SUCCESS) {
+  prims_amd_gda_gpu_verbs_qp_hl* mainQp = nullptr;
+  prims_amd_gda_error_t err =
+      prims_amd_gda_gpu_verbs_create_qp_hl(attr, &mainQp);
+  if (err != PRIMS_AMD_GDA_SUCCESS) {
     delete grp;
     return err;
   }
-  pipes_gda_gpu_verbs_qp_hl* compQp = nullptr;
-  err = pipes_gda_gpu_verbs_create_qp_hl(attr, &compQp);
-  if (err != PIPES_GDA_SUCCESS) {
-    pipes_gda_gpu_verbs_destroy_qp_hl(mainQp);
+  prims_amd_gda_gpu_verbs_qp_hl* compQp = nullptr;
+  err = prims_amd_gda_gpu_verbs_create_qp_hl(attr, &compQp);
+  if (err != PRIMS_AMD_GDA_SUCCESS) {
+    prims_amd_gda_gpu_verbs_destroy_qp_hl(mainQp);
     delete grp;
     return err;
   }
@@ -2469,25 +2477,25 @@ pipes_gda_error_t pipes_gda_gpu_verbs_create_qp_group_hl(
   // Move-by-copy: the create_qp_hl returns heap-allocated handles. We
   // copy their fields into the group and then free the wrappers. After
   // copy, fix up qp_gverbs to point at the new (in-group) qp_hl
-  // addresses so pipes_gda_gpu_verbs_get_qp_dev recovers the right
+  // addresses so prims_amd_gda_gpu_verbs_get_qp_dev recovers the right
   // handle.
   grp->qp_main = *mainQp;
   grp->qp_companion = *compQp;
   grp->qp_main.qp_gverbs =
-      reinterpret_cast<pipes_gda_gpu_verbs_qp*>(&grp->qp_main);
+      reinterpret_cast<prims_amd_gda_gpu_verbs_qp*>(&grp->qp_main);
   grp->qp_companion.qp_gverbs =
-      reinterpret_cast<pipes_gda_gpu_verbs_qp*>(&grp->qp_companion);
+      reinterpret_cast<prims_amd_gda_gpu_verbs_qp*>(&grp->qp_companion);
   delete mainQp;
   delete compQp;
 
   *out_grp = grp;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_group_hl(
-    pipes_gda_gpu_verbs_qp_group_hl* g) {
+prims_amd_gda_error_t prims_amd_gda_gpu_verbs_destroy_qp_group_hl(
+    prims_amd_gda_gpu_verbs_qp_group_hl* g) {
   if (!g) {
-    return PIPES_GDA_SUCCESS;
+    return PRIMS_AMD_GDA_SUCCESS;
   }
   // Free the resources owned by the embedded handles. We can't call
   // destroy_qp_hl directly because it would try to delete the wrapper;
@@ -2495,9 +2503,9 @@ pipes_gda_error_t pipes_gda_gpu_verbs_destroy_qp_group_hl(
   freeQpResources(&g->qp_main);
   freeQpResources(&g->qp_companion);
   delete g;
-  return PIPES_GDA_SUCCESS;
+  return PRIMS_AMD_GDA_SUCCESS;
 }
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda
 
 #endif // __HIP_PLATFORM_AMD__

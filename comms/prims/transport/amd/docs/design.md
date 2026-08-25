@@ -25,28 +25,47 @@ AMD-only sources (`MultipeerIbgdaTransportAmd.{h,cu}`, etc.).
 
 | Header | Layer | Purpose |
 |---|---|---|
-| `amd/HipHostCompat.h` | Host | `meta::comms::DeviceBuffer` and `meta::comms::CudaEvent` HIP-backed substitutes; `cudaEvent_t` typedef. Mirrors the NVIDIA `comms::utils` interface so test runners and benchmarks need no rewrites. |
-| `amd/HipDeviceCompat.h` | Device | `__trap()` mapped to `abort()` for the HIP device pass; small device-side substitutes (warp size, etc.). Included transitively by device headers. |
-| `amd/DocaCompat.h` | Both | Translates every `doca_*` symbol used by `MultipeerIbgdaTransport.{h,cc}` and `P2pIbgdaTransportDevice.cuh` to its AMD `pipes_gda_*` counterpart. Pure forwarding; the underlying impls live in `amd/pipes_gda/`. |
+| `HipHostCompat.h` | Host | `meta::comms::DeviceBuffer` and `meta::comms::CudaEvent` HIP-backed substitutes; `cudaEvent_t` typedef. Mirrors the NVIDIA `comms::utils` interface so test runners and benchmarks need no rewrites. |
+| `HipDeviceCompat.h` | Device | `__trap()` mapped to `abort()` for the HIP device pass; small device-side substitutes (warp size, etc.). Included transitively by device headers. |
+| `DocaCompat.h` | Both | Translates every `doca_*` symbol used by `MultipeerIbgdaTransport.{h,cc}` and `P2pIbgdaTransportDevice.cuh` to its AMD `prims_amd_gda_*` counterpart. Pure forwarding; the underlying impls live in `prims_amd_gda/`. |
 
-### The AMD-native `pipes_gda` impl
+### The AMD-native `prims_amd_gda` impl
 
-Under `comms/prims/transport/amd/pipes_gda/`:
+Under `comms/prims/transport/amd/prims_amd_gda/`:
 
-- `PipesGdaDef.h` / `PipesGdaDev.h` / `PipesGdaOps.h` / `PipesGdaShared.h` —
-  device-side `pipes_gda_*` API implementations (mlx5dv-direct WQE
+- `PrimsAmdGdaDef.h` / `PrimsAmdGdaDev.h` / `PrimsAmdGdaOps.h` / `PrimsAmdGdaShared.h` —
+  device-side `prims_amd_gda_*` API implementations (mlx5dv-direct WQE
   construction, HSA UAR mapping, etc.).
-- `PipesGdaHost.{h,cc}` — host-side `pipes_gda_*` API: `pipes_gda_gpu_*`
-  context, `pipes_gda_verbs_*` QP/CQ creation and modification (with full
+- `PrimsAmdGdaHost.{h,cc}` — host-side `prims_amd_gda_*` API: `prims_amd_gda_gpu_*`
+  context, `prims_amd_gda_verbs_*` QP/CQ creation and modification (with full
   IBV_QP_* mask translation), HSA dmabuf export, `ibv_reg_*` wrappers.
+- `PrimsAmdGdaDmaBuf.{h,cc}` — dma-buf export helpers used by the host API.
 
-### NIC backend (mlx5)
+### NIC backends
 
-Under `comms/prims/transport/amd/nic/`:
+Under `comms/prims/transport/amd/nic/`, one subdirectory per RDMA NIC family
+plus two shared headers:
 
-- `Mlx5Hsi.h`, `Mlx5NicBackend.h`, `NicConfig.h`, `NicSelector.h` —
-  hardware-specific WQE layouts and NIC-selection helpers used by the
-  `pipes_gda_*` device API.
+- `NicConfig.h`, `NicSelector.h` — NIC-selection helpers; `NicSelector.h`
+  typedefs the active backend off the `-DNIC_*` flag.
+- `mlx5/Mlx5Hsi.h`, `mlx5/Mlx5NicBackend.h`
+- `bnxt/BnxtHsi.h`, `bnxt/BnxtNicBackend.h`, `bnxt/BnxtReDv.h`
+- `ionic/IonicHsi.h`, `ionic/IonicNicBackend.h`, `ionic/IonicReDv.h`,
+  `ionic/IonicGidDiscovery.h`
+
+Each carries the hardware-specific WQE layouts used by the `prims_amd_gda_*`
+device API. Exactly one is compiled in per build — see "NIC backend selection"
+below.
+
+### NIC backend selection
+
+`transport/amd/nic_config.bzl` reads `-c hpc_comms.nic={mlx5,bnxt,ionic}`
+(default `bnxt`) at parse time and exports `NIC_DEFINE_AMD` (`-DNIC_MLX5` /
+`-DNIC_BNXT` / `-DNIC_IONIC`) plus the matching `rdma-core` dep. The three host
+impls define overlapping symbols, so they cannot co-exist in one binary; the
+flag picks which `#ifdef` block of `PrimsAmdGdaHost.cc` compiles. Because the
+choice happens at parse time, a default build proves nothing about the other
+two backends — build all three when touching this code.
 
 ## BUCK conventions
 
@@ -83,18 +102,22 @@ and let CI dispatch run the test under whichever build mode it picks.
 
 These exist only on AMD (no NVIDIA counterpart needed):
 
-- `:hip_compat` — `amd/HipHostCompat.h` + `amd/HipDeviceCompat.h` shims.
-- `:doca_compat_amd` — `amd/DocaCompat.h` device + host shim. Re-exports
-  `:pipes_gda_device` and `:pipes_gda_host` so consumers including
+- `:hip_compat` — the `transport/amd/HipHostCompat.h` shim. Note it does *not*
+  carry `HipDeviceCompat.h`; that ships with the `:prims_amd_gda*` targets below.
+- `:doca_compat_amd` — `transport/amd/DocaCompat.h` device + host shim (plus
+  `transport/amd/nic/ionic/IonicGidDiscovery.h`). Re-exports
+  `:prims_amd_gda_device` and `:prims_amd_gda_host` so consumers including
   `DocaCompat.h` get the underlying impls.
 
-### AMD `pipes_gda` library targets in `comms/prims/amd:`
+### AMD `prims_amd_gda` library targets in `comms/prims/transport/amd:`
 
-- `:pipes_gda_device` — device-side AMD `pipes_gda_*` API (header-only).
-- `:pipes_gda_host` — host-side `PipesGdaHost.{h,cc}`. The
-  `-D__HIP_PLATFORM_AMD__` flag is gated behind `select()` so the NV
-  build pass produces an empty TU (the .cc/.h content is wrapped in
-  `#ifdef __HIP_PLATFORM_AMD__`).
+- `:prims_amd_gda` / `:prims_amd_gda_device` — device-side AMD
+  `prims_amd_gda_*` API plus the NIC backend headers and `HipDeviceCompat.h`
+  (header-only; both targets export the same header set).
+- `:prims_amd_gda_host` — host-side `PrimsAmdGdaHost.{h,cc}` and
+  `PrimsAmdGdaDmaBuf.{h,cc}`. The `-D__HIP_PLATFORM_AMD__` flag is gated
+  behind `select()` so the NV build pass produces an empty TU (the .cc/.h
+  content is wrapped in `#ifdef __HIP_PLATFORM_AMD__`).
 
 ## Conditional compilation
 
@@ -157,7 +180,7 @@ __device__ __forceinline__ void my_kernel_helper(...) {
   `cuMemGetAddressRange` for MR caching. AMD path uses `hipHostMalloc` for
   sink buffers and treats the user pointer as the MR base.
 - **NCCL baseline in benchmarks**: see "Wrap NCCL-only code".
-- **DOCA host APIs not yet in `pipes_gda::PipesGdaHost`**: anything beyond
+- **DOCA host APIs not yet in `prims_amd_gda::PrimsAmdGdaHost`**: anything beyond
   what `MultipeerIbgdaTransport.cc` uses.
 
 ## Adding new AMD support — recipe
@@ -165,12 +188,12 @@ __device__ __forceinline__ void my_kernel_helper(...) {
 1. Identify the NVIDIA target you want to build on AMD.
 2. Read its source for NVIDIA-only includes / API calls. Decide whether to:
    - Wrap them in `#ifndef __HIP_PLATFORM_AMD__` (most common).
-   - Add a new shim to `amd/HipHostCompat.h` if multiple consumers need
-     the same substitute type.
-   - Add a new entry to `amd/DocaCompat.h` if it's a new `doca_*` device
-     symbol used by the IBGDA path.
-   - Add a new function to `amd/pipes_gda/PipesGdaHost.{h,cc}` if it's a
-     new host-side DOCA call.
+   - Add a new shim to `transport/amd/HipHostCompat.h` if multiple consumers
+     need the same substitute type.
+   - Add a new entry to `transport/amd/DocaCompat.h` if it's a new `doca_*`
+     device symbol used by the IBGDA path.
+   - Add a new function to `transport/amd/prims_amd_gda/PrimsAmdGdaHost.{h,cc}`
+     if it's a new host-side DOCA call.
 3. Convert the existing NVIDIA-only library target to a unified target
    using the `select()` pattern above. Drop any `disable_amd_ci = True`.
 4. Build with `buck2 build @fbcode//mode/opt-amd-gpu //path/to:foo`.
@@ -180,24 +203,29 @@ __device__ __forceinline__ void my_kernel_helper(...) {
 
 ```
 comms/prims/
-├── *.{h,cc,cuh,cu}              shared sources (NVIDIA + AMD)
 ├── BUCK                          unified targets — single name, select() for platform
-├── amd/                          AMD-only shims and primitives
-│   ├── BUCK
-│   ├── HipHostCompat.h           DeviceBuffer / CudaEvent host shim
-│   ├── HipDeviceCompat.h         __trap() / device-side shim
-│   ├── DocaCompat.h              doca_* → pipes_gda_* translation (device + host)
-│   ├── pipes_gda/                AMD-native pipes_gda_* impl
-│   │   ├── PipesGdaDef.h
-│   │   ├── PipesGdaDev.h
-│   │   ├── PipesGdaHost.{h,cc}    host-side QP / CQ / dmabuf / MR
-│   │   ├── PipesGdaOps.h
-│   │   └── PipesGdaShared.h
-│   ├── nic/                      NIC backends (Mlx5Hsi.h, Mlx5NicBackend.h, NicConfig.h, NicSelector.h)
-│   └── docs/                     this file + status.md
-├── collectives/{,tests,benchmarks}/  unified collectives + tests
+├── core/                         shared sources (NVIDIA + AMD)
+├── transport/                    one directory per transport
+│   ├── ibgda/  ibrc/  ll/  ll128/  llx/  nvl/  rdma/  self/
+│   └── amd/                      AMD-only shims and primitives
+│       ├── BUCK
+│       ├── nic_config.bzl        -c hpc_comms.nic=... → -DNIC_* + rdma-core dep
+│       ├── HipHostCompat.h       DeviceBuffer / CudaEvent host shim
+│       ├── HipDeviceCompat.h     __trap() / device-side shim
+│       ├── DocaCompat.h          doca_* → prims_amd_gda_* translation (device + host)
+│       ├── prims_amd_gda/        AMD-native prims_amd_gda_* impl
+│       │   ├── PrimsAmdGdaDef.h
+│       │   ├── PrimsAmdGdaDev.h
+│       │   ├── PrimsAmdGdaDmaBuf.{h,cc}  dma-buf export helpers
+│       │   ├── PrimsAmdGdaHost.{h,cc}    host-side QP / CQ / dmabuf / MR
+│       │   ├── PrimsAmdGdaOps.h
+│       │   └── PrimsAmdGdaShared.h
+│       ├── nic/                  NicConfig.h, NicSelector.h + mlx5/ bnxt/ ionic/
+│       └── docs/                 this file + status.md
+├── collectives/{,ib,tests,benchmarks}/  unified collectives + tests
 ├── tests/                        unified tests (single targets via select)
-└── benchmarks/                   unified benchmarks (NV-only at runtime; AMD benchmark targets removed pending working AMD test fleet — see status.md)
+└── benchmarks/                   unified benchmarks; carry disable_amd_ci = True, so
+                                  AMD coverage is local-only — see status.md
 ```
 
 ## Reference: HIP API mapping

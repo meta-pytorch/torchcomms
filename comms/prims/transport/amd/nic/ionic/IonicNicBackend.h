@@ -1,12 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// IONIC (AMD Pensando AI NIC) NIC Backend for pipes-gda
+// IONIC (AMD Pensando AI NIC) NIC Backend for prims-amd-gda
 // =============================================================================
 //
 // Device-side WQE construction, doorbell, and CQ polling for the AMD Pensando
 // "ionic" AI NIC. Implements the same method contract as BnxtNicBackend /
-// Mlx5NicBackend so PipesGdaOps.h can drive it through `ActiveNicBackend`.
+// Mlx5NicBackend so PrimsAmdGdaOps.h can drive it through `ActiveNicBackend`.
 //
 // Implements the AMD Pensando ionic GDA send/doorbell protocol, driven by the
 // hardware WQE layout (nic/ionic/IonicHsi.h) and the ionic doorbell/CQ register
@@ -39,9 +39,9 @@
 
 #include "HipDeviceCompat.h" // @manual
 #include "nic/ionic/IonicHsi.h" // @manual
-#include "pipes_gda/PipesGdaDev.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDev.h" // @manual
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 // The GDA SQ uses a 64-byte WQE stride (== sizeof(ionic_v1_wqe)); the host
 // setup asserts the provider's reported stride_log2 matches this.
@@ -70,21 +70,22 @@ struct IonicNicBackend {
   // ---------------------------------------------------------------------------
 
   __device__ __forceinline__ ionic_v1_wqe* ionicWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t wqeIdx) const {
     auto* base = reinterpret_cast<ionic_v1_wqe*>(qp->nic.ionic.sq_buf);
     uint32_t slot = static_cast<uint32_t>(wqeIdx & qp->nic.ionic.sq_mask);
     return &base[slot];
   }
 
-  __device__ pipes_gda_gpu_dev_verbs_wqe* getWqePtr(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+  __device__ prims_amd_gda_gpu_dev_verbs_wqe* getWqePtr(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t wqeIdx) const {
-    return reinterpret_cast<pipes_gda_gpu_dev_verbs_wqe*>(ionicWqe(qp, wqeIdx));
+    return reinterpret_cast<prims_amd_gda_gpu_dev_verbs_wqe*>(
+        ionicWqe(qp, wqeIdx));
   }
 
   __device__ uint64_t
-  reserveWqSlots(pipes_gda_gpu_dev_verbs_qp* qp, uint32_t numWqes) {
+  reserveWqSlots(prims_amd_gda_gpu_dev_verbs_qp* qp, uint32_t numWqes) {
     return amd_atomic_add_device(
         &qp->sq_rsvd_index, static_cast<uint64_t>(numWqes));
   }
@@ -94,7 +95,7 @@ struct IonicNicBackend {
   // doorbell below this keeps producer doorbells in non-decreasing order
   // across concurrent putters.
   __device__ void markWqesReady(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
@@ -109,7 +110,7 @@ struct IonicNicBackend {
 
   // COLOR is set on even wrap cycles of the SQ (the NIC's slot-valid marker).
   __device__ __forceinline__ uint16_t
-  baseColorFlag(pipes_gda_gpu_dev_verbs_qp* qp, uint64_t wqeIdx) const {
+  baseColorFlag(prims_amd_gda_gpu_dev_verbs_qp* qp, uint64_t wqeIdx) const {
     uint64_t wrapBit = static_cast<uint64_t>(qp->nic.ionic.sq_mask) + 1;
     return (wqeIdx & wrapBit) ? 0 : static_cast<uint16_t>(IONIC_V1_FLAG_COLOR);
   }
@@ -129,8 +130,8 @@ struct IonicNicBackend {
   // ---------------------------------------------------------------------------
 
   __device__ void prepareRdmaWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -141,10 +142,10 @@ struct IonicNicBackend {
     ionic_v1_wqe* w = ionicWqe(qp, wqeIdx);
 
     uint16_t flags = baseColorFlag(qp, wqeIdx);
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
       flags |= IONIC_V1_FLAG_SIG;
     }
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE) {
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FENCE) {
       flags |= IONIC_V1_FLAG_FENCE;
     }
 
@@ -180,8 +181,8 @@ struct IonicNicBackend {
   }
 
   __device__ void prepareAtomicFaWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -192,12 +193,12 @@ struct IonicNicBackend {
     ionic_v1_wqe* w = ionicWqe(qp, wqeIdx);
 
     uint16_t flags = baseColorFlag(qp, wqeIdx);
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
       flags |= IONIC_V1_FLAG_SIG;
     }
     // Honor an explicit FENCE: the put-with-counter pattern uses it to order
     // the atomic after a preceding large WRITE.
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE) {
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FENCE) {
       flags |= IONIC_V1_FLAG_FENCE;
     }
 
@@ -223,11 +224,11 @@ struct IonicNicBackend {
     publishWqe(w, flags);
   }
 
-  // ionic has no NOP opcode; pipes_gda_fence posts a signaled zero-length
+  // ionic has no NOP opcode; prims_amd_gda_fence posts a signaled zero-length
   // RDMA-WRITE as a drain marker (completes in order after all prior WQEs).
   __device__ void prepareNopWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx) {
     ionic_v1_wqe* w = ionicWqe(qp, wqeIdx);
 
@@ -248,8 +249,8 @@ struct IonicNicBackend {
   // Inline RDMA write of a small scalar (data embedded in the WQE; no MR).
   template <typename T>
   __device__ void prepareInlineWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* /* unused */,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* /* unused */,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -261,7 +262,7 @@ struct IonicNicBackend {
         kSize <= 32, "prepareInlineWriteWqe: payload exceeds inline capacity");
 
     uint16_t flags = baseColorFlag(qp, wqeIdx) | IONIC_V1_FLAG_INL;
-    if (ctrlFlags & PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
+    if (ctrlFlags & PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE) {
       flags |= IONIC_V1_FLAG_SIG;
     }
 
@@ -288,8 +289,8 @@ struct IonicNicBackend {
   // of companion-QP WAIT, so this is never invoked under __HIP_PLATFORM_AMD__.
   // Defined (forwarding to a NOP) to satisfy the backend contract.
   __device__ void prepareWaitWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t /* ctrlFlags */,
       uint32_t /* targetCqNum */,
@@ -302,7 +303,7 @@ struct IonicNicBackend {
   // ---------------------------------------------------------------------------
 
   __device__ void ringDoorbell(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t nextWqeIdx) {
     auto& io = qp->nic.ionic;
 
@@ -347,12 +348,12 @@ struct IonicNicBackend {
   // calls during a spin are safe. The compressed CQ exposes the latest
   // completed 24-bit MSN in a single CQE slot (cq->cqe_daddr).
   __device__ __forceinline__ int pollOneCqAt(
-      pipes_gda_gpu_dev_verbs_cq* cq,
+      prims_amd_gda_gpu_dev_verbs_cq* cq,
       uint64_t consIndex) {
     const ionic_v1_cqe* cqe =
         reinterpret_cast<const ionic_v1_cqe*>(cq->cqe_daddr);
 
-    if (pipes_gda_ionic_cqe_error(cqe)) {
+    if (prims_amd_gda_ionic_cqe_error(cqe)) {
       uint32_t st = __builtin_bswap32(amd_load_relaxed_sys(
           const_cast<uint32_t*>(
               reinterpret_cast<const uint32_t*>(&cqe->status_length))));
@@ -363,7 +364,7 @@ struct IonicNicBackend {
       return -5;
     }
 
-    uint32_t msn = pipes_gda_ionic_cqe_msn(cqe);
+    uint32_t msn = prims_amd_gda_ionic_cqe_msn(cqe);
     uint32_t target = static_cast<uint32_t>(consIndex + 1) & IONIC_MSN_MASK;
     // 24-bit wrapping compare: sign bit set => msn is behind target.
     if ((msn - target) & IONIC_MSN_SIGN_BIT) {
@@ -375,8 +376,8 @@ struct IonicNicBackend {
   // Blocking poll for the WQE at `consIndex`. Advances the local consumer and,
   // for a non-compressed CQ, rings the CQ doorbell periodically to free space.
   __device__ __forceinline__ int pollCqAt(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_cq* cq,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_cq* cq,
       uint64_t consIndex) {
     constexpr uint64_t kMaxSpins = 10000000ULL;
     for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
@@ -417,4 +418,4 @@ struct IonicNicBackend {
   }
 };
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda
