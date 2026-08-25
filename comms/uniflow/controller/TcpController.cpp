@@ -68,7 +68,6 @@ Status TcpSocketConfig::validate() const {
 namespace {
 
 constexpr uint32_t kMaxMessageSize = 64 << 20;
-constexpr int kSocketBufSize = 1 << 20;
 constexpr int kAcceptTimeoutSec = 5;
 constexpr int kConnectedTimeoutSec = 30;
 constexpr int kKeepaliveIdleSec = 60;
@@ -248,10 +247,22 @@ Result<int> createListenSocket(int domain) {
   return sock;
 }
 
-Status configureAcceptedSocket(int sock) {
+// Applies the connected-socket options to a freshly accepted fd.
+//
+// Only @p socketBufSize is caller-controlled; the keepalive and timeout values
+// remain the constants above. Buffer sizing is the one option a caller has a
+// reason to override per connection: setting SO_RCVBUF explicitly disables
+// Linux receive-window autotuning, which caps a single stream at window/RTT, so
+// a bulk-data connection wants it left unset while the control connection does
+// not care.
+Status configureAcceptedSocket(
+    int sock,
+    const std::optional<int>& socketBufSize) {
   SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
-  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
+  if (socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *socketBufSize, "SO_RCVBUF");
+  }
   opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
   opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
   opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
@@ -947,7 +958,7 @@ template class TcpConn<AsyncIO>;
 
 std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     std::atomic<int>& listenSock,
-    int acceptRetryCnt,
+    const TcpSocketConfig& config,
     const std::string& id) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (listenSock.load() < 0) {
@@ -961,7 +972,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
   // EAGAIN from SO_RCVTIMEO loops back for shutdown checks without
   // counting as a retry. Transient errors retry up to acceptRetryCnt.
   int retryCnt = 0;
-  while (retryCnt < acceptRetryCnt) {
+  while (retryCnt < config.acceptRetryCnt) {
     socklen_t clientLen = sizeof(clientAddr);
     int clientSock = ::accept4(
         listenSock.load(),
@@ -973,7 +984,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
           "TcpServer: accepted fd={} from {}",
           clientSock,
           formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock);
+      auto status = configureAcceptedSocket(clientSock, config.socketBufSize);
       if (!status) {
         UNIFLOW_LOG_ERROR(
             "TcpServer: socket config failed fd={}: {}",
@@ -1018,13 +1029,15 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     UNIFLOW_LOG_WARN(
         "TcpServer: accept retry {}/{}: errno={} ({})",
         retryCnt,
-        acceptRetryCnt,
+        config.acceptRetryCnt,
         savedErrno,
         std::system_category().message(savedErrno));
   }
 
   UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt, id);
+      "TcpServer: accept exhausted {} retries on {}",
+      config.acceptRetryCnt,
+      id);
   return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
 
@@ -1121,7 +1134,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
     // configureAcceptedSocket sets 30s timeouts — must come after the
     // 500ms handshake timeout to avoid overriding it.
-    auto status = configureAcceptedSocket(conn->getFd());
+    auto status = configureAcceptedSocket(conn->getFd(), socketBufSize_);
     if (!status) {
       UNIFLOW_LOG_ERROR(
           "TcpServer: async socket config failed fd={}: {}",
@@ -1141,7 +1154,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
 std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
     std::atomic<int>& listenSock,
-    int /*acceptRetryCnt*/,
+    const TcpSocketConfig& config,
     const std::string& /*id*/) {
   if (listenSock.load() < 0) {
     return make_ready_future(std::unique_ptr<Conn>(nullptr));
@@ -1150,12 +1163,23 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   std::promise<std::unique_ptr<Conn>> promise;
   auto future = promise.get_future();
 
-  evb_.dispatch([this, &listenSock, p = std::move(promise)]() mutable noexcept {
+  evb_.dispatch([this,
+                 &listenSock,
+                 bufSize = config.socketBufSize,
+                 p = std::move(promise)]() mutable noexcept {
     int sock = listenSock.load();
     if (sock < 0) {
       p.set_value(nullptr);
       return;
     }
+
+    // Server-level, not per-accept: BasicTcpServer passes its own config_ to
+    // every accept() call, so every dispatch writes the same value and there is
+    // no per-call setting to lose. Nothing here binds an accepted fd to a
+    // particular accept() anyway -- connections go to whichever promise is
+    // queued first. A future per-accept override would have to travel with the
+    // connection instead.
+    socketBufSize_ = bufSize;
 
     // Lazy setup: fcntl + registerFd both on the loop thread.
     if (!accepting_) {
