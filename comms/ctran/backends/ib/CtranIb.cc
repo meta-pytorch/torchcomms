@@ -148,8 +148,7 @@ commResult_t CtranIbSingleton::destroy() {
   // the commAbort scope.
   this->stopIbAsyncEventHandler();
 
-  // Report traffic if enabled
-  if (NCCL_SLOW_RANK_ENABLE) {
+  if (NCCL_CTRAN_TRANSPORT_PROFILER) {
     for (int i = 0; i < devBytes_.size(); i++) {
       CTRAN_LOG_SUBSYS(
           INFO,
