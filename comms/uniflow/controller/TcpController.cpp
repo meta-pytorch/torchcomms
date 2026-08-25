@@ -7,6 +7,7 @@
 #include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <cassert>
 #include <cerrno>
@@ -341,6 +342,53 @@ bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
   return true;
 }
 
+// Sends every byte of @p iov, coalescing the length prefix and the payload into
+// one syscall instead of two. Mutates @p iov to track progress, so the caller
+// must not reuse it.
+//
+// Error handling deliberately mirrors sendAll(): only EINTR is retried, and
+// anything else -- EAGAIN included -- is fatal. That is the existing contract
+// for these sockets, and widening it here would hide a non-blocking data socket
+// rather than fix one.
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
+  int idx = 0;
+  while (idx < iovCnt) {
+    msghdr msg{};
+    msg.msg_iov = iov + idx;
+    msg.msg_iovlen = static_cast<size_t>(iovCnt - idx);
+    ssize_t n = ::sendmsg(sock_, &msg, MSG_NOSIGNAL);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      int savedErrno = errno;
+      UNIFLOW_LOG_ERROR(
+          "sendAllVec failed: fd={} errno={} ({})",
+          sock_,
+          savedErrno,
+          std::system_category().message(savedErrno));
+      errno = savedErrno;
+      return false;
+    }
+    // A short write can land mid-iovec: retire the entries it fully covered,
+    // then advance the base of the one it split. On a blocking socket this is
+    // only reachable when a signal interrupts a partial transfer, so it is not
+    // covered by tests -- an attempt to force it with an oversized payload did
+    // not reach this branch.
+    auto consumed = static_cast<size_t>(n);
+    while (idx < iovCnt && consumed >= iov[idx].iov_len) {
+      consumed -= iov[idx].iov_len;
+      ++idx;
+    }
+    if (idx < iovCnt && consumed > 0) {
+      iov[idx].iov_base = static_cast<uint8_t*>(iov[idx].iov_base) + consumed;
+      iov[idx].iov_len -= consumed;
+    }
+  }
+  return true;
+}
+
 template <typename IOPolicy>
 bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
@@ -456,16 +504,24 @@ Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
+  // One sendmsg for prefix + payload. With TCP_NODELAY set, sending the 4-byte
+  // prefix separately hands the kernel a 4-byte segment it may put on the wire
+  // immediately, so coalescing also stops emitting a runt segment per frame.
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
-  if (!sendAll(&len, sizeof(len))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "send header failed: " + std::system_category().message(errno));
+  iovec iov[2];
+  iov[0].iov_base = &len;
+  iov[0].iov_len = sizeof(len);
+  int iovCnt = 1;
+  if (!data.empty()) {
+    // const_cast: iovec has no const variant, and sendmsg only reads.
+    iov[1].iov_base = const_cast<uint8_t*>(data.data());
+    iov[1].iov_len = data.size();
+    iovCnt = 2;
   }
-  if (!data.empty() && !sendAll(data.data(), data.size())) {
+  if (!sendAllVec(iov, iovCnt)) {
     return Err(
         ErrCode::ConnectionFailed,
-        "send payload failed: " + std::system_category().message(errno));
+        "send frame failed: " + std::system_category().message(errno));
   }
   return data.size();
 }
