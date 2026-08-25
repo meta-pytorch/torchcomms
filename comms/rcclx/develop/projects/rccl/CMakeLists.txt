@@ -1090,6 +1090,8 @@ set(COMMON_FILES
   comms/utils/logger/BackendTopologyUtil.h
   comms/utils/logger/CommsLogFormatter.cc
   comms/utils/logger/CommsLogFormatter.h
+  comms/utils/logger/CudaLog.cc
+  comms/utils/logger/CudaLog.h
   comms/utils/logger/DataSink.h
   comms/utils/logger/DataTable.cc
   comms/utils/logger/DataTable.h
@@ -1105,6 +1107,8 @@ set(COMMON_FILES
   comms/utils/logger/EventsScubaUtil.h
   comms/utils/logger/Logger.cc
   comms/utils/logger/Logger.h
+  comms/utils/logger/LoggerRuntime.cc
+  comms/utils/logger/LoggerRuntime.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
   comms/utils/logger/LogTypes.cc
