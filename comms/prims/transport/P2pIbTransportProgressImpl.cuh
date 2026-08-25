@@ -936,7 +936,8 @@ progress_registered_send_drain_once(
             .completionId = laneId,
             .value = slot.values[laneId],
         };
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+        if (transport.is_local_completion_ready(
+                group.group_id, ticket, timeout)) {
           pending &= ~laneBit;
           madeProgress = true;
           continue;
@@ -2220,7 +2221,8 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
               .completionId = laneId,
               .value = slot.values[laneId],
           };
-          if (transport.is_local_completion_ready(group.group_id, ticket)) {
+          if (transport.is_local_completion_ready(
+                  group.group_id, ticket, timeout)) {
             pending &= ~laneBit;
           }
         }

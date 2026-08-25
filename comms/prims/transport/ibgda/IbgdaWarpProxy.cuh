@@ -144,7 +144,6 @@ class IbgdaWarpProxy {
       workers_.sync();
     }
 
-    // Posts staged sends and publishes receive credits.
     // Drains staged sends and issues outstanding receive credits -- unless the
     // operation aborts, in which case it returns with commands still queued and
     // their credits deliberately unissued. See the abort-completion note on the
@@ -227,14 +226,18 @@ class IbgdaWarpProxy {
           args...);
     }
 
-    __device__ __forceinline__ void prepare_send_slot(
+    // Returns true when the slot could not be retired -- see
+    // detail::prepare_send_slot. The caller must not stage or put on a slot the
+    // NIC may still be reading.
+    [[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
         P2pIbgdaTransportDevice& transport,
         ThreadGroup& workers,
         uint32_t slot,
         uint64_t generation,
         const Timeout& timeout) {
       IbgdaWarpProxy::wait_prior_send_posted(storage_, workers, slot, timeout);
-      detail::prepare_send_slot(transport, workers, slot, generation, timeout);
+      return detail::prepare_send_slot(
+          transport, workers, slot, generation, timeout);
     }
 
     __device__ __forceinline__ void submit_send(
