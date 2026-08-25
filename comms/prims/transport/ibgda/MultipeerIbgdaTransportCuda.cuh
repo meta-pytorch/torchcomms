@@ -10,14 +10,16 @@
 #include "comms/prims/transport/rdma/NicConstants.h"
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD, `doca_gpu_dev_verbs_qp` is a type alias (declared in
-// `comms/prims/transport/amd/DocaCompat.h`) for `pipes_gda_gpu_dev_verbs_qp`.
-// This .cuh only uses `doca_gpu_dev_verbs_qp*` pointers, so a plain
-// forward declaration of the underlying struct + a `using` alias is
-// sufficient and avoids dragging the full device-side headers
-// (`pipes_gda/PipesGdaOps.h`, `nic/Mlx5NicBackend.h`, `HipDeviceCompat.h`)
-// into host-side translation units that just need the pointer type.
-struct pipes_gda_gpu_dev_verbs_qp;
-using doca_gpu_dev_verbs_qp = pipes_gda_gpu_dev_verbs_qp;
+// `comms/prims/transport/amd/DocaCompat.h`) for
+// `prims_amd_gda_gpu_dev_verbs_qp`. This .cuh only uses
+// `doca_gpu_dev_verbs_qp*` pointers, so a plain forward declaration of the
+// underlying struct + a `using` alias is sufficient and avoids dragging the
+// full device-side headers
+// (`prims_amd_gda/PrimsAmdGdaOps.h`, `nic/Mlx5NicBackend.h`,
+// `HipDeviceCompat.h`) into host-side translation units that just need the
+// pointer type.
+struct prims_amd_gda_gpu_dev_verbs_qp;
+using doca_gpu_dev_verbs_qp = prims_amd_gda_gpu_dev_verbs_qp;
 #else
 // Forward declarations
 struct doca_gpu_dev_verbs_qp;

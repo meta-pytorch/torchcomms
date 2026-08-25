@@ -10,7 +10,7 @@ library / test, platform-specific bits routed via `select()` on
 targets retired. NIC backend on AMD is selected at parse time via
 `-c hpc_comms.nic={mlx5,bnxt,ionic}` (default `bnxt`), wired by
 `//comms/prims/transport/amd:nic_config.bzl`; the chosen backend swaps the
-`PipesGdaHost.cc` `#ifdef NIC_*` blocks and the `rdma-core` dep
+`PrimsAmdGdaHost.cc` `#ifdef NIC_*` blocks and the `rdma-core` dep
 without forking the source tree.
 
 ## Legend
@@ -49,7 +49,7 @@ rewrites the simple cases) or pick up the AMD shims via
 |---|---|---|---|
 | `MultiPeerNvlTransport.{h,cc}` | `:multi_peer_nvl_transport` | ✅ | Single target with `select()`. |
 | `MultiPeerTransport.{h,cc}` | `:multi_peer_transport` | 🚧 | cuMem fabric-handle paths stubbed (throws on AMD if invoked); intra-node NVL + inter-node IBGDA paths fully functional. |
-| `MultipeerIbgdaTransport.{h,cc}` | `:multipeer_ibgda_transport` | ✅ | Single target with `select()`; routes through `:doca_compat_amd` (which re-exports `:pipes_gda_host`). |
+| `MultipeerIbgdaTransport.{h,cc}` | `:multipeer_ibgda_transport` | ✅ | Single target with `select()`; routes through `:doca_compat_amd` (which re-exports `:prims_amd_gda_host`). |
 | `MultipeerIbgdaTransportCuda.{cu,cuh}` | `:multipeer_ibgda_transport_cuda` | ✅ | Single target with `select()`. |
 | `GpuMemHandler.{h,cc}` | `:gpu_mem_handler` | 🚧 | Fabric-mode methods (`allocateFabricMemory`, `exchangeFabricHandles`, `importFabricPeerMemory`, `cleanupFabric`) stubbed under `__HIP_PLATFORM_AMD__`; standard `hipIpc*` IPC path works. |
 | `TopologyDiscovery.{h,cc}` | `:topology_discovery` | ✅ | Single target with `select()`. |
@@ -57,23 +57,23 @@ rewrites the simple cases) or pick up the AMD shims via
 ### NVIDIA-only host targets
 
 These depend on `<cuda.h>`, the cuMem driver API, or DOCA host APIs not
-present in `pipes_gda::PipesGdaHost`. They have `disable_amd_ci = True`.
+present in `prims_amd_gda::PrimsAmdGdaHost`. They have `disable_amd_ci = True`.
 
 | Component | Target | Why NVIDIA-only |
 |---|---|---|
 | `CudaDriverLazy.{h,cc}` | `:cuda_driver_lazy` | Wraps `cuMem*` driver API symbols loaded via `cudaGetDriverEntryPoint`. |
 | `DocaHostUtils.h` | `:doca_host_utils` | NVIDIA-only DOCA helpers. |
 
-### AMD-only support targets (`comms/prims:` and `comms/prims/amd:`)
+### AMD-only support targets (`comms/prims:` and `comms/prims/transport/amd:`)
 
 These exist only on AMD; no NVIDIA counterpart by design.
 
 | Target | Purpose |
 |---|---|
-| `:hip_compat` | `amd/HipHostCompat.h` + `amd/HipDeviceCompat.h` — `__trap()` + `meta::comms::DeviceBuffer`/`CudaEvent` HIP substitutes. |
-| `:doca_compat_amd` | `amd/DocaCompat.h` — `doca_*` → `pipes_gda_*` translation header (device + host). Re-exports `:pipes_gda_device` and `:pipes_gda_host`. |
-| `:pipes_gda` / `:pipes_gda_device` (in `comms/prims/amd:`) | AMD-native NIC backends (`amd/nic/*`) and device-side `pipes_gda_*` API (`amd/pipes_gda/PipesGda{Def,Dev,Ops,Shared,Utils}.h`). Backends: mlx5 (`Mlx5Hsi.h`, `Mlx5NicBackend.h`) and BNXT (`BnxtHsi.h`, `BnxtNicBackend.h`, `BnxtReDv.h`); selected at parse time via `-c hpc_comms.nic=...`. |
-| `:pipes_gda_host` (in `comms/prims/amd:`) | Host-side `pipes_gda_*` API (`amd/pipes_gda/PipesGdaHost.{h,cc}`) — QP / CQ / IBV_QP_* mask translation, HSA dmabuf export with isDevicePointer + page-alignment guards, `ibv_reg_*` wrappers. Single `.cc` carries both mlx5 and BNXT host paths behind `#ifdef NIC_BNXT`. BNXT path goes through `bnxt_re_dv` direct verbs (dlopened via `SysIbv`), allocates SQ/CQ/RQ in GPU uncached memory + dma-buf, and carves the MSN table from the SQ tail. |
+| `:hip_compat` (in `comms/prims:`) | `transport/amd/HipHostCompat.h` — `meta::comms::DeviceBuffer`/`CudaEvent` HIP substitutes. The `__trap()` shim `transport/amd/HipDeviceCompat.h` is not here; it ships with the `:prims_amd_gda*` targets below. |
+| `:doca_compat_amd` (in `comms/prims:`) | `transport/amd/DocaCompat.h` plus `transport/amd/nic/ionic/IonicGidDiscovery.h` — `doca_*` → `prims_amd_gda_*` translation header (device + host). Re-exports `:prims_amd_gda_device` and `:prims_amd_gda_host`. |
+| `:prims_amd_gda` / `:prims_amd_gda_device` (in `comms/prims/transport/amd:`) | AMD-native NIC backends (`transport/amd/nic/*`), the `HipDeviceCompat.h` shim, and the device-side `prims_amd_gda_*` API (`transport/amd/prims_amd_gda/PrimsAmdGda{Def,Dev,Ops,Shared}.h`). Backends: mlx5 (`nic/mlx5/Mlx5Hsi.h`, `Mlx5NicBackend.h`), BNXT (`nic/bnxt/BnxtHsi.h`, `BnxtNicBackend.h`, `BnxtReDv.h`) and ionic (`nic/ionic/IonicHsi.h`, `IonicNicBackend.h`, `IonicReDv.h`); selected at parse time via `-c hpc_comms.nic=...`. |
+| `:prims_amd_gda_host` (in `comms/prims/transport/amd:`) | Host-side `prims_amd_gda_*` API (`transport/amd/prims_amd_gda/PrimsAmdGdaHost.{h,cc}` and `PrimsAmdGdaDmaBuf.{h,cc}`) — QP / CQ / IBV_QP_* mask translation, HSA dmabuf export with isDevicePointer + page-alignment guards, `ibv_reg_*` wrappers. A single `.cc` carries all three host paths behind `#ifdef NIC_MLX5` / `NIC_BNXT` / `NIC_IONIC`. The BNXT path goes through `bnxt_re_dv` direct verbs (dlopened via `SysIbv`), allocates SQ/CQ/RQ in GPU uncached memory + dma-buf, and carves the MSN table from the SQ tail. |
 
 ## Collectives (`comms/prims/collectives/`)
 

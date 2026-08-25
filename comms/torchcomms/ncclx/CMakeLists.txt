@@ -100,6 +100,28 @@ else()
     message(STATUS "ENABLE_PRIMS not set, building without prims support")
 endif()
 
+set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
+if(USE_SYSTEM_LIBS)
+    # CudaRAII.cc calls into CommsSpdlogLogger, whose out-of-line definitions
+    # live in these three. libnccl.so cannot supply them: it is built
+    # -fvisibility=hidden behind version.script, which exports only the nccl*
+    # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
+    # importing the extension fails. The static path gets the definitions from
+    # the libnccl_static.a archive instead.
+    #
+    # These three are the whole closure and no more: SpdlogLogger.cc needs
+    # formatCommsLogMessage() from CommsLogFormatter.cc and the subsystem-mask
+    # accessors from LogTypes.cc, and neither of those includes any further
+    # comms header. RateLimit.h, the other SpdlogLogger.h dependency, is
+    # header-only.
+    find_package(spdlog CONFIG REQUIRED)
+    list(APPEND TORCHCOMMS_NCCLX_LOGGER_SOURCES
+        comms/utils/logger/SpdlogLogger.cc
+        comms/utils/logger/CommsLogFormatter.cc
+        comms/utils/logger/LogTypes.cc
+    )
+endif()
+
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
@@ -107,6 +129,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
+    ${TORCHCOMMS_NCCLX_LOGGER_SOURCES}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
@@ -161,6 +184,7 @@ if(USE_SYSTEM_LIBS)
         "-lboost_program_options"
         "-lboost_filesystem"
         "-lfmt"
+        spdlog::spdlog
     )
 else()
     set(TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS "")

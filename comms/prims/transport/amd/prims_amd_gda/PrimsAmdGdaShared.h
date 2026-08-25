@@ -1,12 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 // =============================================================================
-// PipesGdaShared — Re-exports shared comms::prims types into pipes_gda
+// PrimsAmdGdaShared — Re-exports shared comms::prims types into prims_amd_gda
 // =============================================================================
 //
 // The shared comms::prims headers (ThreadGroup.cuh, Timeout.cuh, IbgdaBuffer.h)
 // support both CUDA and HIP. This header re-exports all their types into the
-// pipes_gda namespace so AMD code can use a consistent namespace.
+// prims_amd_gda namespace so AMD code can use a consistent namespace.
 
 #pragma once
 
@@ -14,7 +14,7 @@
 #include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 // ---------------------------------------------------------------------------
 // IbgdaBuffer types
@@ -62,7 +62,7 @@ using comms::prims::kMultiwarpSize;
 using comms::prims::gpu_clock64;
 using comms::prims::Timeout;
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda
 
 // The FT_ABORT_* checks come from
 // comms/common/fault_tolerance/AbortMacros.cuh, re-exported via

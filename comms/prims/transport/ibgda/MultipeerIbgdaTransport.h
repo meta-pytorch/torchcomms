@@ -15,8 +15,9 @@
 
 // Host-side DOCA APIs are NVIDIA-only. On AMD, `DocaCompat.h`
 // translates both device-side and host-side `doca_*` symbols to the
-// `pipes_gda_*` APIs implemented in `amd/pipes_gda/PipesGdaHost.{h,cc}`,
-// backed by HSA + raw mlx5dv + libibverbs.
+// `prims_amd_gda_*` APIs implemented in
+// `amd/prims_amd_gda/PrimsAmdGdaHost.{h,cc}`, backed by HSA + raw mlx5dv +
+// libibverbs.
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/DocaCompat.h"
 #else
@@ -255,7 +256,7 @@ class MultipeerIbgdaTransport
   doca_gpu* docaGpu_{nullptr};
 
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
-  // nicDevices_.size() == numNics_ after openIbDevice().
+  // nicDoca_.size() == numNics_ after openIbDevice().
 
   // Per-NIC host-side IB verbs resources. blockQpGroups and
   // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0

@@ -226,6 +226,77 @@ TEST_F(LLImplTest, UnpackReduceElementSpansPackets) {
   EXPECT_EQ(actual, expected) << "int64 spanning-packet reduce wrong";
 }
 
+namespace {
+
+// pack `nbytes`, optionally break packet `corruptPacket`, return the verdict.
+uint32_t runAllFlagsSet(std::size_t nbytes, int corruptPacket) {
+  using P = LlxPacketGeometry;
+  std::vector<char> h_src(nbytes);
+  for (std::size_t i = 0; i < nbytes; ++i) {
+    h_src[i] = static_cast<char>(i * 131u + 7u);
+  }
+
+  DeviceBuffer src(nbytes);
+  DeviceBuffer staging(P::wire_bytes(nbytes));
+  DeviceBuffer readyBuf(sizeof(uint32_t));
+  auto* ready_d = static_cast<uint32_t*>(readyBuf.get());
+
+  CUDACHECK_TEST(
+      cudaMemcpy(src.get(), h_src.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(staging.get(), 0xEE, P::wire_bytes(nbytes)));
+  CUDACHECK_TEST(cudaMemset(ready_d, 0xFF, sizeof(uint32_t)));
+
+  test::test_ll_all_flags_set(
+      static_cast<const char*>(src.get()),
+      static_cast<char*>(staging.get()),
+      nbytes,
+      corruptPacket,
+      ready_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t ready = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&ready, ready_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  return ready;
+}
+
+} // namespace
+
+// A fully packed chunk reports ready. kData = 4, so the sweep covers every
+// `nbytes % kData` remainder as well as sizes spanning many packets.
+TEST_F(LLImplTest, AllFlagsSetTrueOnCompleteChunk) {
+  for (std::size_t n :
+       {std::size_t(1),
+        std::size_t(3),
+        std::size_t(4),
+        std::size_t(7),
+        std::size_t(64),
+        std::size_t(533),
+        std::size_t(4096)}) {
+    EXPECT_EQ(runAllFlagsSet(n, /*corruptPacket=*/-1), 1u)
+        << "nbytes=" << n << ": complete chunk reported not-ready";
+  }
+}
+
+// One packet carrying a different generation must sink the whole verdict --
+// and must come back as `false`, not as a hang. The group AND-reduce is the
+// part being pinned: a thread whose own packets are all fine must still agree
+// with the thread that found the bad one.
+TEST_F(LLImplTest, AllFlagsSetFalseOnAnyMissingPacket) {
+  constexpr std::size_t kBytes = 533; // 134 packets, tail is partial
+  const int nPackets =
+      static_cast<int>(LlxPacketGeometry::packet_count(kBytes));
+
+  // First, middle and last: the first is found by thread 0 immediately, the
+  // last only by whichever thread owns the tail, and the middle by neither
+  // edge case -- so all three exercise different threads reporting.
+  for (int p : {0, nPackets / 2, nPackets - 1}) {
+    EXPECT_EQ(runAllFlagsSet(kBytes, p), 0u)
+        << "packet " << p << " of " << nPackets
+        << " had the wrong generation but the chunk reported ready";
+  }
+}
+
 TEST_F(LLImplTest, FlagRoundTrip) {
   DeviceBuffer p8(LlxPacketGeometry::kPacketBytes);
   CUDACHECK_TEST(cudaMemset(p8.get(), 0, LlxPacketGeometry::kPacketBytes));

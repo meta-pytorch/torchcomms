@@ -32,7 +32,7 @@
 // Modifications: (c) Meta Platforms, Inc. and affiliates.
 
 // =============================================================================
-// MLX5 (Mellanox/NVIDIA ConnectX) NIC Backend for pipes-gda
+// MLX5 (Mellanox/NVIDIA ConnectX) NIC Backend for prims-amd-gda
 // =============================================================================
 //
 // Device-side WQE construction, doorbell, and CQ polling for mlx5 NICs.
@@ -50,9 +50,9 @@
 
 #include "HipDeviceCompat.h" // @manual
 #include "nic/mlx5/Mlx5Hsi.h" // @manual
-#include "pipes_gda/PipesGdaDev.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDev.h" // @manual
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 struct Mlx5NicBackend {
   static constexpr const char* vendorPrefix() {
@@ -68,22 +68,23 @@ struct Mlx5NicBackend {
     return htobe32(hostKey);
   }
 
-  __device__ pipes_gda_gpu_dev_verbs_wqe* getWqePtr(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+  __device__ prims_amd_gda_gpu_dev_verbs_wqe* getWqePtr(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t wqeIdx) const {
     uint16_t maskedIdx = static_cast<uint16_t>(wqeIdx) & qp->sq_wqe_mask;
-    return reinterpret_cast<pipes_gda_gpu_dev_verbs_wqe*>(qp->sq_wqe_daddr) +
+    return reinterpret_cast<prims_amd_gda_gpu_dev_verbs_wqe*>(
+               qp->sq_wqe_daddr) +
         maskedIdx;
   }
 
   __device__ uint64_t
-  reserveWqSlots(pipes_gda_gpu_dev_verbs_qp* qp, uint32_t numSlots) {
+  reserveWqSlots(prims_amd_gda_gpu_dev_verbs_qp* qp, uint32_t numSlots) {
     return amd_atomic_add_device(
         &qp->sq_rsvd_index, static_cast<uint64_t>(numSlots));
   }
 
   __device__ void markWqesReady(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
@@ -102,19 +103,20 @@ struct Mlx5NicBackend {
   // the BlueFlame write (a plain volatile store was observed to stall the NIC
   // for hundreds of us at small message sizes).
   __device__ void ringDoorbell(
-      pipes_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t nextWqeIdx) {
     uint32_t pi =
-        static_cast<uint32_t>(nextWqeIdx) & PIPES_GDA_VERBS_WQE_PI_MASK;
+        static_cast<uint32_t>(nextWqeIdx) & PRIMS_AMD_GDA_VERBS_WQE_PI_MASK;
 
     __hip_atomic_store(
-        reinterpret_cast<uint32_t*>(qp->sq_dbrec + PIPES_GDA_IB_MLX5_SND_DBR),
+        reinterpret_cast<uint32_t*>(
+            qp->sq_dbrec + PRIMS_AMD_GDA_IB_MLX5_SND_DBR),
         amd_bswap32(pi),
         __ATOMIC_RELEASE,
         __HIP_MEMORY_SCOPE_SYSTEM);
 
     uint64_t lastWqeIdx = nextWqeIdx - 1;
-    pipes_gda_gpu_dev_verbs_wqe* lastWqe = getWqePtr(qp, lastWqeIdx);
+    prims_amd_gda_gpu_dev_verbs_wqe* lastWqe = getWqePtr(qp, lastWqeIdx);
     uint64_t dbVal = *reinterpret_cast<volatile uint64_t*>(lastWqe);
     amd_store_doorbell_sys_u64(qp->sq_db, dbVal);
 
@@ -131,8 +133,8 @@ struct Mlx5NicBackend {
   }
 
   __device__ void prepareRdmaWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -140,18 +142,18 @@ struct Mlx5NicBackend {
       uint64_t localAddr,
       uint32_t localKey,
       std::size_t size) {
-    pipes_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
     cseg.opmod_idx_opcode = amd_bswap32(
-        (static_cast<uint32_t>(wqeIdx) << PIPES_GDA_VERBS_WQE_IDX_SHIFT) |
-        PIPES_GDA_IB_MLX5_OPCODE_RDMA_WRITE);
+        (static_cast<uint32_t>(wqeIdx) << PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT) |
+        PRIMS_AMD_GDA_IB_MLX5_OPCODE_RDMA_WRITE);
     cseg.qpn_ds = amd_bswap32(qp->sq_num_shift8 | 3);
     cseg.fm_ce_se = ctrlFlags;
 
-    pipes_gda_ib_mlx5_wqe_raddr_seg rseg = {};
+    prims_amd_gda_ib_mlx5_wqe_raddr_seg rseg = {};
     rseg.raddr = amd_bswap64(remoteAddr);
     rseg.rkey = remoteKey;
 
-    pipes_gda_ib_mlx5_wqe_data_seg dseg = {};
+    prims_amd_gda_ib_mlx5_wqe_data_seg dseg = {};
     dseg.byte_count = amd_bswap32(static_cast<uint32_t>(size));
     dseg.lkey = localKey;
     dseg.addr = amd_bswap64(localAddr);
@@ -168,8 +170,8 @@ struct Mlx5NicBackend {
   }
 
   __device__ void prepareAtomicFaWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
@@ -177,23 +179,23 @@ struct Mlx5NicBackend {
       uint64_t localAddr,
       uint32_t localKey,
       uint64_t addVal) {
-    pipes_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
     cseg.opmod_idx_opcode = amd_bswap32(
-        (static_cast<uint32_t>(wqeIdx) << PIPES_GDA_VERBS_WQE_IDX_SHIFT) |
-        PIPES_GDA_IB_MLX5_OPCODE_ATOMIC_FA);
+        (static_cast<uint32_t>(wqeIdx) << PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT) |
+        PRIMS_AMD_GDA_IB_MLX5_OPCODE_ATOMIC_FA);
     cseg.qpn_ds = amd_bswap32(
-        qp->sq_num_shift8 | PIPES_GDA_VERBS_WQE_SEG_CNT_ATOMIC_FA_CAS);
+        qp->sq_num_shift8 | PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_ATOMIC_FA_CAS);
     cseg.fm_ce_se = ctrlFlags;
 
-    pipes_gda_ib_mlx5_wqe_raddr_seg rseg = {};
+    prims_amd_gda_ib_mlx5_wqe_raddr_seg rseg = {};
     rseg.raddr = amd_bswap64(remoteAddr);
     rseg.rkey = remoteKey;
 
-    pipes_gda_ib_mlx5_wqe_atomic_seg aseg = {};
+    prims_amd_gda_ib_mlx5_wqe_atomic_seg aseg = {};
     aseg.swap_add = amd_bswap64(addVal);
     aseg.compare = 0;
 
-    pipes_gda_ib_mlx5_wqe_data_seg dseg = {};
+    prims_amd_gda_ib_mlx5_wqe_data_seg dseg = {};
     dseg.byte_count = amd_bswap32(sizeof(uint64_t));
     dseg.lkey = localKey;
     dseg.addr = amd_bswap64(localAddr);
@@ -213,15 +215,15 @@ struct Mlx5NicBackend {
   }
 
   __device__ void prepareNopWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx) {
-    pipes_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
     cseg.opmod_idx_opcode = amd_bswap32(
-        (static_cast<uint32_t>(wqeIdx) << PIPES_GDA_VERBS_WQE_IDX_SHIFT) |
-        PIPES_GDA_IB_MLX5_OPCODE_NOP);
+        (static_cast<uint32_t>(wqeIdx) << PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT) |
+        PRIMS_AMD_GDA_IB_MLX5_OPCODE_NOP);
     cseg.qpn_ds = amd_bswap32(qp->sq_num_shift8 | 1);
-    cseg.fm_ce_se = PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE;
+    cseg.fm_ce_se = PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE;
 
     amd_store_wqe_seg(
         reinterpret_cast<uint64_t*>(&wqe->dseg0),
@@ -237,39 +239,39 @@ struct Mlx5NicBackend {
   // without needing a local memory region (data is embedded in the WQE).
   template <typename T>
   __device__ void prepareInlineWriteWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint64_t remoteAddr,
       uint32_t remoteKey,
       T value) {
     static_assert(
-        sizeof(T) <= PIPES_GDA_VERBS_MAX_INLINE_SIZE, "inline too large");
+        sizeof(T) <= PRIMS_AMD_GDA_VERBS_MAX_INLINE_SIZE, "inline too large");
 
     uint32_t dsCount = (sizeof(T) <= 16)
-        ? PIPES_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MIN
-        : PIPES_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MAX;
+        ? PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MIN
+        : PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_RDMA_WRITE_INL_MAX;
 
-    pipes_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
     cseg.opmod_idx_opcode = amd_bswap32(
-        (static_cast<uint32_t>(wqeIdx) << PIPES_GDA_VERBS_WQE_IDX_SHIFT) |
-        PIPES_GDA_IB_MLX5_OPCODE_RDMA_WRITE);
+        (static_cast<uint32_t>(wqeIdx) << PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT) |
+        PRIMS_AMD_GDA_IB_MLX5_OPCODE_RDMA_WRITE);
     cseg.qpn_ds = amd_bswap32(qp->sq_num_shift8 | dsCount);
     cseg.fm_ce_se = ctrlFlags;
 
-    pipes_gda_ib_mlx5_wqe_raddr_seg rseg = {};
+    prims_amd_gda_ib_mlx5_wqe_raddr_seg rseg = {};
     rseg.raddr = amd_bswap64(remoteAddr);
     rseg.rkey = remoteKey;
 
     // Inline data segment: header (4 bytes) + payload
     struct {
-      pipes_gda_ib_mlx5_wqe_inl_data_seg hdr;
+      prims_amd_gda_ib_mlx5_wqe_inl_data_seg hdr;
       T payload;
     } __attribute__((__packed__)) inlSeg = {};
 
     inlSeg.hdr.byte_count = amd_bswap32(
-        static_cast<uint32_t>(sizeof(T)) | PIPES_GDA_IB_MLX5_INLINE_SEG);
+        static_cast<uint32_t>(sizeof(T)) | PRIMS_AMD_GDA_IB_MLX5_INLINE_SEG);
     inlSeg.payload = value;
 
     amd_store_wqe_seg(
@@ -291,23 +293,23 @@ struct Mlx5NicBackend {
   // processing on this QP until the referenced CQ has completed the target WQE.
   // Used by companion QP to wait on main QP completion before posting counter.
   __device__ void prepareWaitWqe(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_wqe* wqe,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_wqe* wqe,
       uint64_t wqeIdx,
       uint8_t ctrlFlags,
       uint32_t targetCqNum,
       uint64_t targetWqeIdx) {
-    pipes_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_ctrl_seg cseg = {};
     cseg.opmod_idx_opcode = amd_bswap32(
-        (static_cast<uint32_t>(wqeIdx) << PIPES_GDA_VERBS_WQE_IDX_SHIFT) |
-        PIPES_GDA_IB_MLX5_OPCODE_WAIT);
+        (static_cast<uint32_t>(wqeIdx) << PRIMS_AMD_GDA_VERBS_WQE_IDX_SHIFT) |
+        PRIMS_AMD_GDA_IB_MLX5_OPCODE_WAIT);
     cseg.qpn_ds =
-        amd_bswap32(qp->sq_num_shift8 | PIPES_GDA_VERBS_WQE_SEG_CNT_WAIT);
+        amd_bswap32(qp->sq_num_shift8 | PRIMS_AMD_GDA_VERBS_WQE_SEG_CNT_WAIT);
     cseg.fm_ce_se = ctrlFlags;
 
-    pipes_gda_gpu_dev_verbs_wqe_wait_seg wseg = {};
+    prims_amd_gda_gpu_dev_verbs_wqe_wait_seg wseg = {};
     wseg.max_index = amd_bswap32(
-        static_cast<uint32_t>(targetWqeIdx) & PIPES_GDA_VERBS_WQE_PI_MASK);
+        static_cast<uint32_t>(targetWqeIdx) & PRIMS_AMD_GDA_VERBS_WQE_PI_MASK);
     wseg.qpn_cqn = amd_bswap32(targetCqNum);
 
     amd_store_wqe_seg(
@@ -326,13 +328,13 @@ struct Mlx5NicBackend {
   // Unlike pollCqAt() which spins until completion, this returns immediately
   // so the caller can implement timeout logic.
   __device__ int pollOneCqAt(
-      pipes_gda_gpu_dev_verbs_cq* cq,
+      prims_amd_gda_gpu_dev_verbs_cq* cq,
       uint64_t consIndex) {
-    pipes_gda_ib_mlx5_cqe64* cqeBase =
-        reinterpret_cast<pipes_gda_ib_mlx5_cqe64*>(cq->cqe_daddr);
+    prims_amd_gda_ib_mlx5_cqe64* cqeBase =
+        reinterpret_cast<prims_amd_gda_ib_mlx5_cqe64*>(cq->cqe_daddr);
     const uint32_t cqeNum = cq->cqe_num;
     uint32_t idx = static_cast<uint32_t>(consIndex) & (cqeNum - 1);
-    pipes_gda_ib_mlx5_cqe64* cqe64 = &cqeBase[idx];
+    prims_amd_gda_ib_mlx5_cqe64* cqe64 = &cqeBase[idx];
 
     uint64_t cqeCi = amd_load_relaxed_device(&cq->cqe_ci);
     if (consIndex < cqeCi)
@@ -347,33 +349,33 @@ struct Mlx5NicBackend {
     uint16_t wqeCounter = cqeChunk >> 16;
     uint8_t opown = cqeChunk & 0xff;
 
-    if ((opown & PIPES_GDA_IB_MLX5_CQE_OWNER_MASK) ^ !!(consIndex & cqeNum))
+    if ((opown & PRIMS_AMD_GDA_IB_MLX5_CQE_OWNER_MASK) ^ !!(consIndex & cqeNum))
       return EBUSY;
     if (wqeCounter != (static_cast<uint32_t>(consIndex) & 0xffff))
       return EBUSY;
 
-    uint8_t opcode = opown >> PIPES_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT;
+    uint8_t opcode = opown >> PRIMS_AMD_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT;
 
     amd_fence_acquire_system();
     amd_atomic_max_device(&cq->cqe_ci, consIndex + 1);
 
     uint32_t ci =
-        static_cast<uint32_t>(consIndex + 1) & PIPES_GDA_VERBS_CQE_CI_MASK;
+        static_cast<uint32_t>(consIndex + 1) & PRIMS_AMD_GDA_VERBS_CQE_CI_MASK;
     amd_store_release_sys_u32(
         reinterpret_cast<uint32_t*>(cq->dbrec), amd_bswap32(ci));
 
-    return (opcode == PIPES_GDA_IB_MLX5_CQE_REQ_ERR) ? -5 : 0;
+    return (opcode == PRIMS_AMD_GDA_IB_MLX5_CQE_REQ_ERR) ? -5 : 0;
   }
 
   __device__ int pollCqAt(
-      pipes_gda_gpu_dev_verbs_qp* qp,
-      pipes_gda_gpu_dev_verbs_cq* cq,
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      prims_amd_gda_gpu_dev_verbs_cq* cq,
       uint64_t consIndex) {
-    pipes_gda_ib_mlx5_cqe64* cqeBase =
-        reinterpret_cast<pipes_gda_ib_mlx5_cqe64*>(cq->cqe_daddr);
+    prims_amd_gda_ib_mlx5_cqe64* cqeBase =
+        reinterpret_cast<prims_amd_gda_ib_mlx5_cqe64*>(cq->cqe_daddr);
     const uint32_t cqeNum = cq->cqe_num;
     uint32_t idx = static_cast<uint32_t>(consIndex) & (cqeNum - 1);
-    pipes_gda_ib_mlx5_cqe64* cqe64 = &cqeBase[idx];
+    prims_amd_gda_ib_mlx5_cqe64* cqe64 = &cqeBase[idx];
 
     uint8_t opown;
     uint32_t cqeChunk;
@@ -389,23 +391,23 @@ struct Mlx5NicBackend {
       cqeChunk = amd_bswap32(cqeChunk);
       wqeCounter = cqeChunk >> 16;
       opown = cqeChunk & 0xff;
-    } while (
-        (consIndex >= amd_load_relaxed_device(&cq->cqe_ci) + cqeNum) ||
-        ((opown & PIPES_GDA_IB_MLX5_CQE_OWNER_MASK) ^ !!(consIndex & cqeNum)) ||
-        (wqeCounter != (static_cast<uint32_t>(consIndex) & 0xffff)));
+    } while ((consIndex >= amd_load_relaxed_device(&cq->cqe_ci) + cqeNum) ||
+             ((opown & PRIMS_AMD_GDA_IB_MLX5_CQE_OWNER_MASK) ^
+              !!(consIndex & cqeNum)) ||
+             (wqeCounter != (static_cast<uint32_t>(consIndex) & 0xffff)));
 
-    uint8_t opcode = opown >> PIPES_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT;
+    uint8_t opcode = opown >> PRIMS_AMD_GDA_VERBS_MLX5_CQE_OPCODE_SHIFT;
 
     amd_fence_acquire_system();
     amd_atomic_max_device(&cq->cqe_ci, consIndex + 1);
 
     uint32_t ci =
-        static_cast<uint32_t>(consIndex + 1) & PIPES_GDA_VERBS_CQE_CI_MASK;
+        static_cast<uint32_t>(consIndex + 1) & PRIMS_AMD_GDA_VERBS_CQE_CI_MASK;
     amd_store_release_sys_u32(
         reinterpret_cast<uint32_t*>(cq->dbrec), amd_bswap32(ci));
 
-    return (opcode == PIPES_GDA_IB_MLX5_CQE_REQ_ERR) ? -5 : 0;
+    return (opcode == PRIMS_AMD_GDA_IB_MLX5_CQE_REQ_ERR) ? -5 : 0;
   }
 };
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda

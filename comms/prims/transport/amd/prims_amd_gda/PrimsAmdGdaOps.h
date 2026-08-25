@@ -42,7 +42,7 @@
 // Two coexisting overload families
 // =============================================================================
 //
-// Each `pipes_gda_*` primitive is provided in TWO overloads with the same
+// Each `prims_amd_gda_*` primitive is provided in TWO overloads with the same
 // name, distinguished by parameter list. They achieve identical
 // functionality; pick whichever is more convenient at the call site.
 //
@@ -67,12 +67,12 @@
 //      shapes that resolve to DOCA on NVIDIA and to these wrappers on AMD,
 //      via a thin name-prefix shim in `DocaCompat.h`.
 //
-// Functional-equivalence map (DOCA suffix ↔ pipes_gda suffix):
+// Functional-equivalence map (DOCA suffix ↔ prims_amd_gda suffix):
 //   reserve_wq_slots / get_wqe_ptr / wqe_prepare_write /
 //   wqe_prepare_atomic / mark_wqes_ready / submit / wait / put /
 //   signal_counter / poll_one_cq_at / qp_get_cq_sq
 //
-// And `pipes_gda_fence` (no `gpu_dev_verbs_` infix) is the AMD
+// And `prims_amd_gda_fence` (no `gpu_dev_verbs_` infix) is the AMD
 // equivalent of `doca_fence` (defined in
 // `comms/prims/platform/DocaVerbsUtils.cuh`).
 // =============================================================================
@@ -84,9 +84,9 @@
 #include <cstdint>
 
 #include "nic/NicSelector.h" // @manual
-#include "pipes_gda/PipesGdaDev.h" // @manual
+#include "prims_amd_gda/PrimsAmdGdaDev.h" // @manual
 
-namespace pipes_gda {
+namespace prims_amd_gda {
 
 #if defined(__HIP_PLATFORM_AMD__)
 namespace {
@@ -102,13 +102,13 @@ namespace {
 // NIC_BNXT. NVIDIA never compiles this file (it uses the real DOCA
 // `doca_gpu_dev_verbs_*` headers), so this is AMD-only.
 //
-// Not exposed in the `pipes_gda_*` API surface: this is a CQE-drain
+// Not exposed in the `prims_amd_gda_*` API surface: this is a CQE-drain
 // idiom with no DOCA equivalent, kept internal to preserve the 1:1
 // mirror with NVIDIA's `doca_gpu_dev_verbs_*` names.
 template <typename NicBackend>
 __device__ __forceinline__ void spin_poll_or_trap(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_cq* cq,
+    prims_amd_gda_gpu_dev_verbs_cq* cq,
     uint64_t consIndex) {
   int rc;
   while ((rc = nic.pollOneCqAt(cq, consIndex)) == EBUSY) {
@@ -134,27 +134,28 @@ __device__ __forceinline__ void spin_poll_or_trap(
 // =============================================================================
 
 template <typename NicBackend>
-__device__ __forceinline__ uint64_t pipes_gda_gpu_dev_verbs_reserve_wq_slots(
+__device__ __forceinline__ uint64_t
+prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint32_t numSlots) {
   return nic.reserveWqSlots(qp, numSlots);
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ pipes_gda_gpu_dev_verbs_wqe*
-pipes_gda_gpu_dev_verbs_get_wqe_ptr(
+__device__ __forceinline__ prims_amd_gda_gpu_dev_verbs_wqe*
+prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t wqeIdx) {
   return nic.getWqePtr(qp, wqeIdx);
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx,
     uint8_t ctrlFlags,
     uint64_t remoteAddr,
@@ -175,10 +176,10 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx,
     uint8_t ctrlFlags,
     uint64_t remoteAddr,
@@ -203,35 +204,35 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_nop(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_nop(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx) {
   nic.prepareNopWqe(qp, wqe, wqeIdx);
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_mark_wqes_ready(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t firstIdx,
     uint64_t lastIdx) {
   nic.markWqesReady(qp, firstIdx, lastIdx);
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_submit(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_submit(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t nextWqeIdx) {
   nic.ringDoorbell(qp, nextWqeIdx);
 }
 
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wait(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wait(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t ticket) {
   nic.pollCqAt(qp, &qp->cq_sq, ticket);
 }
@@ -241,22 +242,22 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wait(
 // =============================================================================
 
 /**
- * pipes_gda_gpu_dev_verbs_put - RDMA Write (handles multi-chunk transfers)
+ * prims_amd_gda_gpu_dev_verbs_put - RDMA Write (handles multi-chunk transfers)
  *
  * Reserves WQE slots, prepares RDMA WRITE WQEs (splitting into chunks
  * if size > MAX_TRANSFER_SIZE), marks ready, and submits.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_put(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
-    pipes_gda_gpu_dev_verbs_addr laddr,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_addr laddr,
     std::size_t size,
     uint64_t* out_ticket) {
   uint32_t numChunks = static_cast<uint32_t>(
-      (size + PIPES_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
-      PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+      (size + PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
+      PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
   if (numChunks == 0)
     numChunks = 1;
 
@@ -274,25 +275,25 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
 #endif
 
   uint64_t baseIdx =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numChunks);
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numChunks);
   std::size_t remaining = size;
 
   for (uint32_t i = 0; i < numChunks; i++) {
     uint64_t wqeIdx = baseIdx + i;
-    std::size_t chunkSize = remaining > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
-        ? PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
+    std::size_t chunkSize = remaining > PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
+        ? PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
         : remaining;
 
-    auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
-    pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+    auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
         nic,
         qp,
         wqe,
         wqeIdx,
-        PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
-        raddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        raddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         raddr.key,
-        laddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        laddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
@@ -302,8 +303,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
     // CQE is consumed (advance cqe_ci + ring the CQ doorbell). Drain EVERY
     // chunk — including the last — synchronously (still under the lock) so the
     // single CQE slot is always free and each put is fully self-contained.
-    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
-    pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+    prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
     spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
     qp->cq_sq.cqe_ci = wqeIdx + 1;
     nic.bnxtUpdateCqDbrec(qp);
@@ -318,39 +319,39 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
   // Mlx5 / ionic: batched doorbell — single ring after all chunks prepared.
   // Uses fast submit with ctrl segment captured on GPU stack (avoids
   // PCIe round-trip re-read from SQ buffer).
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, lastIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, lastIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, lastIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, lastIdx + 1);
 #endif
 
   *out_ticket = lastIdx;
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_signal - Atomic fetch-add signal
+ * prims_amd_gda_gpu_dev_verbs_signal - Atomic fetch-add signal
  *
  * Posts an atomic fetch-add WQE to the remote signal buffer.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_signal(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr sig_raddr,
-    pipes_gda_gpu_dev_verbs_addr sig_laddr,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr sig_raddr,
+    prims_amd_gda_gpu_dev_verbs_addr sig_laddr,
     uint64_t sig_val,
     uint64_t* out_ticket) {
-  uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+  uint64_t wqeIdx = prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
 
 #ifdef NIC_BNXT
   nic.lockQp(qp);
 #endif
-  auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+  auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       qp,
       wqe,
       wqeIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       sig_raddr.addr,
       sig_raddr.key,
       sig_laddr.addr,
@@ -359,8 +360,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal(
       sig_val,
       0);
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
 #ifdef NIC_BNXT
   nic.unlockQp(qp);
 #endif
@@ -369,59 +370,59 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal(
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_put_signal - RDMA Write + atomic signal
+ * prims_amd_gda_gpu_dev_verbs_put_signal - RDMA Write + atomic signal
  * (non-adaptive)
  *
  * Posts data WQEs followed by an atomic signal WQE without NIC fence.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_put_signal(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
-    pipes_gda_gpu_dev_verbs_addr laddr,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_addr laddr,
     std::size_t size,
-    pipes_gda_gpu_dev_verbs_addr sig_raddr,
-    pipes_gda_gpu_dev_verbs_addr sig_laddr,
+    prims_amd_gda_gpu_dev_verbs_addr sig_raddr,
+    prims_amd_gda_gpu_dev_verbs_addr sig_laddr,
     uint64_t sig_val,
     uint64_t* out_ticket) {
   uint32_t numChunks = static_cast<uint32_t>(
-      (size + PIPES_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
-      PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+      (size + PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
+      PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
   if (numChunks == 0)
     numChunks = 1;
 
   uint64_t baseIdx =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numChunks + 1);
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numChunks + 1);
   std::size_t remaining = size;
 
   for (uint32_t i = 0; i < numChunks; i++) {
     uint64_t wqeIdx = baseIdx + i;
-    std::size_t chunkSize = remaining > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
-        ? PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
+    std::size_t chunkSize = remaining > PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
+        ? PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
         : remaining;
 
 #ifdef NIC_BNXT
     nic.lockQp(qp);
 #endif
-    auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
-    pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+    auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
         nic,
         qp,
         wqe,
         wqeIdx,
-        PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
-        raddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        raddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         raddr.key,
-        laddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        laddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
 
 #ifdef NIC_BNXT
     // BNXT: per-WQE doorbell + per-chunk CQE drain.
-    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
-    pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+    prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
     spin_poll_or_trap(nic, &qp->cq_sq, wqeIdx);
     qp->cq_sq.cqe_ci = wqeIdx + 1;
     nic.unlockQp(qp);
@@ -432,13 +433,13 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
 #ifdef NIC_BNXT
   nic.lockQp(qp);
 #endif
-  auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, sigIdx);
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  auto* sigWqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, sigIdx);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       qp,
       sigWqe,
       sigIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       sig_raddr.addr,
       sig_raddr.key,
       sig_laddr.addr,
@@ -449,12 +450,12 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
 
 #ifdef NIC_BNXT
   // BNXT: per-WQE doorbell for the signal WQE too.
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, sigIdx, sigIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, sigIdx, sigIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
   nic.unlockQp(qp);
 #else
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, sigIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, baseIdx, sigIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, sigIdx + 1);
 #endif
 
   *out_ticket = sigIdx;
@@ -465,50 +466,50 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal(
 // =============================================================================
 
 /**
- * pipes_gda_fence - Wait for all pending RDMA operations to complete
+ * prims_amd_gda_fence - Wait for all pending RDMA operations to complete
  *
  * Issues a NOP WQE and waits for it to complete. Since WQEs are processed
  * in order, when the NOP completes, all prior WQEs have been processed.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_fence(
+__device__ __forceinline__ void prims_amd_gda_fence(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp) {
-  uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+    prims_amd_gda_gpu_dev_verbs_qp* qp) {
+  uint64_t wqeIdx = prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
 #ifdef NIC_BNXT
   nic.lockQp(qp);
 #endif
-  auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+  auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
-  pipes_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
 #ifdef NIC_BNXT
   nic.unlockQp(qp);
 #endif
-  pipes_gda_gpu_dev_verbs_wait(nic, qp, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_wait(nic, qp, wqeIdx);
 }
 
 /**
- * pipes_gda_put_fenced - Fenced RDMA Write with completion
+ * prims_amd_gda_put_fenced - Fenced RDMA Write with completion
  *
  * Issues a fence, then performs an RDMA Write and waits for completion,
  * then issues another fence.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_put_fenced(
+__device__ __forceinline__ void prims_amd_gda_put_fenced(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
-    pipes_gda_gpu_dev_verbs_addr laddr,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_addr laddr,
     std::size_t size) {
-  pipes_gda_fence(nic, qp);
+  prims_amd_gda_fence(nic, qp);
 
   uint64_t ticket;
-  pipes_gda_gpu_dev_verbs_put(nic, qp, raddr, laddr, size, &ticket);
-  pipes_gda_gpu_dev_verbs_wait(nic, qp, ticket);
+  prims_amd_gda_gpu_dev_verbs_put(nic, qp, raddr, laddr, size, &ticket);
+  prims_amd_gda_gpu_dev_verbs_wait(nic, qp, ticket);
 
-  pipes_gda_fence(nic, qp);
+  prims_amd_gda_fence(nic, qp);
 }
 
 // =============================================================================
@@ -516,36 +517,36 @@ __device__ __forceinline__ void pipes_gda_put_fenced(
 // =============================================================================
 
 /**
- * pipes_gda_gpu_dev_verbs_p<T> - Inline RDMA write of a scalar value
+ * prims_amd_gda_gpu_dev_verbs_p<T> - Inline RDMA write of a scalar value
  *
  * Writes a scalar value to a remote address using an inline RDMA Write WQE.
  * No local memory region needed — data is embedded in the WQE.
  * Used by reset_signal() to write zero to remote signal buffer.
  */
 template <typename T, typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_p(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_p(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
     T value,
     uint64_t* out_ticket) {
-  uint64_t wqeIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
+  uint64_t wqeIdx = prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, 1);
 #ifdef NIC_BNXT
   nic.lockQp(qp);
 #endif
-  auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+  auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 
   nic.prepareInlineWriteWqe(
       qp,
       wqe,
       wqeIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       raddr.addr,
       raddr.key,
       value);
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, wqeIdx, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, wqeIdx + 1);
 #ifdef NIC_BNXT
   nic.unlockQp(qp);
 #endif
@@ -554,29 +555,29 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_p(
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_poll_one_cq_at - Non-blocking CQ poll wrapper
+ * prims_amd_gda_gpu_dev_verbs_poll_one_cq_at - Non-blocking CQ poll wrapper
  *
  * Returns EBUSY if not yet complete, 0 on success.
  * Used by wait_local() with timeout.
  */
 template <typename NicBackend>
-__device__ __forceinline__ int pipes_gda_gpu_dev_verbs_poll_one_cq_at(
+__device__ __forceinline__ int prims_amd_gda_gpu_dev_verbs_poll_one_cq_at(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_cq* cq,
+    prims_amd_gda_gpu_dev_verbs_cq* cq,
     uint64_t consIndex) {
   return nic.pollOneCqAt(cq, consIndex);
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_qp_get_cq_sq - Get pointer to QP's SQ CQ
+ * prims_amd_gda_gpu_dev_verbs_qp_get_cq_sq - Get pointer to QP's SQ CQ
  */
-__device__ __forceinline__ pipes_gda_gpu_dev_verbs_cq*
-pipes_gda_gpu_dev_verbs_qp_get_cq_sq(pipes_gda_gpu_dev_verbs_qp* qp) {
+__device__ __forceinline__ prims_amd_gda_gpu_dev_verbs_cq*
+prims_amd_gda_gpu_dev_verbs_qp_get_cq_sq(prims_amd_gda_gpu_dev_verbs_qp* qp) {
   return &qp->cq_sq;
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_put_signal_counter - Data write + remote signal +
+ * prims_amd_gda_gpu_dev_verbs_put_signal_counter - Data write + remote signal +
  * local counter via companion QP
  *
  * Compound operation:
@@ -586,22 +587,22 @@ pipes_gda_gpu_dev_verbs_qp_get_cq_sq(pipes_gda_gpu_dev_verbs_qp* qp) {
  * 4. Companion QP: Atomic fetch-add to local counter buffer
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_put_signal_counter(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* mainQp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
-    pipes_gda_gpu_dev_verbs_addr laddr,
+    prims_amd_gda_gpu_dev_verbs_qp* mainQp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_addr laddr,
     std::size_t size,
-    pipes_gda_gpu_dev_verbs_addr sigRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr sigSinkAddr,
+    prims_amd_gda_gpu_dev_verbs_addr sigRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr sigSinkAddr,
     uint64_t sigVal,
-    pipes_gda_gpu_dev_verbs_qp* companionQp,
-    pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
+    prims_amd_gda_gpu_dev_verbs_qp* companionQp,
+    prims_amd_gda_gpu_dev_verbs_addr counterRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr counterSinkAddr,
     uint64_t counterVal) {
   uint32_t numChunks = static_cast<uint32_t>(
-      (size + PIPES_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
-      PIPES_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+      (size + PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE - 1) >>
+      PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE_SHIFT);
   if (numChunks == 0)
     numChunks = 1;
 
@@ -613,36 +614,36 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
   uint32_t numWqes = numChunks + (hasSignal ? 1 : 0);
 
   uint64_t mainBase =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, numWqes);
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, numWqes);
   std::size_t remaining = size;
 
   for (uint32_t i = 0; i < numChunks; i++) {
     uint64_t wqeIdx = mainBase + i;
-    std::size_t chunkSize = remaining > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
-        ? PIPES_GDA_VERBS_MAX_TRANSFER_SIZE
+    std::size_t chunkSize = remaining > PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
+        ? PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE
         : remaining;
 
 #ifdef NIC_BNXT
     nic.lockQp(mainQp);
 #endif
-    auto* wqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, wqeIdx);
-    pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+    auto* wqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
         nic,
         mainQp,
         wqe,
         wqeIdx,
-        PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
-        raddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+        raddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         raddr.key,
-        laddr.addr + i * PIPES_GDA_VERBS_MAX_TRANSFER_SIZE,
+        laddr.addr + i * PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE,
         laddr.key,
         static_cast<uint32_t>(chunkSize));
     remaining -= chunkSize;
 
 #ifdef NIC_BNXT
     // BNXT: per-WQE doorbell + per-chunk CQE drain.
-    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, wqeIdx, wqeIdx);
-    pipes_gda_gpu_dev_verbs_submit(nic, mainQp, wqeIdx + 1);
+    prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, wqeIdx, wqeIdx);
+    prims_amd_gda_gpu_dev_verbs_submit(nic, mainQp, wqeIdx + 1);
     spin_poll_or_trap(nic, &mainQp->cq_sq, wqeIdx);
     mainQp->cq_sq.cqe_ci = wqeIdx + 1;
     nic.unlockQp(mainQp);
@@ -655,15 +656,15 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
 #ifdef NIC_BNXT
     nic.lockQp(mainQp);
 #endif
-    auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
-    pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+    auto* sigWqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
+    prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
         nic,
         mainQp,
         sigWqe,
         sigIdx,
         static_cast<uint8_t>(
-            PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE |
-            PIPES_GDA_IB_MLX5_WQE_CTRL_FENCE),
+            PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE |
+            PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_FENCE),
         sigRemoteAddr.addr,
         sigRemoteAddr.key,
         sigSinkAddr.addr,
@@ -673,8 +674,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
         0);
     lastIdx = sigIdx;
 #ifdef NIC_BNXT
-    pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
-    pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+    prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
+    prims_amd_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
     nic.unlockQp(mainQp);
 #endif
   } else {
@@ -682,8 +683,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
   }
 
 #if defined(NIC_MLX5) || defined(NIC_IONIC)
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, mainBase, lastIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, mainQp, lastIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, mainBase, lastIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, mainQp, lastIdx + 1);
 #endif
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -708,27 +709,28 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
 #else
   // Companion QP: WAIT + counter atomic
   uint64_t compBase =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
 
   uint64_t waitIdx = compBase;
   auto* waitWqe =
-      pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, waitIdx);
+      prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, waitIdx);
   nic.prepareWaitWqe(
       companionQp,
       waitWqe,
       waitIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       mainQp->cq_sq.cq_num,
       lastIdx);
 
   uint64_t cntIdx = compBase + 1;
-  auto* cntWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, cntIdx);
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  auto* cntWqe =
+      prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, cntIdx);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       companionQp,
       cntWqe,
       cntIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       counterRemoteAddr.addr,
       counterRemoteAddr.key,
       counterSinkAddr.addr,
@@ -737,27 +739,28 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put_signal_counter(
       counterVal,
       0);
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, companionQp, compBase, cntIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(
+      nic, companionQp, compBase, cntIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
 #endif
 }
 
 /**
- * pipes_gda_gpu_dev_verbs_signal_counter - Remote signal + local counter
+ * prims_amd_gda_gpu_dev_verbs_signal_counter - Remote signal + local counter
  * (no data write)
  *
  * Same as put_signal_counter but without the data write.
  */
 template <typename NicBackend>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_signal_counter(
     NicBackend& nic,
-    pipes_gda_gpu_dev_verbs_qp* mainQp,
-    pipes_gda_gpu_dev_verbs_addr sigRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr sigSinkAddr,
+    prims_amd_gda_gpu_dev_verbs_qp* mainQp,
+    prims_amd_gda_gpu_dev_verbs_addr sigRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr sigSinkAddr,
     uint64_t sigVal,
-    pipes_gda_gpu_dev_verbs_qp* companionQp,
-    pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
+    prims_amd_gda_gpu_dev_verbs_qp* companionQp,
+    prims_amd_gda_gpu_dev_verbs_addr counterRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr counterSinkAddr,
     uint64_t counterVal) {
 #if defined(__HIP_PLATFORM_AMD__)
   // AMD counter-only fast path: when sigVal == 0 (P2pIbgdaTransportDevice
@@ -775,7 +778,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
   // validated cross-host surface.
   if (sigVal == 0) {
     // Wait for the last reserved WQE (the prior put() may have chunked
-    // into multiple WRITE WQEs when size > PIPES_GDA_VERBS_MAX_TRANSFER_SIZE).
+    // into multiple WRITE WQEs when size >
+    // PRIMS_AMD_GDA_VERBS_MAX_TRANSFER_SIZE).
     uint64_t lastWqeIdx = mainQp->sq_rsvd_index - 1;
     spin_poll_or_trap(nic, &mainQp->cq_sq, lastWqeIdx);
     mainQp->cq_sq.cqe_ci = lastWqeIdx + 1;
@@ -792,17 +796,18 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 #endif
 
   // Main QP: signal atomic
-  uint64_t sigIdx = pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, 1);
+  uint64_t sigIdx =
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, mainQp, 1);
 #ifdef NIC_BNXT
   nic.lockQp(mainQp);
 #endif
-  auto* sigWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  auto* sigWqe = prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, mainQp, sigIdx);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       mainQp,
       sigWqe,
       sigIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       sigRemoteAddr.addr,
       sigRemoteAddr.key,
       sigSinkAddr.addr,
@@ -811,8 +816,8 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
       sigVal,
       0);
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, mainQp, sigIdx, sigIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, mainQp, sigIdx + 1);
 #ifdef NIC_BNXT
   nic.unlockQp(mainQp);
 #endif
@@ -835,27 +840,28 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 #else
   // Companion QP: WAIT + counter atomic
   uint64_t compBase =
-      pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
+      prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, companionQp, 2);
 
   uint64_t waitIdx = compBase;
   auto* waitWqe =
-      pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, waitIdx);
+      prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, waitIdx);
   nic.prepareWaitWqe(
       companionQp,
       waitWqe,
       waitIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       mainQp->cq_sq.cq_num,
       sigIdx);
 
   uint64_t cntIdx = compBase + 1;
-  auto* cntWqe = pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, cntIdx);
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  auto* cntWqe =
+      prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, companionQp, cntIdx);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       companionQp,
       cntWqe,
       cntIdx,
-      PIPES_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
+      PRIMS_AMD_GDA_IB_MLX5_WQE_CTRL_CQ_UPDATE,
       counterRemoteAddr.addr,
       counterRemoteAddr.key,
       counterSinkAddr.addr,
@@ -864,8 +870,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
       counterVal,
       0);
 
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, companionQp, compBase, cntIdx);
-  pipes_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(
+      nic, companionQp, compBase, cntIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, companionQp, cntIdx + 1);
 #endif
 }
 
@@ -875,7 +882,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 //
 // Each function below has the SAME signature as its `doca_*` counterpart in
 // `<device/doca_gpunetio_dev_verbs_*.cuh>`, with `doca_` swapped for
-// `pipes_gda_`. They overload the NicBackend-explicit forms above:
+// `prims_amd_gda_`. They overload the NicBackend-explicit forms above:
 //   - Different parameter list (no leading `nic`, plus DOCA-only params).
 //   - Different template parameters (`<int MODE/SCOPE/HANDLER>` vs
 //     `<typename NicBackend>`) — disambiguates explicit-template calls.
@@ -884,34 +891,35 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 // the temporary is zero-cost (compiler elides it).
 
 template <int MODE = 0>
-__device__ __forceinline__ uint64_t pipes_gda_gpu_dev_verbs_reserve_wq_slots(
-    pipes_gda_gpu_dev_verbs_qp* qp,
+__device__ __forceinline__ uint64_t
+prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint32_t numSlots) {
   ActiveNicBackend nic{};
-  return pipes_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numSlots);
+  return prims_amd_gda_gpu_dev_verbs_reserve_wq_slots(nic, qp, numSlots);
 }
 
-__device__ __forceinline__ pipes_gda_gpu_dev_verbs_wqe*
-pipes_gda_gpu_dev_verbs_get_wqe_ptr(
-    pipes_gda_gpu_dev_verbs_qp* qp,
+__device__ __forceinline__ prims_amd_gda_gpu_dev_verbs_wqe*
+prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t wqeIdx) {
   ActiveNicBackend nic{};
-  return pipes_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
+  return prims_amd_gda_gpu_dev_verbs_get_wqe_ptr(nic, qp, wqeIdx);
 }
 
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_nop(
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_nop(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx,
     uint8_t ctrlFlags) {
   (void)ctrlFlags;
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_nop(nic, qp, wqe, wqeIdx);
 }
 
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx,
     uint8_t opcode,
     uint8_t ctrlFlags,
@@ -924,7 +932,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
   (void)opcode;
   (void)lkey_id;
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_wqe_prepare_write(
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_write(
       nic,
       qp,
       wqe,
@@ -937,9 +945,9 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_write(
       size);
 }
 
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_wqe* wqe,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_wqe* wqe,
     uint64_t wqeIdx,
     uint8_t opcode,
     uint8_t ctrlFlags,
@@ -952,7 +960,7 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
     uint64_t compareVal) {
   (void)opcode;
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
+  prims_amd_gda_gpu_dev_verbs_wqe_prepare_atomic(
       nic,
       qp,
       wqe,
@@ -968,53 +976,53 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wqe_prepare_atomic(
 }
 
 template <int MODE = 0>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_mark_wqes_ready(
-    pipes_gda_gpu_dev_verbs_qp* qp,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t firstIdx,
     uint64_t lastIdx) {
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, firstIdx, lastIdx);
+  prims_amd_gda_gpu_dev_verbs_mark_wqes_ready(nic, qp, firstIdx, lastIdx);
 }
 
 template <int MODE = 0, int SCOPE = 0, int HANDLER = 0>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_submit(
-    pipes_gda_gpu_dev_verbs_qp* qp,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_submit(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t nextWqeIdx) {
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_submit(nic, qp, nextWqeIdx);
+  prims_amd_gda_gpu_dev_verbs_submit(nic, qp, nextWqeIdx);
 }
 
 template <int MODE = 0, int HANDLER = 0>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_wait(
-    pipes_gda_gpu_dev_verbs_qp* qp,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_wait(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
     uint64_t ticket) {
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_wait(nic, qp, ticket);
+  prims_amd_gda_gpu_dev_verbs_wait(nic, qp, ticket);
 }
 
 template <int MODE = 0, int HANDLER = 0, int EXEC = 0>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_put(
-    pipes_gda_gpu_dev_verbs_qp* qp,
-    pipes_gda_gpu_dev_verbs_addr raddr,
-    pipes_gda_gpu_dev_verbs_addr laddr,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_put(
+    prims_amd_gda_gpu_dev_verbs_qp* qp,
+    prims_amd_gda_gpu_dev_verbs_addr raddr,
+    prims_amd_gda_gpu_dev_verbs_addr laddr,
     std::size_t size,
     uint64_t* out_ticket) {
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_put(nic, qp, raddr, laddr, size, out_ticket);
+  prims_amd_gda_gpu_dev_verbs_put(nic, qp, raddr, laddr, size, out_ticket);
 }
 
 template <int OP = 0, int MODE = 0, int HANDLER = 0>
-__device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
-    pipes_gda_gpu_dev_verbs_qp* mainQp,
-    pipes_gda_gpu_dev_verbs_addr sigRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr sigSinkAddr,
+__device__ __forceinline__ void prims_amd_gda_gpu_dev_verbs_signal_counter(
+    prims_amd_gda_gpu_dev_verbs_qp* mainQp,
+    prims_amd_gda_gpu_dev_verbs_addr sigRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr sigSinkAddr,
     uint64_t sigVal,
-    pipes_gda_gpu_dev_verbs_qp* companionQp,
-    pipes_gda_gpu_dev_verbs_addr counterRemoteAddr,
-    pipes_gda_gpu_dev_verbs_addr counterSinkAddr,
+    prims_amd_gda_gpu_dev_verbs_qp* companionQp,
+    prims_amd_gda_gpu_dev_verbs_addr counterRemoteAddr,
+    prims_amd_gda_gpu_dev_verbs_addr counterSinkAddr,
     uint64_t counterVal) {
   ActiveNicBackend nic{};
-  pipes_gda_gpu_dev_verbs_signal_counter(
+  prims_amd_gda_gpu_dev_verbs_signal_counter(
       nic,
       mainQp,
       sigRemoteAddr,
@@ -1027,18 +1035,18 @@ __device__ __forceinline__ void pipes_gda_gpu_dev_verbs_signal_counter(
 }
 
 template <int MODE = 0>
-__device__ __forceinline__ int pipes_gda_gpu_dev_verbs_poll_one_cq_at(
-    pipes_gda_gpu_dev_verbs_cq* cq,
+__device__ __forceinline__ int prims_amd_gda_gpu_dev_verbs_poll_one_cq_at(
+    prims_amd_gda_gpu_dev_verbs_cq* cq,
     uint64_t consIndex) {
   ActiveNicBackend nic{};
-  return pipes_gda_gpu_dev_verbs_poll_one_cq_at(nic, cq, consIndex);
+  return prims_amd_gda_gpu_dev_verbs_poll_one_cq_at(nic, cq, consIndex);
 }
 
 template <int MODE = 0, int HANDLER = 0>
-__device__ __forceinline__ void pipes_gda_fence(
-    pipes_gda_gpu_dev_verbs_qp* qp) {
+__device__ __forceinline__ void prims_amd_gda_fence(
+    prims_amd_gda_gpu_dev_verbs_qp* qp) {
   ActiveNicBackend nic{};
-  pipes_gda_fence(nic, qp);
+  prims_amd_gda_fence(nic, qp);
 }
 
-} // namespace pipes_gda
+} // namespace prims_amd_gda

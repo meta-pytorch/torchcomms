@@ -37,7 +37,7 @@
 // Modifications: (c) Meta Platforms, Inc. and affiliates.
 
 // =============================================================================
-// BNXT Direct Verbs API Definitions for pipes-gda
+// BNXT Direct Verbs API Definitions for prims-amd-gda
 // =============================================================================
 //
 // Function pointer types and struct definitions for the bnxt_re direct verbs

@@ -29,7 +29,7 @@
 // NVIDIA-only host-side helpers. On AMD their functionality is provided
 // by `comms/prims/transport/amd/DocaCompat.h` (already included via
 // `MultipeerIbgdaTransport.h`) which translates `doca_*` to the
-// `pipes_gda_*` host APIs in `amd/pipes_gda/PipesGdaHost.{h,cc}`.
+// `prims_amd_gda_*` host APIs in `amd/prims_amd_gda/PrimsAmdGdaHost.{h,cc}`.
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
@@ -370,13 +370,14 @@ void MultipeerIbgdaTransport::registerMemory() {
   // One MR per NIC.
   for (int n = 0; n < numNics_; ++n) {
 #if defined(__HIP_PLATFORM_AMD__) && defined(NIC_MLX5)
-    // AMD+mlx5: register directly against the PD's libibverbs, the same policy
-    // registerBuffer() uses to avoid the lazy/dlopen'd libibverbs on AMD+mlx5
-    // (a separate instance from the PD's). The sink is host-pinned, so unlike
-    // the data path there is no GPU dmabuf to export — hence direct
-    // ibv_reg_mr_iova2 here vs direct ibv_reg_dmabuf_mr in registerBuffer.
-    nicDevices_[n].sinkMr = ibv_reg_mr_iova2(
-        nicDevices_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
+    // AMD+mlx5: the sink is host-pinned, so there is no GPU dmabuf to export.
+    // Register through the symbol table to keep the MR on the same libibverbs
+    // that allocated nics_[n].ibvPd and that frees it in cleanup().
+    if (symbols.ibv_internal_reg_mr_iova2 == nullptr) {
+      throw std::runtime_error("ibv_reg_mr_iova2 is unavailable");
+    }
+    nicDoca_[n].sinkMr = symbols.ibv_internal_reg_mr_iova2(
+        nics_[n].ibvPd, sinkBuffer_, sinkBufferSize_, 0, accessFlags);
 #else
     // NVIDIA / AMD+BNXT: DMABUF export (zero-based) with a lazy iova2 fallback.
     auto sinkDmabuf = export_gpu_dmabuf_aligned(sinkBuffer_, sinkBufferSize_);
