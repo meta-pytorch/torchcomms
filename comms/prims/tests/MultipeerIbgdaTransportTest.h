@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -214,6 +215,24 @@ void testWarpProxySendRecv(
     bool send,
     uint32_t queueDepth,
     uint64_t* queueFullCount);
+
+/**
+ * Test kernel: warp-proxy send against a peer that never runs its own proxy.
+ *
+ * Launches asynchronously and does NOT synchronize -- the caller is expected to
+ * abort the supplied handle while the kernel is parked, then synchronize. The
+ * abort is caller-owned rather than `testAbortDevice()` on purpose: that helper
+ * is a `TRAP`-mode watchdog, so it can only end a stuck proxy by taking the
+ * CUDA context down, which cannot distinguish "the service loop honoured the
+ * abort" from "the watchdog fired".
+ */
+void launchWarpProxyStalledSend(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    uint32_t queueDepth,
+    comms::fault_tolerance::AbortDevice abort);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.

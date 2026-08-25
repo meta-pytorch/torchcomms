@@ -9,12 +9,14 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #endif
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.h"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
@@ -1841,6 +1843,107 @@ TEST_F(
         << "at byte " << firstMismatch << ", expected "
         << static_cast<int>(expected[firstMismatch]) << ", got "
         << static_cast<int>(received[firstMismatch]);
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+#endif
+
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyServiceLoopUnwindsOnMidFlightAbort) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping test: requires exactly 2 ranks, got " << numRanks;
+  }
+
+  // The existing warp-proxy tests all pass `testAbortDevice()`, a 60 s TRAP
+  // handle whose only possible exit is the watchdog taking the CUDA context
+  // down. That means none of them can tell a service loop that honours an
+  // abort from one that ignores it. This test supplies a real `SKIP`-mode
+  // abort with *no* deadline, so honouring it is the only way the kernel can
+  // ever finish.
+  constexpr std::size_t numChunks = 1024;
+  constexpr std::size_t maxSignalBytes = 1024;
+  constexpr int pipelineDepth = 16;
+  constexpr std::size_t perChannelSize =
+      static_cast<std::size_t>(pipelineDepth) * maxSignalBytes;
+  constexpr std::size_t nbytes = numChunks * maxSignalBytes;
+  // Depth 1 so the workers park on credit waits rather than running ahead into
+  // a deep command queue -- parked workers are what "mid-flight" has to mean
+  // for this to exercise anything.
+  constexpr uint32_t queueDepth = 1;
+  const bool isSender = globalRank == 0;
+  const int peerRank = isSender ? 1 : 0;
+
+  std::unique_ptr<MultipeerIbgdaTransport> transport;
+  try {
+    MultipeerIbgdaTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = 1,
+        .pipelineDepth = pipelineDepth,
+    };
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    transport = std::make_unique<MultipeerIbgdaTransport>(
+        globalRank, numRanks, bootstrap, config);
+    transport->exchange();
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  auto* peerTransport = transport->getP2pTransportDevice(peerRank);
+  DeviceBuffer dataBuffer(nbytes);
+  CUDACHECK_TEST(cudaMemset(dataBuffer.get(), 0, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  if (isSender) {
+    // A bare `Abort` leaves `deadlineCycles_` at 0 -- "no deadline" -- so
+    // nothing but the explicit `setAbort()` below can end the kernel.
+    comms::fault_tolerance::Abort abort(
+        /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP);
+    test::launchWarpProxyStalledSend(
+        peerTransport,
+        dataBuffer.get(),
+        nbytes,
+        maxSignalBytes,
+        queueDepth,
+        abort.getDeviceHandle());
+
+    // The peer deliberately never runs its own proxy, so its slot-free credits
+    // never arrive and the sender parks in `wait_recv_ready` with
+    // `posted < tail`. Sleep first so the abort lands on a parked proxy rather
+    // than during setup.
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    ASSERT_NE(cudaStreamQuery(nullptr), cudaSuccess)
+        << "warp proxy finished on its own; the peer must not be draining it, "
+        << "so this test would not be exercising a mid-flight abort";
+
+    const auto abortedAt = std::chrono::steady_clock::now();
+    EXPECT_TRUE(abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED))
+        << "host lost the abort CAS -- something else aborted first";
+
+    // Poll rather than `cudaDeviceSynchronize()`: with no watchdog behind it, a
+    // service loop that ignores the abort would hang here forever and the test
+    // would report nothing at all. Polling turns that regression into a named
+    // failure before the harness kills the process.
+    constexpr auto kUnwindBudget = std::chrono::seconds(30);
+    cudaError_t status = cudaErrorNotReady;
+    while (status == cudaErrorNotReady &&
+           std::chrono::steady_clock::now() - abortedAt < kUnwindBudget) {
+      status = cudaStreamQuery(nullptr);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto unwindMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - abortedAt)
+                              .count();
+    ASSERT_EQ(status, cudaSuccess)
+        << "warp proxy service loop did not unwind " << unwindMs
+        << " ms after a mid-flight abort";
+
+    const auto info = abort.getAbortInfo();
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->reason, comms::fault_tolerance::AbortReason::ABORTED);
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
