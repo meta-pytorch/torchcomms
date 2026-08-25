@@ -2325,10 +2325,11 @@ class P2pIbgdaTransportDevice {
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& timeout,
       const detail::RecvChunkAcquisition& view) {
     detail::
         progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
-            *this, group, view);
+            *this, group, timeout, view);
   }
 
   /**
