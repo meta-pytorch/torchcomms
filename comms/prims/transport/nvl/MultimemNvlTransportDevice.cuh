@@ -78,6 +78,7 @@ struct MultimemNvlTransportDevice {
   int nvlRanks{1};
   uint32_t pipelineDepth{0};
   uint32_t maxChannels{0};
+  uint32_t maxBlocks{0};
   uint32_t signalsPerChannel{0};
   // Indexed by NVL-local destination rank. Each entry addresses the base of
   // that destination's internal signal slots through its unicast mapping.
