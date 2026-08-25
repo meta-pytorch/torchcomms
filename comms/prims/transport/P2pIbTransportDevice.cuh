@@ -777,11 +777,12 @@ template <typename>
 __device__ __forceinline__ void
 P2pIbTransportDevice::progress_recv_release_once(
     ThreadGroup& group,
+    const AbortDevice& timeout,
     const detail::RecvChunkAcquisition& view) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->progress_recv_release_once(group, view);
+    ibrc->progress_recv_release_once(group, timeout, view);
   } else {
-    ibgda->progress_recv_release_once(group, view);
+    ibgda->progress_recv_release_once(group, timeout, view);
   }
 }
 
