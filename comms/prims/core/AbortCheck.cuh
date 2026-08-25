@@ -40,6 +40,8 @@ __device__ __forceinline__ uint64_t gpu_clock64() {
  * per-copy poll interval, so two threads can legitimately disagree for a few
  * microseconds -- and a subset breaking would leave the rest of the group
  * stranded at the next `group.sync()`, which is undefined behavior.
+ * Disabled handles are identical across the group, so they can return before
+ * the broadcast without introducing divergent control flow.
  *
  * Templated on the group type to avoid pulling ThreadGroup.cuh into this
  * header, matching `AbortDevice::checkExpired(group)`.
@@ -48,6 +50,10 @@ template <typename Group>
 __device__ __forceinline__ bool groupAborted(
     Group& group,
     const AbortDevice& abort) {
+  if (!abort.isEnabled()) {
+    return false;
+  }
+
   uint32_t aborted = 0;
   if (group.is_leader()) {
     aborted = abort.checkExpired() ? 1U : 0U;
