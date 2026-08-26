@@ -20,6 +20,7 @@
 
 #include <gtest/gtest.h>
 
+#include "comms/utils/logger/CommsLogFormatter.h"
 #include "comms/utils/logger/CudaLog.h"
 
 using meta::comms::logger::getSpdlogLogger;
@@ -455,6 +456,44 @@ TEST(SpdlogLoggerTest, UnjoinedThreadCanLogDuringStaticDestruction) {
       ::testing::ExitedWithCode(0),
       "shared logger survived teardown(.|\\n)*named logger survived "
       "teardown(.|\\n)*late-created named logger survived teardown");
+}
+
+/*
+ * Exercises logging from an atexit handler after non-trivial TLS teardown. A
+ * maximum-length name prevents small-string optimization from hiding a
+ * lifetime error and verifies that the name remains intact.
+ */
+TEST(SpdlogLoggerTest, ExitingThreadCanLogFromAtexitAfterTlsTeardown) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        const std::string longThreadName(
+            meta::comms::logger::kMaxLogThreadNameLength, 'n');
+        meta::comms::logger::setSpdlogThreadName(longThreadName);
+
+        auto& logger = getSpdlogLogger();
+        logger.configure("TEST", []() { return 0; }, {}, true);
+        logger.set_level(spdlog::level::info);
+
+        std::atexit([]() {
+          COMMS_LOG(WARN, "logged from atexit on the exiting thread");
+        });
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0),
+      "\\[n{63}\\].*logged from atexit on the exiting thread");
+}
+
+TEST(SpdlogLoggerTest, ThreadNameIsTruncatedToStorageCapacity) {
+  const std::string overlongName(
+      meta::comms::logger::kMaxLogThreadNameLength + 17, 'z');
+  meta::comms::logger::setSpdlogThreadName(overlongName);
+  EXPECT_EQ(
+      meta::comms::logger::getLogThreadName(),
+      std::string(meta::comms::logger::kMaxLogThreadNameLength, 'z'));
+
+  meta::comms::logger::setSpdlogThreadName("main");
+  EXPECT_EQ(meta::comms::logger::getLogThreadName(), "main");
 }
 
 TEST(SpdlogLoggerTest, AsyncLoggingFallsBackWhenThreadPoolIsGone) {
