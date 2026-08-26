@@ -192,6 +192,7 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 
 void reportCommsLoggingFailureToStderr(const char* level) noexcept;
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept;
+void shutdownSpdlogForFatal();
 CommsSpdlogLogger& getSpdlogLoggerForFatal(
     std::string_view loggerName) noexcept;
 
@@ -237,16 +238,16 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
 
 /*
- * shutdown() drains the async queue before the synchronous fatal message.
- * CommsSpdlogLogger owns that synchronous logger and its output sinks outside
- * spdlog's registry, so they remain valid after registry shutdown.
+ * shutdownSpdlogForFatal() releases the library-owned async pool. It drains
+ * once any in-flight log calls release their pool references; the synchronous
+ * logger and its output sinks remain valid throughout.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \
   do {                                                               \
     try {                                                            \
       auto& _comms_logger = (logger_expression);                     \
       _comms_logger.flush();                                         \
-      ::spdlog::shutdown();                                          \
+      ::meta::comms::logger::shutdownSpdlogForFatal();               \
       _comms_logger.logFatal(                                        \
           ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
           __VA_ARGS__);                                              \
