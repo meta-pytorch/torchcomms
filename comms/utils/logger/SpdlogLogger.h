@@ -130,6 +130,13 @@ class CommsSpdlogLogger {
   std::shared_ptr<const Configuration> loadConfiguration() const;
   void storeConfiguration(std::shared_ptr<const Configuration> configuration);
 
+  /*
+   * The library-owned shared thread pool is stopped during exit. Holding this
+   * reference across an async call prevents the pool from disappearing after
+   * the check.
+   */
+  std::shared_ptr<spdlog::details::thread_pool> acquireAsyncThreadPool() const;
+
   void logFormatted(
       spdlog::source_loc location,
       spdlog::level::level_enum level,
@@ -138,6 +145,8 @@ class CommsSpdlogLogger {
       bool bypassLevelGate);
 
   std::shared_ptr<spdlog::logger> logger_;
+  // References the exact pool supplied to the async logger at construction.
+  std::weak_ptr<spdlog::details::thread_pool> threadPool_;
   std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink_;
   std::shared_ptr<spdlog::logger> synchronousLogger_;
   ConfigurationStorage configuration_;
@@ -192,6 +201,7 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 
 void reportCommsLoggingFailureToStderr(const char* level) noexcept;
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept;
+void shutdownSpdlogForFatal();
 CommsSpdlogLogger& getSpdlogLoggerForFatal(
     std::string_view loggerName) noexcept;
 
@@ -237,16 +247,15 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
 
 /*
- * shutdown() drains the async queue before the synchronous fatal message.
- * CommsSpdlogLogger owns that synchronous logger and its output sinks outside
- * spdlog's registry, so they remain valid after registry shutdown.
+ * shutdownSpdlogForFatal() drains and stops the library-owned async pool. The
+ * synchronous logger and its output sinks remain valid afterward.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \
   do {                                                               \
     try {                                                            \
       auto& _comms_logger = (logger_expression);                     \
       _comms_logger.flush();                                         \
-      ::spdlog::shutdown();                                          \
+      ::meta::comms::logger::shutdownSpdlogForFatal();               \
       _comms_logger.logFatal(                                        \
           ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
           __VA_ARGS__);                                              \
