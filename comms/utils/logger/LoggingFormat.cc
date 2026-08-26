@@ -57,7 +57,12 @@ struct LastErrorInfo {
   std::vector<std::string> lastErrorNativeStack;
 };
 
-static folly::Synchronized<LastErrorInfo> lastCommsError{};
+folly::Synchronized<LastErrorInfo>& getLastCommsErrorStorage() {
+  // Error callbacks remain reachable from logger threads during static
+  // destruction, so this storage must not register an exit-time destructor.
+  static auto* storage = new folly::Synchronized<LastErrorInfo>{};
+  return *storage;
+}
 } // Anonymous namespace
 
 namespace meta::comms::logger {
@@ -266,7 +271,7 @@ std::string NcclLogFormatter::formatMessage(
     // the call site's logErrorToScuba(), which runs after this formatter,
     // re-sets it when present, and a bare XLOG(ERR) correctly falls back to the
     // legacy per-frame chain.
-    auto lockedError = lastCommsError.wlock();
+    auto lockedError = getLastCommsErrorStorage().wlock();
     lockedError->lastErrorMessage = message.getMessage();
     lockedError->lastErrorNativeStack.clear();
   }
@@ -307,7 +312,7 @@ void logErrorToScuba(
 }
 
 void setLastError(const std::string& message, std::vector<std::string> stack) {
-  auto w = lastCommsError.wlock();
+  auto w = getLastCommsErrorStorage().wlock();
   w->lastErrorMessage = message;
   w->lastErrorNativeStack = std::move(stack);
 }
@@ -330,7 +335,7 @@ void logCommErrorToScuba(commResult_t code, const std::string& message) {
 std::string getLastCommsError() {
   std::ostringstream ss;
   {
-    auto lastCommsErrorRLocked = lastCommsError.rlock();
+    auto lastCommsErrorRLocked = getLastCommsErrorStorage().rlock();
     ss << lastCommsErrorRLocked->lastErrorMessage << "\nNCCL Stack trace:";
     // Prefer the native captured stack; fall back to the legacy per-frame
     // chain (still populated by v2_27/v2_29) when no native stack is present.
@@ -351,7 +356,8 @@ std::string getLastCommsError() {
 // LoggingFormat.h) -- v2_30/ctran use captureNativeErrorStack() +
 // setLastError().
 void appendErrorToStack(std::string error) {
-  lastCommsError.wlock()->lastErrorStack.push_back(std::move(error));
+  getLastCommsErrorStorage().wlock()->lastErrorStack.push_back(
+      std::move(error));
 }
 
 NcclLogFormatter::NcclLogFormatter(
