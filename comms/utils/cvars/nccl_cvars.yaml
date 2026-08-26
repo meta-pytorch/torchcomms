@@ -3458,9 +3458,9 @@ cvars:
    description : |-
      MCCL-native collective algorithm override. Use "none" or leave unset to
      preserve the collective's existing selection. Prefer qualified selectors
-     such as allreduce:tree or allreduce:ring; unqualified tree, ring, and
-     direct are accepted as AllReduce aliases for compatibility with the
-     initial AllReduce-only rollout.
+     such as allreduce:tree, allreduce:ring or alltoall:direct; unqualified
+     tree, ring, and direct are accepted as AllReduce aliases for compatibility
+     with the initial AllReduce-only rollout.
 
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t
