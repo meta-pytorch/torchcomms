@@ -5,7 +5,7 @@
 #include <chrono>
 
 #include <fmt/format.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
@@ -270,8 +270,8 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
                 wc.vendor_err)));
       }
       completedCount++;
-      XLOGF(
-          DBG1,
+      CTRAN_LOG(
+          DBG5,
           "Rank {} got WC {}/{}: wr_id={}, opcode={}",
           rank,
           completedCount,
