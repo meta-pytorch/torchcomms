@@ -16,6 +16,7 @@
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
@@ -194,11 +195,11 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
 
 static void cleanupBenchmarkContext(BenchmarkContext& ctx) {
   if (CtranIb::deregMem(ctx.senderRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for senderRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for senderRegHdl");
   }
 
   if (CtranIb::deregMem(ctx.receiverRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for receiverRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for receiverRegHdl");
   }
 
   // Free each buffer on the device it was allocated on (CUDA VMM unmap is
@@ -583,6 +584,7 @@ int main(int argc, char** argv) {
   // Initialize and run benchmark
   ::benchmark::Initialize(&argc, argv);
   folly::init(&argc, &argv);
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::info);
   ::benchmark::RunSpecifiedBenchmarks();
 
   // Cleanup
