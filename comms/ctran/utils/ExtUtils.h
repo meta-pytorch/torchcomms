@@ -13,9 +13,6 @@
 #include "comms/ctran/utils/Checks.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
-
-#include "comms/utils/logger/LogUtils.h"
 
 // Convienent functions to dequeue element from front of deque container
 template <typename T>

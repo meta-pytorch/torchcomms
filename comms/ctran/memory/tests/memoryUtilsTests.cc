@@ -7,7 +7,9 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/DataTableWrapper.h"
+
+#include "param.h"
 
 class memoryUtilsTest : public ::testing::Test {
  public:
@@ -25,6 +27,7 @@ class memoryUtilsTest : public ::testing::Test {
     ncclCvarInit();
     ncclCudaLibraryInit();
     initNcclLogger();
+    DataTableWrapper::init();
 
     dummyLogData = CommLogData{
         .commId = 0,
@@ -36,7 +39,7 @@ class memoryUtilsTest : public ::testing::Test {
 
   void TearDown() override {
     ctran::logGpuMemoryStats(cudaDev);
-    NcclLogger::close();
+    DataTableWrapper::shutdown();
   }
 };
 
