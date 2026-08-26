@@ -286,6 +286,7 @@ MultimemNvlTransportDevice MultimemNvlTransport::getDeviceTransport() const {
       .nvlRanks = nvlRanks_,
       .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
       .maxChannels = static_cast<uint32_t>(config_.maxChannels),
+      .maxBlocks = static_cast<uint32_t>(config_.maxBlocks),
       .signalsPerChannel = signalsPerChannel_,
       .internalUnicastSignalsByRank = internalUnicastSignalsByRank_
           ? DeviceSpan<SignalState*>(

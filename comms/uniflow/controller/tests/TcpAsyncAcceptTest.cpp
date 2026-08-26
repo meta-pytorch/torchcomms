@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -31,6 +32,62 @@ class TcpAsyncAcceptTest : public ::testing::TestWithParam<AddrFamily> {
   }
 };
 
+namespace {
+
+int getRcvBuf(int fd) {
+  int val = 0;
+  socklen_t len = sizeof(val);
+  EXPECT_EQ(::getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &val, &len), 0);
+  return val;
+}
+
+// SO_RCVBUF on a socket nobody has configured. Used as the control for "the
+// kernel is still in charge" so the assertions do not depend on the host's
+// net.core.rmem_max / tcp_rmem values. Takes the family from the caller because
+// this fixture runs over both IPv4 and IPv6, and a probe from the wrong family
+// is not guaranteed to report the same default.
+//
+// SOCK_STREAM matters: tcp_init_sock() overwrites the sock_init_data() default
+// with tcp_rmem[1], which is the same value an accepted TCP socket starts from,
+// so net.core.rmem_default never enters into it for either socket.
+int kernelDefaultRcvBuf(int family) {
+  int probe = ::socket(family, SOCK_STREAM, 0);
+  if (probe < 0) {
+    return -1;
+  }
+  int val = getRcvBuf(probe);
+  ::close(probe);
+  return val;
+}
+
+// SO_RCVBUF as this kernel stores it for a given request, measured on a
+// throwaway socket of the same family. Requesting a size is not the same as
+// getting it: the kernel clamps the request to net.core.rmem_max, doubles it
+// for skb overhead, and floors it at SOCK_MIN_RCVBUF. Measuring that instead of
+// reproducing the arithmetic keeps the expectation correct on any host tuning.
+int rcvBufForRequest(int family, int request) {
+  int probe = ::socket(family, SOCK_STREAM, 0);
+  if (probe < 0) {
+    return -1;
+  }
+  if (::setsockopt(probe, SOL_SOCKET, SO_RCVBUF, &request, sizeof(request)) !=
+      0) {
+    ::close(probe);
+    return -1;
+  }
+  int val = getRcvBuf(probe);
+  ::close(probe);
+  return val;
+}
+
+// Accepted connections are TcpConn<SyncIO>; only that type exposes the fd.
+int acceptedFd(const std::unique_ptr<Conn>& conn) {
+  auto* tcp = dynamic_cast<TcpConn<SyncIO>*>(conn.get());
+  return tcp == nullptr ? -1 : tcp->getFd();
+}
+
+} // namespace
+
 TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
   ScopedEventBaseThread evbThread("async-accept");
   AsyncTcpServer server(GetParam().serverAddr, {}, *evbThread.getEventBase());
@@ -48,6 +105,101 @@ TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
 
   auto conn = future.get();
   EXPECT_NE(conn, nullptr);
+}
+
+// Leaving socketBufSize unset must leave the kernel's own buffer sizing alone.
+// An explicit SO_RCVBUF disables receive-window autotuning, so the buffer can
+// no longer grow to absorb a stall while the reader is busy with a multi-MiB
+// copy. Before the config was threaded through the accept policy,
+// configureAcceptedSocket hardcoded 1 MiB, so a caller had no way to opt out.
+TEST_P(TcpAsyncAcceptTest, UnsetSocketBufSizeLeavesKernelAutotuning) {
+  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
+  const int kernelDefault = kernelDefaultRcvBuf(family);
+  ASSERT_GT(kernelDefault, 0);
+
+  TcpSocketConfig cfg;
+  cfg.socketBufSize = std::nullopt;
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(GetParam().serverAddr, cfg, *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  // Read once: with autotuning active the kernel may adjust sk_rcvbuf between
+  // calls, and both bounds should describe the same observation.
+  const int rcvBuf = getRcvBuf(fd);
+  // A lower bound rather than equality: this socket has completed a handshake,
+  // and with autotuning left on (which is the thing being asserted) the kernel
+  // is allowed to grow sk_rcvbuf above the initial tcp_rmem[1].
+  EXPECT_GE(rcvBuf, kernelDefault);
+  // The upper bound carries the regression. It is scaled off the probe rather
+  // than a 1 MiB literal so that a host tuned with a large tcp_rmem[1] cannot
+  // make the two bounds mutually unsatisfiable. Restoring the hardcode sets
+  // SO_RCVBUF explicitly, which the kernel doubles, so it lands well outside
+  // this bound; autotuning alone does not double the buffer on a connection
+  // that has carried no payload.
+  EXPECT_LT(rcvBuf, 2 * kernelDefault);
+}
+
+// The configured value reaches the accepted socket. The assertion is pinned to
+// the exact value the kernel stores for the request, because a range wide
+// enough to contain the unconfigured default would also be satisfied if
+// socketBufSize were dropped again.
+TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
+  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
+  const int kernelDefault = kernelDefaultRcvBuf(family);
+  ASSERT_GT(kernelDefault, 0);
+
+  // Scaled off the probe rather than a literal. A quarter of the default
+  // doubles to half the default, which cannot coincide with the default itself;
+  // a fixed 64 KiB doubles to exactly the stock tcp_rmem[1] of 131072, which
+  // would make a correctly configured socket indistinguishable from an
+  // untouched one on any stock host. Staying below the default also keeps the
+  // request clear of net.core.rmem_max, so it is not silently clamped.
+  const int requested = kernelDefault / 4;
+  const int expected = rcvBufForRequest(family, requested);
+  ASSERT_GT(expected, 0);
+
+  // Whether the configured size is observably different from the default is a
+  // property of the host, not of the code under test, so skip rather than fail:
+  // where the two coincide this test can prove nothing either way.
+  if (expected == kernelDefault) {
+    GTEST_SKIP() << "configured size is indistinguishable from the kernel "
+                    "default ("
+                 << kernelDefault << ") on this host";
+  }
+
+  TcpSocketConfig cfg;
+  cfg.socketBufSize = requested;
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(GetParam().serverAddr, cfg, *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(getRcvBuf(fd), expected);
 }
 
 TEST_P(TcpAsyncAcceptTest, MultipleAsyncAccepts) {

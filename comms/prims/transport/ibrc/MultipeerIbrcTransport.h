@@ -19,6 +19,7 @@
 #endif
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
@@ -50,11 +51,16 @@ class P2pIbrcTransportDevice;
 class MultipeerIbrcTransport
     : public MultiPeerIbTransport<MultipeerIbrcTransport> {
  public:
+  // `abort` is the owning communicator's device handle. It is baked into every
+  // per-peer device slot so the device-side waits on the CPU proxy terminate on
+  // abort instead of trapping. A default-constructed handle keeps the legacy
+  // cycle-deadline trap; see kIbrcDefaultDeviceTimeoutCycles.
   MultipeerIbrcTransport(
       int myRank,
       int nRanks,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-      const MultipeerIbTransportConfig& config);
+      const MultipeerIbTransportConfig& config,
+      comms::fault_tolerance::AbortDevice abort = {});
 
   ~MultipeerIbrcTransport();
 
@@ -226,6 +232,7 @@ class MultipeerIbrcTransport
   std::atomic<bool> stopProgress_{false};
   std::thread progressThread_;
   std::vector<int> progressCpus_;
+  comms::fault_tolerance::AbortDevice abortDevice_;
 
   // Send/recv staging state (eager mode) lives in MultiPeerIbTransportBase
   // (sendRecvPeerBuffers_ + bulks); IBRC delegates allocation/exchange/cleanup.

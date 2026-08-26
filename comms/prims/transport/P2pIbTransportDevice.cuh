@@ -475,13 +475,17 @@ P2pIbTransportDevice::read_counter(const IbgdaLocalBuffer& counterBuf) const {
   return ibgda->read_counter(counterBuf);
 }
 
-// IBRC still drains under its own fixed device deadline; wiring it to the
-// abort handle is a separate change, so the handle stops at IBGDA for now.
+// IBRC deliberately does not take the caller's deadline. Its drain is bounded
+// by the fixed SM-to-proxy watchdog, which is a contract between one rank's
+// kernel and its own host proxy and is honoured on its own terms; the caller's
+// deadline bounds the collective, which is a different fault with a different
+// owner. The bound is unconditional either way, so dropping the argument costs
+// no liveness. IBGDA is GPU-initiated with no proxy, so it uses the deadline.
 __device__ __forceinline__ void P2pIbTransportDevice::flush(
     ThreadGroup& group,
     const Timeout& timeout) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->flush(group);
+    ibrc->flush(group, IbDirection::Send);
   } else {
     ibgda->flush(group, IbDirection::Send, timeout);
   }
@@ -490,7 +494,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::flush(
 __device__ __forceinline__ void P2pIbTransportDevice::flush(
     const Timeout& timeout) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->flush();
+    ibrc->flush(IbDirection::Send);
   } else {
     ibgda->flush(timeout);
   }

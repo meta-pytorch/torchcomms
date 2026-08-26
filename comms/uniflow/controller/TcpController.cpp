@@ -7,6 +7,7 @@
 #include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <cassert>
 #include <cerrno>
@@ -68,7 +69,6 @@ Status TcpSocketConfig::validate() const {
 namespace {
 
 constexpr uint32_t kMaxMessageSize = 64 << 20;
-constexpr int kSocketBufSize = 1 << 20;
 constexpr int kAcceptTimeoutSec = 5;
 constexpr int kConnectedTimeoutSec = 30;
 constexpr int kKeepaliveIdleSec = 60;
@@ -248,10 +248,22 @@ Result<int> createListenSocket(int domain) {
   return sock;
 }
 
-Status configureAcceptedSocket(int sock) {
+// Applies the connected-socket options to a freshly accepted fd.
+//
+// Only @p socketBufSize is caller-controlled; the keepalive and timeout values
+// remain the constants above. Buffer sizing is the one option a caller has a
+// reason to override per connection: setting SO_RCVBUF explicitly disables
+// Linux receive-window autotuning, which caps a single stream at window/RTT, so
+// a bulk-data connection wants it left unset while the control connection does
+// not care.
+Status configureAcceptedSocket(
+    int sock,
+    const std::optional<int>& socketBufSize) {
   SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
-  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
+  if (socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *socketBufSize, "SO_RCVBUF");
+  }
   opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
   opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
   opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
@@ -326,6 +338,53 @@ bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
     }
     ptr += n;
     remaining -= static_cast<size_t>(n);
+  }
+  return true;
+}
+
+// Sends every byte of @p iov, coalescing the length prefix and the payload into
+// one syscall instead of two. Mutates @p iov to track progress, so the caller
+// must not reuse it.
+//
+// Error handling deliberately mirrors sendAll(): only EINTR is retried, and
+// anything else -- EAGAIN included -- is fatal. That is the existing contract
+// for these sockets, and widening it here would hide a non-blocking data socket
+// rather than fix one.
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
+  int idx = 0;
+  while (idx < iovCnt) {
+    msghdr msg{};
+    msg.msg_iov = iov + idx;
+    msg.msg_iovlen = static_cast<size_t>(iovCnt - idx);
+    ssize_t n = ::sendmsg(sock_, &msg, MSG_NOSIGNAL);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      int savedErrno = errno;
+      UNIFLOW_LOG_ERROR(
+          "sendAllVec failed: fd={} errno={} ({})",
+          sock_,
+          savedErrno,
+          std::system_category().message(savedErrno));
+      errno = savedErrno;
+      return false;
+    }
+    // A short write can land mid-iovec: retire the entries it fully covered,
+    // then advance the base of the one it split. On a blocking socket this is
+    // only reachable when a signal interrupts a partial transfer, so it is not
+    // covered by tests -- an attempt to force it with an oversized payload did
+    // not reach this branch.
+    auto consumed = static_cast<size_t>(n);
+    while (idx < iovCnt && consumed >= iov[idx].iov_len) {
+      consumed -= iov[idx].iov_len;
+      ++idx;
+    }
+    if (idx < iovCnt && consumed > 0) {
+      iov[idx].iov_base = static_cast<uint8_t*>(iov[idx].iov_base) + consumed;
+      iov[idx].iov_len -= consumed;
+    }
   }
   return true;
 }
@@ -445,16 +504,24 @@ Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
+  // One sendmsg for prefix + payload. With TCP_NODELAY set, sending the 4-byte
+  // prefix separately hands the kernel a 4-byte segment it may put on the wire
+  // immediately, so coalescing also stops emitting a runt segment per frame.
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
-  if (!sendAll(&len, sizeof(len))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "send header failed: " + std::system_category().message(errno));
+  iovec iov[2];
+  iov[0].iov_base = &len;
+  iov[0].iov_len = sizeof(len);
+  int iovCnt = 1;
+  if (!data.empty()) {
+    // const_cast: iovec has no const variant, and sendmsg only reads.
+    iov[1].iov_base = const_cast<uint8_t*>(data.data());
+    iov[1].iov_len = data.size();
+    iovCnt = 2;
   }
-  if (!data.empty() && !sendAll(data.data(), data.size())) {
+  if (!sendAllVec(iov, iovCnt)) {
     return Err(
         ErrCode::ConnectionFailed,
-        "send payload failed: " + std::system_category().message(errno));
+        "send frame failed: " + std::system_category().message(errno));
   }
   return data.size();
 }
@@ -947,7 +1014,7 @@ template class TcpConn<AsyncIO>;
 
 std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     std::atomic<int>& listenSock,
-    int acceptRetryCnt,
+    const TcpSocketConfig& config,
     const std::string& id) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (listenSock.load() < 0) {
@@ -961,7 +1028,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
   // EAGAIN from SO_RCVTIMEO loops back for shutdown checks without
   // counting as a retry. Transient errors retry up to acceptRetryCnt.
   int retryCnt = 0;
-  while (retryCnt < acceptRetryCnt) {
+  while (retryCnt < config.acceptRetryCnt) {
     socklen_t clientLen = sizeof(clientAddr);
     int clientSock = ::accept4(
         listenSock.load(),
@@ -973,7 +1040,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
           "TcpServer: accepted fd={} from {}",
           clientSock,
           formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock);
+      auto status = configureAcceptedSocket(clientSock, config.socketBufSize);
       if (!status) {
         UNIFLOW_LOG_ERROR(
             "TcpServer: socket config failed fd={}: {}",
@@ -1018,13 +1085,15 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     UNIFLOW_LOG_WARN(
         "TcpServer: accept retry {}/{}: errno={} ({})",
         retryCnt,
-        acceptRetryCnt,
+        config.acceptRetryCnt,
         savedErrno,
         std::system_category().message(savedErrno));
   }
 
   UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt, id);
+      "TcpServer: accept exhausted {} retries on {}",
+      config.acceptRetryCnt,
+      id);
   return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
 
@@ -1121,7 +1190,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
     // configureAcceptedSocket sets 30s timeouts — must come after the
     // 500ms handshake timeout to avoid overriding it.
-    auto status = configureAcceptedSocket(conn->getFd());
+    auto status = configureAcceptedSocket(conn->getFd(), socketBufSize_);
     if (!status) {
       UNIFLOW_LOG_ERROR(
           "TcpServer: async socket config failed fd={}: {}",
@@ -1141,7 +1210,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
 std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
     std::atomic<int>& listenSock,
-    int /*acceptRetryCnt*/,
+    const TcpSocketConfig& config,
     const std::string& /*id*/) {
   if (listenSock.load() < 0) {
     return make_ready_future(std::unique_ptr<Conn>(nullptr));
@@ -1150,12 +1219,23 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   std::promise<std::unique_ptr<Conn>> promise;
   auto future = promise.get_future();
 
-  evb_.dispatch([this, &listenSock, p = std::move(promise)]() mutable noexcept {
+  evb_.dispatch([this,
+                 &listenSock,
+                 bufSize = config.socketBufSize,
+                 p = std::move(promise)]() mutable noexcept {
     int sock = listenSock.load();
     if (sock < 0) {
       p.set_value(nullptr);
       return;
     }
+
+    // Server-level, not per-accept: BasicTcpServer passes its own config_ to
+    // every accept() call, so every dispatch writes the same value and there is
+    // no per-call setting to lose. Nothing here binds an accepted fd to a
+    // particular accept() anyway -- connections go to whichever promise is
+    // queued first. A future per-accept override would have to travel with the
+    // connection instead.
+    socketBufSize_ = bufSize;
 
     // Lazy setup: fcntl + registerFd both on the loop thread.
     if (!accepting_) {

@@ -291,6 +291,44 @@ TEST_P(TcpConnTest, RejectsPeerClosedBeforeMagic) {
       << "accept() should reject when peer closes before magic exchange";
 }
 
+// Large frames now leave as a single sendmsg with the length prefix and payload
+// in separate iovecs. This checks the frame still round-trips byte-exactly at a
+// size well past the socket send buffer, with position-dependent content so a
+// dropped, duplicated, or reordered run fails rather than merely changing the
+// length.
+//
+// NOT covered here: sendAllVec's mid-iovec resume. On a blocking socket Linux
+// sendmsg transfers everything requested before returning, so no payload size
+// forces a short write -- a partial return needs EINTR after a partial
+// transfer, which this test cannot produce. Verified by injecting a break into
+// the resume branch: this test still passed, so it must not be read as covering
+// it.
+TEST_P(TcpConnTest, LargeFrameRoundTripsThroughCoalescedSend) {
+  auto [clientConn, serverConn] = connectPair();
+  ASSERT_NE(clientConn, nullptr);
+  ASSERT_NE(serverConn, nullptr);
+
+  constexpr size_t kPayload = 4UL * 1024 * 1024;
+  std::vector<uint8_t> msg(kPayload);
+  for (size_t i = 0; i < msg.size(); ++i) {
+    msg[i] = static_cast<uint8_t>((i * 31u + (i >> 13)) & 0xFF);
+  }
+
+  // Reader runs concurrently: the payload exceeds the send buffer, so the
+  // sender blocks until the peer drains and a send-then-recv ordering would
+  // deadlock.
+  std::vector<uint8_t> got;
+  std::thread reader([&] { (void)serverConn->recv(got).get(); });
+
+  auto result = clientConn->send(msg).get();
+  reader.join();
+
+  ASSERT_TRUE(result.hasValue()) << result.error().toString();
+  EXPECT_EQ(result.value(), kPayload);
+  ASSERT_EQ(got.size(), kPayload) << "frame truncated or over-sent";
+  EXPECT_EQ(got, msg) << "payload corrupted through the coalesced send path";
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AddrFamilies,
     TcpConnTest,

@@ -10,6 +10,19 @@
 
 namespace uniflow::controller {
 
+/// A framed, bidirectional connection to one peer.
+///
+/// Not safe for concurrent use: at most one send() and one recv() may be in
+/// flight at a time, and callers must serialize their own access. Overlapping
+/// sends do not merely scramble bytes -- each send() writes its own length
+/// prefix, so two senders interleave frames and the peer reassembles a payload
+/// from both.
+///
+/// Enforcement is uneven, so do not rely on a diagnostic. TcpConn<AsyncIO>
+/// rejects an overlapping call with ErrCode::ResourceExhausted, but
+/// TcpConn<SyncIO> -- what accept() and connect() return, and therefore what
+/// every control connection is -- has no such check and corrupts the stream
+/// silently.
 class Conn {
  public:
   virtual ~Conn() = default;
@@ -31,7 +44,8 @@ class Conn {
       std::span<uint8_t> buf) = 0;
 
   /// Interrupt any blocked recv(). After close(), recv() must return an error.
-  /// Used by Connection to stop its reader thread during shutdown.
+  /// Called by Connection::shutdown() to release whatever thread is parked in
+  /// recv(); that thread belongs to the caller, not to Connection.
   virtual void close() {}
 };
 

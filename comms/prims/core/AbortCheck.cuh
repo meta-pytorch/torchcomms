@@ -12,6 +12,7 @@
 namespace comms::prims {
 
 using AbortDevice = comms::fault_tolerance::AbortDevice;
+using AbortFlag = comms::fault_tolerance::AbortFlag;
 
 __device__ __forceinline__ uint64_t gpu_clock64() {
 #if defined(__HIP_DEVICE_COMPILE__) && !defined(__CUDA_ARCH__)
