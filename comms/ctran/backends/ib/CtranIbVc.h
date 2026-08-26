@@ -1495,6 +1495,12 @@ class CtranIbVirtualConn {
 
     auto maybeSend = ibvDataQps_[i].postSend(&sendPutWr_, &badSendPutWr_);
     FOLLY_EXPECTED_CHECK(maybeSend);
+    if (NCCL_CTRAN_TRANSPORT_PROFILER) {
+      auto singleton = CtranIbSingleton::getInstance();
+      CHECK_VALID_IB_SINGLETON(singleton);
+      singleton->recordDeviceTraffic(
+          devices_[device].ibvDevice->context(), cudaDev_, toSend);
+    }
     put->offset += toSend;
     if (finalWriteOfPut) {
       // If this was the final put, move the PutInfo descriptor from pending
