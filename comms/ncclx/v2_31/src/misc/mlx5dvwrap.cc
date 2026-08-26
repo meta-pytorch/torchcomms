@@ -29,7 +29,7 @@ ncclResult_t wrap_mlx5dv_symbols(void) {
 /* CHECK_NOT_NULL: helper macro to check for NULL symbol */
 #define CHECK_NOT_NULL(container, internal_name) \
   if (container.internal_name == NULL) { \
-    WARN("NET/MLX5: lib wrapper not initialized."); \
+    ERR(ncclInternalError, "NET/MLX5: lib wrapper not initialized."); \
     return ncclInternalError; \
   }
 
@@ -37,7 +37,7 @@ ncclResult_t wrap_mlx5dv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   retval = container.call; \
   if (retval == error_retval) { \
-    WARN("NET/MLX5: Call to " name " failed with error %s", strerror(errno)); \
+    ERR(ncclSystemError, "NET/MLX5: Call to " name " failed with error %s", strerror(errno)); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
@@ -46,7 +46,7 @@ ncclResult_t wrap_mlx5dv_symbols(void) {
   CHECK_NOT_NULL(container, internal_name); \
   int ret = container.call; \
   if (ret != success_retval) { \
-    WARN("NET/MLX5: Call to " name " failed with error %s", strerror(errno)); \
+    ERR(ncclSystemError, "NET/MLX5: Call to " name " failed with error %s", strerror(errno)); \
     return ncclSystemError; \
   } \
   return ncclSuccess;
