@@ -284,4 +284,80 @@ inline size_t allReduceOffloadPermille(AllReduceRoute route) {
   return route == AllReduceRoute::FlatOffload ? 500 : 0;
 }
 
+// Largest software-pipeline depth the single-group relays will use.
+//
+// Capped at 4 for stability rather than for throughput. Every group boundary is
+// a cross-rank sync point, so a deeper pipeline gives co-resident independent
+// jobs more opportunities to skew against each other: at depth 8 the 4-job
+// parallel sweep becomes erratic and non-reproducible (0.74x-1.46x outliers
+// scattered through the size axis, different sizes each run), while depth 4 is
+// as stable as the unpipelined schedule. Depth 4 also happens to be what the
+// cost model below picks at every size measured on the single-group sweep, so
+// the cap costs nothing there.
+inline constexpr int kRelayMaxPipelineTiles = 4;
+
+// What one extra ncclGroup boundary costs, expressed as the per-link bytes that
+// take the same time: a grouped-P2P launch plus work-FIFO upload plus fence is
+// ~25 us, which at the measured ~50 GB/s per XGMI link is ~768 KiB. Deepening
+// the pipeline trades per-link bytes for boundaries, so this is what decides
+// where that trade stops paying.
+inline constexpr size_t kRelayPipelineBoundaryBytes = 768u << 10;
+
+/**
+ * Software-pipeline depth for the single-group 2-active relay.
+ *
+ * With nGroups == 1 the active ranks and the helpers are DISJOINT sets, so a
+ * cross link carries the scatter (active -> helper) in one direction and the
+ * forward (helper -> active) in the other. Running those as two serialized
+ * ncclGroups therefore leaves every cross link HALF-DUPLEX for the whole call:
+ * the forward direction is idle for all of group 1 and the scatter direction
+ * for all of group 2.
+ *
+ * Tiling the relay into T tiles and issuing tile t's forward in the SAME group
+ * as tile t+1's scatter fills both directions. Per link and direction each of
+ * the T+1 groups then carries one unit u, against a count of
+ * ((H+1)*T + 1)*u -- so the cost is (T+1)/((H+1)*T + 1) of the count:
+ * count/4 at T = 1 (identical to the two-group schedule) falling towards
+ * count/7 as T grows on an 8-GPU node, i.e. a 4x ceiling becomes 7x. count/7 is
+ * also the hard floor, since an active rank must move its whole buffer out
+ * across its 7 links exactly once.
+ *
+ * A FUSED call gains nothing here, which is why this is gated on nGroups == 1:
+ * there every rank is active for one group and a helper for the others, so its
+ * scatter and its forward are egress on the SAME link direction. They add
+ * rather than overlap, and the extra group boundaries are pure cost.
+ *
+ * The depth is whichever power of two minimizes
+ * (T + 1) * (perStageBytes + kRelayPipelineBoundaryBytes), which is the two
+ * competing terms stated directly rather than a size threshold per depth.
+ */
+inline int relayA2PipelineTiles(
+    int nActiveRanksPerGroup,
+    int numHelpers,
+    int nGroups,
+    size_t maxCount,
+    size_t elementSize) {
+  if (nGroups != 1 || nActiveRanksPerGroup != 2 || numHelpers < 1) {
+    return 1;
+  }
+  const size_t bytes = maxCount * elementSize;
+  const size_t perTileStages = static_cast<size_t>(numHelpers) + 1;
+  int bestTiles = 1;
+  size_t bestCost = 0;
+  for (int tiles = 1; tiles <= kRelayMaxPipelineTiles; tiles *= 2) {
+    const size_t units = perTileStages * static_cast<size_t>(tiles) + 1;
+    // A stage still has to be a whole aligned chunk.
+    if (maxCount / units < kRelayChunkAlignElements) {
+      break;
+    }
+    const size_t cost = static_cast<size_t>(tiles + 1) *
+        (bytes / units + kRelayPipelineBoundaryBytes);
+    if (bestCost == 0 || cost < bestCost) {
+      bestCost = cost;
+      bestTiles = tiles;
+    }
+  }
+  return bestTiles;
+}
+
 } // namespace rcclx::relay
