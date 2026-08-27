@@ -7,9 +7,9 @@
 #include <cstdio>
 #include <stdexcept>
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims::test {
 

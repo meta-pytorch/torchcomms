@@ -5,7 +5,7 @@
 #pragma once
 
 #include "comms/prims/collectives/AllGatherDirectTypes.h"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 namespace comms::prims {
 

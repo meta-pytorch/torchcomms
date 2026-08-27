@@ -4,9 +4,9 @@
 
 #include <cstdint>
 #include "comms/common/BitOps.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 

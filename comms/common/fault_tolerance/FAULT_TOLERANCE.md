@@ -346,31 +346,21 @@ For Prims-backed collectives:
 3. Kernel entry creates a local per-block copy and calls `startTimeout()`.
 4. Transport and synchronization waits poll that local abort handle.
 
-## Prims `Timeout` Compatibility
+## What Replaced the Prims `Timeout`
 
-Prims `Timeout` is a source-compatible alias to `AbortDevice` during the
-migration:
-
-```cpp
-using Timeout = comms::fault_tolerance::AbortDevice;
-```
-
-This preserves existing kernel signatures while removing the old standalone
-`Timeout` implementation. There is no per-launch GPU-cycle timeout object and
+`AbortDevice` is the only spelling. The standalone Prims `Timeout` and its
+transitional alias are gone: there is no per-launch GPU-cycle timeout object and
 no `makeTimeout()` helper. Timeout duration comes from the communicator-owned
 host `Abort` default timeout and is read by `AbortDevice::startTimeout()`.
 
-The behavior change is intentional:
+The behavior differences from the old `Timeout` are intentional:
 
-- Default-constructed `Timeout`/`AbortDevice` is disabled and behaves like the
-  previous no-timeout default.
+- A default-constructed `AbortDevice` is disabled and behaves like the previous
+  no-timeout default.
 - Handles borrowed from MPT observe explicit host aborts and timeout-triggered
   aborts through shared state.
 - Timeout expiry records `AbortReason::TIMED_OUT` once in shared abort state,
   making the result visible to host code and other device consumers.
-
-New code should name the concrete type `AbortDevice`. `Timeout` spelling is
-only for migration compatibility and should not be used in new Prims APIs.
 
 ### Per-operation timeouts
 
@@ -538,7 +528,8 @@ Two things this audit turned up that are worth keeping written down:
   already armed one must use the four-argument overload — using the short one
   is the easiest way to end up with two budgets in a kernel, and it is how Tree
   did before this was fixed.
-- `prims::collectives::all_gather` takes its `Timeout` **by value and arms it**.
+- `prims::collectives::all_gather` takes its `AbortDevice` **by value and arms
+  it**.
   That is correct for its current callers, which are all kernel entries handing
   in an unarmed handle, but it means a collective that ever passes its own armed
   handle would silently get it re-armed. Prefer taking it by reference if that

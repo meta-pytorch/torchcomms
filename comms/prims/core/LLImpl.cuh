@@ -6,11 +6,11 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 

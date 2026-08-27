@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {

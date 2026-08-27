@@ -2,9 +2,9 @@
 
 #pragma once
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
