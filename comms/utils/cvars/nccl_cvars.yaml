@@ -3558,7 +3558,7 @@ cvars:
      For example, setting MCCL_SCUBA_LOG_LEVEL=HIGH means only HIGH and
      CRITICAL priority logs will be forwarded to Scuba.
 
- - name        : MCCL_CTRAN_TRANSPORT_PROFILER
+ - name        : MCCL_CTRAN_GPE_PROFILING_LOGGING
    type        : bool
    default     : true
    description : |-
