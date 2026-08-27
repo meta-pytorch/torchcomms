@@ -216,7 +216,7 @@ __device__ __forceinline__ void assert_progress_slot_idle(
     const char* opName);
 
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
@@ -711,8 +711,22 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
         static_cast<uint8_t>(kPipesTraceQpLaneMask),
         fwdSignalVal);
   }
-  prepare_send_slot<protocol::Simple>(
-      fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
+  if (prepare_send_slot<protocol::Simple>(
+          fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout)) {
+    // Slot not retired: a lane's completion was never observed, so the NIC may
+    // still be reading this staging. Staging over it is the memory hazard the
+    // retirement guard exists to prevent, so stop before CopyOp::forward.
+    //
+    // An empty signal is the "nothing to piggyback" value -- the same one the
+    // host-compile arm below returns. On this Simple overload the success path
+    // always returns a real `fwdRemoteChannel.dataReady`, so an empty `buf` is
+    // an unambiguous "this chunk was abandoned" marker for the caller; on LL it
+    // is the normal case, which is why the caller tests it only for Simple.
+    //
+    // `prepare_send_slot()` broadcasts its verdict, so this return is
+    // group-uniform and barrier-safe.
+    return SendSignal{};
+  }
   if (group.is_leader()) {
     trace_allreduce_event(
         sendTraceContext,
@@ -1120,8 +1134,14 @@ __device__ __forceinline__ void send_impl(
           (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
-      prepare_send_slot<Proto>(
-          transport, group, ringSlot, pipelineCycle, timeout);
+      if (prepare_send_slot<Proto>(
+              transport, group, ringSlot, pipelineCycle, timeout)) {
+        // Unretired slot -- see prepare_send_slot. Breaking rather than
+        // continuing keeps this loop from staging over a buffer the NIC may
+        // still be reading, and from publishing chunks for an operation that
+        // has already given up.
+        break;
+      }
 
       // (2) Cooperative compress: src -> local sendStaging via CopyOp. The
       //     return value is the compressed byte count the leader uses to size
@@ -1239,12 +1259,17 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint8_t>(kPipesTraceQpLaneMask),
             bytesThis);
       }
-      if constexpr (std::is_void_v<IbOps>) {
-        prepare_send_slot<Proto>(
-            transport, group, slot, pipelineCycle, timeout);
-      } else {
-        ibOps->prepare_send_slot(
-            transport, group, slot, pipelineCycle, timeout);
+      const bool slotUnretired = [&] {
+        if constexpr (std::is_void_v<IbOps>) {
+          return prepare_send_slot<Proto>(
+              transport, group, slot, pipelineCycle, timeout);
+        } else {
+          return ibOps->prepare_send_slot(
+              transport, group, slot, pipelineCycle, timeout);
+        }
+      }();
+      if (slotUnretired) {
+        break;
       }
       if (group.is_leader()) {
         trace_allreduce_event(
@@ -2098,11 +2123,23 @@ __device__ __forceinline__ void forward_impl(
           recvTraceContext,
           sendTraceContext,
           args...);
-      // The DATA_READY wait inside prepareForwardBuf may have given up, so this
-      // chunk was never written. Forward is the worst of the three paths to get
-      // wrong on abort: continuing would ACK the predecessor for a chunk we
-      // never consumed *and* hand the successor data that never arrived,
-      // releasing two correctly-blocked peers at once.
+      // The DATA_READY wait inside prepareForwardBuf may have given up, or the
+      // fwd slot may not have retired, so this chunk was never written. Forward
+      // is the worst of the three paths to get wrong on abort: continuing would
+      // ACK the predecessor for a chunk we never consumed *and* hand the
+      // successor data that never arrived, releasing two correctly-blocked
+      // peers at once.
+      //
+      // The empty-signal test is not redundant with `groupAborted()`. That read
+      // is amortized behind `nextPollCycles_`, so it can still answer false on
+      // the iteration where slot preparation gave up; the signal is derived
+      // from the broadcast verdict itself and cannot be stale. Simple only --
+      // LL returns an empty signal on its success path.
+      if constexpr (std::is_same_v<Proto, protocol::Simple>) {
+        if (sig.buf.ptr == nullptr) {
+          break;
+        }
+      }
       if (groupAborted(group, timeout)) {
         break;
       }
@@ -2203,12 +2240,16 @@ __device__ __forceinline__ void forward_impl(
     } else {
       const uint64_t recvToken =
           ibOps->wait_recv(transport, group, recvProtocolBytesThis, timeout);
-      ibOps->prepare_send_slot(
-          fwdTransport,
-          group,
-          static_cast<uint32_t>(fwdSlot),
-          fwdPipelineCycle,
-          timeout);
+      if (ibOps->prepare_send_slot(
+              fwdTransport,
+              group,
+              static_cast<uint32_t>(fwdSlot),
+              fwdPipelineCycle,
+              timeout)) {
+        // Unretired forward slot -- stop before CopyOp::forward stages into a
+        // buffer the NIC may still be reading.
+        break;
+      }
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, payloadBytes, nbytes);
       if (validBytes > 0) {
@@ -2533,36 +2574,67 @@ __device__ __forceinline__ void assert_progress_slot_idle(
 #endif
 }
 
+/*
+ * Returns true when the slot could NOT be retired, so the caller must stop
+ * before staging or putting anything.
+ *
+ * `wait_local_completion()` is `void` and stays that way (FT principle 3): on
+ * abort or an expired deadline it exits its spin through `FT_ABORT_BREAK`,
+ * leaving that lane's completion unobserved. Clearing the whole mask and
+ * advancing the generation regardless -- which is what this used to do -- tells
+ * a later `try_prepare_send_slot()` that those completions landed when they did
+ * not, dropping the one guard that stops the next operation overwriting
+ * send-staging while the NIC is still reading out of it.
+ *
+ * The drain path already states this invariant in
+ * `P2pIbTransportProgressImpl.cuh` ("The masks are deliberately left ALONE
+ * rather than cleared"); the blocking path did not honour it. So each lane is
+ * re-checked after its wait and only *observed* completions are cleared, and
+ * the generation advances only once the mask actually reaches zero.
+ *
+ * The verdict leaves through the `group.sync()` that already terminated this
+ * function, now a broadcast, so making it group-uniform costs no extra barrier.
+ */
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
     const Timeout& timeout) {
+  uint32_t unretired = 0;
   if (group.is_leader()) {
     auto& slot = transport.template local_channel_slot<P>(group.group_id)
                      .sendCompletionSlots[slotId];
     if (slot.generation != generation) {
-      const uint64_t pending = slot.laneMask;
+      uint64_t pending = slot.laneMask;
       const uint32_t numLanes = transport.send_completion_lane_count();
       for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
-        if ((pending & (1ULL << laneId)) == 0) {
+        const uint64_t laneBit = 1ULL << laneId;
+        if ((pending & laneBit) == 0) {
           continue;
         }
-        transport.wait_local_completion(
-            group.group_id,
-            IbLocalCompletionTicket{
-                .completionId = laneId,
-                .value = slot.values[laneId],
-            },
-            timeout);
+        const IbLocalCompletionTicket ticket{
+            .completionId = laneId,
+            .value = slot.values[laneId],
+        };
+        transport.wait_local_completion(group.group_id, ticket, timeout);
+        // Confirm rather than assume: the wait above cannot report that it gave
+        // up, and a lane earlier in this loop may already have latched the
+        // abort, so later lanes can fall straight through it.
+        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+          pending &= ~laneBit;
+        }
       }
-      slot.laneMask = 0;
-      slot.generation = generation;
+      slot.laneMask = pending;
+      if (pending == 0) {
+        slot.generation = generation;
+      } else {
+        unretired = 1U;
+      }
     }
   }
-  group.sync();
+  return group.broadcast<uint32_t>(unretired) != 0U;
 }
 
 template <typename P, typename Transport>
@@ -2588,13 +2660,13 @@ __device__ __forceinline__ void record_send_completion(
 }
 
 template <typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
     const Timeout& timeout) {
-  prepare_send_slot<protocol::Simple>(
+  return prepare_send_slot<protocol::Simple>(
       transport, group, slotId, generation, timeout);
 }
 

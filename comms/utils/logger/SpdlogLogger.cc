@@ -68,7 +68,6 @@ constexpr size_t kAsyncThreadCount = 1;
  * recent lines only in the stdio buffer.
  */
 constexpr auto kPeriodicFlushInterval = std::chrono::seconds{1};
-thread_local std::string threadName = "main";
 // Guard the full callback chain so it cannot recurse through another context
 // logger and eventually re-enter the originating callback.
 thread_local bool errorCallbackInProgress = false;
@@ -639,7 +638,7 @@ void CommsSpdlogLogger::logFormatted(
        *hostname,
        processId,
        configuration->threadContextFn(),
-       threadName,
+       getLogThreadName(),
        configuration->prefix});
   const auto threadPoolLease = getCommsThreadPoolState().acquire();
   if (bypassLevelGate || !configuration->asyncLogging || !threadPoolLease) {
@@ -746,7 +745,7 @@ void configureCommsAndNamedSpdlogLoggers(
 }
 
 void setSpdlogThreadName(std::string_view name) {
-  threadName = name;
+  setLogThreadName(name);
 }
 
 } // namespace meta::comms::logger

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -127,6 +128,10 @@ struct RegisteredSendObservation {
   uint64_t progressedCount{0};
   uint64_t postedCount{0};
   uint64_t drainedCount{0};
+  uint64_t abortedCount{0};
+  /// Iterations the drain loop actually took. Only written by the
+  /// drain-abort test; zero elsewhere.
+  uint64_t drainIterations{0};
 
   template <typename Status>
   IBGDA_HOST_DEVICE void record(Status status) {
@@ -142,6 +147,9 @@ struct RegisteredSendObservation {
         break;
       case Status::Drained:
         ++drainedCount;
+        break;
+      case Status::Aborted:
+        ++abortedCount;
         break;
     }
   }
@@ -214,6 +222,24 @@ void testWarpProxySendRecv(
     bool send,
     uint32_t queueDepth,
     uint64_t* queueFullCount);
+
+/**
+ * Test kernel: warp-proxy send against a peer that never runs its own proxy.
+ *
+ * Launches asynchronously and does NOT synchronize -- the caller is expected to
+ * abort the supplied handle while the kernel is parked, then synchronize. The
+ * abort is caller-owned rather than `testAbortDevice()` on purpose: that helper
+ * is a `TRAP`-mode watchdog, so it can only end a stuck proxy by taking the
+ * CUDA context down, which cannot distinguish "the service loop honoured the
+ * abort" from "the watchdog fired".
+ */
+void launchWarpProxyStalledSend(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    uint32_t queueDepth,
+    comms::fault_tolerance::AbortDevice abort);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.
@@ -416,6 +442,56 @@ void testMultiQpPutAndSignal(
     std::size_t totalBytes,
     int signalId,
     uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: put + flush against a caller-supplied abort handle.
+ *
+ * The fault injector for the completion-error path: give it a `remoteBuf` whose
+ * rkey the peer rejects and the NIC produces an error CQE, which `flush()`
+ * observes inside `wait_local_on_qp`. Unlike a dead peer -- where the op simply
+ * never completes until IB retry exhaustion, roughly a minute out -- a remote
+ * access error is terminal and reported immediately.
+ *
+ * `abort` is by value: `AbortDevice` is a handle over shared state, so the copy
+ * the kernel mutates and the host's `Abort` observe the same latch.
+ */
+/**
+ * Test kernel: a real registered send whose completions never land, followed by
+ * the production-shaped drain loop.
+ *
+ * `poisonedRemote` is an exchanged peer buffer with its rkey corrupted. The
+ * kernel puts to it several times -- deliberately without flushing -- to drive
+ * the channel's QP lanes into error state, so the registered send that follows
+ * has completions the NIC will never report successfully. The drain then loops
+ * `while (status != Drained)` exactly as `ReduceScatterDirectIbV2.cu` does.
+ *
+ * The channel layout's own staging rkeys are NOT usable for this: they are not
+ * populated at the point the kernel runs, and indexing them traps.
+ *
+ * `drainIterationCap` bounds that loop so a regression reports a failure
+ * instead of hanging until the harness timeout; `observation->drainIterations`
+ * records what it actually took, which is the assertion that matters.
+ */
+void testRegisteredSendDrainWithAbort(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    const IbgdaRemoteBuffer& poisonedRemote,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    RegisteredSendObservation* observation,
+    uint64_t drainIterationCap,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
+void testPutAndFlushWithAbort(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    comms::fault_tolerance::AbortDevice abort,
     int numBlocks,
     int blockSize);
 

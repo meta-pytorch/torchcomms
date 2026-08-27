@@ -2269,55 +2269,6 @@ cvars:
    description : |-
      Enable Ctran transport profiling.
 
- - name        : NCCL_SLOW_RANK_ENABLE
-   type        : bool
-   default     : false
-   description : |-
-     Flag to enable slow rank module
-
- - name        : NCCL_SLOW_RANK_PERF_WINDOW_SIZE
-   type        : int
-   default     : 5
-   description : |-
-     This is the window for keeping track of rdma performance efficiency metric.
-     If all the samples in this window are below the threshold then we flag the
-     rank as slow.
-
- - name        : NCCL_SLOW_RANK_WQE_WINDOW_SIZE
-   type        : int
-   default     : 1
-   description : |-
-     If the number of wqe's completed is equal to this window size we
-     calculatethe rdma perf efficiency for the window and push it in the queue.
-
- - name        : NCCL_SLOW_RANK_RDMA_PERF_EFFICIENCY_PERC
-   type        : int
-   default     : 70
-   description : |-
-     This is the threshold for rdma perf efficiency. If efficiency drops below
-     this threshold then we flag the rank as slow.
-
- - name        : NCCL_SLOW_RANK_SCUBA_LOGGING_INTERVAL_IN_USECS
-   type        : int
-   default     : 1000000
-   description : |-
-     Scuba logging interval in microseconds.
-
- - name        : NCCL_SLOW_RANK_LOG_NSAMPLES
-   type        : int
-   default     : 10
-   description : |-
-     By default scuba logging is only enabled if slow rank detected. This flag
-     gives us the option to log first n slow rank stats even if rank is not
-     slow.
-
- - name        : NCCL_SLOW_RANK_VARIANCE_PERC
-   type        : int
-   default     : 20
-   description : |-
-     Only log slow rank data if the variance is more than this percentage.
-
-
  - name        : NCCL_CTRAN_ENABLE_TRACE_LOG
    type        : bool
    default     : false
@@ -2755,20 +2706,6 @@ cvars:
      Hard upper bound on past collectives retained when
      NCCL_COLLTRACE_ITERATION_MODE is enabled. Prevents unbounded growth
      if ncclxSetIteration is never called.
-
- - name        : NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG
-   type        : stringlist
-   default     :
-   description : |-
-     Comma separated list of PG name and threshold in ms. If a collective takes
-     longer than the specifies threshold, it will be logged to scuba. The format
-     for each element in the stringlist is "<PG Prefix>:<thresholdInMs>".
-     To specify any PG, use "ANY" as the prefix. To specify not record any
-     collective for a specific PG, use -1 as the threshold. By default, no
-     collectives will be logged to scuba.
-     Example: "TP:100,PP:200" will log all collectives in TP group to scuba
-     if it takes longer than 100ms, and all collectives in PP group to scuba
-     if it takes longer than 200ms.
 
  - name        : NCCL_COLLTRACE_REPORT_FIRST_N_COLL
    type        : int64_t

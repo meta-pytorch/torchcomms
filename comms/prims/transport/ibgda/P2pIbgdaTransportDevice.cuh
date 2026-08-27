@@ -684,7 +684,8 @@ class P2pIbgdaTransportDevice {
 
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
-      const IbLocalCompletionTicket& ticket) {
+      const IbLocalCompletionTicket& ticket,
+      const Timeout& timeout = Timeout()) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
     const int status = doca_gpu_dev_verbs_poll_one_cq_at<
@@ -702,7 +703,33 @@ class P2pIbgdaTransportDevice {
         ticket.completionId,
         static_cast<unsigned long long>(ticket.value),
         status);
-    PIPES_DEVICE_TRAP();
+    // An error completion is a *fault* -- a peer whose QP went to error state,
+    // a bad rkey, an unreachable remote -- not a programming error. Trapping
+    // takes down the CUDA context for the entire process, which is precisely
+    // the outcome fault tolerance exists to prevent, so under FT this latches
+    // the abort instead and lets the caller's own check unwind. The legacy trap
+    // is kept for the FT-disabled path, where nothing else would notice.
+    //
+    // Mirrors `P2pIbrcTransportDevice::check_status`, which is the reference
+    // implementation for this pattern.
+    if (!timeout.isEnabled()) {
+      PIPES_DEVICE_TRAP();
+      return false;
+    }
+    // NETWORK_ERROR, not ABORTED. The condition here is a peer whose QP went to
+    // error state, a bad rkey, an unreachable remote -- exactly what
+    // FAULT_TOLERANCE.md defines NETWORK_ERROR as ("a transport or peer-network
+    // failure"), while ABORTED is reserved for an explicit user or transport
+    // abort. Since the reason is first-writer-wins and drives host telemetry,
+    // using ABORTED here permanently misfiled every completion fault as a user
+    // abort. It also sharpens `BadRkeyCompletionErrorUnwinds`, which asserts
+    // the reason to tell the CQE path from the deadline path.
+    (void)timeout.setAbort(
+        comms::fault_tolerance::AbortReason::NETWORK_ERROR,
+        "IBGDA local completion error CQE");
+    // Deliberately "not ready": the caller polls this inside a loop that
+    // already consults the abort, so reporting not-ready routes it through the
+    // same unwind path an expiry would take instead of inventing a second one.
     return false;
   }
 
@@ -1090,6 +1117,39 @@ class P2pIbgdaTransportDevice {
               timeout,
               "wait_local_on_qp timed out (ticket=%llu)",
               static_cast<unsigned long long>(ticket));
+        } else if (status != 0) {
+          // Previously this fell straight out of the loop: the `while` only
+          // continues on EBUSY, so an error status returned from a `void`
+          // function and the caller was left believing the put had landed. A
+          // silent success on a hardware error is worse than a trap, because
+          // nothing downstream can tell that anything went wrong.
+          //
+          // No `!isEnabled()` trap arm here, unlike `is_local_completion_ready`
+          // below: this whole branch is inside the `else` of `isEnabled()`, so
+          // the handle is enabled by construction. With FT off the function
+          // takes the blocking `doca_gpu_dev_verbs_wait` above and never
+          // inspects a status at all, so there is no disabled-path error to
+          // preserve.
+          // Gated on the CAS result so the diagnostic is one-shot. An error CQE
+          // is sticky and this function is re-entered by its caller's spin
+          // loop, so printing first meant one printf plus one system-scope CAS
+          // attempt per iteration until some other poll observed the abort --
+          // a large log burst and repeated mapped-host traffic for a single
+          // fault. `setAbort()` already reports whether it won the transition,
+          // which is exactly the first-writer property the log wants.
+          //
+          // The message stays a printf rather than a `context` string because
+          // it carries the ticket and status; `context` is a plain `const
+          // char*` and cannot format them.
+          if (timeout.setAbort(
+                  comms::fault_tolerance::AbortReason::NETWORK_ERROR)) {
+            printf(
+                "P2pIbgdaTransportDevice: wait_local_on_qp completion failed "
+                "(ticket=%llu status=%d)\n",
+                static_cast<unsigned long long>(ticket),
+                status);
+          }
+          break;
         }
       } while (status == EBUSY);
     }
@@ -2325,10 +2385,11 @@ class P2pIbgdaTransportDevice {
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& timeout,
       const detail::RecvChunkAcquisition& view) {
     detail::
         progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
-            *this, group, view);
+            *this, group, timeout, view);
   }
 
   /**

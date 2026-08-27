@@ -37,12 +37,23 @@ namespace comms::prims {
  * warp owns remote readiness polling, WQE posting, ticket publication, and
  * receive credits. A run exclusively owns every (transport, channel) passed
  * through Ops until run() returns; transport objects must have shared or global
- * lifetime. Ops calls may return after work is queued. run() returns after
- * staged sends are posted and receive credits are issued. workerFn must use
+ * lifetime. Ops calls may return after work is queued. workerFn must use
  * Ops::group() for synchronization and issue Ops calls collectively from that
  * single producer group; block-wide barriers and concurrent subgroup issuers
  * are unsupported. Fused forwarding releases each upstream receive credit
  * before its dependent downstream send becomes eligible for posting.
+ *
+ * Completion has two shapes, and they differ in what they promise:
+ *
+ * - **Normal completion**: run() returns after staged sends are posted and
+ *   receive credits are issued, so the queues are drained.
+ * - **Abort completion**: run() returns with `send.posted < send.tail` and/or
+ *   `recv.credited < recv.tail`. Pending commands are deliberately abandoned
+ *   and their credits never issued -- publishing them would signal a peer for
+ *   work this rank gave up on, which is what releases a correctly blocked peer
+ *   and stops it reaching its own deadline. Queue drain is therefore NOT a
+ *   postcondition of run(); termination is. Recovery is `reconfigure()`, as
+ *   everywhere else in the abort contract.
  */
 template <
     uint32_t WorkerThreads,
@@ -133,7 +144,11 @@ class IbgdaWarpProxy {
       workers_.sync();
     }
 
-    // Posts staged sends and publishes receive credits.
+    // Drains staged sends and issues outstanding receive credits -- unless the
+    // operation aborts, in which case it returns with commands still queued and
+    // their credits deliberately unissued. See the abort-completion note on the
+    // class comment: "drained" is not a postcondition once an abort is latched,
+    // termination is.
     __device__ __forceinline__ void drain() {
       IbgdaWarpProxy::drain_queues(storage_, workers_, timeout_);
     }
@@ -211,14 +226,18 @@ class IbgdaWarpProxy {
           args...);
     }
 
-    __device__ __forceinline__ void prepare_send_slot(
+    // Returns true when the slot could not be retired -- see
+    // detail::prepare_send_slot. The caller must not stage or put on a slot the
+    // NIC may still be reading.
+    [[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
         P2pIbgdaTransportDevice& transport,
         ThreadGroup& workers,
         uint32_t slot,
         uint64_t generation,
         const Timeout& timeout) {
       IbgdaWarpProxy::wait_prior_send_posted(storage_, workers, slot, timeout);
-      detail::prepare_send_slot(transport, workers, slot, generation, timeout);
+      return detail::prepare_send_slot(
+          transport, workers, slot, generation, timeout);
     }
 
     __device__ __forceinline__ void submit_send(
@@ -233,8 +252,14 @@ class IbgdaWarpProxy {
         uint64_t generation,
         uint64_t requiredRecvCredit,
         const Timeout& timeout) {
-      IbgdaWarpProxy::template wait_queue_space<true>(
-          storage_, workers, timeout);
+      // The wait reports its own verdict through the barrier it already had,
+      // so declining to enqueue costs no extra synchronization. Enqueuing here
+      // would hand the service warp a command it turns into a peer-visible put
+      // with a fused DATA_READY.
+      if (IbgdaWarpProxy::template wait_queue_space<true>(
+              storage_, workers, timeout)) {
+        return;
+      }
       IbgdaWarpProxy::enqueue_send(
           storage_,
           workers,
@@ -257,8 +282,13 @@ class IbgdaWarpProxy {
         ThreadGroup& workers,
         std::size_t protocolBytes,
         const Timeout& timeout) {
-      IbgdaWarpProxy::template wait_queue_space<false>(
-          storage_, workers, timeout);
+      // Same shape as `submit_send()`. `kInvalidSequence` is what makes
+      // `publish_recv()` free: it can decline on a register compare instead of
+      // taking another barrier to re-ask.
+      if (IbgdaWarpProxy::template wait_queue_space<false>(
+              storage_, workers, timeout)) {
+        return kInvalidSequence;
+      }
       const uint64_t sequence = IbgdaWarpProxy::enqueue_recv(
           storage_,
           workers,
@@ -267,7 +297,10 @@ class IbgdaWarpProxy {
               .protocolBytes = protocolBytes,
               .channel = static_cast<uint32_t>(workers.group_id),
           });
-      IbgdaWarpProxy::wait_recv_ready(storage_, workers, sequence, timeout);
+      if (IbgdaWarpProxy::wait_recv_ready(
+              storage_, workers, sequence, timeout)) {
+        return kInvalidSequence;
+      }
       return sequence;
     }
 
@@ -278,6 +311,16 @@ class IbgdaWarpProxy {
         uint64_t sequence) {
       (void)transport;
       (void)protocolBytes;
+      // Advancing `recv.copied` is what lets the service warp emit SLOT_FREE
+      // for this chunk, so it must not happen for a receive that never landed.
+      //
+      // The sentinel carries that decision from `wait_recv()`, which already
+      // made it group-uniformly through its own barrier. Re-asking here would
+      // cost another block-wide barrier per chunk to learn something already
+      // known, so this is a register compare.
+      if (sequence == kInvalidSequence) {
+        return;
+      }
       IbgdaWarpProxy::publish_recv_copied(storage_, workers, sequence);
     }
 
@@ -490,10 +533,11 @@ class IbgdaWarpProxy {
   }
 
   template <bool IsSend>
-  __device__ __forceinline__ static void wait_queue_space(
+  __device__ __forceinline__ static bool wait_queue_space(
       SharedState& storage,
       ThreadGroup& workers,
       const Timeout& timeout) {
+    uint32_t aborted = 0;
     if (workers.is_leader()) {
       uint64_t& tailValue = IsSend ? storage.send.tail : storage.recv.tail;
       uint64_t& headValue =
@@ -508,17 +552,20 @@ class IbgdaWarpProxy {
         queueFullCount.fetch_add(1, cuda::memory_order_relaxed);
       }
       while (currentTail - currentHead >= storage.queueDepth) {
-        FT_ABORT_BREAK(
-            timeout,
-            "IbgdaWarpProxy %s queue full channel=%u head=%llu tail=%llu",
-            IsSend ? "send" : "recv",
-            workers.group_id,
-            static_cast<unsigned long long>(currentHead),
-            static_cast<unsigned long long>(currentTail));
+        if (FT_ABORT_CHECK(
+                timeout,
+                "IbgdaWarpProxy %s queue full channel=%u head=%llu tail=%llu",
+                IsSend ? "send" : "recv",
+                workers.group_id,
+                static_cast<unsigned long long>(currentHead),
+                static_cast<unsigned long long>(currentTail))) {
+          aborted = 1U;
+          break;
+        }
         currentHead = head.load(cuda::memory_order_acquire);
       }
     }
-    workers.sync();
+    return workers.broadcast<uint32_t>(aborted) != 0U;
   }
 
   __device__ __forceinline__ static void wait_prior_send_posted(
@@ -575,26 +622,32 @@ class IbgdaWarpProxy {
     return workers.broadcast(sequence);
   }
 
-  __device__ __forceinline__ static void wait_recv_ready(
+  // Same shape as `wait_queue_space`: the verdict leaves through the barrier
+  // this already had, and the abort is read only while actually stalled.
+  __device__ __forceinline__ static bool wait_recv_ready(
       SharedState& storage,
       ThreadGroup& workers,
       uint64_t sequence,
       const Timeout& timeout) {
+    uint32_t aborted = 0;
     if (workers.is_leader()) {
       BlockAtomicU64 ready(storage.recv.ready);
       uint64_t current = ready.load(cuda::memory_order_acquire);
       while (current <= sequence) {
-        FT_ABORT_BREAK(
-            timeout,
-            "IbgdaWarpProxy waiting for DATA_READY channel=%u ready=%llu "
-            "required=%llu",
-            workers.group_id,
-            static_cast<unsigned long long>(current),
-            static_cast<unsigned long long>(sequence + 1));
+        if (FT_ABORT_CHECK(
+                timeout,
+                "IbgdaWarpProxy waiting for DATA_READY channel=%u ready=%llu "
+                "required=%llu",
+                workers.group_id,
+                static_cast<unsigned long long>(current),
+                static_cast<unsigned long long>(sequence + 1))) {
+          aborted = 1U;
+          break;
+        }
         current = ready.load(cuda::memory_order_acquire);
       }
     }
-    workers.sync();
+    return workers.broadcast<uint32_t>(aborted) != 0U;
   }
 
   __device__ __forceinline__ static void publish_recv_copied(
@@ -744,25 +797,75 @@ class IbgdaWarpProxy {
       const Timeout& timeout) {
     BlockAtomicU32 producerDone(storage.producerDone);
     while (true) {
-      if (service.is_leader()) {
-        post_recv_credits(storage, fullBlock);
-        publish_recv_readiness(storage, timeout);
-        post_send_once(storage, fullBlock, timeout);
-      }
-
       uint32_t stop = 0;
-      if (service.is_leader() &&
-          producerDone.load(cuda::memory_order_acquire) != 0) {
-        BlockAtomicU64 sendTail(storage.send.tail);
-        BlockAtomicU64 sendPosted(storage.send.posted);
-        BlockAtomicU64 recvTail(storage.recv.tail);
-        BlockAtomicU64 recvCredited(storage.recv.credited);
-        stop = sendPosted.load(cuda::memory_order_acquire) ==
-                    sendTail.load(cuda::memory_order_acquire) &&
-                recvCredited.load(cuda::memory_order_acquire) ==
-                    recvTail.load(cuda::memory_order_acquire)
-            ? 1U
-            : 0U;
+      if (service.is_leader()) {
+        // An abort has to end this loop on its own. Its only other exit is a
+        // fully drained queue, and an abort is precisely what makes that
+        // unreachable: a worker that gave up mid-flight leaves posted < tail
+        // (or credited < tail) forever, so the drain condition below never
+        // becomes true and the service warp spins until the launch is killed.
+        //
+        // Exiting here does not strand the workers. Their credit and slot waits
+        // are FT_ABORT_BREAK-guarded, so the same abort releases both sides --
+        // which is the property that matters, since worker and service warp
+        // only coordinate through these release/acquire counters and each is
+        // otherwise waiting for the other to move them.
+        //
+        // Folded into the existing `stop` broadcast rather than given its own,
+        // so the check is warp-uniform at no extra barrier. Leader-only keeps
+        // it to one poll per iteration instead of one per lane.
+        //
+        // The check runs BEFORE the iteration's peer-visible work, and again
+        // between each abortable step, rather than once at the bottom. Both are
+        // needed, and for different reasons:
+        //
+        //   - `post_recv_credits()` emits `signal(slotFree)` and has no abort
+        //     check of its own; `post_send_once()` issues a `put` with a fused
+        //     `DATA_READY`. With the check below them, the iteration on which
+        //     the abort first becomes visible has already sent one more round.
+        //   - Hoisting alone does not close it: `publish_recv_readiness()` is
+        //     itself abortable, so an abort first observed *inside* it would
+        //     still be followed by `post_send_once()` in the same iteration.
+        //
+        // That is FT principle 4 -- never signal a peer for work you abandoned.
+        // A false credit releases a peer that is correctly blocked and stops it
+        // ever reaching its own deadline, so one rank's abort silently
+        // suppresses fault detection on the rest.
+        //
+        // The between-step checks are plain `isAborted()` reads rather than new
+        // return values: once an abortable step gives up it has already latched
+        // the reason in shared state, so a subsequent read sees it. Cheap, and
+        // it keeps the change to control flow instead of threading a status
+        // through `publish_recv_readiness()`.
+        bool aborted = FT_ABORT_CHECK(
+            timeout, "IbgdaWarpProxy::run_service abandoning drain");
+        // Each step runs only if nothing has aborted yet, and re-reads the flag
+        // afterwards because the step itself may have given up inside.
+        const auto step = [&](auto&& emit) {
+          if (aborted) {
+            return;
+          }
+          emit();
+          aborted = timeout.isAborted();
+        };
+        step([&] { post_recv_credits(storage, fullBlock); });
+        step([&] { publish_recv_readiness(storage, timeout); });
+        step([&] { post_send_once(storage, fullBlock, timeout); });
+
+        if (aborted) {
+          stop = 1U;
+        } else if (producerDone.load(cuda::memory_order_acquire) != 0) {
+          BlockAtomicU64 sendTail(storage.send.tail);
+          BlockAtomicU64 sendPosted(storage.send.posted);
+          BlockAtomicU64 recvTail(storage.recv.tail);
+          BlockAtomicU64 recvCredited(storage.recv.credited);
+          stop = sendPosted.load(cuda::memory_order_acquire) ==
+                      sendTail.load(cuda::memory_order_acquire) &&
+                  recvCredited.load(cuda::memory_order_acquire) ==
+                      recvTail.load(cuda::memory_order_acquire)
+              ? 1U
+              : 0U;
+        }
       }
       stop = service.broadcast(stop);
       if (stop != 0) {

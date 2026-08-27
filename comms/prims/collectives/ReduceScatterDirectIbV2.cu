@@ -300,7 +300,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
             // slow peer never stops us polling the others.
             int ready = 0;
             bool finished = false;
-            while (ready < count && !finished) {
+            bool aborted = false;
+            while (ready < count && !finished && !aborted) {
               ready = 0;
               for (int i = 0; i < count; ++i) {
                 if (rviews[s][i].staging != nullptr) {
@@ -311,6 +312,17 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
                 auto transport = args.peers[rpeer_of[i]];
                 const auto st = transport.progress_recv_acquire_once(
                     solo, wire_bytes, max_sig, timeout, view);
+                // `Aborted` is terminal and must be handled explicitly. It used
+                // to fall through this chain: the acquire had already driven
+                // the slot to `Done` via abandon_progress_state(), so the NEXT
+                // acquire returned `Done`, the loop set `finished` and the
+                // collective reported ordinary completion over a partially
+                // reduced accumulator. Stopping here keeps "aborted" and
+                // "stream complete" distinguishable.
+                if (st == IbgdaSendRecvProgressStatus::Aborted) {
+                  aborted = true;
+                  break;
+                }
                 if (st == IbgdaSendRecvProgressStatus::Done) {
                   finished = true;
                   break;
@@ -321,7 +333,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
                 }
               }
             }
-            if (finished) {
+            if (finished || aborted) {
               s_nchunks = c;
               __threadfence_block();
               s_published = c;
@@ -339,7 +351,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
               const int ps = (c - 1) % kSlots;
               for (int i = 0; i < count; ++i) {
                 auto transport = args.peers[rpeer_of[i]];
-                transport.progress_recv_release_once(solo, rviews[ps][i]);
+                transport.progress_recv_release_once(
+                    solo, timeout, rviews[ps][i]);
                 rviews[ps][i] = detail::RecvChunkAcquisition{};
               }
               released = c - 1;
@@ -354,7 +367,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
             const int ds = d % kSlots;
             for (int i = 0; i < count; ++i) {
               auto transport = args.peers[rpeer_of[i]];
-              transport.progress_recv_release_once(solo, rviews[ds][i]);
+              transport.progress_recv_release_once(
+                  solo, timeout, rviews[ds][i]);
               rviews[ds][i] = detail::RecvChunkAcquisition{};
             }
             released = d;

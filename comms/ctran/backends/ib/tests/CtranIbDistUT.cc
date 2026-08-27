@@ -1619,8 +1619,11 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
       "Expect rank 0 puts data from its local GPU data to other ranks and "
       "the traffic profiling can catch exact bytes as expected per device and per QP.");
 
-  setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1);
-  ncclCvarInit();
+  EnvRAII profilerEnv(NCCL_CTRAN_TRANSPORT_PROFILER, true);
+  auto singleton = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(singleton);
+  const size_t trafficBefore =
+      singleton->getDeviceTrafficSnapshot(this->localRank);
 
 #undef BUF_COUNT
 #define BUF_COUNT 8192
@@ -1715,6 +1718,10 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
           putReqs.erase(rank);
         }
       }
+
+      EXPECT_EQ(
+          singleton->getDeviceTrafficSnapshot(this->localRank) - trafficBefore,
+          (this->numRanks - 1) * BUF_COUNT * sizeof(int));
     } else {
       // Other rank ensures send control messages has completed
       waitIbReq(ctrlSReq, ctranIb);
@@ -1736,8 +1743,6 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
-
-  unsetenv("NCCL_CTRAN_TRANSPORT_PROFILER");
 }
 
 TEST_F(CtranIbTest, InvalidPeer) {

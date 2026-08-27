@@ -40,9 +40,18 @@ std::string getHostName(const char delim) {
 struct ProcMetaData {
   std::string hostname;
   int pid{};
-} procMetaData;
-folly::once_flag procMetaDataInitFlag;
-static thread_local std::string myThreadName = "main";
+  folly::once_flag initFlag;
+};
+
+ProcMetaData& getProcMetaData() {
+  /*
+   * Retain process metadata for the process lifetime because formatting may run
+   * during static destruction. Keeping the initialization guard here also
+   * prevents its destruction from racing with initialization.
+   */
+  static auto* metaData = new ProcMetaData{};
+  return *metaData;
+}
 
 struct LastErrorInfo {
   std::string lastErrorMessage;
@@ -194,11 +203,11 @@ std::string parseDebugFile(const char* ncclDebugFileEnv) {
             dfn,
             PATH_MAX + 1 - (dfn - debugFn),
             "%s",
-            procMetaData.hostname.c_str());
+            getProcMetaData().hostname.c_str());
         break;
       case 'p': // %p = pid
         dfn += snprintf(
-            dfn, PATH_MAX + 1 - (dfn - debugFn), "%d", procMetaData.pid);
+            dfn, PATH_MAX + 1 - (dfn - debugFn), "%d", getProcMetaData().pid);
         break;
       default: // Echo everything we don't understand
         *dfn++ = '%';
@@ -243,18 +252,16 @@ LogLevel getLoggerDebugLevel(std::string_view level) {
 }
 
 void initProcMetaData() {
-  folly::call_once(procMetaDataInitFlag, []() {
-    procMetaData.hostname = getHostName('.');
-    procMetaData.pid = getpid();
+  auto& metaData = getProcMetaData();
+  folly::call_once(metaData.initFlag, [&metaData]() {
+    metaData.hostname = getHostName('.');
+    metaData.pid = getpid();
   });
 }
 
 void initThreadMetaData(std::string_view threadName) {
   static thread_local folly::once_flag threadNameFlag;
-  folly::call_once(threadNameFlag, [&]() {
-    myThreadName = threadName;
-    setSpdlogThreadName(threadName);
-  });
+  folly::call_once(threadNameFlag, [&]() { setSpdlogThreadName(threadName); });
 }
 
 std::string NcclLogFormatter::formatMessage(
@@ -289,10 +296,10 @@ std::string NcclLogFormatter::formatMessage(
        .threadId = message.getThreadID(),
        .filename = std::string_view{basename.data(), basename.size()},
        .lineNumber = message.getLineNumber(),
-       .hostname = procMetaData.hostname,
-       .processId = procMetaData.pid,
+       .hostname = getProcMetaData().hostname,
+       .processId = getProcMetaData().pid,
        .threadContext = cudaDev,
-       .threadName = myThreadName,
+       .threadName = getLogThreadName(),
        .prefix = prefix_});
 }
 

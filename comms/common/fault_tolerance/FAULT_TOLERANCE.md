@@ -21,36 +21,51 @@ rules the detail exists to serve.
    `FT_ABORT_BREAK` / `FT_ABORT_RETURN` (`AbortMacros.cuh`); they terminate the
    loop themselves. Do not convert a `void` wait to `bool` just to report that
    it aborted.
-4. **Group uniformity idiom: leader polls, then broadcasts.** Use the existing
+4. **Never signal a peer for work you abandoned.** `FT_ABORT_BREAK` ends the
+   *spin* it is written in; it says nothing to the pipeline loop around it. A
+   loop that keeps going after its wait gave up will still issue the put, the
+   fused `DATA_READY`, and the `SLOT_FREE` credit for every remaining chunk. So
+   put a group-uniform `groupAborted()` break between the wait and the first
+   peer-visible side effect.
+
+   This is not about garbage output — that is contract-legal. It is that a false
+   signal **releases a peer that is correctly blocked and stops it ever reaching
+   its own deadline**, so the fault looks to that peer like a successful
+   collective. One rank's abort then silently suppresses fault detection on the
+   rest, which is the opposite of what this design is for. Measured at
+   `IB_ONLY_1x8` before this was fixed: only 5 of 7 survivors recorded
+   `TIMED_OUT` from their own deadline; the other two were spuriously completed
+   by the ranks that had. After: 7 of 7.
+5. **Group uniformity idiom: leader polls, then broadcasts.** Use the existing
    leader + `broadcast<uint32_t>` shape rather than adding a new reduction
    primitive for one call site.
-5. **Never derive a loop bound or an index from peer-written data.** Bounds come
+6. **Never derive a loop bound or an index from peer-written data.** Bounds come
    from local geometry or parameters. This is the assumption that lets a wait
    give up without unwinding the caller.
-6. **Do not store started deadline state in a transport object.** Transport
+7. **Do not store started deadline state in a transport object.** Transport
    handles outlive operations and are shared across blocks; copy the handle per
    block and call `startTimeout()` on the copy.
-7. **Keep abort polling off hot paths.** Gate the check behind a spin count so
+8. **Keep abort polling off hot paths.** Gate the check behind a spin count so
    it only engages once actually stalled, and prefer one poller per group over
    one per thread when the loop is per-thread.
-8. **Onboard every new or in-flight wait as it lands**, including
+9. **Onboard every new or in-flight wait as it lands**, including
    work-in-progress paths. A spin loop that reaches main without an abort check
    is a hang waiting to happen.
-9. **Per-operation timeouts come only from the collective API.** The
-   communicator deadline stays late-bound in shared state so `setTimeout()` is
-   observed by already-created device handles.
-10. **Validate a timeout's sign, not its size.** Choosing a sane magnitude is
+10. **Per-operation timeouts come only from the collective API.** The
+    communicator deadline stays late-bound in shared state so `setTimeout()` is
+    observed by already-created device handles.
+11. **Validate a timeout's sign, not its size.** Choosing a sane magnitude is
     the caller's job; `std::chrono` types already make unit mistakes unlikely.
     A negative value must be rejected, because at the `AbortDevice` layer it
     silently means "no override".
-11. **Fault tolerance is an MCCL-communicator feature.** Communicators created
+12. **Fault tolerance is an MCCL-communicator feature.** Communicators created
     through the NCCLX/CTRAN factory get a disabled `Abort`; see *Scope*.
-12. **Terminate the kernel cleanly; never trap to do it.** A trap takes the CUDA
+13. **Terminate the kernel cleanly; never trap to do it.** A trap takes the CUDA
     context down and loses every other stream on the device, which is a worse
     outcome than the hang it replaces. Abort must unwind to a normal kernel
     exit. `FT_DEVICE_TRAP()` stays reserved for the death tests that assert trap
     semantics deliberately.
-13. **Contain the abort path in the transport.** The transport leaves its
+14. **Contain the abort path in the transport.** The transport leaves its
     per-channel state releasable on abort -- an unwinding operation drives its
     progress slot to the terminal stage (`abandon_progress_state()`), so a
     kernel already queued on the same channel re-initializes without tripping
@@ -142,6 +157,76 @@ Do not store started timeout state in persistent transport objects. Transport
 device handles may live across calls and may be reused by many blocks. Storing a
 started deadline there would make timeout state shared across unrelated blocks,
 kernels, or operations.
+
+## Why the abort check is amortized
+
+This is the single most important performance property of the whole design, and
+it is easy to undo by accident, so it is worth stating with numbers.
+
+`AbortState` lives in **mapped pinned host memory** so that host and device see
+one abort reason. That is what makes the contract work, and it is also what
+makes a naive check ruinous: every read of the shared reason from the device is
+an uncached PCIe round trip. Spin loops call the check on *every iteration*, and
+in the LL small-message path that is up to 32 lanes x 2 loads per warp per
+iteration.
+
+So `checkExpired()` does not read shared state on most calls. It gates the read
+behind the free device clock:
+
+```cpp
+const uint64_t now = detail::deviceClock();
+const bool deadlineDue = deadlineCycles_ != 0 && now >= deadlineCycles_;
+if (!deadlineDue && now < nextPollCycles_) {
+  return false;          // register compare only -- no memory touched
+}
+nextPollCycles_ = now + pollIntervalCycles_;
+```
+
+`pollIntervalCycles_` is `cyclesPerMs_ / kAbortPollsPerMs` with
+`kAbortPollsPerMs = 100`, i.e. **100 shared reads per millisecond per handle**,
+independent of how fast the loop spins. Once a terminal reason has been seen,
+`sawTerminalReason_` answers from a register forever.
+
+### What it is worth
+
+Measured on 8x H100 (`devgpu012.mwg1`) with
+`comms/common/fault_tolerance/benchmarks:abort_bench`; full tables and
+methodology in that directory's `Perf.md`.
+
+| Row | Ungated | Gated | |
+|---|---:|---:|---|
+| `AbortDeviceIsAbortedLoadLoop` | 225.93ms / 100K polls | 4.87ms / 100K polls | 46x |
+| `AbortDeviceIsAbortedWithDeadlineLoadLoop` | 226.28ms / 100K polls | 4.88ms / 100K polls | 46x |
+
+That is ~2.26us per ungated poll against ~49ns gated. The
+`CudaAtomicDeviceLoadLoop` row corroborates the mechanism independently: a bare
+mapped-pinned load is 1.11us, so the ungated cost is simply "the shared read,
+every time".
+
+Two consequences worth internalizing:
+
+- **Arming a deadline is free.** The with-deadline row is within noise of the
+  no-deadline row (4.88ms vs 4.87ms) because the deadline is one more register
+  compare on the same gated path. There is no performance argument for leaving a
+  collective unarmed.
+- **The cost of an abort check is a property of the poll interval, not of the
+  loop.** A tighter spin loop does not make aborts more expensive. This is why
+  Principle 7 says to gate the check rather than to call it less often.
+
+### How to not undo it
+
+- Do not add work to `checkExpired()` before the gate. Anything above the
+  `now < nextPollCycles_` early return runs on every spin iteration of every
+  wait in the codebase.
+- Do not add a debug assertion to this path "just in case" -- it was considered
+  for the arm-site invariant and rejected for exactly this reason; a static
+  audit plus per-collective stall tests cover that without touching the gate.
+- Prefer one poller per group over one per thread when the loop is per-thread.
+  The gate is per-handle-copy, so N thread-local copies mean N times the shared
+  reads.
+- If you change `kAbortPollsPerMs`, re-run `abort_bench` and update both this
+  section and `Perf.md`. It trades abort-detection latency against shared-read
+  volume, and both numbers above move with it.
 
 ## MPT And Prims Integration
 
@@ -401,6 +486,64 @@ communicator" and "the collective forgot to pass the handle". Only the host can
 see both the communicator's `Abort` and the handle being launched, so only the
 host can tell those apart.
 
+### One budget per kernel
+
+`startTimeout()` computes `deadlineCycles_ = deviceClock() + timeoutMs *
+cyclesPerMs_` **at the moment it is called**. There is no host-settable absolute
+deadline, so a deadline is only ever as wide as the region between the `start()`
+that armed it and the wait that observes it.
+
+The rule that follows, and the one the table below audits:
+
+> **Exactly one `start()` per `__global__` kernel, at entry. Everything below it
+> takes the handle by reference.**
+
+A second `start()` anywhere downstream re-arms from the current clock, so the
+work after it gets a fresh full budget on top of whatever the work before it
+already spent. Two arm sites in one kernel means the kernel can take twice the
+deadline the caller asked for, and the effect is worst exactly when it matters
+least — when things are already running slowly.
+
+The accepted consequence: a collective that spans **two kernel launches gets two
+budgets**. That is deliberate. Closing it would need the host to stamp an
+absolute deadline into the handle, which means carrying a device-clock reference
+sample to convert `steady_clock` into the device cycle domain. Not worth it
+while one collective is one launch.
+
+### Per-collective FT status
+
+Onboarding is incremental. A collective that has not been onboarded carries a
+**disabled** handle, and `AbortDevice::checkExpired()` returns `false`
+immediately for those — so it is inert rather than wrong. What must never happen
+is an *enabled* handle that nothing armed: the waits would then observe explicit
+aborts but no deadline would ever fire.
+
+| Collective | Kernel(s) | Arm site | Status |
+| --- | --- | --- | --- |
+| AllReduce Direct | `AllReduceIbDirect.cu` | `args.timeout.start()` at entry, forwarded to the 4-arg `runAllReduceFused` | onboarded |
+| AllReduce Ring | `AllReduceIbRingImpl.cuh` | `runRing` arms at entry; passed to `runAllReduceFused` and `phase2IbRing` | onboarded |
+| AllReduce Tree | `AllReduceIbTreeImpl.cuh` | kernel entry; passed to `runAllReduceFused` and `TreePhase2` | onboarded |
+| SendRecv | `SendRecvLauncher.cu` | `abort.start()` at entry, threaded into every send/recv | onboarded |
+| ReduceScatter Ring | `RingReduceScatterKernel.cuh` | kernel entry | onboarded |
+| ReduceScatter Direct / DirectIbV2 | `prims/collectives/ReduceScatterDirect*.cu` | kernel entry | onboarded |
+| ReduceScatter DirectIb (`ctdirect_ib`) | `ctran/algos/ReduceScatterDirectIb.cc` | **none — `params.abort` is left default-constructed** | **not onboarded** |
+| AllGather Direct | `prims/collectives/AllGatherDirect.cu` | kernel entry, once in each of the three kernels | onboarded |
+| AllGather Ring | `prims/collectives/RingAllgather.cu` | kernel entry | onboarded |
+| AllToAllv (+ Ll128) | `prims/collectives/AllToAllv*.cu` | kernel entry | onboarded |
+
+Two things this audit turned up that are worth keeping written down:
+
+- `runAllReduceFused` has a **three-argument overload that arms a handle of its
+  own**. It exists for callers that have no handle to pass. A caller that has
+  already armed one must use the four-argument overload — using the short one
+  is the easiest way to end up with two budgets in a kernel, and it is how Tree
+  did before this was fixed.
+- `prims::collectives::all_gather` takes its `Timeout` **by value and arms it**.
+  That is correct for its current callers, which are all kernel entries handing
+  in an unarmed handle, but it means a collective that ever passes its own armed
+  handle would silently get it re-armed. Prefer taking it by reference if that
+  call site appears.
+
 ### What the caller sees
 
 - The collective completes; **output buffers are undefined** after an abort.
@@ -413,10 +556,22 @@ host can tell those apart.
 
 Fault tolerance is a **MCCL-communicator** feature. Communicators created
 through the NCCLX/CTRAN factory get a disabled `Abort`, so they have no device
-deadline and no abort observation; the `ctdirect_ib` ReduceScatter path is
-unbounded on those comms. This is an accepted limitation, not an oversight, and
-it is a regression against the pre-migration code, which applied
-`MCCL_ABORT_TIMEOUT_MS` unconditionally on that path. The debug diagnostic above
+deadline and no abort observation.
+
+`ctdirect_ib` ReduceScatter is unbounded on **more than those comms**, and the
+earlier wording here understated it. `McclComm::reduceScatter()` intercepts only
+`ctring_ib`, so an ordinary **FT-enabled** MCCL communicator that selects
+`ctdirect_ib` — via `NCCL_REDUCESCATTER_ALGO` or `ncclReduceScatterQuantize` —
+falls through to `ctranReduceScatter()` and reaches
+`ReduceScatterDirectIb.cc`, which deliberately leaves `params.abort`
+default-constructed. The kernel therefore arms a disabled handle and has neither
+the communicator's abort state nor its deadline, so peer loss is unbounded on a
+communicator whose owner asked for fault tolerance. Thanks to @benrcarver for
+catching that the status table and this section contradicted each other.
+
+Until that route is either plumbed or rejected under FT, the table above marks
+it **not onboarded**. This is a regression against the pre-migration code, which
+applied `MCCL_ABORT_TIMEOUT_MS` unconditionally on that path. The debug diagnostic above
 is scoped to FT-enabled communicators so it stays silent here and under
 `MCCL_ABORT_MODE=none`.
 
