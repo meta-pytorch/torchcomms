@@ -27,7 +27,7 @@ namespace comms::prims::test {
 
 namespace {
 
-Timeout makeTestAbortDevice(
+AbortDevice makeTestAbortDevice(
     comms::fault_tolerance::Abort& abort,
     uint32_t timeout_ms) {
   abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
@@ -37,28 +37,32 @@ Timeout makeTestAbortDevice(
 } // namespace
 
 // Kernel that waits on SignalState that will never be signaled
-// This should trigger a timeout and call __trap()
+// This should trigger an abort handle and call __trap()
 // Uses the single-threaded API which creates a ThreadGroup internally
-__global__ void signalStateTimeoutKernel(SignalState* state, Timeout timeout) {
-  // Start the timeout timer - captures clock64() once at kernel entry
-  timeout.start();
+__global__ void signalStateTimeoutKernel(
+    SignalState* state,
+    AbortDevice abortDevice) {
+  // Start the abortDevice timer - captures clock64() once at kernel entry
+  abortDevice.start();
 
   // State is initialized to 0, so waiting for value 1 will spin forever
-  // unless timeout triggers
-  // Uses simple API - ThreadGroup is created internally for timeout checking
-  state->wait_until(CmpOp::CMP_EQ, 1, timeout);
+  // unless abortDevice triggers
+  // Uses simple API - ThreadGroup is created internally for abortDevice
+  // checking
+  state->wait_until(CmpOp::CMP_EQ, 1, abortDevice);
 }
 
-// Kernel that starts timeout, checks once, and completes successfully
-// This is a positive test case that exercises the full timeout path
+// Kernel that starts abortDevice, checks once, and completes successfully
+// This is a positive test case that exercises the full abortDevice path
 // without actually timing out
-__global__ void noTimeoutKernel(Timeout timeout) {
-  // Start the timeout timer
-  timeout.start();
+__global__ void noTimeoutKernel(AbortDevice abortDevice) {
+  // Start the abortDevice timer
+  abortDevice.start();
 
-  // Check timeout once - should not be expired since we're well within timeout
-  if (timeout.checkExpired()) {
-    printf("CUDA TIMEOUT ERROR: Unexpected timeout in noTimeoutKernel\n");
+  // Check abortDevice once - should not be expired since we're well within
+  // abortDevice
+  if (abortDevice.checkExpired()) {
+    printf("CUDA TIMEOUT ERROR: Unexpected abortDevice in noTimeoutKernel\n");
     __trap();
   }
 }
@@ -77,12 +81,12 @@ cudaError_t launchSignalStateTimeoutKernel(int device, uint32_t timeout_ms) {
 
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
-  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
+  AbortDevice abortDevice = makeTestAbortDevice(abort, timeout_ms);
 
-  // Launch kernel with a full warp - should trap due to timeout
+  // Launch kernel with a full warp - should trap due to abortDevice
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  signalStateTimeoutKernel<<<1, 32>>>(d_state, timeout);
+  signalStateTimeoutKernel<<<1, 32>>>(d_state, abortDevice);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   const auto syncErr = cudaDeviceSynchronize();
 
@@ -95,23 +99,23 @@ void launchNoTimeoutKernel(int device, uint32_t timeout_ms) {
 
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
-  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
+  AbortDevice abortDevice = makeTestAbortDevice(abort, timeout_ms);
 
   // Launch kernel - should complete normally
-  noTimeoutKernel<<<1, 1>>>(timeout);
+  noTimeoutKernel<<<1, 1>>>(abortDevice);
   CUDA_CHECK(cudaDeviceSynchronize());
 }
 
-// Kernel that uses ThreadGroup-based timeout checking for SignalState
+// Kernel that uses ThreadGroup-based abortDevice checking for SignalState
 __global__ void signalStateThreadGroupTimeoutKernel(
     SignalState* state,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
   auto group = make_thread_group(SyncScope::WARP);
 
   // State is initialized to 0, so waiting for value 1 will spin forever
-  // Uses ThreadGroup-based wait which calls timeout.check(group)
-  state->wait_until(group, CmpOp::CMP_EQ, 1, timeout);
+  // Uses ThreadGroup-based wait which calls abortDevice.check(group)
+  state->wait_until(group, CmpOp::CMP_EQ, 1, abortDevice);
 }
 
 // Simple kernel that sets a flag to indicate it ran
@@ -119,12 +123,12 @@ __global__ void setFlagKernel(int* flag) {
   *flag = 1;
 }
 
-// Kernel that will timeout and trap, used to test stream behavior
-__global__ void timeoutTrapKernel(Timeout timeout) {
-  timeout.start();
-  // Spin until timeout expires, then trap
+// Kernel that will abortDevice and trap, used to test stream behavior
+__global__ void timeoutTrapKernel(AbortDevice abortDevice) {
+  abortDevice.start();
+  // Spin until abortDevice expires, then trap
   while (true) {
-    if (timeout.checkExpired()) {
+    if (abortDevice.checkExpired()) {
       printf("CUDA TIMEOUT ERROR: timeoutTrapKernel timed out\n");
       __trap();
     }
@@ -147,13 +151,13 @@ cudaError_t launchSignalStateThreadGroupTimeoutKernel(
 
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
-  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
+  AbortDevice abortDevice = makeTestAbortDevice(abort, timeout_ms);
 
-  // Launch kernel with a full warp - should trap due to timeout
+  // Launch kernel with a full warp - should trap due to abortDevice
   // Leader-only checking means only thread 0 calls clock64()
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  signalStateThreadGroupTimeoutKernel<<<1, 32>>>(d_state, timeout);
+  signalStateThreadGroupTimeoutKernel<<<1, 32>>>(d_state, abortDevice);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   const auto syncErr = cudaDeviceSynchronize();
 
@@ -179,12 +183,12 @@ cudaError_t launchMultipleKernelsOnStreamTest(
 
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
-  Timeout timeout = makeTestAbortDevice(abort, timeout_ms);
+  AbortDevice abortDevice = makeTestAbortDevice(abort, timeout_ms);
 
-  // Launch first kernel that will trap due to timeout
+  // Launch first kernel that will trap due to abortDevice
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  timeoutTrapKernel<<<1, 1, 0, stream>>>(timeout);
+  timeoutTrapKernel<<<1, 1, 0, stream>>>(abortDevice);
 
   // Launch second kernel on the same stream - should NOT run if first traps
   // Intentionally unchecked - previous kernel will trap

@@ -12,8 +12,8 @@
 
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/benchmarks/TileSendRecv.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/tests/P2pNvlTransportTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
@@ -266,7 +266,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
   dim3 grid(numSendBlocks * 2);
   dim3 block(256);
 
-  Timeout timeout;
+  AbortDevice abortDevice;
 
   for (int iter = 0; iter < nIters; iter++) {
     const int pattern = 0x10 + globalRank + iter * 0x20;
@@ -281,7 +281,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -352,7 +352,7 @@ TEST_F(
 
   comms::fault_tolerance::Abort abort{/*enabled=*/true};
   abort.setDefaultTimeout(std::chrono::milliseconds{5000});
-  Timeout timeout = abort.getDeviceHandle();
+  AbortDevice abortDevice = abort.getDeviceHandle();
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   test::testTileTwoCallSendThenRecv(
@@ -364,7 +364,7 @@ TEST_F(
       secondCallBytes,
       maxSignalBytes,
       threadCount,
-      timeout);
+      abortDevice);
   CUDACHECK_TEST(cudaDeviceSynchronize());
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -406,9 +406,9 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
       static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
 
   std::size_t maxSignalBytesArg = maxSignalBytes;
-  Timeout timeout;
+  AbortDevice abortDevice;
   void* args[] = {
-      &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &timeout};
+      &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &abortDevice};
 
   cudaStream_t stream;
   CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -488,7 +488,7 @@ static void runTileTest(
   dim3 grid(numSendBlocks * 2);
   dim3 block(threadCount);
 
-  Timeout timeout;
+  AbortDevice abortDevice;
 
   for (int iter = 0; iter < nIters; iter++) {
     const int pattern = 0x10 + globalRank + iter * 0x20;
@@ -503,7 +503,7 @@ static void runTileTest(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -1390,7 +1390,7 @@ TEST_F(
 
   comms::fault_tolerance::Abort abort{/*enabled=*/true};
   abort.setDefaultTimeout(std::chrono::milliseconds{5000});
-  Timeout timeout = abort.getDeviceHandle();
+  AbortDevice abortDevice = abort.getDeviceHandle();
 
   test::testTileTwoCallVariableSignalSendRecv(
       p2pHost,
@@ -1403,7 +1403,7 @@ TEST_F(
       secondMaxSignalBytes,
       true,
       threadCount,
-      timeout);
+      abortDevice);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   std::vector<char> hostRecv(totalBytes);
@@ -1528,7 +1528,7 @@ TEST_F(
 
   DeviceBuffer sendBuf(nBytes);
   DeviceBuffer recvBuf(nBytes);
-  Timeout timeout;
+  AbortDevice abortDevice;
 
   const std::vector<int> launchedBlocks = {2, 4, 1, 4};
   for (size_t round = 0; round < launchedBlocks.size(); ++round) {
@@ -1545,7 +1545,7 @@ TEST_F(
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytesArg = maxSignalBytes;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &abortDevice};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -1837,7 +1837,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
 
   dim3 grid(numSendBlocks * 2);
   dim3 block(256);
-  Timeout timeout;
+  AbortDevice abortDevice;
 
   for (size_t callIdx = 0; callIdx < sizes.size(); callIdx++) {
     size_t nBytes = sizes[callIdx];
@@ -1855,7 +1855,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
         static_cast<char*>(recvBuf.get()), nBytes, numSendBlocks);
     std::size_t maxSignalBytes = 0;
     void* args[] = {
-        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
+        &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -2479,7 +2479,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
       {16, 64 * 1024 * 1024}, // 16 blocks, 64MB (large)
   };
 
-  Timeout timeout;
+  AbortDevice abortDevice;
   int prevBlocks = 0;
 
   for (size_t roundIdx = 0; roundIdx < rounds.size(); roundIdx++) {
@@ -2502,7 +2502,8 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
         static_cast<char*>(recvBuf.get()), nBytes, numBlocks);
 
     bool needsBarrier = (prevBlocks != 0 && prevBlocks != numBlocks);
-    void* args[] = {&p2pHost, &sendTiles, &recvTiles, &needsBarrier, &timeout};
+    void* args[] = {
+        &p2pHost, &sendTiles, &recvTiles, &needsBarrier, &abortDevice};
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -2585,7 +2586,7 @@ static void runTileForwardTest(
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
 
-  Timeout timeout;
+  AbortDevice abortDevice;
 
   for (int iter = 0; iter < nIters; iter++) {
     const int pattern = 0x10 + iter * 0x20;
@@ -2613,7 +2614,7 @@ static void runTileForwardTest(
           static_cast<char*>(recvR0Buf.get()), nBytes, numSendBlocks);
       std::size_t maxSignalBytes = 0;
       void* args[] = {
-          &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
+          &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileSendRecv,
@@ -2628,7 +2629,8 @@ static void runTileForwardTest(
       char* dstPtr = static_cast<char*>(fwdR1Buf.get()) + dstOffset;
       comms::prims::TiledBuffer<char> dstTiles(dstPtr, nBytes, numSendBlocks);
       std::size_t maxSignalBytes = 0;
-      void* args[] = {&p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &timeout};
+      void* args[] = {
+          &p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &abortDevice};
 
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)comms::prims::benchmark::p2pTileForward,
@@ -2884,7 +2886,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
   comms::fault_tolerance::Abort abort{/*enabled=*/true};
   abort.setDefaultTimeout(std::chrono::milliseconds{5000});
-  Timeout timeout = abort.getDeviceHandle();
+  AbortDevice abortDevice = abort.getDeviceHandle();
 
   if (globalRank == 0) {
     CUDACHECK_TEST(cudaMemset(
@@ -2913,7 +2915,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         advanceSendBuf.get(),
         kAdvanceBytes,
         kMaxSignalBytes,
-        timeout,
+        abortDevice,
         kNumBlocks,
         kThreadCount);
   } else {
@@ -2922,7 +2924,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         advanceRecvBuf.get(),
         kAdvanceBytes,
         kMaxSignalBytes,
-        timeout,
+        abortDevice,
         kNumBlocks,
         kThreadCount);
   }
@@ -2960,14 +2962,15 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         srcBuf.get(),
         kForwardBytes,
         kMaxSignalBytes,
-        timeout,
+        abortDevice,
         kNumBlocks,
         kThreadCount);
   } else {
     TiledBuffer<char> dstTiles(
         static_cast<char*>(fwdR1Buf.get()), kForwardBytes, kNumBlocks);
     std::size_t maxSignalBytes = kMaxSignalBytes;
-    void* args[] = {&p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &timeout};
+    void* args[] = {
+        &p2pHost, &p2pHost, &dstTiles, &maxSignalBytes, &abortDevice};
 
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileForward,

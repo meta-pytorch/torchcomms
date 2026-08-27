@@ -16,7 +16,7 @@ __global__ void testAllGatherKernel(
     DeviceSpan<Transport> transports) {
   // Call all_gather - it will perform actual data transfers
   all_gather(
-      recvbuff_d, sendbuff_d, sendcount, my_rank_id, transports, Timeout());
+      recvbuff_d, sendbuff_d, sendcount, my_rank_id, transports, AbortDevice());
 }
 
 void testAllGather(

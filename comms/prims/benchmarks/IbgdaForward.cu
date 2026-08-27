@@ -14,7 +14,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_forward_kernel(
     std::size_t totalBytes,
     int numBlocks,
     int my_rank,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
 
   const std::size_t sectionBytes = (my_rank == 1)
@@ -30,14 +30,14 @@ __global__ void __launch_bounds__(512, 1) ibgda_forward_kernel(
 
     if (my_rank == 0) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, group);
-      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, abortDevice);
     } else if (my_rank == 2) {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, abortDevice);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
       prev_transport->forward(
-          group, tiles.data(), *next_transport, tiles.bytes(), 0, timeout);
+          group, tiles.data(), *next_transport, tiles.bytes(), 0, abortDevice);
     }
   }
 }
@@ -50,7 +50,7 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     int my_rank,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
 
   const std::size_t sectionBytes = (my_rank == 1)
@@ -66,14 +66,14 @@ __global__ void __launch_bounds__(512, 1) ibgda_recv_send_kernel(
 
     if (my_rank == 0) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, group);
-      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, abortDevice);
     } else if (my_rank == 2) {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, abortDevice);
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, group);
-      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, timeout);
-      next_transport->send(group, tiles.data(), tiles.bytes(), 0, timeout);
+      prev_transport->recv(group, tiles.data(), tiles.bytes(), 0, abortDevice);
+      next_transport->send(group, tiles.data(), tiles.bytes(), 0, abortDevice);
     }
   }
 }
@@ -87,7 +87,7 @@ void launch_ibgda_forward_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   ibgda_forward_kernel<<<numBlocks, 512, 0, stream>>>(
       prev_transport,
       next_transport,
@@ -96,7 +96,7 @@ void launch_ibgda_forward_chain(
       nbytes,
       numBlocks,
       my_rank,
-      timeout);
+      abortDevice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
@@ -113,7 +113,7 @@ void launch_ibgda_recv_send_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   ibgda_recv_send_kernel<<<numBlocks, 512, 0, stream>>>(
       prev_transport,
       next_transport,
@@ -122,7 +122,7 @@ void launch_ibgda_recv_send_chain(
       nbytes,
       numBlocks,
       my_rank,
-      timeout);
+      abortDevice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(

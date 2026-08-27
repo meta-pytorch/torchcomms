@@ -18,7 +18,7 @@ __global__ void ll128_send_no_recv_kernel(
     const char* src,
     size_t nbytes,
     Ll128Packet* remote_ll128_buf,
-    Timeout timeout) {
+    AbortDevice timeout) {
   auto group = make_warp_group();
   timeout.start();
   // Send data — the sender will poll for ACK (kLl128ReadyToWrite) which
@@ -75,7 +75,7 @@ __global__ void ll128_send_recv_undersized_buffer_kernel(
     size_t buffer_num_packets) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {

@@ -154,8 +154,9 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     SyncScope groupScope = config.groupScope;
     void* devicePtr = isSend ? sendBuff.get() : recvBuff.get();
     std::size_t nBytes = config.nBytes;
-    Timeout timeout;
-    void* args[] = {p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
+    AbortDevice abortDevice;
+    void* args[] = {
+        p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &abortDevice};
 
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
@@ -224,11 +225,12 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     bool isSend = (globalRank == 0);
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
-    Timeout timeout; // Default timeout (disabled)
+    AbortDevice abortDevice; // Default abortDevice (disabled)
     // p2pDevicePtr points to a host-side P2pNvlTransportDevice;
     // cudaLaunchKernel reads the struct by value from host memory for the
     // kernel parameter.
-    void* args[] = {p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &timeout};
+    void* args[] = {
+        p2pDevicePtr, &devicePtr, &nBytes, &groupScope, &abortDevice};
 
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
@@ -294,7 +296,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     dim3 blockDim(config.numThreads);
 
     CudaEvent start, stop;
-    Timeout timeout;
+    AbortDevice abortDevice;
 
     // Create TiledBuffer views for send and recv
     comms::prims::TiledBuffer<char> sendTiles(
@@ -311,7 +313,7 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         ? (void*)comms::prims::benchmark::p2pTileSendRecvBidirCta
         : (void*)comms::prims::benchmark::p2pTileSendRecv;
     void* args[] = {
-        p2pDevicePtr, &sendTiles, &recvTiles, &maxSignalBytes, &timeout};
+        p2pDevicePtr, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
     std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
@@ -498,12 +500,12 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* sendPtr = sendBuff.get();
     void* recvPtr = recvBuff.get();
     SyncScope groupScope = config.groupScope;
-    Timeout timeout; // Default timeout (disabled)
+    AbortDevice abortDevice; // Default abortDevice (disabled)
     // p2pDevicePtr points to a host-side P2pNvlTransportDevice;
     // cudaLaunchKernel reads the struct by value from host memory for the
     // kernel parameter.
     void* args[] = {
-        p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+        p2pDevicePtr, &sendPtr, &recvPtr, &nBytes, &groupScope, &abortDevice};
 
     void* kernelFunc = (void*)comms::prims::benchmark::p2pBidirectional;
 

@@ -264,7 +264,7 @@ class AllToAllvLl128BenchmarkFixture
         ? std::optional{defaultClusterDim}
         : std::nullopt;
 
-    Timeout timeout_config;
+    AbortDevice timeout_config;
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
@@ -373,7 +373,7 @@ class AllToAllvLl128BenchmarkFixture
 
     comms::fault_tolerance::Abort abort{/*enabled=*/true};
     abort.setDefaultTimeout(std::chrono::milliseconds{5000});
-    Timeout timeout_config = abort.getDeviceHandle();
+    AbortDevice timeout_config = abort.getDeviceHandle();
 
     // Warmup: per-iteration sync to ensure each iteration completes
     bootstrap->barrierAll();

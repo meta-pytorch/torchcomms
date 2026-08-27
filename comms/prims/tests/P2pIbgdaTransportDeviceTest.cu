@@ -143,7 +143,7 @@ __global__ void testWaitSignalUntilAbort(
       1);
 
   // Arm the deadline the way a production kernel does. Without this the
-  // handle observes explicit aborts only, and a communicator timeout never
+  // handle observes explicit aborts only, and a communicator abortDevice never
   // reaches the wait.
   abort.start();
   // Published after the handle is armed, so a host that sees it knows every
@@ -411,12 +411,14 @@ void runTestTraceIbgdaEvent(PipesTraceHandle trace) {
 }
 
 // =============================================================================
-// wait_signal timeout test kernels
+// wait_signal abortDevice test kernels
 // =============================================================================
 
-__global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
-  // Start the timeout timer
-  timeout.start();
+__global__ void testWaitSignalTimeout(
+    uint64_t* d_signalBuf,
+    AbortDevice abortDevice) {
+  // Start the abortDevice timer
+  abortDevice.start();
 
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
@@ -428,14 +430,16 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
       1);
 
   // Signal buffer is pre-set to 0 by host.
-  // Waiting for >= 999 will never succeed, so timeout should fire.
-  transport.wait_signal(0, 999, timeout);
+  // Waiting for >= 999 will never succeed, so abortDevice should fire.
+  transport.wait_signal(0, 999, abortDevice);
 }
 
-__global__ void
-testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
-  // Start the timeout timer
-  timeout.start();
+__global__ void testWaitSignalNoTimeout(
+    uint64_t* d_signalBuf,
+    AbortDevice abortDevice,
+    bool* success) {
+  // Start the abortDevice timer
+  abortDevice.start();
 
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
@@ -447,14 +451,14 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
       1);
 
   // Signal buffer is pre-set to 42 by host.
-  // Waiting for >= 42 will succeed immediately, no timeout.
-  transport.wait_signal(0, 42, timeout);
+  // Waiting for >= 42 will succeed immediately, no abort handle.
+  transport.wait_signal(0, 42, abortDevice);
 
   *success = true;
 }
 
 // =============================================================================
-// wait_signal timeout test wrapper functions
+// wait_signal abortDevice test wrapper functions
 // =============================================================================
 
 cudaError_t runTestWaitSignalTimeout(
@@ -468,11 +472,11 @@ cudaError_t runTestWaitSignalTimeout(
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
   abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
-  Timeout timeout = abort.getDeviceHandle();
+  AbortDevice abortDevice = abort.getDeviceHandle();
 
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, timeout);
+  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, abortDevice);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   return cudaDeviceSynchronize();
 }
@@ -482,9 +486,9 @@ void runTestWaitSignalNoTimeout(
     int /*device*/,
     uint32_t /*timeout_ms*/,
     bool* d_success) {
-  Timeout timeout;
+  AbortDevice abortDevice;
 
-  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, timeout, d_success);
+  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, abortDevice, d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

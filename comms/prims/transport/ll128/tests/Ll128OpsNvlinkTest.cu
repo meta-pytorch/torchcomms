@@ -25,7 +25,7 @@ __global__ void ll128_nvlink_send_kernel(
     size_t buffer_num_packets,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll128_send(
@@ -40,7 +40,7 @@ __global__ void ll128_nvlink_recv_kernel(
     size_t buffer_num_packets,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll128_recv(
@@ -56,7 +56,7 @@ __global__ void ll128_nvlink_forward_kernel(
     size_t buffer_num_packets,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll128_forward(
@@ -88,7 +88,7 @@ __global__ void ll128_nvlink_send_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   if (partition_id == 0) {
     for (int i = 0; i < num_steps; i++) {
@@ -386,7 +386,7 @@ __global__ void ll128_nvlink_varying_send_kernel(
     size_t buffer_num_packets,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll128_send(
@@ -406,7 +406,7 @@ __global__ void ll128_nvlink_varying_recv_kernel(
     size_t buffer_num_packets,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout abortDevice;
+  AbortDevice abortDevice;
   abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll128_recv(
