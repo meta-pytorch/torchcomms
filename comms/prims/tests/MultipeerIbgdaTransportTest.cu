@@ -739,6 +739,40 @@ void testWarpProxySendRecv(
 #endif
 }
 
+void launchWarpProxyStalledSend(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    uint32_t queueDepth,
+    comms::fault_tolerance::AbortDevice abort) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)buffer;
+  (void)nbytes;
+  (void)maxSignalBytes;
+  (void)queueDepth;
+  (void)abort;
+  throw std::runtime_error("warp proxy is NVIDIA-only");
+#else
+  warpProxySendRecvKernel<<<1, WarpProxyTest::kBlockThreads>>>(
+      transport,
+      buffer,
+      nbytes,
+      maxSignalBytes,
+      /*send=*/true,
+      queueDepth,
+      /*queueFullCount=*/nullptr,
+      abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+  // Deliberately no synchronize: the caller aborts while this is parked.
+#endif
+}
+
 void testProgressSendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
