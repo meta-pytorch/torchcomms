@@ -129,6 +129,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
   comm->logMetaData_.commDesc = commDesc;
   comm->logMetaData_.rank = globalRank;
   comm->logMetaData_.nRanks = numRanks;
+  // Mirrors the standalone-ctran-comm creator policy.
+  comm->config_.enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0;
 
   int cudaDev;
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));

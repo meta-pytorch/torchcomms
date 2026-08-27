@@ -517,6 +517,10 @@ std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
       /*commRanksToWorldRanks=*/std::move(commRanksToWorldRanks),
       /*commDesc=*/std::string(kCommDesc));
 
+  // Mirrors the standalone-ctran-comm creator policy.
+  ctranComm->config_.enableProfiler =
+      NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0;
+
   EXPECT_EQ(ctranInit(ctranComm.get()), commSuccess);
 
   CLOGF(INFO, "UT CTran initialized");
@@ -601,6 +605,10 @@ void initCtranCommMultiRank(PerRankState& state) {
       std::move(commRanksToWorldRanks),
       std::string{kMultiRankCommDesc});
   ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
+
+  // Mirrors the standalone-ctran-comm creator policy.
+  ctranComm->config_.enableProfiler =
+      NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0;
 
   FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 
