@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <vector>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -90,7 +91,8 @@ class CtranAllGatherTest : public CtranIntraProcessFixture,
   void runAllGather(size_t sendCount, PerRankState& state) {
     validateConfigs(sendCount * kNRanks);
 
-    CLOGF(INFO, "rank {} allGather with {} sendCount", state.rank, sendCount);
+    CTRAN_LOG(
+        INFO, "rank {} allGather with {} sendCount", state.rank, sendCount);
 
     initBufferValues(sendCount, state);
 
@@ -109,7 +111,7 @@ class CtranAllGatherTest : public CtranIntraProcessFixture,
       state.ctranComm->ctran_->commDeregister(srcHandle);
     };
 
-    CLOGF(INFO, "rank {} allGather completed registration", state.rank);
+    CTRAN_LOG(INFO, "rank {} allGather completed registration", state.rank);
 
     if (!ctranAllGatherSupport(state.ctranComm.get(), NCCL_ALLGATHER_ALGO)) {
       GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
@@ -124,14 +126,14 @@ class CtranAllGatherTest : public CtranIntraProcessFixture,
         NCCL_ALLGATHER_ALGO);
     EXPECT_EQ(commSuccess, result);
 
-    CLOGF(INFO, "rank {} allGather scheduled", state.rank);
+    CTRAN_LOG(INFO, "rank {} allGather scheduled", state.rank);
 
     EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
     EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
 
     validateAllGatherData(sendCount, state);
 
-    CLOGF(INFO, "rank {} allGather task completed", state.rank);
+    CTRAN_LOG(INFO, "rank {} allGather task completed", state.rank);
   }
 
   void validateAllGatherData(size_t sendCount, PerRankState& state) {

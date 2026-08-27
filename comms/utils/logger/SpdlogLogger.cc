@@ -53,8 +53,9 @@ spdlog::level::level_enum loggerLevelToSpdlogLevel(LogLevel level) {
     case LogLevel::INFO:
       return spdlog::level::info;
     case LogLevel::ABORT:
-    case LogLevel::TRACE:
       return spdlog::level::debug;
+    case LogLevel::TRACE:
+      return spdlog::level::trace;
   }
   return spdlog::level::off;
 }

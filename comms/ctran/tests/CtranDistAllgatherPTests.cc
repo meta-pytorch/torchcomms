@@ -3,6 +3,7 @@
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <stdlib.h>
 
@@ -512,7 +513,7 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
   const auto maxRecvCount = 8192 * numRanks;
   for (auto memType : memTypes) {
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
-      XLOG(INFO)
+      CTRAN_LOG_STREAM(INFO)
           << "CuMem not supported, skipping InvalidCount test with memType = kMemNcclMemAlloc";
       ;
       continue;
@@ -753,7 +754,7 @@ TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
   }
 
   if (ncclIsCuMemSupported() == false) {
-    XLOG(INFO)
+    CTRAN_LOG_STREAM(INFO)
         << "CuMem not supported, skipping SharePersistentBuffer test with memType = kMemNcclMemAlloc";
     return;
   }

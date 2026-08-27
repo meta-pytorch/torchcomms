@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <algorithm>
 
@@ -62,8 +63,8 @@ TEST_F(MultiPeerTransportTest, InitAndExchange) {
   EXPECT_EQ(comm->multiPeerTransport_->n_ranks(), numRanks)
       << "MultiPeerTransport nRanks should match numRanks";
 
-  XLOG(INFO) << "Rank " << globalRank << "/" << numRanks
-             << ": MultiPeerTransport initialized successfully";
+  CTRAN_LOG_STREAM(INFO) << "Rank " << globalRank << "/" << numRanks
+                         << ": MultiPeerTransport initialized successfully";
 
   // Verify transport types are set for all peers
   for (int peer = 0; peer < numRanks; peer++) {
@@ -78,15 +79,16 @@ TEST_F(MultiPeerTransportTest, InitAndExchange) {
           transportType == comms::prims::TransportType::P2P_IBGDA)
           << "Transport to peer " << peer << " should be P2P_NVL or P2P_IBGDA";
     }
-    XLOG(INFO) << "Rank " << globalRank << ": transport to peer " << peer
-               << " is type " << static_cast<int>(transportType);
+    CTRAN_LOG_STREAM(INFO) << "Rank " << globalRank << ": transport to peer "
+                           << peer << " is type "
+                           << static_cast<int>(transportType);
   }
 
   // Verify NVL peer info
   int nvlNRanks = comm->multiPeerTransport_->nvl_n_ranks();
   int nvlLocalRank = comm->multiPeerTransport_->nvl_local_rank();
-  XLOG(INFO) << "Rank " << globalRank << ": NVL local rank " << nvlLocalRank
-             << "/" << nvlNRanks;
+  CTRAN_LOG_STREAM(INFO) << "Rank " << globalRank << ": NVL local rank "
+                         << nvlLocalRank << "/" << nvlNRanks;
 
   EXPECT_GE(nvlNRanks, 1) << "Should have at least 1 NVL rank (self)";
   EXPECT_GE(nvlLocalRank, 0) << "NVL local rank should be >= 0";
@@ -131,10 +133,11 @@ TEST_F(MultiPeerTransportTest, DeviceHandle) {
   EXPECT_EQ(deviceHandle.transports.size(), static_cast<size_t>(numRanks))
       << "Device handle transports should have nRanks entries";
 
-  XLOG(INFO) << "Rank " << globalRank
-             << ": MultiPeerTransport device handle created successfully"
-             << ", numNvlPeers=" << deviceHandle.numNvlPeers
-             << ", numIbPeers=" << deviceHandle.numIbPeers;
+  CTRAN_LOG_STREAM(INFO)
+      << "Rank " << globalRank
+      << ": MultiPeerTransport device handle created successfully"
+      << ", numNvlPeers=" << deviceHandle.numNvlPeers
+      << ", numIbPeers=" << deviceHandle.numIbPeers;
 }
 
 // Verify that the P2pNvlTransportDevice objects constructed by CtranAlgo
@@ -207,10 +210,12 @@ TEST_F(MultiPeerTransportTest, TransportBufferPointersMatchStagingBuffers) {
         << ": P2pNvlTransportDevice remote data buffer for peer " << peer
         << " does not match SharedResource staging buffer";
 
-    XLOG(INFO) << "Rank " << globalRank << ": peer " << peer
-               << " buffer pointers verified"
-               << " localData=" << static_cast<void*>(expectedLocalData)
-               << " remoteData=" << static_cast<void*>(expectedRemoteData);
+    CTRAN_LOG_STREAM(INFO) << "Rank " << globalRank << ": peer " << peer
+                           << " buffer pointers verified"
+                           << " localData="
+                           << static_cast<void*>(expectedLocalData)
+                           << " remoteData="
+                           << static_cast<void*>(expectedRemoteData);
   }
 }
 
@@ -284,9 +289,9 @@ TEST_F(MultiPeerTransportTest, StagingBufferIpcAccessible) {
       << "'s staging buffer through IPC. "
       << "This indicates the external buffer wiring is incorrect.";
 
-  XLOG(INFO) << "Rank " << globalRank << ": IPC read from peer "
-             << peerGlobalRank << "'s staging buffer verified (" << kNumElements
-             << " elements)";
+  CTRAN_LOG_STREAM(INFO) << "Rank " << globalRank << ": IPC read from peer "
+                         << peerGlobalRank << "'s staging buffer verified ("
+                         << kNumElements << " elements)";
 
   comm->bootstrap_->barrier(comm->statex_->rank(), comm->statex_->nRanks())
       .get();

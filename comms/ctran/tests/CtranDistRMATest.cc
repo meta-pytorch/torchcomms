@@ -4,6 +4,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
@@ -287,9 +288,9 @@ TEST_P(CtranRMATestParam, winPutWait) {
         cudaEventElapsedTime(&elapsed_time_ms, start_event, end_event));
     // time captured with kNumIters - 1 iterations
     float achieved_bw = chunkBytes / elapsed_time_ms / 1e6 * (kNumIters - 1);
-    XLOGF(
+    CTRAN_LOG(
         INFO,
-        "[%d] elapsed time %.2f ms for %zu bytes * %ld iterations (%.2f GB/s), on %s\n",
+        "[{}] elapsed time {:.2f} ms for {} bytes * {} iterations ({:.2f} GB/s), on {}",
         statex->rank(),
         elapsed_time_ms,
         chunkBytes,
@@ -411,9 +412,9 @@ TEST_P(CtranRMATestParam, winWaitPut) {
         cudaEventElapsedTime(&elapsed_time_ms, start_event, end_event));
     // time captured with kNumIters - 1 iterations
     float achieved_bw = chunkBytes / elapsed_time_ms / 1e6 * (kNumIters - 1);
-    XLOGF(
+    CTRAN_LOG(
         INFO,
-        "[%d] elapsed time %.2f ms for %zu bytes * %ld iterations (%.2f GB/s), on %s\n",
+        "[{}] elapsed time {:.2f} ms for {} bytes * {} iterations ({:.2f} GB/s), on {}",
         statex->rank(),
         elapsed_time_ms,
         chunkBytes,

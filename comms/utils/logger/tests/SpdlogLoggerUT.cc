@@ -265,6 +265,17 @@ TEST(SpdlogLoggerTest, MapsFollyLevelNames) {
   });
 }
 
+TEST(SpdlogLoggerTest, MapsLegacyTraceAndAbortLevels) {
+  EXPECT_EQ(
+      meta::comms::logger::loggerLevelToSpdlogLevel(
+          meta::comms::logger::LogLevel::TRACE),
+      spdlog::level::trace);
+  EXPECT_EQ(
+      meta::comms::logger::loggerLevelToSpdlogLevel(
+          meta::comms::logger::LogLevel::ABORT),
+      spdlog::level::debug);
+}
+
 TEST(SpdlogLoggerTest, FatalTerminatesProcess) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_DEATH(

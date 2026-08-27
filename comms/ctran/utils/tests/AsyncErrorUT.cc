@@ -52,7 +52,7 @@ TEST(CtranAsyncErrorTest, SetAndGet) {
 }
 
 TEST(AsyncErrorTest, AbortOnError) {
-  // Do not check exit code since CLOGF(FATAL) may trigger core dump, and
+  // Do not check exit code since CTRAN_LOG(FATAL) may trigger core dump, and
   // changed SIGABRT to core dump
   EXPECT_DEATH(
       {

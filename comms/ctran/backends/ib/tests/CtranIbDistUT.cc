@@ -11,7 +11,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -58,9 +58,9 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
     // NOTE: Printing it as WARN to make this log visible as our default setting
     // is to only print WARN and above logs.
-    XLOG_IF(WARN, this->globalRank == 0)
+    CTRAN_LOG_STREAM_IF(WARN, this->globalRank == 0)
         << testName << " numRanks " << this->numRanks
-        << ". Description: " << testDesc << std::endl;
+        << ". Description: " << testDesc;
   }
 
   size_t getIbRegCount() {
