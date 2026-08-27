@@ -6,8 +6,8 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
@@ -161,7 +161,7 @@ TEST_F(DciStreamsTestFixture, DciStreamsMultiTargetWrite) {
   auto pollOk1 = pollCqForCompletions(0, *cq_, 1);
   ASSERT_TRUE(pollOk1) << "stream 0 -> DCT-A poll failed: "
                        << pollOk1.error().errStr;
-  XLOG(INFO) << "stream_id=0 -> DCT-A: success";
+  CTRAN_LOG_STREAM(INFO) << "stream_id=0 -> DCT-A: success";
 
   // Post RDMA write with stream_id=1 to DCT-B
   ASSERT_EQ(postDcRdmaWriteStream(exQp_, dvQp_, *ahB_, cardB_, sge_, 1, 1), 0)
@@ -170,7 +170,7 @@ TEST_F(DciStreamsTestFixture, DciStreamsMultiTargetWrite) {
   auto pollOk2 = pollCqForCompletions(0, *cq_, 1);
   ASSERT_TRUE(pollOk2) << "stream 1 -> DCT-B poll failed: "
                        << pollOk2.error().errStr;
-  XLOG(INFO) << "stream_id=1 -> DCT-B: success";
+  CTRAN_LOG_STREAM(INFO) << "stream_id=1 -> DCT-B: success";
 
   // Verify DCI is still in RTS after successful multi-stream writes
   {
@@ -181,7 +181,7 @@ TEST_F(DciStreamsTestFixture, DciStreamsMultiTargetWrite) {
         << "DCI should remain in RTS after successful writes";
   }
 
-  XLOG(INFO) << "Multi-target stream writes verified successfully.";
+  CTRAN_LOG_STREAM(INFO) << "Multi-target stream writes verified successfully.";
 }
 
 // Kill one peer (DCT-B), keep sending on both streams.
@@ -193,10 +193,10 @@ TEST_F(DciStreamsTestFixture, DciStreamsFaultIsolation) {
       postDcRdmaWriteStream(exQp_, dvQp_, *ahA_, cardA_, sge_, 100, 0), 0);
   auto preOk = pollCqForCompletions(0, *cq_, 1);
   ASSERT_TRUE(preOk) << "Pre-kill stream 0 -> DCT-A failed";
-  XLOG(INFO) << "Pre-kill: stream_id=0 -> DCT-A: success";
+  CTRAN_LOG_STREAM(INFO) << "Pre-kill: stream_id=0 -> DCT-A: success";
 
   // --- Step 2: Kill DCT-B (simulate peer going down) ---
-  XLOG(INFO) << "Destroying DCT-B (simulating peer failure)";
+  CTRAN_LOG_STREAM(INFO) << "Destroying DCT-B (simulating peer failure)";
   dctB_.reset();
 
   // --- Step 3: Send to dead DCT-B on stream 1 → expect error ---
@@ -215,7 +215,7 @@ TEST_F(DciStreamsTestFixture, DciStreamsFaultIsolation) {
             << "Expected error completion for dead DCT-B";
         EXPECT_EQ(wc.wr_id, 1u) << "Error should be for stream 1 (wr_id=1)";
         gotError = true;
-        XLOGF(
+        CTRAN_LOG(
             INFO,
             "stream_id=1 -> dead DCT-B: error status={}, vendor_err={}",
             wc.status,
@@ -234,10 +234,10 @@ TEST_F(DciStreamsTestFixture, DciStreamsFaultIsolation) {
     auto queryResult = dci_->queryQp(IBV_QP_STATE);
     ASSERT_TRUE(queryResult) << "queryQp failed";
     auto& [qpAttr, qpInitAttr] = *queryResult;
-    XLOGF(INFO, "DCI QP state after stream error: {}", qpAttr.qp_state);
+    CTRAN_LOG(INFO, "DCI QP state after stream error: {}", qpAttr.qp_state);
 
     if (qpAttr.qp_state != IBV_QPS_RTS) {
-      XLOGF(
+      CTRAN_LOG(
           WARN,
           "DCI moved to state {} (not RTS). HW max_log_num_errored may be 0, "
           "meaning 1 errored stream pushes the DCI to ERR. Fault isolation "
@@ -255,14 +255,15 @@ TEST_F(DciStreamsTestFixture, DciStreamsFaultIsolation) {
   // --- Step 5: Keep sending on healthy stream 0 to live DCT-A ---
   // With max_log_num_errored=0, the DCI may report RTS but still fail on
   // other streams. True fault isolation requires max_log_num_errored > 0.
-  XLOG(INFO) << "DCI still in RTS — sending on healthy stream to live peer";
+  CTRAN_LOG_STREAM(INFO)
+      << "DCI still in RTS — sending on healthy stream to live peer";
   ASSERT_EQ(postDcRdmaWriteStream(exQp_, dvQp_, *ahA_, cardA_, sge_, 2, 0), 0);
 
   // Poll — on HW with max_log_num_errored=0, this may fail even though the
   // DCI is in RTS, because the errored stream contaminates the DCI.
   auto pollOk = pollCqForCompletions(0, *cq_, 1);
   if (pollOk.hasError()) {
-    XLOGF(
+    CTRAN_LOG(
         WARN,
         "Post-kill stream 0 -> DCT-A failed: {}. "
         "DCI is in RTS but errored stream contaminated other streams. "
@@ -273,19 +274,19 @@ TEST_F(DciStreamsTestFixture, DciStreamsFaultIsolation) {
         << "Firmware max_log_num_errored=0 does not provide true fault "
         << "isolation: " << pollOk.error().errStr;
   }
-  XLOG(INFO)
+  CTRAN_LOG_STREAM(INFO)
       << "Post-kill: stream_id=0 -> DCT-A: success. Fault isolation verified.";
 
   // --- Step 6: Try resetting the errored stream if supported ---
   auto resetResult = resetDciStream(*dci_, 1);
   if (resetResult.hasError()) {
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "dci_stream_id_reset not supported (errno={}): {}",
         resetResult.error().errNum,
         resetResult.error().errStr);
   } else {
-    XLOG(INFO) << "stream_id=1 reset successfully";
+    CTRAN_LOG_STREAM(INFO) << "stream_id=1 reset successfully";
   }
 }
 
@@ -306,10 +307,11 @@ TEST_F(DciStreamsTestFixture, DciStreamsCompletionClassification) {
   auto preOk = pollCqForCompletions(0, *cq_, kWrsPerStream);
   ASSERT_TRUE(preOk) << "Pre-kill stream 0 writes failed: "
                      << preOk.error().errStr;
-  XLOG(INFO) << "Pre-kill: 3 WRs on stream 0 -> DCT-A all succeeded";
+  CTRAN_LOG_STREAM(INFO)
+      << "Pre-kill: 3 WRs on stream 0 -> DCT-A all succeeded";
 
   // --- Step 2: Kill DCT-B ---
-  XLOG(INFO) << "Destroying DCT-B (simulating peer failure)";
+  CTRAN_LOG_STREAM(INFO) << "Destroying DCT-B (simulating peer failure)";
   dctB_.reset();
 
   // --- Step 3: Post 3 WRs on stream 1 to dead DCT-B ---
@@ -368,7 +370,7 @@ TEST_F(DciStreamsTestFixture, DciStreamsCompletionClassification) {
         ok ? stream1Success++ : stream1Error++;
       }
 
-      XLOGF(
+      CTRAN_LOG(
           INFO,
           "  WC: stream={}, seq={}, status={}, vendor_err={} [{}]",
           sid,
@@ -390,18 +392,18 @@ TEST_F(DciStreamsTestFixture, DciStreamsCompletionClassification) {
 
   int stuck = kTotalPosted - totalPolled;
 
-  XLOG(INFO) << "=== Completion Classification ===";
-  XLOGF(
+  CTRAN_LOG_STREAM(INFO) << "=== Completion Classification ===";
+  CTRAN_LOG(
       INFO,
       "  Stream 0 (live DCT-A):  {} success, {} error",
       stream0Success,
       stream0Error);
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "  Stream 1 (dead DCT-B): {} success, {} error",
       stream1Success,
       stream1Error);
-  XLOGF(INFO, "  Stuck (no completion):  {}", stuck);
+  CTRAN_LOG(INFO, "  Stuck (no completion):  {}", stuck);
 
   // Stream 1 should have errors (sent to dead DCT)
   EXPECT_GT(stream1Error, 0) << "Expected errors on stream 1 (dead DCT-B)";
@@ -412,18 +414,20 @@ TEST_F(DciStreamsTestFixture, DciStreamsCompletionClassification) {
     auto queryResult = dci_->queryQp(IBV_QP_STATE);
     ASSERT_TRUE(queryResult);
     auto& [qpAttr, qpInitAttr] = *queryResult;
-    XLOGF(INFO, "  DCI QP state: {}", qpAttr.qp_state);
+    CTRAN_LOG(INFO, "  DCI QP state: {}", qpAttr.qp_state);
   }
 
   // On HW with max_log_num_errored=0, stream 0's post-kill WRs may also
   // error or be stuck. Log it either way — the classification is the value.
   if (stream0Error > 0 || stuck > 0) {
-    XLOG(INFO) << "  Note: stream 0 WRs also affected — fault isolation not "
-               << "available (max_log_num_errored likely 0)";
+    CTRAN_LOG_STREAM(INFO)
+        << "  Note: stream 0 WRs also affected — fault isolation not "
+        << "available (max_log_num_errored likely 0)";
   }
   if (stream0Success == kWrsPerStream && stream0Error == 0) {
-    XLOG(INFO) << "  Fault isolation confirmed: stream 0 fully operational "
-               << "despite stream 1 errors";
+    CTRAN_LOG_STREAM(INFO)
+        << "  Fault isolation confirmed: stream 0 fully operational "
+        << "despite stream 1 errors";
   }
 }
 
@@ -432,5 +436,6 @@ TEST_F(DciStreamsTestFixture, DciStreamsCompletionClassification) {
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::warn);
   return RUN_ALL_TESTS();
 }

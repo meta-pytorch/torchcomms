@@ -22,7 +22,6 @@
 
 #include <folly/init/Init.h>
 #include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"

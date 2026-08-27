@@ -4,7 +4,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <folly/logging/xlog.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 

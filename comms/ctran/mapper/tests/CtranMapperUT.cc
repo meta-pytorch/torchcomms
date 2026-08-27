@@ -2,6 +2,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <cstdlib>
 #include <memory>
@@ -1451,7 +1452,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     }
     usedDisjointAllocation = true;
 
-    CLOGF(
+    CTRAN_LOG(
         INFO,
         "Disjoint allocation created {} segments: seg0[{}, {}], seg1[{}, {}]",
         segments.size(),
@@ -1462,7 +1463,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
 
     buf = (char*)bufBase + offset;
 
-    CLOGF(INFO, "bufBase: {}, buf: {}", bufBase, buf);
+    CTRAN_LOG(INFO, "bufBase: {}, buf: {}", bufBase, buf);
 
     // Turn on profiler after initialization to track only test registrations
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = 0;

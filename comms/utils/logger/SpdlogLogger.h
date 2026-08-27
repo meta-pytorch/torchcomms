@@ -236,6 +236,8 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 
 #define COMMS_LOGGER_DEBUG(logger, ...) \
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
+#define COMMS_LOGGER_TRACE(logger, ...) \
+  SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
  * shutdownSpdlogForFatal() releases the library-owned async pool. It drains
