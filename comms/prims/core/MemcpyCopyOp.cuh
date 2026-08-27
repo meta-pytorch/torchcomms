@@ -6,10 +6,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 

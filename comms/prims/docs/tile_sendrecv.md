@@ -202,14 +202,14 @@ class P2pNvlTransportDevice {
       const void* src,
       size_t nbytes,
       size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   __device__ void recv(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
       size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   __device__ void forward(
       ThreadGroup& group,
@@ -217,7 +217,7 @@ class P2pNvlTransportDevice {
       size_t nbytes,
       P2pNvlTransportDevice& successor,
       size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 };
 
 class P2pIbgdaTransportDevice {
@@ -227,14 +227,14 @@ class P2pIbgdaTransportDevice {
       const void* src,
       size_t nbytes,
       size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 
   __device__ void recv(
       ThreadGroup& group,
       void* dst,
       size_t nbytes,
       size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& timeout = AbortDevice());
 };
 ```
 
@@ -268,7 +268,7 @@ def recv(dst_ptr, nbytes, block_id, max_signal_bytes, timeout_ns,
 | `src` / `dst` | yes | — | This block's pre-sliced data pointer. Caller computes per-block offset (see `TiledBuffer`). |
 | `nbytes` | yes | — | This block's data size. May exceed `per_channel_size` — chunked internally over pipeline slots. |
 | `max_signal_bytes` | no | `0` → `per_channel_size` | Hint for the maximum number of bytes between consecutive DATA_READY signals. Capped at `per_channel_size` if larger (sub-slot signaling only). |
-| `timeout` | no | `Timeout()` (no limit) | Per-wait timeout. Reuses `comms::prims::Timeout`. On expiry: `__trap()`. |
+| `timeout` | no | `AbortDevice()` (no limit) | Per-wait abort handle. Reuses `comms::fault_tolerance::AbortDevice`. On expiry the wait terminates; see `comms/common/fault_tolerance/FAULT_TOLERANCE.md`. |
 
 ### Special values
 
@@ -594,7 +594,7 @@ blocks into senders and receivers.
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 using namespace comms::prims;
 
@@ -602,7 +602,7 @@ __global__ void bidirectional_send_recv_kernel(
     P2pIbgdaTransportDevice* transport,
     char* src, char* dst,
     size_t total_bytes,
-    Timeout timeout) {
+    AbortDevice timeout) {
   auto group = make_block_group();
   auto [role, sub] = group.partition(2);
   const bool is_sender = (role == 0);
@@ -640,7 +640,7 @@ transport.exchange();
 
 auto* device_xport = transport.get_p2p_transport_device(peer_rank);
 bidirectional_send_recv_kernel<<<128, 256, 0, stream>>>(
-    device_xport, send_buf, recv_buf, total_bytes, Timeout::ms(5000));
+    device_xport, send_buf, recv_buf, total_bytes, abort.getDeviceHandle());
 ```
 
 Notes on the example:

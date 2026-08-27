@@ -19,9 +19,9 @@
 #include <string>
 
 #include "comms/common/fault_tolerance/TestAbort.h"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::test {

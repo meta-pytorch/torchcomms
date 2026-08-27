@@ -636,7 +636,7 @@ __device__ __forceinline__ void signal_publish(
 /**
  * Waits for the selected publishers on every selected waiter rank.
  *
- * A caller that enables abortDevice checking must call `Timeout::start()`
+ * A caller that enables abortDevice checking must call `AbortDevice::start()`
  * before this function.
  *
  * @param transport Exchanged multimem transport device view.

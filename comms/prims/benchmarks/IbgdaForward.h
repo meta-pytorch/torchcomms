@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 namespace comms::prims {
 class P2pIbgdaTransportDevice;

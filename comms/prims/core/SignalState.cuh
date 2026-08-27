@@ -6,8 +6,8 @@
 
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/BitOps.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
 namespace comms::prims {

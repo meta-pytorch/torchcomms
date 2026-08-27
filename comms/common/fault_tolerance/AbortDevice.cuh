@@ -227,11 +227,10 @@ struct AbortDevice final {
   }
 
   /**
-   * Transition alias for Prims `Timeout::start()`.
+   * Legacy spelling of `startTimeout()`, kept for the Prims waits that were
+   * written against the retired standalone timeout type.
    *
-   * New device code should prefer `startTimeout()`. This exists so timeout
-   * shaped Prims waits can migrate to `AbortDevice` without introducing a
-   * separate adapter type.
+   * New device code should prefer `startTimeout()`.
    */
   __device__ void start() {
     startTimeout();
@@ -277,7 +276,7 @@ struct AbortDevice final {
   }
 
   /**
-   * Transition alias for Prims `Timeout::checkExpired()`.
+   * Legacy spelling of the raw expiry predicate, kept for migrated Prims waits.
    *
    * Returns true for either an explicit abort or an expired local device
    * timeout. If this handle's local deadline has expired, this records
@@ -294,8 +293,8 @@ struct AbortDevice final {
     }
 
     // `state_` lives in mapped pinned host memory, so every read here is an
-    // uncached PCIe round trip. The pre-migration Prims `Timeout` compared an
-    // on-chip clock and touched no memory at all, so a naive port turns each
+    // uncached PCIe round trip. The retired standalone Prims timeout compared
+    // an on-chip clock and touched no memory at all, so a naive port turns each
     // spin-loop iteration into a host access - worst case 32 lanes x 2 loads
     // per warp per iteration in the LL small-message path. Gate the shared
     // read on the free device clock: steady-state polling costs a register
@@ -319,7 +318,7 @@ struct AbortDevice final {
   }
 
   /**
-   * Group-scoped transition alias for Prims `Timeout::checkExpired(group)`.
+   * Group-scoped form of the legacy raw expiry predicate.
    *
    * Only the group leader polls shared abort state, matching the current
    * timeout check shape used by Prims wait loops.
