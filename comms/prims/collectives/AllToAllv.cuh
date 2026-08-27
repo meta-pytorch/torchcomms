@@ -117,7 +117,7 @@ __device__ __forceinline__ void all_to_allv(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout
+    AbortDevice abortDevice
     // all arguments below will eventually come from communicator
 ) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -245,7 +245,7 @@ __device__ __forceinline__ void all_to_allv(
         tiles.data(),
         tiles.bytes(),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   } else {
     TiledBuffer<char> tiles(
         static_cast<char*>(recvbuff_d) + recv_info.offset,
@@ -256,7 +256,7 @@ __device__ __forceinline__ void all_to_allv(
         tiles.data(),
         tiles.bytes(),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 
 #endif

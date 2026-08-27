@@ -234,10 +234,11 @@ class IbgdaWarpProxy {
         ThreadGroup& workers,
         uint32_t slot,
         uint64_t generation,
-        const Timeout& timeout) {
-      IbgdaWarpProxy::wait_prior_send_posted(storage_, workers, slot, timeout);
+        const AbortDevice& abortDevice) {
+      IbgdaWarpProxy::wait_prior_send_posted(
+          storage_, workers, slot, abortDevice);
       return detail::prepare_send_slot(
-          transport, workers, slot, generation, timeout);
+          transport, workers, slot, generation, abortDevice);
     }
 
     __device__ __forceinline__ void submit_send(
@@ -251,13 +252,13 @@ class IbgdaWarpProxy {
         uint32_t slot,
         uint64_t generation,
         uint64_t requiredRecvCredit,
-        const Timeout& timeout) {
+        const AbortDevice& abortDevice) {
       // The wait reports its own verdict through the barrier it already had,
       // so declining to enqueue costs no extra synchronization. Enqueuing here
       // would hand the service warp a command it turns into a peer-visible put
       // with a fused DATA_READY.
       if (IbgdaWarpProxy::template wait_queue_space<true>(
-              storage_, workers, timeout)) {
+              storage_, workers, abortDevice)) {
         return;
       }
       IbgdaWarpProxy::enqueue_send(
@@ -281,12 +282,12 @@ class IbgdaWarpProxy {
         P2pIbgdaTransportDevice& transport,
         ThreadGroup& workers,
         std::size_t protocolBytes,
-        const Timeout& timeout) {
+        const AbortDevice& abortDevice) {
       // Same shape as `submit_send()`. `kInvalidSequence` is what makes
       // `publish_recv()` free: it can decline on a register compare instead of
       // taking another barrier to re-ask.
       if (IbgdaWarpProxy::template wait_queue_space<false>(
-              storage_, workers, timeout)) {
+              storage_, workers, abortDevice)) {
         return kInvalidSequence;
       }
       const uint64_t sequence = IbgdaWarpProxy::enqueue_recv(
@@ -298,7 +299,7 @@ class IbgdaWarpProxy {
               .channel = static_cast<uint32_t>(workers.group_id),
           });
       if (IbgdaWarpProxy::wait_recv_ready(
-              storage_, workers, sequence, timeout)) {
+              storage_, workers, sequence, abortDevice)) {
         return kInvalidSequence;
       }
       return sequence;
@@ -327,25 +328,27 @@ class IbgdaWarpProxy {
    private:
     friend class IbgdaWarpProxy<WorkerThreads, MaxPipelineDepth>;
 
-    __device__
-    Ops(SharedState& storage, ThreadGroup workers, const Timeout& timeout)
-        : storage_(storage), workers_(workers), timeout_(timeout) {}
+    __device__ Ops(
+        SharedState& storage,
+        ThreadGroup workers,
+        const AbortDevice& abortDevice)
+        : storage_(storage), workers_(workers), timeout_(abortDevice) {}
 
     SharedState& storage_;
     ThreadGroup workers_;
-    Timeout timeout_;
+    AbortDevice timeout_;
   };
 
   template <typename WorkerFn>
   __device__ __forceinline__ static void run(
       SharedState& storage,
       ThreadGroup fullBlock,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       WorkerFn&& workerFn) {
     run(storage,
         fullBlock,
         Config{},
-        timeout,
+        abortDevice,
         static_cast<WorkerFn&&>(workerFn));
   }
 
@@ -354,7 +357,7 @@ class IbgdaWarpProxy {
       SharedState& storage,
       ThreadGroup fullBlock,
       const Config& config,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       WorkerFn&& workerFn) {
     validate_block(fullBlock);
     validate_config(config, fullBlock);
@@ -362,12 +365,12 @@ class IbgdaWarpProxy {
 
     if (fullBlock.thread_id_in_group < WorkerThreads) {
       ThreadGroup workers = make_worker_group(fullBlock);
-      Ops ops(storage, workers, timeout);
+      Ops ops(storage, workers, abortDevice);
       workerFn(ops);
       finish_workers(storage, workers);
     } else {
       ThreadGroup service = make_service_group(fullBlock);
-      run_service(storage, service, fullBlock, timeout);
+      run_service(storage, service, fullBlock, abortDevice);
     }
 
     fullBlock.sync();
@@ -489,7 +492,7 @@ class IbgdaWarpProxy {
   __device__ __forceinline__ static void drain_queues(
       SharedState& storage,
       ThreadGroup& workers,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     workers.sync();
     if (workers.is_leader()) {
       BlockAtomicU64 sendTail(storage.send.tail);
@@ -502,7 +505,7 @@ class IbgdaWarpProxy {
       uint64_t currentRecv = recvCredited.load(cuda::memory_order_acquire);
       while (currentSend < targetSend || currentRecv < targetRecv) {
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "IbgdaWarpProxy drain waiting for service progress "
             "send=%llu/%llu recv=%llu/%llu",
             static_cast<unsigned long long>(currentSend),
@@ -536,7 +539,7 @@ class IbgdaWarpProxy {
   __device__ __forceinline__ static bool wait_queue_space(
       SharedState& storage,
       ThreadGroup& workers,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     uint32_t aborted = 0;
     if (workers.is_leader()) {
       uint64_t& tailValue = IsSend ? storage.send.tail : storage.recv.tail;
@@ -553,7 +556,7 @@ class IbgdaWarpProxy {
       }
       while (currentTail - currentHead >= storage.queueDepth) {
         if (FT_ABORT_CHECK(
-                timeout,
+                abortDevice,
                 "IbgdaWarpProxy %s queue full channel=%u head=%llu tail=%llu",
                 IsSend ? "send" : "recv",
                 workers.group_id,
@@ -572,7 +575,7 @@ class IbgdaWarpProxy {
       SharedState& storage,
       ThreadGroup& workers,
       uint32_t slot,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     auto& slotState = storage.send.slots[slot];
     if (workers.is_leader()) {
       const uint64_t requiredPosted = slotState.lastCommand == kInvalidSequence
@@ -582,7 +585,7 @@ class IbgdaWarpProxy {
       uint64_t currentPosted = posted.load(cuda::memory_order_acquire);
       while (currentPosted < requiredPosted) {
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "IbgdaWarpProxy waiting for send WQE post channel=%u slot=%u "
             "posted=%llu required=%llu",
             workers.group_id,
@@ -628,14 +631,14 @@ class IbgdaWarpProxy {
       SharedState& storage,
       ThreadGroup& workers,
       uint64_t sequence,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     uint32_t aborted = 0;
     if (workers.is_leader()) {
       BlockAtomicU64 ready(storage.recv.ready);
       uint64_t current = ready.load(cuda::memory_order_acquire);
       while (current <= sequence) {
         if (FT_ABORT_CHECK(
-                timeout,
+                abortDevice,
                 "IbgdaWarpProxy waiting for DATA_READY channel=%u ready=%llu "
                 "required=%llu",
                 workers.group_id,
@@ -681,7 +684,7 @@ class IbgdaWarpProxy {
 
   __device__ __forceinline__ static void publish_recv_readiness(
       SharedState& storage,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     BlockAtomicU64 tail(storage.recv.tail);
     BlockAtomicU64 ready(storage.recv.ready);
     uint64_t currentReady = ready.load(cuda::memory_order_relaxed);
@@ -705,7 +708,7 @@ class IbgdaWarpProxy {
         // CHECK rather than BREAK: the `break` below is unconditional, so this
         // call is only here for the log-and-trap side effect on abort.
         (void)FT_ABORT_CHECK(
-            timeout,
+            abortDevice,
             "IbgdaWarpProxy waiting for DATA_READY channel=%u "
             "expected=%llu current=%llu",
             command.channel,
@@ -720,7 +723,7 @@ class IbgdaWarpProxy {
   __device__ __forceinline__ static void post_send_once(
       SharedState& storage,
       const ThreadGroup& fullBlock,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     BlockAtomicU64 tail(storage.send.tail);
     BlockAtomicU64 posted(storage.send.posted);
     const uint64_t head = posted.load(cuda::memory_order_relaxed);
@@ -741,7 +744,7 @@ class IbgdaWarpProxy {
       // Not a loop: `post_send_once` returns to its caller's polling loop, so
       // this only needs the log-and-trap side effect on abort.
       (void)FT_ABORT_CHECK(
-          timeout,
+          abortDevice,
           "IbgdaWarpProxy waiting for receive credit channel=%u "
           "credited=%llu required=%llu",
           command.channel,
@@ -758,7 +761,7 @@ class IbgdaWarpProxy {
       if (current < command.slotFreeExpected) {
         // As above: the return is unconditional; this is the log-and-trap.
         (void)FT_ABORT_CHECK(
-            timeout,
+            abortDevice,
             "IbgdaWarpProxy waiting for SLOT_FREE channel=%u "
             "expected=%llu current=%llu",
             command.channel,
@@ -794,7 +797,7 @@ class IbgdaWarpProxy {
       SharedState& storage,
       ThreadGroup& service,
       const ThreadGroup& fullBlock,
-      const Timeout& timeout) {
+      const AbortDevice& abortDevice) {
     BlockAtomicU32 producerDone(storage.producerDone);
     while (true) {
       uint32_t stop = 0;
@@ -838,7 +841,7 @@ class IbgdaWarpProxy {
         // it keeps the change to control flow instead of threading a status
         // through `publish_recv_readiness()`.
         bool aborted = FT_ABORT_CHECK(
-            timeout, "IbgdaWarpProxy::run_service abandoning drain");
+            abortDevice, "IbgdaWarpProxy::run_service abandoning drain");
         // Each step runs only if nothing has aborted yet, and re-reads the flag
         // afterwards because the step itself may have given up inside.
         const auto step = [&](auto&& emit) {
@@ -846,11 +849,11 @@ class IbgdaWarpProxy {
             return;
           }
           emit();
-          aborted = timeout.isAborted();
+          aborted = abortDevice.isAborted();
         };
         step([&] { post_recv_credits(storage, fullBlock); });
-        step([&] { publish_recv_readiness(storage, timeout); });
-        step([&] { post_send_once(storage, fullBlock, timeout); });
+        step([&] { publish_recv_readiness(storage, abortDevice); });
+        step([&] { post_send_once(storage, fullBlock, abortDevice); });
 
         if (aborted) {
           stop = 1U;

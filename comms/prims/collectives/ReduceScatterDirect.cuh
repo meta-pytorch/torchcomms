@@ -11,6 +11,6 @@ template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 __global__
     __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
         const __grid_constant__ DirectReduceScatterNvlArgs<T> args,
-        Timeout timeout);
+        AbortDevice abortDevice);
 
 } // namespace comms::prims

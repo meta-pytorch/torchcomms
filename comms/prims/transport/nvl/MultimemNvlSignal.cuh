@@ -8,7 +8,6 @@
 
 #include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
 
 namespace comms::prims {
@@ -192,10 +191,10 @@ __device__ __forceinline__ void validate_protocol() {
 __device__ __forceinline__ void wait_until_reached(
     const SignalState& signal,
     uint64_t expected,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   while (!sequence_reached(signal.load(), expected)) {
     if (FT_ABORT_CHECK(
-            timeout,
+            abortDevice,
             "NVL signal wait for sequence=%llu",
             static_cast<unsigned long long>(expected))) {
       FT_DEVICE_TRAP();
@@ -342,7 +341,7 @@ __device__ __forceinline__ void wait_per_peer_all(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks &&
       rank_selected(participants.publisherMask, source)) {
@@ -350,7 +349,7 @@ __device__ __forceinline__ void wait_per_peer_all(
         transport.internalLocalSignals[peer_signal_id<phase>(
             transport, round, source)],
         round.value,
-        timeout);
+        abortDevice);
   }
   group.sync();
 }
@@ -361,7 +360,7 @@ __device__ __forceinline__ void wait_per_peer_serial(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   if (group.is_leader()) {
     bool complete = false;
     while (!complete) {
@@ -379,7 +378,7 @@ __device__ __forceinline__ void wait_per_peer_serial(
       }
       if (!complete) {
         if (FT_ABORT_CHECK(
-                timeout,
+                abortDevice,
                 "NVL serial per-peer wait for round=%llu",
                 static_cast<unsigned long long>(round.value))) {
           FT_DEVICE_TRAP();
@@ -396,7 +395,7 @@ __device__ __forceinline__ void wait_per_peer_tree(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   __shared__ uint32_t completeByThread[kMaxNvlSignalPerPeerThreads];
   const uint32_t thread = group.thread_id_in_group;
   bool complete = false;
@@ -421,7 +420,7 @@ __device__ __forceinline__ void wait_per_peer_tree(
     complete = completeByThread[0] != 0;
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
-              timeout,
+              abortDevice,
               "NVL tree per-peer wait for round=%llu",
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
@@ -437,7 +436,7 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   __shared__ uint32_t completeByWarp[kMaxNvlSignalPerPeerWarps];
   const uint32_t thread = group.thread_id_in_group;
   const uint32_t lane = thread % kWarpSize;
@@ -469,7 +468,7 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     }
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
-              timeout,
+              abortDevice,
               "NVL butterfly per-peer wait for round=%llu",
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
@@ -637,14 +636,14 @@ __device__ __forceinline__ void signal_publish(
 /**
  * Waits for the selected publishers on every selected waiter rank.
  *
- * A caller that enables timeout checking must call `Timeout::start()` before
- * this function.
+ * A caller that enables abortDevice checking must call `Timeout::start()`
+ * before this function.
  *
  * @param transport Exchanged multimem transport device view.
  * @param round Logical channel and per-peer round value.
  * @param participants Rank masks and expected arrival count.
  * @param group Topology-specific cooperative thread group.
- * @param timeout Started timeout or the disabled default timeout.
+ * @param abortDevice Started abortDevice or the disabled default abortDevice.
  */
 namespace nvl_signal_detail {
 
@@ -658,7 +657,7 @@ __device__ __forceinline__ void signal_wait_impl(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   nvl_signal_detail::validate_protocol<access, topology, phase, waitPolicy>();
   nvl_signal_detail::validate_common(transport, round, participants);
   if constexpr (topology == NvlSignalTopology::Aggregate) {
@@ -679,7 +678,7 @@ __device__ __forceinline__ void signal_wait_impl(
       const uint64_t expected =
           epoch->load() + static_cast<uint64_t>(participants.expectedArrivals);
       if (isWaiter) {
-        nvl_signal_detail::wait_until_reached(*counter, expected, timeout);
+        nvl_signal_detail::wait_until_reached(*counter, expected, abortDevice);
       }
       if constexpr (access == NvlSignalAccess::Multimem) {
         epoch->store(expected);
@@ -692,16 +691,16 @@ __device__ __forceinline__ void signal_wait_impl(
     return;
   } else if constexpr (waitPolicy == NvlPerPeerWaitPolicy::WaitAll) {
     nvl_signal_detail::wait_per_peer_all<phase>(
-        transport, round, participants, group, timeout);
+        transport, round, participants, group, abortDevice);
   } else if constexpr (waitPolicy == NvlPerPeerWaitPolicy::SerialMin) {
     nvl_signal_detail::wait_per_peer_serial<phase>(
-        transport, round, participants, group, timeout);
+        transport, round, participants, group, abortDevice);
   } else if constexpr (waitPolicy == NvlPerPeerWaitPolicy::TreeMin) {
     nvl_signal_detail::wait_per_peer_tree<phase>(
-        transport, round, participants, group, timeout);
+        transport, round, participants, group, abortDevice);
   } else {
     nvl_signal_detail::wait_per_peer_butterfly<phase>(
-        transport, round, participants, group, timeout);
+        transport, round, participants, group, abortDevice);
   }
   (void)access;
 }
@@ -719,13 +718,13 @@ __device__ __forceinline__ void signal_wait(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   static_assert(
       access != NvlSignalAccess::Multimem ||
           topology != NvlSignalTopology::Aggregate,
       "aggregate multimem requires signal_publish_and_wait on every rank");
   nvl_signal_detail::signal_wait_impl<access, topology, phase, waitPolicy>(
-      transport, round, participants, group, timeout);
+      transport, round, participants, group, abortDevice);
 }
 
 /**
@@ -735,7 +734,7 @@ __device__ __forceinline__ void signal_wait(
  * @param round Logical channel and per-peer round value.
  * @param participants Rank masks and expected arrival count.
  * @param group Topology-specific cooperative thread group.
- * @param timeout Started timeout or the disabled default timeout.
+ * @param abortDevice Started abortDevice or the disabled default abortDevice.
  */
 template <
     NvlSignalAccess access,
@@ -747,11 +746,11 @@ __device__ __forceinline__ void signal_publish_and_wait(
     const StageRound& round,
     const NvlSignalParticipants& participants,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   nvl_signal_detail::signal_publish_impl<access, topology, phase, waitPolicy>(
       transport, round, participants, group);
   nvl_signal_detail::signal_wait_impl<access, topology, phase, waitPolicy>(
-      transport, round, participants, group, timeout);
+      transport, round, participants, group, abortDevice);
 }
 
 } // namespace comms::prims

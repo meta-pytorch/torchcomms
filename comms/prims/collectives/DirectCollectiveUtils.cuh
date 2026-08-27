@@ -53,7 +53,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
     std::size_t max_sig,
     const P2pNvlTransportDevice* peers,
     char* recvbuf,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
   if (nvl_size <= 1) {
     return;
@@ -83,7 +83,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
           continue;
         }
         auto peer = peers[peer_rank];
-        peer.send(group, send_src, window, max_sig, timeout);
+        peer.send(group, send_src, window, max_sig, abortDevice);
       }
 
       for (int peer_rank = 0; peer_rank < nvl_size; ++peer_rank) {
@@ -95,7 +95,7 @@ hierarchical_allgather_nvl_broadcast_from_recvbuf(
                 sendcount +
             tile_offset + off;
         auto peer = peers[peer_rank];
-        peer.recv(group, dst, window, max_sig, timeout);
+        peer.recv(group, dst, window, max_sig, abortDevice);
       }
     }
   }

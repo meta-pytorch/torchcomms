@@ -247,8 +247,8 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     void* sendBuff_d = sendBuffer.get();
 
-    // Create timeout (default = no timeout)
-    Timeout timeout;
+    // Create abort handle (default = disabled)
+    Timeout abortDevice;
 
     // Need non-const copy for kernel args
     std::size_t sendcount_arg = sendcount;
@@ -260,7 +260,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         &sendcount_arg,
         &rank_arg,
         &transports_span,
-        &timeout};
+        &abortDevice};
 
     CudaEvent start, stop;
     const int nIter = 100;

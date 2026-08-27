@@ -34,7 +34,7 @@ namespace comms::prims {
  * @param transports_per_rank Array of transport objects per rank
  * @param send_chunk_infos Array of send chunk metadata per destination rank
  * @param recv_chunk_infos Array of recv chunk metadata per source rank
- * @param timeout Timeout configuration
+ * @param abortDevice Timeout configuration
  */
 __device__ __forceinline__ void all_to_allv_ll128(
     void* recvbuff_d,
@@ -43,7 +43,7 @@ __device__ __forceinline__ void all_to_allv_ll128(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
@@ -107,13 +107,13 @@ __device__ __forceinline__ void all_to_allv_ll128(
         group_per_peer,
         static_cast<const char*>(sendbuff_d) + send_info.offset,
         send_info.nbytes,
-        timeout);
+        abortDevice);
   } else {
     transport.p2p_nvl.ll128_recv_group(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,
-        timeout);
+        abortDevice);
   }
 #endif
 }

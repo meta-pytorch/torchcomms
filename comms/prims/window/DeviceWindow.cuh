@@ -524,20 +524,20 @@ class DeviceWindow {
    *
    * Thread-level API: any single thread may call this independently.
    * The caller spins on the inbox slot until the comparison is satisfied
-   * or the timeout expires.
+   * or the abortDevice expires.
    *
    * @param source_rank  Rank to wait on (must not be self).
    * @param signal_id    Signal slot index in [0, peerSignalCount).
    * @param cmp          Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value        Threshold value for comparison.
-   * @param timeout      Optional timeout (traps on expiry).
+   * @param abortDevice      Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void wait_signal_from(
       int source_rank,
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     DEVICE_WINDOW_CHECK_RANK(source_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(source_rank, handle_.myRank);
     DEVICE_WINDOW_CHECK_SIGNAL_ID(signal_id, peerSignalCount_);
@@ -546,7 +546,7 @@ class DeviceWindow {
       int slot = nvlIdx * peerSignalCount_ + signal_id;
       while (!compare(nvlPeerSignalInbox_[slot].load(), cmp, value)) {
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "DeviceWindow::wait_signal_from(source_rank=%d,"
             " signal_id=%d, value=%llu) rank=%d",
             source_rank,
@@ -561,7 +561,7 @@ class DeviceWindow {
       volatile uint64_t* sig = &ibgdaPeerSignalInbox_[slot];
       while (!compare(*sig, cmp, value)) {
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "DeviceWindow::wait_signal_from(source_rank=%d,"
             " signal_id=%d, value=%llu) rank=%d",
             source_rank,
@@ -585,7 +585,7 @@ class DeviceWindow {
    * @param signal_id    Signal slot index in [0, peerSignalCount).
    * @param cmp          Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value        Threshold value for comparison.
-   * @param timeout      Optional timeout (traps on expiry).
+   * @param abortDevice      Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void wait_signal_from(
       ThreadGroup& group,
@@ -593,9 +593,9 @@ class DeviceWindow {
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     if (group.is_leader()) {
-      wait_signal_from(source_rank, signal_id, cmp, value, timeout);
+      wait_signal_from(source_rank, signal_id, cmp, value, abortDevice);
     }
     group.sync();
   }
@@ -613,14 +613,14 @@ class DeviceWindow {
    * @param signal_id  Signal slot index in [0, peerSignalCount).
    * @param cmp        Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value      Threshold value for the aggregate sum.
-   * @param timeout    Optional timeout (traps on expiry).
+   * @param abortDevice    Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void wait_signal(
       ThreadGroup& group,
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     DEVICE_WINDOW_CHECK_SIGNAL_ID(signal_id, peerSignalCount_);
     if (group.is_leader()) {
       int nPeers = num_peers();
@@ -644,7 +644,7 @@ class DeviceWindow {
           break;
         }
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "DeviceWindow::wait_signal(signal_id=%d, value=%llu)"
             " rank=%d",
             signal_id,
@@ -726,14 +726,14 @@ class DeviceWindow {
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param timeout     Optional timeout (traps on expiry).
+   * @param abortDevice     Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void wait_counter(
       int peer_rank,
       int counter_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     DEVICE_WINDOW_CHECK_RANK(peer_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(peer_rank, handle_.myRank);
     // Counter operations are IB-only; no-op for NVL peers
@@ -745,7 +745,7 @@ class DeviceWindow {
     auto ib = handle_.get_ib(peer_rank);
     while (!compare(ib.read_counter(counterSlotBuf), cmp, value)) {
       FT_ABORT_BREAK(
-          timeout,
+          abortDevice,
           "DeviceWindow::wait_counter(peer_rank=%d,"
           " counter_id=%d, value=%llu) rank=%d",
           peer_rank,
@@ -768,7 +768,7 @@ class DeviceWindow {
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param timeout     Optional timeout (traps on expiry).
+   * @param abortDevice     Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void wait_counter(
       ThreadGroup& group,
@@ -776,9 +776,9 @@ class DeviceWindow {
       int counter_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     if (group.is_leader()) {
-      wait_counter(peer_rank, counter_id, cmp, value, timeout);
+      wait_counter(peer_rank, counter_id, cmp, value, abortDevice);
     }
     group.sync();
   }
@@ -841,12 +841,12 @@ class DeviceWindow {
    *
    * @param group       ThreadGroup for group coordination.
    * @param barrier_id  Barrier slot index.
-   * @param timeout     Optional timeout (traps on expiry).
+   * @param abortDevice     Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void barrier(
       ThreadGroup& group,
       int barrier_id,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     barrier_arrive(group, barrier_id);
     // Only one thread updates barrierExpected_ to avoid races when
     // DeviceWindow is accessed via pointer (shared mutable state).
@@ -856,7 +856,8 @@ class DeviceWindow {
     // Broadcast the updated value to all threads via group sync so
     // barrier_wait sees a consistent threshold.
     group.sync();
-    barrier_wait(group, barrier_id, CmpOp::CMP_GE, barrierExpected_, timeout);
+    barrier_wait(
+        group, barrier_id, CmpOp::CMP_GE, barrierExpected_, abortDevice);
   }
 
   /**
@@ -868,19 +869,20 @@ class DeviceWindow {
    * @param target_rank  Peer rank to barrier with (must not be self).
    * @param group        ThreadGroup for group coordination.
    * @param barrier_id   Barrier slot index.
-   * @param timeout      Optional timeout (traps on expiry).
+   * @param abortDevice      Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void barrier_peer(
       int target_rank,
       ThreadGroup& group,
       int barrier_id,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     barrier_arrive_peer(group, target_rank, barrier_id);
     if (group.is_leader()) {
       barrierExpected_ += 1;
     }
     group.sync();
-    barrier_wait(group, barrier_id, CmpOp::CMP_GE, barrierExpected_, timeout);
+    barrier_wait(
+        group, barrier_id, CmpOp::CMP_GE, barrierExpected_, abortDevice);
   }
 
   /**
@@ -958,14 +960,14 @@ class DeviceWindow {
    * @param barrier_id  Barrier slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param timeout     Optional timeout (traps on expiry).
+   * @param abortDevice     Optional abort handle (traps on expiry).
    */
   __device__ __forceinline__ void barrier_wait(
       ThreadGroup& group,
       int barrier_id,
       CmpOp cmp,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     DEVICE_WINDOW_CHECK_BARRIER_ID(barrier_id, barrierCount_);
     if (group.is_leader()) {
       while (true) {
@@ -982,7 +984,7 @@ class DeviceWindow {
           break;
         }
         FT_ABORT_BREAK(
-            timeout,
+            abortDevice,
             "DeviceWindow::barrier_wait(barrier_id=%d, value=%llu)"
             " rank=%d",
             barrier_id,
