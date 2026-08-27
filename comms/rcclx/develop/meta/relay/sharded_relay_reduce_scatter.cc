@@ -1022,6 +1022,199 @@ static ncclResult_t shardedRelayReduceScatter2Active(
 }
 
 /**
+ * Software-pipelined single-group 2-active sharded relay reduce-scatter.
+ *
+ * Same logical collective and the same passthrough helpers as
+ * shardedRelayReduceScatter2Active, but for nGroups == 1 -- where the active
+ * ranks and the helpers are disjoint sets -- the relay is tiled and pipelined
+ * so both directions of every cross link stay busy. See relayA2PipelineTiles()
+ * for why the two-group schedule cannot do that and what it costs.
+ *
+ * Helpers stay pure passthrough here, unlike allreduce: slot 0 is a0's
+ * contribution to a1's output and slot 1 is a1's contribution to a0's output --
+ * different outputs, so there is nothing to sum at the helper. The active rank
+ * reduces once at the end, and foreignScratch still mirrors the output layout
+ * so that stays a single fused launch no matter how many tiles the relay used.
+ *
+ * With T tiles and unit u = align(recvCount / ((H+1)*T + 1)), the block shipped
+ * to the other active rank splits as:
+ *   [0, H*T*u)         relay region; helper h owns [h*T*u, (h+1)*T*u), its tile
+ *                      t at h*T*u + t*u
+ *   [H*T*u, recvCount) direct region as T+1 chunks of u, the last absorbing the
+ *                      /((H+1)*T + 1) remainder and the alignment loss
+ *
+ * Group k, for k in [0, T]: the active rank scatters tile k (k < T) to every
+ * helper, receives tile k-1 (k > 0) of the partner's contribution from every
+ * helper into the matching offset of foreignScratch, and exchanges direct chunk
+ * k over the active<->active link; helper h receives tile k of each active's
+ * chunk into ping-pong buffer k%2 and forwards buffer (k-1)%2 to the active
+ * rank that owns it.
+ */
+static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* recvCounts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t recvcount = recvCounts[0];
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t u = ((recvcount / (static_cast<size_t>(H + 1) * T + 1)) /
+                    CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (u == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * u;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  const size_t lastDirect = recvcount - directBase - tileStride;
+
+  // Scratch mirroring the output block, so the whole reduction is one launch.
+  void* foreignScratch = nullptr;
+  size_t ownBlockOffset = 0;
+  size_t sendBlockOffset = 0;
+  bool isInPlace = false;
+  if (myActiveGroup == 0) {
+    ownBlockOffset = static_cast<size_t>(cfg.myActiveIndex) * recvcount;
+    sendBlockOffset = static_cast<size_t>(1 - cfg.myActiveIndex) * recvcount;
+    const char* ownBlock =
+        static_cast<const char*>(sendBuffs[0]) + ownBlockOffset * elementSize;
+    isInPlace =
+        (static_cast<const void*>(recvBuffs[0]) ==
+         static_cast<const void*>(ownBlock));
+    foreignScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS, recvcount * elementSize, stream);
+    if (foreignScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  // Helper staging: two ping-pong units per active source.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto helperSlot = [&](int a, int k) -> char* {
+    return hbuff +
+        (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) * u *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendBlock = static_cast<const char*>(sendBuffs[0]) +
+          sendBlockOffset * elementSize;
+      char* scratch = static_cast<char*>(foreignScratch);
+      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      const size_t directOffset = directBase + static_cast<size_t>(k) * u;
+      const size_t directSize = (k < T) ? u : lastDirect;
+
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendBlock +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclSend(
+          sendBlock + directOffset * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      if (k > 0) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              scratch +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclRecv(
+          scratch + directOffset * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      if (k < T) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclRecv(
+              helperSlot(a, k), u, datatype, cfg.activeRanks[a], comm, stream));
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclSend(
+              helperSlot(a, k - 1),
+              u,
+              datatype,
+              cfg.activeRanks[1 - a],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+  }
+
+  // One fused pass over the whole output block.
+  if (myActiveGroup == 0) {
+    void* out = recvBuffs[0];
+    if (isInPlace) {
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype, out, foreignScratch, recvcount, reductionDivisor, stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(
+            datatype, out, foreignScratch, recvcount, stream);
+      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          out,
+          static_cast<const char*>(sendBuffs[0]) + ownBlockOffset * elementSize,
+          foreignScratch,
+          recvcount,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * Reduce-scatter for > 2 active ranks (two-group flat relay with
  * reduce-at-helper).
  *
@@ -1513,6 +1706,36 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
     for (int g = 0; g < nGroups; g++) {
       sendBuffs2[g] = sendBuffs[g];
       recvBuffs2[g] = recvBuffs[g];
+    }
+    // A single-group relay call has the helpers to itself, so the scatter and
+    // the forward run on opposite directions of each cross link and can be
+    // software-pipelined into one duplex stream. relayA2PipelineTiles() returns
+    // 1 whenever that does not apply, and the small-message pure-direct route
+    // (owned by shardedRelayReduceScatter2Active) never pipelines.
+    const int nTiles = (rcclx::relay::selectReduceScatterRoute(
+                            2, numHelpers, nGroups, recvCounts, elementSize) ==
+                        rcclx::relay::ReduceScatterRoute::A2Relay)
+        ? rcclx::relay::relayA2PipelineTiles(
+              2,
+              numHelpers,
+              nGroups,
+              rcclx::relay::relayMaxCount(recvCounts, nGroups),
+              elementSize)
+        : 1;
+    if (nTiles > 1) {
+      return shardedRelayReduceScatter2ActivePipelined(
+          sendBuffs2,
+          recvBuffs2,
+          recvCounts,
+          datatype,
+          reductionDivisor,
+          comm,
+          stream,
+          configs,
+          myActiveGroup,
+          numHelpers,
+          nTiles,
+          elementSize);
     }
     return shardedRelayReduceScatter2Active(
         sendBuffs2,
