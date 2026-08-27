@@ -1367,4 +1367,157 @@ void testMultiQpPutAndSignal(
   }
 }
 
+// =============================================================================
+// Kernel: put + flush against a caller-supplied abort handle
+//
+// No signal is posted -- the point is to reach the completion drain, and a
+// signal would only add a second WQE that fails the same way.
+// =============================================================================
+
+__global__ void putAndFlushWithAbortKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    abort.start();
+    transport.put(
+        localBuf, remoteBuf, nbytes, /*signalId=*/-1, /*signalVal=*/0);
+    transport.flush(abort);
+  }
+}
+
+// =============================================================================
+// Kernel: registered send with a poisoned rkey, then the production drain loop
+//
+// The rkey lives in the transport's own channel layout rather than in a
+// caller-supplied buffer, because progress_registered_send_once() derives its
+// RDMA destination from `acquire_channel()` -- so unlike putAndFlushWithAbort,
+// the corruption has to happen on the device object itself. Flipping the high
+// bits (rather than zeroing) keeps the value implausible as an "unset" default
+// that some future host-side guard might reject before the WQE is posted.
+// =============================================================================
+
+__global__ void registeredSendDrainAbortKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer source,
+    IbgdaRemoteBuffer poisonedRemote,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    RegisteredSendObservation* observation,
+    uint64_t drainIterationCap,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  abort.start();
+
+  // Drive the QPs into error state first, using the same caller-supplied
+  // bad-rkey buffer BadRkeyCompletionErrorUnwinds uses. Deliberately no
+  // flush(): the error CQEs must still be unreaped when the drain runs, which
+  // is what gives the drain a genuine never-completing lane to abort on.
+  //
+  // One put per QP lane because `put()` round-robins over them and each lane is
+  // its own QP -- leaving any lane unpoisoned would let the registered send
+  // pick a healthy one and complete. Derived from the transport rather than
+  // assumed: the lane count is a runtime property of the channel, so a
+  // hardcoded guess silently under-poisons on any part that has more.
+  const uint32_t poisonPuts = transport.ibgda->send_completion_lane_count();
+  if (group.is_global_leader()) {
+    for (uint32_t i = 0; i < poisonPuts; ++i) {
+      transport.put(
+          source, poisonedRemote, nbytes, /*signalId=*/-1, /*signalVal=*/0);
+    }
+  }
+  group.sync();
+
+  transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
+
+  IbgdaRegisteredSendProgressStatus status;
+  do {
+    status = transport.progress_registered_send_once(
+        group, source, nbytes, maxSignalBytes, abort);
+    if (group.is_leader() && observation != nullptr) {
+      observation->record(status);
+    }
+  } while (status != IbgdaRegisteredSendProgressStatus::Posted &&
+           status != IbgdaRegisteredSendProgressStatus::Drained &&
+           status != IbgdaRegisteredSendProgressStatus::Aborted);
+
+  // Deliberately the exact shape of ReduceScatterDirectIbV2.cu's drain: exits
+  // on `Drained` only. Before the terminality fix this never leaves, because
+  // the aborted drain re-reports `Aborted` on every call.
+  uint64_t iterations = 0;
+  while (status != IbgdaRegisteredSendProgressStatus::Drained &&
+         iterations < drainIterationCap) {
+    status = transport.progress_registered_send_drain_once(group, abort);
+    if (group.is_leader() && observation != nullptr) {
+      observation->record(status);
+    }
+    ++iterations;
+  }
+  if (group.is_leader() && observation != nullptr) {
+    observation->drainIterations = iterations;
+  }
+}
+
+void testRegisteredSendDrainWithAbort(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    const IbgdaRemoteBuffer& poisonedRemote,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    RegisteredSendObservation* observation,
+    uint64_t drainIterationCap,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)source;
+  (void)poisonedRemote;
+  (void)nbytes;
+  (void)maxSignalBytes;
+  (void)observation;
+  (void)drainIterationCap;
+  (void)abort;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("registered-source send is NVIDIA-only");
+#else
+  P2pIbTransportDevice unifiedTransport(transport);
+  registeredSendDrainAbortKernel<<<numBlocks, blockSize>>>(
+      unifiedTransport,
+      source,
+      poisonedRemote,
+      nbytes,
+      maxSignalBytes,
+      observation,
+      drainIterationCap,
+      abort);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
+void testPutAndFlushWithAbort(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize) {
+  putAndFlushWithAbortKernel<<<numBlocks, blockSize>>>(
+      transport, localBuf, remoteBuf, nbytes, abort);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 } // namespace comms::prims::test
