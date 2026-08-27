@@ -1027,7 +1027,7 @@ static ncclResult_t shardedRelayReduceScatter2Active(
  * Same logical collective and the same passthrough helpers as
  * shardedRelayReduceScatter2Active, but for nGroups == 1 -- where the active
  * ranks and the helpers are disjoint sets -- the relay is tiled and pipelined
- * so both directions of every cross link stay busy. See relayA2PipelineTiles()
+ * so both directions of every cross link stay busy. See relayPipelineTiles()
  * for why the two-group schedule cannot do that and what it costs.
  *
  * Helpers stay pure passthrough here, unlike allreduce: slot 0 is a0's
@@ -1709,16 +1709,15 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
     }
     // A single-group relay call has the helpers to itself, so the scatter and
     // the forward run on opposite directions of each cross link and can be
-    // software-pipelined into one duplex stream. relayA2PipelineTiles() returns
+    // software-pipelined into one duplex stream. relayPipelineTiles() returns
     // 1 whenever that does not apply, and the small-message pure-direct route
     // (owned by shardedRelayReduceScatter2Active) never pipelines.
     const int nTiles = (rcclx::relay::selectReduceScatterRoute(
                             2, numHelpers, nGroups, recvCounts, elementSize) ==
                         rcclx::relay::ReduceScatterRoute::A2Relay)
-        ? rcclx::relay::relayA2PipelineTiles(
-              2,
-              numHelpers,
+        ? rcclx::relay::relayPipelineTiles(
               nGroups,
+              rcclx::relay::relayShapeA2(numHelpers),
               rcclx::relay::relayMaxCount(recvCounts, nGroups),
               elementSize)
         : 1;
