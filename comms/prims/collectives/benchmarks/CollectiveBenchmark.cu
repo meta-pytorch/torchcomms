@@ -11,7 +11,7 @@ __global__ void all_to_allv_kernel(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
+    Timeout abortDevice) {
   all_to_allv(
       recvbuff_d,
       sendbuff_d,
@@ -19,7 +19,7 @@ __global__ void all_to_allv_kernel(
       transports_per_rank,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abortDevice);
 }
 
 __global__ void all_gather_kernel(
@@ -28,14 +28,14 @@ __global__ void all_gather_kernel(
     std::size_t sendcount,
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
-    Timeout timeout) {
+    Timeout abortDevice) {
   all_gather(
       recvbuff_d,
       sendbuff_d,
       sendcount,
       my_rank_id,
       transports_per_rank,
-      timeout);
+      abortDevice);
 }
 
 } // namespace comms::prims::benchmark

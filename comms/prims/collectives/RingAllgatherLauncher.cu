@@ -14,7 +14,9 @@ namespace comms::prims {
 namespace {
 
 template <int NumRings>
-void launch_impl(const RingAllgatherLaunchParams& params, Timeout timeout) {
+void launch_impl(
+    const RingAllgatherLaunchParams& params,
+    AbortDevice abortDevice) {
   RingAllgatherArgs<NumRings> args{};
   args.my_rank = params.my_rank;
   args.num_ranks = params.num_ranks;
@@ -34,7 +36,7 @@ void launch_impl(const RingAllgatherLaunchParams& params, Timeout timeout) {
   }
 
   ring_allgather_kernel<NumRings, 512>
-      <<<params.num_blocks, 512>>>(args, timeout);
+      <<<params.num_blocks, 512>>>(args, abortDevice);
 }
 
 } // namespace

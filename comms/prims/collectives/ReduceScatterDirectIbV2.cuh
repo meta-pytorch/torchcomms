@@ -39,6 +39,6 @@ void launch_direct_reduce_scatter_ib_v2(
     int num_blocks,
     int block_threads,
     cudaStream_t stream,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 } // namespace comms::prims

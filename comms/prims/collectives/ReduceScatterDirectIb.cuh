@@ -31,13 +31,13 @@ void launch_direct_reduce_scatter_ib_impl(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     cudaStream_t stream,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 void launch_direct_reduce_scatter_ib_quantized_impl(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     bool use_tma,
     cudaStream_t stream,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 } // namespace comms::prims
