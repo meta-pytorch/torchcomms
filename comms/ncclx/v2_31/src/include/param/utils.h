@@ -32,8 +32,15 @@
 
 // Compiler detection macros
 #if defined(__GNUC__) || defined(__clang__)
+// Default visibility is required for the param registry's cross-DSO contract (see
+// param_registry.h): the fbcode Buck build compiles with -fvisibility=hidden and applies no
+// linker version script, so without this the accessor is hidden and each DSO that statically
+// links NCCLX gets its own registry. Upstream instead relies on its Makefile libnccl.map
+// ("global: nccl*"), which the Buck build does not use.
+#define NCCL_PARAM_COMPILER_EXPORT_SYMBOL __attribute__((visibility("default")))
 #define NCCL_PARAM_COMPILER_EXPECT(x, v) __builtin_expect((x), (v))
 #elif defined(_MSC_VER)
+#define NCCL_PARAM_COMPILER_EXPORT_SYMBOL
 #define NCCL_PARAM_COMPILER_EXPECT(x, v) (x)
 #else
 #error "Unsupported compiler"
@@ -54,8 +61,8 @@ constexpr ncclParamTypeId_t ncclParamTypeIdOf() noexcept {
   else return NCCL_PARAM_TYPE_RAW;
 }
 
-extern "C" const char* ncclParamEnvPluginGet(const char* key, bool env_init);
-extern "C" bool ncclParamIsCacheDisabled(const char* key);
+extern "C" NCCL_PARAM_COMPILER_EXPORT_SYMBOL const char* ncclParamEnvPluginGet(const char* key, bool env_init);
+extern "C" NCCL_PARAM_COMPILER_EXPORT_SYMBOL bool ncclParamIsCacheDisabled(const char* key);
 
 namespace nccl {
 namespace param {
