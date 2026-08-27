@@ -1,10 +1,10 @@
 # comms/dsl: customized collectives without the plumbing - a hook in, an autotuned kernel out
 
-`comms/dsl` framework lets a kernel developer (user) build a customized, autotunable collective in DSLs (Triton or CuTe) by writing only the small part that differentiates their kernel: per-tile hooks and optionally transports, while the framework owns the generic ~95% (schedule, multi-peer addressing, signal/wait protocol) and automates the performance tuning.
+`comms/dsl` framework lets a kernel developer (user) build a customized, autotunable collective in a DSL (CuTe today; the façade is backend-parametrized so Triton can be re-added) by writing only the small part that differentiates their kernel: per-tile hooks and optionally transports, while the framework owns the generic ~95% (schedule, multi-peer addressing, signal/wait protocol) and automates the performance tuning.
 
 ## Why
 
-Researchers prototype new ideas as kernels in DSLs like Triton/CuTe instead of CUDA/C++ for the fast iteration loop. Scaling the idea needs communication, and that usually leads to repetitive work: days-to-weeks of race-prone stage/signal/wait/fence logic, re-derived per kernel, with bugs that could pass tests and fail at scale. Notably, the part that differentiates the kernel is typically small: a transpose, a quantize, or an accumulate, while a lot around it is plumbing.
+Researchers prototype new ideas as kernels in DSLs like CuTe/Triton instead of CUDA/C++ for the fast iteration loop. Scaling the idea needs communication, and that usually leads to repetitive work: days-to-weeks of race-prone stage/signal/wait/fence logic, re-derived per kernel, with bugs that could pass tests and fail at scale. Notably, the part that differentiates the kernel is typically small: a transpose, a quantize, or an accumulate, while a lot around it is plumbing.
 
 For instance, the `all_to_all_single_non_contig` kernel is ~800 lines, of which roughly 95% is generic machinery, including the signaling protocol, the pipeline, symmetric-memory staging, multi-peer addressing, and tile-size math. The remaining ~5% is layout transform, which is what really makes this kernel unique.
 
@@ -17,9 +17,9 @@ comms/dsl breaks both loops. It provides the customizable boilerplate, and it tu
 | Piece | What it is |
 |---|---|
 | **Transport** | A fabric binding (NVLink today, IB later): cross-GPU memory + signaling state, created once via a `rendezvous` over PyTorch symmetric memory. The framework ships defaults and the user either sets one up or could provide their own. |
-| **Endpoint (`PeerEndpoint`)** | How the transport hands a schedule per-peer addresses - `send_dst` (where to write into a peer), `recv_src` (where to read its data), and the signal slots - so no schedule touches raw pointers. Two forms: a host-resolved `PeerEndpoint` for a single peer (used by `send_tile`/`recv_tile`), and a device-side table of all peers that a fused collective indexes by peer in-kernel (e.g. `all_to_all`). |
+| **Endpoint (`PeerEndpoint`)** | How the transport hands a schedule per-peer addresses - `send_dst` (where to write into a peer), `recv_src` (where to read its data), and the signal slots - so no schedule touches raw pointers. Two forms: a host-resolved `PeerEndpoint` for a single peer (used by `send_tiles`/`recv_tiles`), and a device-side table of all peers that a fused collective indexes by peer in-kernel (e.g. `all_to_all`). |
 | **Ops** | The transport's four device functions that act on those addresses: `put` (remote write), `get` (local read), `signal`/`wait` (the data-ready handshake). The only fabric-specific (NVLink vs IB) device code; hooks and schedules call them and stay transport-agnostic. |
-| **Hook + `Ctx`** | The 5% the user writes: `produce(ctx) -> tile` and `consume(ctx, tile)`. `Ctx` is the per-tile view the framework hands the hook - input/output pointer, flat index, mask, and within-chunk position. This is where a transpose / gather / quantize / accumulate goes. |
+| **Hook + `Ctx`** | The 5% the user writes, in **two tiers**. *Per-element / value* — `produce(ctx) -> tile` / `consume(ctx, tile)`: a per-thread transform on the tile *value* (scale / quantize / accumulate), over the per-tile `Ctx` (CuTe exposes `part`/`atom` + read-only facts `coord`/`peer`). *Block-tile / layout* — `layout_hook(bctx)`: a CTA-cooperative transform over a SMEM-staged 2D tile (`BlockCtx` exposes the loaded tile `sA` + tile coords), for coalescing-critical layout changes (transpose / permute / reshape) where a per-element gather would go uncoalesced. The framework owns the coalesced SMEM load + barriers; the hook does the in-SMEM transform. The portable contract is the hook *role*; the field set is per-DSL, so a hook body is written against its backend's `Ctx`. |
 | **Collective** | The shipped schedule (e.g. `all_to_all`) that runs the hook over the fused `peer x block` transfer, owning all addressing and signal/wait. |
 | **`Config` + `Key`** | `Config` = the launch tunables the autotuner sweeps; `Key` = how a tuned config is looked up at runtime. Both are defined by the user (see principles). |
 | **Adapter** | A thin class that plugs a collective into the comms-owned tuner engine (`comm_tuning`). |
@@ -28,10 +28,10 @@ Flow: a `Transport` gives the kernel per-peer addresses; the `Collective` loops 
 
 ## Design principles
 
-- Own the 95%, expose the 5%. The framework owns the schedule and the race-prone protocol; the user writes a per-tile `produce`/`consume` hook (transpose, gather, quantize, accumulate) and supplies a transport. No fences, no wait loops, no deadlock reasoning in user code.
+- Own the 95%, expose the 5%. The framework owns the schedule and the race-prone protocol; the user writes a hook — a per-element `produce`/`consume` value transform (quantize, scale, accumulate) or a block-tile `layout_hook` (transpose, permute, reshape) — and supplies a transport. No fences, no wait loops, no deadlock reasoning in user code.
 - Performance is autotuned, and the tuner is generic. The user declares two things: a `Key` (which input properties should map to one tuned config - size, dtype, world size, layout, whatever matters for that kernel) and a `Config` (the launch knobs to sweep). A shared engine sweeps configs offline and emits a `{Key: Config}` map; at runtime the collective rebuilds the same key and looks it up (safe default if absent). Changing shapes means re-running the tuner, not rewriting the kernel.
-- Spectrum of control. Plug-and-play collective (write a hook) -> `send_tile`/`recv_tile` (keep your own schedule) -> raw `put`/`get`/`signal`/`wait` ops (full control). Climb only as high as you need.
-- Contracts shared, code per-DSL. Triton and CuTe share the same op names, hook roles, and Config/Key shapes; the device kernels are written per DSL (flat pointers vs partitions), since device code is not portable across DSLs.
+- Spectrum of control. Plug-and-play collective (write a hook) -> `send_tiles`/`recv_tiles` (keep your own schedule) -> raw `put`/`get`/`signal`/`wait` ops (full control). Climb only as high as you need.
+- Backend-parametrized, code per-DSL. The transport contract, hook roles, lookup `Key` shape, and the `comms.dsl.collectives` façade are DSL-agnostic; the `Config` launch knobs and the device kernels are per-DSL (partitions, DSL-specific tunables), since device code is not portable across DSLs. CuTe is the shipped backend; the façade keeps a `backend=` seam so a second DSL (Triton) re-registers without touching callers.
 
 ## Example: a custom collective (a2a non-contig), end to end
 
@@ -43,60 +43,63 @@ A transport, one hook, one call:
 
 ```python
 from comms.dsl import nvl_rendezvous
-from comms.dsl.triton import all_to_all
-from comms.dsl.triton.hooks import transpose_produce   # the 5%: the layout transform
+from comms.dsl.cute import all_to_all
 
 t = nvl_rendezvous(group, dev, per_peer_bytes=chunk_bytes)   # transport (staging + signaling)
-all_to_all(t, out, inp, produce=transpose_produce, rows=R)   # config=None -> tuned lookup
+all_to_all(t, out, inp, rows=R)                              # config=None -> tuned lookup
 ```
 
-`nvl_rendezvous` allocates the per-peer staging buffer + signal pad once; `rows` describes the 2D tile layout the hook reads; with no `produce` hook this is a plain all-to-all.
+`nvl_rendezvous` allocates the per-peer staging buffer + signal pad once; `rows` describes the 2D tile layout the hook reads; with the default identity copy hook this is a plain all-to-all.
 
-The hook is the 5%. `ctx` is the per-tile view (input pointer, flat index, mask, within-chunk position `pos` with `rows`/`cols`); it returns the tile to send - here, the transposed source position, fused into the transfer leg with no extra HBM pass:
+The hook is the 5%, in two tiers. A **per-element** `produce`/`consume` transforms the tile *value* (scale / quantize / accumulate). The `rows > 0` transpose is the flagship **block-tile** hook (`transpose_tile`): the framework coalesced-loads each `[tile, tile]` chunk into padded SMEM and barriers (via the shared substrate leaf `_block_tile_u`, the block-tile twin of the value leaf `_send_u`), and the hook coalesced-stores it transposed — both gmem legs stay coalesced, unlike a per-element gather (the CuTe twin of a Triton on-chip `tl.trans`). The transpose SMEM tile is `32x32`, so `rows > 0` has a `2KB` floor (a sub-tile transpose is degenerate); plain (`rows=0`) a2a still goes down to `32B`.
 
-```python
-@triton.jit
-def transpose_produce(ctx):
-    r = ctx.pos % ctx.rows           # position in the transposed [cols, rows] layout
-    c = ctx.pos // ctx.rows
-    src = r * ctx.cols + c           # source position in the [rows, cols] layout
-    base = ctx.idx - ctx.pos         # chunk base in the input
-    return tl.load(ctx.ptr + base + src, mask=ctx.mask)
-```
+The framework runs the fused `peer x block` schedule (multi-peer addressing, signal/wait) in one launch, validated bit-exact against `dist.all_to_all_single`.
 
-The framework runs the fused `peer x block` schedule (multi-peer addressing, signal/wait) in one launch, validated bit-exact against `dist.all_to_all_single` on 4 ranks.
+> **Backend note (honest scope).** The per-element `produce`/`consume` value hooks (scale / quantize / accumulate) run on the CuTe copy-staging schedule, and are **proven reusable across collectives** — the same value leaf (`_send_u`/`_send_slot`) is composed by both `all_to_all` and the standalone `send_tiles`/`recv_tiles`. The block-tile `rows > 0` transpose (the non-contiguous headline) ships on the **zero-copy transfer** (`all_to_all(rows=R)` auto-selects an orchestrated mid-band / fused large-band kernel, both composing the shared `_block_tile_u` leaf), on-par-or-exceeding the Triton baseline across `0.5MB–128MB` on 8×GB300 (bit-exact, SM-matched). The block-tile tier ships today as the `BlockCtx` contract + `_block_tile_u` leaf + this **a2a reference**; reuse across other collectives is a documented backlog item (unlike the value tier). A fused copy-staged block-tile variant was evaluated and removed as send-leg-bound at the mid band (archived; see the CuTe backend notes). The TMA bulk-copy and raw zero-copy (`direct`/`ce`) paths move raw bytes and apply no hook.
 
 ### 2. Autotune it
 
-Write one thin adapter - the engine is generic, so you only declare your `Key` and the `Config`s to sweep:
+No adapter to write - declare the hook on a collective *object* and call `.autotune()`. The object is both the callable collective and the thing that tunes itself, because it already knows its hook, `variant`, candidate search, and correctness reference:
 
 ```python
-class A2ATuningAdapter(CommKernelTuningAdapter):
-    def enumerate_input_specs(self, world_size): ...      # the shapes to tune
-    def make_key(self, spec, world_size): ...             # YOUR key (must match runtime)
-    def enumerate_candidate_configs(self, spec, key): ... # YOUR configs to sweep
-    def make_inputs(self, spec, *, rank, world_size, device): ...   # tensors + nvl_rendezvous
-    def run_candidate(self, inputs, config, group):       # the collective with the tuned config
-        all_to_all(inputs.transport, inputs.output, inputs.input, rows=inputs.rows, config=config)
-        return inputs.output
-    def run_baseline(self, inputs, baseline, group): ...  # e.g. NCCL, the speed baseline
-    def check_correctness(self, candidate, reference): ...
+from comms.dsl.collectives import A2A
+
+# The non-contig transpose: rows>0 selects the block-tile transpose hook, and its own tuned
+# table falls out of the `rows` field in the lookup key (no produce= -- the transpose is a
+# block-tile LAYOUT hook, not a per-element value hook).
+a2a = A2A(
+    backend="cute",
+    reference=transpose_ref,           # (inputs, group)->Tensor; default = nccl identity
+    # candidates=<dict | callable>     # optional; default = shipped expert size-banded grid
+)
+
+a2a(t, out, inp, rows=R)               # callable: config=None -> per-shape tuned lookup
+a2a.autotune(shapes=PROD_SHAPES)       # sweep -> select -> generate (one tuning job)
+
+# A per-element VALUE hook (quantize / scale / accumulate) instead plugs in as produce=/consume=
+# and MUST carry an explicit `variant` so its tuned configs don't collide with the default copy:
+#   A2A(backend="cute", produce=quantize_produce, consume=dequant_consume, variant="fp8")
 ```
 
-Parent mode sweeps every candidate, benchmarks it against your baseline, and checks correctness; select mode picks the winner per key and writes a generated table:
+`.autotune()` drives the comms-owned `comm_tuning` engine and writes the generated table; `__call__` rebuilds the **same** key (including `rows` and `variant`, so the transpose / a custom value hook never reuses the default copy hook's config) and looks it up. The candidate search is pluggable: omit it for the expert default grid, pass a flat `{CuteA2AConfig_field: [values]}` dict (cartesian), or a `(spec, key) -> [CuteA2AConfig]` callable.
 
 ```python
-# comms/dsl/triton/generated/a2a_tuned_configs.py  (generated; do not hand-edit)
-from comms.dsl.triton.collectives_tuning import A2AConfig, A2AKey
+# comms/dsl/cute/a2a/generated/a2a_tuned_configs.py  (generated; do not hand-edit)
+from comms.dsl.cute.a2a.tuning import CuteA2AConfig, CuteA2AKey
 
 TUNED_A2A_CONFIGS = {
-    A2AKey(world_size=8, dtype="bfloat16", numel=8192, rows=0, transport_kind="NvlTransport"):
-        A2AConfig(num_blocks=16, block=2048, num_warps=8),
-    # ... one row per tuned key ...
+    CuteA2AKey(world_size=8, dtype="bfloat16", numel=8192, rows=0,
+               transport_kind="NvlTransport", device="GB300", backend="cute", variant=""):
+        CuteA2AConfig(num_blocks=8, num_threads=512, primitive="copy"),
+    # ... one row per tuned key (per shape x hardware x hook) ...
 }
 ```
 
-Then nothing else changes: the Step 1 call `all_to_all(..., config=None)` rebuilds the key and looks it up, so it now runs the tuned config automatically. When shapes change, re-run the tuner and regenerate the table - no kernel edits.
+Re-tune = re-run `.autotune()`, regenerate the table - no kernel edits.
+
+**Where it runs.** Perf tuning runs on **MAST/conda**, not a local buck par: the DSL JIT-compiles in a conda env, and production shapes (GB300, multi-node, TP=8) only exist on cluster GPUs. So `.autotune()` is the *body of the tuning-job entrypoint*; you launch it with the MAST launcher (`buck2 run //comms/dsl/tests:mast_launch -- --tune ...` -- buck only builds/launches the launcher; MAST runs the sweep). The framework stays buck-importable for single-host correctness tests / CI.
+
+**Reuse contract (M1).** Each `(shape)` should get its own transport; reusing one transport across configs of differing *geometry* (`num_blocks`/`primitive`) is unsafe without a drain, which is not implemented here yet. A runtime guard raises on a geometry switch on a reused transport (no runtime drain, so reinterpreting in-flight bytes would corrupt staging); `COMMS_DSL_ALLOW_GEOMETRY_SWITCH=1` downgrades it to a silent advance for callers whose successive launches are device-sync-separated (a benchmark / tuner sweeping configs at one size). A fully user-declared `Key` (arbitrary fields) and a numel shape-bucket are planned extensions. See `USER_GUIDE.md` for runnable, task-oriented examples of all three usage layers + the autotuner workflow.
 
 ## What the same pattern enables next
 
