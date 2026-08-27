@@ -4,9 +4,10 @@
 // PrimsAmdGdaShared — Re-exports shared comms::prims types into prims_amd_gda
 // =============================================================================
 //
-// The shared comms::prims headers (ThreadGroup.cuh, Timeout.cuh, IbgdaBuffer.h)
-// support both CUDA and HIP. This header re-exports all their types into the
-// prims_amd_gda namespace so AMD code can use a consistent namespace.
+// The shared comms::prims headers (ThreadGroup.cuh, AbortCheck.cuh,
+// IbgdaBuffer.h) support both CUDA and HIP. This header re-exports all their
+// types into the prims_amd_gda namespace so AMD code can use a consistent
+// namespace.
 
 #pragma once
 
@@ -57,13 +58,13 @@ using comms::prims::kMaxMultiwarpsPerBlock;
 using comms::prims::kMultiwarpSize;
 
 // ---------------------------------------------------------------------------
-// Timeout types and helpers
+// AbortDevice types and helpers
 // ---------------------------------------------------------------------------
+using comms::prims::AbortDevice;
 using comms::prims::gpu_clock64;
-using comms::prims::Timeout;
 
 } // namespace prims_amd_gda
 
 // The FT_ABORT_* checks come from
 // comms/common/fault_tolerance/AbortMacros.cuh, re-exported via
-// comms/prims/core/Timeout.cuh
+// comms/prims/core/AbortCheck.cuh

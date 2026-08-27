@@ -128,7 +128,7 @@ namespace comms::prims {
  * @param src       Local source buffer (user data, contiguous, 16-byte aligned)
  * @param nbytes    Total message size in bytes (must be a multiple of 16)
  * @param remote_ll128_buf  Pointer to receiver's LL128 packet buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_packets  Number of packets in the LL128 buffer.
  *                            0 = buffer is pre-sized to fit the entire message
  *                            (no chunking). >0 and < total packets =
@@ -140,7 +140,7 @@ __device__ __forceinline__ void ll128_send(
     const char* __restrict__ src,
     size_t nbytes,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -222,7 +222,7 @@ __device__ __forceinline__ void ll128_send(
               : 0;
           if (!ready) {
             if (FT_ABORT_CHECK(
-                    timeout,
+                    abortDevice,
                     "ll128_send: waiting for READY_TO_WRITE on packet %llu (buf_idx=%llu, current=%lld)",
                     (unsigned long long)pkt_idx,
                     (unsigned long long)buf_idx,
@@ -303,7 +303,7 @@ __device__ __forceinline__ void ll128_send(
   (void)src;
   (void)nbytes;
   (void)remote_ll128_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_packets;
 #endif
 }
@@ -320,7 +320,7 @@ __device__ __forceinline__ void ll128_send(
  * @param dst       Local output buffer (contiguous user data, 16-byte aligned)
  * @param nbytes    Total message size in bytes (must be a multiple of 16)
  * @param local_ll128_buf  Pointer to local LL128 packet buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_packets  Number of packets in the LL128 buffer.
  *                            0 = buffer is pre-sized to fit the entire message
  *                            (no chunking). >0 and < total packets =
@@ -332,7 +332,7 @@ __device__ __forceinline__ void ll128_recv(
     char* __restrict__ dst,
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -407,7 +407,7 @@ __device__ __forceinline__ void ll128_recv(
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
             if (FT_ABORT_CHECK(
-                    timeout,
+                    abortDevice,
                     "ll128_recv: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
                     (long long)pkt_flag_value,
                     (unsigned long long)pkt_idx,
@@ -498,7 +498,7 @@ __device__ __forceinline__ void ll128_recv(
   (void)dst;
   (void)nbytes;
   (void)local_ll128_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_packets;
 #endif
 }
@@ -517,7 +517,7 @@ __device__ __forceinline__ void ll128_recv(
  * @param nbytes    Total message size in bytes (must be a multiple of 16)
  * @param local_ll128_buf   Pointer to local LL128 buffer (predecessor wrote)
  * @param remote_ll128_buf  Pointer to successor's LL128 buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_packets  Number of packets in the LL128 buffer.
  *                            0 = buffer is pre-sized to fit the entire message
  *                            (no chunking). >0 and < total packets =
@@ -530,7 +530,7 @@ __device__ __forceinline__ void ll128_forward(
     size_t nbytes,
     Ll128Packet* __restrict__ local_ll128_buf,
     Ll128Packet* __restrict__ remote_ll128_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_packets = 0) {
 #ifdef __CUDA_ARCH__
   // Constant base flag. Multi-step works via receiver ACK (-1) reset between
@@ -605,7 +605,7 @@ __device__ __forceinline__ void ll128_forward(
               (local_ll128_buf[buf_idx].load_flag() == pkt_flag_value) ? 1 : 0;
           if (!ready) {
             if (FT_ABORT_CHECK(
-                    timeout,
+                    abortDevice,
                     "ll128_forward: waiting for flag_value=%lld on packet %llu (buf_idx=%llu, current=%lld)",
                     (long long)pkt_flag_value,
                     (unsigned long long)pkt_idx,
@@ -658,7 +658,7 @@ __device__ __forceinline__ void ll128_forward(
               : 0;
           if (!ready) {
             if (FT_ABORT_CHECK(
-                    timeout,
+                    abortDevice,
                     "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (buf_idx=%llu, current=%lld)",
                     (unsigned long long)pkt_idx,
                     (unsigned long long)buf_idx,
@@ -765,7 +765,7 @@ __device__ __forceinline__ void ll128_forward(
   (void)nbytes;
   (void)local_ll128_buf;
   (void)remote_ll128_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_packets;
 #endif
 }
