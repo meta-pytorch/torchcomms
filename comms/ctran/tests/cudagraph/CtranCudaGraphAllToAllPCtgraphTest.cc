@@ -398,17 +398,13 @@ TEST_F(CudaGraphAllToAllPCtgraphIbConfig, CtgraphHonorsAllToAllIbConfig) {
 // Verifies the ctgraph AllToAllP path actually feeds the ctran::Profiler
 // (whose reporter writes to the `nccl_profiler_algo` Scuba table). Without
 // this, the instrumentation added in `ctranAllToAllPIbImpl` would compile
-// but silently no-op — the default test env sets
-// NCCL_CTRAN_TRANSPORT_PROFILER=false, so `comm->ctran_->profiler` is
-// nullptr and every CTRAN_PROFILER_IF block skips. This fixture flips both
-// knobs so the profiler is constructed AND every collective is traced,
-// then reads the accumulated profiler state after the graph replays.
+// but silently no-op. This fixture samples every collective so the profiler
+// is constructed, then reads its accumulated state after the graph replays.
 class CudaGraphAllToAllPCtgraphProfilerScuba : public CtranCudaGraphTestBase {
  protected:
   void SetUp() override {
     CtranDistTestFixture::SetUp(
         ctran::CtranEnvs{
-            {"NCCL_CTRAN_TRANSPORT_PROFILER", "true"},
             {"NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1"},
         });
   }
@@ -477,7 +473,7 @@ TEST_F(
 
   ASSERT_NE(comm->ctran_, nullptr);
   ASSERT_NE(comm->ctran_->profiler, nullptr)
-      << "Profiler must be constructed when NCCL_CTRAN_TRANSPORT_PROFILER=true";
+      << "Profiler must be constructed when sampling is enabled";
   auto* profiler = comm->ctran_->profiler.get();
 
   // Post-condition set inside `ctranAllToAllPIbImpl`: on a traced collective

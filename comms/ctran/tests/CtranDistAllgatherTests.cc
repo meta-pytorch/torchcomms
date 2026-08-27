@@ -36,7 +36,6 @@ class CtranAllgatherTest : public ctran::CtranDistTestFixture,
   ctran::test::VerifyAlgoStatsHelper algoStats_;
 
   void setUpWithEnvs(const ctran::CtranEnvs& envs = {}) {
-    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     algoStats_.enable();
     ctran::CtranDistTestFixture::SetUp(envs);

@@ -90,7 +90,9 @@ struct ctranConfig {
   std::string commDesc;
   std::vector<enum CommBackend> backends = {};
   ctranPrimsConfig primsConfig;
-  bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
+  // The creator supplies this; ctran does not read the sampling cvar
+  // itself, so a comm-split child inherits the parent's decision.
+  bool enableProfiler{false};
 
   bool operator==(const ctranConfig& other) const {
     return (

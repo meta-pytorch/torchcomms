@@ -3562,15 +3562,10 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Enable ctran transport profiling for MCCL. When true (and the rank
-     passes MCCL_FILTER_PROFILER_LOGGING_BY_RANKS), MCCL sets
-     comm_->config_.enableProfiler and injects BOTH
-     McclAlgoProfilerReporter and McclGpeProfilerReporter into
-     ctranInit. Algo rows land in mccl_operation_trace with
-     mcclop="ALGO_PROFILING"; GPE per-tracepoint rows land in the same
-     table with mcclop="GPE_PROFILING". Set to false to disable both
-     reporters from the MCCL level (CTRAN-side defaults for the GPE
-     profiler still apply per NCCL_CTRAN_GPE_PROFILING_ENABLE).
+     Enable construction of the MCCL GPE profiler reporter. When enabled,
+     the reporter can write GPE per-tracepoint rows to mccl_operation_trace
+     with mcclop="GPE_PROFILING". This does not control the CTRAN algorithm
+     profiler.
 
  - name        : MCCL_FORCE_SMALL_MSG_AR_RING
    type        : bool
@@ -3589,13 +3584,11 @@ cvars:
    default     : "0"
    description : |-
      Comma-separated list of global ranks allowed to write profiler
-     operation data to filter logs (mccl_operation_trace). Only effective
-     when MCCL_CTRAN_TRANSPORT_PROFILER is enabled (true by default),
-     which controls whether ctran profiling data flows to
-     mccl_operation_trace. This filter applies only to profiler
-     operation trace samples; other log types are not affected. When
-     this list is non-empty, only the specified ranks will have their
-     profiler samples written; all other ranks are silently skipped.
+     operation data to filter logs (mccl_operation_trace). This filter applies
+     to algorithm profiler construction and healthy GPE profiler rows; aborted
+     GPE rows bypass it. Other log types are not affected. When this list is
+     non-empty, only the specified ranks will have their profiler samples
+     written; all other ranks are silently skipped.
      Default: "0" (only rank 0 logs). Set to an empty string to allow
      all ranks to log.
 
