@@ -541,6 +541,173 @@ static ncclResult_t shardedRelayAllToAll2Active(
 }
 
 /**
+ * Software-pipelined single-group 2-active sharded relay all-to-all.
+ *
+ * Same logical collective and the same helper roles as
+ * shardedRelayAllToAll2Active, but for nGroups == 1 -- where the active ranks
+ * and the helpers are disjoint sets -- the relay is tiled and pipelined so both
+ * directions of every cross link stay busy. See relayA2PipelineTiles() for why
+ * the two-group schedule cannot do that and what it costs.
+ *
+ * With T tiles and unit u = align(segmentCount / ((H+1)*T + 1)), the exchange
+ * segment splits as:
+ *   [0, H*T*u)   offload region; helper h owns [h*T*u, (h+1)*T*u), its tile t
+ * at h*T*u + t*u [H*T*u, sc)  direct region as T+1 chunks of u, the last
+ * absorbing the
+ *                /((H+1)*T + 1) remainder and the alignment loss
+ *
+ * Group k, for k in [0, T]: the active rank scatters tile k (k < T) to every
+ * helper, receives the partner's tile k-1 (k > 0) from every helper straight
+ * into its receive segment, and exchanges direct chunk k over the
+ * active<->active link; helper h receives tile k of each active's chunk into
+ * ping-pong buffer k%2 and forwards buffer (k-1)%2 to the OTHER active rank.
+ *
+ * Every rank posts exactly one send and one recv per link per group. The
+ * helper's staging is two units per active rather than the whole chunk, so a
+ * forwarded tile is still cache-resident when it is read back.
+ *
+ * OUT-OF-PLACE ONLY, like every other all-to-all route.
+ */
+static ncclResult_t shardedRelayAllToAll2ActivePipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* segmentCounts,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t sc = segmentCounts[0];
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t u =
+      ((sc / (static_cast<size_t>(H + 1) * T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (u == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * u;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  const size_t lastDirect = sc - directBase - tileStride;
+
+  // Diagonal: recvSeg[m] = sendSeg[m].
+  size_t exchangeSegOffset = 0;
+  if (myActiveGroup == 0) {
+    const size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
+    exchangeSegOffset = static_cast<size_t>(1 - cfg.myActiveIndex) * sc;
+    cudaMemcpyAsync(
+        static_cast<char*>(recvBuffs[0]) + diagOffset * elementSize,
+        static_cast<const char*>(sendBuffs[0]) + diagOffset * elementSize,
+        sc * elementSize,
+        cudaMemcpyDeviceToDevice,
+        stream);
+  }
+
+  // Helper staging: two ping-pong units per active source.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendSeg = static_cast<const char*>(sendBuffs[0]) +
+          exchangeSegOffset * elementSize;
+      char* recvSeg =
+          static_cast<char*>(recvBuffs[0]) + exchangeSegOffset * elementSize;
+      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      const size_t directOffset = directBase + static_cast<size_t>(k) * u;
+      const size_t directSize = (k < T) ? u : lastDirect;
+
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendSeg +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclSend(
+          sendSeg + directOffset * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      if (k > 0) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              recvSeg +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclRecv(
+          recvSeg + directOffset * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      if (k < T) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclRecv(
+              hbuff +
+                  (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) *
+                      u * elementSize,
+              u,
+              datatype,
+              cfg.activeRanks[a],
+              comm,
+              stream));
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclSend(
+              hbuff +
+                  (static_cast<size_t>(a) * 2 +
+                   static_cast<size_t>((k - 1) % 2)) *
+                      u * elementSize,
+              u,
+              datatype,
+              cfg.activeRanks[1 - a],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * A=4 no-pack XOR/Latin relay path.
  *
  * Each off-diagonal segment stays in place and is split into contiguous
@@ -915,18 +1082,40 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
   const rcclx::relay::AllToAllRoute route = rcclx::relay::selectAllToAllRoute(
       nActiveRanksPerGroup, numHelpers, nGroups, segmentCounts, elementSize);
   if (route == rcclx::relay::AllToAllRoute::A2Relay) {
-    r = shardedRelayAllToAll2Active(
-        sendBuffs2,
-        recvBuffs2,
-        segmentCounts,
-        datatype,
-        comm,
-        stream,
-        configs,
-        myActiveGroup,
+    // A single-group call has the helpers to itself, so the scatter and the
+    // forward run on opposite directions of each cross link and can be
+    // software-pipelined into one duplex stream; relayA2PipelineTiles() returns
+    // 1 whenever that does not apply.
+    const int nTiles = rcclx::relay::relayA2PipelineTiles(
+        nActiveRanksPerGroup,
         numHelpers,
         nGroups,
+        rcclx::relay::relayMaxCount(segmentCounts, nGroups),
         elementSize);
+    r = (nTiles > 1) ? shardedRelayAllToAll2ActivePipelined(
+                           sendBuffs2,
+                           recvBuffs2,
+                           segmentCounts,
+                           datatype,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nTiles,
+                           elementSize)
+                     : shardedRelayAllToAll2Active(
+                           sendBuffs2,
+                           recvBuffs2,
+                           segmentCounts,
+                           datatype,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nGroups,
+                           elementSize);
   } else if (route == rcclx::relay::AllToAllRoute::A4XorRelay) {
     r = shardedRelayAllToAllA4XorRelay(
         sendBuffs2,
