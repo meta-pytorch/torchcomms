@@ -168,6 +168,8 @@ commResult_t setupMulticast(
     CtranComm* comm,
     CtranMapper* mapper,
     void* dataRegHdl,
+    const void* dataPtr,
+    size_t dataBytes,
     std::unique_ptr<ctran::utils::CtranMulticast>& outMulticast) {
   outMulticast = nullptr;
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12040
@@ -176,6 +178,8 @@ commResult_t setupMulticast(
   (void)comm;
   (void)mapper;
   (void)dataRegHdl;
+  (void)dataPtr;
+  (void)dataBytes;
   return commSuccess;
 #else
   const auto& statex = comm->statex_;
@@ -212,23 +216,38 @@ commResult_t setupMulticast(
   bool localOk = hasNvlReg &&
       (mc->retainSegments(regElem->buf, regElem->len) == commSuccess);
   const size_t mcSize = localOk ? mc->retainedSize() : 0;
+  const auto dataOffset =
+      localOk ? mc->retainedOffset(dataPtr, dataBytes) : std::nullopt;
   size_t gran = 0;
-  localOk = localOk && ctran::utils::CtranMulticast::isSupported(cudaDev) &&
+  localOk = localOk && dataOffset.has_value() &&
+      ctran::utils::CtranMulticast::isSupported(cudaDev) &&
       ctran::utils::CtranMulticast::granularity(cudaDev, nLocalRanks, gran) ==
           commSuccess &&
       gran != 0 && (mcSize % gran) == 0 && mc->segmentsAlignedTo(gran);
 
   // Single-round rendezvous: the root creates + exports its fabric handle up
-  // front if its own validation passed; one all-gather of {ok, handle} then
-  // lets every rank decide unanimously (all must pass) and pick up the root's
-  // handle.
+  // front if its own validation passed; one all-gather lets every rank require
+  // unanimous eligibility and an identical registered-buffer layout before
+  // picking up the root's handle.
+  struct McLayout {
+    size_t mcSize{0};
+    size_t dataOffset{0};
+    size_t dataBytes{0};
+
+    bool operator==(const McLayout& other) const {
+      return mcSize == other.mcSize && dataOffset == other.dataOffset &&
+          dataBytes == other.dataBytes;
+    }
+  };
   struct McRzv {
     int ok{0};
+    McLayout layout{};
     ctran::utils::CtranIpcHandle handle{};
   };
   McRzv myRzv{}; // value-init: zeroes any padding, since the whole struct is
                  // shipped over the wire by intraNvlDomainAllGather
   myRzv.ok = localOk ? 1 : 0;
+  myRzv.layout = {mcSize, dataOffset.value_or(0), dataBytes};
   if (isRoot && localOk) {
     CUmemGenericAllocationHandle mcHandle = 0;
     if (mc->createRoot(mcSize, CU_MEM_HANDLE_TYPE_FABRIC, mcHandle) !=
@@ -245,22 +264,20 @@ commResult_t setupMulticast(
 
   // Proceed only if every rank validated (root's handle is in allRzv[0]:
   // intraNvlDomainAllGather indexes by domain rank, and root == domain rank 0).
-  bool allOk = true;
+  const auto& rootRzv = allRzv[0];
+  bool allEligible = true;
+  bool sameLayout = true;
   for (const auto& r : allRzv) {
-    allOk = allOk && (r.ok != 0);
+    allEligible = allEligible && (r.ok != 0);
+    sameLayout = sameLayout && r.layout == rootRzv.layout;
   }
-  if (!allOk) {
-    int declined = 0;
-    for (const auto& r : allRzv) {
-      if (r.ok == 0) {
-        declined++;
-      }
-    }
+  if (!allEligible || !sameLayout) {
     CTRAN_LOG(
         WARN,
-        "CTRAN-MC: rank {} falling back to unicast -- {} of {} NVL-domain ranks declined multicast (unsupported HW/IMEX, or a non-cuMem / unregistered buffer)",
+        "CTRAN-MC: rank {} falling back to unicast -- eligibility {}, registered-buffer layout {} across {} NVL-domain ranks",
         rank,
-        declined,
+        allEligible ? "available" : "unavailable",
+        sameLayout ? "matches" : "differs",
         nLocalRanks);
     // `mc` (incl. the root's just-created object, if any) is released by its
     // dtor at scope exit; no leak.
@@ -582,7 +599,8 @@ commResult_t CtranWin::exchange() {
   if (NCCL_CTRAN_WIN_ENABLE_MULTICAST && ipcOnly_ && isSymmetric() &&
       winDataPtr != nullptr) {
     std::unique_ptr<ctran::utils::CtranMulticast> mc;
-    FB_COMMCHECK(setupMulticast(comm, mapper, dataRegHdl, mc));
+    FB_COMMCHECK(
+        setupMulticast(comm, mapper, dataRegHdl, winDataPtr, dataBytes, mc));
     const bool mcEngaged = (mc != nullptr);
     if (mcEngaged) {
       // exchange() is a CtranWin member; store the window's multicast object
