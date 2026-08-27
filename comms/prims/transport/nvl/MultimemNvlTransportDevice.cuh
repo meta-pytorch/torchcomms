@@ -109,8 +109,9 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const AbortDevice& timeout = AbortDevice()) const {
-    user_local_signal_ptr(signal_id)->wait_until(group, op, expected, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    user_local_signal_ptr(signal_id)->wait_until(
+        group, op, expected, abortDevice);
   }
 
   __device__ __forceinline__ void signal_internal(
@@ -154,9 +155,9 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const AbortDevice& timeout = AbortDevice()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     internal_local_signal_ptr(signal_id)->wait_until(
-        group, op, expected, timeout);
+        group, op, expected, abortDevice);
   }
 
  private:
