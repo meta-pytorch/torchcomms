@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
 
 namespace torch::comms {
 
@@ -185,6 +186,21 @@ class C10dWindowWrapper final : public c10d::Window {
 };
 #endif
 
+void completeFutureOnce(
+    const std::shared_ptr<std::atomic<bool>>& claimed,
+    const c10::intrusive_ptr<c10::ivalue::Future>& future,
+    const std::vector<at::Tensor>& tensors,
+    bool blockIfLost) {
+  if (claimed == nullptr) {
+    return;
+  }
+  if (!claimed->exchange(true) && !future->completed()) {
+    future->markCompleted(c10::IValue(tensors));
+  } else if (blockIfLost) {
+    future->wait();
+  }
+}
+
 } // namespace
 
 WorkWrapper::WorkWrapper(
@@ -218,10 +234,11 @@ WorkWrapper::WorkWrapper(
   } else {
     // For other device types (CPU) async: register end hook so
     // future completes when setStatus fires.
-    work_->registerWorkEndHook([future = future_, tensors = outputTensors_]() {
-      if (!future->completed()) {
-        future->markCompleted(c10::IValue(tensors));
-      }
+    futureCompletionClaimed_ = std::make_shared<std::atomic<bool>>(false);
+    work_->registerWorkEndHook([claimed = futureCompletionClaimed_,
+                                future = future_,
+                                tensors = outputTensors_]() {
+      completeFutureOnce(claimed, future, tensors, /*blockIfLost=*/false);
     });
   }
 }
@@ -242,9 +259,8 @@ bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
     finish(std::current_exception());
     throw;
   }
-  if (!future_->completed()) {
-    future_->markCompleted(c10::IValue(outputTensors_));
-  }
+  completeFutureOnce(
+      futureCompletionClaimed_, future_, outputTensors_, /*blockIfLost=*/true);
   finish();
   return true;
 }
@@ -258,9 +274,8 @@ void WorkWrapper::synchronize() {
     finish(std::current_exception());
     throw;
   }
-  if (!future_->completed()) {
-    future_->markCompleted(c10::IValue(outputTensors_));
-  }
+  completeFutureOnce(
+      futureCompletionClaimed_, future_, outputTensors_, /*blockIfLost=*/true);
   finish();
 }
 std::vector<at::Tensor> WorkWrapper::result() {
