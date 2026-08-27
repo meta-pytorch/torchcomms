@@ -501,7 +501,7 @@ static ncclResult_t shardedRelayAllGather2Active(
  * Same logical collective and the same helper roles as
  * shardedRelayAllGather2Active, but for nGroups == 1 -- where the active ranks
  * and the helpers are disjoint sets -- the relay is tiled and pipelined so both
- * directions of every cross link stay busy. See relayA2PipelineTiles() for why
+ * directions of every cross link stay busy. See relayPipelineTiles() for why
  * the two-group schedule cannot do that and what it costs.
  *
  * With T tiles and unit u = align(sendCount / ((H+1)*T + 1)):
@@ -1065,12 +1065,11 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
       rcclx::relay::AllGatherRoute::A2Relay) {
     // A single-group call has the helpers to itself, so the scatter and the
     // forward run on opposite directions of each cross link and can be
-    // software-pipelined into one duplex stream; relayA2PipelineTiles() returns
+    // software-pipelined into one duplex stream; relayPipelineTiles() returns
     // 1 whenever that does not apply.
-    const int nTiles = rcclx::relay::relayA2PipelineTiles(
-        nActiveRanksPerGroup,
-        numHelpers,
+    const int nTiles = rcclx::relay::relayPipelineTiles(
         nGroups,
+        rcclx::relay::relayShapeA2(numHelpers),
         rcclx::relay::relayMaxCount(sendCounts, nGroups),
         elementSize);
     r = (nTiles > 1) ? shardedRelayAllGather2ActivePipelined(
