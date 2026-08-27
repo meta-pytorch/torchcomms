@@ -25,10 +25,10 @@ __global__ void ll_nvlink_send_kernel(
     size_t buffer_num_lines,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
-    ll_send(group, src, nbytes, remote_ll_buf, timeout, buffer_num_lines);
+    ll_send(group, src, nbytes, remote_ll_buf, abortDevice, buffer_num_lines);
   }
 }
 
@@ -39,10 +39,10 @@ __global__ void ll_nvlink_recv_kernel(
     size_t buffer_num_lines,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
-    ll_recv(group, dst, nbytes, local_ll_buf, timeout, buffer_num_lines);
+    ll_recv(group, dst, nbytes, local_ll_buf, abortDevice, buffer_num_lines);
   }
 }
 
@@ -54,8 +54,8 @@ __global__ void ll_nvlink_forward_kernel(
     size_t buffer_num_lines,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll_forward(
         group,
@@ -63,7 +63,7 @@ __global__ void ll_nvlink_forward_kernel(
         nbytes,
         local_ll_buf,
         remote_ll_buf,
-        timeout,
+        abortDevice,
         buffer_num_lines);
   }
 }
@@ -86,16 +86,22 @@ __global__ void ll_nvlink_send_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   if (partition_id == 0) {
     for (int i = 0; i < num_steps; i++) {
       ll_send(
-          subgroup, src, nbytes, remote_send_buf, timeout, buffer_num_lines);
+          subgroup,
+          src,
+          nbytes,
+          remote_send_buf,
+          abortDevice,
+          buffer_num_lines);
     }
   } else {
     for (int i = 0; i < num_steps; i++) {
-      ll_recv(subgroup, dst, nbytes, local_recv_buf, timeout, buffer_num_lines);
+      ll_recv(
+          subgroup, dst, nbytes, local_recv_buf, abortDevice, buffer_num_lines);
     }
   }
 }
@@ -357,15 +363,15 @@ __global__ void ll_nvlink_varying_send_kernel(
     size_t buffer_num_lines,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll_send(
         group,
         src + i * nbytes,
         nbytes,
         remote_ll_buf,
-        timeout,
+        abortDevice,
         buffer_num_lines);
   }
 }
@@ -377,15 +383,15 @@ __global__ void ll_nvlink_varying_recv_kernel(
     size_t buffer_num_lines,
     int num_steps) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
+  Timeout abortDevice;
+  abortDevice.start();
   for (int i = 0; i < num_steps; i++) {
     ll_recv(
         group,
         dst + i * nbytes,
         nbytes,
         local_ll_buf,
-        timeout,
+        abortDevice,
         buffer_num_lines);
   }
 }

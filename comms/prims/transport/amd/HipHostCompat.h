@@ -8,7 +8,7 @@
 //
 // 1. **`__trap()` shim** — HIP doesn't expose `__trap()` in host pass the
 //    way nvcc does. Aliases `__trap()` to `abort()` in the device pass so
-//    cross-platform headers like `IbgdaBuffer.h` and `Timeout.cuh` that
+//    cross-platform headers like `IbgdaBuffer.h` and `AbortCheck.cuh` that
 //    use `__trap()` for fatal-error paths compile cleanly under hipcc.
 //    Kept here (not in `HipDeviceCompat.h`) because it's lightweight and
 //    used by cross-platform consumers that don't otherwise need AMD GCN
