@@ -304,7 +304,41 @@ inline constexpr int kRelayMaxPipelineTiles = 4;
 inline constexpr size_t kRelayPipelineBoundaryBytes = 768u << 10;
 
 /**
- * Software-pipeline depth for the single-group 2-active relay.
+ * Geometry a single-group relay's software pipeline has, in units of the
+ * smallest chunk the schedule moves.
+ *
+ * A relay schedule is described by two linear functions of the depth T:
+ *   totalUnits(T)  how many units the relayed count divides into, so one unit
+ * is count / totalUnits(T) linkUnits(T)   how many units the busiest link
+ * direction ends up carrying, which is what the call actually costs Both are
+ * affine in T, so each is a (perTile, fixed) pair. The depth-1 case always
+ * reproduces the existing two-group schedule, which is the check that a shape
+ * is written correctly.
+ *
+ * The four shipped shapes, on an 8-GPU node (H helpers):
+ *
+ *   2-active, all four collectives   link {1, 1}   total {H+1, 1}
+ *     One unit per link per group. count/4 at T = 1 -> count/7 as T grows.
+ *
+ *   4-active all-to-all              link {1, 1}   total {2, 1}
+ *     One unit up and one down per cross link per group, matched by one direct
+ *     unit on the intra links. 2*count/3 at T = 1 -> count/2.
+ *
+ */
+struct RelayPipelineShape {
+  int linkPerTile;
+  int linkFixed;
+  int totalPerTile;
+  int totalFixed;
+};
+
+inline constexpr RelayPipelineShape relayShapeA2(int numHelpers) {
+  return {1, 1, numHelpers + 1, 1};
+}
+inline constexpr RelayPipelineShape kRelayShapeA4AllToAll = {1, 1, 2, 1};
+
+/**
+ * Software-pipeline depth for a single-group relay.
  *
  * With nGroups == 1 the active ranks and the helpers are DISJOINT sets, so a
  * cross link carries the scatter (active -> helper) in one direction and the
@@ -314,13 +348,11 @@ inline constexpr size_t kRelayPipelineBoundaryBytes = 768u << 10;
  * for all of group 2.
  *
  * Tiling the relay into T tiles and issuing tile t's forward in the SAME group
- * as tile t+1's scatter fills both directions. Per link and direction each of
- * the T+1 groups then carries one unit u, against a count of
- * ((H+1)*T + 1)*u -- so the cost is (T+1)/((H+1)*T + 1) of the count:
- * count/4 at T = 1 (identical to the two-group schedule) falling towards
- * count/7 as T grows on an 8-GPU node, i.e. a 4x ceiling becomes 7x. count/7 is
- * also the hard floor, since an active rank must move its whole buffer out
- * across its 7 links exactly once.
+ * as tile t+1's scatter fills both directions. What that is worth depends on
+ * the schedule's shape (see RelayPipelineShape); at 2 active ranks it takes the
+ * per-link cost from count/4 towards count/7, which is also the hard floor
+ * since an active rank must move its buffer out across its 7 links exactly
+ * once.
  *
  * A FUSED call gains nothing here, which is why this is gated on nGroups == 1:
  * there every rank is active for one group and a helper for the others, so its
@@ -328,30 +360,34 @@ inline constexpr size_t kRelayPipelineBoundaryBytes = 768u << 10;
  * rather than overlap, and the extra group boundaries are pure cost.
  *
  * The depth is whichever power of two minimizes
- * (T + 1) * (perStageBytes + kRelayPipelineBoundaryBytes), which is the two
- * competing terms stated directly rather than a size threshold per depth.
+ * linkUnits(T) * unitBytes + (T + 1) * kRelayPipelineBoundaryBytes, which is
+ * the two competing terms stated directly rather than a size threshold per
+ * depth.
  */
-inline int relayA2PipelineTiles(
-    int nActiveRanksPerGroup,
-    int numHelpers,
+inline int relayPipelineTiles(
     int nGroups,
+    RelayPipelineShape shape,
     size_t maxCount,
     size_t elementSize) {
-  if (nGroups != 1 || nActiveRanksPerGroup != 2 || numHelpers < 1) {
+  if (nGroups != 1 || shape.totalPerTile < 1) {
     return 1;
   }
   const size_t bytes = maxCount * elementSize;
-  const size_t perTileStages = static_cast<size_t>(numHelpers) + 1;
   int bestTiles = 1;
   size_t bestCost = 0;
   for (int tiles = 1; tiles <= kRelayMaxPipelineTiles; tiles *= 2) {
-    const size_t units = perTileStages * static_cast<size_t>(tiles) + 1;
-    // A stage still has to be a whole aligned chunk.
-    if (maxCount / units < kRelayChunkAlignElements) {
+    const size_t totalUnits =
+        static_cast<size_t>(shape.totalPerTile) * static_cast<size_t>(tiles) +
+        static_cast<size_t>(shape.totalFixed);
+    // A unit still has to be a whole aligned chunk.
+    if (maxCount / totalUnits < kRelayChunkAlignElements) {
       break;
     }
-    const size_t cost = static_cast<size_t>(tiles + 1) *
-        (bytes / units + kRelayPipelineBoundaryBytes);
+    const size_t linkUnits =
+        static_cast<size_t>(shape.linkPerTile) * static_cast<size_t>(tiles) +
+        static_cast<size_t>(shape.linkFixed);
+    const size_t cost = linkUnits * (bytes / totalUnits) +
+        static_cast<size_t>(tiles + 1) * kRelayPipelineBoundaryBytes;
     if (bestCost == 0 || cost < bestCost) {
       bestCost = cost;
       bestTiles = tiles;
