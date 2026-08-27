@@ -8,7 +8,7 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
 namespace ctran::logging {
@@ -17,7 +17,7 @@ namespace {
 folly::once_flag ctranLoggingInitOnceFlag;
 
 void initCtranLoggingImpl() {
-  meta::comms::logger::initCommLogging();
+  meta::comms::logger::initCommLoggerRuntime();
   const auto logFilePath =
       meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str());
   const auto threadContextFn = []() {

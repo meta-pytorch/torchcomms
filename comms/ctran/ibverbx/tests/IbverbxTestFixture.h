@@ -5,7 +5,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <random>
