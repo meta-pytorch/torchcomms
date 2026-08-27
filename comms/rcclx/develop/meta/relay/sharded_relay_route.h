@@ -115,8 +115,10 @@ inline size_t relayMaxCount(const size_t* counts, int nGroups) {
  *
  * A==2 crossover: the fused relay overtakes the direct exchange at ~9 MB and an
  * independent call at ~27 MB (independent has no cross-group contention, so
- * direct holds on longer); cross over below each. A==4 uses the XOR relay only
- * inside [63 MiB, 256 MiB).
+ * direct holds on longer); cross over below each. A==4 relays from 27 MB fused
+ * / 9 MB independent up, with no upper bound: the 256 MiB ceiling this used to
+ * carry was covering an alignment bug in the relay geometry, not a real
+ * crossover.
  */
 inline AllToAllRoute selectAllToAllRoute(
     int nActiveRanksPerGroup,
@@ -139,17 +141,23 @@ inline AllToAllRoute selectAllToAllRoute(
   for (int g = 0; g < nGroups; g++) {
     allSegmentCountsPositive &= segmentCounts[g] > 0;
   }
-  constexpr size_t kXorRelayMinBytes = static_cast<size_t>(63) << 20;
-  constexpr size_t kXorRelayMaxBytes = static_cast<size_t>(256) << 20;
+  constexpr size_t kXorRelayMinBytes = static_cast<size_t>(9) << 20;
+  const size_t xorRelayMinBytes = (nGroups > 1)
+      ? (static_cast<size_t>(27) << 20) // fused: >= 27 MB
+      : kXorRelayMinBytes; // independent: >= 9 MB
   const bool useXorRelay = nActiveRanksPerGroup == 4 && numHelpers == 4 &&
-      allSegmentCountsPositive && maxBytes >= kXorRelayMinBytes &&
-      maxBytes < kXorRelayMaxBytes;
+      allSegmentCountsPositive && maxBytes >= xorRelayMinBytes;
   return useXorRelay ? AllToAllRoute::A4XorRelay : AllToAllRoute::PureDirect;
 }
 
-// Per-source relay chunk of the A==4 XOR all-to-all. The direct-B region
-// absorbs both the /3 remainder and the alignment loss, so
-// 3 * relayCount <= segmentCount always holds.
+// Per-source relay chunk of the A==4 XOR all-to-all, and equally the size of
+// its leading direct region: the schedule's two serialized phases each carry
+// one such chunk per link, so the three regions are directA = relay = this
+// count with directB absorbing the /3 remainder and the alignment loss. Every
+// region boundary is therefore 128-element aligned; a plain segmentCount/3
+// directA is misaligned for every power-of-two segment (2^n is never divisible
+// by 3), which pushed the relay region onto an unaligned offset and cost more
+// than the relay saved.
 inline size_t allToAllA4RelayCount(size_t segmentCount) {
   return (segmentCount / 3 / kRelayChunkAlignElements) *
       kRelayChunkAlignElements;
