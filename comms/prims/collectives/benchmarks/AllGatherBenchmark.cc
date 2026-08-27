@@ -248,7 +248,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* sendBuff_d = sendBuffer.get();
 
     // Create abort handle (default = disabled)
-    Timeout abortDevice;
+    AbortDevice abortDevice;
 
     // Need non-const copy for kernel args
     std::size_t sendcount_arg = sendcount;

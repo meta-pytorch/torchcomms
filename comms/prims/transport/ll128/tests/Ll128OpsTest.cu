@@ -26,7 +26,7 @@ __global__ void ll128_forward_kernel(
     Ll128Packet* local_ll128_buf,
     Ll128Packet* remote_ll128_buf) {
   auto group = make_warp_group();
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
   ll128_forward(group, dst, nbytes, local_ll128_buf, remote_ll128_buf, timeout);
 }
@@ -46,7 +46,7 @@ __global__ void ll128_forward_abort_kernel(
     Ll128Packet* remote_ll128_buf,
     comms::fault_tolerance::AbortDevice abort) {
   auto group = make_warp_group();
-  Timeout timeout = abort;
+  AbortDevice timeout = abort;
   timeout.start();
   ll128_forward(group, dst, nbytes, local_ll128_buf, remote_ll128_buf, timeout);
 }
@@ -68,7 +68,7 @@ __global__ void ll128_multi_step_combined_kernel(
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -186,7 +186,7 @@ __global__ void ll128_multi_step_send_forward_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(3);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -254,7 +254,7 @@ __global__ void ll128_chunked_combined_kernel(
     Ll128Packet* ll128_buf,
     size_t buffer_num_packets,
     int num_steps,
-    Timeout timeout) {
+    AbortDevice timeout) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
@@ -286,7 +286,7 @@ __global__ void ll128_chunked_send_forward_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(3);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -409,7 +409,7 @@ __global__ void ll128_windowed_combined_kernel(
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -455,7 +455,7 @@ __global__ void ll128_varying_data_multi_step_combined_kernel(
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -492,7 +492,7 @@ __global__ void ll128_varying_data_multi_step_send_forward_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(3);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {

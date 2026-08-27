@@ -363,13 +363,13 @@ __global__ void sendRecvKernel(
     std::size_t nbytes,
     std::size_t maxSignalBytes,
     bool send,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   if (send) {
-    transport->send(group, buffer, nbytes, maxSignalBytes, timeout);
+    transport->send(group, buffer, nbytes, maxSignalBytes, abortDevice);
   } else {
-    transport->recv(group, buffer, nbytes, maxSignalBytes, timeout);
+    transport->recv(group, buffer, nbytes, maxSignalBytes, abortDevice);
   }
 }
 
@@ -380,18 +380,18 @@ __global__ void twoCallSendThenRecvKernel(
     std::size_t firstBytes,
     std::size_t secondBytes,
     std::size_t maxSignalBytes,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   auto* sendBytes = static_cast<const char*>(sendBuffer);
   auto* recvBytes = static_cast<char*>(recvBuffer);
 
-  transport.send(group, sendBytes, firstBytes, maxSignalBytes, timeout);
-  transport.recv(group, recvBytes, firstBytes, maxSignalBytes, timeout);
+  transport.send(group, sendBytes, firstBytes, maxSignalBytes, abortDevice);
+  transport.recv(group, recvBytes, firstBytes, maxSignalBytes, abortDevice);
   transport.send(
-      group, sendBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+      group, sendBytes + firstBytes, secondBytes, maxSignalBytes, abortDevice);
   transport.recv(
-      group, recvBytes + firstBytes, secondBytes, maxSignalBytes, timeout);
+      group, recvBytes + firstBytes, secondBytes, maxSignalBytes, abortDevice);
 }
 
 void testSendRecv(
@@ -448,8 +448,8 @@ __global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
         bool send,
         uint32_t queueDepth,
         uint64_t* queueFullCount,
-        Timeout timeout) {
-  timeout.start();
+        AbortDevice abortDevice) {
+  abortDevice.start();
   auto block = make_block_group();
   __shared__ WarpProxyTest::SharedState sharedState;
   WarpProxyTest::run(
@@ -459,7 +459,7 @@ __global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
           .queueDepth = queueDepth,
           .queueFullCount = queueFullCount,
       },
-      timeout,
+      abortDevice,
       [&](auto& ops) {
         if (send) {
           ops.send(*transport, buffer, nbytes, maxSignalBytes);
@@ -476,16 +476,16 @@ __global__ void progressSendRecvKernel(
     std::size_t maxSignalBytes,
     bool send,
     uint64_t* waitingCount,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   uint64_t waits = 0;
   if (send) {
     transport->init_send_progress(group, nbytes, maxSignalBytes);
     IbgdaSendRecvProgressStatus status;
     do {
       status = transport->progress_send_once(
-          group, buffer, nbytes, maxSignalBytes, timeout);
+          group, buffer, nbytes, maxSignalBytes, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   } else {
@@ -493,7 +493,7 @@ __global__ void progressSendRecvKernel(
     IbgdaSendRecvProgressStatus status;
     do {
       status = transport->progress_recv_once(
-          group, buffer, nbytes, maxSignalBytes, timeout);
+          group, buffer, nbytes, maxSignalBytes, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   }
@@ -526,13 +526,13 @@ __device__ IbgdaRegisteredSendProgressStatus postRegisteredSend(
     const IbgdaLocalBuffer& source,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     RegisteredSendObservation* observation) {
   transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
   IbgdaRegisteredSendProgressStatus status;
   do {
     status = transport.progress_registered_send_once(
-        group, source, nbytes, maxSignalBytes, timeout);
+        group, source, nbytes, maxSignalBytes, abortDevice);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }
@@ -545,11 +545,11 @@ template <typename Transport>
 __device__ void drainRegisteredSends(
     Transport& transport,
     ThreadGroup& group,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     RegisteredSendObservation* observation) {
   IbgdaRegisteredSendProgressStatus status;
   do {
-    status = transport.progress_registered_send_drain_once(group, timeout);
+    status = transport.progress_registered_send_drain_once(group, abortDevice);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }
@@ -568,12 +568,13 @@ __global__ void registeredSendRecvKernel(
     bool overwriteAfterDrain,
     uint8_t overwriteValue,
     bool zeroByteAfterPosted,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   if (send) {
     if (blocking) {
-      transport.send_registered(group, source, nbytes, maxSignalBytes, timeout);
+      transport.send_registered(
+          group, source, nbytes, maxSignalBytes, abortDevice);
       if (group.is_leader() && observation != nullptr) {
         ++observation->drainedCount;
       }
@@ -584,18 +585,18 @@ __global__ void registeredSendRecvKernel(
           source,
           nbytes,
           maxSignalBytes,
-          timeout,
+          abortDevice,
           observation);
       if (zeroByteAfterPosted) {
         transport.init_registered_send_progress(group, 0, maxSignalBytes);
         const auto zeroByteStatus = transport.progress_registered_send_once(
-            group, IbgdaLocalBuffer{}, 0, maxSignalBytes, timeout);
+            group, IbgdaLocalBuffer{}, 0, maxSignalBytes, abortDevice);
         if (group.is_leader() && observation != nullptr) {
           observation->record(zeroByteStatus);
         }
       }
       if (status != IbgdaRegisteredSendProgressStatus::Drained) {
-        drainRegisteredSends(transport, group, timeout, observation);
+        drainRegisteredSends(transport, group, abortDevice, observation);
       }
     }
     if (overwriteAfterDrain) {
@@ -607,7 +608,7 @@ __global__ void registeredSendRecvKernel(
       group.sync();
     }
   } else {
-    transport.recv(group, recvBuffer, nbytes, maxSignalBytes, timeout);
+    transport.recv(group, recvBuffer, nbytes, maxSignalBytes, abortDevice);
   }
 }
 
@@ -620,9 +621,9 @@ __global__ void mixedRegisteredAndStagedSendRecvKernel(
     std::size_t thirdBytes,
     std::size_t maxSignalBytes,
     bool send,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   if (send) {
     (void)postRegisteredSend(
         *transport,
@@ -630,36 +631,36 @@ __global__ void mixedRegisteredAndStagedSendRecvKernel(
         sendBuffer,
         firstBytes,
         maxSignalBytes,
-        timeout,
+        abortDevice,
         nullptr);
     transport->send(
         group,
         static_cast<const char*>(sendBuffer.ptr) + firstBytes,
         secondBytes,
         maxSignalBytes,
-        timeout);
+        abortDevice);
     (void)postRegisteredSend(
         *transport,
         group,
         sendBuffer.subBuffer(firstBytes + secondBytes),
         thirdBytes,
         maxSignalBytes,
-        timeout,
+        abortDevice,
         nullptr);
-    drainRegisteredSends(*transport, group, timeout, nullptr);
+    drainRegisteredSends(*transport, group, abortDevice, nullptr);
     return;
   }
 
   auto* output = static_cast<char*>(recvBuffer);
-  transport->recv(group, output, firstBytes, maxSignalBytes, timeout);
+  transport->recv(group, output, firstBytes, maxSignalBytes, abortDevice);
   transport->recv(
-      group, output + firstBytes, secondBytes, maxSignalBytes, timeout);
+      group, output + firstBytes, secondBytes, maxSignalBytes, abortDevice);
   transport->recv(
       group,
       output + firstBytes + secondBytes,
       thirdBytes,
       maxSignalBytes,
-      timeout);
+      abortDevice);
 }
 
 __global__ void fillTransportStagingKernel(

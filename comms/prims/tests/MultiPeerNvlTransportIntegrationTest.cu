@@ -271,15 +271,15 @@ __global__ void signalAllAggregateDistributedKernel(
     DeviceWindow dw,
     int signalIdx,
     uint64_t* result,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto group = make_warp_group();
-  timeout.start();
+  abortDevice.start();
 
   // Every rank signals all peers with value 1
   dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
 
   // Wait until aggregate reaches nRanks-1 (all peers have signaled us)
-  dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), timeout);
+  dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), abortDevice);
 
   // Read aggregate (thread-level API)
   if (group.is_leader()) {

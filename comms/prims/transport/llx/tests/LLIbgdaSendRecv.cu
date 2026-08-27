@@ -62,7 +62,7 @@ __global__ void sendRecvKernel(
     int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
-    Timeout abortDevice) {
+    AbortDevice abortDevice) {
   (void)activeBlocks; // master's detail::send/recv has no active_blocks param
   auto group = make_block_group();
   abortDevice.start();

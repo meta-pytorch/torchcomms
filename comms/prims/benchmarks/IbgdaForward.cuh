@@ -21,7 +21,7 @@ __global__ void ibgda_forward_kernel(
     std::size_t totalBytes,
     int numBlocks,
     int my_rank,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 /**
  * 3-rank chain kernel using recv + send on rank 1 (baseline).
@@ -35,6 +35,6 @@ __global__ void ibgda_recv_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     int my_rank,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 } // namespace comms::prims::benchmark

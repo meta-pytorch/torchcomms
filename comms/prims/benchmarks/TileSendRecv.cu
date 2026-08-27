@@ -12,8 +12,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   auto [role, sub] = group.partition(2);
@@ -26,14 +26,14 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -93,15 +93,15 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     bool needsBarrier,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   auto [role, sub] = group.partition(2);
   const int blockId = sub.group_id;
 
   if (needsBarrier) {
-    p2p.barrier_sync(sub, blockId, timeout);
+    p2p.barrier_sync(sub, blockId, abortDevice);
   }
 
   if (role == 0) {
@@ -110,14 +110,14 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -175,8 +175,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_multiwarp_group(blockDim.x / 2);
   auto [role, sub] = group.partition_interleaved(2);
@@ -189,14 +189,14 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -205,8 +205,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   const int blockId = group.group_id;
@@ -217,7 +217,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
       dstTiles.tile_bytes(blockId),
       p2p_succ,
       max_signal_bytes,
-      timeout);
+      abortDevice);
 }
 
 } // namespace comms::prims::benchmark

@@ -288,7 +288,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     const void* sendBuff_d = sendBuffer.get();
 
-    Timeout timeout_config;
+    AbortDevice timeout_config;
 
     CudaEvent start, stop;
     const int nIter = 100;

@@ -17,7 +17,7 @@ __global__ void test_all_to_allv_ll128_kernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout abortDevice) {
+    AbortDevice abortDevice) {
   abortDevice.start();
   all_to_allv_ll128(
       recvbuff_d,
@@ -39,7 +39,7 @@ void test_all_to_allv_ll128(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize,
-    Timeout abortDevice) {
+    AbortDevice abortDevice) {
   test_all_to_allv_ll128_kernel<<<numBlocks, blockSize>>>(
       recvbuff_d,
       sendbuff_d,

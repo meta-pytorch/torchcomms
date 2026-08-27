@@ -146,14 +146,14 @@ constexpr std::size_t kSlotSize = 16 * 1024 * 1024; // 16MB per slot
  * @param recvTiles     Tiled view of the recv buffer
  * @param stepState     Persistent step counters [2 * numSendBlocks int64s],
  *                      zeroed before first use
- * @param timeout       Optional timeout for signal waits
+ * @param abortDevice       Optional abortDevice for signal waits
  */
 __global__ void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes = 0,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 /**
  * p2pTileSendRecvBidirCta — Bidirectional in a single block via half-block
@@ -170,7 +170,7 @@ __global__ void p2pTileSendRecvBidirCta(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes = 0,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 /**
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
@@ -199,7 +199,7 @@ __global__ void p2pTileSendRecvDynamic(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     bool needsBarrier,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 /**
  * p2pTileForward — Tile-style fused recv+forward kernel.
@@ -219,13 +219,13 @@ __global__ void p2pTileSendRecvDynamic(
  * @param p2p_succ   Transport to successor (write target staging)
  * @param dstTiles   Tiled view of the local output buffer
  * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
- * @param timeout    Optional timeout for signal waits
+ * @param abortDevice    Optional abortDevice for signal waits
  */
 __global__ void p2pTileForward(
     P2pNvlTransportDevice p2p_pred,
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
     std::size_t max_signal_bytes = 0,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 } // namespace comms::prims::benchmark

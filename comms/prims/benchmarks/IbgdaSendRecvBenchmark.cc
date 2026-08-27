@@ -809,7 +809,7 @@ class IbgdaSendRecvBenchmarkContext {
             numBlocks_,
             stream_,
             /*maxSignalBytes=*/0,
-            Timeout(),
+            AbortDevice(),
             FLAGS_ibgda_warp_proxy_queue_depth);
       } else {
         LOG(FATAL) << "unsupported send/recv API";
@@ -847,7 +847,7 @@ class IbgdaSendRecvBenchmarkContext {
           numBlocks_,
           stream_,
           /*maxSignalBytes=*/0,
-          Timeout(),
+          AbortDevice(),
           FLAGS_ibgda_warp_proxy_queue_depth);
     } else {
       LOG(FATAL) << "unsupported send/recv API";
