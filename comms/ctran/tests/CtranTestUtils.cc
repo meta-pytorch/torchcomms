@@ -19,8 +19,6 @@
 #include "comms/mccl/utils/Utils.h"
 #include "comms/utils/InitFolly.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LogUtils.h"
-#include "comms/utils/logger/Logger.h"
 
 namespace ctran {
 

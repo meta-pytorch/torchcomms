@@ -17,7 +17,6 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::fttesting {
 

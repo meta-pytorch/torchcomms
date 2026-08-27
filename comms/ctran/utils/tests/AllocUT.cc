@@ -9,7 +9,6 @@
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/Logger.h"
 
 using namespace ctran::utils;
 

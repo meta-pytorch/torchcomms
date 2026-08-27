@@ -6,10 +6,6 @@
 #include <folly/ScopeGuard.h>
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
-
 namespace ibverbx {
 
 namespace {
