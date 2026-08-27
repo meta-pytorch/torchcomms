@@ -34,13 +34,13 @@ __device__ __forceinline__ void send_peer(
     const char* src,
     size_t bytes,
     size_t ll128ThresholdBytes,
-    comms::prims::Timeout timeout) {
+    comms::prims::AbortDevice abortDevice) {
   if constexpr (Proto == PipeProtocol::LL128) {
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
         comms::prims::can_use_ll128(src, bytes);
     if (use_ll128) {
       transport.p2p_nvl.ll128_send_group(
-          group, const_cast<char*>(src), bytes, timeout);
+          group, const_cast<char*>(src), bytes, abortDevice);
     } else {
       comms::prims::TiledBuffer<char> tiles(
           const_cast<char*>(src), bytes, group);
@@ -49,7 +49,7 @@ __device__ __forceinline__ void send_peer(
           tiles.tile_data(group.group_id),
           tiles.tile_bytes(group.group_id),
           /*max_signal_bytes=*/0,
-          timeout);
+          abortDevice);
     }
   } else {
     comms::prims::TiledBuffer<char> tiles(const_cast<char*>(src), bytes, group);
@@ -58,7 +58,7 @@ __device__ __forceinline__ void send_peer(
         tiles.tile_data(group.group_id),
         tiles.tile_bytes(group.group_id),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -70,12 +70,12 @@ __device__ __forceinline__ void recv_peer(
     char* dst,
     size_t bytes,
     size_t ll128ThresholdBytes,
-    comms::prims::Timeout timeout) {
+    comms::prims::AbortDevice abortDevice) {
   if constexpr (Proto == PipeProtocol::LL128) {
     bool use_ll128 = (bytes <= ll128ThresholdBytes) &&
         comms::prims::can_use_ll128(dst, bytes);
     if (use_ll128) {
-      transport.p2p_nvl.ll128_recv_group(group, dst, bytes, timeout);
+      transport.p2p_nvl.ll128_recv_group(group, dst, bytes, abortDevice);
     } else {
       comms::prims::TiledBuffer<char> tiles(dst, bytes, group);
       transport.p2p_nvl.recv(
@@ -83,7 +83,7 @@ __device__ __forceinline__ void recv_peer(
           tiles.tile_data(group.group_id),
           tiles.tile_bytes(group.group_id),
           /*max_signal_bytes=*/0,
-          timeout);
+          abortDevice);
     }
   } else {
     comms::prims::TiledBuffer<char> tiles(dst, bytes, group);
@@ -92,7 +92,7 @@ __device__ __forceinline__ void recv_peer(
         tiles.tile_data(group.group_id),
         tiles.tile_bytes(group.group_id),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -118,10 +118,10 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
     }
   }();
 
-  // Timeout for LL128 path (default = no timeout / infinite wait).
-  // Harmless for Simple path (send/recv accept optional Timeout with same
+  // Timeout for LL128 path (default = disabled / infinite wait).
+  // Harmless for Simple path (send/recv accept optional AbortDevice with same
   // default).
-  comms::prims::Timeout timeout{};
+  comms::prims::AbortDevice abortDevice{};
 
   if (nLocalRanks == 1) {
     // Single local rank — self-copy only
@@ -173,7 +173,7 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
           src_ptr,
           sendBytes,
           args.ll128ThresholdBytes,
-          timeout);
+          abortDevice);
     } else {
       recv_peer<Proto>(
           transports[peerGlobalRank],
@@ -181,7 +181,7 @@ __global__ void ncclKernelDeviceAllToAllvPipes(
           dst_ptr,
           recvBytes,
           args.ll128ThresholdBytes,
-          timeout);
+          abortDevice);
     }
   }
 }
