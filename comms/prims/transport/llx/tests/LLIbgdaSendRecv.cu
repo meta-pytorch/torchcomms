@@ -62,16 +62,16 @@ __global__ void sendRecvKernel(
     int activeBlocks,
     std::size_t maxSignalBytes,
     bool send,
-    Timeout timeout) {
+    Timeout abortDevice) {
   (void)activeBlocks; // master's detail::send/recv has no active_blocks param
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
   if (send) {
     detail::send<P2pIbgdaTransportDevice, Memcpy, Proto>(
-        *transport, group, buffer, nbytes, maxSignalBytes, timeout);
+        *transport, group, buffer, nbytes, maxSignalBytes, abortDevice);
   } else {
     detail::recv<P2pIbgdaTransportDevice, Memcpy, Proto>(
-        *transport, group, buffer, nbytes, maxSignalBytes, timeout);
+        *transport, group, buffer, nbytes, maxSignalBytes, abortDevice);
   }
 }
 
