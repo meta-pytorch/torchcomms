@@ -291,8 +291,9 @@ class P2pNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t value,
-      const Timeout& timeout = Timeout()) {
-    localState_.signalBuffer[signal_id].wait_until(group, op, value, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) {
+    localState_.signalBuffer[signal_id].wait_until(
+        group, op, value, abortDevice);
   }
 
   /**
@@ -341,7 +342,7 @@ class P2pNvlTransportDevice {
   __device__ __forceinline__ void barrier_sync(
       ThreadGroup& group,
       uint64_t barrier_id,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     // Ensure all prior memory operations are complete
     group.sync();
 
@@ -352,7 +353,7 @@ class P2pNvlTransportDevice {
       remoteState_.barrierBuffer[barrier_id].arrive();
 
       // Wait for peer - poll local barrier state until peer signals
-      localState_.barrierBuffer[barrier_id].wait(timeout);
+      localState_.barrierBuffer[barrier_id].wait(abortDevice);
     }
 
     // Ensure all threads wait for leader to complete barrier
@@ -374,13 +375,13 @@ class P2pNvlTransportDevice {
    * @param group   ThreadGroup (auto-converted to warp scope)
    * @param src     Local source buffer (16-byte aligned)
    * @param nbytes  Total bytes (must be a multiple of 16)
-   * @param timeout Timeout for flag polling
+   * @param abortDevice Timeout for flag polling
    */
   __device__ __forceinline__ void ll128_send_group(
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
@@ -390,7 +391,7 @@ class P2pNvlTransportDevice {
         src,
         nbytes,
         remoteState_.ll128Buffer,
-        timeout,
+        abortDevice,
         options_.ll128BufferNumPackets);
 #endif
   }
@@ -406,13 +407,13 @@ class P2pNvlTransportDevice {
    * @param group   ThreadGroup (auto-converted to warp scope)
    * @param dst     Local output buffer (16-byte aligned)
    * @param nbytes  Total bytes (must be a multiple of 16)
-   * @param timeout Timeout for flag polling
+   * @param abortDevice Timeout for flag polling
    */
   __device__ __forceinline__ void ll128_recv_group(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -422,7 +423,7 @@ class P2pNvlTransportDevice {
         dst,
         nbytes,
         localState_.ll128Buffer,
-        timeout,
+        abortDevice,
         options_.ll128BufferNumPackets);
 #endif
   }
@@ -440,14 +441,14 @@ class P2pNvlTransportDevice {
    * @param dst                  Local output buffer (16-byte aligned)
    * @param nbytes               Total bytes (must be a multiple of 16)
    * @param successor_transport  Transport for the successor peer
-   * @param timeout              Timeout for flag polling
+   * @param abortDevice              Timeout for flag polling
    */
   __device__ __forceinline__ void ll128_forward_group(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(successor_transport.remoteState_.ll128Buffer != nullptr);
@@ -474,7 +475,7 @@ class P2pNvlTransportDevice {
         nbytes,
         localState_.ll128Buffer,
         successor_transport.remoteState_.ll128Buffer,
-        timeout,
+        abortDevice,
         effective_packets);
 #endif
   }
@@ -494,7 +495,7 @@ class P2pNvlTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
@@ -536,13 +537,13 @@ class P2pNvlTransportDevice {
             group,
             CmpOp::CMP_GE,
             protocolStreamEnd - layout.pipelineBytes,
-            timeout);
+            abortDevice);
       }
       // Leave before the staging write and the DATA_READY signal below. The
       // backpressure wait gave up, so the slot may still hold data the receiver
       // has not consumed; worse, signalling DATA_READY would release a receiver
       // that is correctly blocked and prevent it reaching its own deadline.
-      if (groupAborted(group, timeout)) {
+      if (groupAborted(group, abortDevice)) {
         break;
       }
 
@@ -576,7 +577,7 @@ class P2pNvlTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] const AbortDevice& abortDevice = AbortDevice(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -614,13 +615,14 @@ class P2pNvlTransportDevice {
       const uint64_t protocolStreamEnd =
           streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
-      local_ch.data_ready.wait_until(group, CmpOp::CMP_GE, streamEnd, timeout);
+      local_ch.data_ready.wait_until(
+          group, CmpOp::CMP_GE, streamEnd, abortDevice);
       // The wait above gave up rather than being satisfied, so this chunk was
       // never written. Leave before the copy and, critically, before the
       // SLOT_FREE credit below: signalling it would tell the sender we consumed
       // a chunk it never sent, releasing a peer that is correctly blocked and
       // stopping it from ever reaching its own deadline.
-      if (groupAborted(group, timeout)) {
+      if (groupAborted(group, abortDevice)) {
         break;
       }
 
@@ -683,7 +685,7 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       P2pNvlTransportDevice& successor,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const Timeout& timeout = Timeout(),
+      [[maybe_unused]] const AbortDevice& abortDevice = AbortDevice(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -748,7 +750,7 @@ class P2pNvlTransportDevice {
 
       // 1. Wait for predecessor data to be ready (recv side, every step).
       recv_local_ch.data_ready.wait_until(
-          group, CmpOp::CMP_GE, recvStreamEnd, timeout);
+          group, CmpOp::CMP_GE, recvStreamEnd, abortDevice);
 
       // 2. Wait for successor's staging slot to be free once we have wrapped
       //    around the pipeline.
@@ -757,7 +759,7 @@ class P2pNvlTransportDevice {
             group,
             CmpOp::CMP_GE,
             sendProtocolStreamEnd - layout.pipelineBytes,
-            timeout);
+            abortDevice);
       }
 
       // Either wait may have given up. Leave before the copy and before both
@@ -766,7 +768,7 @@ class P2pNvlTransportDevice {
       // *and* ACK the predecessor for a chunk we never consumed, releasing two
       // correctly-blocked peers and stopping both from reaching their own
       // deadlines.
-      if (groupAborted(group, timeout)) {
+      if (groupAborted(group, abortDevice)) {
         break;
       }
 
@@ -849,14 +851,14 @@ class P2pNvlTransportDevice {
    * @param active_groups Number of groups calling concurrently.
    *   0 = default to max groups the LL buffer can support.
    *   >0 = explicit group count; buffer partitioned per group.group_id.
-   * @param timeout       Timeout for flag polling
+   * @param abortDevice       Timeout for flag polling
    */
   __device__ __forceinline__ void ll_send(
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
@@ -882,14 +884,14 @@ class P2pNvlTransportDevice {
         src,
         nbytes,
         remoteState_.llBuffer + bufferOffset,
-        timeout,
+        abortDevice,
         perGroupLines);
 #else
     (void)group;
     (void)src;
     (void)nbytes;
     (void)active_groups;
-    (void)timeout;
+    (void)abortDevice;
 #endif
   }
 
@@ -907,14 +909,14 @@ class P2pNvlTransportDevice {
    * @param active_groups Number of groups calling concurrently.
    *   0 = default to max groups the LL buffer can support.
    *   >0 = explicit group count; buffer partitioned per group.group_id.
-   * @param timeout       Timeout for flag polling
+   * @param abortDevice       Timeout for flag polling
    */
   __device__ __forceinline__ void ll_recv(
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
@@ -940,14 +942,14 @@ class P2pNvlTransportDevice {
         dst,
         nbytes,
         localState_.llBuffer + bufferOffset,
-        timeout,
+        abortDevice,
         perGroupLines);
 #else
     (void)group;
     (void)dst;
     (void)nbytes;
     (void)active_groups;
-    (void)timeout;
+    (void)abortDevice;
 #endif
   }
 
@@ -967,7 +969,7 @@ class P2pNvlTransportDevice {
    * @param active_groups        Number of groups calling concurrently.
    *   0 = default to max groups the LL buffer can support.
    *   >0 = explicit group count; buffer partitioned per group.group_id.
-   * @param timeout              Timeout for flag polling
+   * @param abortDevice              Timeout for flag polling
    */
   __device__ __forceinline__ void ll_forward(
       const ThreadGroup& group,
@@ -975,7 +977,7 @@ class P2pNvlTransportDevice {
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
       int active_groups = 0,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
@@ -1028,7 +1030,7 @@ class P2pNvlTransportDevice {
         nbytes,
         localState_.llBuffer + myOffset,
         successor_transport.remoteState_.llBuffer + succOffset,
-        timeout,
+        abortDevice,
         effectiveLines);
 #else
     (void)group;
@@ -1036,7 +1038,7 @@ class P2pNvlTransportDevice {
     (void)nbytes;
     (void)successor_transport;
     (void)active_groups;
-    (void)timeout;
+    (void)abortDevice;
 #endif
   }
 
