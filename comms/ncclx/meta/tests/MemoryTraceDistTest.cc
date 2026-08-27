@@ -18,7 +18,7 @@
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
 
 #include "VerifyTopoUtil.h"
@@ -64,6 +64,7 @@ class MemoryTraceTestFixture : public NcclxBaseTestFixture,
         make_mock([this]() {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
+    meta::comms::logger::initCommLoggerRuntime();
     // force singleton init
     folly::Singleton<const DataTableAllTables, DataTableAllTablesTag>::
         try_get();
@@ -370,7 +371,7 @@ void MemoryTraceTestFixture::runNcclInternalBufferLogTest() {
   CUDACHECK_TEST(cudaMemGetInfo(&after_free, &after_total));
   size_t groundTruthUsage = before_free - after_free;
   // wait until memory logging completes
-  NcclLogger::close();
+  meta::comms::logger::shutdownCommLoggerRuntime();
   auto output = readFromFile(logFileName);
   EXPECT_NE(output, "");
 
@@ -448,7 +449,7 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
   NCCLCHECK_TEST(ncclMemFree(userBuf));
 
   // wait until memory logging completes
-  NcclLogger::close();
+  meta::comms::logger::shutdownCommLoggerRuntime();
   auto output = readFromFile(logFileName);
 
   // Expect ranks 0-1 to have memory allocation events logged
@@ -516,7 +517,7 @@ void MemoryTraceTestFixture::runScopedRegisterLoggingTest() {
   NCCLCHECK_TEST(ncclMemFree(buf));
 
   // wait until memory logging completes
-  NcclLogger::close();
+  meta::comms::logger::shutdownCommLoggerRuntime();
   auto output = readFromFile(logFileName);
   EXPECT_NE(output, "");
 
