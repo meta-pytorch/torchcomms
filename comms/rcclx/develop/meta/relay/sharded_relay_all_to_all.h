@@ -29,10 +29,10 @@
  * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 selects between
  * the exact direct exchange at small sizes and the original 2-active
  * passthrough relay with 6 dedicated helpers. A==4 with 4
- * helpers uses the no-pack XOR/Latin relay when the common maximum per-active-
- * rank input size, A * max(segmentCounts) * elementSize, is in [63 MiB,
- * 256 MiB) and every group count is positive. Other A==4 calls use the exact
- * pure-direct all-to-all. OUT-OF-PLACE ONLY in all cases.
+ * helpers uses the no-pack XOR/Latin relay once the common maximum per-active-
+ * rank input size, A * max(segmentCounts) * elementSize, reaches 27 MiB (fused)
+ * or 9 MiB (independent) and every group count is positive. Smaller A==4 calls
+ * use the exact pure-direct all-to-all. OUT-OF-PLACE ONLY in all cases.
  *
  * Unlike allreduce/reduce-scatter, all-to-all performs NO reduction — it is
  * pure data movement — so no reduction kernels are used and there is no
