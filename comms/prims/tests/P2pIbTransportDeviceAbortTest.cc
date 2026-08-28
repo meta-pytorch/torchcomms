@@ -265,19 +265,24 @@ TEST(P2pIbTransportDeviceAbortTest, IbrcPutSkipsWhenQueueFullAndAborted) {
       fixture.posted(),
       /*attempts=*/depth + 2,
       abort.getDeviceHandle());
-  // Deliberate, and not replaceable by a condition variable: the abort has to
-  // land *while* the kernel is spinning on the full ring, and the only signal
-  // that it got there is the device-side posted counter, which the host cannot
-  // read mid-kernel without serialising behind the very kernel it is waiting
-  // on. 200 ms is two orders of magnitude above the launch it is covering.
+  // Deliberate: the abort has to land while the kernel is still inside the
+  // ring-full spin, and the only signal that it got there is the device-side
+  // posted counter, which the host cannot read mid-kernel without serialising
+  // behind the very kernel it is waiting on. 200 ms is two orders of magnitude
+  // above the launch it is covering.
   // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   abort.setAbort();
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  // Exactly the puts that fit are posted. The one that blocked on the full ring
-  // is dropped by the abort, and the one after it is dropped without ever
-  // touching the ring because the abort is already latched.
+  // Exactly the puts that fit are posted, but note *which* mechanism does what.
+  // `reserve()` does not read the abort inside its spin -- by design, so the
+  // stall path costs no mapped-host traffic -- so the parked put is released by
+  // the fixed proxy watchdog, not by this `setAbort()`. What the host abort
+  // does is make the *next* `reserve()` fail its one-shot entry check, so that
+  // put never touches the ring. Both leave `posted == depth`, which is why this
+  // assertion holds either way; the synchronize therefore also carries the
+  // watchdog's latency rather than returning as soon as the abort lands.
   EXPECT_EQ(fixture.readPosted(), depth);
   EXPECT_TRUE(abort.isAborted());
 }

@@ -1021,14 +1021,31 @@ class P2pIbrcTransportDevice {
     if (load_acquire_system_u32(&queue.status->error) == 0) {
       return;
     }
-    printf(
-        "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
-        load_acquire_system_u32(&queue.status->error_queue),
-        load_acquire_system_u32(&queue.status->error_code));
     if (!abort_.isEnabled()) {
+      printf(
+          "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
+          load_acquire_system_u32(&queue.status->error_queue),
+          load_acquire_system_u32(&queue.status->error_code));
       PIPES_DEVICE_TRAP();
     }
-    abort_.setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+    // NETWORK_ERROR, not ABORTED: the proxy published a transport fault, which
+    // is what FAULT_TOLERANCE.md reserves NETWORK_ERROR for, while ABORTED
+    // means an explicit user or transport abort. The reason is
+    // first-writer-wins and drives host telemetry, so the old value permanently
+    // misfiled a proxy queue error as a user abort. Matches the IBGDA
+    // error-CQE sites.
+    //
+    // Diagnostic gated on the CAS result so it fires once. A queue error is
+    // sticky and this is called on every iteration of the `reserve()` and
+    // `drain_queue()` spins -- which deliberately do not read the abort flag --
+    // so printing first meant one printf plus one system-scope CAS attempt per
+    // iteration until the fixed watchdog fired, a large burst for one fault.
+    if (abort_.setAbort(comms::fault_tolerance::AbortReason::NETWORK_ERROR)) {
+      printf(
+          "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
+          load_acquire_system_u32(&queue.status->error_queue),
+          load_acquire_system_u32(&queue.status->error_code));
+    }
   }
 
   __device__ void wait_local(
