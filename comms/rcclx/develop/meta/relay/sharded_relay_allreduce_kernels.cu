@@ -271,7 +271,9 @@ void launchSeededMultiReduceKernel(
  * flag, so thread 0 issues __threadfence_system() and then a release store; the
  * reader spins with an acquire load. The epoch comparison is wraparound-safe,
  * and flags are never reset -- the epoch only advances, so a stale flag from a
- * previous call always compares as not-yet-arrived for the current one.
+ * previous call always compares as not-yet-arrived for the current one. The
+ * epoch itself comes from a per-block device counter; see the comment at the
+ * point it is bumped for why it cannot be a kernel argument.
  */
 __device__ __forceinline__ bool oneShotEpochReached(
     uint32_t got,
@@ -292,7 +294,7 @@ __global__ void oneShotPushReduceKernel(
     size_t srcStride,
     size_t ownOffset,
     size_t slotBytes,
-    uint32_t epoch,
+    uint32_t* seq,
     int divisor) {
   // 16 bytes is the widest access, and moving the push as 16-byte units rather
   // than element-wise is what makes this competitive: measured, the kernel is
@@ -368,6 +370,29 @@ __global__ void oneShotPushReduceKernel(
     for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
       dst[i] = src[i];
     }
+  }
+
+  // The epoch is derived here rather than passed in. As a by-value kernel
+  // argument it was baked when a graph was captured, so every replay reused the
+  // capture-time value: on replay N every peer flag already holds it, the
+  // step-3 spin falls straight through, and step 4 reduces whatever the staging
+  // happened to hold. Reading and bumping a device counter makes a replay
+  // advance it exactly like a fresh launch.
+  //
+  // Per BLOCK, not one counter for the grid. Grid size follows the message
+  // size, so a later smaller call runs fewer blocks; a single shared counter
+  // would let the blocks that did run race ahead of the ones that did not, and
+  // the peer comparison is per (source, block). RCCL's own symmetric kernels
+  // keep their counter per block for the same reason.
+  //
+  // Only thread 0 flags and waits, so only thread 0 needs the value and no
+  // broadcast is required. Unsynchronised between concurrent one-shot calls on
+  // one comm, exactly as the host counter it replaces was -- those already
+  // share this comm's flag array.
+  uint32_t epoch = 0;
+  if (threadIdx.x == 0) {
+    epoch = seq[blockIdx.x] + 1u;
+    seq[blockIdx.x] = epoch;
   }
 
   // Step 2: publish the stores, then raise every peer's flag for this block.
@@ -461,7 +486,7 @@ void launchOneShotPushReduceKernel(
     size_t srcStride,
     size_t ownOffset,
     size_t slotBytes,
-    uint32_t epoch,
+    uint32_t* seq,
     int divisor,
     cudaStream_t stream) {
   const int blockSize = rcclx::relay::kOneShotThreads;
@@ -484,7 +509,7 @@ void launchOneShotPushReduceKernel(
       srcStride,
       ownOffset,
       slotBytes,
-      epoch,
+      seq,
       divisor);
 }
 
@@ -533,7 +558,7 @@ void launchOneShotPushReduceKernel(
       size_t srcStride,                                                    \
       size_t ownOffset,                                                    \
       size_t slotBytes,                                                    \
-      uint32_t epoch,                                                      \
+      uint32_t* seq,                                                       \
       int divisor,                                                         \
       cudaStream_t stream);
 
