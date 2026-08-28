@@ -97,19 +97,19 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
   ncclResult_t ret = ncclSuccess;
   if (ncclParamGinEnable() == 0) {
-    WARN("GIN is disabled.");
+    ERR(ncclInternalError, "GIN is disabled.");
     return ncclInternalError;
   }
 
   if (!ginState->supported) {
-    WARN("GIN not supported.");
+    ERR(ncclInvalidUsage, "GIN not supported.");
     return ncclInvalidUsage;
   }
 
   ginState->ginConnectionType = comm->globalGinSupport;
 
   if (!comm->symmetricSupport) {
-    WARN("Communicator does not support symmetric memory!");
+    ERR(ncclInternalError, "Communicator does not support symmetric memory!");
     return ncclInternalError;
   }
 
@@ -149,7 +149,7 @@ ncclResult_t ncclGinConnectOnce(struct ncclComm* comm) {
 
     NCCLCHECKGOTO(backend->ncclGin->devices(&ndev), ret, fail);
     if (ndev <= 0) {
-      WARN("No GIN-capable devices found.");
+      ERR(ncclInternalError, "No GIN-capable devices found.");
       ret = ncclInternalError;
       goto fail;
     }
@@ -449,7 +449,7 @@ ncclResult_t ncclGinDevCommFree(struct ncclComm* comm, struct ncclDevComm const*
   struct ncclGinStateDevComm *dc = ginState->devComms, *prevDc = NULL;
   while (1) {
     if (dc == NULL) {
-      WARN("Dev comm not found\n");
+      ERR(ncclInternalError, "Dev comm not found\n");
       return ncclInternalError;
     }
     if (dc->devHandles[0]->handle == devComm->ginHandles[0]) break;
@@ -509,7 +509,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
       // Multi-segment GIN registration requires DMABUF support on all GIN connections
       for (int commIdx = 0; commIdx < backend->ginCommCount; commIdx++) {
         if (!(backend->ginProps[commIdx].ptrSupport & NCCL_PTR_DMABUF)) {
-          WARN(
+          ERR(ncclInvalidArgument, 
             "Window registration of addresses that span multiple physical segments requires DMABUF support with GIN.");
           return ncclInvalidArgument;
         }
@@ -520,7 +520,7 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
       NCCLCHECK(backend->ncclGin->regMrSym(backend->ginComms[commIdx], address, size, memType, mrFlags,
                                            &ginHostWins[slot], &ginDevWins[slot]));
       if (ginHostWins[slot] == NULL) {
-        WARN("rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
+        ERR(ncclSystemError, "rank %d - GIN Symmetric register failed: buff %p, size %ld", comm->rank, address, size);
         return ncclSystemError;
       }
     }

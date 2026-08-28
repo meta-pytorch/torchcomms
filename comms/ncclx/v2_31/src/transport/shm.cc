@@ -305,7 +305,7 @@ static void initShmLocality() {
 ncclResult_t ncclShmAllocateShareableBuffer(size_t size, bool legacy, ncclShmIpcDesc_t* desc, void** hptr,
                                             void** dptr) {
   if (desc == NULL || hptr == NULL) {
-    WARN("Invalid argument desc %p, hptr %p", desc, hptr);
+    ERR(ncclInvalidArgument, "Invalid argument desc %p, hptr %p", desc, hptr);
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 12020
@@ -358,7 +358,7 @@ ncclResult_t ncclShmAllocateShareableBuffer(size_t size, bool legacy, ncclShmIpc
 ncclResult_t ncclShmImportShareableBuffer(struct ncclComm* comm, int proxyRank, ncclShmIpcDesc_t* desc, void** hptr,
                                           void** dptr, ncclShmIpcDesc_t* descOut) {
   if (comm == NULL || desc == NULL || hptr == NULL || descOut == NULL) {
-    WARN("Invalid argument comm %p, desc %p, hptr %p, descOut %p", comm, desc, hptr, descOut);
+    ERR(ncclInvalidArgument, "Invalid argument comm %p, desc %p, hptr %p, descOut %p", comm, desc, hptr, descOut);
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 12020

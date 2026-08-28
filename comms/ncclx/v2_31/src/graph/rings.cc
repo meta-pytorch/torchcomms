@@ -48,7 +48,7 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
     snprintf(prefix, sizeof(prefix), "Channel %02d/%02d :", r, nrings);
     if (rank == 0) dumpLine(rings + r * nranks, nranks, prefix);
     if (current != rank) {
-      WARN("Error : ring %d does not loop back to start (%d != %d)", r, current, rank);
+      ERR(ncclInternalError, "Error : ring %d does not loop back to start (%d != %d)", r, current, rank);
       ret = ncclInternalError;
       goto end;
     }
@@ -61,7 +61,7 @@ ncclResult_t ncclBuildRings(int nrings, int* rings, int rank, int nranks, int* p
         continue;
       }
       if ((bits & mask) == 0) {
-        WARN("Error : ring %d does not contain rank %d", r, i);
+        ERR(ncclInternalError, "Error : ring %d does not contain rank %d", r, i);
         ret = ncclInternalError;
         goto end;
       }

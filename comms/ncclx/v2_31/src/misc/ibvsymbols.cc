@@ -93,7 +93,7 @@ ncclResult_t buildIbvSymbols(struct ncclIbvSymbols* ibvSymbols) {
     cast = (void**)&funcptr; \
     tmp = dlvsym(handle, symbol, IBVERBS_VERSION); \
     if (tmp == NULL) { \
-      WARN("dlvsym failed on %s - %s version %s", symbol, dlerror(), IBVERBS_VERSION); \
+      ERR(ncclSystemError, "dlvsym failed on %s - %s version %s", symbol, dlerror(), IBVERBS_VERSION); \
       goto teardown; \
     } \
     *cast = tmp; \

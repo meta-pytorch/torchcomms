@@ -10,12 +10,14 @@
 namespace ncclx::test {
 
 namespace {
+#ifdef IS_NCCLX
 std::atomic<int> commCounter{
     0}; // NOLINT(facebook-avoid-non-const-global-variables)
 
 int getNextCommId() {
   return commCounter.fetch_add(1);
 }
+#endif
 } // namespace
 
 ncclComm_t createNcclComm(
@@ -33,23 +35,26 @@ ncclComm_t createNcclComm(
     config = NCCL_CONFIG_INITIALIZER;
   }
 
-  // Generate a unique commDesc per communicator to avoid stale TCPStore keys
-  // when fast-init mode reuses the same TCPStore across multiple test cases.
-  // Only override when the caller didn't explicitly set commDesc via
-  // ncclConfig_t.commDesc or ncclConfig_t.hints.
+#ifdef IS_NCCLX
+  // commDesc and hints are NCCLX-only ncclConfig_t extensions, present in the
+  // same nccl.h that declares ncclx::Hints (both gated by IS_NCCLX). Generate
+  // a unique commDesc per communicator to avoid key collisions when the
+  // bootstrap store is reused across multiple test cases, but only when the
+  // caller didn't already set commDesc via ncclConfig_t.commDesc or a
+  // "commDesc" hint. commDesc must outlive the ncclCommInitRankConfig call
+  // below because config.commDesc borrows its buffer.
   const auto commDesc =
       std::string(kNcclUtCommDesc) + "_" + std::to_string(getNextCommId());
-  const bool hasCommDescInHints = [&] {
-    if (config.hints == nullptr) {
-      return false;
-    }
+  bool hasCommDescInHints = false;
+  if (config.hints != nullptr) {
     std::string val;
     const auto* hints = static_cast<const ncclx::Hints*>(config.hints);
-    return hints->get("commDesc", val) == ncclSuccess;
-  }();
+    hasCommDescInHints = (hints->get("commDesc", val) == ncclSuccess);
+  }
   if (config.commDesc == nullptr && !hasCommDescInHints) {
     config.commDesc = commDesc.c_str();
   }
+#endif
 
   ncclUniqueId id;
   if (globalRank == 0) {
