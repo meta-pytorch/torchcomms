@@ -787,6 +787,73 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Correctness_SingleGroup_64MB) {
 }
 
 /**
+ * Test: Single group, IN-PLACE, at a size the software pipeline covers.
+ *
+ * nGroups == 1 puts the relay on the pipelined schedule (the active ranks and
+ * the helpers are disjoint there, so the scatter and the forward run on
+ * opposite directions of each cross link and are interleaved). 64 MB clears the
+ * pipeline floor, so this pins the pipelined path's in-place handling -- the
+ * diagonal is already in the send slot and must not be re-copied, while the
+ * gather slot is written tile by tile across the pipeline stages.
+ */
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_SingleGroup_InPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 1;
+  const int nActiveRanksPerGroup = 2;
+  const size_t sendBytes = 64ULL * 1024 * 1024;
+  const size_t sendCount = sendBytes / sizeof(int32_t);
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+
+  const bool isActive = (this->globalRank == 0 || this->globalRank == 1);
+  const int myActiveIndex = this->globalRank;
+
+  int32_t* buff = nullptr;
+  const size_t buffBytes =
+      static_cast<size_t>(nActiveRanksPerGroup) * sendBytes;
+  HIPCHECK_TEST(hipMalloc(&buff, buffBytes));
+
+  barrierSyncOn(buff);
+
+  HIPCHECK_TEST(hipMemset(buff, 0, buffBytes));
+  // In-place: this rank's contribution already sits in its own output slot.
+  int32_t* mySlot = buff + static_cast<size_t>(myActiveIndex) * sendCount;
+  if (isActive) {
+    fillDeviceRegion(mySlot, sendCount, rankFillValue(myActiveIndex));
+  }
+
+  const void* sendPtrs[1] = {isActive ? mySlot : buff};
+  void* recvPtrs[1] = {buff};
+  size_t sendCounts[] = {sendCount};
+
+  const ncclResult_t result = callAllGatherCompat(
+      sendPtrs,
+      recvPtrs,
+      sendCounts,
+      ncclInt32,
+      this->comm,
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (isActive) {
+    verifyAllGatherOutput(buff, sendCount, 0);
+  }
+
+  HIPCHECK_TEST(hipFree(buff));
+}
+
+/**
  * Test: Correctness with minimum passthrough helper buffers (OUT-OF-PLACE)
  */
 TEST_F(
