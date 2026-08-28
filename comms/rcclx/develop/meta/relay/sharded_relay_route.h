@@ -303,6 +303,29 @@ inline size_t allReduceOffloadPermille(AllReduceRoute route) {
 inline constexpr size_t kRelayOverlapReduceMinBytes = static_cast<size_t>(256)
     << 20;
 
+// Smallest message for which the pipelined A>2 all-gather issues its direct
+// exchange as v-sized pieces instead of one (A-1)*v operation.
+//
+// Both directions of every link carry the same 3v per group, but the cross
+// links carried it as three v-sized ops while the intra links carried it as a
+// single 3v op, and RCCL budgets channels per operation -- so the single-op
+// link got a third of the channels and gated the group. Making every op in a
+// group the same size provisions all seven links alike.
+//
+// The mirrored reduce-scatter shape takes this unconditionally because it wins
+// everywhere its offload route is active (1.30x -> 1.61x at 1 GB, 1.26x
+// -> 1.46x at 135 MB). All-gather has far less to gain, being already the
+// closest variant to the roofline, and the extra ops do not amortize at
+// moderate sizes:
+//
+//   135 MB  1.77x -> 1.73x     256 MB  1.81x -> 1.83x
+//   144 MB  1.76x -> 1.74x     512 MB  1.83x -> 1.88x
+//                                1 GB  1.83x -> 1.91x
+//
+// so it is gated to where it measurably pays.
+inline constexpr size_t kRelayUniformDirectOpMinBytes = static_cast<size_t>(256)
+    << 20;
+
 // Largest software-pipeline depth the single-group relays will use.
 //
 // 8 is where the measured optimum stops moving. Depth 16 is a wash at best
