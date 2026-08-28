@@ -24,7 +24,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggingFormat.h"
 #include "meta/NcclxLogger.h"
 #include "meta/commDump.h"
 
@@ -107,25 +107,37 @@ class CollTraceTest : public NcclxBaseTestFixture {
     return true;
   }
   void startVerboseLogging() {
-    NcclLogger::close();
+    flushLogging();
     prevDebug = NCCL_DEBUG.empty() ? "WARN" : NCCL_DEBUG;
     prevDebugSubsys =
         NCCL_DEBUG_SUBSYS.empty() ? "INIT,BOOTSTRAP,ENV" : NCCL_DEBUG_SUBSYS;
     NCCL_DEBUG = "INFO";
     NCCL_DEBUG_SUBSYS = "INIT,COLL";
-    initNcclLogger();
+    reconfigureLogging();
   }
 
   void endVerboseLogging() {
     sleep(1);
-    NcclLogger::close();
+    flushLogging();
     NCCL_DEBUG = prevDebug;
     NCCL_DEBUG_SUBSYS = prevDebugSubsys;
+    reconfigureLogging();
+  }
+
+  void reconfigureLogging() {
+    meta::comms::logger::setSubSystemMask(
+        meta::comms::logger::parseDebugSubsysMask(NCCL_DEBUG_SUBSYS.c_str()));
     initNcclLogger();
   }
 
   void barrier() {
     oobBarrier();
+  }
+
+  void flushLogging() {
+    meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+        .flush();
+    meta::comms::logger::getSpdlogLogger().flush();
   }
 
  protected:
