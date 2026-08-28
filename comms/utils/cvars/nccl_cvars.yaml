@@ -2999,15 +2999,6 @@ cvars:
    description : |-
      Enable network perf monitor to monitor the bandwidth of NCCL.
 
- - name        : NCCL_CTRAN_ALLOW_CUDA_GRAPH
-   type        : bool
-   default     : false
-   description : |-
-     Preallocate runtime buffers at communicator creation time,
-     allowing the communicator to be usable in CUDA graph mode
-     (runtime allocation and mapping of buffers is not CUDA graph
-     safe).
-
  - name        : NCCL_CTRAN_ENABLE_PERFTRACE
    type        : bool
    default     : false

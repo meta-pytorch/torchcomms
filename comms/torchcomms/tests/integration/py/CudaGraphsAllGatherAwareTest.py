@@ -39,7 +39,6 @@ class TestAllGatherCudaGraphAware(CudaGraphTestBase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ["NCCL_CTRAN_ALLOW_CUDA_GRAPH"] = "1"
         os.environ["NCCL_ALLGATHER_ALGO"] = "ctgraph"
         os.environ.setdefault("NCCL_DEBUG", "INFO")
         os.environ.setdefault("NCCL_DEBUG_SUBSYS", "COLL")

@@ -24,7 +24,6 @@ class DeviceAllToAllvLl128Environment : public ctran::CtranEnvironmentBase {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_CTRAN_DA2A_LL128_THRESHOLD", "262144", 1);
     setenv("NCCL_CTRAN_PIPES_DISABLE_IB", "1", 1);
-    setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
   }
 
   void TearDown() override {
@@ -32,7 +31,6 @@ class DeviceAllToAllvLl128Environment : public ctran::CtranEnvironmentBase {
     unsetenv("NCCL_CTRAN_ENABLE");
     unsetenv("NCCL_CTRAN_DA2A_LL128_THRESHOLD");
     unsetenv("NCCL_CTRAN_PIPES_DISABLE_IB");
-    unsetenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH");
     ctran::CtranEnvironmentBase::TearDown();
   }
 };

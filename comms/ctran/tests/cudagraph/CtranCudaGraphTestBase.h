@@ -19,7 +19,6 @@
 class CtranCudaGraphEnvironment : public ctran::CtranDistEnvironment {
  public:
   void SetUp() override {
-    setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     // ctranAllToAllSupport is size-gated: at 1024 int32 (4KB per peer) the
     // cudagraph cases sit below the 32KB NCCL_CTRAN_ALLTOALL_THRESHOLD
