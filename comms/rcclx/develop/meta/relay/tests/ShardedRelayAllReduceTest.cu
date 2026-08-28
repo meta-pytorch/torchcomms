@@ -571,7 +571,7 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     const void* sendPtrs[1] = {buff};
     void* recvPtrs[1] = {buff};
     size_t counts[1] = {count};
-    // 64 MiB single-group A=4 sits far above the 9 MiB independent crossover,
+    // 64 MiB single-group A=4 sits far above the 1 MiB independent crossover,
     // so this case must exercise the helper offload rather than the
     // pure-direct reduce-scatter + all-gather.
     expectAllReduceRoute(
@@ -2231,18 +2231,18 @@ TEST_F(
 
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
-    Correctness_Phase2C02_BFloat16_A4_Independent9MiBBoundary) {
+    Correctness_Phase2C02_BFloat16_A4_Independent1MiBBoundary) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t thresholdCount = (9ULL * 1024 * 1024) / sizeof(uint16_t);
+  constexpr size_t thresholdCount = (1ULL * 1024 * 1024) / sizeof(uint16_t);
   const int activeRanks[4] = {0, 1, 2, 3};
   const int* allActiveRanks[1] = {activeRanks};
   const std::vector<Bfloat16AllReduceCase> cases = {
-      {thresholdCount - 4, ncclSum, "A=4 9 MiB below-threshold BF16 SUM"},
-      {thresholdCount, ncclSum, "A=4 9 MiB at-threshold BF16 SUM"},
-      {thresholdCount + 4, ncclSum, "A=4 9 MiB above-threshold BF16 SUM"},
+      {thresholdCount - 4, ncclSum, "A=4 1 MiB below-threshold BF16 SUM"},
+      {thresholdCount, ncclSum, "A=4 1 MiB at-threshold BF16 SUM"},
+      {thresholdCount + 4, ncclSum, "A=4 1 MiB above-threshold BF16 SUM"},
   };
 
   runBfloat16AllReduceCases(allActiveRanks, 4, 1, cases);
@@ -2367,19 +2367,19 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Routing_SizeAdaptiveCrossovers) {
     size_t thresholdBytes;
     rcclx::relay::AllReduceRoute atOrAbove;
   };
-  // A==2: 2 MB fused / 6 MB independent. A>2: 2 MB fused / 9 MB independent.
+  // A==2: 2 MB fused / 2 MB independent. A>2: 2 MB fused / 1 MB independent.
   const Crossover crossovers[] = {
       {"A2 fused", 2, 4, 2ULL << 20, rcclx::relay::AllReduceRoute::A2Relay},
       {"A2 independent",
        2,
        1,
-       6ULL << 20,
+       2ULL << 20,
        rcclx::relay::AllReduceRoute::A2Relay},
       {"A4 fused", 4, 2, 2ULL << 20, rcclx::relay::AllReduceRoute::FlatOffload},
       {"A4 independent",
        4,
        1,
-       9ULL << 20,
+       1ULL << 20,
        rcclx::relay::AllReduceRoute::FlatOffload},
   };
 
