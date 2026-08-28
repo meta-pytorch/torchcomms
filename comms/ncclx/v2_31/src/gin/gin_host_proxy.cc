@@ -270,7 +270,7 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
     void* dstHandle = (void*)(uint64_t)gfd->qword[ncclGinProxyGfdDstHandle].dstHandle.dstHandle;
     uint64_t size = gfd->qword[ncclGinProxyGfdHeader].header.size;
     if (!rmaBackend->iget) {
-      WARN("GIN plugin does not support GET");
+      ERR(ncclInvalidUsage, "GIN plugin does not support GET");
       return ncclInvalidUsage;
     }
     NCCLCHECK(rmaBackend->iget(ctx->rmaCtx, hostGpuCtx->contextId, srcOff, srcHandle, size, dstOff, dstHandle,
@@ -280,7 +280,7 @@ static ncclResult_t proxyGinProcessGfd(struct ginProxyCtx* ctx, struct ginProxyH
 
   if (extractOp(gfd) & ncclGinProxyOpFlush) {
     if (!rmaBackend->iflush) {
-      WARN("GIN plugin does not support FLUSH");
+      ERR(ncclInvalidUsage, "GIN plugin does not support FLUSH");
       return ncclInvalidUsage;
     }
     NCCLCHECK(rmaBackend->iflush(ctx->rmaCtx, hostGpuCtx->contextId, ctx->signalsGinHandle, targetRank,

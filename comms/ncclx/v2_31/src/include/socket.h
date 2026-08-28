@@ -11,6 +11,8 @@
 #include "nccl.h"
 #include "os.h"
 
+#include <string>
+
 #if !defined(__CUDA_ARCH__)
 /* Ensure full socket types are visible when this header is included from .cu or other TU without os.h socket context. */
 #if defined(NCCL_OS_WINDOWS)
@@ -123,7 +125,9 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
 ncclResult_t ncclSocketListen(struct ncclSocket* sock);
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr);
 // Connect to sock->addr. sock->socketDescriptor is set after a successful call.
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock);
+// localIfName, when set, binds the client socket to that interface (SO_BINDTODEVICE);
+// NCCL_CLIENT_SOCKET_IFNAME supplies the default.
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName = nullptr);
 // Return socket connection state.
 ncclResult_t ncclSocketReady(struct ncclSocket* sock, int* running);
 // Accept an incoming connection from listenSock->socketDescriptor and keep the file descriptor in
@@ -147,4 +151,9 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
 ncclResult_t ncclSocketShutdown(struct ncclSocket* sock, int how);
 ncclResult_t ncclSocketClose(struct ncclSocket* sock, bool wait = false);
 uint16_t ncclSocketToPort(union ncclSocketAddress* addr);
+// Numeric-host rendering of an address, used to match NCCL_SOCKET_IPADDR_PREFIX.
+// Despite the name (kept as-is from v2_30 so the two trees stay diffable), this handles both
+// AF_INET and AF_INET6 and returns the numeric form for either. Returns an empty string if the
+// address cannot be rendered.
+std::string ncclSocketToIPv6String(union ncclSocketAddress* addr);
 #endif

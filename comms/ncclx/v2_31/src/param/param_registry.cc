@@ -8,7 +8,7 @@
 #include "param/param_registry.h"
 #include "debug.h"
 
-extern "C" void* ncclParamRegistryInstance() {
+extern "C" NCCL_PARAM_COMPILER_EXPORT_SYMBOL void* ncclParamRegistryInstance() {
   static ncclParamRegistry::registryState state;
   return &state;
 }
@@ -17,7 +17,7 @@ ncclResult_t ncclParamRegistry::add(std::string key, ncclParamInfo_t info, ncclP
   auto& reg = state();
   std::lock_guard<std::mutex> lock(reg.mtx);
   if (reg.map.find(key) != reg.map.end()) {
-    WARN("PARAM: Duplicate registration for key \"%s\", ignoring.", key.c_str());
+    ERR(ncclInternalError, "PARAM: Duplicate registration for key \"%s\", ignoring.", key.c_str());
     return ncclInternalError;
   }
   reg.map[key] = {info, param};

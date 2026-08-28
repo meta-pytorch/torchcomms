@@ -110,7 +110,7 @@ ncclResult_t ncclInitKernelsForDevice(int cudaArch, int maxSharedMem, size_t* ma
   }
 
   if (ncclShmemDynamicSize(cudaArch) > maxDynamicSmem) {
-    WARN("cudaArch %d dynamic smem %d exceeds device/fn maxSharedMem %d", cudaArch, ncclShmemDynamicSize(cudaArch),
+    ERR(ncclSystemError, "cudaArch %d dynamic smem %d exceeds device/fn maxSharedMem %d", cudaArch, ncclShmemDynamicSize(cudaArch),
          maxDynamicSmem);
     return ncclSystemError;
   }
@@ -1245,11 +1245,11 @@ static ncclResult_t scheduleP2pTasksToPlan(struct ncclComm* comm, int* p2pEpoch,
 
       if (sendRank == comm->rank) {
         if (send != nullptr && recv == nullptr) {
-          WARN("Trying to send to self without a matching recv");
+          ERR(ncclInvalidUsage, "Trying to send to self without a matching recv");
           return ncclInvalidUsage;
         }
         if (send == nullptr && recv != nullptr) {
-          WARN("Trying to recv to self without a matching send");
+          ERR(ncclInvalidUsage, "Trying to recv to self without a matching send");
           return ncclInvalidUsage;
         }
       }
@@ -2197,7 +2197,7 @@ static ncclResult_t calcCollChunking(struct ncclComm* comm, struct ncclTaskColl*
                                                             ncclPatternRingTwice;
     break;
   default:
-    WARN("Unknown pattern for collective %d algorithm %d", info->func, info->algorithm);
+    ERR(ncclInternalError, "Unknown pattern for collective %d algorithm %d", info->func, info->algorithm);
     return ncclInternalError;
   }
 
@@ -2345,7 +2345,7 @@ static ncclResult_t calcCollChunking(struct ncclComm* comm, struct ncclTaskColl*
     nchunksPerLoop = comm->channels[0].nvls.nHeads;
     break;
   default:
-    WARN("Unknown pattern %d", pattern);
+    ERR(ncclInternalError, "Unknown pattern %d", pattern);
     return ncclInternalError;
   }
 
@@ -2412,7 +2412,7 @@ static ncclResult_t calcCollChunking(struct ncclComm* comm, struct ncclTaskColl*
         proxyOp->loopOffset = 0;
       }
     } else {
-      WARN("Net registration invalid algorithm %s", ncclAlgoToString(info->algorithm));
+      ERR(ncclInternalError, "Net registration invalid algorithm %s", ncclAlgoToString(info->algorithm));
       return ncclInternalError;
     }
 
@@ -2459,7 +2459,7 @@ static ncclResult_t calcCollChunking(struct ncclComm* comm, struct ncclTaskColl*
   case ncclPatternSend:
   case ncclPatternRecv:
   default:
-    WARN("Unknown pattern %d", pattern);
+    ERR(ncclInternalError, "Unknown pattern %d", pattern);
     return ncclInternalError;
   }
 
@@ -2563,7 +2563,7 @@ static ncclResult_t hostToDevRedOp(ncclDevRedOpFull* opFull, ncclRedOp_t op, ncc
     int ix = int(ncclUserRedOpMangle(comm, op)) - int(ncclNumOps);
     ncclUserRedOp* user = &comm->userRedOps[ix];
     if (datatype != user->datatype) {
-      WARN("Data type supplied to user-created ncclRedOp_t does not match type "
+      ERR(ncclInvalidArgument, "Data type supplied to user-created ncclRedOp_t does not match type "
            "given to reduction operation");
       return ncclInvalidArgument;
     }
@@ -2584,7 +2584,7 @@ ncclResult_t ncclPlannerSetCapturingGraph(struct ncclComm* comm, struct ncclInfo
         struct ncclCudaGraph graph;
         NCCLCHECK(ncclCudaGetCapturingGraph(&graph, info->stream, comm->config.graphUsageMode));
         if (planner->streams != nullptr && !ncclCudaGraphSame(planner->capturingGraph, graph)) {
-          WARN("Streams given to a communicator within a NCCL group must either be all uncaptured or all captured by "
+          ERR(ncclInvalidUsage, "Streams given to a communicator within a NCCL group must either be all uncaptured or all captured by "
                "the same graph.");
           return ncclInvalidUsage;
         }
@@ -2890,14 +2890,14 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
   void const* srcBuff = info->sendbuff;
 
   if (!comm->hostRmaSupport) {
-    WARN("One sided RMA: host RMA is not supported in this communicator.");
+    ERR(ncclInvalidArgument, "One sided RMA: host RMA is not supported in this communicator.");
     return ncclInvalidArgument;
   }
 
   int driverVersion;
   NCCLCHECK(ncclCudaDriverVersion(&driverVersion));
   if (driverVersion < 12050) {
-    WARN("One-sided RMA requires CUDA driver 12.5 or later (found %d.%d).", driverVersion / 1000,
+    ERR(ncclInvalidUsage, "One-sided RMA requires CUDA driver 12.5 or later (found %d.%d).", driverVersion / 1000,
          (driverVersion % 1000) / 10);
     return ncclInvalidUsage;
   }
@@ -2917,7 +2917,7 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
 
   // Check if flags is valid
   if (info->flags != 0) {
-    WARN("Flags %u is invalid (must be 0)", info->flags);
+    ERR(ncclInvalidArgument, "Flags %u is invalid (must be 0)", info->flags);
     return ncclInvalidArgument;
   }
 
@@ -2929,7 +2929,7 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
   if (info->coll == ncclFuncPutSignal) {
     // Validate peer window with detailed debugging
     if (info->peerWin == NULL) {
-      WARN("ncclPutSignal: peerWin is NULL");
+      ERR(ncclInvalidArgument, "ncclPutSignal: peerWin is NULL");
       return ncclInvalidArgument;
     }
 
@@ -2939,12 +2939,12 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
 
     // Validate source buffer and window
     if (srcBuff == NULL) {
-      WARN("ncclPutSignal: srcBuff is NULL");
+      ERR(ncclInvalidArgument, "ncclPutSignal: srcBuff is NULL");
       return ncclInvalidArgument;
     }
     NCCLCHECK(ncclDevrFindWindow(comm, srcBuff, &srcWinHost));
     if (srcWinHost == NULL || !(srcWinHost->winFlags & NCCL_WIN_COLL_SYMMETRIC)) {
-      WARN("ncclPutSignal: srcWinHost is not in a valid symmetric window");
+      ERR(ncclInvalidArgument, "ncclPutSignal: srcWinHost is not in a valid symmetric window");
       return ncclInvalidArgument;
     }
     srcWinOffset = (char*)srcBuff - (char*)srcWinHost->userPtr;
@@ -2953,29 +2953,29 @@ static ncclResult_t rmaTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     bool hasSysmemSegment = ncclDevrWindowHasSysmemSegment(srcWinHost) || ncclDevrWindowHasSysmemSegment(peerWinHost);
 
     if (isMultiSegment) {
-      WARN("ncclPutSignal currently does not support VAs backed by multiple physical cuMem segments");
+      ERR(ncclInvalidArgument, "ncclPutSignal currently does not support VAs backed by multiple physical cuMem segments");
       return ncclInvalidArgument;
     }
     if (hasSysmemSegment) {
-      WARN("ncclPutSignal currently does not support VAs with host-backed cuMem segments");
+      ERR(ncclInvalidArgument, "ncclPutSignal currently does not support VAs with host-backed cuMem segments");
       return ncclInvalidArgument;
     }
   } else if (info->coll == ncclFuncSignal) {
     // Check if count is valid
     if (info->count != 0) {
-      WARN("ncclSignal: count must be 0");
+      ERR(ncclInvalidArgument, "ncclSignal: count must be 0");
       return ncclInvalidArgument;
     }
   } else if (info->coll == ncclFuncWaitSignal) {
     // Check if signalDescs is valid
     if (info->signalDescs == NULL || info->nDesc == 0) {
-      WARN("ncclWaitSignal: invalid arguments");
+      ERR(ncclInvalidArgument, "ncclWaitSignal: invalid arguments");
       return ncclInvalidArgument;
     }
     // Validate each descriptor
     for (int i = 0; i < info->nDesc; i++) {
       if (info->signalDescs[i].opCnt <= 0) {
-        WARN("ncclWaitSignal: descriptor %d has invalid opCnt %d", i, info->signalDescs[i].opCnt);
+        ERR(ncclInvalidArgument, "ncclWaitSignal: descriptor %d has invalid opCnt %d", i, info->signalDescs[i].opCnt);
         return ncclInvalidArgument;
       }
       if (info->signalDescs[i].sigIdx < 0 || info->signalDescs[i].sigIdx >= comm->config.numRmaSig) {
@@ -3152,7 +3152,7 @@ static ncclResult_t rawTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
       put->stream = info->stream;
     } else {
       if (info->count != 0) {
-        WARN("ncclSignal: count must be 0");
+        ERR(ncclInvalidArgument, "ncclSignal: count must be 0");
         return ncclInvalidArgument;
       }
       struct ncclRawTaskSignal* sig = &t->rma.rmaOp.signal;
@@ -3165,12 +3165,12 @@ static ncclResult_t rawTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     ncclIntruQueueEnqueue(&rtq->genericQueue, t);
   } else if (info->coll == ncclFuncWaitSignal) {
     if (info->nDesc <= 0 || info->signalDescs == NULL) {
-      WARN("ncclWaitSignal: invalid arguments");
+      ERR(ncclInvalidArgument, "ncclWaitSignal: invalid arguments");
       return ncclInvalidArgument;
     }
     for (int i = 0; i < info->nDesc; i++) {
       if (info->signalDescs[i].opCnt <= 0) {
-        WARN("ncclWaitSignal: descriptor %d has invalid opCnt %d", i, info->signalDescs[i].opCnt);
+        ERR(ncclInvalidArgument, "ncclWaitSignal: descriptor %d has invalid opCnt %d", i, info->signalDescs[i].opCnt);
         return ncclInvalidArgument;
       }
       if (info->signalDescs[i].sigIdx < 0 || info->signalDescs[i].sigIdx >= comm->config.numRmaSig) {
@@ -3205,7 +3205,7 @@ static ncclResult_t rawTaskAppend(struct ncclComm* comm, struct ncclInfo* info) 
     if (info->datatype == ncclFloat8e4m3 || info->datatype == ncclFloat8e5m2) {
       if (comm->minCompCap < 90 &&
           (info->coll == ncclFuncReduce || info->coll == ncclFuncReduceScatter || info->coll == ncclFuncAllReduce)) {
-        WARN("FP8 reduction support begins with sm90 capable devices.");
+        ERR(ncclInvalidArgument, "FP8 reduction support begins with sm90 capable devices.");
         return ncclInvalidArgument;
       }
     }
@@ -3269,7 +3269,7 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
     if (info->datatype == ncclFloat8e4m3 || info->datatype == ncclFloat8e5m2) {
       if (comm->minCompCap < 90 && info->coll != ncclFuncAllGather && info->coll != ncclFuncBroadcast &&
           info->coll != ncclFuncAlltoAll && info->coll != ncclFuncScatter && info->coll != ncclFuncGather) {
-        WARN("FP8 reduction support begins with sm90 capable devices.");
+        ERR(ncclInvalidArgument, "FP8 reduction support begins with sm90 capable devices.");
         return ncclInvalidArgument;
       }
     }
@@ -3477,7 +3477,7 @@ ncclResult_t ncclRedOpCreatePreMulSum(ncclRedOp_t* op, void* scalar, ncclDataTyp
 NCCL_API(ncclResult_t, ncclRedOpDestroy, ncclRedOp_t op, ncclComm_t comm);
 ncclResult_t ncclRedOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   if (0 <= int(op) && int(op) < int(ncclNumOps)) {
-    WARN("ncclRedOpDestroy : operator is a NCCL builtin.");
+    ERR(ncclInvalidArgument, "ncclRedOpDestroy : operator is a NCCL builtin.");
     return ncclInvalidArgument;
   }
   // int(ncclMaxRedOp) < int(op) will always be false due to the sizes of
@@ -3485,17 +3485,17 @@ ncclResult_t ncclRedOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   // just as a reminder.
   // coverity[result_independent_of_operands]
   if (int(op) < 0 || int(ncclMaxRedOp) < int(op)) {
-    WARN("ncclRedOpDestroy :  operator is garbage.");
+    ERR(ncclInvalidArgument, "ncclRedOpDestroy :  operator is garbage.");
     return ncclInvalidArgument;
   }
   if (comm == NULL) {
-    WARN("ncclRedOpDestroy : invalid communicator passed.");
+    ERR(ncclInvalidArgument, "ncclRedOpDestroy : invalid communicator passed.");
     return ncclInvalidArgument;
   }
 
   int ix = int(ncclUserRedOpMangle(comm, op)) - int(ncclNumOps);
   if (comm->userRedOpCapacity <= ix || comm->userRedOps[ix].freeNext != -1) {
-    WARN("ncclRedOpDestroy : operator unknown to this communicator.");
+    ERR(ncclInvalidArgument, "ncclRedOpDestroy : operator unknown to this communicator.");
     return ncclInvalidArgument;
   }
   // push to free list
