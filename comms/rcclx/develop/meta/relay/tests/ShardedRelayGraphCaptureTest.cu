@@ -55,6 +55,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_oneshot.h"
 #include "nccl.h"
 
 #define HIPCHECK_TEST(cmd)                                          \
@@ -136,23 +137,48 @@ int32_t expectedAllReduce(int replay) {
 
 class ShardedRelayGraphCaptureTest : public ::testing::Test {
  protected:
-  void SetUp() override {
+  // The comm lives for the whole binary instead of being rebuilt per case. It
+  // used to be created in SetUp and destroyed in TearDown, so every case freed
+  // everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu wipe it
+  // (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding mmap_lock
+  // for write, so 8 ranks cycling multi-GB comms serialise into a stall that
+  // takes the whole host down. Reusing also matches how comms are really used:
+  // a handful, kept for the life of the process. Only the comm moves here; the
+  // per-case stream and scratch stay in SetUp.
+  //
+  // Guarded so a derived fixture, which is a separate suite and so runs these
+  // hooks again, rebuilds rather than leaks.
+  static void SetUpTestSuite() {
+    if (comm != nullptr) {
+      return;
+    }
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    const bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    comm = createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    if (comm != nullptr) {
+      NCCLCHECK_TEST(ncclCommDestroy(comm));
+      comm = nullptr;
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->comm, nullptr)
+        << "suite-scoped comm was not created; SetUpTestSuite did not run";
     HIPCHECK_TEST(hipStreamCreate(&stream));
     this->isActive = this->globalRank < kActive;
     this->myActiveIndex = this->globalRank;
@@ -165,11 +191,6 @@ class ShardedRelayGraphCaptureTest : public ::testing::Test {
 
   void TearDown() override {
     HIPEXPECT_TEST(hipStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Bounded replacement for hipStreamSynchronize.
@@ -303,11 +324,11 @@ class ShardedRelayGraphCaptureTest : public ::testing::Test {
     }
   }
 
-  ncclComm_t comm{nullptr};
+  static inline ncclComm_t comm{nullptr};
   hipStream_t stream{};
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
   bool isActive{false};
   int myActiveIndex{0};
   int activeRanks[kActive]{};
@@ -316,7 +337,7 @@ class ShardedRelayGraphCaptureTest : public ::testing::Test {
   // call sequence, so a plain counter does.
   int barrierTag{0};
   bool streamWedged{false};
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 namespace {
@@ -546,6 +567,23 @@ TEST_F(
 
   HIPEXPECT_TEST(hipGraphExecDestroy(exec));
   release(small);
+}
+
+// Whether the region exists before any relay call is the whole of G3, and it is
+// directly observable, so assert it rather than inferring it from a timing or a
+// pass. The eager binary (-DRCCLX_RELAY_TEST_EAGER_ONESHOT, which sets
+// NCCL_SHARDED_RELAY_MODE_ENABLE=1 before the first comm is built) must have
+// one already; the default binary must not, because that is still the lazy
+// path.
+TEST_F(ShardedRelayGraphCaptureReduceScatterTest, OneShotRegionReadyAtInit) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+#ifdef RCCLX_RELAY_TEST_EAGER_ONESHOT
+  EXPECT_TRUE(rcclx::relay::oneShotReady(this->comm));
+#else
+  EXPECT_FALSE(rcclx::relay::oneShotReady(this->comm));
+#endif
 }
 
 // Baseline sanity: capture and replay work at all on this build and stream.
@@ -801,6 +839,16 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef RCCLX_RELAY_TEST_EAGER_ONESHOT
+  // Has to happen before the first communicator is built, and NCCL caches the
+  // parameter on first read, so covering both settings needs two binaries
+  // rather than two cases.
+  setenv("NCCL_SHARDED_RELAY_MODE_ENABLE", "1", /*overwrite=*/1);
+#else
+  // This binary is the lazy half of the pair and asserts the region is NOT up
+  // at init, so it must not inherit the variable from whoever invoked it.
+  unsetenv("NCCL_SHARDED_RELAY_MODE_ENABLE");
+#endif
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
