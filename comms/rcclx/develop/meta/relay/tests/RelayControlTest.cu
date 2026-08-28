@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -854,6 +855,63 @@ TEST(RelayControlBlockTest, ConfiguredGeometryIsClampedToSaneValues) {
   EXPECT_LE(relayControlConfiguredMaxCalls(), 65536u);
   EXPECT_GE(relayControlConfiguredRingDepth(), 2u);
   EXPECT_LE(relayControlConfiguredRingDepth(), 1024u);
+}
+
+/**
+ * The exported struct and the internal one are the same wire format. If they
+ * ever diverge, a plan written through one and read through the other is
+ * silently misinterpreted -- no crash, no error, just wrong counts -- so this
+ * is asserted at compile time rather than left to review.
+ */
+TEST(RelayControlExportTest, PublicPlanInfoMatchesTheInternalRecord) {
+  static_assert(
+      sizeof(ncclRelayPlanInfo) == sizeof(RelayPlanInfo),
+      "the exported and internal plan records must be the same wire format");
+  static_assert(
+      offsetof(ncclRelayPlanInfo, nCalls) == offsetof(RelayPlanInfo, nCalls) &&
+          offsetof(ncclRelayPlanInfo, opCode) ==
+              offsetof(RelayPlanInfo, opCode) &&
+          offsetof(ncclRelayPlanInfo, dtype) ==
+              offsetof(RelayPlanInfo, dtype) &&
+          offsetof(ncclRelayPlanInfo, redOp) ==
+              offsetof(RelayPlanInfo, redOp) &&
+          offsetof(ncclRelayPlanInfo, flags) == offsetof(RelayPlanInfo, flags),
+      "field offsets must agree between the exported and internal records");
+  // The opcodes are two enumerations of one protocol; a mismatch would route a
+  // plan to the wrong collective.
+  EXPECT_EQ(static_cast<uint32_t>(ncclRelayOpShutdown), kRelayOpShutdown);
+  EXPECT_EQ(static_cast<uint32_t>(ncclRelayOpAllReduce), kRelayOpAllReduce);
+  EXPECT_EQ(
+      static_cast<uint32_t>(ncclRelayOpReduceScatter), kRelayOpReduceScatter);
+  EXPECT_EQ(static_cast<uint32_t>(ncclRelayOpAllGather), kRelayOpAllGather);
+  EXPECT_EQ(static_cast<uint32_t>(ncclRelayOpAllToAll), kRelayOpAllToAll);
+}
+
+/**
+ * Exercises the two exported entry points through their public declarations.
+ *
+ * This is the check that the export actually works: it only links if the C
+ * signature in nccl.h matches the definition and the symbol resolves. Reading
+ * the library with nm would show a name and prove neither.
+ */
+TEST(RelayControlExportTest, ExportedEntryPointsRejectBadArguments) {
+  ncclRelayPlanInfo info{};
+  info.nCalls = 1;
+  info.opCode = ncclRelayOpAllReduce;
+  size_t counts[1] = {1024};
+
+  EXPECT_EQ(
+      ncclRelayControlPublish(nullptr, 0, &info, counts, kShortTimeoutNs),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRelayControlPublish(nullptr, 0, nullptr, counts, kShortTimeoutNs),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRelayControlConsume(nullptr, 0, &info, counts, 1, kShortTimeoutNs),
+      ncclInvalidArgument);
+  EXPECT_EQ(
+      ncclRelayControlConsume(nullptr, 0, nullptr, counts, 1, kShortTimeoutNs),
+      ncclInvalidArgument);
 }
 
 // Reports the per-operation cost being traded against the ~0.9 ms per call that

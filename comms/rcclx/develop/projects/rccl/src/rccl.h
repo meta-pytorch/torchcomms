@@ -32,6 +32,7 @@ extern "C" {
 #endif
 
 #include <limits.h>
+#include <stdint.h>
 
 /*! @brief      Opaque handle to communicator
     @details    A communicator contains information required to facilitate collective communications calls */
@@ -789,6 +790,130 @@ ncclResult_t pncclShardedRelayMultiGroupAllToAll(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
     const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+/*! @endcond */
+
+/*! @brief      Relay operation codes used by @ref ncclRelayPlanInfo */
+typedef enum {
+  ncclRelayOpShutdown     = 0, /*!< Helpers should stop; nCalls is 0 */
+  ncclRelayOpAllReduce    = 1,
+  ncclRelayOpReduceScatter = 2,
+  ncclRelayOpAllGather    = 3,
+  ncclRelayOpAllToAll     = 4
+} ncclRelayOp_t;
+
+/*! @brief      One forward pass worth of sharded-relay plan
+    @details    Fixed 32 bytes with reserved space to grow into. The per-call
+                element counts travel separately, as a caller-owned array, rather
+                than inline. That is what lets this record stay a fixed size while
+                the per-plan call capacity remains a *runtime* parameter
+                (NCCL_RELAY_CONTROL_MAX_CALLS): the number of relay calls in one
+                forward is the chunk count of a chunked prefill, which is
+                deployment configuration rather than a bounded property of the
+                algorithm.
+
+                Publish the decision, not the input. Only the ranks running the
+                model can know whether a given call happens at all -- it depends
+                on contiguity, alignment, compile state and phase -- so the plan
+                carries resolved counts and never a token count for the helper to
+                re-derive. */
+typedef struct {
+  uint32_t nCalls;      /*!< Relay calls in this forward; 0 with ncclRelayOpShutdown means shut down */
+  uint32_t opCode;      /*!< An @ref ncclRelayOp_t value */
+  uint32_t dtype;       /*!< An @ref ncclDataType_t value */
+  uint32_t redOp;       /*!< An @ref ncclRedOp_t value */
+  uint32_t flags;       /*!< Reserved; must be 0 */
+  uint32_t reserved[3]; /*!< Reserved; must be 0 */
+} ncclRelayPlanInfo;
+
+/*! @brief      Publish one forward's relay plan for this node's helper ranks
+    @details    A sharded relay collective is symmetric over the whole
+                communicator: it happens only when every rank's host thread
+                independently enqueues it. But a communicator is a data plane, not
+                a scheduler. Where the helper ranks are separate processes that do
+                not run the model -- no batch, no forward pass, no scheduler --
+                nothing in the communicator can make them post a call, and their
+                buffers are a one-element placeholder the kernel never reads.
+
+                This publishes the two things a helper cannot derive for itself:
+                the resolved per-call counts, and which calls happen at all. Call
+                it ONCE PER FORWARD, ORDERED BEFORE the forward's first
+                ncclShardedRelay* call. That ordering is the whole contract: the
+                decision point is strictly before the collective, because a rank
+                already blocked inside a collective cannot be rescued by anything
+                this function does.
+
+                Exactly one rank of the communicator may publish. Route selection
+                is deliberately absent: it is a pure function of size, so every
+                rank derives the same route from the published counts with zero
+                communication.
+
+                Requires NCCL_SHARDED_RELAY_MODE_ENABLE=1 at communicator
+                creation, which is also the switch for eager one-shot region
+                creation. Returns ncclInvalidArgument if this communicator has no
+                control plane, so callers keep whatever fallback they had.
+
+    @return     Result code. See @ref rccl_result_code for more details.
+
+    @param[in]  comm      Communicator group object to publish on
+    @param[in]  epoch     Monotonic forward counter, shared with the consumers. Explicit rather than internal so a skipped forward is a detectable desync instead of a silent one
+    @param[in]  info      The plan; info->nCalls must not exceed NCCL_RELAY_CONTROL_MAX_CALLS
+    @param[in]  counts    Array of info->nCalls element counts, one per relay call
+    @param[in]  timeoutNs Wait budget in nanoseconds. Only ever consumed if a helper has fallen more than NCCL_RELAY_CONTROL_RING_DEPTH forwards behind, which means it is stuck; the wait exists because dropping a plan would desynchronize the communicator */
+ncclResult_t  ncclRelayControlPublish(
+    ncclComm_t comm, uint64_t epoch,
+    const ncclRelayPlanInfo* info, const size_t* counts, int64_t timeoutNs);
+/*! @cond       include_hidden */
+ncclResult_t pncclRelayControlPublish(
+    ncclComm_t comm, uint64_t epoch,
+    const ncclRelayPlanInfo* info, const size_t* counts, int64_t timeoutNs);
+/*! @endcond */
+
+/*! @brief      Take one forward's relay plan on a helper rank
+    @details    Blocks until the plan for `epoch` is available, then returns the
+                calls to enqueue. The wait is BOUNDED: it spins briefly, backs off,
+                and then fails while setting an abort flag that every other rank
+                observes -- so one stuck rank produces a single attributed cause
+                rather than a hang, or N independent timeouts.
+
+                In steady state this does not wait at all. The active rank runs a
+                forward ahead, so the plan is already published; the per-call
+                rendezvous is handled on the device, where the send/recv pairs
+                inside a relay schedule already block until peers arrive. This
+                function therefore needs to deliver correct program order and
+                arguments, not low-latency wake-up.
+
+                A rank becomes a consumer by calling this. It must do so before the
+                publisher completes NCCL_RELAY_CONTROL_RING_DEPTH forwards, which
+                communicator creation makes free: it is a barrier both sides leave
+                together, and the publisher's first forward costs orders of
+                magnitude more than reaching this call. Violating it returns an
+                error rather than corrupting anything.
+
+    @return     Result code. ncclInvalidArgument if countsCapacity is too small for
+                the published plan, in which case info IS filled in so the caller
+                can see the size it needed in info->nCalls. On any OTHER failure
+                (timeout, a peer abort, no control plane on this communicator)
+                info is left UNCHANGED -- it is not zeroed, because a zeroed
+                record is nCalls 0 with opCode ncclRelayOpShutdown, which is a
+                valid instruction to stop rather than a marker for "no plan".
+                Check the result code before reading info. See @ref
+                rccl_result_code.
+
+    @param[in]  comm           Communicator group object to consume from
+    @param[in]  epoch          Monotonic forward counter, matching the publisher
+    @param[out] info           Receives the plan
+    @param[out] counts         Receives info->nCalls element counts
+    @param[in]  countsCapacity Elements available in counts
+    @param[in]  timeoutNs      Wait budget in nanoseconds before failing */
+ncclResult_t  ncclRelayControlConsume(
+    ncclComm_t comm, uint64_t epoch,
+    ncclRelayPlanInfo* info, size_t* counts, uint32_t countsCapacity,
+    int64_t timeoutNs);
+/*! @cond       include_hidden */
+ncclResult_t pncclRelayControlConsume(
+    ncclComm_t comm, uint64_t epoch,
+    ncclRelayPlanInfo* info, size_t* counts, uint32_t countsCapacity,
+    int64_t timeoutNs);
 /*! @endcond */
 
 /*! @brief      Fused Multi-Group Sharded Relay All-Gather for 2D Sparse Parallelism
