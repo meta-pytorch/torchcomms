@@ -71,7 +71,7 @@ struct Region {
   OneShotPeerTable table{};
   size_t slotBytes{0};
   int nRanks{0};
-  uint32_t epoch{0};
+  uint32_t* seq{nullptr}; // device, kOneShotMaxBlocks entries
   void* openedPeers[kOneShotMaxRanks]{};
   // Identity of the communicator this region belongs to. The map is keyed on
   // the comm POINTER, which the allocator recycles; commHash distinguishes a
@@ -91,7 +91,7 @@ std::mutex& regionMutex() {
  * commFree).
  *
  * Per-comm rather than per-process, and independent: each region owns its own
- * staging, its own flags and its own epoch, so nothing about one communicator's
+ * staging, its own flags and its own counters, so nothing about one comm's
  * one-shot traffic can reach another's. Two consequences that matter:
  *
  *  - The create decision is made from THIS comm's state alone, which starts
@@ -146,8 +146,13 @@ bool createRegion(ncclComm_t comm, Region& reg) {
   const size_t stagingBytes = static_cast<size_t>(nRanks) * kSlotBytes;
   const size_t flagBytes =
       static_cast<size_t>(nRanks) * kOneShotMaxBlocks * sizeof(uint32_t);
+  // Trails the flags in the same allocation so the memset below zeroes it too,
+  // which is what makes the first epoch 1 and every never-written flag compare
+  // as not-yet-arrived.
+  const size_t seqBytes =
+      static_cast<size_t>(kOneShotMaxBlocks) * sizeof(uint32_t);
 
-  const size_t sentinelOffset = stagingBytes + flagBytes;
+  const size_t sentinelOffset = stagingBytes + flagBytes + seqBytes;
   const size_t totalBytes = sentinelOffset + kSentinelBytes;
 
   bool ok = true;
@@ -193,6 +198,9 @@ bool createRegion(ncclComm_t comm, Region& reg) {
   }
 
   if (ok) {
+    // Local only: a rank's own counter, never read through a peer mapping.
+    reg.seq = reinterpret_cast<uint32_t*>(
+        static_cast<char*>(reg.base) + stagingBytes + flagBytes);
     for (int r = 0; r < nRanks; r++) {
       if (r == rank) {
         reg.table.staging[r] = static_cast<char*>(reg.base);
@@ -265,6 +273,18 @@ bool createRegion(ncclComm_t comm, Region& reg) {
 
 } // namespace
 
+bool oneShotReady(ncclComm_t comm) {
+  if (comm == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(regionMutex());
+  auto it = regions().find(static_cast<const void*>(comm));
+  // find rather than operator[]: this must not create a Region entry, or a
+  // capturing caller would leave behind a tried=false shell keyed to this comm.
+  return it != regions().end() && it->second.valid &&
+      it->second.commHash == comm->commHash;
+}
+
 bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out) {
   if (comm == nullptr || out == nullptr) {
     return false;
@@ -318,17 +338,10 @@ bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out) {
     return false;
   }
 
-  // Unique per launch, and advances identically on every rank because every
-  // rank takes exactly one epoch per collective call on this comm. It never
-  // rewinds: the region is only ever destroyed with the comm. Bumping it under
-  // this comm's lock keeps two streams on one communicator from taking the same
-  // value.
-  reg.epoch += 1;
-
   out->table = reg.table;
   out->slotBytes = reg.slotBytes;
   out->nRanks = reg.nRanks;
-  out->epoch = reg.epoch;
+  out->seq = reg.seq;
   return true;
 }
 

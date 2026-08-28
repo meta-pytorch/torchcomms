@@ -662,7 +662,7 @@ bool buildShardedRelayRankConfig(
     srcStride,                                        \
     ownOffset,                                        \
     slotBytes,                                        \
-    epoch,                                            \
+    seq,                                              \
     divisor,                                          \
     stream)                                           \
   do {                                                \
@@ -681,7 +681,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -698,7 +698,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -715,7 +715,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -732,7 +732,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -749,7 +749,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -766,7 +766,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -783,7 +783,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -800,7 +800,7 @@ bool buildShardedRelayRankConfig(
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -841,13 +841,14 @@ static bool tryOneShotReduceScatter(
       rcclx::relay::kRelayOneShotMaxBytes) {
     return false;
   }
-  // The epoch advances per host launch, so a replayed graph would reuse a stale
-  // value and the handshake would pass before the data arrived.
+  // Creating the region is not capturable: it does a bootstrap all-gather and a
+  // synchronous hipMemset. Using one that already exists is fine, so under
+  // capture take the path only if the region is already up.
   struct ncclCudaGraph graph;
   if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
     return false;
   }
-  if (ncclCudaGraphValid(graph)) {
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::oneShotReady(comm)) {
     return false;
   }
 
@@ -883,7 +884,7 @@ static bool tryOneShotReduceScatter(
       /*ownOffset=*/static_cast<size_t>(cfg.myActiveIndex) *
           recvCounts[myActiveGroup],
       osl.slotBytes,
-      osl.epoch,
+      osl.seq,
       reductionDivisor,
       stream);
   // An unsupported datatype must not silently produce nothing. Falling back is
