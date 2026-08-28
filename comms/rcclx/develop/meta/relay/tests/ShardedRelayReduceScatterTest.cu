@@ -1854,6 +1854,155 @@ TEST_F(
   runBfloat16A4SeededDirect(ncclAvg);
 }
 
+/**
+ * Test: single group (nGroups == 1) at 4 active ranks, both placements.
+ *
+ * nGroups == 1 makes the active ranks {0,1,2,3} and the helpers {4,5,6,7}
+ * disjoint, which is what puts the flat relay on its software-pipelined
+ * schedule: the offload scatter and the helper's reduced return share a group
+ * so each cross link runs duplex, and the helper's reduce runs per tile between
+ * the group that receives it and the group that ships it. 64 MB is above the
+ * offload threshold and deep enough for the cost model to tile, so this is the
+ * only coverage of that path -- every other 4-active case runs 2 groups, where
+ * the relay stays unpipelined.
+ */
+class ShardedRelayReduceScatterSingleGroupA4Test
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  void runSingleGroupA4Case(bool inPlace) {
+    const int nGroups = 1;
+    const int nActiveRanksPerGroup = 4;
+    const size_t recvBytes = 64ULL * 1024 * 1024;
+    const size_t recvCount = recvBytes / sizeof(int32_t);
+    const size_t inBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * recvBytes;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank;
+
+    // Helpers hand in a placeholder; the kernel stages into its own scratch.
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendBuff, inBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvBuff, recvBytes));
+    }
+
+    barrierSyncOn(sendBuff);
+
+    HIPCHECK_TEST(hipMemset(sendBuff, 0, inBytes));
+    if (isActive) {
+      initActiveSendBuffer(
+          sendBuff, recvCount, myActiveIndex, nActiveRanksPerGroup);
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, recvBytes));
+      }
+    }
+    // In-place: the output aliases this rank's own contribution block.
+    int32_t* out = inPlace
+        ? sendBuff + static_cast<size_t>(myActiveIndex) * recvCount
+        : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t recvCounts[1] = {recvCount};
+
+    const ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclInt32,
+        ncclSum,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyDeviceBufferEquals(
+          out,
+          recvCount,
+          expectedReduceScatterSum(myActiveIndex, nActiveRanksPerGroup),
+          0,
+          "4-active single-group reduce-scatter SUM mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+TEST_F(
+    ShardedRelayReduceScatterSingleGroupA4Test,
+    Correctness_OutOfPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/false);
+}
+
+TEST_F(ShardedRelayReduceScatterSingleGroupA4Test, Correctness_InPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true);
+}
+
+/**
+ * Test: the pipelined relay's block layout fits inside recvCount at EVERY
+ * geometry buildShardedRelayRankConfig() accepts, not just the A = H = 4 one
+ * the 8-rank cases above exercise.
+ *
+ * The GPU cases here are pinned to 8 ranks, so a single-group A = 4 call always
+ * has exactly 4 helpers; the combinations a 9-to-16-rank comm would produce
+ * (A = 4 with H = 5..8, or A = 8 with H = 8) cannot be built from this harness.
+ * What those geometries break is arithmetic, not scheduling:
+ * shardedRelayReduceScatterFlatPipelined() takes directSz = rc - H*T*w and then
+ * directSize(T) = directSz - T*(A-1)*w, so if totalUnits(T) is smaller than
+ * H*T + (A-1)*T + 1 both subtractions underflow as size_t and a wild count
+ * reaches ncclSend/ncclRecv. Assert the invariant against the shape directly
+ * over the whole accepted (A, H) space, which needs no ranks at all.
+ */
+TEST(ShardedRelayReduceScatterFanoutShape, LayoutFitsAtEveryAcceptedGeometry) {
+  // Mirrors SHARDED_RELAY_MAX_ACTIVE / SHARDED_RELAY_MAX_HELPERS.
+  constexpr int kMaxActive = 8;
+  constexpr int kMaxHelpers = 8;
+
+  for (int a = 2; a <= kMaxActive; a *= 2) {
+    for (int h = 1; h <= kMaxHelpers; h++) {
+      const rcclx::relay::RelayPipelineShape shape =
+          rcclx::relay::relayShapeFanout(a, h);
+      for (int t = 1; t <= 8; t *= 2) {
+        const int totalUnits = shape.totalPerTile * t + shape.totalFixed;
+        // Offload region, plus the T heavy direct chunks, plus at least one
+        // unit for the last chunk to absorb.
+        const int consumed = h * t + (a - 1) * t + 1;
+        EXPECT_LE(consumed, totalUnits)
+            << "pipelined block layout overruns recvCount at A=" << a
+            << " H=" << h << " T=" << t << ": needs " << consumed
+            << " units out of " << totalUnits;
+      }
+    }
+  }
+
+  // The shipped 8-GPU geometry must still resolve to the constants the perf
+  // numbers were measured at, so the parameterization is a generalization and
+  // not a change.
+  const rcclx::relay::RelayPipelineShape shipped =
+      rcclx::relay::relayShapeFanout(4, 4);
+  EXPECT_EQ(shipped.linkPerTile, 3);
+  EXPECT_EQ(shipped.linkFixed, 1);
+  EXPECT_EQ(shipped.totalPerTile, 7);
+  EXPECT_EQ(shipped.totalFixed, 1);
+}
+
 TEST_F(
     ShardedRelayMultiGroupReduceScatterTest,
     Correctness_4Active_2Groups_OutOfPlace) {
