@@ -1,5 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <algorithm>
 #include <cstring>
 
 #include <unistd.h>
@@ -22,9 +23,10 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
-#include "comms/utils/CudaRAII.h"
 
-using namespace meta::comms;
+using meta::comms::MpiBaseTestFixture;
+using meta::comms::MpiBootstrap;
+using meta::comms::MPIEnvironmentBase;
 
 namespace comms::prims::tests {
 
@@ -45,7 +47,8 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
   }
 
   std::unique_ptr<MultiPeerTransport> createTransport(
-      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) {
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr,
+      std::optional<std::vector<int>> logicalNvlRanks = std::nullopt) {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
@@ -58,6 +61,7 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
             {
                 .cudaDevice = localRank,
             },
+        .topoConfig = {.logicalNvlRanks = std::move(logicalNvlRanks)},
     };
     return std::make_unique<MultiPeerTransport>(
         globalRank,
@@ -159,6 +163,9 @@ TEST_F(MultiPeerTransportTestFixture, TopologyDiscovery) {
   EXPECT_EQ(transport->get_transport_type(globalRank), TransportType::SELF);
   EXPECT_EQ(transport->get_transport_type(peer), TransportType::P2P_NVL);
   EXPECT_FALSE(transport->nvl_peer_ranks().empty());
+  EXPECT_EQ(
+      transport->nvl_rank_map_matches_config(),
+      transport->nvl_n_ranks() == transport->n_ranks());
   // Every remote rank must be classified either as NVL-reachable or as an
   // IB peer (no rank should be "unclassified"). On MNNVL, all peers are
   // NVL-reachable and ib_peer_ranks is empty; on non-MNNVL, IB covers what
@@ -168,6 +175,29 @@ TEST_F(MultiPeerTransportTestFixture, TopologyDiscovery) {
       static_cast<int>(transport->nvl_peer_ranks().size()) +
       static_cast<int>(transport->ib_peer_ranks().size());
   EXPECT_EQ(totalClassified, numRanks - 1);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(
+    MultiPeerTransportTestFixture,
+    ConfiguredLocalRankMapSupportsMultipleNvlDomains) {
+  ASSERT_EQ(numRanks, 4);
+
+  const int domainStart = (globalRank / 2) * 2;
+  std::vector<int> logicalNvlRanks{domainStart, domainStart + 1};
+  auto transport = createTransport(nullptr, logicalNvlRanks);
+  EXPECT_TRUE(transport->nvl_rank_map_matches_config());
+  EXPECT_EQ(transport->n_ranks(), 4);
+  EXPECT_EQ(transport->nvl_n_ranks(), 2);
+  EXPECT_NE(transport->n_ranks(), transport->nvl_n_ranks());
+  EXPECT_EQ(transport->nvl_local_rank(), globalRank % 2);
+  transport.reset();
+
+  auto mismatchedRanks = logicalNvlRanks;
+  std::reverse(mismatchedRanks.begin(), mismatchedRanks.end());
+  auto mismatchedTransport = createTransport(nullptr, mismatchedRanks);
+  EXPECT_FALSE(mismatchedTransport->nvl_rank_map_matches_config());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -420,6 +450,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
 
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type.
   void* localBuf = reinterpret_cast<void*>(devPtr);
   CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, requestedSize));
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -499,6 +530,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd) {
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
 
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type.
   void* localBuf = reinterpret_cast<void*>(devPtr);
   CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, requestedSize));
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -578,7 +610,8 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferPosixFd_MultipleRounds) {
     accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
     ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
 
-    void* localBuf = reinterpret_cast<void*>(devPtr);
+    void* localBuf =
+        reinterpret_cast<void*>(devPtr); // NOLINT(performance-no-int-to-ptr)
     CUDACHECK_TEST(cudaMemset(localBuf, iter + 1, requestedSize));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -651,6 +684,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCuMemNone_Throws) {
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
   ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
 
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type.
   void* localBuf = reinterpret_cast<void*>(devPtr);
 
   EXPECT_THROW(transport->exchangeNvlBuffer(localBuf), std::runtime_error);
