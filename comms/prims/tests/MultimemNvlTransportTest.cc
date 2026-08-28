@@ -2388,6 +2388,80 @@ TEST_F(MultimemNvlTransportTestFixture, DeviceLoadReduceCoversPublicTypes) {
   }
 }
 
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    PhasedReduceBlockPreservesOwnedFp16AndBf16Lanes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+
+  // 1. Create a transport shared by all participating NVL ranks.
+  auto bootstrap = makeBootstrap("mmnvl_phased_reduce_block");
+  auto transport = makeExchangedTransport(
+      bootstrap,
+      globalRank,
+      numRanks,
+      localRank,
+      /*userSignalCount=*/0,
+      /*needsInternalSignals=*/true);
+  if (!transport) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  const auto deviceTransport = transport->getDeviceTransport();
+  ASSERT_GT(deviceTransport.nvlRanks, 0);
+  ASSERT_GE(deviceTransport.nvlRank, 0);
+  ASSERT_LT(deviceTransport.nvlRank, deviceTransport.nvlRanks);
+  const std::size_t nvlRank = static_cast<std::size_t>(deviceTransport.nvlRank);
+  const std::size_t nvlRanks =
+      static_cast<std::size_t>(deviceTransport.nvlRanks);
+  constexpr std::size_t kElements = 8;
+  const float localValue = test::phasedReduceBlockRankValue(nvlRank);
+  const float expectedValue = test::phasedReduceBlockExpectedValue(nvlRanks);
+  const std::size_t ownedFirstLane = kElements * nvlRank / nvlRanks;
+  const std::size_t ownedEndLane = kElements * (nvlRank + 1) / nvlRanks;
+
+  // 2. Exercise both two-byte types and both accumulation modes.
+  for (const auto type :
+       {test::MultimemReductionTestType::Float16,
+        test::MultimemReductionTestType::Bfloat16}) {
+    for (const bool accF32 : {false, true}) {
+      test::launchPhasedReduceBlock(deviceTransport, type, accF32);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      // 3. Decode this rank's in-place multicast backing block.
+      std::vector<uint16_t> values(kElements);
+      CUDACHECK_TEST(cudaMemcpy(
+          values.data(),
+          deviceTransport.localData,
+          16,
+          cudaMemcpyDeviceToHost));
+
+      std::vector<float> actualValues(kElements);
+      for (std::size_t lane = 0; lane < kElements; ++lane) {
+        if (type == test::MultimemReductionTestType::Float16) {
+          __half raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          actualValues[lane] = __half2float(raw);
+        } else {
+          __nv_bfloat16 raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          actualValues[lane] = __bfloat162float(raw);
+        }
+      }
+
+      // 4. Compare against an independently constructed ownership layout.
+      std::vector<float> expectedValues(kElements, localValue);
+      std::fill(
+          expectedValues.begin() + ownedFirstLane,
+          expectedValues.begin() + ownedEndLane,
+          expectedValue);
+      EXPECT_EQ(actualValues, expectedValues);
+      ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    }
+  }
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char* argv[]) {
