@@ -2,6 +2,23 @@
 # Extension: torchcomms._comms_rcclx
 file(GLOB TORCHCOMMS_RCCLX_SOURCES "comms/torchcomms/rcclx/*.cpp")
 
+# RcclxApiShardedRelay.cpp (real) and RcclxApiShardedRelayStub.cpp (ncclInternalError
+# stubs) define the SAME DefaultRcclxApi::shardedRelay* symbols with no #ifdef
+# guards, so exactly one must be compiled or the link fails with duplicate symbols.
+# In buck this is a select() on the rccl constraint (see comms/torchcomms/rcclx/BUCK);
+# here (OSS/wheel CMake path) it keys off USE_RCCLX_DEV, forwarded by setup.py.
+# Default OFF -> stub (safe against rcclx-stable, which lacks the relay symbols);
+# ON -> real impl, requires linking an rcclx-dev librccl that exports
+# ncclShardedRelayMultiGroup*.
+option(USE_RCCLX_DEV "Link the real rcclx-dev sharded-relay impl instead of the stub" OFF)
+if(USE_RCCLX_DEV)
+    list(FILTER TORCHCOMMS_RCCLX_SOURCES EXCLUDE REGEX "RcclxApiShardedRelayStub\\.cpp$")
+    message(STATUS "rcclx: using real sharded-relay impl (RcclxApiShardedRelay.cpp)")
+else()
+    list(FILTER TORCHCOMMS_RCCLX_SOURCES EXCLUDE REGEX "RcclxApiShardedRelay\\.cpp$")
+    message(STATUS "rcclx: using sharded-relay stub (RcclxApiShardedRelayStub.cpp)")
+endif()
+
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
 # User can override via ROCM_HOME environment variable; otherwise use
 # ROCM_PATH set by LoadHIP.cmake, included via find_package(Torch).
