@@ -280,7 +280,7 @@ __device__ __forceinline__ bool oneShotEpochReached(
 }
 
 template <typename T>
-__global__ void oneShotReduceScatterKernel(
+__global__ void oneShotPushReduceKernel(
     T* __restrict__ out,
     const T* __restrict__ sendBuff,
     rcclx::relay::OneShotPeerTable table,
@@ -289,6 +289,8 @@ __global__ void oneShotReduceScatterKernel(
     int myRank,
     int mySlot,
     size_t rc,
+    size_t srcStride,
+    size_t ownOffset,
     size_t slotBytes,
     uint32_t epoch,
     int divisor) {
@@ -307,7 +309,7 @@ __global__ void oneShotReduceScatterKernel(
     staged[s] = reinterpret_cast<const T*>(
         table.staging[myRank] + static_cast<size_t>(s) * slotBytes);
   }
-  const T* own = sendBuff + static_cast<size_t>(mySlot) * rc;
+  const T* own = sendBuff + ownOffset;
 
   // Staging slots are hipMalloc'd and slot-aligned, so they are always 16-byte
   // aligned; the caller's buffers are not guaranteed to be, and a per-source
@@ -325,7 +327,9 @@ __global__ void oneShotReduceScatterKernel(
   const uintptr_t bits = reinterpret_cast<uintptr_t>(sendBuff) |
       reinterpret_cast<uintptr_t>(out) |
       reinterpret_cast<uintptr_t>(table.staging[myRank]);
-  const bool vecOk = ((bits & 15u) == 0) && ((rc * sizeof(T)) % 16u == 0);
+  const bool vecOk = ((bits & 15u) == 0) &&
+      ((srcStride * sizeof(T)) % 16u == 0) &&
+      ((ownOffset * sizeof(T)) % 16u == 0) && ((rc * sizeof(T)) % 16u == 0);
 
   // Per-block element range, derived only from rc, kEvec and gridDim -- all
   // rank-agreed (gridDim comes from rc, kOneShotThreads and kOneShotMaxBlocks)
@@ -352,7 +356,7 @@ __global__ void oneShotReduceScatterKernel(
     }
     T* dst = reinterpret_cast<T*>(
         table.staging[ranks.r[j]] + static_cast<size_t>(mySlot) * slotBytes);
-    const T* src = sendBuff + static_cast<size_t>(j) * rc;
+    const T* src = sendBuff + static_cast<size_t>(j) * srcStride;
     if (vecOk && vecEnd > begin) {
       const Vec* s4 = reinterpret_cast<const Vec*>(src + begin);
       Vec* d4 = reinterpret_cast<Vec*>(dst + begin);
@@ -445,7 +449,7 @@ __global__ void oneShotReduceScatterKernel(
 }
 
 template <typename T>
-void launchOneShotReduceScatterKernel(
+void launchOneShotPushReduceKernel(
     void* out,
     const void* sendBuff,
     const rcclx::relay::OneShotPeerTable& table,
@@ -454,6 +458,8 @@ void launchOneShotReduceScatterKernel(
     int myRank,
     int mySlot,
     size_t rc,
+    size_t srcStride,
+    size_t ownOffset,
     size_t slotBytes,
     uint32_t epoch,
     int divisor,
@@ -466,7 +472,7 @@ void launchOneShotReduceScatterKernel(
   if (gridSize > rcclx::relay::kOneShotMaxBlocks) {
     gridSize = rcclx::relay::kOneShotMaxBlocks;
   }
-  oneShotReduceScatterKernel<T><<<gridSize, blockSize, 0, stream>>>(
+  oneShotPushReduceKernel<T><<<gridSize, blockSize, 0, stream>>>(
       static_cast<T*>(out),
       static_cast<const T*>(sendBuff),
       table,
@@ -475,6 +481,8 @@ void launchOneShotReduceScatterKernel(
       myRank,
       mySlot,
       rc,
+      srcStride,
+      ownOffset,
       slotBytes,
       epoch,
       divisor);
@@ -513,7 +521,7 @@ void launchOneShotReduceScatterKernel(
       size_t count,                                                        \
       int divisor,                                                         \
       cudaStream_t stream);                                                \
-  template void launchOneShotReduceScatterKernel<T>(                       \
+  template void launchOneShotPushReduceKernel<T>(                          \
       void* out,                                                           \
       const void* sendBuff,                                                \
       const rcclx::relay::OneShotPeerTable& table,                         \
@@ -522,6 +530,8 @@ void launchOneShotReduceScatterKernel(
       int myRank,                                                          \
       int mySlot,                                                          \
       size_t rc,                                                           \
+      size_t srcStride,                                                    \
+      size_t ownOffset,                                                    \
       size_t slotBytes,                                                    \
       uint32_t epoch,                                                      \
       int divisor,                                                         \

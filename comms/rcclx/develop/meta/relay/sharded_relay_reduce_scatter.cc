@@ -628,148 +628,166 @@ bool buildShardedRelayRankConfig(
 // worth an instantiation, and an unsupported type must fall through to the
 // ncclSend/ncclRecv schedule rather than silently do nothing, so the caller
 // checks the bool this sets.
-#define DISPATCH_ONESHOT_REDUCE_SCATTER(                 \
-    datatype,                                            \
-    handled,                                             \
-    out,                                                 \
-    sendBuff,                                            \
-    table,                                               \
-    ranks,                                               \
-    nActive,                                             \
-    myRank,                                              \
-    mySlot,                                              \
-    rc,                                                  \
-    slotBytes,                                           \
-    epoch,                                               \
-    divisor,                                             \
-    stream)                                              \
-  do {                                                   \
-    (handled) = true;                                    \
-    switch (datatype) {                                  \
-      case ncclInt32:                                    \
-        launchOneShotReduceScatterKernel<int32_t>(       \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclUint32:                                   \
-        launchOneShotReduceScatterKernel<uint32_t>(      \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclInt64:                                    \
-        launchOneShotReduceScatterKernel<int64_t>(       \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclUint64:                                   \
-        launchOneShotReduceScatterKernel<uint64_t>(      \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclFloat16:                                  \
-        launchOneShotReduceScatterKernel<__half>(        \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclFloat:                                    \
-        launchOneShotReduceScatterKernel<float>(         \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclDouble:                                   \
-        launchOneShotReduceScatterKernel<double>(        \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      case ncclBfloat16:                                 \
-        launchOneShotReduceScatterKernel<__nv_bfloat16>( \
-            out,                                         \
-            sendBuff,                                    \
-            table,                                       \
-            ranks,                                       \
-            nActive,                                     \
-            myRank,                                      \
-            mySlot,                                      \
-            rc,                                          \
-            slotBytes,                                   \
-            epoch,                                       \
-            divisor,                                     \
-            stream);                                     \
-        break;                                           \
-      default:                                           \
-        (handled) = false;                               \
-        break;                                           \
-    }                                                    \
+#define DISPATCH_ONESHOT_REDUCE_SCATTER(              \
+    datatype,                                         \
+    handled,                                          \
+    out,                                              \
+    sendBuff,                                         \
+    table,                                            \
+    ranks,                                            \
+    nActive,                                          \
+    myRank,                                           \
+    mySlot,                                           \
+    rc,                                               \
+    srcStride,                                        \
+    ownOffset,                                        \
+    slotBytes,                                        \
+    epoch,                                            \
+    divisor,                                          \
+    stream)                                           \
+  do {                                                \
+    (handled) = true;                                 \
+    switch (datatype) {                               \
+      case ncclInt32:                                 \
+        launchOneShotPushReduceKernel<int32_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint32:                                \
+        launchOneShotPushReduceKernel<uint32_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclInt64:                                 \
+        launchOneShotPushReduceKernel<int64_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint64:                                \
+        launchOneShotPushReduceKernel<uint64_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat16:                               \
+        launchOneShotPushReduceKernel<__half>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat:                                 \
+        launchOneShotPushReduceKernel<float>(         \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclDouble:                                \
+        launchOneShotPushReduceKernel<double>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclBfloat16:                              \
+        launchOneShotPushReduceKernel<__nv_bfloat16>( \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      default:                                        \
+        (handled) = false;                            \
+        break;                                        \
+    }                                                 \
   } while (0)
 
 // Try the one-shot IPC kernel for a single-group A-active reduce-scatter, and
@@ -841,6 +859,9 @@ static bool tryOneShotReduceScatter(
       comm->rank,
       cfg.myActiveIndex,
       recvCounts[myActiveGroup],
+      /*srcStride=*/recvCounts[myActiveGroup],
+      /*ownOffset=*/static_cast<size_t>(cfg.myActiveIndex) *
+          recvCounts[myActiveGroup],
       osl.slotBytes,
       osl.epoch,
       reductionDivisor,
