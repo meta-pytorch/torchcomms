@@ -14,6 +14,7 @@
 #include "debug.h"
 #include "tuner.h"
 #include "plugin.h"
+#include "meta/tuner/MetaTuner.h"
 
 extern ncclTuner_t* getNcclTuner_v2(void* lib);
 extern ncclTuner_t* getNcclTuner_v3(void* lib);
@@ -40,6 +41,19 @@ ncclResult_t ncclTunerPluginLoad(struct ncclComm* comm) {
   const char* tunerName;
   // Initialize to nullptr by default if plugin tuner cannot be loaded.
   comm->tuner = nullptr;
+  // [META] The built-in CSV/JSON tuner takes precedence over NCCL_TUNER_PLUGIN
+  // when NCCLX_TUNER_CONFIG_FILE is set; see meta/tuner/MetaTuner.h. Warn rather
+  // than silently overriding, because the dlopen path below never runs and would
+  // otherwise not even log that NCCL_TUNER_PLUGIN was seen.
+  if (ncclx::tuner::tryLoadMetaTuner(comm)) {
+    const char* overriddenPlugin = ncclGetEnv("NCCL_TUNER_PLUGIN");
+    if (overriddenPlugin != nullptr && strcasecmp(overriddenPlugin, "none") != 0) {
+      WARN("NCCLX_TUNER_CONFIG_FILE is set, so the built-in tuner is used and NCCL_TUNER_PLUGIN=%s is ignored. "
+           "Unset NCCLX_TUNER_CONFIG_FILE to load the external plugin.",
+           overriddenPlugin);
+    }
+    return ncclSuccess;
+  }
   if (tunerPluginLoadFailed == status) {
     return ncclSuccess;
   }

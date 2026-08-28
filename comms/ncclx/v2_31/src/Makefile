@@ -168,7 +168,7 @@ $(INCDIR)/nccl.h : nccl.h.in ../makefiles/version.mk
 $(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFESTS)
 	@printf "Linking    %-35s > %s\n" $(LIBTARGET) $@
 	mkdir -p $(LIBDIR)
-	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFESTS)) $(LDFLAGS) -Wl,--version-script=libnccl.map
+	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFESTS)) $(LDFLAGS) -Wl,--version-script=version.script
 	ln -sf $(LIBSONAME) $(LIBDIR)/$(LIBNAME)
 	ln -sf $(LIBTARGET) $(LIBDIR)/$(LIBSONAME)
 

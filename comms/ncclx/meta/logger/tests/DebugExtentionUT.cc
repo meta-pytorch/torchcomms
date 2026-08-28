@@ -146,6 +146,30 @@ TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   finishLogging();
 }
 
+// ncclGetLastError() must report the ERR() origin, not the last propagation
+// WARN. ncclDebugLogV() rewrites upstream's ncclLastError[] buffer on every
+// WARN, and NCCLCHECK emits one per enclosing frame, so reading that buffer
+// yields the outermost "-> %d" trace instead of the root cause.
+TEST_F(DebugExtTest, LastErrorKeepsRootCauseThroughPropagation) {
+  initEnv();
+  NCCL_DEBUG = "WARN";
+  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  initLogging();
+
+  ERR(ncclSystemError, "root cause: connect refused on eth0");
+  // What NCCLCHECK/NCCLCHECKGOTO emit as the error unwinds.
+  WARN("-> %d", ncclSystemError);
+  WARN("-> %d", ncclSystemError);
+
+  const std::string lastError = ncclGetLastError(nullptr);
+  EXPECT_THAT(
+      lastError, testing::HasSubstr("root cause: connect refused on eth0"));
+  EXPECT_THAT(
+      lastError,
+      testing::Not(testing::HasSubstr(fmt::format("-> {}", ncclSystemError))));
+  finishLogging();
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   testing::AddGlobalTestEnvironment(new NcclLoggerTestEnv);

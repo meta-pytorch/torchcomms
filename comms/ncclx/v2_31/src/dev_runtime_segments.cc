@@ -46,7 +46,7 @@ ncclResult_t ncclDevrCheckRegistrationSupport(void* userPtr, size_t userSize, st
   ncclResult_t ret = ncclSuccess;
   if (hasSysmemSegment) {
     if (!ncclParamElasticBufferRegister()) {
-      WARN("VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but "
+      ERR(ncclInvalidArgument, "VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but "
            "NCCL_ELASTIC_BUFFER_REGISTER is set to 0. Please set NCCL_ELASTIC_BUFFER_REGISTER=1 and retry window "
            "registration",
            userPtr, userSize);
@@ -60,7 +60,7 @@ ncclResult_t ncclDevrCheckRegistrationSupport(void* userPtr, size_t userSize, st
                                        comm->cudaDev),
                   ret, exit);
       if (!multiNodeLsaSupported) {
-        WARN("VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but the LSA team "
+        ERR(ncclInvalidArgument, "VA represented by {userPtr = %p, size = %zu} contains CPU-backed physical segments, but the LSA team "
              "does not support multi-node IPC on CPU-backed buffers. Please retry by setting NCCL_MNNVL_ENABLE=0",
              userPtr, userSize);
         ret = ncclInvalidArgument;
