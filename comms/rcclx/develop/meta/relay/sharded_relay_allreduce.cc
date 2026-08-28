@@ -9,6 +9,7 @@
 #include "sharded_relay_allreduce.h"
 #include "comm.h"
 #include "sharded_relay_allreduce_kernels.h"
+#include "sharded_relay_oneshot.h"
 #include "sharded_relay_route.h"
 
 #include <hip/hip_bfloat16.h>
@@ -740,6 +741,260 @@ static bool buildShardedRelayRankConfig(
 // groups where they are a helper.
 static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
 
+#define DISPATCH_ONESHOT_PUSH_REDUCE(                 \
+    datatype,                                         \
+    handled,                                          \
+    out,                                              \
+    sendBuff,                                         \
+    table,                                            \
+    ranks,                                            \
+    nActive,                                          \
+    myRank,                                           \
+    mySlot,                                           \
+    rc,                                               \
+    srcStride,                                        \
+    ownOffset,                                        \
+    slotBytes,                                        \
+    epoch,                                            \
+    divisor,                                          \
+    stream)                                           \
+  do {                                                \
+    (handled) = true;                                 \
+    switch (datatype) {                               \
+      case ncclInt32:                                 \
+        launchOneShotPushReduceKernel<int32_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint32:                                \
+        launchOneShotPushReduceKernel<uint32_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclInt64:                                 \
+        launchOneShotPushReduceKernel<int64_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint64:                                \
+        launchOneShotPushReduceKernel<uint64_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat16:                               \
+        launchOneShotPushReduceKernel<__half>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat:                                 \
+        launchOneShotPushReduceKernel<float>(         \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclDouble:                                \
+        launchOneShotPushReduceKernel<double>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclBfloat16:                              \
+        launchOneShotPushReduceKernel<__nv_bfloat16>( \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            epoch,                                    \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      default:                                        \
+        (handled) = false;                            \
+        break;                                        \
+    }                                                 \
+  } while (0)
+
+// Try the one-shot IPC kernel for a single-group A-active allreduce, and report
+// whether it ran.
+//
+// The pure-direct allreduce schedules -- the A==2 full exchange and the A>2 one
+// added alongside it -- are both TWO launches: one group, then one reduce. That
+// is one more than NCCL, and it is the same shape the reduce-scatter had before
+// the one-shot path replaced it. The fix transfers directly: allreduce is the
+// srcStride == 0 case of the same push-reduce kernel, because every peer is
+// owed the whole buffer rather than a per-peer block, and every rank keeps the
+// whole result rather than a shard.
+//
+// Bytes moved are unchanged -- (A-1)*count pushed per rank, exactly what the
+// group form sent -- so this trades a launch for nothing.
+//
+// Every predicate is derived from sizes and the communicator only, so all ranks
+// reach the same decision: a rank that ran the one-shot kernel while a peer
+// took the ncclSend path would spin forever rather than merely run slower.
+// oneShotAcquire() is COLLECTIVE on first use, so it is called before any
+// branch on myActiveGroup and it agrees its own success across ranks.
+static bool tryOneShotAllReduce(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int nActiveRanksPerGroup,
+    int nGroups,
+    size_t elementSize) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  if (nGroups != 1 || maxCount == 0) {
+    return false;
+  }
+  // Each of the A staging slots holds a whole contribution here, not a shard,
+  // so the gate is the per-rank count directly.
+  if (maxCount * elementSize > rcclx::relay::kRelayOneShotMaxBytes) {
+    return false;
+  }
+  // The epoch advances per host launch, so a replayed graph would reuse a stale
+  // value and the handshake would pass before the data arrived.
+  struct ncclCudaGraph graph;
+  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    return false;
+  }
+  if (ncclCudaGraphValid(graph)) {
+    return false;
+  }
+
+  rcclx::relay::OneShotLaunch osl{};
+  if (!rcclx::relay::oneShotAcquire(comm, &osl)) {
+    return false;
+  }
+
+  // Helpers have nothing to do, but they DID have to reach the acquire above,
+  // which is the whole reason it sits before this branch.
+  if (myActiveGroup < 0 || counts[myActiveGroup] == 0) {
+    return true;
+  }
+
+  const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+  rcclx::relay::OneShotRanks ranks{};
+  for (int a = 0; a < nActiveRanksPerGroup; a++) {
+    ranks.r[a] = cfg.activeRanks[a];
+  }
+  bool handled = false;
+  DISPATCH_ONESHOT_PUSH_REDUCE(
+      datatype,
+      handled,
+      recvBuffs[myActiveGroup],
+      sendBuffs[myActiveGroup],
+      osl.table,
+      ranks,
+      nActiveRanksPerGroup,
+      comm->rank,
+      cfg.myActiveIndex,
+      counts[myActiveGroup],
+      /*srcStride=*/0,
+      /*ownOffset=*/0,
+      osl.slotBytes,
+      osl.epoch,
+      reductionDivisor,
+      stream);
+  // An unsupported datatype must not silently produce nothing. Falling back is
+  // safe only because the dtype is identical on every rank, so either all of
+  // them fall back or none do -- and in pure-direct mode the helpers post
+  // nothing anyway, so a helper that already returned true is equivalent.
+  return handled;
+}
+
 static ncclResult_t shardedRelayAllReduce2Active(
     const void* const* sendBuffs,
     void* const* recvBuffs,
@@ -767,6 +1022,24 @@ static ncclResult_t shardedRelayAllReduce2Active(
   // about A==2.
   if (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
       rcclx::relay::AllReduceRoute::PureDirect) {
+    // One kernel instead of the group-plus-reduce pair below. See
+    // tryOneShotAllReduce().
+    if (tryOneShotAllReduce(
+            sendBuffs,
+            recvBuffs,
+            counts,
+            datatype,
+            reductionDivisor,
+            comm,
+            stream,
+            configs,
+            myActiveGroup,
+            2,
+            nGroups,
+            elementSize)) {
+      return ncclSuccess;
+    }
+
     void* pdScratch = nullptr;
     if (myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
       pdScratch = ScratchBufferCache::getInstance().get(
@@ -1385,6 +1658,24 @@ static ncclResult_t shardedRelayAllReduceFlat(
   // helper in the others, so its links carry several groups' traffic at once
   // and the bytes this trades away are not free there.
   if (kOffPermille == 0 && nGroups == 1) {
+    // One kernel instead of the group-plus-reduce pair below. See
+    // tryOneShotAllReduce().
+    if (tryOneShotAllReduce(
+            sendBuffs,
+            recvBuffs,
+            counts,
+            datatype,
+            reductionDivisor,
+            comm,
+            stream,
+            configs,
+            myActiveGroup,
+            A,
+            nGroups,
+            elementSize)) {
+      return ncclSuccess;
+    }
+
     const size_t count = counts[0];
     void* xScratch = nullptr;
     if (myActiveGroup >= 0 && count > 0) {
