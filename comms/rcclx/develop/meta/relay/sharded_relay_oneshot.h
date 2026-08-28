@@ -55,8 +55,9 @@
  * rank PUSHES its contribution into peers' pre-registered staging. That also
  * means the per-call cost is zero: nothing is registered or mapped per call.
  *
- * Setup cost, measured for 8 ranks: hipIpcGetMemHandle 0.012 ms +
- * bootstrapAllGather 1.7 ms + 7x hipIpcOpenMemHandle 0.65 ms, so ~1.7 ms once.
+ * Setup cost, measured for 8 ranks: hipIpcGetMemHandle 0.008 ms +
+ * bootstrapAllGather 1.5 ms + 7x hipIpcOpenMemHandle 0.36 ms, so ~1.9 ms once
+ * per PROCESS -- not per communicator, and not per call.
  *
  * COLLECTIVE, AND WHY THAT MATTERS
  *
@@ -122,8 +123,11 @@ struct OneShotLaunch {
 bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out);
 
 /**
- * Drop a communicator's region. Safe to call for a communicator that never had
- * one. Intended for communicator teardown.
+ * Free a communicator's region. Called from RCCL's commFree(), which is the
+ * only point at which the relay learns a comm is going away; without it the
+ * region outlives the comm and its peer mappings accumulate. Purely local -- an
+ * hipIpcCloseMemHandle per peer plus one hipFree -- so it honours commFree()'s
+ * no-sync-among-ranks contract. A no-op for a comm that never took the path.
  */
 void oneShotRelease(ncclComm_t comm);
 
