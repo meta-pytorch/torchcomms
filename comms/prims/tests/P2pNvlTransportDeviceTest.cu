@@ -235,17 +235,17 @@ void testReadSignal(SignalState* signal_d, uint64_t* result_d) {
 __global__ void
 testLl128SendKernel(P2pNvlTransportDevice p2p, const char* src, size_t nbytes) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
-  p2p.ll128_send_group(group, src, nbytes, timeout);
+  AbortDevice abortDevice;
+  abortDevice.start();
+  p2p.ll128_send_group(group, src, nbytes, abortDevice);
 }
 
 __global__ void
 testLl128RecvKernel(P2pNvlTransportDevice p2p, char* dst, size_t nbytes) {
   auto group = make_warp_group();
-  Timeout timeout;
-  timeout.start();
-  p2p.ll128_recv_group(group, dst, nbytes, timeout);
+  AbortDevice abortDevice;
+  abortDevice.start();
+  p2p.ll128_recv_group(group, dst, nbytes, abortDevice);
 }
 
 void testLl128SendRecv(
@@ -293,12 +293,12 @@ __global__ void testLlTiledSendKernel(
   auto group = make_warp_group();
   auto [dir, subgroup] = group.partition_interleaved(2);
   const int active = subgroup.total_groups;
-  Timeout timeout;
-  timeout.start();
+  AbortDevice abortDevice;
+  abortDevice.start();
   if (dir == 0) {
     for (int i = 0; i < num_steps; i++) {
       TiledBuffer<char> tile(const_cast<char*>(src), nbytes, subgroup);
-      p2p.ll_send(subgroup, tile.data(), tile.bytes(), active, timeout);
+      p2p.ll_send(subgroup, tile.data(), tile.bytes(), active, abortDevice);
     }
   }
 }
@@ -311,12 +311,12 @@ __global__ void testLlTiledRecvKernel(
   auto group = make_warp_group();
   auto [dir, subgroup] = group.partition_interleaved(2);
   const int active = subgroup.total_groups;
-  Timeout timeout;
-  timeout.start();
+  AbortDevice abortDevice;
+  abortDevice.start();
   if (dir == 1) {
     for (int i = 0; i < num_steps; i++) {
       TiledBuffer<char> tile(dst, nbytes, subgroup);
-      p2p.ll_recv(subgroup, tile.data(), tile.bytes(), active, timeout);
+      p2p.ll_recv(subgroup, tile.data(), tile.bytes(), active, abortDevice);
     }
   }
 }

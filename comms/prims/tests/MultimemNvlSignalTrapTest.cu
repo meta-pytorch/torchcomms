@@ -36,7 +36,7 @@ __device__ SignalState* boundaryPeerSignals[kBoundaryMaxRanks];
 
 __global__ void nvlSignalTrapKernel(
     NvlSignalTrapCase testCase,
-    Timeout waitAbort) {
+    AbortDevice waitAbort) {
   auto* trapSignals = reinterpret_cast<SignalState*>(trapSignalStorage);
   SignalState* peerSignals[4] = {
       trapSignals, trapSignals, trapSignals, trapSignals};
@@ -123,7 +123,7 @@ __global__ void nvlSignalTrapKernel(
         NvlSignalAccess::Unicast,
         NvlSignalTopology::Aggregate,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
     return;
   }
   if (testCase == NvlSignalTrapCase::AggregateDepthTooLarge ||
@@ -134,7 +134,7 @@ __global__ void nvlSignalTrapKernel(
         NvlSignalAccess::Multimem,
         NvlSignalTopology::Aggregate,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
     return;
   }
   auto group = make_block_group();
@@ -203,14 +203,14 @@ __global__ void nvlSignalRankBoundaryKernel(
           .expectedArrivals = nvl_signal_detail::mask_rank_count(publishers),
       },
       group,
-      Timeout{});
+      AbortDevice{});
   if (group.is_leader()) {
     *output = signals[selectedRank].load();
   }
 }
 
 template <NvlPerPeerWaitPolicy waitPolicy>
-__global__ void nvlSignalUpperWordWaitTimeoutKernel(Timeout waitAbort) {
+__global__ void nvlSignalUpperWordWaitTimeoutKernel(AbortDevice waitAbort) {
   auto group = make_block_group();
   auto* signals = reinterpret_cast<SignalState*>(boundarySignalStorage);
   for (int rank = static_cast<int>(threadIdx.x); rank < kBoundaryMaxRanks;

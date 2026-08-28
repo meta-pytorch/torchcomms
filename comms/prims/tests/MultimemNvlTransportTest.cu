@@ -142,7 +142,7 @@ __global__ void aggregateSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -176,7 +176,7 @@ __global__ void perPeerSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
@@ -203,7 +203,7 @@ __global__ void aggregateAckSignalProtocolKernel(
       StageRound{.channel = 0, .value = roundValue},
       makeAckParticipants(transport),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -232,7 +232,7 @@ __global__ void multiChannelAggregateSignalKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
     const uint64_t signalId = layout.signalBase +
@@ -258,7 +258,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/true),
       group,
-      Timeout{});
+      AbortDevice{});
 
   if (transport.nvlRank == transport.nvlRanks - 1) {
     __nanosleep(100'000'000);
@@ -272,7 +272,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -310,7 +310,7 @@ __global__ void aggregateMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.thread_id_in_group == kPayloadLane) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -354,7 +354,7 @@ __global__ void perPeerMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.is_leader()) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -378,7 +378,7 @@ __global__ void separatePublishAndWaitKernel(
         NvlSignalAccess::Unicast,
         NvlSignalTopology::PerPeer,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
   } else {
     signal_publish<
         NvlSignalAccess::Unicast,
@@ -418,7 +418,7 @@ __global__ void perPeerWaitOnlyKernel(
       StageRound{.channel = 0, .value = roundValue},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
     out[source] = transport.internalLocalSignals[source].load();

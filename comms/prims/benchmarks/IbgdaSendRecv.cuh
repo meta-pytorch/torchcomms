@@ -27,7 +27,7 @@ __global__ void ibgda_send_recv_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 #ifndef __HIP_PLATFORM_AMD__
 __global__ void ibgda_progress_send_recv_kernel(
@@ -37,7 +37,7 @@ __global__ void ibgda_progress_send_recv_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 #endif
 
 __global__ void ibgda_send_recv_two_call_kernel(
@@ -49,7 +49,7 @@ __global__ void ibgda_send_recv_two_call_kernel(
     int numBlocks,
     std::size_t firstMaxSignalBytes,
     std::size_t secondMaxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 /**
  * Unidirectional tile send kernel. All blocks send.
@@ -61,7 +61,7 @@ __global__ void ibgda_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 /**
  * Unidirectional tile recv kernel. All blocks receive.
@@ -73,7 +73,7 @@ __global__ void ibgda_recv_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 #ifndef __HIP_PLATFORM_AMD__
 /**
@@ -86,7 +86,7 @@ __global__ void ibgda_progress_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout,
+    AbortDevice abortDevice,
     bool waitForSlotFree);
 
 /**
@@ -99,7 +99,7 @@ __global__ void ibgda_registered_progress_send_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 /**
  * Unidirectional progress recv kernel. All blocks receive.
@@ -111,7 +111,7 @@ __global__ void ibgda_progress_recv_kernel(
     std::size_t totalBytes,
     int numBlocks,
     std::size_t maxSignalBytes,
-    Timeout timeout);
+    AbortDevice abortDevice);
 #endif
 
 } // namespace comms::prims::benchmark
