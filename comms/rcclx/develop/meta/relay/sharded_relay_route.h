@@ -284,6 +284,25 @@ inline size_t allReduceOffloadPermille(AllReduceRoute route) {
   return route == AllReduceRoute::FlatOffload ? 500 : 0;
 }
 
+// Smallest message the single-group 2-active reduce-scatter overlaps its owner
+// reduce for, measured against the two bounds that bracket the change (the
+// unoverlapped schedule, and the same schedule with the reduce skipped
+// entirely). Fraction of that interval closed, per size:
+//
+//    63-72 MB   the overlap LOSES 6-8%
+//   135-144 MB  a wash (-0.5% to +1.1%)
+//   256 MB      47%
+//   512 MB      65%
+//     1 GB      80%   (3.82x -> 4.68x vs NCCL; the ceiling is T/(T+1) = 89%)
+//
+// Two effects push the crossover up: the T+1 event record/wait pairs are a
+// fixed cost, and the last region's reduce can never be hidden because no
+// transfer follows it -- at small sizes the depth is lower, so that unhidden
+// region is a larger share of the whole. 256 MiB is the smallest size measured
+// to win clearly; there is no sample between 144 MiB and it.
+inline constexpr size_t kRelayOverlapReduceMinBytes = static_cast<size_t>(256)
+    << 20;
+
 // Largest software-pipeline depth the single-group relays will use.
 //
 // 8 is where the measured optimum stops moving. Depth 16 is a wash at best
