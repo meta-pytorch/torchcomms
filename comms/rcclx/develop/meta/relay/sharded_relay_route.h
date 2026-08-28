@@ -330,6 +330,29 @@ inline constexpr size_t kRelayOverlapReduceMinBytes = static_cast<size_t>(256)
 inline constexpr size_t kRelayUniformDirectOpMinBytes = static_cast<size_t>(256)
     << 20;
 
+// Largest per-active-rank message the one-shot IPC path handles, and equally
+// the per-peer staging slot size it provisions.
+//
+// Below this the collective is pure launch cost, and a single kernel that
+// pushes into peers' pre-registered staging, handshakes on a flag, and reduces
+// in registers replaces a whole ncclGroup plus a reduce. Above it the push
+// costs two HBM trips NCCL's streaming kernel does not pay -- store into the
+// peer's staging, then read it back to reduce -- and that overtakes the launch
+// it saves.
+//
+// The feasibility probe measured the KERNEL crossover (2-rank reduce-scatter,
+// float, streamed) between 1 MiB and 2.25 MiB:
+//
+//   4 KB .. 1152 KB   1.46x - 1.71x faster than NCCL's fused kernel
+//   2304 KB           0.89x
+//   4608 KB           0.78x
+//   9216 KB           0.73x
+//
+// so 1 MiB is the last power of two entirely inside the winning region. Staging
+// is nRanks * this per rank, i.e. 8 MiB on an 8-GPU node, allocated once per
+// communicator.
+inline constexpr size_t kRelayOneShotMaxBytes = static_cast<size_t>(1) << 20;
+
 // Largest software-pipeline depth the single-group relays will use.
 //
 // 8 is where the measured optimum stops moving. Depth 16 is a wash at best

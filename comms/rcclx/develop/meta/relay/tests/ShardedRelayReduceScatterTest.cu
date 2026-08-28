@@ -2036,13 +2036,21 @@ class ShardedRelayReduceScatterOverlapA2Test
         static_cast<int32_t>(i % static_cast<size_t>(kPeriod));
   }
 
-  void runOverlapCase(bool inPlace, ncclRedOp_t op) {
+  void runOverlapCase(
+      bool inPlace,
+      ncclRedOp_t op,
+      size_t recvCountOverride = 0,
+      size_t misalignElemsOnOddRanks = 0) {
     const int nGroups = 1;
     const int A = 2;
-    // A * recvBytes must reach kRelayOverlapReduceMinBytes (256 MiB) for the
-    // side-stream path to engage at all.
-    const size_t recvBytes = 128ULL * 1024 * 1024;
-    const size_t recvCount = recvBytes / sizeof(int32_t);
+    // Default: A * recvBytes reaches kRelayOverlapReduceMinBytes (256 MiB) so
+    // the side-stream path engages. recvCountOverride instead pins a small
+    // count so the one-shot IPC path is exercised (it needs A * recvCount *
+    // elemSize <= kRelayOneShotMaxBytes).
+    const size_t recvCount = (recvCountOverride != 0)
+        ? recvCountOverride
+        : (128ULL * 1024 * 1024) / sizeof(int32_t);
+    const size_t recvBytes = recvCount * sizeof(int32_t);
     const size_t inBytes = static_cast<size_t>(A) * recvBytes;
 
     const int activeRanks[] = {0, 1};
@@ -2050,12 +2058,23 @@ class ShardedRelayReduceScatterOverlapA2Test
     const bool isActive = this->globalRank < A;
     const int myActiveIndex = this->globalRank;
 
-    int32_t* sendBuff = nullptr;
-    int32_t* recvBuff = nullptr;
-    HIPCHECK_TEST(hipMalloc(&sendBuff, inBytes));
+    // Shift only the ODD active rank's buffers, so the two peers disagree on
+    // whether 16-byte accesses are usable. hipMalloc always returns a
+    // 16-byte-aligned pointer, so every other case here has both ranks aligned.
+    const size_t skew =
+        (misalignElemsOnOddRanks != 0 && (myActiveIndex % 2) == 1)
+        ? misalignElemsOnOddRanks
+        : 0;
+    const size_t skewBytes = skew * sizeof(int32_t);
+
+    int32_t* sendAlloc = nullptr;
+    int32_t* recvAlloc = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendAlloc, inBytes + skewBytes));
     if (isActive && !inPlace) {
-      HIPCHECK_TEST(hipMalloc(&recvBuff, recvBytes));
+      HIPCHECK_TEST(hipMalloc(&recvAlloc, recvBytes + skewBytes));
     }
+    int32_t* sendBuff = sendAlloc + skew;
+    int32_t* recvBuff = (recvAlloc != nullptr) ? recvAlloc + skew : nullptr;
 
     barrierSyncOn(sendBuff);
 
@@ -2128,6 +2147,111 @@ class ShardedRelayReduceScatterOverlapA2Test
     }
   }
 };
+
+// The four cases below sit BELOW kRelayOneShotMaxBytes (1 MiB of
+// per-active-rank input), where the one-shot IPC kernel replaces the ncclGroup
+// + reduce pair entirely: it pushes into the peer's staging, handshakes on a
+// per-block flag, and reduces in registers, in a single launch.
+//
+// This fixture is the right home because its fill is POSITION-DEPENDENT. The
+// older A=2 tests fill each block with a constant, which cannot catch an offset
+// or slot permutation -- and the one-shot path is exactly where such a bug
+// would live, since it indexes peer staging by active index.
+//
+// 65536 int32 = 256 KiB per rank, so 512 KiB of input: inside the gate, and
+// 16-byte aligned so the vectorized bulk path runs. 65535 is deliberately NOT a
+// multiple of 16/sizeof(int32_t), so it drives the scalar tail and the
+// misaligned-pointer fallback instead.
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclSum, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclAvg, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum, /*recvCountOverride=*/65535);
+}
+
+// The two cases below give ONE of the two peers 16-byte-misaligned caller
+// buffers and leave the other aligned, so the peers disagree about whether
+// vectorized accesses are usable. hipMalloc always returns a 16-byte-aligned
+// pointer, so in every other case here both ranks vectorize and that mixed
+// state is never reached at all.
+//
+// The count is chosen so the two ranks would also PARTITION differently if the
+// alignment decision were allowed to pick the block range. Vector partitioning
+// splits rc/kEvec vectors across gridDim blocks, element partitioning splits
+// rc, and the two agree whenever ceil((rc/kEvec)/G)*kEvec == ceil(rc/G) --
+// which is the case at 65536 and 65535 (both 1024). At 16388 int32 with
+// kEvec = 4 and G = 64 the vector stride is ceil(4097/64)*4 = 260 against an
+// element stride of ceil(16388/64) = 257, so the ranges diverge from block 1
+// onward. 16389 adds a ragged rc % kEvec tail on top of the same skew.
+//
+// WHAT THESE DO AND DO NOT GUARANTEE. They cover the mixed-alignment path --
+// one rank on the vector loops, its peer on the element-wise loops -- and they
+// would fail outright on a partition that overlapped or left a gap. They are
+// NOT a regression test for the ordering hazard that motivated deriving the
+// range from rank-agreed values only. With a divergent partition, block b
+// reduces a range wider than the one block b's flag covers, so it can read
+// staging its peer has not pushed yet. That read is a race and it is not
+// reliably observable here: the window is a few elements at a block seam, the
+// peer's block is doing the same work at the same time, and this fixture writes
+// the same fill on every call, so a premature read returns the value that is
+// about to be written anyway. Confirmed empirically -- with the
+// alignment-dependent partition restored, both cases below still pass. The
+// invariant is held by the kernel deriving [begin, end) from rc, kEvec and
+// gridDim alone; do not read a green run here as licence to relax that.
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum_AsymmetricAlignment) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/16388,
+      /*misalignElemsOnOddRanks=*/1);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Avg_AsymmetricAlignmentUnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/true,
+      ncclAvg,
+      /*recvCountOverride=*/16389,
+      /*misalignElemsOnOddRanks=*/1);
+}
 
 TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Sum) {
   if (this->numRanks != 8) {
