@@ -5,6 +5,11 @@
 
 #include <cstdlib>
 #include <memory>
+#include <string>
+#include <vector>
+
+#include <fmt/core.h>
+#include <folly/String.h>
 
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
@@ -1269,14 +1274,18 @@ TEST_F(CtranMapperTest, exportMemFailsWithExtraSegments) {
 
 TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   CtranMapperRemoteAccessKey rkey1 = {.backend = CtranMapperBackend::IB};
+  std::vector<std::string> expectedKeys;
   for (auto i = 0; i < CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
     rkey1.ibKey.rkeys[i] = 291 + i;
+    expectedKeys.push_back(std::to_string(rkey1.ibKey.rkeys[i]));
   }
   rkey1.ibKey.nKeys = CTRAN_MAX_IB_DEVICES_PER_RANK;
   std::strncpy(
       rkey1.nvlKey.peerId, "host1:1234", ctran::regcache::kMaxPeerIdLen);
   rkey1.nvlKey.basePtr = (void*)0x4567890;
-  EXPECT_EQ(rkey1.toString(), "backend=IB, ibKey=[291, 292]");
+  EXPECT_EQ(
+      rkey1.toString(),
+      fmt::format("backend=IB, ibKey=[{}]", folly::join(", ", expectedKeys)));
 
   CtranMapperRemoteAccessKey rkey2 = rkey1;
   rkey2.backend = CtranMapperBackend::NVL;
