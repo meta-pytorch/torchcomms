@@ -440,4 +440,84 @@ inline int relayPipelineTiles(
   return bestTiles;
 }
 
+/**
+ * Software-pipeline depth for the single-group A>2 allreduce.
+ *
+ * This one needs its own selector because, unlike every other relay, its
+ * depth-1 form is NOT the shipped two-group schedule, so it cannot be expressed
+ * as a RelayPipelineShape whose depth-1 case reproduces today's behaviour.
+ *
+ * The two-group allreduce splits the count into equal direct and offload halves
+ * and moves count/4 per link. The pipelined form runs T direct tiles (a
+ * reduce-scatter tile per group, its all-gather one group later) woven with T
+ * offload tiles, and moves 2*(T+1)*count/((A + 2H)*T) per link: at A = H = 4
+ * that is count/3 at T = 1 and exactly count/4 at T = 2 -- worse, then
+ * break-even with an extra boundary. It first pays at depth 4 (5*count/24) and
+ * again at 8 (3*count/16), so only those are offered, and only when they also
+ * cover their extra boundaries.
+ *
+ * The unit count is A + 2H rather than a fixed 12 because that is what the
+ * layout actually consumes: the offload region takes 2*H*T units and the direct
+ * region needs A*T for its per-owner shards to tile. At the shipped A = H = 4
+ * geometry that is 12, but A = 4 with H = 5..8 (a 9-to-12-rank comm) or A = 8
+ * with H = 8 (a 16-rank one) also reach this path, and a fixed 12 would push pO
+ * past count and underflow pD. The depth THRESHOLDS below are still calibrated
+ * against A = H = 4 measurements; other geometries get a correct layout from a
+ * cost model that has not been re-measured for them.
+ *
+ * Its offload is what makes it worth doing at all: the helper takes one chunk
+ * per active rank and returns one reduced chunk per active rank, so the cross
+ * link carries the same in each direction and merging is not throttled by a
+ * heavy side, unlike the all-gather and reduce-scatter shapes.
+ *
+ * A stage here is priced at TWICE kRelayPipelineBoundaryBytes because this is
+ * the only schedule that issues two reduce kernels per stage -- the owner
+ * folding its direct shard's tile and the helper summing its offload tile -- on
+ * top of the group boundary itself. Measured, that is what it takes: the depth
+ * curve wants the two-group schedule at or below 72 MB, depth 4 from 135 MB to
+ * 256 MB, and depth 8 from 512 MB, which pins the per-stage price to
+ * between 1.33 and 1.875 MiB. At the shared 768 KiB it crosses over near 54 MB
+ * instead and loses 7-8% at 63-72 MB.
+ */
+// Units the pipelined allreduce layout divides the count into per tile:
+// 2*H for the offload region (the helper takes one chunk per active rank and
+// returns one, so a tile is 2y) plus A for the direct region's per-owner
+// shards.
+inline constexpr int relayAllReducePipelineUnitsPerTile(
+    int nActiveRanks,
+    int numHelpers) {
+  return nActiveRanks + 2 * numHelpers;
+}
+
+inline int relayAllReducePipelineTiles(
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers,
+    size_t maxCount,
+    size_t elementSize) {
+  if (nGroups != 1) {
+    return 1;
+  }
+  const size_t bytes = maxCount * elementSize;
+  // Depth 1 means "keep the two-group schedule", so that is what to beat.
+  constexpr size_t kStageBytes = 2 * kRelayPipelineBoundaryBytes;
+  size_t bestCost = bytes / 4 + 2 * kStageBytes;
+  int bestTiles = 1;
+  const size_t unitsPerTile = static_cast<size_t>(
+      relayAllReducePipelineUnitsPerTile(nActiveRanks, numHelpers));
+  for (int tiles = 4; tiles <= kRelayMaxPipelineTiles; tiles *= 2) {
+    const size_t units = unitsPerTile * static_cast<size_t>(tiles);
+    if (maxCount / units < kRelayChunkAlignElements) {
+      break;
+    }
+    const size_t cost = 2 * static_cast<size_t>(tiles + 1) * (bytes / units) +
+        static_cast<size_t>(tiles + 1) * kStageBytes;
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestTiles = tiles;
+    }
+  }
+  return bestTiles;
+}
+
 } // namespace rcclx::relay
