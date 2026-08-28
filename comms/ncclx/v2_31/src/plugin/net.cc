@@ -14,6 +14,9 @@
 #include <string.h>
 #include <errno.h>
 #include <mutex>
+
+// [NCCLX-PerCommConfig] RAII scope for passing comm config to net plugin init
+#include "meta/transport/NcclxNetPluginHelper.h"
 // #include <sys/types.h>
 // #include <sys/stat.h>
 // #include <unistd.h>
@@ -322,6 +325,11 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
   bool ncclNetPluginInitialized = false;
   std::call_once(initPluginLibsOnceFlag, initPluginLibsOnceFunc);
   std::lock_guard<std::mutex> lock(netPluginMutex);
+
+  // [NCCLX-PerCommConfig] Make comm config available to ncclIbInit via side-channel.
+  // Scoped to this function, and read synchronously under the same mutex.
+  ncclx::NcclxCommConfigScope configScope(&comm->config);
+
   for (int pluginIndex = 0; pluginIndex < pluginCount; pluginIndex++) {
     if ((pluginIndex < (pluginCount - NCCL_NET_NUM_INTERNAL_PLUGINS)) &&
         (netPluginLibs[pluginIndex].ncclNetPluginState == ncclNetPluginStateLoadReady)) {
