@@ -8,6 +8,7 @@
 
 #include "sharded_relay_all_gather.h"
 #include "comm.h"
+#include "sharded_relay_graph_scratch.h"
 #include "sharded_relay_route.h"
 
 #include <cstdint>
@@ -44,6 +45,25 @@ class ScratchBufferCache {
   void* get(int key, size_t requiredBytes, cudaStream_t stream) {
     if (requiredBytes == 0) {
       return nullptr;
+    }
+
+    // A capturing stream must not use this cache. hipMallocAsync would record
+    // an allocation node whose address is only valid while the graph runs, and
+    // a later growth would hipFreeAsync a pointer this graph has already baked
+    // in. Captures get a graph-scoped buffer instead; see
+    // sharded_relay_graph_scratch.h.
+    //
+    // Ahead of the lock on purpose: this is a HIP runtime call, and there is no
+    // reason to hold a process-wide mutex across it while relay collectives run
+    // concurrently on other streams. Measured either way it is in the noise, so
+    // this is hygiene rather than a fix for anything.
+    struct ncclCudaGraph graph;
+    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+      return nullptr;
+    }
+    if (ncclCudaGraphValid(graph)) {
+      return rcclx::relay::graphScratchGet(
+          this, key, requiredBytes, stream, graph);
     }
     int device;
     cudaGetDevice(&device);
