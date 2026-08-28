@@ -565,9 +565,8 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
   A4RelayTask tasks[SHARDED_RELAY_MAX_GROUPS][A4_RELAY_TASKS];
 
   for (int g = 0; g < nGroups; g++) {
-    const size_t third = segmentCounts[g] / 3;
-    directACounts[g] = third;
     relayCounts[g] = rcclx::relay::allToAllA4RelayCount(segmentCounts[g]);
+    directACounts[g] = relayCounts[g];
     directBCounts[g] = segmentCounts[g] - directACounts[g] - relayCounts[g];
     if (!buildA4RelayTasks(configs[g], tasks[g])) {
       return ncclInvalidArgument;
@@ -810,7 +809,8 @@ static ncclResult_t shardedRelayAllToAllFlat(
  *
  * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 selects its direct
  * or dedicated 6-helper relay schedule by size. A==4 uses the deterministic
- * XOR/Latin helper schedule in its retained window and exact direct otherwise.
+ * XOR/Latin helper schedule from its lower size bound up, and exact direct
+ * below it.
  */
 HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
     const void* const* sendBuffs,
