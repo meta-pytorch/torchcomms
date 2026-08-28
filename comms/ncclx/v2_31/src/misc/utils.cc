@@ -406,15 +406,15 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
                                                int nextFieldOffset, uintptr_t key, void* object) {
   // Runtime validation
   if (map == nullptr) {
-    WARN("Intrusive address map pointer is NULL");
+    ERR(ncclInvalidUsage, "Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
   }
   if (object == nullptr) {
-    WARN("Object pointer is NULL");
+    ERR(ncclInvalidUsage, "Object pointer is NULL");
     return ncclInvalidUsage;
   }
   if (keySize <= 0 || keySize > (int)sizeof(uintptr_t)) {
-    WARN("Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
+    ERR(ncclInvalidUsage, "Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
     return ncclInvalidUsage;
   }
 
@@ -426,7 +426,7 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
     map->table = (void**)calloc(tableEntries, sizeof(void*));
     if (map->table == nullptr) {
       map->hbits = 0; // Reset on failure
-      WARN("Intrusive address map initialization failed: calloc(%zu entries) returned null", tableEntries);
+      ERR(ncclSystemError, "Intrusive address map initialization failed: calloc(%zu entries) returned null", tableEntries);
       return ncclSystemError;
     }
   }
@@ -443,7 +443,7 @@ ncclResult_t ncclIntruAddressMapInsert_untyped(struct ncclIntruAddressMap_untype
     // Allocate a new table (don't use realloc to avoid data corruption during rehashing)
     void** newTable = (void**)malloc(newSize * sizeof(void*));
     if (newTable == nullptr) {
-      WARN("Intrusive address map resize failed: malloc(%d entries) returned null", newSize);
+      ERR(ncclSystemError, "Intrusive address map resize failed: malloc(%d entries) returned null", newSize);
       return ncclSystemError;
     }
 
@@ -495,15 +495,15 @@ ncclResult_t ncclIntruAddressMapFind_untyped(struct ncclIntruAddressMap_untyped*
                                              int nextFieldOffset, uintptr_t key, void** object) {
   // Runtime validation
   if (map == nullptr) {
-    WARN("Intrusive address map pointer is NULL");
+    ERR(ncclInvalidUsage, "Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
   }
   if (object == nullptr) {
-    WARN("Output object pointer is NULL");
+    ERR(ncclInvalidUsage, "Output object pointer is NULL");
     return ncclInvalidUsage;
   }
   if (keySize <= 0 || keySize > (int)sizeof(uintptr_t)) {
-    WARN("Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
+    ERR(ncclInvalidUsage, "Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
     return ncclInvalidUsage;
   }
 
@@ -534,11 +534,11 @@ ncclResult_t ncclIntruAddressMapRemove_untyped(struct ncclIntruAddressMap_untype
                                                int nextFieldOffset, uintptr_t key) {
   // Runtime validation
   if (map == nullptr) {
-    WARN("Intrusive address map pointer is NULL");
+    ERR(ncclInvalidUsage, "Intrusive address map pointer is NULL");
     return ncclInvalidUsage;
   }
   if (keySize <= 0 || keySize > (int)sizeof(uintptr_t)) {
-    WARN("Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
+    ERR(ncclInvalidUsage, "Invalid key size %d (must be 0 < keySize <= %zu)", keySize, sizeof(uintptr_t));
     return ncclInvalidUsage;
   }
 
