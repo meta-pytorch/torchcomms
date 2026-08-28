@@ -125,6 +125,120 @@ class ScratchBufferCache {
   std::map<std::tuple<int, const void*, int>, BufferEntry> buffers_;
 };
 
+/**
+ * Side-Stream Cache Singleton
+ *
+ * The pipelined reduce-scatter's owner reduce is pure serialized tail: it runs
+ * only once the last transfer has landed, and at 1 GB with 2 active ranks it is
+ * 0.61 ms of a 2.64 ms call (measured by skipping it). Splitting it per
+ * pipeline stage on the caller's stream buys nothing, because stream order is
+ * total -- the T+1 smaller reduces just serialize in the same places. So the
+ * per-stage reduces go on a side stream, gated by an event recorded at each
+ * group boundary, and the caller's stream joins once at the end. Only that
+ * closing join creates a side -> caller dependency, so group k+1 never waits on
+ * the reduce of stage k.
+ *
+ * One stream and one event pool per (device, caller stream), for the same
+ * reason ScratchBufferCache keys on the stream: two relay collectives can run
+ * concurrently on one device on different streams.
+ */
+class ReduceOverlapCache {
+ public:
+  // One event per pipeline group: the depth is at most kRelayMaxPipelineTiles
+  // and a depth-T pipeline runs T+1 groups. Callers MUST check T+1 against this
+  // before indexing stageDone -- a deeper pipeline than the pool cannot be
+  // overlapped, and reading past the array is a segfault, not a slow path.
+  static constexpr int kStageEvents = rcclx::relay::kRelayMaxPipelineTiles + 1;
+
+  struct Handle {
+    cudaStream_t stream{};
+    cudaEvent_t stageDone[kStageEvents]{};
+    cudaEvent_t allDone{};
+  };
+
+  static ReduceOverlapCache& getInstance() {
+    static ReduceOverlapCache instance;
+    return instance;
+  }
+
+  // Returns nullptr if the resources could not be created, in which case the
+  // caller must fall back to one reduce on its own stream.
+  const Handle* get(cudaStream_t callerStream) {
+    int device;
+    if (cudaGetDevice(&device) != cudaSuccess) {
+      return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto& entry = handles_[std::make_pair(
+        device, static_cast<const void*>(callerStream))];
+    if (!entry.tried) {
+      entry.tried = true;
+      entry.valid = create(&entry.handle);
+    }
+    return entry.valid ? &entry.handle : nullptr;
+  }
+
+  ReduceOverlapCache(const ReduceOverlapCache&) = delete;
+  ReduceOverlapCache& operator=(const ReduceOverlapCache&) = delete;
+
+ private:
+  ReduceOverlapCache() = default;
+  ~ReduceOverlapCache() = default;
+
+  // cudaStreamNonBlocking so the side stream does not implicitly synchronize
+  // with the legacy default stream; all ordering here is explicit via events.
+  // Timing is disabled on the events because nothing queries their elapsed
+  // time, which keeps the record cheap.
+  static bool create(Handle* h) {
+    if (cudaStreamCreateWithFlags(&h->stream, cudaStreamNonBlocking) !=
+        cudaSuccess) {
+      h->stream = nullptr;
+      return false;
+    }
+    for (int i = 0; i < kStageEvents; i++) {
+      if (cudaEventCreateWithFlags(&h->stageDone[i], cudaEventDisableTiming) !=
+          cudaSuccess) {
+        destroy(h);
+        return false;
+      }
+    }
+    if (cudaEventCreateWithFlags(&h->allDone, cudaEventDisableTiming) !=
+        cudaSuccess) {
+      destroy(h);
+      return false;
+    }
+    return true;
+  }
+
+  static void destroy(Handle* h) {
+    for (int i = 0; i < kStageEvents; i++) {
+      if (h->stageDone[i] != nullptr) {
+        cudaEventDestroy(h->stageDone[i]);
+        h->stageDone[i] = nullptr;
+      }
+    }
+    if (h->allDone != nullptr) {
+      cudaEventDestroy(h->allDone);
+      h->allDone = nullptr;
+    }
+    if (h->stream != nullptr) {
+      cudaStreamDestroy(h->stream);
+      h->stream = nullptr;
+    }
+  }
+
+  struct Entry {
+    Handle handle;
+    bool tried = false;
+    bool valid = false;
+  };
+
+  std::mutex mutex_;
+  // (device, caller stream) -> side stream and its event pool.
+  std::map<std::pair<int, const void*>, Entry> handles_;
+};
+
 // Maximum number of helper ranks supported per group.
 constexpr int SHARDED_RELAY_MAX_HELPERS = 8;
 
@@ -1037,18 +1151,27 @@ static ncclResult_t shardedRelayReduceScatter2Active(
  * so that stays a single fused launch no matter how many tiles the relay used.
  *
  * With T tiles and unit u = align(recvCount / ((H+1)*T + 1)), the block shipped
- * to the other active rank splits as:
- *   [0, H*T*u)         relay region; helper h owns [h*T*u, (h+1)*T*u), its tile
- *                      t at h*T*u + t*u
- *   [H*T*u, recvCount) direct region as T+1 chunks of u, the last absorbing the
- *                      /((H+1)*T + 1) remainder and the alignment loss
+ * to the other active rank splits into T+1 STAGE-major regions, so that
+ * everything arriving in one group is contiguous:
+ *   region 0        direct chunk 0 alone, size u
+ *   region k >= 1   relay stage k-1's H pieces of u, then direct chunk k;
+ *                   size (H+1)*u, with region T absorbing the
+ *                   /((H+1)*T + 1) remainder and the alignment loss
  *
- * Group k, for k in [0, T]: the active rank scatters tile k (k < T) to every
- * helper, receives tile k-1 (k > 0) of the partner's contribution from every
- * helper into the matching offset of foreignScratch, and exchanges direct chunk
- * k over the active<->active link; helper h receives tile k of each active's
- * chunk into ping-pong buffer k%2 and forwards buffer (k-1)%2 to the active
- * rank that owns it.
+ * Region k is exactly the set of pieces that lands in group k, which is what
+ * lets a single launch reduce it. The unit count is unchanged at (H+1)*T + 1,
+ * so relayPipelineTiles() still describes the depth.
+ *
+ * Group k, for k in [0, T]: the active rank scatters relay stage k (k < T) to
+ * every helper, receives stage k-1 (k > 0) of the partner's contribution from
+ * every helper into the matching offset of foreignScratch, and exchanges direct
+ * chunk k over the active<->active link; helper h receives tile k of each
+ * active's chunk into ping-pong buffer k%2 and forwards buffer (k-1)%2 to the
+ * active rank that owns it.
+ *
+ * The owner's reduce is then issued per region on a side stream as each group
+ * completes, rather than as one pass over the whole block at the end -- that
+ * tail was 0.61 ms of a 2.64 ms call at 1 GB. See ReduceOverlapCache.
  */
 static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
     const void* const* sendBuffs,
@@ -1073,11 +1196,30 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
   if (u == 0) {
     return ncclInvalidArgument;
   }
-  const size_t tileStride = static_cast<size_t>(T) * u;
-  const size_t directBase = static_cast<size_t>(H) * tileStride;
-  const size_t lastDirect = recvcount - directBase - tileStride;
+  // STAGE-major geometry: region k holds precisely what group k receives.
+  const size_t stageSpan = static_cast<size_t>(H + 1) * u;
+  auto regionOffset = [&](int k) -> size_t {
+    return (k == 0) ? 0 : (u + static_cast<size_t>(k - 1) * stageSpan);
+  };
+  auto regionSize = [&](int k) -> size_t {
+    if (k == 0) {
+      return u;
+    }
+    return (k < T) ? stageSpan : (recvcount - regionOffset(T));
+  };
+  // Relay tile (h, t) is the h-th piece of region t+1; direct chunk k is the
+  // piece that follows region k's relay pieces.
+  auto relayOffset = [&](int h, int t) -> size_t {
+    return regionOffset(t + 1) + static_cast<size_t>(h) * u;
+  };
+  auto directOffset = [&](int k) -> size_t {
+    return (k == 0) ? 0 : (regionOffset(k) + static_cast<size_t>(H) * u);
+  };
+  auto directSize = [&](int k) -> size_t {
+    return (k < T) ? u : (recvcount - directOffset(T));
+  };
 
-  // Scratch mirroring the output block, so the whole reduction is one launch.
+  // Scratch mirroring the output block, so a region's reduce is one launch.
   void* foreignScratch = nullptr;
   size_t ownBlockOffset = 0;
   size_t sendBlockOffset = 0;
@@ -1114,6 +1256,52 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
         elementSize;
   };
 
+  // out[span] = (own[span] + scratch[span]) / divisor.
+  auto reduceSpan = [&](size_t off, size_t sz, cudaStream_t s) {
+    char* out = static_cast<char*>(recvBuffs[0]) + off * elementSize;
+    const char* scratch =
+        static_cast<const char*>(foreignScratch) + off * elementSize;
+    if (isInPlace) {
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype, out, scratch, sz, reductionDivisor, s);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(datatype, out, scratch, sz, s);
+      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          out,
+          static_cast<const char*>(sendBuffs[0]) +
+              (ownBlockOffset + off) * elementSize,
+          scratch,
+          sz,
+          reductionDivisor,
+          s);
+    }
+  };
+
+  // Per-region reduces run on a side stream so they overlap the transfers that
+  // follow. Four things force the single trailing pass on the caller's stream
+  // instead: a depth deeper than the event pool (a depth-T pipeline runs T+1
+  // groups and each needs its own event, so this bounds the overlap to the pool
+  // rather than letting a raised kRelayMaxPipelineTiles index past it); a
+  // message too small for the overlap to pay for its event traffic (see
+  // kRelayOverlapReduceMinBytes); graph capture, because RCCL requires every
+  // stream in a group to be captured by the same graph and the side stream is
+  // uncaptured; and any failure to create the side stream or its events.
+  const bool ownerReduces = (myActiveGroup == 0);
+  const ReduceOverlapCache::Handle* ovl = nullptr;
+  if (ownerReduces && T + 1 <= ReduceOverlapCache::kStageEvents &&
+      recvcount * static_cast<size_t>(cfg.nActiveRanks) * elementSize >=
+          rcclx::relay::kRelayOverlapReduceMinBytes) {
+    struct ncclCudaGraph graph;
+    NCCLCHECK(ncclCudaGetCapturingGraph(&graph, stream));
+    if (!ncclCudaGraphValid(graph)) {
+      ovl = ReduceOverlapCache::getInstance().get(stream);
+    }
+  }
+
   for (int k = 0; k <= T; k++) {
     NCCLCHECK(ncclGroupStart());
     if (cfg.isActiveRank) {
@@ -1121,16 +1309,13 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
           sendBlockOffset * elementSize;
       char* scratch = static_cast<char*>(foreignScratch);
       const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
-      const size_t directOffset = directBase + static_cast<size_t>(k) * u;
-      const size_t directSize = (k < T) ? u : lastDirect;
+      const size_t dOff = directOffset(k);
+      const size_t dSz = directSize(k);
 
       if (k < T) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclSend(
-              sendBlock +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k) * u) *
-                      elementSize,
+              sendBlock + relayOffset(h, k) * elementSize,
               u,
               datatype,
               cfg.helperRanks[h],
@@ -1139,8 +1324,8 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
         }
       }
       NCCLCHECK(ncclSend(
-          sendBlock + directOffset * elementSize,
-          directSize,
+          sendBlock + dOff * elementSize,
+          dSz,
           datatype,
           partner,
           comm,
@@ -1148,10 +1333,7 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
       if (k > 0) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclRecv(
-              scratch +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k - 1) * u) *
-                      elementSize,
+              scratch + relayOffset(h, k - 1) * elementSize,
               u,
               datatype,
               cfg.helperRanks[h],
@@ -1160,12 +1342,7 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
         }
       }
       NCCLCHECK(ncclRecv(
-          scratch + directOffset * elementSize,
-          directSize,
-          datatype,
-          partner,
-          comm,
-          stream));
+          scratch + dOff * elementSize, dSz, datatype, partner, comm, stream));
     } else {
       if (k < T) {
         for (int a = 0; a < cfg.nActiveRanks; a++) {
@@ -1186,29 +1363,24 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
       }
     }
     NCCLCHECK(ncclGroupEnd());
+
+    // Region k has landed in full. Reduce it now, on the side stream, so it
+    // overlaps groups k+1..T instead of waiting behind them.
+    if (ovl != nullptr) {
+      CUDACHECK(cudaEventRecord(ovl->stageDone[k], stream));
+      CUDACHECK(cudaStreamWaitEvent(ovl->stream, ovl->stageDone[k], 0));
+      reduceSpan(regionOffset(k), regionSize(k), ovl->stream);
+    }
   }
 
-  // One fused pass over the whole output block.
-  if (myActiveGroup == 0) {
-    void* out = recvBuffs[0];
-    if (isInPlace) {
-      if (reductionDivisor > 1) {
-        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
-            datatype, out, foreignScratch, recvcount, reductionDivisor, stream);
-      } else {
-        DISPATCH_INCREMENTAL_ADD(
-            datatype, out, foreignScratch, recvcount, stream);
-      }
-    } else {
-      DISPATCH_FUSED_REDUCE(
-          datatype,
-          out,
-          static_cast<const char*>(sendBuffs[0]) + ownBlockOffset * elementSize,
-          foreignScratch,
-          recvcount,
-          reductionDivisor,
-          stream);
-    }
+  if (ovl != nullptr) {
+    // The caller's stream must not observe the output before the last region's
+    // reduce has retired. This is the only side -> caller dependency.
+    CUDACHECK(cudaEventRecord(ovl->allDone, ovl->stream));
+    CUDACHECK(cudaStreamWaitEvent(stream, ovl->allDone, 0));
+  } else if (ownerReduces) {
+    // Fallback: one pass over the whole output block on the caller's stream.
+    reduceSpan(0, recvcount, stream);
   }
 
   return ncclSuccess;
