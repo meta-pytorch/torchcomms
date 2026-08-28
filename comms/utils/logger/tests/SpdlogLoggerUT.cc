@@ -17,6 +17,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -31,12 +32,16 @@ void waitForAsyncThreadPoolShutdownForTesting();
 bool asyncThreadPoolLeaseAvailableForTesting();
 } // namespace meta::comms::logger::testing
 
+/*
+ * Each instance owns a private directory. Concurrent copies of this binary --
+ * how stress runs execute -- would otherwise share one path under TempDir() and
+ * unlink each other's log file while the sink still holds the old inode.
+ */
 class ScopedTestFile {
  public:
   explicit ScopedTestFile(std::string filename)
-      : path_{std::filesystem::path{testing::TempDir()} / std::move(filename)} {
-    std::filesystem::remove(path_);
-  }
+      : directory_{makeUniqueDirectory()},
+        path_{directory_ / std::move(filename)} {}
 
   ~ScopedTestFile() {
     removeNoexcept();
@@ -47,11 +52,26 @@ class ScopedTestFile {
   }
 
  private:
-  void removeNoexcept() noexcept {
-    std::error_code error;
-    std::filesystem::remove(path_, error);
+  static std::filesystem::path makeUniqueDirectory() {
+    const auto pattern =
+        (std::filesystem::path{testing::TempDir()} / "comms_spdlog_ut_XXXXXX")
+            .string();
+    std::vector<char> buffer{pattern.begin(), pattern.end()};
+    buffer.push_back('\0');
+    if (::mkdtemp(buffer.data()) == nullptr) {
+      throw std::runtime_error{
+          "Failed to create a temporary directory under " +
+          std::string{testing::TempDir()}};
+    }
+    return std::filesystem::path{buffer.data()};
   }
 
+  void removeNoexcept() noexcept {
+    std::error_code error;
+    std::filesystem::remove_all(directory_, error);
+  }
+
+  std::filesystem::path directory_;
   std::filesystem::path path_;
 };
 
