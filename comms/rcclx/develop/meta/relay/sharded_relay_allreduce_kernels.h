@@ -70,32 +70,32 @@ void launchMultiReduceKernel(
     cudaStream_t stream);
 
 /**
- * One-shot 2-rank reduce-scatter: transfer AND reduction in a single launch.
+ * One-shot reduce-scatter over A active ranks: transfer AND reduction in a
+ * single launch, replacing an ncclGroup plus a reduce kernel.
  *
- * sendBuff holds 2*rc elements. Rank m must produce
- *   out[i] = (sendBuff[m*rc + i] + peerSendBuff[m*rc + i]) / divisor
+ * sendBuff holds A*rc elements. The rank whose active index is mySlot produces
+ *   out[i] = (sum over sources s of sendBuff_s[mySlot*rc + i]) / divisor
  *
- * Step 1  store my foreign block into the PEER's staging slot mySlot.
- * Step 2  fence, then raise the peer's flag for this block.
- * Step 3  spin until the peer raised MY flag for this block.
- * Step 4  out = own block + what the peer staged.
+ * Step 1  store each peer's block into that peer's staging slot mySlot.
+ * Step 2  fence, then raise every peer's flag for this block.
+ * Step 3  spin until every source raised MY flag for this block.
+ * Step 4  out = own block + every staged block.
  *
- * Blocks handshake pairwise, so no global barrier and no co-residency
+ * Blocks handshake pairwise, so there is no global barrier and no co-residency
  * requirement: every block writes and flags before it waits.
  *
- * `inPlace` means out aliases sendBuff + mySlot*rc; the reduce reads that as
- * its own contribution and writes it back, which is safe because it is the same
- * element index.
+ * In-place (out aliasing sendBuff + mySlot*rc) is supported: the reduce reads
+ * and writes the same element index.
  */
 template <typename T>
-void launchOneShotReduceScatter2Kernel(
+void launchOneShotReduceScatterKernel(
     void* out,
     const void* sendBuff,
     const rcclx::relay::OneShotPeerTable& table,
+    const rcclx::relay::OneShotRanks& ranks,
+    int nActive,
     int myRank,
-    int peerRank,
     int mySlot,
-    int peerSlot,
     size_t rc,
     size_t slotBytes,
     uint32_t epoch,
@@ -147,14 +147,14 @@ void launchSeededMultiReduceKernel(
       size_t count,                                                        \
       int divisor,                                                         \
       cudaStream_t stream);                                                \
-  extern template void launchOneShotReduceScatter2Kernel<T>(               \
+  extern template void launchOneShotReduceScatterKernel<T>(                \
       void* out,                                                           \
       const void* sendBuff,                                                \
       const rcclx::relay::OneShotPeerTable& table,                         \
+      const rcclx::relay::OneShotRanks& ranks,                             \
+      int nActive,                                                         \
       int myRank,                                                          \
-      int peerRank,                                                        \
       int mySlot,                                                          \
-      int peerSlot,                                                        \
       size_t rc,                                                           \
       size_t slotBytes,                                                    \
       uint32_t epoch,                                                      \
