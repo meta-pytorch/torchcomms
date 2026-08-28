@@ -1713,6 +1713,33 @@ TEST(ShardedRelayAllReducePipelineUnits, LayoutFitsAtEveryAcceptedGeometry) {
   EXPECT_EQ(rcclx::relay::relayAllReducePipelineUnitsPerTile(4, 4), 12);
 }
 
+// The two cases below sit BELOW the 1 MiB A=4 independent crossover, where the
+// full-exchange fast path replaces the direct reduce-scatter + all-gather: one
+// group in which each active rank ships its whole buffer to the other three,
+// then one fused reduce over all four contributions. Both aliasing forms are
+// covered because they take different kernels (in-place seeds the reduce from
+// the destination, out-of-place seeds it from sendbuff), and AVG is covered
+// because the divisor is folded into that single reduce.
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Sum_OutOfPlace_FullExchange) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/false, ncclSum, /*dataBytes=*/256ULL * 1024);
+}
+
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Avg_InPlace_FullExchange) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/true, ncclAvg, /*dataBytes=*/256ULL * 1024);
+}
+
 // The two cases below sit ABOVE kRelayUniformDirectOpMinBytes (256 MiB), where
 // the offload is issued as two half-sized operations per link instead of one,
 // so that every operation in a group matches the direct tiles. The 128 MB cases
