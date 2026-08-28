@@ -63,8 +63,8 @@ __device__ __forceinline__ void multimem_red_release_sys_add_u64(
  * spans are this rank's backing memory after multicast replication. Callers
  * that want to reduce from the multicast VA should obtain
  * `multimem_data_ptr()` and pass it to `multimem::load_reduce_at()`, defined
- * in `MultimemNvlReduce.cuh`. Broadcast-store helpers are introduced by the
- * later store-primitives diff.
+ * in `MultimemNvlReduce.cuh`. Broadcast stores into arbitrary multicast
+ * addresses are defined in `MultimemNvlStore.cuh`.
  */
 struct MultimemNvlTransportDevice {
   char* localData{nullptr};
