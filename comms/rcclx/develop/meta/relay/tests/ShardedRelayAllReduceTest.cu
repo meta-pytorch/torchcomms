@@ -1583,10 +1583,12 @@ class ShardedRelayAllReduceSingleGroupA4Test
     return values[activeIndex];
   }
 
-  void runSingleGroupA4Case(bool inPlace, ncclRedOp_t op) {
+  void runSingleGroupA4Case(
+      bool inPlace,
+      ncclRedOp_t op,
+      size_t dataBytes = 128ULL * 1024 * 1024) {
     const int nGroups = 1;
     const int nActiveRanksPerGroup = 4;
-    const size_t dataBytes = 128ULL * 1024 * 1024;
     const size_t count = dataBytes / sizeof(int32_t);
     const int32_t sum =
         contribution(0) + contribution(1) + contribution(2) + contribution(3);
@@ -1709,6 +1711,31 @@ TEST(ShardedRelayAllReducePipelineUnits, LayoutFitsAtEveryAcceptedGeometry) {
   // were measured at, so the parameterization is a generalization and not a
   // change.
   EXPECT_EQ(rcclx::relay::relayAllReducePipelineUnitsPerTile(4, 4), 12);
+}
+
+// The two cases below sit ABOVE kRelayUniformDirectOpMinBytes (256 MiB), where
+// the offload is issued as two half-sized operations per link instead of one,
+// so that every operation in a group matches the direct tiles. The 128 MB cases
+// above stay below that threshold, so between them both sides of the gate are
+// covered. AVG is included because the divisor is applied per piece.
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Sum_OutOfPlace_UniformOps) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/false, ncclSum, /*dataBytes=*/256ULL * 1024 * 1024);
+}
+
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Avg_InPlace_UniformOps) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/true, ncclAvg, /*dataBytes=*/256ULL * 1024 * 1024);
 }
 
 TEST_F(
