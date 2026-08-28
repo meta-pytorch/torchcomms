@@ -26,6 +26,7 @@
 #include "comms/prims/memory/MultimemHandler.h"
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#include "comms/prims/transport/nvl/MultimemNvlStore.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransport.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
 #include "comms/testinfra/DistTestBase.h"
@@ -1325,6 +1326,105 @@ void verifyUnicastPeerViews(
 }
 
 } // namespace
+
+TEST(MultimemNvlStoreValidationTest, ValidatesAddressAndExtent) {
+  EXPECT_TRUE(detail::is_multimem_store_valid(/*destination=*/1, /*bytes=*/0));
+  EXPECT_TRUE(detail::is_multimem_store_valid(/*destination=*/4, /*bytes=*/4));
+  EXPECT_FALSE(detail::is_multimem_store_valid(/*destination=*/2, /*bytes=*/4));
+  EXPECT_FALSE(detail::is_multimem_store_valid(/*destination=*/4, /*bytes=*/2));
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    DeviceMultimemStoreBroadcastsArbitraryRanges) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_device_store_arbitrary_ranges");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kDataBytes = 4096;
+  constexpr uint8_t kGuard = 0xA5;
+  MultimemNvlTransport transport(
+      bootstrap, globalRank, identityRankMap(numRanks), makeConfig(kDataBytes));
+  transport.exchange();
+  const auto deviceTransport = transport.getDeviceTransport();
+
+  std::vector<uint8_t> source(kDataBytes + 1);
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    source[index] = static_cast<uint8_t>(index ^ 0x5A);
+  }
+  void* deviceSource = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&deviceSource, source.size()));
+  CUDACHECK_TEST(cudaMemcpy(
+      deviceSource, source.data(), source.size(), cudaMemcpyHostToDevice));
+  DeviceUint64Slot acquiredSignal;
+
+  struct StoreCase {
+    std::size_t destinationOffset;
+    std::size_t sourceOffset;
+    std::size_t bytes;
+    int unroll;
+  };
+  constexpr StoreCase kCases[] = {
+      {.destinationOffset = 1, .sourceOffset = 1, .bytes = 0, .unroll = 1},
+      {.destinationOffset = 4, .sourceOffset = 1, .bytes = 4, .unroll = 1},
+      {.destinationOffset = 8, .sourceOffset = 1, .bytes = 12, .unroll = 1},
+      {.destinationOffset = 64, .sourceOffset = 0, .bytes = 64, .unroll = 4},
+      {.destinationOffset = 128, .sourceOffset = 1, .bytes = 68, .unroll = 4},
+      {.destinationOffset = 512, .sourceOffset = 0, .bytes = 260, .unroll = 4},
+      {.destinationOffset = 1024,
+       .sourceOffset = 0,
+       .bytes = 2064,
+       .unroll = 4},
+      {.destinationOffset = 2048, .sourceOffset = 1, .bytes = 516, .unroll = 4},
+  };
+
+  uint64_t epoch = 0;
+  for (const auto& storeCase : kCases) {
+    ++epoch;
+    CUDACHECK_TEST(cudaMemset(deviceTransport.localData, kGuard, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+    if (globalRank == 0) {
+      test::launchMultimemStore(
+          deviceTransport,
+          storeCase.destinationOffset,
+          static_cast<const char*>(deviceSource) + storeCase.sourceOffset,
+          storeCase.bytes,
+          storeCase.unroll);
+      test::launchSetUserSignal(deviceTransport, /*signalId=*/0, epoch);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+    }
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    test::launchWaitAndReadUserSignal(
+        deviceTransport,
+        /*signalId=*/0,
+        CmpOp::CMP_EQ,
+        epoch,
+        acquiredSignal.device_ptr());
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<uint8_t> actual(kDataBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        actual.data(),
+        deviceTransport.localData,
+        actual.size(),
+        cudaMemcpyDeviceToHost));
+    std::vector<uint8_t> expected(kDataBytes, kGuard);
+    for (std::size_t index = 0; index < storeCase.bytes; ++index) {
+      expected[storeCase.destinationOffset + index] =
+          source[storeCase.sourceOffset + index];
+    }
+    EXPECT_EQ(actual, expected);
+  }
+
+  CUDACHECK_TEST(cudaFree(deviceSource));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
 
 TEST_F(
     MultimemNvlTransportTestFixture,
