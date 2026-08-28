@@ -17,6 +17,19 @@ ncclResult_t CudaPtrCheck(const void* pointer, struct ncclComm* comm, const char
     return ncclInvalidArgument;
   }
 #if CUDART_VERSION >= 10000
+  // [META] Reject plain host memory that the device can nonetheless address.
+  // On a classic discrete-GPU system unregistered host memory reports a NULL
+  // devicePointer and the check above already rejects it, so this branch is
+  // inert. Where host memory is device-addressable (Grace-class ATS/HMM parts),
+  // a malloc'd pointer can report a usable devicePointer while still being
+  // cudaMemoryTypeUnregistered -- it passes the check above and NCCL goes on to
+  // treat a host address as a collective buffer. Reject it explicitly.
+  // Deliberately WARN, not ERR, matching v2_29/v2_30: the 2.30 sweep converted
+  // the two neighbouring returns in this function and left this one alone.
+  if (attr.type == cudaMemoryTypeUnregistered) {
+    WARN("%s : %s %p is unregistered host memory, not a valid device pointer", opname, ptrname, pointer);
+    return ncclInvalidArgument;
+  }
   if (attr.type == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
 #else
   if (attr.memoryType == cudaMemoryTypeDevice && attr.device != comm->cudaDev) {
