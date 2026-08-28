@@ -1439,6 +1439,89 @@ TorchCommRCCLX::sharded_relay_multi_group_all_gather(
   return work;
 }
 
+namespace {
+
+// Capacity of the counts array a consumer must provide, from the same knob the
+// C++ side sizes the ring slot with. Reading the env var directly rather than
+// exposing NCCL_PARAM keeps this a plain host-side lookup; the default matches
+// relay_control.cc.
+uint32_t relayControlCountsCapacity() {
+  constexpr uint32_t kDefaultMaxCalls = 128;
+  const char* raw = std::getenv("NCCL_RELAY_CONTROL_MAX_CALLS");
+  if (raw == nullptr) {
+    return kDefaultMaxCalls;
+  }
+  const long parsed = std::strtol(raw, nullptr, 10);
+  if (parsed <= 0) {
+    return kDefaultMaxCalls;
+  }
+  return static_cast<uint32_t>(parsed);
+}
+
+} // namespace
+
+void TorchCommRCCLX::relay_control_publish(
+    uint64_t epoch,
+    const std::vector<int64_t>& counts,
+    int64_t op_code,
+    int64_t dtype,
+    int64_t red_op,
+    int64_t flags,
+    int64_t timeout_ns) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  RcclxRelayPlan plan;
+  plan.nCalls = static_cast<uint32_t>(counts.size());
+  plan.opCode = static_cast<uint32_t>(op_code);
+  plan.dtype = static_cast<uint32_t>(dtype);
+  plan.redOp = static_cast<uint32_t>(red_op);
+  plan.flags = static_cast<uint32_t>(flags);
+
+  // int64_t -> size_t: the wrapper owns this buffer, so the pointer handed to
+  // the C API stays valid for the call.
+  const std::vector<size_t> sizes(counts.begin(), counts.end());
+
+  const ncclResult_t result = rcclx_api_->relayControlPublish(
+      nccl_comm_,
+      epoch,
+      plan,
+      sizes.empty() ? nullptr : sizes.data(),
+      timeout_ns);
+
+  if (result != ncclSuccess) {
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Relay Control Publish failed", result, nccl_comm_);
+  }
+}
+
+std::tuple<int64_t, int64_t, int64_t, int64_t, std::vector<int64_t>>
+TorchCommRCCLX::relay_control_consume(uint64_t epoch, int64_t timeout_ns) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  const uint32_t capacity = relayControlCountsCapacity();
+  std::vector<size_t> sizes(capacity, 0);
+  RcclxRelayPlan plan;
+
+  const ncclResult_t result = rcclx_api_->relayControlConsume(
+      nccl_comm_, epoch, &plan, sizes.data(), capacity, timeout_ns);
+
+  if (result != ncclSuccess) {
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Relay Control Consume failed", result, nccl_comm_);
+  }
+
+  // nCalls is bounded by capacity on success, so this cannot over-read.
+  std::vector<int64_t> counts(sizes.begin(), sizes.begin() + plan.nCalls);
+  return {
+      static_cast<int64_t>(plan.opCode),
+      static_cast<int64_t>(plan.dtype),
+      static_cast<int64_t>(plan.redOp),
+      static_cast<int64_t>(plan.flags),
+      std::move(counts)};
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
     const at::Tensor& tensor,
     int root,

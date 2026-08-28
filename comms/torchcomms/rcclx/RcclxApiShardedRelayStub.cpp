@@ -96,4 +96,23 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
   return ncclInternalError;
 }
 
+ncclResult_t DefaultRcclxApi::relayControlPublish(
+    ncclComm_t /*comm*/,
+    uint64_t /*epoch*/,
+    const RcclxRelayPlan& /*plan*/,
+    const size_t* /*counts*/,
+    int64_t /*timeoutNs*/) {
+  return ncclInternalError;
+}
+
+ncclResult_t DefaultRcclxApi::relayControlConsume(
+    ncclComm_t /*comm*/,
+    uint64_t /*epoch*/,
+    RcclxRelayPlan* /*plan*/,
+    size_t* /*counts*/,
+    uint32_t /*countsCapacity*/,
+    int64_t /*timeoutNs*/) {
+  return ncclInternalError;
+}
+
 } // namespace torch::comms

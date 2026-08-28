@@ -293,6 +293,85 @@ class RcclxMock : public RcclxApi {
   MOCK_METHOD(ncclResult_t, memAlloc, (void** ptr, size_t size), (override));
   MOCK_METHOD(ncclResult_t, memFree, (void* ptr), (override));
 
+  // Sharded relay collectives and control plane. Not optional: RcclxApi
+  // declares all six pure virtual, so without them this class stays abstract
+  // and every target that instantiates NiceMock<RcclxMock> fails to compile
+  // with "allocating an object of abstract class type". That went unnoticed
+  // because the targets in this directory's BUCK are all ci.remove(...).
+  MOCK_METHOD(
+      ncclResult_t,
+      shardedRelayMultiGroupAllReduce,
+      (const void* const* sendBuffs,
+       void* const* recvBuffs,
+       const size_t* counts,
+       ncclDataType_t datatype,
+       ncclRedOp_t op,
+       ncclComm_t comm,
+       hipStream_t stream,
+       const int* const* allActiveRanks,
+       int nActiveRanksPerGroup,
+       int nGroups),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      shardedRelayMultiGroupReduceScatter,
+      (const void* const* sendBuffs,
+       void* const* recvBuffs,
+       const size_t* recvCounts,
+       ncclDataType_t datatype,
+       ncclRedOp_t op,
+       ncclComm_t comm,
+       hipStream_t stream,
+       const int* const* allActiveRanks,
+       int nActiveRanksPerGroup,
+       int nGroups),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      shardedRelayMultiGroupAllToAll,
+      (const void* const* sendBuffs,
+       void* const* recvBuffs,
+       const size_t* segmentCounts,
+       ncclDataType_t datatype,
+       ncclComm_t comm,
+       hipStream_t stream,
+       const int* const* allActiveRanks,
+       int nActiveRanksPerGroup,
+       int nGroups),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      shardedRelayMultiGroupAllGather,
+      (const void* const* sendBuffs,
+       void* const* recvBuffs,
+       const size_t* sendCounts,
+       ncclDataType_t datatype,
+       ncclComm_t comm,
+       hipStream_t stream,
+       const int* const* allActiveRanks,
+       int nActiveRanksPerGroup,
+       int nGroups),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      relayControlPublish,
+      (ncclComm_t comm,
+       uint64_t epoch,
+       const RcclxRelayPlan& plan,
+       const size_t* counts,
+       int64_t timeoutNs),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      relayControlConsume,
+      (ncclComm_t comm,
+       uint64_t epoch,
+       RcclxRelayPlan* plan,
+       size_t* counts,
+       uint32_t countsCapacity,
+       int64_t timeoutNs),
+      (override));
+
   // Helper method to set up default behaviors for common operations
   void setupDefaultBehaviors();
 };
