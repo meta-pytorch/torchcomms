@@ -1599,6 +1599,29 @@ TEST_F(
 }
 
 /**
+ * A=4 single group at a size the software pipeline covers.
+ *
+ * The 9 MiB single-group cases above are just above the routing threshold,
+ * which the depth cost model resolves to depth 1 -- so they exercise the
+ * unpipelined XOR schedule. 64 MiB per active rank is the first swept size deep
+ * enough to tile, so this is the coverage for the pipelined schedule, where
+ * each cross link carries the relay's two hops at once in opposite directions.
+ * Verified over whole segments rather than at region boundaries, since the
+ * pipelined layout splits the segment differently.
+ */
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_SingleGroup_Pipelined_64MiB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t perActiveBytes = 64ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
+  runA4SingleGroupCorrectnessCase(segmentCount, true);
+}
+
+/**
  * Tiny-segment regression for the exact direct fallback below the retained
  * A=4 XOR/Latin routing window.
  */
