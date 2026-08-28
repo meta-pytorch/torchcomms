@@ -988,6 +988,223 @@ static ncclResult_t shardedRelayAllReduce2Active(
 }
 
 /**
+ * Software-pipelined single-group 2-active sharded relay allreduce.
+ *
+ * Same logical collective and the same reduce-at-helper as
+ * shardedRelayAllReduce2Active, but for nGroups == 1 -- where the active ranks
+ * and the helpers are disjoint sets -- the relay is tiled and pipelined so both
+ * directions of every cross link stay busy. See relayA2PipelineTiles() for why
+ * the two-group schedule cannot do that and what it costs.
+ *
+ * With T tiles and unit u = align(count / ((H+1)*T + 1)):
+ *   [0, H*T*u)     relay region; helper h owns [h*T*u, (h+1)*T*u), its tile t
+ * at h*T*u + t*u [H*T*u, count) direct region as T+1 chunks of u, the last
+ * absorbing the
+ *                  /((H+1)*T + 1) remainder and the alignment loss
+ *
+ * Group k, for k in [0, T]: the active rank scatters tile k (k < T) to every
+ * helper, receives helper h's REDUCED tile k-1 (k > 0) straight into its final
+ * place in recvBuff, and exchanges direct chunk k over the active<->active
+ * link. Helper h receives tile k into ping-pong buffer k%2 and forwards the
+ * already reduced buffer (k-1)%2 to both active ranks.
+ *
+ * The helper's reduce of tile k is issued between group k, which receives it,
+ * and group k+1, which sends it -- so it is one launch per tile over u elements
+ * instead of one over the whole chunk. Both active ranks send the same logical
+ * tile index, so their sum is already the final allreduced value and the return
+ * hop stays one chunk per active rank.
+ *
+ * Both in-place and out-of-place are supported. The relay region cannot alias
+ * dangerously even in place: group k reads tile k from sendBuff while writing
+ * tile k-1 into recvBuff, which are different offsets.
+ */
+static ncclResult_t shardedRelayAllReduce2ActivePipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t count = counts[0];
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t u =
+      ((count / (static_cast<size_t>(H + 1) * T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (u == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * u;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  const size_t directTotal = count - directBase;
+  const size_t lastDirect = directTotal - tileStride;
+
+  // In-place must stage the received direct chunks so the local contribution is
+  // still readable when the fused reduce runs; out-of-place lands them straight
+  // in recvBuff and reduces against sendBuff.
+  void* directScratch = nullptr;
+  const bool isInPlace = (myActiveGroup == 0) && (sendBuffs[0] == recvBuffs[0]);
+  if (myActiveGroup == 0 && isInPlace) {
+    directScratch = ScratchBufferCache::getInstance().get(
+        0, directTotal * elementSize, stream);
+    if (directScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto directDst = [&](size_t offsetWithinDirect) -> char* {
+    if (isInPlace) {
+      return static_cast<char*>(directScratch) +
+          offsetWithinDirect * elementSize;
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (directBase + offsetWithinDirect) * elementSize;
+  };
+
+  // Helper staging: two ping-pong slot pairs, one pair per pipeline stage in
+  // flight. Small enough that a tile is reduced and forwarded out of cache.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  // Slot for active source a of the buffer that stage k uses.
+  auto helperSlot = [&](int a, int k) -> char* {
+    return hbuff +
+        (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) * u *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
+      char* recvbuff = static_cast<char*>(recvBuffs[0]);
+      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      const size_t directOffset = static_cast<size_t>(k) * u;
+      const size_t directSize = (k < T) ? u : lastDirect;
+
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclSend(
+          sendbuff + (directBase + directOffset) * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      if (k > 0) {
+        // Already reduced by the helper, so this is its final value.
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclRecv(
+          directDst(directOffset),
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      if (k < T) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclRecv(
+              helperSlot(a, k), u, datatype, cfg.activeRanks[a], comm, stream));
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclSend(
+              helperSlot(0, k - 1),
+              u,
+              datatype,
+              cfg.activeRanks[a],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    // Reduce the tile this group received, before the next group forwards it.
+    if (!cfg.isActiveRank && k < T) {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          helperSlot(0, k),
+          helperSlot(0, k),
+          helperSlot(1, k),
+          u,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  // Fold both received direct chunks in one fused pass; they are adjacent in
+  // recvBuff and in the scratch.
+  if (myActiveGroup == 0 && directTotal > 0) {
+    char* dst = static_cast<char*>(recvBuffs[0]) + directBase * elementSize;
+    if (isInPlace) {
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype,
+            dst,
+            directScratch,
+            directTotal,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(
+            datatype, dst, directScratch, directTotal, stream);
+      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          dst,
+          static_cast<const char*>(sendBuffs[0]) + directBase * elementSize,
+          dst,
+          directTotal,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * AllReduce for > 2 active ranks (flat helper-reduce-AND-broadcast). Combines
  * the two patterns that individually beat NCCL at 4-active: the
  * reduce-AT-helper of the flat reduce-scatter and the broadcast-AT-helper of
@@ -1384,19 +1601,47 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
 
   ncclResult_t r;
   if (nActiveRanksPerGroup == 2) {
-    r = shardedRelayAllReduce2Active(
-        sendBuffs2,
-        recvBuffs2,
-        counts,
-        datatype,
-        reductionDivisor,
-        comm,
-        stream,
-        configs,
-        myActiveGroup,
-        numHelpers,
-        nGroups,
-        elementSize);
+    // A single-group relay call has the helpers to itself, so the scatter and
+    // the reduced forward run on opposite directions of each cross link and can
+    // be software-pipelined into one duplex stream. relayA2PipelineTiles()
+    // returns 1 whenever that does not apply, and the small-message pure-direct
+    // route (owned by shardedRelayAllReduce2Active) never pipelines.
+    const int nTiles =
+        (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
+         rcclx::relay::AllReduceRoute::A2Relay)
+        ? rcclx::relay::relayA2PipelineTiles(
+              2,
+              numHelpers,
+              nGroups,
+              rcclx::relay::relayMaxCount(counts, nGroups),
+              elementSize)
+        : 1;
+    r = (nTiles > 1) ? shardedRelayAllReduce2ActivePipelined(
+                           sendBuffs2,
+                           recvBuffs2,
+                           counts,
+                           datatype,
+                           reductionDivisor,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nTiles,
+                           elementSize)
+                     : shardedRelayAllReduce2Active(
+                           sendBuffs2,
+                           recvBuffs2,
+                           counts,
+                           datatype,
+                           reductionDivisor,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nGroups,
+                           elementSize);
   } else {
     // A>2: flat helper-reduce-and-broadcast (direct RS+AG over intra woven with
     // offload reduce+broadcast through the helpers).
