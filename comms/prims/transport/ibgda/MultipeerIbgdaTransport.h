@@ -42,6 +42,21 @@ struct PeerBufferPayload;
 
 namespace comms::prims {
 
+#if !defined(__HIP_PLATFORM_AMD__) && defined(DOCA_GPUNETIO_VERSION_MAJOR) && \
+    DOCA_GPUNETIO_VERSION_MAJOR >= 4
+#define PRIMS_DOCA_HOST_V4 1
+using DocaGpu = doca_gpu_t;
+using DocaAhAttr = doca_verbs_ah_attr_t;
+#else
+#define PRIMS_DOCA_HOST_V4 0
+using DocaGpu = doca_gpu;
+using DocaAhAttr = doca_verbs_ah_attr;
+#endif
+
+struct DocaNetDevice {
+  void* handle{nullptr};
+};
+
 // AddressFamily and the shared transport config now live in
 // MultiPeerIbTransport.h. Keep the historical name as an alias so callers and
 // the ctor signature below are unchanged.
@@ -253,7 +268,7 @@ class MultipeerIbgdaTransport
   // inherited (protected) from MultiPeerIbTransport.
 
   // DOCA GPU context (shared across NICs).
-  doca_gpu* docaGpu_{nullptr};
+  DocaGpu* docaGpu_{nullptr};
 
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
@@ -266,7 +281,8 @@ class MultipeerIbgdaTransport
   // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
   // index-aligned with this vector; openIbDevice() fills both.
   struct NicDocaResources {
-    doca_verbs_ah_attr* ahAttr{nullptr};
+    DocaNetDevice netDev;
+    DocaAhAttr* ahAttr{nullptr};
     ibverbx::ibv_mr* sinkMr{nullptr};
     bool useReliableDoorbell{false};
     std::vector<doca_gpu_verbs_qp_group_hl*> blockQpGroups;

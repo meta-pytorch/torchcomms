@@ -220,10 +220,10 @@ doca_gpu_dev_verbs_qp_get_cq_sq(doca_gpu_dev_verbs_qp* qp) {
 
 template <int MODE = 0>
 __device__ __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_at(
-    doca_gpu_dev_verbs_cq* cq,
+    doca_gpu_dev_verbs_qp* qp,
     uint64_t consIndex) {
   return prims_amd_gda::prims_amd_gda_gpu_dev_verbs_poll_one_cq_at<MODE>(
-      cq, consIndex);
+      doca_gpu_dev_verbs_qp_get_cq_sq(qp), consIndex);
 }
 
 // =============================================================================

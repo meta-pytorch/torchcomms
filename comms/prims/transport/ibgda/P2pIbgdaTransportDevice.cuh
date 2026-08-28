@@ -691,8 +691,7 @@ class P2pIbgdaTransportDevice {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
     const int status = doca_gpu_dev_verbs_poll_one_cq_at<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-        doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(lane.qp, ticket.value);
     if (status == 0) {
       return true;
     }
@@ -1112,8 +1111,7 @@ class P2pIbgdaTransportDevice {
       int status;
       do {
         status = doca_gpu_dev_verbs_poll_one_cq_at<
-            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
+            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, ticket);
         if (status == EBUSY) {
           FT_ABORT_BREAK(
               abortDevice,

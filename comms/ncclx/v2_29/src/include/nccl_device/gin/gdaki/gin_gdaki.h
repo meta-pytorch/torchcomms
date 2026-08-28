@@ -346,7 +346,11 @@ struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_GDAKI> {
           return;
         --ticket;
         while (status != 0 && !testAbort(abortFlag, steps)) {
+#if defined(DOCA_GPUNETIO_VERSION_MAJOR) && DOCA_GPUNETIO_VERSION_MAJOR >= 4
+          status = doca_gpu_dev_verbs_poll_one_cq_at(&qps[peer], ticket);
+#else
           status = doca_gpu_dev_verbs_poll_one_cq_at(&qps[peer].cq_sq, ticket);
+#endif
         }
       }
     } else {
