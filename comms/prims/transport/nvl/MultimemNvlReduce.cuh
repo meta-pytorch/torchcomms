@@ -5,9 +5,8 @@
 // Holds the reduce side of the NVLS staging model: the raw `multimem.ld_reduce`
 // PTX emitters (`comms::prims::detail`) and the public entry point
 // `multimem::load_reduce_at<>` that reads the cross-rank reduction of a
-// multicast VA into a local buffer. The store side (`multimem::store()`) and
-// the staging orchestration that composes both land later in the stack
-// (`MultimemNvlStore.cuh`, `MultimemNvlStaging.cuh`).
+// multicast VA into a local buffer. The store side (`multimem::store()`) lives
+// in `MultimemNvlStore.cuh`.
 
 // clang-tidy analyzes this .cuh as a standalone main file and misflags the
 // pragma; it is a genuine include-once header. False positive, so suppress it.
@@ -229,6 +228,41 @@ namespace comms::prims::multimem {
 
 /** Reduction operator for the multimem data reduce verbs. Only Add today. */
 enum class MultimemRedOp { Add };
+
+/**
+ * Reduces one aligned 16-byte fp16 or bf16 block into registers.
+ *
+ * Keeping the reduced block separate from the eventual stores lets callers
+ * place a team barrier between the read and write phases when adjacent ranks
+ * own different lanes of the same 16-byte block.
+ */
+template <typename T, bool kAccF32 = true>
+__device__ __forceinline__ uint4 load_reduce_block16(const T* multicastBlock) {
+  static_assert(
+      std::is_same_v<T, __half> || std::is_same_v<T, __nv_bfloat16>,
+      "load_reduce_block16 supports fp16 and bf16");
+  const auto* source = reinterpret_cast<const uint4*>(multicastBlock);
+  if constexpr (std::is_same_v<T, __half>) {
+    return comms::prims::detail::multimem_ld_reduce_v4_f16x2<kAccF32>(source);
+  } else {
+    return comms::prims::detail::multimem_ld_reduce_v4_bf16x2<kAccF32>(source);
+  }
+}
+
+/** Stores a contiguous lane range from a previously reduced 16-byte block. */
+template <typename T>
+__device__ __forceinline__ void store_reduced_block16_range(
+    T* destination,
+    const uint4& block,
+    std::size_t firstLane,
+    std::size_t count) {
+  static_assert(
+      sizeof(T) == 2, "store_reduced_block16_range requires a 2-byte type");
+  const auto* lanes = reinterpret_cast<const T*>(&block);
+  for (std::size_t index = 0; index < count; ++index) {
+    destination[index] = lanes[firstLane + index];
+  }
+}
 
 /**
  * multimem.ld_reduce from an ARBITRARY multicast base pointer into `dst`.

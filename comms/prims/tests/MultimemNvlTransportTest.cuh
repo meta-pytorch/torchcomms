@@ -182,6 +182,14 @@ void launchInitializeAggregateSignals(
     uint64_t epochValue,
     cudaStream_t stream = nullptr);
 
+void launchBlockAggregateBarrier(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues,
+    cudaStream_t stream = nullptr);
+
 void launchFillReductionInput(
     MultimemNvlTransportDevice transport,
     MultimemReductionTestType type,
@@ -197,6 +205,30 @@ void launchLoadReduce(
     void* output,
     std::size_t elems,
     std::size_t sourceOffsetElems,
+    cudaStream_t stream = nullptr);
+
+void launchReduceBroadcast(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream = nullptr);
+
+void launchMultimemStore(
+    MultimemNvlTransportDevice transport,
+    std::size_t destinationOffset,
+    const void* source,
+    std::size_t bytes,
+    int unroll,
+    cudaStream_t stream = nullptr);
+
+void launchPhasedReduceBlock(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    void* output,
     cudaStream_t stream = nullptr);
 
 void launchStageLayout(

@@ -165,6 +165,14 @@ class MultiPeerTransport {
     return nvlNRanks_;
   }
 
+  /**
+   * @return Whether the discovered NVL rank map matches the configured logical
+   * map, or covers the identity-mapped communicator when no map was configured.
+   */
+  bool nvl_rank_map_matches_config() const {
+    return nvlRankMapMatchesConfig_;
+  }
+
   /** @return NVL local rank for the given global rank.
    *  @throws std::out_of_range if globalRank is not in the NVL group. */
   int global_to_nvl_local(int globalRank) const {
@@ -194,6 +202,7 @@ class MultiPeerTransport {
    * @return Pointer to the device-side Transport array from NVL transport,
    *   indexed by NVL local rank. Returns nullptr if no NVL transport.
    */
+  // NOLINTNEXTLINE(facebook-hte-NullableReturn)
   Transport* /*nullable*/ get_nvl_transports_array() const;
 
   /**
@@ -368,6 +377,7 @@ class MultiPeerTransport {
 
   // --- NVLink rank mapping ---
   std::unordered_map<int, int> globalToNvlLocal_;
+  bool nvlRankMapMatchesConfig_{false};
   int nvlLocalRank_{-1};
   int nvlNRanks_{0};
 

@@ -63,6 +63,30 @@ comms::fault_tolerance::AbortDevice makeAbortDeviceHandle(
   return abort->getDeviceHandle();
 }
 
+bool nvlRankMapCoversCommunicator(
+    const std::vector<int>& nvlRankToCommRank,
+    int commRanks) {
+  if (commRanks <= 0 ||
+      nvlRankToCommRank.size() != static_cast<std::size_t>(commRanks)) {
+    return false;
+  }
+  for (int rank = 0; rank < commRanks; ++rank) {
+    if (nvlRankToCommRank[static_cast<std::size_t>(rank)] != rank) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool nvlRankMapMatchesConfig(
+    const std::vector<int>& nvlRankToCommRank,
+    const std::optional<std::vector<int>>& configuredNvlRanks,
+    int commRanks) {
+  return configuredNvlRanks.has_value()
+      ? nvlRankToCommRank == *configuredNvlRanks
+      : nvlRankMapCoversCommunicator(nvlRankToCommRank, commRanks);
+}
+
 } // namespace
 
 MultiPeerTransport::MultiPeerTransport(
@@ -96,6 +120,12 @@ void MultiPeerTransport::initFromTopology(
   // Derive fields from the slim TopologyResult.
   nvlNRanks_ = static_cast<int>(nvlPeerRanks_.size()) + 1;
   nvlLocalRank_ = globalToNvlLocal_.at(myRank_);
+  std::vector<int> nvlRankToCommRank(nvlNRanks_);
+  for (const auto& [globalRank, nvlLocal] : globalToNvlLocal_) {
+    nvlRankToCommRank.at(nvlLocal) = globalRank;
+  }
+  nvlRankMapMatchesConfig_ = nvlRankMapMatchesConfig(
+      nvlRankToCommRank, config.topoConfig.logicalNvlRanks, nRanks_);
 
   typePerRank_.resize(nRanks_);
 
@@ -166,13 +196,8 @@ void MultiPeerTransport::initFromTopology(
 
   // Create NVLink sub-transport with NvlBootstrapAdapter
   if (!nvlPeerRanks_.empty()) {
-    std::vector<int> localRankToCommRank(nvlNRanks_);
-    for (const auto& [globalRank, nvlLocal] : globalToNvlLocal_) {
-      localRankToCommRank[nvlLocal] = globalRank;
-    }
-
     nvlBootstrapAdapter_ = std::make_shared<NvlBootstrapAdapter>(
-        bootstrap_, std::move(localRankToCommRank));
+        bootstrap_, std::move(nvlRankToCommRank));
 
     nvlTransport_ = std::make_unique<MultiPeerNvlTransport>(
         nvlLocalRank_,
@@ -304,6 +329,7 @@ P2pIbgdaTransportDevice* MultiPeerTransport::get_p2p_ibgda_transport_device(
   return ibgdaTransport_->getP2pTransportDevice(globalPeerRank);
 }
 
+// NOLINTNEXTLINE(facebook-hte-NullableReturn)
 Transport* /*nullable*/ MultiPeerTransport::get_nvl_transports_array() const {
   if (!nvlTransport_) {
     return nullptr;
@@ -477,6 +503,7 @@ IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     void* host = nullptr;
     void* device = nullptr;
     CUDA_CHECK(cudaHostAlloc(&host, size, cudaHostAllocMapped));
+    CHECK(host != nullptr);
     CUDA_CHECK(cudaHostGetDevicePointer(&device, host, 0));
     std::memset(host, 0, size);
     *hostPtr = host;
@@ -485,6 +512,7 @@ IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
   if (ibgdaTransport_) {
     void* ptr = nullptr;
     CUDA_CHECK(cudaMalloc(&ptr, size));
+    CHECK(ptr != nullptr);
     CUDA_CHECK(cudaMemset(ptr, 0, size));
     return IbgdaLocalBuffer(ptr, NetworkLKeys{});
   }
