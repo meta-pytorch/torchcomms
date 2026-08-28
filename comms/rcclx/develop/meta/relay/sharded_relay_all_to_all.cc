@@ -1067,8 +1067,22 @@ static ncclResult_t shardedRelayAllToAllFlat(
   const int A = nActiveRanksPerGroup;
   (void)numHelpers; // pure-direct: no helper relay for A>2 all-to-all.
 
-  // Diagonal copy recvSeg[m] = sendSeg[m] (active group only, out-of-place).
-  if (myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+  // The diagonal (recvSeg[m] = sendSeg[m]) rides along in the comm group below
+  // as a P2P pair whose peer is the issuing rank: that is serviced as a local
+  // copy inside the same kernel, so it costs no transfer and, unlike a separate
+  // cudaMemcpyAsync, no second launch -- worth ~5 us, which at these sizes is
+  // 10% of the whole call.
+  //
+  // Restricted to nGroups == 1. The same fold in the all-gather's fused case
+  // made a fused routing-threshold test fail intermittently (once in four
+  // runs); there all eight ranks issue a self pair alongside a real one in the
+  // same group rather than just the active ones. Every sub-1x cell this targets
+  // is single-group, so the fused route keeps the separate copy. Do not lift
+  // this gate without running the fused suites repeatedly.
+  const bool foldDiagonalIntoGroup = (nGroups == 1);
+
+  if (!foldDiagonalIntoGroup && myActiveGroup >= 0 &&
+      segmentCounts[myActiveGroup] > 0) {
     const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
     size_t sc = segmentCounts[myActiveGroup];
     size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
@@ -1097,7 +1111,7 @@ static ncclResult_t shardedRelayAllToAllFlat(
     char* recvbuff = static_cast<char*>(recvBuffs[g]);
     int m = cfg.myActiveIndex;
     for (int j = 0; j < A; j++) {
-      if (j == m)
+      if (j == m && !foldDiagonalIntoGroup)
         continue;
       NCCLCHECK(ncclSend(
           sendbuff + static_cast<size_t>(j) * sc * elementSize,
@@ -1108,7 +1122,7 @@ static ncclResult_t shardedRelayAllToAllFlat(
           stream));
     }
     for (int s = 0; s < A; s++) {
-      if (s == m)
+      if (s == m && !foldDiagonalIntoGroup)
         continue;
       NCCLCHECK(ncclRecv(
           recvbuff + static_cast<size_t>(s) * sc * elementSize,
