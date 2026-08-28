@@ -71,6 +71,7 @@
 #endif
 #include "rccl_common.h"
 #include "meta/lpcoll/low_precision_buffer_pool.h"
+#include "meta/relay/sharded_relay_oneshot.h"
 // [/RCCL]
 
 #ifdef ENABLE_ROCSHMEM
@@ -521,6 +522,15 @@ static ncclResult_t commFree(ncclComm_t comm) {
     NCCLCHECK(ncclCudaFree(comm->tempBuff));
     comm->tempBuff = nullptr;
   }
+
+  // Release the sharded-relay one-shot IPC region for this communicator. It holds
+  // an exported device allocation plus a mapping of every peer's, and there is no
+  // other point at which the relay learns the comm is going away -- without this
+  // the region outlives the comm and its mappings accumulate. Purely local (an
+  // hipIpcCloseMemHandle per peer and one hipFree), so it respects the
+  // no-sync-among-ranks contract of commFree(); a no-op for a comm that never
+  // took the one-shot path.
+  rcclx::relay::oneShotRelease(comm);
 
   if (comm->symmetricSupport) {
     NCCLCHECK(ncclSymkFinalize(comm));
