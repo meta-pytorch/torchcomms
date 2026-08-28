@@ -280,19 +280,19 @@ __device__ __forceinline__ bool oneShotEpochReached(
 }
 
 template <typename T>
-__global__ void oneShotReduceScatter2Kernel(
+__global__ void oneShotReduceScatterKernel(
     T* __restrict__ out,
     const T* __restrict__ sendBuff,
     rcclx::relay::OneShotPeerTable table,
+    rcclx::relay::OneShotRanks ranks,
+    int nActive,
     int myRank,
-    int peerRank,
     int mySlot,
-    int peerSlot,
     size_t rc,
     size_t slotBytes,
     uint32_t epoch,
     int divisor) {
-  // 16 bytes is the widest access, and moving the push as 16-byte stores rather
+  // 16 bytes is the widest access, and moving the push as 16-byte units rather
   // than element-wise is what makes this competitive: measured, the kernel is
   // copy-throughput bound, not handshake bound (1 block is 6x slower than 64 at
   // 576 KB, while the extra 63 flag round trips cost nothing).
@@ -301,16 +301,19 @@ __global__ void oneShotReduceScatter2Kernel(
     T e[kEvec];
   };
 
-  T* dst = reinterpret_cast<T*>(
-      table.staging[peerRank] + static_cast<size_t>(mySlot) * slotBytes);
-  const T* src = sendBuff + static_cast<size_t>(peerSlot) * rc;
-  const T* staged = reinterpret_cast<const T*>(
-      table.staging[myRank] + static_cast<size_t>(peerSlot) * slotBytes);
+  // My own staging slots: slot s receives source s's contribution to my block.
+  const T* staged[rcclx::relay::kOneShotMaxRanks];
+  for (int s = 0; s < nActive; s++) {
+    staged[s] = reinterpret_cast<const T*>(
+        table.staging[myRank] + static_cast<size_t>(s) * slotBytes);
+  }
   const T* own = sendBuff + static_cast<size_t>(mySlot) * rc;
 
   // Staging slots are hipMalloc'd and slot-aligned, so they are always 16-byte
-  // aligned; the caller's buffers are not guaranteed to be, so check rather
-  // than assume. A misaligned call still works, just element-wise.
+  // aligned; the caller's buffers are not guaranteed to be, and a per-source
+  // offset of rc elements is only aligned when rc*sizeof(T) is a multiple
+  // of 16. Check rather than assume -- a misaligned call still works, just
+  // element-wise.
   //
   // This is a LOCAL property: the two ranks own independent allocations, so one
   // can be aligned while the other is not. It therefore must NOT feed the block
@@ -319,10 +322,10 @@ __global__ void oneShotReduceScatter2Kernel(
   // block b goes on to reduce -- it would read staging that the peer pushed
   // from some other block, whose flag it never waited on. vecOk selects only
   // HOW a block moves its own fixed range, never WHICH range it gets.
-  const uintptr_t bits = reinterpret_cast<uintptr_t>(dst) |
-      reinterpret_cast<uintptr_t>(src) | reinterpret_cast<uintptr_t>(staged) |
-      reinterpret_cast<uintptr_t>(own) | reinterpret_cast<uintptr_t>(out);
-  const bool vecOk = (bits & 15u) == 0;
+  const uintptr_t bits = reinterpret_cast<uintptr_t>(sendBuff) |
+      reinterpret_cast<uintptr_t>(out) |
+      reinterpret_cast<uintptr_t>(table.staging[myRank]);
+  const bool vecOk = ((bits & 15u) == 0) && ((rc * sizeof(T)) % 16u == 0);
 
   // Per-block element range, derived only from rc, kEvec and gridDim -- all
   // rank-agreed (gridDim comes from rc, kOneShotThreads and kOneShotMaxBlocks)
@@ -342,68 +345,98 @@ __global__ void oneShotReduceScatter2Kernel(
   // begin sends the whole range through the element-wise loops instead.
   const size_t vecEnd = vecOk ? (ve * kEvec) : begin;
 
-  // Step 1: push my foreign block into the peer's staging slot.
-  if (vecOk && vecEnd > begin) {
-    const Vec* s4 = reinterpret_cast<const Vec*>(src + begin);
-    Vec* d4 = reinterpret_cast<Vec*>(dst + begin);
-    const size_t nv = (vecEnd - begin) / kEvec;
-    for (size_t v = threadIdx.x; v < nv; v += blockDim.x) {
-      d4[v] = s4[v];
+  // Step 1: push each peer's block into that peer's staging slot mySlot.
+  for (int j = 0; j < nActive; j++) {
+    if (j == mySlot) {
+      continue;
+    }
+    T* dst = reinterpret_cast<T*>(
+        table.staging[ranks.r[j]] + static_cast<size_t>(mySlot) * slotBytes);
+    const T* src = sendBuff + static_cast<size_t>(j) * rc;
+    if (vecOk && vecEnd > begin) {
+      const Vec* s4 = reinterpret_cast<const Vec*>(src + begin);
+      Vec* d4 = reinterpret_cast<Vec*>(dst + begin);
+      const size_t nv = (vecEnd - begin) / kEvec;
+      for (size_t v = threadIdx.x; v < nv; v += blockDim.x) {
+        d4[v] = s4[v];
+      }
+    }
+    for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
+      dst[i] = src[i];
     }
   }
-  for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
-    dst[i] = src[i];
-  }
 
-  // Step 2: publish the stores, then raise the peer's flag for this block. The
-  // release store must not be reordered before the data, hence the system-scope
-  // fence; the peer pairs it with an acquire load.
+  // Step 2: publish the stores, then raise every peer's flag for this block.
+  // The release store must not be reordered before the data, hence the
+  // system-scope fence; the reader pairs it with an acquire load.
   __syncthreads();
   if (threadIdx.x == 0) {
     __threadfence_system();
-    __atomic_store_n(
-        &table.flags[peerRank]
-                    [mySlot * rcclx::relay::kOneShotMaxBlocks + blockIdx.x],
-        epoch,
-        __ATOMIC_RELEASE);
+    for (int j = 0; j < nActive; j++) {
+      if (j == mySlot) {
+        continue;
+      }
+      __atomic_store_n(
+          &table.flags[ranks.r[j]]
+                      [mySlot * rcclx::relay::kOneShotMaxBlocks + blockIdx.x],
+          epoch,
+          __ATOMIC_RELEASE);
+    }
   }
 
-  // Step 3: wait for the peer's matching block. Flags are never cleared: the
-  // epoch only advances, so a value left by an earlier call always compares as
-  // not-yet-arrived for this one.
+  // Step 3: wait for every source's matching block. Flags are never cleared:
+  // the epoch only advances, so a value left by an earlier call always compares
+  // as not-yet-arrived for this one.
   if (threadIdx.x == 0) {
-    uint32_t* mine =
-        &table.flags[myRank]
-                    [peerSlot * rcclx::relay::kOneShotMaxBlocks + blockIdx.x];
-    while (
-        !oneShotEpochReached(__atomic_load_n(mine, __ATOMIC_ACQUIRE), epoch)) {
+    for (int s = 0; s < nActive; s++) {
+      if (s == mySlot) {
+        continue;
+      }
+      uint32_t* mine =
+          &table
+               .flags[myRank][s * rcclx::relay::kOneShotMaxBlocks + blockIdx.x];
+      while (!oneShotEpochReached(
+          __atomic_load_n(mine, __ATOMIC_ACQUIRE), epoch)) {
+      }
     }
   }
   __syncthreads();
 
-  // Step 4: reduce my own contribution with what the peer staged. In-place is
-  // safe: out aliases own at the same element index.
+  // Step 4: reduce my own contribution with what every source staged. In-place
+  // is safe: out aliases own at the same element index.
   if (vecOk && vecEnd > begin) {
     const Vec* o4 = reinterpret_cast<const Vec*>(own + begin);
-    const Vec* g4 = reinterpret_cast<const Vec*>(staged + begin);
     Vec* r4 = reinterpret_cast<Vec*>(out + begin);
     const size_t nv = (vecEnd - begin) / kEvec;
     for (size_t v = threadIdx.x; v < nv; v += blockDim.x) {
       Vec a = o4[v];
-      const Vec b = g4[v];
-#pragma unroll
-      for (int k = 0; k < kEvec; k++) {
-        T acc = a.e[k] + b.e[k];
-        if (divisor > 1) {
-          acc = acc / static_cast<T>(divisor);
+      for (int s = 0; s < nActive; s++) {
+        if (s == mySlot) {
+          continue;
         }
-        a.e[k] = acc;
+        const Vec b = reinterpret_cast<const Vec*>(staged[s] + begin)[v];
+#pragma unroll
+        for (int k = 0; k < kEvec; k++) {
+          a.e[k] = a.e[k] + b.e[k];
+        }
+      }
+      if (divisor > 1) {
+#pragma unroll
+        for (int k = 0; k < kEvec; k++) {
+          a.e[k] = a.e[k] / static_cast<T>(divisor);
+        }
       }
       r4[v] = a;
     }
   }
   for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
-    T acc = own[i] + staged[i];
+    T acc = own[i];
+    for (int s = 0; s < nActive; s++) {
+      if (s == mySlot) {
+        continue;
+      }
+      acc = acc + staged[s][i];
+    }
     if (divisor > 1) {
       acc = acc / static_cast<T>(divisor);
     }
@@ -412,14 +445,14 @@ __global__ void oneShotReduceScatter2Kernel(
 }
 
 template <typename T>
-void launchOneShotReduceScatter2Kernel(
+void launchOneShotReduceScatterKernel(
     void* out,
     const void* sendBuff,
     const rcclx::relay::OneShotPeerTable& table,
+    const rcclx::relay::OneShotRanks& ranks,
+    int nActive,
     int myRank,
-    int peerRank,
     int mySlot,
-    int peerSlot,
     size_t rc,
     size_t slotBytes,
     uint32_t epoch,
@@ -433,14 +466,14 @@ void launchOneShotReduceScatter2Kernel(
   if (gridSize > rcclx::relay::kOneShotMaxBlocks) {
     gridSize = rcclx::relay::kOneShotMaxBlocks;
   }
-  oneShotReduceScatter2Kernel<T><<<gridSize, blockSize, 0, stream>>>(
+  oneShotReduceScatterKernel<T><<<gridSize, blockSize, 0, stream>>>(
       static_cast<T*>(out),
       static_cast<const T*>(sendBuff),
       table,
+      ranks,
+      nActive,
       myRank,
-      peerRank,
       mySlot,
-      peerSlot,
       rc,
       slotBytes,
       epoch,
@@ -480,14 +513,14 @@ void launchOneShotReduceScatter2Kernel(
       size_t count,                                                        \
       int divisor,                                                         \
       cudaStream_t stream);                                                \
-  template void launchOneShotReduceScatter2Kernel<T>(                      \
+  template void launchOneShotReduceScatterKernel<T>(                       \
       void* out,                                                           \
       const void* sendBuff,                                                \
       const rcclx::relay::OneShotPeerTable& table,                         \
+      const rcclx::relay::OneShotRanks& ranks,                             \
+      int nActive,                                                         \
       int myRank,                                                          \
-      int peerRank,                                                        \
       int mySlot,                                                          \
-      int peerSlot,                                                        \
       size_t rc,                                                           \
       size_t slotBytes,                                                    \
       uint32_t epoch,                                                      \
