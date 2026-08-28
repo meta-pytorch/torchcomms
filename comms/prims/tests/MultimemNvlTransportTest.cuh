@@ -15,6 +15,23 @@ namespace comms::prims::test {
 
 enum class MultimemReductionTestType { Float, Int32, Float16, Bfloat16 };
 
+__host__ __device__ constexpr float phasedReduceBlockRankValue(
+    std::size_t nvlRank) {
+  return static_cast<float>(nvlRank % 4 + 1);
+}
+
+constexpr float phasedReduceBlockExpectedValue(std::size_t nvlRanks) {
+  float result = 0.0f;
+  for (std::size_t rank = 0; rank < nvlRanks; ++rank) {
+    result += phasedReduceBlockRankValue(rank);
+  }
+  return result;
+}
+
+static_assert(
+    phasedReduceBlockExpectedValue(kMaxNvlSignalRanks) <= 256.0f,
+    "phased reduction test values must sum exactly in bf16");
+
 struct StageLayoutResult {
   std::size_t channelBeginBytes;
   std::size_t stagingBytes;
@@ -205,6 +222,12 @@ void launchLoadReduce(
     void* output,
     std::size_t elems,
     std::size_t sourceOffsetElems,
+    cudaStream_t stream = nullptr);
+
+void launchPhasedReduceBlock(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
     cudaStream_t stream = nullptr);
 
 void launchStageLayout(
