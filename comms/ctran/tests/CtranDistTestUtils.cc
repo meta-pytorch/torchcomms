@@ -38,10 +38,6 @@ void CtranDistEnvironment::SetUp() {
 #if defined(TEST_ENABLE_LOCAL_REGISTER)
   setenv("NCCL_LOCAL_REGISTER", "1", 1);
 #endif
-
-#if defined(TEST_CUDA_GRAPH_MODE)
-  setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
-#endif
 }
 
 // ============================================================================
