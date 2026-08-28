@@ -410,6 +410,102 @@ class ScratchBufferCache {
     }                                                                       \
   } while (0)
 
+#define LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                          \
+    TYPE, dst, seed, contribs, numContribs, count, divisor, stream) \
+  launchSeededMultiReduceKernel<TYPE>(                              \
+      dst, seed, contribs, numContribs, count, divisor, stream)
+
+#define DISPATCH_SEEDED_MULTI_REDUCE(                                          \
+    datatype, dst, seed, contribs, numContribs, count, divisor, stream)        \
+  do {                                                                         \
+    switch (datatype) {                                                        \
+      case ncclInt8:                                                           \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int8_t, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclUint8:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint8_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt32:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int32_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint32:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint32_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt64:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int64_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint64:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint64_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclFloat16:                                                        \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __half, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclFloat:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            float, dst, seed, contribs, numContribs, count, divisor, stream);  \
+        break;                                                                 \
+      case ncclDouble:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            double, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclBfloat16:                                                       \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __nv_bfloat16,                                                     \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      default:                                                                 \
+        break;                                                                 \
+    }                                                                          \
+  } while (0)
+
 #define LAUNCH_MULTI_REDUCE_KERNEL(                           \
     TYPE, dst, contribs, numContribs, count, divisor, stream) \
   launchMultiReduceKernel<TYPE>(                              \
@@ -1267,6 +1363,90 @@ static ncclResult_t shardedRelayAllReduceFlat(
     if (counts[g] != 0 && (counts[g] % static_cast<size_t>(A)) != 0) {
       return ncclInvalidArgument;
     }
+  }
+
+  // ==========================================================================
+  // SINGLE-GROUP SMALL-MESSAGE FULL-EXCHANGE FAST PATH (A > 2)
+  // ==========================================================================
+  // Below the crossover this schedule's cost is entirely launch latency, and
+  // the reduce-scatter + all-gather form it would otherwise run is the most
+  // expensive shape in the relay set at FOUR launches on the critical path: the
+  // sendbuff -> recvbuff staging copy, the reduce-scatter group, the shard
+  // reduce, and the all-gather group. A plain full exchange needs TWO -- one
+  // group in which every active rank ships its whole buffer to the other A-1,
+  // then one fused reduce over all A contributions. It moves (A-1)*count per
+  // link instead of 2*(A-1)*count/A, but below the crossover the bytes are not
+  // what is being paid for. This is the same trade the A==2 path already makes
+  // (see shardedRelayAllReduce2Active), generalized to A > 2.
+  //
+  // No separate size gate: the route selector already bounds the pure-direct
+  // regime, so "offload disabled" IS "below the crossover". Restricted to
+  // nGroups == 1 because a fused call has every rank active in one group and a
+  // helper in the others, so its links carry several groups' traffic at once
+  // and the bytes this trades away are not free there.
+  if (kOffPermille == 0 && nGroups == 1) {
+    const size_t count = counts[0];
+    void* xScratch = nullptr;
+    if (myActiveGroup >= 0 && count > 0) {
+      xScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS,
+          static_cast<size_t>(A - 1) * count * elementSize,
+          stream);
+      if (xScratch == nullptr) {
+        return ncclInternalError;
+      }
+    }
+
+    if (count > 0) {
+      NCCLCHECK(ncclGroupStart());
+      const ShardedRelayRankConfig& cfg = configs[0];
+      if (cfg.isActiveRank) {
+        const int m = cfg.myActiveIndex;
+        for (int k = 0; k < A; k++) {
+          if (k == m) {
+            continue;
+          }
+          NCCLCHECK(ncclSend(
+              sendBuffs[0], count, datatype, cfg.activeRanks[k], comm, stream));
+        }
+        for (int s = 0; s < A; s++) {
+          if (s == m) {
+            continue;
+          }
+          const int p = (s < m) ? s : s - 1;
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(xScratch) +
+                  static_cast<size_t>(p) * count * elementSize,
+              count,
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclGroupEnd());
+    }
+
+    if (myActiveGroup >= 0 && count > 0) {
+      void* out = recvBuffs[0];
+      if (out == sendBuffs[0]) {
+        // In-place: recvbuff already holds this rank's contribution, so it is
+        // both the seed and the destination.
+        DISPATCH_MULTI_REDUCE(
+            datatype, out, xScratch, A - 1, count, reductionDivisor, stream);
+      } else {
+        DISPATCH_SEEDED_MULTI_REDUCE(
+            datatype,
+            out,
+            sendBuffs[0],
+            xScratch,
+            A - 1,
+            count,
+            reductionDivisor,
+            stream);
+      }
+    }
+    return ncclSuccess;
   }
 
   // Per-group geometry: pO (offload) aligned to H*CHUNK_ALIGN; pD = count - pO
