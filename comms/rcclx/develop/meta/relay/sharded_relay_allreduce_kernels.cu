@@ -259,6 +259,194 @@ void launchSeededMultiReduceKernel(
 // (which only sees `extern template` declarations via the header) would
 // fail to link the launchers — leaving the underlying `__global__`
 // kernels' host stubs unresolved at runtime.
+
+/*
+ * ONE-SHOT 2-RANK REDUCE-SCATTER
+ *
+ * A single kernel that both moves the data and reduces it, so it replaces an
+ * ncclGroup plus a reduce launch. See sharded_relay_oneshot.h for why the group
+ * itself, not the reduce, is what has to go.
+ *
+ * Ordering: the data stores must be visible to the peer BEFORE it observes the
+ * flag, so thread 0 issues __threadfence_system() and then a release store; the
+ * reader spins with an acquire load. The epoch comparison is wraparound-safe,
+ * and flags are never reset -- the epoch only advances, so a stale flag from a
+ * previous call always compares as not-yet-arrived for the current one.
+ */
+__device__ __forceinline__ bool oneShotEpochReached(
+    uint32_t got,
+    uint32_t want) {
+  return (got - want) <= (uint32_t(-1) >> 1);
+}
+
+template <typename T>
+__global__ void oneShotReduceScatter2Kernel(
+    T* __restrict__ out,
+    const T* __restrict__ sendBuff,
+    rcclx::relay::OneShotPeerTable table,
+    int myRank,
+    int peerRank,
+    int mySlot,
+    int peerSlot,
+    size_t rc,
+    size_t slotBytes,
+    uint32_t epoch,
+    int divisor) {
+  // 16 bytes is the widest access, and moving the push as 16-byte stores rather
+  // than element-wise is what makes this competitive: measured, the kernel is
+  // copy-throughput bound, not handshake bound (1 block is 6x slower than 64 at
+  // 576 KB, while the extra 63 flag round trips cost nothing).
+  constexpr int kEvec = static_cast<int>(16 / sizeof(T));
+  struct alignas(16) Vec {
+    T e[kEvec];
+  };
+
+  T* dst = reinterpret_cast<T*>(
+      table.staging[peerRank] + static_cast<size_t>(mySlot) * slotBytes);
+  const T* src = sendBuff + static_cast<size_t>(peerSlot) * rc;
+  const T* staged = reinterpret_cast<const T*>(
+      table.staging[myRank] + static_cast<size_t>(peerSlot) * slotBytes);
+  const T* own = sendBuff + static_cast<size_t>(mySlot) * rc;
+
+  // Staging slots are hipMalloc'd and slot-aligned, so they are always 16-byte
+  // aligned; the caller's buffers are not guaranteed to be, so check rather
+  // than assume. A misaligned call still works, just element-wise.
+  //
+  // This is a LOCAL property: the two ranks own independent allocations, so one
+  // can be aligned while the other is not. It therefore must NOT feed the block
+  // partition below. Blocks handshake pairwise on a single block index, so if
+  // the ranks partitioned differently, block b's flag would not cover the range
+  // block b goes on to reduce -- it would read staging that the peer pushed
+  // from some other block, whose flag it never waited on. vecOk selects only
+  // HOW a block moves its own fixed range, never WHICH range it gets.
+  const uintptr_t bits = reinterpret_cast<uintptr_t>(dst) |
+      reinterpret_cast<uintptr_t>(src) | reinterpret_cast<uintptr_t>(staged) |
+      reinterpret_cast<uintptr_t>(own) | reinterpret_cast<uintptr_t>(out);
+  const bool vecOk = (bits & 15u) == 0;
+
+  // Per-block element range, derived only from rc, kEvec and gridDim -- all
+  // rank-agreed (gridDim comes from rc, kOneShotThreads and kOneShotMaxBlocks)
+  // -- so both ranks assign the same [begin, end) to the same block index
+  // whatever their buffer alignment. Ranges are whole 16-byte vectors so that
+  // begin stays 16-byte aligned for a rank that can vectorize.
+  const size_t nvec = rc / kEvec;
+  const size_t vchunk = (nvec + gridDim.x - 1) / gridDim.x;
+  size_t vb = vchunk * blockIdx.x;
+  vb = (vb < nvec) ? vb : nvec;
+  size_t ve = vb + vchunk;
+  ve = (ve < nvec) ? ve : nvec;
+  const size_t begin = vb * kEvec;
+  // The last block also takes the ragged tail rc % kEvec.
+  const size_t end = (blockIdx.x == gridDim.x - 1) ? rc : (ve * kEvec);
+  // End of the 16-byte bulk this block moves vectorized; collapsing it to
+  // begin sends the whole range through the element-wise loops instead.
+  const size_t vecEnd = vecOk ? (ve * kEvec) : begin;
+
+  // Step 1: push my foreign block into the peer's staging slot.
+  if (vecOk && vecEnd > begin) {
+    const Vec* s4 = reinterpret_cast<const Vec*>(src + begin);
+    Vec* d4 = reinterpret_cast<Vec*>(dst + begin);
+    const size_t nv = (vecEnd - begin) / kEvec;
+    for (size_t v = threadIdx.x; v < nv; v += blockDim.x) {
+      d4[v] = s4[v];
+    }
+  }
+  for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
+    dst[i] = src[i];
+  }
+
+  // Step 2: publish the stores, then raise the peer's flag for this block. The
+  // release store must not be reordered before the data, hence the system-scope
+  // fence; the peer pairs it with an acquire load.
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    __threadfence_system();
+    __atomic_store_n(
+        &table.flags[peerRank]
+                    [mySlot * rcclx::relay::kOneShotMaxBlocks + blockIdx.x],
+        epoch,
+        __ATOMIC_RELEASE);
+  }
+
+  // Step 3: wait for the peer's matching block. Flags are never cleared: the
+  // epoch only advances, so a value left by an earlier call always compares as
+  // not-yet-arrived for this one.
+  if (threadIdx.x == 0) {
+    uint32_t* mine =
+        &table.flags[myRank]
+                    [peerSlot * rcclx::relay::kOneShotMaxBlocks + blockIdx.x];
+    while (
+        !oneShotEpochReached(__atomic_load_n(mine, __ATOMIC_ACQUIRE), epoch)) {
+    }
+  }
+  __syncthreads();
+
+  // Step 4: reduce my own contribution with what the peer staged. In-place is
+  // safe: out aliases own at the same element index.
+  if (vecOk && vecEnd > begin) {
+    const Vec* o4 = reinterpret_cast<const Vec*>(own + begin);
+    const Vec* g4 = reinterpret_cast<const Vec*>(staged + begin);
+    Vec* r4 = reinterpret_cast<Vec*>(out + begin);
+    const size_t nv = (vecEnd - begin) / kEvec;
+    for (size_t v = threadIdx.x; v < nv; v += blockDim.x) {
+      Vec a = o4[v];
+      const Vec b = g4[v];
+#pragma unroll
+      for (int k = 0; k < kEvec; k++) {
+        T acc = a.e[k] + b.e[k];
+        if (divisor > 1) {
+          acc = acc / static_cast<T>(divisor);
+        }
+        a.e[k] = acc;
+      }
+      r4[v] = a;
+    }
+  }
+  for (size_t i = vecEnd + threadIdx.x; i < end; i += blockDim.x) {
+    T acc = own[i] + staged[i];
+    if (divisor > 1) {
+      acc = acc / static_cast<T>(divisor);
+    }
+    out[i] = acc;
+  }
+}
+
+template <typename T>
+void launchOneShotReduceScatter2Kernel(
+    void* out,
+    const void* sendBuff,
+    const rcclx::relay::OneShotPeerTable& table,
+    int myRank,
+    int peerRank,
+    int mySlot,
+    int peerSlot,
+    size_t rc,
+    size_t slotBytes,
+    uint32_t epoch,
+    int divisor,
+    cudaStream_t stream) {
+  const int blockSize = rcclx::relay::kOneShotThreads;
+  int gridSize = static_cast<int>((rc + blockSize - 1) / blockSize);
+  if (gridSize < 1) {
+    gridSize = 1;
+  }
+  if (gridSize > rcclx::relay::kOneShotMaxBlocks) {
+    gridSize = rcclx::relay::kOneShotMaxBlocks;
+  }
+  oneShotReduceScatter2Kernel<T><<<gridSize, blockSize, 0, stream>>>(
+      static_cast<T*>(out),
+      static_cast<const T*>(sendBuff),
+      table,
+      myRank,
+      peerRank,
+      mySlot,
+      peerSlot,
+      rc,
+      slotBytes,
+      epoch,
+      divisor);
+}
+
 #define RCCLX_INSTANTIATE_RELAY_KERNELS(T)                                 \
   template void launchIncrementalAddKernel<T>(                             \
       void* output, const void* input, size_t count, cudaStream_t stream); \
@@ -290,6 +478,19 @@ void launchSeededMultiReduceKernel(
       const void* contribs,                                                \
       int numContribs,                                                     \
       size_t count,                                                        \
+      int divisor,                                                         \
+      cudaStream_t stream);                                                \
+  template void launchOneShotReduceScatter2Kernel<T>(                      \
+      void* out,                                                           \
+      const void* sendBuff,                                                \
+      const rcclx::relay::OneShotPeerTable& table,                         \
+      int myRank,                                                          \
+      int peerRank,                                                        \
+      int mySlot,                                                          \
+      int peerSlot,                                                        \
+      size_t rc,                                                           \
+      size_t slotBytes,                                                    \
+      uint32_t epoch,                                                      \
       int divisor,                                                         \
       cudaStream_t stream);
 

@@ -9,6 +9,7 @@
 #include "sharded_relay_reduce_scatter.h"
 #include "comm.h"
 #include "sharded_relay_allreduce_kernels.h"
+#include "sharded_relay_oneshot.h"
 #include "sharded_relay_route.h"
 
 #include <hip/hip_bfloat16.h>
@@ -622,6 +623,155 @@ bool buildShardedRelayRankConfig(
     }                                                                      \
   } while (0)
 
+// Dtype dispatch for the one-shot 2-rank reduce-scatter. Deliberately narrower
+// than the other macros: only the types the small-message paths actually see
+// are worth an instantiation, and an unsupported type must fall through to the
+// ncclSend/ncclRecv schedule rather than silently do nothing, so the caller
+// checks the bool this sets.
+#define DISPATCH_ONESHOT_REDUCE_SCATTER2(                 \
+    datatype,                                             \
+    handled,                                              \
+    out,                                                  \
+    sendBuff,                                             \
+    table,                                                \
+    myRank,                                               \
+    peerRank,                                             \
+    mySlot,                                               \
+    peerSlot,                                             \
+    rc,                                                   \
+    slotBytes,                                            \
+    epoch,                                                \
+    divisor,                                              \
+    stream)                                               \
+  do {                                                    \
+    (handled) = true;                                     \
+    switch (datatype) {                                   \
+      case ncclInt32:                                     \
+        launchOneShotReduceScatter2Kernel<int32_t>(       \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclUint32:                                    \
+        launchOneShotReduceScatter2Kernel<uint32_t>(      \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclInt64:                                     \
+        launchOneShotReduceScatter2Kernel<int64_t>(       \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclUint64:                                    \
+        launchOneShotReduceScatter2Kernel<uint64_t>(      \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclFloat16:                                   \
+        launchOneShotReduceScatter2Kernel<__half>(        \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclFloat:                                     \
+        launchOneShotReduceScatter2Kernel<float>(         \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclDouble:                                    \
+        launchOneShotReduceScatter2Kernel<double>(        \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      case ncclBfloat16:                                  \
+        launchOneShotReduceScatter2Kernel<__nv_bfloat16>( \
+            out,                                          \
+            sendBuff,                                     \
+            table,                                        \
+            myRank,                                       \
+            peerRank,                                     \
+            mySlot,                                       \
+            peerSlot,                                     \
+            rc,                                           \
+            slotBytes,                                    \
+            epoch,                                        \
+            divisor,                                      \
+            stream);                                      \
+        break;                                            \
+      default:                                            \
+        (handled) = false;                                \
+        break;                                            \
+    }                                                     \
+  } while (0)
+
 #define LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                          \
     TYPE, dst, seed, contribs, numContribs, count, divisor, stream) \
   launchSeededMultiReduceKernel<TYPE>(                              \
@@ -804,6 +954,68 @@ static ncclResult_t shardedRelayReduceScatter2Active(
   if (rcclx::relay::selectReduceScatterRoute(
           2, numHelpers, nGroups, recvCounts, elementSize) ==
       rcclx::relay::ReduceScatterRoute::PureDirect) {
+    // ======================================================================
+    // ONE-SHOT IPC FAST PATH
+    // ======================================================================
+    // The schedule below is already minimal for ncclSend/ncclRecv -- one group
+    // plus one fused reduce -- and that is still one launch more than NCCL,
+    // which fuses transfer and reduction into a single kernel. Measured, the
+    // group ALONE costs more than NCCL's whole collective, so no amount of
+    // trimming here reaches 1x. The one-shot kernel removes the group entirely:
+    // it pushes into the peer's pre-registered staging, handshakes on a flag,
+    // and reduces in registers, all in one launch.
+    //
+    // Every predicate below is derived only from sizes and the communicator, so
+    // all ranks reach the same decision. That matters more than usual here: if
+    // one rank ran the one-shot kernel while its peer took the ncclSend path,
+    // the first would spin forever instead of merely running slower.
+    // oneShotAcquire() is COLLECTIVE on first use, which is why it is called
+    // here -- before any branch on myActiveGroup -- and why it agrees its own
+    // success across ranks.
+    const size_t osMaxCount = rcclx::relay::relayMaxCount(recvCounts, nGroups);
+    bool useOneShot = (nGroups == 1) && (osMaxCount > 0) &&
+        (2 * osMaxCount * elementSize <= rcclx::relay::kRelayOneShotMaxBytes);
+    if (useOneShot) {
+      // The epoch advances per host launch, so a replayed graph would reuse a
+      // stale value and the handshake would pass before the data arrived.
+      struct ncclCudaGraph graph;
+      NCCLCHECK(ncclCudaGetCapturingGraph(&graph, stream));
+      useOneShot = !ncclCudaGraphValid(graph);
+    }
+    rcclx::relay::OneShotLaunch osl{};
+    if (useOneShot) {
+      useOneShot = rcclx::relay::oneShotAcquire(comm, &osl);
+    }
+    if (useOneShot && myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
+      const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+      const size_t rc = recvCounts[myActiveGroup];
+      const int m = cfg.myActiveIndex;
+      const int other = 1 - m;
+      bool handled = false;
+      DISPATCH_ONESHOT_REDUCE_SCATTER2(
+          datatype,
+          handled,
+          recvBuffs[myActiveGroup],
+          sendBuffs[myActiveGroup],
+          osl.table,
+          comm->rank,
+          cfg.activeRanks[other],
+          m,
+          other,
+          rc,
+          osl.slotBytes,
+          osl.epoch,
+          reductionDivisor,
+          stream);
+      // An unsupported datatype must not silently produce nothing. Falling back
+      // is safe only because the dtype is the same on every rank, so either all
+      // of them fall back or none do.
+      useOneShot = handled;
+    }
+    if (useOneShot) {
+      return ncclSuccess;
+    }
+
     void* pdScratch = nullptr;
     size_t pdRecvcount = 0;
     size_t pdOwnOff = 0;
