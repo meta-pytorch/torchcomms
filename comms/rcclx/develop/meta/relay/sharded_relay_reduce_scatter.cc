@@ -1905,18 +1905,45 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
       const size_t dOff = directOffset(k);
       const size_t dSz = directSize(k);
 
-      // Direct reduce-scatter: my chunk of block j goes to its owner j.
+      // Direct reduce-scatter: my chunk of block j goes to its owner j, issued
+      // as w-sized pieces rather than one (A-1)*w op.
+      //
+      // Both directions of every link carry the same 3w per group, but they
+      // were carrying it as DIFFERENT op counts: the cross links as three
+      // w-sized offload sends, the intra links as a single 3w direct send. RCCL
+      // budgets channels per operation, so the single-op link received a third
+      // of the channels and became the bottleneck while the cross links
+      // finished early. Splitting the direct region into w-sized pieces makes
+      // every op in the group the same size, so all seven links are provisioned
+      // alike.
+      //
+      // Measured at 1 GB, 4 active ranks: 4.239 -> 3.539 ms (1.30x -> 1.56x).
+      // Splitting further is worse (six pieces read 4.304 ms), so uniformity is
+      // the goal, not op count for its own sake. The 2-active shapes already
+      // ship a direct chunk of exactly u, which is why they never showed this.
+      const size_t dPiece = w;
+      const int dN = (dSz >= dPiece) ? static_cast<int>(dSz / dPiece) : 1;
+      auto dPieceOff = [&](int i) -> size_t {
+        return dOff + static_cast<size_t>(i) * dPiece;
+      };
+      auto dPieceSz = [&](int i) -> size_t {
+        return (i < dN - 1) ? dPiece
+                            : (dSz - static_cast<size_t>(dN - 1) * dPiece);
+      };
       for (int j = 0; j < A; j++) {
         if (j == m) {
           continue;
         }
-        NCCLCHECK(ncclSend(
-            sendbuff + (static_cast<size_t>(j) * rc + dOff) * elementSize,
-            dSz,
-            datatype,
-            cfg.activeRanks[j],
-            comm,
-            stream));
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(j) * rc + dPieceOff(i)) * elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
       }
       if (k < T) {
         // Offload scatter: helper h gets tile k of each of my foreign blocks.
@@ -1944,14 +1971,17 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
           continue;
         }
         const int p = (s < m) ? s : s - 1;
-        NCCLCHECK(ncclRecv(
-            static_cast<char*>(dScratch) +
-                (static_cast<size_t>(p) * directSz + dOff) * elementSize,
-            dSz,
-            datatype,
-            cfg.activeRanks[s],
-            comm,
-            stream));
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(dScratch) +
+                  (static_cast<size_t>(p) * directSz + dPieceOff(i)) *
+                      elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
       }
       if (k > 0) {
         // One already-reduced tile per helper, landing where my output wants

@@ -1074,17 +1074,37 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
       const size_t dOff = directOffset(k);
       const size_t dSz = directSize(k);
 
+      // Direct exchange, issued as v-sized pieces rather than one (A-1)*v op,
+      // so that every operation in the group is the same size and all seven
+      // links get a comparable channel budget. See
+      // kRelayUniformDirectOpMinBytes for why this is size-gated here but
+      // unconditional in the reduce-scatter mirror.
+      const size_t dPiece = v;
+      const int dN =
+          (sc * elementSize >= rcclx::relay::kRelayUniformDirectOpMinBytes &&
+           dSz >= dPiece)
+          ? static_cast<int>(dSz / dPiece)
+          : 1;
+      auto dPieceOff = [&](int i) -> size_t {
+        return dOff + static_cast<size_t>(i) * dPiece;
+      };
+      auto dPieceSz = [&](int i) -> size_t {
+        return (i < dN - 1) ? dPiece
+                            : (dSz - static_cast<size_t>(dN - 1) * dPiece);
+      };
       for (int d = 0; d < A; d++) {
         if (d == m) {
           continue;
         }
-        NCCLCHECK(ncclSend(
-            sendbuff + dOff * elementSize,
-            dSz,
-            datatype,
-            cfg.activeRanks[d],
-            comm,
-            stream));
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclSend(
+              sendbuff + dPieceOff(i) * elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[d],
+              comm,
+              stream));
+        }
       }
       if (k < T) {
         for (int h = 0; h < H; h++) {
@@ -1104,13 +1124,16 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
         if (s == m) {
           continue;
         }
-        NCCLCHECK(ncclRecv(
-            recvbuff + (static_cast<size_t>(s) * sc + dOff) * elementSize,
-            dSz,
-            datatype,
-            cfg.activeRanks[s],
-            comm,
-            stream));
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (static_cast<size_t>(s) * sc + dPieceOff(i)) * elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
       }
       if (k > 0) {
         // Helper h delivers tile k-1 of every other source's offload chunk.
