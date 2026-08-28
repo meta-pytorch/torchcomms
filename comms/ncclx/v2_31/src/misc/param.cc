@@ -20,6 +20,17 @@
 #include <unordered_set>
 #include "os.h"
 
+#include "cuda_runtime_api.h"
+
+#include <folly/synchronization/CallOnce.h>
+
+#include "comms/utils/InitFolly.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/SpdlogLogger.h"
+#include "meta/NcclxLogger.h"
+
 const char* userHomeDir() {
   return getenv("HOME");
 }
@@ -67,8 +78,19 @@ static void initEnvFunc() {
 }
 
 void initEnv() {
-  static std::once_flag once;
-  std::call_once(once, initEnvFunc);
+  // folly::call_once, not std::call_once: initFolly()/ncclCvarInit() can throw,
+  // and std::call_once deadlocks rather than retrying on a throwing callable.
+  static folly::once_flag once;
+  folly::call_once(once, [] {
+    meta::comms::initFolly();
+    ncclCvarInit();
+    // As early as the sink can be registered: it is configured from the
+    // NCCL_DEBUG* cvars, so it cannot precede ncclCvarInit(). Anything logged
+    // before this point goes to an unconfigured logger and is lost, so keep
+    // initEnvFunc() -- which reads conf files and can warn -- after it.
+    initNcclLogger();
+    initEnvFunc();
+  });
 }
 
 static void ncclGetCachePolicy(char const* env, int8_t* noCache) {
@@ -108,4 +130,20 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
 const char* ncclGetEnv(const char* name) {
   ncclInitEnv();
   return ncclEnvPluginGetEnv(name);
+}
+
+void initNcclLogger() {
+  // Shared CollTrace code still emits raw XLOG under comms.utils.
+  meta::comms::logger::initCommLogging();
+  meta::comms::logger::configureSpdlogLogger(
+    ncclx::logging::kNcclxLoggerName, "NCCL", meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+    []() {
+      int cudaDev = -1;
+      (void)cudaGetDevice(&cudaDev);
+      return cudaDev;
+    },
+    [](std::string_view message) { meta::comms::logger::setLastError(std::string{message}, {}); },
+    NCCL_DEBUG_LOGGING_ASYNC);
+  meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+    .set_level(meta::comms::logger::loggerLevelToSpdlogLevel(meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)));
 }
