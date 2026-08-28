@@ -767,7 +767,26 @@ static ncclResult_t shardedRelayAllGatherFlat(
   }
 
   // Diagonal: recvBuff[m*sc] = sendBuff.
-  if (myActiveGroup >= 0 && sendCounts[myActiveGroup] > 0 && !isInPlace) {
+  //
+  // With the offload disabled the whole shard goes out in one group, so the
+  // diagonal can ride along in it as a P2P pair whose peer is the issuing rank:
+  // that is serviced as a local copy inside the same kernel, costing no
+  // transfer and, unlike this cudaMemcpyAsync, no second launch. With the
+  // offload enabled the direct region is only d1 of the sc elements, so the
+  // diagonal does not correspond to any single operation in the group and has
+  // to stay a separate copy.
+  //
+  // Restricted to nGroups == 1. Folding it in the FUSED case made
+  // Correctness_4Groups_A2_FusedRoutingThresholds fail intermittently (once in
+  // four runs) with mismatched slots. There, all eight ranks issue a self pair
+  // alongside a real one in the same group, rather than just the two active
+  // ranks; whether that is an RCCL self-P2P ordering issue or something else
+  // was not chased, because every sub-1x cell this targets is single-group and
+  // the fused route has its own tuned reference. Do not lift this gate without
+  // running the fused suite repeatedly -- a single green run is not evidence.
+  const bool foldDiagonalIntoGroup = !useOffload && !isInPlace && nGroups == 1;
+  if (myActiveGroup >= 0 && sendCounts[myActiveGroup] > 0 && !isInPlace &&
+      !foldDiagonalIntoGroup) {
     cudaMemcpyAsync(
         static_cast<char*>(recvBuffs[myActiveGroup]) +
             myDiagOffset * elementSize,
@@ -815,13 +834,13 @@ static ncclResult_t shardedRelayAllGatherFlat(
 
       if (d1 > 0) {
         for (int d = 0; d < A; d++) {
-          if (d == m)
+          if (d == m && !foldDiagonalIntoGroup)
             continue;
           NCCLCHECK(ncclSend(
               sendbuff, d1, datatype, cfg.activeRanks[d], comm, stream));
         }
         for (int s = 0; s < A; s++) {
-          if (s == m)
+          if (s == m && !foldDiagonalIntoGroup)
             continue;
           NCCLCHECK(ncclRecv(
               recvbuff + static_cast<size_t>(s) * sc * elementSize,
