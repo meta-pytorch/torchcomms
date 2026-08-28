@@ -562,6 +562,40 @@ __global__ void loadReduceKernel(
       group, output, source, elems);
 }
 
+template <typename T, bool kAccF32>
+__global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
+  auto block = make_block_group();
+  constexpr std::size_t kElements = sizeof(uint4) / sizeof(T);
+  auto* local = reinterpret_cast<T*>(transport.localData);
+  if (threadIdx.x < kElements) {
+    local[threadIdx.x] =
+        reductionValue<T>(phasedReduceBlockRankValue(transport.nvlRank));
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+
+  uint4 reduced{};
+  if (block.is_leader()) {
+    reduced = multimem::load_reduce_block16<T, kAccF32>(
+        reinterpret_cast<const T*>(transport.multimemData));
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+
+  if (block.is_leader()) {
+    const std::size_t ownedFirstLane = kElements *
+        static_cast<std::size_t>(transport.nvlRank) /
+        static_cast<std::size_t>(transport.nvlRanks);
+    const std::size_t ownedEndLane = kElements *
+        static_cast<std::size_t>(transport.nvlRank + 1) /
+        static_cast<std::size_t>(transport.nvlRanks);
+    multimem::store_reduced_block16_range(
+        local + ownedFirstLane,
+        reduced,
+        ownedFirstLane,
+        ownedEndLane - ownedFirstLane);
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+}
+
 __global__ void stageLayoutKernel(
     MultimemNvlTransportDevice transport,
     StageLayoutResult* results) {
@@ -619,6 +653,19 @@ void launchLoadReduceTyped(
   } else {
     loadReduceKernel<T, false><<<1, 32, 0, stream>>>(
         transport, static_cast<T*>(output), elems, sourceOffsetElems);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
+void launchPhasedReduceBlockTyped(
+    MultimemNvlTransportDevice transport,
+    bool accF32,
+    cudaStream_t stream) {
+  if (accF32) {
+    phasedReduceBlockKernel<T, true><<<1, 128, 0, stream>>>(transport);
+  } else {
+    phasedReduceBlockKernel<T, false><<<1, 128, 0, stream>>>(transport);
   }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
@@ -935,6 +982,23 @@ void launchLoadReduce(
     case MultimemReductionTestType::Bfloat16:
       return launchLoadReduceTyped<__nv_bfloat16>(
           transport, accF32, output, elems, sourceOffsetElems, stream);
+  }
+}
+
+void launchPhasedReduceBlock(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float16:
+      return launchPhasedReduceBlockTyped<__half>(transport, accF32, stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchPhasedReduceBlockTyped<__nv_bfloat16>(
+          transport, accF32, stream);
+    case MultimemReductionTestType::Float:
+    case MultimemReductionTestType::Int32:
+      throw std::runtime_error("phased reduce block requires a 2-byte type");
   }
 }
 

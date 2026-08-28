@@ -5,6 +5,7 @@
 #include "comms/common/fault_tolerance/TestAbort.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 
 namespace comms::prims::test {
@@ -37,6 +38,24 @@ __device__ SignalState* boundaryPeerSignals[kBoundaryMaxRanks];
 __global__ void nvlSignalTrapKernel(
     NvlSignalTrapCase testCase,
     AbortDevice waitAbort) {
+  if (testCase == NvlSignalTrapCase::ReducedBlockRangeOutOfBounds) {
+    // A range crossing the 16-byte block boundary must trap before indexing.
+    uint4 reducedBlock{};
+    __half destination[2]{};
+    multimem::store_reduced_block16_range(
+        destination,
+        reducedBlock,
+        /*sourceFirstLane=*/7,
+        /*count=*/2);
+    return;
+  }
+  if (testCase == NvlSignalTrapCase::ReduceBlock16MisalignedSource) {
+    // Offset a 16-byte-aligned allocation by one lane to violate the contract.
+    alignas(16) __half source[9]{};
+    (void)multimem::load_reduce_block16<__half>(source + 1);
+    return;
+  }
+
   auto* trapSignals = reinterpret_cast<SignalState*>(trapSignalStorage);
   SignalState* peerSignals[4] = {
       trapSignals, trapSignals, trapSignals, trapSignals};
