@@ -2489,6 +2489,12 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // Initialize the AlgoFactory which handles customized collective algorithms
   comm->algoFactory = initAlgoFactory(comm);
 
+  // Build the sharded-relay one-shot region now, if it was asked for. Creation
+  // is collective, so doing it here is what lets a captured call use the path:
+  // every rank is in init already, and no later call has to run a bootstrap
+  // all-gather it cannot capture.
+  rcclx::relay::oneShotInit(comm);
+
   NCCLCHECKGOTO(latency_profiler::collTraceInit(comm), res, fail);
   // update communicator state
   comm->initState = ncclSuccess;

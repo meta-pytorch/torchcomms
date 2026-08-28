@@ -190,33 +190,79 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
  public:
   ShardedRelayMultiGroupReduceScatterTest() = default;
 
-  void SetUp() override {
+  // One comm per active-rank shape, created once for the whole binary and
+  // reused by every case, plus a dedicated one for the rank barrier. These used
+  // to be created in SetUp and destroyed in TearDown, so each of the 37 cases
+  // freed everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu
+  // wipe it (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding
+  // mmap_lock for write, so 8 ranks cycling multi-GB comms serialise into a
+  // stall that takes the whole host down. Reusing also matches how comms are
+  // really used: a handful, kept for the life of the process.
+  //
+  // Shapes are kept apart because relay state is per-comm and a comm cannot be
+  // shared between the 2- and 4-active-rank configurations. One store serves
+  // all three, with incrTestCount() between them: the unique-ID rendezvous key
+  // is derived from that counter, so without bumping it the second comm would
+  // read the first one's stale ID. Built eagerly in a fixed order so every rank
+  // consumes the same keys in the same sequence.
+  static void SetUpTestSuite() {
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    barrierComm = makeComm();
+    incrTestCount();
+    commA2 = makeComm();
+    incrTestCount();
+    commA4 = makeComm();
+  }
+
+  static ncclComm_t makeComm() {
+    return createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  // The comm for a given active-rank shape. Every collective call site has
+  // nActiveRanksPerGroup in scope, which is how a test reaches its comm.
+  static ncclComm_t commFor(int nActiveRanksPerGroup) {
+    switch (nActiveRanksPerGroup) {
+      case 2:
+        return commA2;
+      case 4:
+        return commA4;
+      default:
+        ADD_FAILURE() << "no comm cached for nActiveRanksPerGroup="
+                      << nActiveRanksPerGroup;
+        return nullptr;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    for (ncclComm_t* c : {&commA4, &commA2, &barrierComm}) {
+      if (*c != nullptr) {
+        NCCLCHECK_TEST(ncclCommDestroy(*c));
+        *c = nullptr;
+      }
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->commA2, nullptr)
+        << "suite-scoped comms were not created; SetUpTestSuite did not run";
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Standard 8-rank, 4-group, 2-active-per-group sparse parallelism layout.
@@ -435,7 +481,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
           recvCounts.data(),
           ncclBfloat16,
           op,
-          this->comm,
+          this->commFor(nActiveRanksPerGroup),
           this->stream,
           allActiveRanks,
           nActiveRanksPerGroup,
@@ -548,7 +594,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         recvCounts,
         ncclInt32,
         op,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -641,7 +687,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         recvCounts,
         ncclBfloat16,
         op,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         groupConfig.allActiveRanks,
         nActiveRanksPerGroup,
@@ -697,7 +743,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         1,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->barrierComm,
         this->stream));
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
     HIPCHECK_TEST(hipFree(barrierScratch));
@@ -737,12 +783,14 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
     return errorCount;
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
-  ncclComm_t comm;
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
+  static inline ncclComm_t barrierComm{nullptr};
+  static inline ncclComm_t commA2{nullptr};
+  static inline ncclComm_t commA4{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   cudaStream_t stream;
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 /**
@@ -819,7 +867,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -914,7 +962,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1007,7 +1055,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Correctness_4Groups_Avg_64MB) {
       recvCounts,
       ncclInt32,
       ncclAvg,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1121,7 +1169,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Z_BusBW_4Groups_InPlace_1GB) {
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1253,7 +1301,7 @@ TEST_F(
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1361,7 +1409,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Correctness_SingleGroup_64MB) {
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1469,7 +1517,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1606,7 +1654,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1715,7 +1763,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1814,7 +1862,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1915,7 +1963,7 @@ class ShardedRelayReduceScatterSingleGroupA4Test
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -2109,7 +2157,7 @@ class ShardedRelayReduceScatterOverlapA2Test
         recvCounts,
         ncclInt32,
         op,
-        this->comm,
+        this->commFor(activeRanksPerGroup),
         this->stream,
         allActiveRanks,
         A,
@@ -2394,7 +2442,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2487,7 +2535,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclAvg,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2611,7 +2659,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2707,7 +2755,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2799,7 +2847,7 @@ TEST_F(
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
