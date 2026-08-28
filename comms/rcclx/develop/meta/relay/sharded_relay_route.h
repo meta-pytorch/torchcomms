@@ -113,12 +113,14 @@ inline size_t relayMaxCount(const size_t* counts, int nGroups) {
  * A * max(segmentCounts) * elementSize, which equals the bench's per-rank input
  * label.
  *
- * A==2 crossover: the fused relay overtakes the direct exchange at ~9 MB and an
- * independent call at ~27 MB (independent has no cross-group contention, so
- * direct holds on longer); cross over below each. A==4 relays from 27 MB fused
- * / 9 MB independent up, with no upper bound: the 256 MiB ceiling this used to
- * carry was covering an alignment bug in the relay geometry, not a real
- * crossover.
+ * A==2 crossover: measured on the single-group sweep AFTER the tiling and
+ * pipelining work, the relay overtakes the direct exchange at 4.5 MB (relay
+ * 0.077 ms vs direct 0.089 ms; at 2.25 MB it is 0.067 vs 0.066, a tie). The
+ * 27 MB this used to carry was measured before pipelining and left the whole
+ * 4.5-27 MB band on the direct route at ~1.07x when the relay was already
+ * worth 1.26x-2.25x there. A==4 relays from 27 MB fused / 10 MB independent
+ * up, with no upper bound: the 256 MiB ceiling this used to carry was covering
+ * an alignment bug in the relay geometry, not a real crossover.
  */
 inline AllToAllRoute selectAllToAllRoute(
     int nActiveRanksPerGroup,
@@ -132,7 +134,7 @@ inline AllToAllRoute selectAllToAllRoute(
   if (nActiveRanksPerGroup == 2) {
     const size_t pureDirectMaxBytes = (nGroups > 1)
         ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-        : (static_cast<size_t>(27) << 20); // independent: < 27 MB
+        : (static_cast<size_t>(3) << 20); // independent: < 3 MB
     return (maxBytes < pureDirectMaxBytes) ? AllToAllRoute::PureDirect
                                            : AllToAllRoute::A2Relay;
   }
@@ -141,10 +143,10 @@ inline AllToAllRoute selectAllToAllRoute(
   for (int g = 0; g < nGroups; g++) {
     allSegmentCountsPositive &= segmentCounts[g] > 0;
   }
-  constexpr size_t kXorRelayMinBytes = static_cast<size_t>(9) << 20;
+  constexpr size_t kXorRelayMinBytes = static_cast<size_t>(10) << 20;
   const size_t xorRelayMinBytes = (nGroups > 1)
       ? (static_cast<size_t>(27) << 20) // fused: >= 27 MB
-      : kXorRelayMinBytes; // independent: >= 9 MB
+      : kXorRelayMinBytes; // independent: >= 10 MB
   const bool useXorRelay = nActiveRanksPerGroup == 4 && numHelpers == 4 &&
       allSegmentCountsPositive && maxBytes >= xorRelayMinBytes;
   return useXorRelay ? AllToAllRoute::A4XorRelay : AllToAllRoute::PureDirect;
@@ -169,13 +171,13 @@ inline size_t allToAllA4RelayCount(size_t segmentCount) {
  * Size metric is max(sendCounts) * elementSize -- the per-rank input shard
  * label, with no active-rank factor.
  *
- * A==2 crossover: the fused 2-active relay overtakes the direct exchange at
- * ~4.5 MB and an independent call at ~13.5 MB; cross over below each. For A>2
- * the flat path turns a profit on the 2-hop offload from ~12 MB when fused and
- * ~8 MB when independent (an independent call has the cross links to itself).
- * A==2 never takes the offload: it only reaches the flat path in the
- * small-message regime where the relay was already ruled out, so offloading
- * would re-add the hop it was routed there to avoid.
+ * A==2 crossover: measured post-pipelining, the relay overtakes the direct
+ * exchange at 2.25 MB (relay 0.076 ms vs direct 0.090 ms; at 1.125 MB it is
+ * 0.068 vs 0.067, a tie). For A>2 the flat path turns a profit on the 2-hop
+ * offload from 4.5 MB when independent (0.120 vs 0.140). A==2 never takes the
+ * offload: it only reaches the flat path in the small-message regime where the
+ * relay was already ruled out, so offloading would re-add the hop it was routed
+ * there to avoid.
  */
 inline AllGatherRoute selectAllGatherRoute(
     int nActiveRanksPerGroup,
@@ -188,14 +190,14 @@ inline AllGatherRoute selectAllGatherRoute(
   if (nActiveRanksPerGroup == 2) {
     const size_t pureDirectMaxBytes = (nGroups > 1)
         ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-        : (static_cast<size_t>(9) << 20); // independent: < 9 MB
+        : (static_cast<size_t>(2) << 20); // independent: < 2 MB
     return (maxBytes < pureDirectMaxBytes) ? AllGatherRoute::PureDirect
                                            : AllGatherRoute::A2Relay;
   }
 
   const size_t offloadMinBytes = (nGroups > 1)
       ? (static_cast<size_t>(12) << 20) // fused: >= 12 MB
-      : (static_cast<size_t>(8) << 20); // independent: >= 8 MB
+      : (static_cast<size_t>(3) << 20); // independent: >= 3 MB
   const bool useOffload = (numHelpers > 0) && (nActiveRanksPerGroup > 2) &&
       (maxBytes >= offloadMinBytes);
   return useOffload ? AllGatherRoute::FlatOffload : AllGatherRoute::PureDirect;
@@ -208,10 +210,13 @@ inline AllGatherRoute selectAllGatherRoute(
  * label. The A==2 fast path measures 2 * recvCount * elementSize, which is the
  * same value because it is only reachable when A==2.
  *
- * A==2 crossover: the fused relay overtakes the direct exchange at ~9 MB and an
- * independent call at ~27 MB; cross over just below each. For A>2 the offload's
- * extra hop and second group boundary only pay for themselves past ~48 MB;
- * below that the single-group pure-direct reduce-scatter wins outright.
+ * A==2 crossover: measured post-pipelining, the relay overtakes the direct
+ * exchange at 4.5 MB (relay 0.074 ms vs direct 0.089 ms; at 2.25 MB it is 0.065
+ * vs 0.067, a tie). The 27 MB this used to carry predates pipelining. For A>2
+ * the offload's extra hop and second group boundary still only pay for
+ * themselves past ~48 MB -- its relay curve is the one shape pipelining did not
+ * move below 27 MB (0.202 ms vs 0.187 ms direct there) -- so that threshold is
+ * unchanged.
  */
 inline ReduceScatterRoute selectReduceScatterRoute(
     int nActiveRanksPerGroup,
@@ -225,7 +230,7 @@ inline ReduceScatterRoute selectReduceScatterRoute(
   if (nActiveRanksPerGroup == 2) {
     const size_t pureDirectMaxBytes = (nGroups > 1)
         ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-        : (static_cast<size_t>(27) << 20); // independent: < 27 MB
+        : (static_cast<size_t>(3) << 20); // independent: < 3 MB
     return (maxBytes < pureDirectMaxBytes) ? ReduceScatterRoute::PureDirect
                                            : ReduceScatterRoute::A2Relay;
   }
@@ -242,15 +247,14 @@ inline ReduceScatterRoute selectReduceScatterRoute(
  * Size metric is max(counts) * elementSize -- the bench per-rank input label,
  * with no active-rank factor.
  *
- * A==2 crossover: the relay wins big at large sizes (one group spread across
- * all helpers) so the crossover is low, and an independent call has no
- * cross-group contention on the direct link so pure-direct holds on longer
- * (2 MB fused, 6 MB independent). For A>2 the fused sweep phase-syncs every
- * group so the offload cross links stay clean and it pays off almost
- * immediately, while an independent call contends with whatever else is in
- * flight (2 MB fused, 9 MB independent); below the crossover the offload only
- * adds helper-hop latency, so the flat path runs a pure-direct
- * reduce-scatter + all-gather among the active ranks with helpers idle.
+ * A==2 crossover: measured post-pipelining, the relay overtakes the direct
+ * exchange at 2.25 MB (relay 0.080 ms vs direct 0.090 ms; at 1.125 MB it is
+ * 0.073 vs 0.066, still direct). For A>2 the offload wins from 1.125 MB
+ * (0.072 vs 0.076) -- the earliest crossover of any shape, because its
+ * pure-direct alternative is the only 3-launch schedule in the set (direct
+ * reduce-scatter, then a reduce, then a direct all-gather) and it measures
+ * 0.89-0.97x of NCCL at every size, so there is very little for the relay to
+ * beat. The 6 MB / 9 MB these used to carry predate pipelining.
  *
  * Unlike the other three selectors this one does not consult numHelpers: the
  * allreduce predicates it replaces never did.
@@ -265,14 +269,14 @@ inline AllReduceRoute selectAllReduceRoute(
   if (nActiveRanksPerGroup == 2) {
     const size_t pureDirectMaxBytes = (nGroups > 1)
         ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-        : (static_cast<size_t>(6) << 20); // independent: < 6 MB
+        : (static_cast<size_t>(2) << 20); // independent: < 2 MB
     return (maxBytes < pureDirectMaxBytes) ? AllReduceRoute::PureDirect
                                            : AllReduceRoute::A2Relay;
   }
 
   const size_t pureDirectMaxBytes = (nGroups > 1)
       ? (static_cast<size_t>(2) << 20) // fused: < 2 MB
-      : (static_cast<size_t>(9) << 20); // independent: < 9 MB
+      : (static_cast<size_t>(1) << 20); // independent: < 1 MB
   return (maxBytes < pureDirectMaxBytes) ? AllReduceRoute::PureDirect
                                          : AllReduceRoute::FlatOffload;
 }

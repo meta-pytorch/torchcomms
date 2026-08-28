@@ -496,7 +496,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t kThresholdElements = (9ULL * 1024 * 1024) / sizeof(int32_t);
+  constexpr size_t kThresholdElements = (2ULL * 1024 * 1024) / sizeof(int32_t);
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
   runOutOfPlaceRoutingCases(
@@ -531,7 +531,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t kThresholdElements = (8ULL * 1024 * 1024) / sizeof(int32_t);
+  constexpr size_t kThresholdElements = (3ULL * 1024 * 1024) / sizeof(int32_t);
   const int activeRanks[] = {0, 1, 2, 3};
   const int* allActiveRanks[] = {activeRanks};
   runOutOfPlaceRoutingCases(

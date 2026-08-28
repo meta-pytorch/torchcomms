@@ -894,7 +894,7 @@ TEST_F(
       std::vector<size_t>(4, 262145), groupConfig.allActiveRanks, true);
 }
 
-// The independent A=2 cutoff is 27 MiB, or 3538944 int32 elements per segment.
+// The independent A=2 cutoff is 3 MiB, or 393216 int32 elements per segment.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
     Correctness_A2_IndependentThreshold_Below_UnalignedTail) {
@@ -905,7 +905,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538943}, allActiveRanks, false);
+  runA2CorrectnessCase({393215}, allActiveRanks, false);
 }
 
 TEST_F(
@@ -918,7 +918,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538944}, allActiveRanks, true);
+  runA2CorrectnessCase({393216}, allActiveRanks, true);
 }
 
 TEST_F(
@@ -931,7 +931,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538945}, allActiveRanks, true);
+  runA2CorrectnessCase({393217}, allActiveRanks, true);
 }
 
 TEST_F(
@@ -1564,12 +1564,12 @@ TEST_F(
 // tests cover, across the routed and direct regimes.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_SingleGroup_Routed_9MiB) {
+    Correctness_4Active_SingleGroup_Routed_10MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4SingleGroupCorrectnessCase(segmentCount, true);
 }
@@ -1581,7 +1581,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
   runA4SingleGroupCorrectnessCase(segmentCount, false);
 }
@@ -1593,7 +1593,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
   runA4SingleGroupCorrectnessCase(segmentCount, true, true);
 }
@@ -1601,7 +1601,7 @@ TEST_F(
 /**
  * A=4 single group at a size the software pipeline covers.
  *
- * The 9 MiB single-group cases above are just above the routing threshold,
+ * The 10 MiB single-group cases above are just above the routing threshold,
  * which the depth cost model resolves to depth 1 -- so they exercise the
  * unpipelined XOR schedule. 64 MiB per active rank is the first swept size deep
  * enough to tile, so this is the coverage for the pipelined schedule, where

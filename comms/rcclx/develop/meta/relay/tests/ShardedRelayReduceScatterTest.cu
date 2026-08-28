@@ -1532,7 +1532,7 @@ TEST_F(
                  << " available";
   }
 
-  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclSum);
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(3) << 20, ncclSum);
 }
 
 TEST_F(
@@ -1543,7 +1543,7 @@ TEST_F(
                  << " available";
   }
 
-  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclAvg);
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(3) << 20, ncclAvg);
 }
 
 TEST_F(
