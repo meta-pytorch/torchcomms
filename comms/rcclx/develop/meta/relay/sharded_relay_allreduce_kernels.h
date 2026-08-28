@@ -88,7 +88,7 @@ void launchMultiReduceKernel(
  * and writes the same element index.
  */
 template <typename T>
-void launchOneShotReduceScatterKernel(
+void launchOneShotPushReduceKernel(
     void* out,
     const void* sendBuff,
     const rcclx::relay::OneShotPeerTable& table,
@@ -97,6 +97,8 @@ void launchOneShotReduceScatterKernel(
     int myRank,
     int mySlot,
     size_t rc,
+    size_t srcStride,
+    size_t ownOffset,
     size_t slotBytes,
     uint32_t epoch,
     int divisor,
@@ -147,7 +149,7 @@ void launchSeededMultiReduceKernel(
       size_t count,                                                        \
       int divisor,                                                         \
       cudaStream_t stream);                                                \
-  extern template void launchOneShotReduceScatterKernel<T>(                \
+  extern template void launchOneShotPushReduceKernel<T>(                   \
       void* out,                                                           \
       const void* sendBuff,                                                \
       const rcclx::relay::OneShotPeerTable& table,                         \
@@ -156,6 +158,8 @@ void launchSeededMultiReduceKernel(
       int myRank,                                                          \
       int mySlot,                                                          \
       size_t rc,                                                           \
+      size_t srcStride,                                                    \
+      size_t ownOffset,                                                    \
       size_t slotBytes,                                                    \
       uint32_t epoch,                                                      \
       int divisor,                                                         \
