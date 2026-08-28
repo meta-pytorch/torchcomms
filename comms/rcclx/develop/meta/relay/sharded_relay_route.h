@@ -304,26 +304,34 @@ inline constexpr int kRelayMaxPipelineTiles = 4;
 inline constexpr size_t kRelayPipelineBoundaryBytes = 768u << 10;
 
 /**
- * Geometry a single-group relay's software pipeline has, in units of the
+ * Geometry of a single-group relay's software pipeline, in units of the
  * smallest chunk the schedule moves.
  *
- * A relay schedule is described by two linear functions of the depth T:
- *   totalUnits(T)  how many units the relayed count divides into, so one unit
- * is count / totalUnits(T) linkUnits(T)   how many units the busiest link
- * direction ends up carrying, which is what the call actually costs Both are
- * affine in T, so each is a (perTile, fixed) pair. The depth-1 case always
- * reproduces the existing two-group schedule, which is the check that a shape
- * is written correctly.
+ * A schedule is described by two affine functions of the depth T, each a
+ * (perTile, fixed) pair:
  *
- * The four shipped shapes, on an 8-GPU node (H helpers):
+ * - totalUnits(T): how many units the relayed count divides into. One unit is
+ *   count / totalUnits(T).
+ * - linkUnits(T): how many units the busiest link direction carries, which is
+ *   what the call actually costs.
  *
- *   2-active, all four collectives   link {1, 1}   total {H+1, 1}
- *     One unit per link per group. count/4 at T = 1 -> count/7 as T grows.
+ * Depth 1 always reproduces the existing two-group schedule, which is the check
+ * that a shape is written correctly.
  *
- *   4-active all-to-all              link {1, 1}   total {2, 1}
- *     One unit up and one down per cross link per group, matched by one direct
- *     unit on the intra links. 2*count/3 at T = 1 -> count/2.
+ * The shipped shapes, for A active ranks and H helpers:
  *
+ * - 2-active, all four collectives. link {1, 1}, total {H+1, 1}. One unit per
+ *   link per group; count/4 at T = 1 falling towards count/7 at H = 6.
+ * - 4-active all-to-all. link {1, 1}, total {2, 1}. One unit up and one down
+ * per cross link per group, matched by one direct unit on the intra links;
+ *   2*count/3 at T = 1 falling towards count/2.
+ * - A>2 all-gather fanout. link {A-1, 1}, total {H+A-1, 1}. Asymmetric: the
+ *   helper fans each source's slice out to the A-1 other destinations, so one
+ *   direction of the cross link carries A-1 units for every 1 the other
+ *   carries and merging is bounded by the heavy direction. At A = H = 4 that
+ *   is link {3, 1} / total {7, 1}: count/2 at T = 1 falling towards
+ *   3*count/7, which is also the hard floor since an active rank must take in
+ *   A-1 whole buffers across its 7 links.
  */
 struct RelayPipelineShape {
   int linkPerTile;
@@ -336,6 +344,17 @@ inline constexpr RelayPipelineShape relayShapeA2(int numHelpers) {
   return {1, 1, numHelpers + 1, 1};
 }
 inline constexpr RelayPipelineShape kRelayShapeA4AllToAll = {1, 1, 2, 1};
+
+// The all-gather fanout schedule's layout consumes H*T + 1 + (T-1)*(A-1) units
+// before its final direct chunk, so totalUnits must be at least that for
+// directSize(T) = count - directOffset(T) not to underflow. Deriving both
+// members from A and H keeps the shape and the kernel's own layout in step for
+// every geometry buildShardedRelayRankConfig() accepts, not just A = H = 4.
+inline constexpr RelayPipelineShape relayShapeFanout(
+    int nActiveRanks,
+    int numHelpers) {
+  return {nActiveRanks - 1, 1, numHelpers + nActiveRanks - 1, 1};
+}
 
 /**
  * Software-pipeline depth for a single-group relay.
