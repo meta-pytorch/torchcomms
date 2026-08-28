@@ -11,6 +11,7 @@
 #include "nccl.h"
 #include "nccl_common.h"
 #include <stdio.h>
+#include <string_view>
 #include <thread>
 #include "compiler.h"
 
@@ -43,12 +44,30 @@ void ncclDebugLogInternal(ncclDebugLogLevel level, unsigned long flags, const ch
                           const char* fmt, ...);
 #endif
 
+/* Same signature and behaviour as ncclDebugLogInternal, kept as a separate
+ * symbol because the shared (version-independent) Meta code under
+ * comms/ncclx/meta/ links against this name across v2_29/v2_30/v2_31.
+ */
+void ncclMetaDebugLog(ncclDebugLogLevel level, unsigned long flags, const char* file, const char* func, int line,
+                      const char* fmt, ...) __attribute__((format(printf, 6, 7)));
+
+/* Root-cause error log. Carries the ncclResult_t, so it can write the Scuba
+ * error record and set ncclGetLastError() state at the origin site rather than
+ * at every propagating check-macro layer. Defined in
+ * comms/ncclx/meta/logger/DebugExt.cc.
+ */
+void ncclMetaDebugLogError(ncclResult_t code, unsigned long flags, const char* file, const char* func, int line,
+                           const char* fmt, ...) __attribute__((format(printf, 6, 7)));
+
+void ncclSetMyThreadLoggingName(std::string_view name);
+
 // Let code temporarily downgrade WARN into INFO
 extern thread_local int ncclDebugNoWarn;
 extern char ncclLastError[];
 
-#define VERSION(...) ncclDebugLogInternal(NCCL_LOG_VERSION, NCCL_ALL, nullptr, nullptr, 0, __VA_ARGS__)
+#define VERSION(...) ncclDebugLogInternal(NCCL_LOG_VERSION, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
 #define WARN(...) ncclDebugLogInternal(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+#define ERR(code, ...) ncclMetaDebugLogError((code), NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
 
 #define NOWARN(EXPR, FLAGS) \
   do { \
@@ -62,7 +81,7 @@ extern char ncclLastError[];
   do { \
     int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
     if ((level >= NCCL_LOG_INFO && ((FLAGS) & ncclDebugMask)) || (level < 0)) \
-      ncclDebugLogInternal(NCCL_LOG_INFO, (FLAGS), nullptr, nullptr, 0, __VA_ARGS__); \
+      ncclDebugLogInternal(NCCL_LOG_INFO, (FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
   } while (0)
 
 #define INFO_LOC_FN(FLAGS, file, line, fn, fmt, ...) \
@@ -73,7 +92,7 @@ extern char ncclLastError[];
   do { \
     int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
     if ((level >= NCCL_LOG_TRACE && (NCCL_CALL & ncclDebugMask)) || (level < 0)) { \
-      ncclDebugLogInternal(NCCL_LOG_TRACE, NCCL_CALL, nullptr, __func__, __LINE__, __VA_ARGS__); \
+      ncclDebugLogInternal(NCCL_LOG_TRACE, NCCL_CALL, __FILE__, __func__, __LINE__, __VA_ARGS__); \
     } \
   } while (0)
 
@@ -82,7 +101,7 @@ extern char ncclLastError[];
   do { \
     int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
     if ((level >= NCCL_LOG_TRACE && ((FLAGS) & ncclDebugMask)) || (level < 0)) { \
-      ncclDebugLogInternal(NCCL_LOG_TRACE, (FLAGS), nullptr, __func__, __LINE__, __VA_ARGS__); \
+      ncclDebugLogInternal(NCCL_LOG_TRACE, (FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
     } \
   } while (0)
 #define TRACE_LOC_FN(FLAGS, file, line, fn, fmt, ...) \
@@ -93,6 +112,19 @@ extern char ncclLastError[];
 #define TRACE_LOC_FN(FLAGS, file, line, fn, fmt, ...)
 #define TRACE_LOC(FLAGS, fmt, ...)
 #endif
+
+#define NCCL_NAMED_THREAD_START(threadName) \
+  do { \
+    ncclSetMyThreadLoggingName(threadName); \
+    INFO(NCCL_INIT, "[NCCL THREAD] Starting %s thread at %s", threadName, __func__); \
+  } while (0)
+
+#define NCCL_NAMED_THREAD_START_EXT(threadName, rank, commHash, commDesc) \
+  do { \
+    ncclSetMyThreadLoggingName(threadName); \
+    INFO(NCCL_INIT, "[NCCL THREAD] Starting %s thread for rank %d commHash %lx commDesc %s at %s", threadName, rank, \
+         commHash, commDesc.c_str(), __func__); \
+  } while (0)
 
 void ncclSetThreadName(std::thread& thread, const char* fmt, ...);
 #ifdef __cplusplus
