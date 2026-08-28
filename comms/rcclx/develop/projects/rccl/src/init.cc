@@ -72,6 +72,7 @@
 #include "rccl_common.h"
 #include "meta/lpcoll/low_precision_buffer_pool.h"
 #include "meta/relay/sharded_relay_oneshot.h"
+#include "meta/relay/relay_control.h"
 // [/RCCL]
 
 #ifdef ENABLE_ROCSHMEM
@@ -531,6 +532,12 @@ static ncclResult_t commFree(ncclComm_t comm) {
   // no-sync-among-ranks contract of commFree(); a no-op for a comm that never
   // took the one-shot path.
   rcclx::relay::oneShotRelease(comm);
+
+  // Same reasoning, and the same single point of truth: commFree() is where the
+  // relay learns the comm is going away. Purely local -- an munmap plus, for the
+  // creating rank, an shm_unlink -- so it respects commFree()'s
+  // no-sync-among-ranks contract, and a no-op for a comm that never built one.
+  rcclx::relay::relayControlRelease(comm);
 
   if (comm->symmetricSupport) {
     NCCLCHECK(ncclSymkFinalize(comm));
@@ -2494,6 +2501,13 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // every rank is in init already, and no later call has to run a bootstrap
   // all-gather it cannot capture.
   rcclx::relay::oneShotInit(comm);
+
+  // And the control plane segment, for the same reason: setup is collective (two
+  // bootstrap all-gathers, enabled only on unanimity), so init is the one place
+  // it is free. Every rank is already here, and no later call has to run a
+  // bootstrap all-gather it cannot capture -- which is exactly the position the
+  // first call of a graph capture would be in.
+  rcclx::relay::relayControlInit(comm);
 
   NCCLCHECKGOTO(latency_profiler::collTraceInit(comm), res, fail);
   // update communicator state
