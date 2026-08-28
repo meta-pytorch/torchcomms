@@ -5,8 +5,14 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include <new>
+
 #include "common.h"
 #include "p2p_resiliency_recovery.h"
+// [NCCLX-PerCommConfig] Per-comm IB config via side-channel
+#include "meta/NcclxConfig.h"
+#include "meta/transport/NcclxIbNetCommConfig.h"
+#include "meta/transport/NcclxNetPluginHelper.h"
 
 NCCL_PARAM(IbPciRelaxedOrdering, "IB_PCI_RELAXED_ORDERING", 2);
 NCCL_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
@@ -526,14 +532,32 @@ fail:
 
 ncclResult_t ncclIbInit(void** ctx, uint64_t commId, ncclNetCommConfig_t* config, ncclDebugLogger_t logFunction,
                         ncclProfilerCallback_t profFunction) {
-  ncclResult_t ret = ncclSuccess;
-  ncclNetCommConfig_t* netCommConfig = nullptr;
   NCCLCHECK(ncclIbInitDevices(logFunction, profFunction));
   NCCLCHECK(ncclIbPortRecoveryThreadStart());
-  NCCLCHECK(ncclCalloc(&netCommConfig, 1));
-  netCommConfig->trafficClass = config->trafficClass;
-  *ctx = (void*)netCommConfig;
-  return ret;
+  // [NCCLX-PerCommConfig] Allocate extended ctx with per-comm IB overrides.
+  // NcclxIbNetCommConfig is a superset of ncclNetCommConfig_t, so the upstream
+  // readers of *ctx are unaffected; ncclIbFinalize deletes it as the same type.
+  // Use nothrow: ncclIbInit is a C-style plugin callback returning ncclResult_t,
+  // so a std::bad_alloc must not propagate up through exception-unsafe callers.
+  auto* ncclxConfig = new (std::nothrow) ncclx::NcclxIbNetCommConfig();
+  if (ncclxConfig == nullptr) return ncclSystemError;
+  ncclxConfig->trafficClass = config->trafficClass;
+
+  const ncclConfig_t* commConfig = ncclxGetCurrentCommConfig();
+  if (commConfig && commConfig->ncclxConfig) {
+    auto& ibSplit = NCCLX_CONFIG_FIELD(*commConfig, ibSplitDataOnQps);
+    if (ibSplit.has_value()) {
+      ncclxConfig->ibSplitDataOnQps = ibSplit.value();
+    }
+
+    auto& ibQps = NCCLX_CONFIG_FIELD(*commConfig, ibQpsPerConnection);
+    if (ibQps.has_value()) {
+      ncclxConfig->ibQpsPerConnection = ibQps.value();
+    }
+  }
+
+  *ctx = (void*)ncclxConfig;
+  return ncclSuccess;
 }
 
 ncclResult_t ncclIbDevices(int* ndev) {
@@ -588,7 +612,8 @@ ncclResult_t ncclIbGetProperties(int dev, ncclNetProperties_t* props) {
 }
 
 ncclResult_t ncclIbFinalize(void* ctx) {
-  free(ctx);
+  // [NCCLX-PerCommConfig] Free extended ctx (NcclxIbNetCommConfig, not ncclNetCommConfig_t)
+  delete static_cast<ncclx::NcclxIbNetCommConfig*>(ctx);
   NCCLCHECK(ncclIbPortRecoveryThreadStop());
   return ncclIbFinalizeDevices();
 }

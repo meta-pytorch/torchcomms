@@ -112,6 +112,28 @@ comm->ctx = ctx; // [NCCLX-PerCommConfig] store ctx for ncclIbAccept
 
 **Why in baseline**: `ncclIbConnect` and `ncclIbAccept` are where QPs are created and `splitDataOnQps`/`nqps`/`cqSize` are computed. The values must be set at connection time.
 
+### 6. `src/transport/net_ib/gin.cc` — Extended IB ctx allocation (GIN path)
+
+**Include added**: `meta/transport/NcclxIbNetCommConfig.h`
+
+**Function**: `ncclGinIbInitType()`
+
+**Change**: Same ctx upgrade as `ncclIbInit()`. The GIN backend routes through `ncclIbListen`/`ncclIbConnect`/`ncclIbAccept`, which now cast `ctx` to `ncclx::NcclxIbNetCommConfig*`. Allocating a plain `ncclNetCommConfig_t` here would make those casts read past the allocation, so the ctx must be allocated as `NcclxIbNetCommConfig`.
+
+```cpp
+// [NCCLX-PerCommConfig] Allocate NcclxIbNetCommConfig (not ncclNetCommConfig_t)
+auto* ncclxConfig = new (std::nothrow) ncclx::NcclxIbNetCommConfig();
+if (ncclxConfig == nullptr) return ncclSystemError;
+ncclxConfig->trafficClass = NCCL_NET_TRAFFIC_CLASS_UNDEF;
+*ctx = ncclxConfig;
+```
+
+**Function**: `ncclGinIbFinalize()`
+
+**Change**: Uses `delete static_cast<ncclx::NcclxIbNetCommConfig*>(ctx)` instead of `free(ctx)`.
+
+**Why in baseline**: GIN allocates its own IB ctx and passes it into the shared IB transport entry points, so it must match the ctx type those entry points expect.
+
 ## NCCLX meta/ Files (not baseline)
 
 These files contain the NCCLX-side logic and are not part of NCCL baseline:
@@ -138,3 +160,4 @@ To remove per-comm config from the baseline:
 3. `src/transport/net_ib/init.cc`: Revert `ncclIbInit()` to allocate `ncclNetCommConfig_t` via `ncclCalloc`; revert `ncclIbFinalize()` to `free(ctx)`; remove meta/ includes
 4. `src/transport/net_ib/common.h`: Remove `void* ctx` from `ncclIbListenComm`
 5. `src/transport/net_ib/connect.cc`: Remove `NcclxIbNetCommConfig.h` include; remove `comm->ctx = ctx` in `ncclIbListen`; remove `ncclxIbCommInit` calls; revert `qpsPerConn`/`qpsPerConnAccept` to use `ncclParamIbQpsPerConn()` directly; revert ctx cast to `ncclNetCommConfig_t*`
+6. `src/transport/net_ib/gin.cc`: Remove the `NcclxIbNetCommConfig.h` include; revert `ncclGinIbInitType()` to allocate `ncclNetCommConfig_t` via `ncclCalloc`; revert `ncclGinIbFinalize()` to `free(ctx)`

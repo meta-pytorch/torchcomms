@@ -10,6 +10,9 @@
 #include "p2p.h"
 #include "p2p_resiliency.h"
 
+// [NCCLX-PerCommConfig] Per-comm IB config helpers
+#include "meta/transport/NcclxIbNetCommConfig.h"
+
 NCCL_PARAM(IbGidIndex, "IB_GID_INDEX", -1);
 NCCL_PARAM(IbRoutableFlidIbGidIndex, "IB_ROUTABLE_FLID_GID_INDEX", 1);
 NCCL_PARAM(IbRoceVersionNum, "IB_ROCE_VERSION_NUM", 2);
@@ -634,6 +637,7 @@ ncclResult_t ncclIbListen(void* ctx, int dev, void* opaqueHandle, void** listenC
   static_assert(sizeof(struct ncclIbHandle) < NCCL_NET_HANDLE_MAXSIZE, "ncclIbHandle size too large");
   memset(handle, 0, sizeof(struct ncclIbHandle));
   comm->dev = dev;
+  comm->ctx = ctx; // [NCCLX-PerCommConfig] store ctx for ncclIbAccept
   handle->magic = ncclSocketDefaultMagic();
   NCCLCHECKGOTO(ncclSocketInit(&comm->sock, &ncclIbIfAddr, handle->magic, ncclSocketTypeNetIb, NULL, 1), ret, fail);
   NCCLCHECKGOTO(ncclSocketListen(&comm->sock), ret, fail);
@@ -857,6 +861,8 @@ ncclResult_t ncclIbConnectImpl(void* ctx, int dev, void* opaqueHandle, void** se
 
   NCCLCHECK(ncclIbMalloc((void**)&comm, sizeof(struct ncclIbSendComm)));
   NCCLCHECKGOTO(ncclIbSendCommInit(comm), ret, fail);
+  // [NCCLX-PerCommConfig] Apply per-comm IB overrides (splitDataOnQps)
+  ncclx::ncclxIbCommInit(comm, ctx);
   NCCLCHECKGOTO(ncclIbStatsInit(&comm->base.stats), ret, fail);
   NCCLCHECKGOTO(ncclSocketInit(&comm->base.sock, &handle->connectAddr, handle->magic, ncclSocketTypeNetIb, NULL, 1),
                 ret, fail);
@@ -1132,7 +1138,12 @@ fail:
 
 ncclResult_t ncclIbConnect(void* ctx, int dev, void* opaqueHandle, void** sendComm,
                            ncclNetDeviceHandle_t** sendDevComm) {
-  return ncclIbConnectImpl(ctx, dev, opaqueHandle, sendComm, sendDevComm, ncclParamIbQpsPerConn(), ncclParamIbTc());
+  // [NCCLX-PerCommConfig] Resolve the per-comm qpsPerConnection override here.
+  // 2.31 takes nQpsPerDev as a parameter, so unlike v2_30 this needs no helper
+  // threaded through the goto-driven state machine in ncclIbConnectImpl.
+  return ncclIbConnectImpl(ctx, dev, opaqueHandle, sendComm, sendDevComm,
+                           ncclx::ibResolveQpsPerConnection((ncclx::NcclxIbNetCommConfig*)ctx, ncclParamIbQpsPerConn()),
+                           ncclParamIbTc());
 }
 
 NCCL_PARAM(IbWarnRailLocal, "IB_WARN_RAIL_LOCAL", 0);
@@ -1441,6 +1452,8 @@ ncclResult_t ncclIbAcceptImpl(void* listenComm, void** recvComm, ncclNetDeviceHa
 
   NCCLCHECK(ncclIbMalloc((void**)&rComm, sizeof(struct ncclIbRecvComm)));
   NCCLCHECKGOTO(ncclIbRecvCommInit(rComm), ret, fail);
+  // [NCCLX-PerCommConfig] Apply per-comm IB overrides (splitDataOnQps)
+  ncclx::ncclxIbCommInit(rComm, lComm->ctx);
   NCCLCHECKGOTO(ncclIbStatsInit(&rComm->base.stats), ret, fail);
   stage->comm = rComm;
   stage->state = ncclIbCommStateAccept;
@@ -1712,7 +1725,12 @@ fail:
 }
 
 ncclResult_t ncclIbAccept(void* listenComm, void** recvComm, ncclNetDeviceHandle_t** recvDevComm) {
-  return ncclIbAcceptImpl(listenComm, recvComm, recvDevComm, ncclParamIbQpsPerConn());
+  // [NCCLX-PerCommConfig] Resolve the per-comm qpsPerConnection override from
+  // the ctx ncclIbListen stashed on the listen comm.
+  auto* lComm = (struct ncclIbListenComm*)listenComm;
+  return ncclIbAcceptImpl(listenComm, recvComm, recvDevComm,
+                          ncclx::ibResolveQpsPerConnection((ncclx::NcclxIbNetCommConfig*)lComm->ctx,
+                                                           ncclParamIbQpsPerConn()));
 }
 
 ncclResult_t ncclIbCloseSend(void* sendComm) {
