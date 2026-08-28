@@ -6,11 +6,11 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -33,8 +33,8 @@ template <typename P>
 struct LLImpl {
   using FlagType = typename P::FlagType;
 
-  // Spins between timeout clock reads. A power-of-two minus one so the check
-  // is a mask, not a modulo.
+  // Spins between abortDevice clock reads. A power-of-two minus one so the
+  // check is a mask, not a modulo.
   static constexpr uint32_t kTimeoutPollMask = 1023;
 
   // Replicate the (32-bit) flagVal across a 64-bit flag word, so an 8 B flag
@@ -212,11 +212,11 @@ struct LLImpl {
   /// Wait until every packet covering `nbytes` carries flag == `flagVal`, then
   /// decode its payload into `dst`. Cooperative across `group`; each thread
   /// spins only on the packets it owns.
-  // `timeout` bounds the readiness spin. Unlike Simple, LL's readiness lives in
-  // the payload, so the wait happens HERE rather than in wait_signal -- without
-  // a deadline a lost WQE, a dead peer, or a flagVal desync spins forever and
-  // then holds the whole group at the group.sync() below. Each thread polls
-  // only the packets it owns, so the check is per-thread
+  // `abortDevice` bounds the readiness spin. Unlike Simple, LL's readiness
+  // lives in the payload, so the wait happens HERE rather than in wait_signal
+  // -- without a deadline a lost WQE, a dead peer, or a flagVal desync spins
+  // forever and then holds the whole group at the group.sync() below. Each
+  // thread polls only the packets it owns, so the check is per-thread
   // (FT_ABORT_BREAK) and not the leader-only group form. The
   // clock is read once per kTimeoutPollMask+1 spins: LL is the latency path,
   // and a clock64() on every poll is a measurable cost on a hot loop.
@@ -232,7 +232,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__
     const std::size_t nPackets = P::packet_count(nbytes);
     const auto* base = reinterpret_cast<const char*>(staging);
@@ -249,7 +249,7 @@ struct LLImpl {
         // single abort-aware spin loop in this file.
         bool abandoned = false;
         const uint32_t data =
-            load_ready_payload(pkt, flagVal, timeout, abandoned);
+            load_ready_payload(pkt, flagVal, abortDevice, abandoned);
         // Leaves the packet loop as well: load_ready_payload only exits its own
         // spin. `dst` is undefined from here, which the abort contract permits.
         if (abandoned) {
@@ -270,7 +270,7 @@ struct LLImpl {
           // Spin until this packet's flag reaches the current flagVal.
           if ((++spins & kTimeoutPollMask) == 0) {
             FT_ABORT_BREAK(
-                timeout,
+                abortDevice,
                 "LLImpl::unpack waiting for LL flag %u on packet %llu",
                 (unsigned)flagVal,
                 (unsigned long long)i);
@@ -278,7 +278,7 @@ struct LLImpl {
         }
         if (spins >= kTimeoutPollMask) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "LLImpl::unpack abandoning decode at packet %llu",
               (unsigned long long)i);
         }
@@ -324,7 +324,7 @@ struct LLImpl {
   __device__ __forceinline__ static uint32_t load_ready_payload(
       const char* pkt,
       FlagType flagVal,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       bool& abandoned) {
 #ifdef __CUDA_ARCH__
     const auto* p = reinterpret_cast<const volatile uint64_t*>(pkt);
@@ -337,7 +337,7 @@ struct LLImpl {
         // unwind, not kill the CUDA context from inside LL decode. CHECK rather
         // than BREAK so the flag can be raised before leaving the spin.
         if (FT_ABORT_CHECK(
-                timeout,
+                abortDevice,
                 "LLImpl::load_ready_payload waiting for LL flag %u",
                 (unsigned)flagVal)) {
           abandoned = true;
@@ -350,7 +350,7 @@ struct LLImpl {
 #else
     (void)pkt;
     (void)flagVal;
-    (void)timeout;
+    (void)abortDevice;
     (void)abandoned;
     return 0;
 #endif
@@ -392,7 +392,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__
     constexpr std::size_t kData = static_cast<std::size_t>(P::kData);
     constexpr std::size_t kPacket = static_cast<std::size_t>(P::kPacketBytes);
@@ -404,8 +404,8 @@ struct LLImpl {
       for (std::size_t i = group.thread_id_in_group; i < nPackets;
            i += group.group_size) {
         bool abandoned = false;
-        const uint32_t data =
-            load_ready_payload(base + i * kPacket, flagVal, timeout, abandoned);
+        const uint32_t data = load_ready_payload(
+            base + i * kPacket, flagVal, abortDevice, abandoned);
         // `accum` is undefined from here, which the abort contract permits.
         if (abandoned) {
           break;
@@ -450,7 +450,7 @@ struct LLImpl {
           const uint32_t word = load_ready_payload(
               base + (e * kPacketsPerElem + k) * kPacket,
               flagVal,
-              timeout,
+              abortDevice,
               abandoned);
           if (abandoned) {
             break;
@@ -477,7 +477,7 @@ struct LLImpl {
     (void)staging;
     (void)nbytes;
     (void)flagVal;
-    (void)timeout;
+    (void)abortDevice;
 #endif
   }
 };

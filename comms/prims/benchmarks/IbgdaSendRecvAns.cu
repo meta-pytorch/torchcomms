@@ -11,10 +11,10 @@
 
 #include "comms/prims/benchmarks/IbgdaSendRecvAns.h"
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::benchmark {
@@ -50,7 +50,7 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
         P2pIbgdaTransportDevice* transport,
         char* src,
         std::size_t totalBytes,
-        Timeout timeout) {
+        AbortDevice abortDevice) {
   auto group = make_block_group();
 
   const std::size_t sectionBytes = ans_section_bytes(transport, totalBytes);
@@ -68,7 +68,7 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
         tiles.data(),
         tiles.bytes(),
         /*max_signal_bytes=*/0,
-        timeout,
+        abortDevice,
         /*alignedAuxBuf=*/static_cast<char*>(nullptr));
   }
 }
@@ -78,7 +78,7 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
         P2pIbgdaTransportDevice* transport,
         char* dst,
         std::size_t totalBytes,
-        Timeout timeout) {
+        AbortDevice abortDevice) {
   auto group = make_block_group();
 
   const std::size_t sectionBytes = ans_section_bytes(transport, totalBytes);
@@ -89,7 +89,11 @@ __global__ void __launch_bounds__(kAnsNumWarps * 32, kAnsMinBlocksPerSm)
     // max_signal_bytes = 0: exercise the transport's 0-sentinel (derives the
     // trap-safe chunk size via CopyOp::max_safe_chunk_size_for_slot()).
     transport->recv<BenchAnsCompress>(
-        group, tiles.data(), tiles.bytes(), /*max_signal_bytes=*/0, timeout);
+        group,
+        tiles.data(),
+        tiles.bytes(),
+        /*max_signal_bytes=*/0,
+        abortDevice);
   }
 }
 
@@ -99,9 +103,9 @@ void launch_ibgda_send_ans(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   ibgda_send_ans_kernel<<<numBlocks, kAnsNumWarps * 32, 0, stream>>>(
-      transport, src, nbytes, timeout);
+      transport, src, nbytes, abortDevice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
@@ -115,9 +119,9 @@ void launch_ibgda_recv_ans(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   ibgda_recv_ans_kernel<<<numBlocks, kAnsNumWarps * 32, 0, stream>>>(
-      transport, dst, nbytes, timeout);
+      transport, dst, nbytes, abortDevice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(

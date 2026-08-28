@@ -271,12 +271,11 @@ INSTANTIATE_TEST_SUITE_P(
       return std::get<0>(info.param);
     });
 
-// Profiler test subclass: enables profiler in SetUp so ctran::Profiler is
+// Profiler test subclass: samples every collective so ctran::Profiler is
 // created during ctranInit, then injects MockAlgoProfilerReporter.
 class CtranAllReduceProfilerTest : public CtranAllReduceTest {
  protected:
   void SetUp() override {
-    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 1);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 1);
     CtranAllReduceTest::SetUp();
   }

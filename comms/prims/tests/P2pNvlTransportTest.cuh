@@ -24,7 +24,7 @@ void testTileSend(
     void* src_d,
     size_t nbytes,
     size_t maxSignalBytes,
-    Timeout timeout,
+    AbortDevice abortDevice,
     int numBlocks,
     int blockSize,
     cudaStream_t stream = nullptr);
@@ -34,7 +34,7 @@ void testTileRecv(
     void* dst_d,
     size_t nbytes,
     size_t maxSignalBytes,
-    Timeout timeout,
+    AbortDevice abortDevice,
     int numBlocks,
     int blockSize,
     cudaStream_t stream = nullptr);
@@ -62,7 +62,7 @@ void testTileTwoCallVariableSignalSendRecv(
     size_t secondMaxSignalBytes,
     bool waitForSecondCallSignal,
     int blockSize,
-    Timeout timeout = Timeout(),
+    AbortDevice abortDevice = AbortDevice(),
     cudaStream_t stream = nullptr);
 
 void testTileTwoCallSendThenRecv(
@@ -74,7 +74,7 @@ void testTileTwoCallSendThenRecv(
     size_t secondCallBytes,
     size_t maxSignalBytes,
     int blockSize,
-    Timeout timeout = Timeout(),
+    AbortDevice abortDevice = AbortDevice(),
     cudaStream_t stream = nullptr);
 
 void testTileMultiCallSendOnly(

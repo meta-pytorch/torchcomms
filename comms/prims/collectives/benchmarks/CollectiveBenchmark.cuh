@@ -6,7 +6,7 @@
 
 #include "comms/prims/collectives/AllGather.cuh"
 #include "comms/prims/collectives/AllToAllv.cuh"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 namespace comms::prims::benchmark {
 
@@ -21,7 +21,7 @@ __global__ void all_to_allv_kernel(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 /**
  * AllGather benchmark kernel.
@@ -35,6 +35,6 @@ __global__ void all_gather_kernel(
     std::size_t sendcount,
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 } // namespace comms::prims::benchmark

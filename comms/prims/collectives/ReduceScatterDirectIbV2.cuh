@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
@@ -39,6 +39,6 @@ void launch_direct_reduce_scatter_ib_v2(
     int num_blocks,
     int block_threads,
     cudaStream_t stream,
-    Timeout timeout);
+    AbortDevice abortDevice);
 
 } // namespace comms::prims

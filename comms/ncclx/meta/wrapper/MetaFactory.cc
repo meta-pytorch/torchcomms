@@ -38,6 +38,7 @@ ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
       .commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc),
+      .enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0,
   };
   if (comm->config.ncclxConfig != nullptr) {
     const auto* ncclxCfg =

@@ -142,7 +142,7 @@ __global__ void aggregateSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -176,7 +176,7 @@ __global__ void perPeerSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
@@ -203,7 +203,7 @@ __global__ void aggregateAckSignalProtocolKernel(
       StageRound{.channel = 0, .value = roundValue},
       makeAckParticipants(transport),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -232,7 +232,7 @@ __global__ void multiChannelAggregateSignalKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
     const uint64_t signalId = layout.signalBase +
@@ -258,7 +258,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/true),
       group,
-      Timeout{});
+      AbortDevice{});
 
   if (transport.nvlRank == transport.nvlRanks - 1) {
     __nanosleep(100'000'000);
@@ -272,7 +272,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -310,7 +310,7 @@ __global__ void aggregateMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.thread_id_in_group == kPayloadLane) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -354,7 +354,7 @@ __global__ void perPeerMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.is_leader()) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -378,7 +378,7 @@ __global__ void separatePublishAndWaitKernel(
         NvlSignalAccess::Unicast,
         NvlSignalTopology::PerPeer,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
   } else {
     signal_publish<
         NvlSignalAccess::Unicast,
@@ -404,6 +404,41 @@ __global__ void initializeAggregateSignalsKernel(
   }
 }
 
+__global__ void blockAggregateBarrierKernel(
+    MultimemNvlTransportDevice transport,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues) {
+  auto block = make_block_group();
+  auto* local = reinterpret_cast<int32_t*>(transport.localData);
+  const auto* multicast =
+      reinterpret_cast<const int32_t*>(transport.multimemData);
+  for (uint32_t epoch = 0; epoch < epochs; ++epoch) {
+    const std::size_t offset =
+        (static_cast<std::size_t>(epoch) * gridDim.x + blockIdx.x) * blockDim.x;
+    local[offset + threadIdx.x] = transport.nvlRank + 1 +
+        static_cast<int32_t>(10 * epoch + 100 * blockIdx.x);
+    nvl_block_barrier(
+        transport, static_cast<uint32_t>(blockIdx.x), block, AbortDevice{});
+    multimem::load_reduce_at<int32_t>(
+        block, reducedValues + offset, multicast + offset, blockDim.x);
+  }
+
+  block.sync();
+  if (threadIdx.x < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(blockIdx.x) * transport.signalsPerChannel +
+        static_cast<uint64_t>(3 * transport.nvlRanks) +
+        static_cast<uint64_t>(4 * threadIdx.x);
+    const std::size_t outputBase =
+        static_cast<std::size_t>(blockIdx.x) * 2 * transport.pipelineDepth;
+    signalValues[outputBase + threadIdx.x] =
+        transport.internalLocalSignals[signalId].load();
+    signalValues[outputBase + transport.pipelineDepth + threadIdx.x] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
 __global__ void perPeerWaitOnlyKernel(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,
@@ -418,7 +453,7 @@ __global__ void perPeerWaitOnlyKernel(
       StageRound{.channel = 0, .value = roundValue},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
     out[source] = transport.internalLocalSignals[source].load();
@@ -828,6 +863,18 @@ void launchInitializeAggregateSignals(
     cudaStream_t stream) {
   initializeAggregateSignalsKernel<<<1, 32, 0, stream>>>(
       transport, counterValue, epochValue);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchBlockAggregateBarrier(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues,
+    cudaStream_t stream) {
+  blockAggregateBarrierKernel<<<channels, 128, 0, stream>>>(
+      transport, epochs, reducedValues, signalValues);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

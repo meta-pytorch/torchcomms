@@ -73,6 +73,28 @@ TEST_F(CommWithCtranTest, CtranDisable) {
   EXPECT_FALSE(ctranAllToAllvSupport(nullptr));
 }
 
+TEST_F(CommWithCtranTest, ProfilerCreatedWhenSamplingWeightSet) {
+  // A regular NCCL comm must still construct the ctran profiler when the
+  // sampling cvar is on.
+  EnvRAII env(NCCL_CTRAN_ENABLE, true);
+
+  {
+    EnvRAII samplingWeightEnv(NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT, 1);
+    ncclx::test::NcclCommRAII comm{
+        globalRank, numRanks, localRank, bootstrap_.get()};
+    ASSERT_NE(comm->ctranComm_, nullptr);
+    ASSERT_NE(comm->ctranComm_->ctran_, nullptr);
+    EXPECT_NE(comm->ctranComm_->ctran_->profiler, nullptr);
+  }
+
+  {
+    EnvRAII samplingWeightEnv(NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT, 0);
+    ncclx::test::NcclCommRAII comm{
+        globalRank, numRanks, localRank, bootstrap_.get()};
+    EXPECT_EQ(comm->ctranComm_->ctran_->profiler, nullptr);
+  }
+}
+
 TEST_F(CommWithCtranTest, CtranCommInitialized) {
   EnvRAII env(NCCL_CTRAN_ENABLE, true);
   ncclx::test::NcclCommRAII comm{

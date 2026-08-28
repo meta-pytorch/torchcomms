@@ -91,7 +91,6 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     CtranDistTestFixture::SetUp();
 

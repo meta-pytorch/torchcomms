@@ -27,7 +27,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     setenv("NCCL_COLLTRACE", "trace", 0);
     setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     ctran::CtranDistTestFixture::SetUp(envs);
     srand(time(NULL));

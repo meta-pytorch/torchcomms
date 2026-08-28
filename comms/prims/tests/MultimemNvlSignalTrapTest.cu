@@ -36,7 +36,7 @@ __device__ SignalState* boundaryPeerSignals[kBoundaryMaxRanks];
 
 __global__ void nvlSignalTrapKernel(
     NvlSignalTrapCase testCase,
-    Timeout waitAbort) {
+    AbortDevice waitAbort) {
   auto* trapSignals = reinterpret_cast<SignalState*>(trapSignalStorage);
   SignalState* peerSignals[4] = {
       trapSignals, trapSignals, trapSignals, trapSignals};
@@ -48,7 +48,8 @@ __global__ void nvlSignalTrapKernel(
   uint32_t signalsPerChannel =
       static_cast<uint32_t>(multimem_staging_signals_per_channel(
           static_cast<uint64_t>(nvlRanks), pipelineDepth));
-  if (testCase == NvlSignalTrapCase::SignalsPerChannelMismatch) {
+  if (testCase == NvlSignalTrapCase::SignalsPerChannelMismatch ||
+      testCase == NvlSignalTrapCase::BlockBarrierSignalsPerChannelMismatch) {
     --signalsPerChannel;
   }
   MultimemNvlTransportDevice transport{
@@ -123,7 +124,7 @@ __global__ void nvlSignalTrapKernel(
         NvlSignalAccess::Unicast,
         NvlSignalTopology::Aggregate,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
     return;
   }
   if (testCase == NvlSignalTrapCase::AggregateDepthTooLarge ||
@@ -134,10 +135,17 @@ __global__ void nvlSignalTrapKernel(
         NvlSignalAccess::Multimem,
         NvlSignalTopology::Aggregate,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
     return;
   }
   auto group = make_block_group();
+  if (testCase == NvlSignalTrapCase::BlockBarrierNon1DBlock ||
+      testCase == NvlSignalTrapCase::BlockBarrierDuplicateChannelOwner ||
+      testCase == NvlSignalTrapCase::BlockBarrierNon1DGrid ||
+      testCase == NvlSignalTrapCase::BlockBarrierSignalsPerChannelMismatch) {
+    nvl_signal_detail::validate_block_barrier(transport, /*channel=*/0, group);
+    return;
+  }
   if (testCase == NvlSignalTrapCase::PerPeerDuplicateChannelOwner ||
       testCase == NvlSignalTrapCase::PerPeerNon1DBlock) {
     signal_publish<
@@ -203,14 +211,14 @@ __global__ void nvlSignalRankBoundaryKernel(
           .expectedArrivals = nvl_signal_detail::mask_rank_count(publishers),
       },
       group,
-      Timeout{});
+      AbortDevice{});
   if (group.is_leader()) {
     *output = signals[selectedRank].load();
   }
 }
 
 template <NvlPerPeerWaitPolicy waitPolicy>
-__global__ void nvlSignalUpperWordWaitTimeoutKernel(Timeout waitAbort) {
+__global__ void nvlSignalUpperWordWaitTimeoutKernel(AbortDevice waitAbort) {
   auto group = make_block_group();
   auto* signals = reinterpret_cast<SignalState*>(boundarySignalStorage);
   for (int rank = static_cast<int>(threadIdx.x); rank < kBoundaryMaxRanks;
@@ -267,6 +275,7 @@ dim3 signal_trap_threads(NvlSignalTrapCase testCase) {
     case NvlSignalTrapCase::DuplicateChannelOwner:
       return dim3(2 * kWarpSize);
     case NvlSignalTrapCase::PerPeerNon1DBlock:
+    case NvlSignalTrapCase::BlockBarrierNon1DBlock:
       return dim3(kNvlSignalSmallPerPeerThreads, 2);
     case NvlSignalTrapCase::AggregateDepthTooLarge:
     case NvlSignalTrapCase::ArrivalCountMismatch:
@@ -282,8 +291,10 @@ dim3 signal_trap_threads(NvlSignalTrapCase testCase) {
 dim3 signal_trap_blocks(NvlSignalTrapCase testCase) {
   switch (testCase) {
     case NvlSignalTrapCase::PerPeerDuplicateChannelOwner:
+    case NvlSignalTrapCase::BlockBarrierDuplicateChannelOwner:
       return dim3(2);
     case NvlSignalTrapCase::AggregateNon1DGrid:
+    case NvlSignalTrapCase::BlockBarrierNon1DGrid:
       return dim3(1, 2);
     default:
       return dim3(1);

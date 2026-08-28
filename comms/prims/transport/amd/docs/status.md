@@ -30,9 +30,10 @@ without forking the source tree.
 ### Device transports & utilities
 
 All device-side transports either compile directly under hipcc (HIPify
-rewrites the simple cases) or pick up the AMD shims via
-`comms/prims/transport/amd/HipDeviceCompat.h` (transitively included by
-`Timeout.cuh`).
+rewrites the simple cases) or pick up the AMD shims from
+`comms/prims/transport/amd/HipHostCompat.h` -- which `AbortCheck.cuh` includes,
+so every wait site gets it -- or, for the IBGDA and `pipes_gda_*` device paths,
+from `HipDeviceCompat.h` directly.
 
 | Component | Target | AMD | Notes |
 |---|---|---|---|
@@ -41,7 +42,7 @@ rewrites the simple cases) or pick up the AMD shims via
 | `P2pIbgdaTransportDevice.cuh` | `:p2p_ibgda_transport_device` | ✅ | Cross-compiled via the `:doca_compat_amd` shim. |
 | `MultipeerIbgdaDeviceTransport.cuh` | `:multipeer_ibgda_device_transport` | ✅ | Header-only. |
 | `Transport.cuh` | `:transport` | — | Header-only. |
-| `IbgdaBuffer.h`, `Timeout.cuh`, `ThreadGroup.cuh`, `CopyUtils.cuh`, `DeviceCheck.cuh`, `DeviceSpan.cuh`, `BarrierState.cuh`, `SignalState.cuh` | various | — | Header-only. |
+| `IbgdaBuffer.h`, `AbortCheck.cuh`, `ThreadGroup.cuh`, `CopyUtils.cuh`, `DeviceCheck.cuh`, `DeviceSpan.cuh`, `BarrierState.cuh`, `SignalState.cuh` | various | — | Header-only. |
 
 ### Host-side transports
 

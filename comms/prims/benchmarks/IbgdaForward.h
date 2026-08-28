@@ -5,7 +5,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
@@ -22,7 +22,7 @@ void launch_ibgda_forward_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 void launch_ibgda_recv_send_chain(
     P2pIbgdaTransportDevice* prev_transport,
@@ -33,6 +33,6 @@ void launch_ibgda_recv_send_chain(
     int numBlocks,
     int my_rank,
     cudaStream_t stream,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 } // namespace comms::prims::benchmark

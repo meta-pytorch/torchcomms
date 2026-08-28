@@ -197,8 +197,8 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     bool isSend = (globalRank == 0);
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
-    Timeout timeout;
-    void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope, &timeout};
+    AbortDevice abortDevice;
+    void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope, &abortDevice};
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
 
@@ -257,8 +257,8 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     std::size_t nBytes = config.nBytes;
     bool isSend = (globalRank == 0);
     void* devicePtr = isSend ? sendBuff.get() : recvBuff.get();
-    Timeout timeout;
-    void* args[] = {&p2p, &devicePtr, &nBytes, &timeout};
+    AbortDevice abortDevice;
+    void* args[] = {&p2p, &devicePtr, &nBytes, &abortDevice};
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pLl128Send
                               : (void*)comms::prims::benchmark::p2pLl128Recv;
 
@@ -414,8 +414,9 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* sendPtr = sendBuff.get();
     void* recvPtr = recvBuff.get();
     SyncScope groupScope = config.groupScope;
-    Timeout timeout;
-    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+    AbortDevice abortDevice;
+    void* args[] = {
+        &p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &abortDevice};
     void* kernelFunc = (void*)comms::prims::benchmark::p2pBidirectional;
 
     bootstrap->barrierAll();
@@ -461,8 +462,8 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     std::size_t nBytes = config.nBytes;
     void* sendPtr = sendBuff.get();
     void* recvPtr = recvBuff.get();
-    Timeout timeout;
-    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &timeout};
+    AbortDevice abortDevice;
+    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &abortDevice};
     void* kernelFunc = (void*)comms::prims::benchmark::p2pLl128Bidirectional;
 
     bootstrap->barrierAll();

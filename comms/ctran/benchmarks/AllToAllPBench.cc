@@ -84,7 +84,6 @@ class CtranAllToAllPBenchTestEnv : public ctran::CtranEnvironmentBase {
     // set logging level to WARN
     setenv("NCCL_DEBUG", "WARN", 1);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 0);
     // Turn on colltrace to validate used algorithm
     setenv("NCCL_COLLTRACE", "algostat", 1);
   }

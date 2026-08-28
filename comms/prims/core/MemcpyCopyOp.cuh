@@ -6,10 +6,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -85,9 +85,10 @@ struct Memcpy {
   }
 
   template <typename P, typename... Args>
-  // Takes a Timeout where recv()/sendLL() do not: LL's readiness wait happens
-  // inside the codec (the flag is in the payload), so this is the one hook that
-  // can block indefinitely and therefore the one that needs a deadline.
+  // Takes an AbortDevice where recv()/sendLL() do not: LL's readiness wait
+  // happens inside the codec (the flag is in the payload), so this is the one
+  // hook that can block indefinitely and therefore the one that needs a
+  // deadline.
   __device__ __forceinline__ static void recvLL(
       ThreadGroup& group,
       char* dst,
@@ -95,9 +96,9 @@ struct Memcpy {
       std::size_t nbytes,
       std::size_t /*byte_offset*/,
       typename P::FlagType flagVal,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       Args...) {
-    LLImpl<P>::unpack(group, dst, staging, nbytes, flagVal, timeout);
+    LLImpl<P>::unpack(group, dst, staging, nbytes, flagVal, abortDevice);
   }
 };
 
@@ -133,6 +134,6 @@ inline constexpr bool has_recvLL_v<
         std::declval<std::size_t>(),
         std::declval<std::size_t>(),
         std::declval<typename P::FlagType>(),
-        std::declval<const Timeout&>()))>> = true;
+        std::declval<const AbortDevice&>()))>> = true;
 
 } // namespace comms::prims

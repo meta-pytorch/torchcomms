@@ -415,8 +415,8 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, TraceIbgdaEventWritesEvent) {
 #endif // !__HIP_PLATFORM_AMD__
 
 // =============================================================================
-// wait_signal Timeout Tests
-// Verify that the Timeout parameter on wait_signal correctly traps when the
+// wait_signal AbortDevice Tests
+// Verify that the AbortDevice parameter on wait_signal correctly traps when the
 // timeout expires and does not interfere when the signal is already satisfied.
 // =============================================================================
 

@@ -6,9 +6,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
 
 namespace comms::prims {
@@ -74,7 +74,7 @@ namespace comms::prims {
  * @param src       Local source buffer (8-byte aligned)
  * @param nbytes    Total message size in bytes (must be a multiple of 8)
  * @param remote_ll_buf  Pointer to receiver's LL line buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_lines  Number of lines in the LL buffer.
  *                          0 = buffer is pre-sized to fit the entire message.
  *                          >0 and < total lines = windowed/chunked mode.
@@ -85,7 +85,7 @@ __device__ __forceinline__ void ll_send(
     const char* __restrict__ src,
     size_t nbytes,
     LlLine* __restrict__ remote_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
@@ -130,7 +130,7 @@ __device__ __forceinline__ void ll_send(
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "ll_send: waiting for READY_TO_WRITE on line %llu (buf_idx=%llu)",
                   (unsigned long long)line_idx,
                   (unsigned long long)buf_idx)) {
@@ -164,7 +164,7 @@ __device__ __forceinline__ void ll_send(
   (void)src;
   (void)nbytes;
   (void)remote_ll_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_lines;
 #endif
 }
@@ -184,7 +184,7 @@ __device__ __forceinline__ void ll_send(
  * @param dst       Local output buffer (8-byte aligned)
  * @param nbytes    Total message size in bytes (must be a multiple of 8)
  * @param local_ll_buf  Pointer to local LL line buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_lines  Number of lines in the LL buffer.
  *                          0 = buffer is pre-sized to fit the entire message.
  *                          >0 and < total lines = windowed/chunked mode.
@@ -195,7 +195,7 @@ __device__ __forceinline__ void ll_recv(
     char* __restrict__ dst,
     size_t nbytes,
     LlLine* __restrict__ local_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
@@ -239,7 +239,7 @@ __device__ __forceinline__ void ll_recv(
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "ll_recv: waiting for flag=%u on line %llu (buf_idx=%llu, got flag1=%u flag2=%u)",
                   (unsigned)pkt_flag_value,
                   (unsigned long long)line_idx,
@@ -275,7 +275,7 @@ __device__ __forceinline__ void ll_recv(
   (void)dst;
   (void)nbytes;
   (void)local_ll_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_lines;
 #endif
 }
@@ -297,7 +297,7 @@ __device__ __forceinline__ void ll_recv(
  * @param nbytes    Total message size in bytes (must be a multiple of 8)
  * @param local_ll_buf   Pointer to local LL buffer (predecessor wrote)
  * @param remote_ll_buf  Pointer to successor's LL buffer
- * @param timeout   Timeout for flag polling
+ * @param abortDevice   Timeout for flag polling
  * @param buffer_num_lines  Number of lines in the LL buffer.
  *                          0 = buffer is pre-sized to fit the entire message.
  *                          >0 and < total lines = windowed/chunked mode.
@@ -309,7 +309,7 @@ __device__ __forceinline__ void ll_forward(
     size_t nbytes,
     LlLine* __restrict__ local_ll_buf,
     LlLine* __restrict__ remote_ll_buf,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     size_t buffer_num_lines = 0) {
 #ifdef __CUDA_ARCH__
   const uint32_t flag_value = 1;
@@ -347,7 +347,7 @@ __device__ __forceinline__ void ll_forward(
         ll_load_line(&local_ll_buf[buf_idx], in);
         if (in.flag1 != pkt_flag_value || in.flag2 != pkt_flag_value) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "ll_forward: waiting for flag=%u on local line %llu (buf_idx=%llu)",
                   (unsigned)pkt_flag_value,
                   (unsigned long long)line_idx,
@@ -371,7 +371,7 @@ __device__ __forceinline__ void ll_forward(
         ll_load_line(&remote_ll_buf[buf_idx], poll);
         if (poll.flag1 != kLlReadyToWrite || poll.flag2 != kLlReadyToWrite) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "ll_forward: waiting for READY_TO_WRITE on remote line %llu (buf_idx=%llu)",
                   (unsigned long long)line_idx,
                   (unsigned long long)buf_idx)) {
@@ -406,7 +406,7 @@ __device__ __forceinline__ void ll_forward(
   (void)nbytes;
   (void)local_ll_buf;
   (void)remote_ll_buf;
-  (void)timeout;
+  (void)abortDevice;
   (void)buffer_num_lines;
 #endif
 }
