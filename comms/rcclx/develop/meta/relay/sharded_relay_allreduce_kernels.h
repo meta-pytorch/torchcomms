@@ -100,7 +100,7 @@ void launchOneShotPushReduceKernel(
     size_t srcStride,
     size_t ownOffset,
     size_t slotBytes,
-    uint32_t epoch,
+    uint32_t* seq,
     int divisor,
     cudaStream_t stream);
 
@@ -161,7 +161,7 @@ void launchSeededMultiReduceKernel(
       size_t srcStride,                                                    \
       size_t ownOffset,                                                    \
       size_t slotBytes,                                                    \
-      uint32_t epoch,                                                      \
+      uint32_t* seq,                                                       \
       int divisor,                                                         \
       cudaStream_t stream);
 
