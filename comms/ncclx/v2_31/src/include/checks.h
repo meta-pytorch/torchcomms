@@ -10,12 +10,38 @@
 
 #include "debug.h"
 
+constexpr const char* ncclCodeToString(ncclResult_t code) {
+  switch (code) {
+  case ncclSuccess:
+    return "no error";
+  case ncclUnhandledCudaError:
+    return "unhandled cuda error (run with NCCL_DEBUG=INFO for details)";
+  case ncclSystemError:
+    return "unhandled system error (run with NCCL_DEBUG=INFO for details)";
+  case ncclInternalError:
+    return "internal error - please report this issue to the NCCL developers";
+  case ncclInvalidArgument:
+    return "invalid argument (run with NCCL_DEBUG=WARN for details)";
+  case ncclInvalidUsage:
+    return "invalid usage (run with NCCL_DEBUG=WARN for details)";
+  case ncclRemoteError:
+    return "remote process exited or there was a network error";
+  case ncclInProgress:
+    return "NCCL operation in progress";
+  case ncclTimeout:
+    return "NCCL operation timed out";
+  case ncclNumResults:
+  default:
+    return "unknown result code";
+  }
+}
+
 // Check CUDA RT calls
 #define CUDACHECK(cmd) \
   do { \
     cudaError_t err = cmd; \
     if (err != cudaSuccess) { \
-      WARN("Cuda failure '%s'", cudaGetErrorString(err)); \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err)); \
       (void)cudaGetLastError(); \
       return ncclUnhandledCudaError; \
     } \
@@ -25,12 +51,34 @@
   do { \
     cudaError_t err = cmd; \
     if (err != cudaSuccess) { \
-      WARN("Cuda failure '%s'", cudaGetErrorString(err)); \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err)); \
       (void)cudaGetLastError(); \
       RES = ncclUnhandledCudaError; \
       goto label; \
     } \
   } while (false)
+
+// Use of abort should be aware of potential memory leak risk
+// and place a signal handler to catch it and trigger termination processing
+#define CUDACHECKABORT(cmd) \
+  do { \
+    cudaError_t err = cmd; \
+    if (err != cudaSuccess) { \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s'", cudaGetErrorString(err)); \
+      abort(); \
+    } \
+  } while (false)
+
+// fmt is required: WARN expands to a printf-format function, so an
+// argument-less CHECKABORT would expand to a format-less WARN.
+#define CHECKABORT(statement, fmt, ...) \
+  do { \
+    if (!(statement)) { \
+      WARN("Check failed: %s", #statement); \
+      WARN(fmt, ##__VA_ARGS__); \
+      abort(); \
+    } \
+  } while (0)
 
 // Report failure but clear error and continue
 #define CUDACHECKIGNORE(cmd) \
@@ -60,7 +108,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     int retval; \
     SYSCHECKSYNC((statement), name, retval); \
     if (retval == -1) { \
-      WARN("Call to " name " failed: %s", strerror(errno)); \
+      ERR(ncclSystemError, "Call to " name " failed: %s", strerror(errno)); \
       return ncclSystemError; \
     } \
   } while (false)
@@ -80,7 +128,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     int retval; \
     SYSCHECKSYNC((statement), name, retval); \
     if (retval == -1) { \
-      WARN("Call to " name " failed: %s", strerror(errno)); \
+      ERR(ncclSystemError, "Call to " name " failed: %s", strerror(errno)); \
       RES = ncclSystemError; \
       goto label; \
     } \
@@ -91,7 +139,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     int retval = (statement); \
     if (retval != 0) { \
-      WARN("Call to " name " failed: %s", strerror(retval)); \
+      ERR(ncclSystemError, "Call to " name " failed: %s", strerror(retval)); \
       return ncclSystemError; \
     } \
   } while (0)
@@ -100,7 +148,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     int retval = (statement); \
     if (retval != 0) { \
-      WARN("Call to " name " failed: %s", strerror(retval)); \
+      ERR(ncclSystemError, "Call to " name " failed: %s", strerror(retval)); \
       RES = ncclSystemError; \
       goto label; \
     } \
@@ -110,7 +158,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     if ((statement) != value) { \
       /* Print the back trace*/ \
-      INFO_LOC(NCCL_ALL, "-> %d (%s)", ncclSystemError, strerror(errno)); \
+      ERR(ncclSystemError, "-> %d (%s)", ncclSystemError, strerror(errno)); \
       return ncclSystemError; \
     } \
   } while (0)
@@ -120,7 +168,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     if ((statement) != value) { \
       /* Print the back trace*/ \
       RES = ncclSystemError; \
-      INFO_LOC(NCCL_ALL, "-> %d (%s)", RES, strerror(errno)); \
+      ERR(ncclSystemError, "-> %d (%s)", RES, strerror(errno)); \
       goto label; \
     } \
   } while (0)
@@ -129,7 +177,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     if ((statement) == value) { \
       /* Print the back trace*/ \
-      INFO_LOC(NCCL_ALL, "-> %d (%s)", ncclSystemError, strerror(errno)); \
+      ERR(ncclSystemError, "-> %d (%s)", ncclSystemError, strerror(errno)); \
       return ncclSystemError; \
     } \
   } while (0)
@@ -139,7 +187,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     if ((statement) == value) { \
       /* Print the back trace*/ \
       RES = ncclSystemError; \
-      INFO_LOC(NCCL_ALL, "-> %d (%s)", RES, strerror(errno)); \
+      ERR(ncclSystemError, "-> %d (%s)", RES, strerror(errno)); \
       goto label; \
     } \
   } while (0)
@@ -150,7 +198,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     ncclResult_t RES = call; \
     if (RES != ncclSuccess && RES != ncclInProgress) { \
       /* Print the back trace*/ \
-      if (ncclDebugNoWarn == 0) INFO_LOC(NCCL_ALL, "-> %d", RES); \
+      if (ncclDebugNoWarn == 0) WARN("-> %d", RES); \
       return RES; \
     } \
   } while (0)
@@ -160,7 +208,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     RES = call; \
     if (RES != ncclSuccess && RES != ncclInProgress) { \
       /* Print the back trace*/ \
-      if (ncclDebugNoWarn == 0) INFO_LOC(NCCL_ALL, "-> %d", RES); \
+      if (ncclDebugNoWarn == 0) WARN("-> %d", RES); \
       goto label; \
     } \
   } while (0)
@@ -171,7 +219,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     ncclResult_t TMPRES = call; \
     if (TMPRES != ncclSuccess && TMPRES != ncclInProgress) { \
-      if (ncclDebugNoWarn == 0) INFO_LOC(NCCL_ALL, "-> %d", TMPRES); \
+      if (ncclDebugNoWarn == 0) WARN("-> %d (%s)", TMPRES, ncclCodeToString(TMPRES)); \
       if (RES == ncclSuccess) RES = TMPRES; \
     } \
   } while (0)
@@ -198,7 +246,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     uint32_t* tmpAbortFlag = (abortFlagPtr); \
     ncclResult_t RES = call; \
     if (RES != ncclSuccess && RES != ncclInProgress) { \
-      if (ncclDebugNoWarn == 0) INFO_LOC(NCCL_ALL, "-> %d", RES); \
+      if (ncclDebugNoWarn == 0) WARN("-> %d", RES); \
       return ncclInternalError; \
     } \
     if (COMPILER_ATOMIC_LOAD(tmpAbortFlag, std::memory_order_acquire)) NEQCHECK(*tmpAbortFlag, 0); \
@@ -209,7 +257,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
     uint32_t* tmpAbortFlag = (abortFlagPtr); \
     RES = call; \
     if (RES != ncclSuccess && RES != ncclInProgress) { \
-      if (ncclDebugNoWarn == 0) INFO_LOC(NCCL_ALL, "-> %d", RES); \
+      if (ncclDebugNoWarn == 0) WARN("-> %d", RES); \
       goto label; \
     } \
     if (COMPILER_ATOMIC_LOAD(tmpAbortFlag, std::memory_order_acquire)) NEQCHECKGOTO(*tmpAbortFlag, 0, RES, label); \
@@ -218,7 +266,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
 #define NCCLCHECKTHREAD(a, args) \
   do { \
     if (((args)->ret = (a)) != ncclSuccess && (args)->ret != ncclInProgress) { \
-      INFO_LOC(NCCL_INIT, "-> %d [Async thread]", (args)->ret); \
+      WARN("-> %d [Async thread]", (args)->ret); \
       return args; \
     } \
   } while (0)
@@ -227,7 +275,7 @@ static inline cudaError_t cuda_clear(cudaError_t err) {
   do { \
     cudaError_t err = (a); \
     if (err != cudaSuccess) { \
-      INFO_LOC(NCCL_INIT, "-> %d [Async thread]", (int)(err)); \
+      ERR(ncclUnhandledCudaError, "Cuda failure '%s' [Async thread]", cudaGetErrorString(err)); \
       args->ret = ncclUnhandledCudaError; \
       return args; \
     } \

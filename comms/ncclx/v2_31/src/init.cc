@@ -6,6 +6,10 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/NcclxConfig.h" // @manual
+#include "meta/NcclxPerCommConfig.h" // @manual
+#include "meta/DeviceRackSerial.h" // @manual
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -42,6 +46,9 @@
 #include "tuning.h"
 
 #include <cinttypes>
+#include <string>
+
+#include "comms/utils/logger/LoggingFormat.h"
 
 #define STR2(v) #v
 #define STR(v) STR2(v)
@@ -284,6 +291,14 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
   comm->destructorHead = dtor;
 }
 
+// [META:PER_COMM_CONFIG] Release the canonical ncclx::Config owned by the comm.
+static void ncclxCommFree(ncclComm_t comm) {
+  if (comm->config.ncclxConfig != nullptr) {
+    delete static_cast<ncclx::Config*>(comm->config.ncclxConfig);
+    comm->config.ncclxConfig = nullptr;
+  }
+}
+
 static ncclResult_t commFree(ncclComm_t comm) {
   int abort = 0;
   /* commFree() should not involve any sync among ranks. */
@@ -388,6 +403,7 @@ static ncclResult_t commFree(ncclComm_t comm) {
   free(comm->topParentRanks);
   free(comm->topParentLocalRanks);
   free(comm->gproxyConn);
+  ncclxCommFree(comm);
 
   NCCLCHECK(ncclRegCleanup(comm));
 
@@ -450,7 +466,7 @@ ncclResult_t ncclCommEnsureReady(ncclComm_t comm) {
   } else {
     NCCLCHECK(ncclCommGetAsyncError(comm, &ret));
     if (ret == ncclInProgress) {
-      WARN("Attempt to use communicator before the previous operation returned ncclSuccess");
+      ERR(ncclInvalidArgument, "Attempt to use communicator before the previous operation returned ncclSuccess");
       ret = ncclInvalidArgument;
       goto exit;
     }
@@ -463,11 +479,11 @@ exit:
 
 static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, int ndev, int rank) {
   if (ndev < 1) {
-    WARN("invalid device count (%d) requested", ndev);
+    ERR(ncclInvalidArgument, "invalid device count (%d) requested", ndev);
     return ncclInvalidArgument;
   }
   if (rank >= ndev || rank < 0) {
-    WARN("rank %d exceeds ndev=%d", rank, ndev);
+    ERR(ncclInvalidArgument, "rank %d exceeds ndev=%d", rank, ndev);
     return ncclInvalidArgument;
   }
 
@@ -509,7 +525,7 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
 
   if (parent && parent->shareResources) {
     if (parent->ncclNet != comm->ncclNet) {
-      WARN("Split shares resources, but parent comm netName %s is different from child comm netName %s",
+      ERR(ncclInvalidUsage, "Split shares resources, but parent comm netName %s is different from child comm netName %s",
            parent->ncclNet->name, comm->ncclNet->name);
       return ncclInvalidUsage;
     }
@@ -821,6 +837,14 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
       }
       INFO(NCCL_INIT, "MNNVL busId 0x%lx fabric UUID %lx.%lx cliqueId 0x%x state %d healthMask 0x%x", info->busId,
            uuid0, uuid1, info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
+      // [META] Load rack serial for MNNVL trunk disable (string-based, supports alphanumeric serials)
+      if (NCCL_MNNVL_TRUNK_DISABLE) {
+        if (ncclx::loadRackSerial(NCCL_TOPO_FILE_PATH, info->rackSerial, sizeof(info->rackSerial))) {
+          INFO(NCCL_INIT, "Loaded rack serial: %s", info->rackSerial);
+        } else {
+          WARN("No rack serial information available, skipping rack serial check");
+        }
+      }
     }
   }
 
@@ -875,6 +899,16 @@ static ncclResult_t computeBuffSizes(struct ncclComm* comm) {
 
   for (int p = 0; p < NCCL_NUM_PROTOCOLS; p++) {
     comm->buffSizes[p] = envs[p] != -2 ? envs[p] : defaults[p];
+  }
+
+  // [NCCLX-PerCommConfig] Validate and apply per-comm overrides
+  NCCLCHECK(ncclxValidatePerCommConfig(comm->config));
+  if (comm->config.ncclxConfig) {
+    auto& configBuffSize = NCCLX_CONFIG_FIELD(comm->config, ncclBuffSize);
+    if (configBuffSize.has_value()) {
+      comm->buffSizes[NCCL_PROTO_SIMPLE] = configBuffSize.value();
+      INFO(NCCL_INIT, "Per-comm SIMPLE buffSize overridden to %d", configBuffSize.value());
+    }
   }
 
   if (comm->nNodes > 1) {
@@ -959,7 +993,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
   int groupCount = 0;
   for (int n = 0; n < comm->nNodes; ++n) {
     if (0 != comm->nodeRanks[n].localRanks % groupSize) {
-      WARN("nLocals = %d should be a diviser of the number of ranks in node %d = %d", groupSize, n,
+      ERR(ncclInternalError, "nLocals = %d should be a diviser of the number of ranks in node %d = %d", groupSize, n,
            comm->nodeRanks[n].localRanks);
       return ncclInternalError;
     }
@@ -972,7 +1006,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
     if (n < comm->node) group += nGroupsInNode;
   }
   if (groupCount != nGroups) {
-    WARN("Group creation failed: %d vs %d", groupCount, nGroups);
+    ERR(ncclInternalError, "Group creation failed: %d vs %d", groupCount, nGroups);
     return ncclInternalError;
   }
   INFO(NCCL_GRAPH, "%s: group size used is %d", __func__, groupSize);
@@ -1006,7 +1040,7 @@ static ncclResult_t ncclP2pSchedule(struct ncclComm* comm) {
   free(groupToLocal);
 
   if (round != comm->nRanks) {
-    WARN("P2p schedule creation has bugs.");
+    ERR(ncclInternalError, "P2p schedule creation has bugs.");
     return ncclInternalError;
   }
   return ncclSuccess;
@@ -1120,7 +1154,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     }
 
     if (comm->peerInfo[i].version != comm->peerInfo[rank].version) {
-      WARN("Mismatched NCCL version detected : rank %d version %d rank %d version %d", i, comm->peerInfo[i].version,
+      ERR(ncclInvalidUsage, "Mismatched NCCL version detected : rank %d version %d rank %d version %d", i, comm->peerInfo[i].version,
            rank, comm->peerInfo[rank].version);
       ret = ncclInvalidUsage;
       goto fail;
@@ -1194,7 +1228,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
     TRACE(NCCL_INIT, "pidHash[%d] %lx intraProcRank %d intraProcRanks %d intraProcRank0 %d", rank,
           comm->peerInfo[rank].pidHash, intraProcRank, intraProcRanks, intraProcRank0);
     if (intraProcRank == -1 || intraProcRank0 == -1 || comm->peerInfo[intraProcRank0].comm == NULL) {
-      WARN("Failed to determine intra proc ranks rank %d hostHash %lx pidHash %lx intraProcRank %d intraProcRanks %d "
+      ERR(ncclInternalError, "Failed to determine intra proc ranks rank %d hostHash %lx pidHash %lx intraProcRank %d intraProcRanks %d "
            "intraProcRank0 %d",
            rank, comm->peerInfo[rank].hostHash, comm->peerInfo[rank].pidHash, intraProcRank, intraProcRanks,
            intraProcRank0);
@@ -1425,7 +1459,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
              "NCCL_IGNORE_NET_MISMATCH.",
              minLocalNetCount, maxLocalNetCount);
       } else {
-        WARN("Detected mixed local Net device counts across ranks (min %d, max %d). Set NCCL_IGNORE_NET_MISMATCH=1 to "
+        ERR(ncclSystemError, "Detected mixed local Net device counts across ranks (min %d, max %d). Set NCCL_IGNORE_NET_MISMATCH=1 to "
              "continue.",
              minLocalNetCount, maxLocalNetCount);
         ret = ncclSystemError;
@@ -1448,7 +1482,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
              "NCCL_IGNORE_COLLNET_MISMATCH.",
              minLocalCollNetCount, maxLocalCollNetCount);
       } else {
-        WARN("Detected mixed local CollNet device counts across ranks (min %d, max %d). Set "
+        ERR(ncclSystemError, "Detected mixed local CollNet device counts across ranks (min %d, max %d). Set "
              "NCCL_IGNORE_COLLNET_MISMATCH=1 to continue.",
              minLocalCollNetCount, maxLocalCollNetCount);
         ret = ncclSystemError;
@@ -1501,7 +1535,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   TRACE(NCCL_INIT, "hostHash[%d] %lx localRank %d localRanks %d localRank0 %d", rank, comm->peerInfo[rank].hostHash,
         comm->localRank, comm->localRanks, comm->localRankToRank[0]);
   if (comm->localRank == -1 || comm->localRankToRank[0] == -1 || comm->localRanks == 0) {
-    WARN("Failed to determine local ranks rank %d hostHash %lx pidHash %lx localRank %d localRanks %d localRank0 %d",
+    ERR(ncclInternalError, "Failed to determine local ranks rank %d hostHash %lx pidHash %lx localRank %d localRanks %d localRank0 %d",
          rank, comm->peerInfo[rank].hostHash, comm->peerInfo[rank].pidHash, comm->localRank, comm->localRanks,
          comm->localRankToRank[0]);
     ret = ncclInternalError;
@@ -2377,8 +2411,25 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   return ret;
 }
 
+// [META:PER_COMM_CONFIG] ncclConfig_t carries an owning pointer to an
+// ncclx::Config, so a bytewise copy would leave parent and child sharing one
+// object and double-free it. Clone it instead.
+static void deepCopyCommConfig(ncclConfig_t* dst, const ncclConfig_t* src) {
+  *dst = *src;
+  // parseCommConfig copies individual fields to comm->config but never sets
+  // size, magic, or version, so they remain 0 from the original ncclCalloc.
+  // Restore them here so the copied config passes parseCommConfig's magic
+  // validation in the child comm.
+  dst->size = sizeof(ncclConfig_t);
+  dst->magic = NCCL_API_MAGIC;
+  dst->version = NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH);
+  if (src->ncclxConfig) {
+    dst->ncclxConfig = new ncclx::Config(*static_cast<ncclx::Config*>(src->ncclxConfig));
+  }
+}
+
 static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  memcpy(&childComm->config, &parnet->config, sizeof(ncclConfig_t));
+  deepCopyCommConfig(&childComm->config, &parnet->config);
   NCCLCHECK(envConfigOverride(childComm));
   return ncclSuccess;
 }
@@ -2398,7 +2449,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
     realSize = realSize > sizeof(ncclConfig_t) ? sizeof(ncclConfig_t) : realSize;
     memcpy((void*)internalConfigPtr, (void*)config, realSize);
     if (internalConfigPtr->magic != NCCL_API_MAGIC) {
-      WARN("ncclConfig_t argument not initialized via NCCL_CONFIG_INITIALIZER");
+      ERR(ncclInvalidArgument, "ncclConfig_t argument not initialized via NCCL_CONFIG_INITIALIZER");
       ret = ncclInvalidArgument;
       goto fail;
     }
@@ -2454,13 +2505,13 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   /* check input config attributes, -1 means user-undefined and we should use default value from NCCL. */
   if (internalConfigPtr->blocking != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->blocking != 0 &&
       internalConfigPtr->blocking != 1) {
-    WARN("Invalid config blocking attribute value %d", internalConfigPtr->blocking);
+    ERR(ncclInvalidArgument, "Invalid config blocking attribute value %d", internalConfigPtr->blocking);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->cgaClusterSize != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->cgaClusterSize < 0) {
-    WARN("Invalid config cgaClusterSize attribute value %d", internalConfigPtr->cgaClusterSize);
+    ERR(ncclInvalidArgument, "Invalid config cgaClusterSize attribute value %d", internalConfigPtr->cgaClusterSize);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2469,7 +2520,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
       (internalConfigPtr->maxCTAs != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->maxCTAs <= 0) ||
       (internalConfigPtr->minCTAs != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->maxCTAs != NCCL_CONFIG_UNDEF_INT &&
        internalConfigPtr->minCTAs > internalConfigPtr->maxCTAs)) {
-    WARN("Invalid config min/max channels attribute value %d/%d", internalConfigPtr->minCTAs,
+    ERR(ncclInvalidArgument, "Invalid config min/max channels attribute value %d/%d", internalConfigPtr->minCTAs,
          internalConfigPtr->maxCTAs);
     ret = ncclInvalidArgument;
     goto fail;
@@ -2477,21 +2528,21 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
 
   if (internalConfigPtr->splitShare != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->splitShare != 0 &&
       internalConfigPtr->splitShare != 1) {
-    WARN("Invalid config splitShare attribute value %d", internalConfigPtr->splitShare);
+    ERR(ncclInvalidArgument, "Invalid config splitShare attribute value %d", internalConfigPtr->splitShare);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->collnetEnable != NCCL_CONFIG_UNDEF_INT &&
       (internalConfigPtr->collnetEnable < 0 || internalConfigPtr->collnetEnable > 1)) {
-    WARN("Invalid config collnetEnable attribute value %d", internalConfigPtr->collnetEnable);
+    ERR(ncclInvalidArgument, "Invalid config collnetEnable attribute value %d", internalConfigPtr->collnetEnable);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->CTAPolicy != NCCL_CONFIG_UNDEF_INT) {
     if (!ctaPolicyIsValid(internalConfigPtr->CTAPolicy)) {
-      WARN("Invalid config policy attribute value %d", internalConfigPtr->CTAPolicy);
+      ERR(ncclInvalidArgument, "Invalid config policy attribute value %d", internalConfigPtr->CTAPolicy);
       ret = ncclInvalidArgument;
       goto fail;
     }
@@ -2499,27 +2550,27 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
 
   if (internalConfigPtr->shrinkShare != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->shrinkShare != 0 &&
       internalConfigPtr->shrinkShare != 1) {
-    WARN("Invalid config shrinkShare attribute value %d", internalConfigPtr->shrinkShare);
+    ERR(ncclInvalidArgument, "Invalid config shrinkShare attribute value %d", internalConfigPtr->shrinkShare);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nvlsCTAs != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->nvlsCTAs <= 0) {
-    WARN("Invalid config nvlsCTAs attribute value %d", internalConfigPtr->nvlsCTAs);
+    ERR(ncclInvalidArgument, "Invalid config nvlsCTAs attribute value %d", internalConfigPtr->nvlsCTAs);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nChannelsPerNetPeer != NCCL_CONFIG_UNDEF_INT &&
       (internalConfigPtr->nChannelsPerNetPeer <= 0 || internalConfigPtr->nChannelsPerNetPeer > MAXCHANNELS)) {
-    WARN("Invalid config nChannelsPerNetPeer attribute value %d", internalConfigPtr->nChannelsPerNetPeer);
+    ERR(ncclInvalidArgument, "Invalid config nChannelsPerNetPeer attribute value %d", internalConfigPtr->nChannelsPerNetPeer);
     ret = ncclInvalidArgument;
     goto fail;
   }
 
   if (internalConfigPtr->nvlinkCentricSched != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->nvlinkCentricSched != 0 &&
       internalConfigPtr->nvlinkCentricSched != 1) {
-    WARN("Invalid config nvlinkCentricSched attribute value %d", internalConfigPtr->nvlinkCentricSched);
+    ERR(ncclInvalidArgument, "Invalid config nvlinkCentricSched attribute value %d", internalConfigPtr->nvlinkCentricSched);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2532,7 +2583,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   }
 
   if (internalConfigPtr->numRmaCtx != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->numRmaCtx < 0) {
-    WARN("Invalid config numRmaCtx attribute value %d", internalConfigPtr->numRmaCtx);
+    ERR(ncclInvalidArgument, "Invalid config numRmaCtx attribute value %d", internalConfigPtr->numRmaCtx);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2544,7 +2595,7 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   }
 
   if (internalConfigPtr->maxP2pPeers != NCCL_CONFIG_UNDEF_INT && internalConfigPtr->maxP2pPeers <= 0) {
-    WARN("Invalid config maxP2pPeers attribute value %d", internalConfigPtr->maxP2pPeers);
+    ERR(ncclInvalidArgument, "Invalid config maxP2pPeers attribute value %d", internalConfigPtr->maxP2pPeers);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2631,6 +2682,9 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t* config) {
   comm->config.numRmaSig = internalConfigPtr->numRmaSig;
   comm->config.rmaEagerInit = internalConfigPtr->rmaEagerInit;
   comm->config.hostCftMode = internalConfigPtr->hostCftMode;
+  // [META:PER_COMM_CONFIG] Hand the parsed ncclx::Config to the comm. Ownership
+  // transfers here: ncclxCommFree() deletes it in commFree().
+  comm->config.ncclxConfig = internalConfigPtr->ncclxConfig;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
   // Resolve to system default (serialize) if neither user config nor env var set it.
@@ -2666,7 +2720,7 @@ static void ncclCommInitJobFree(void* _job) {
 static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId, ncclUniqueId* commId, int myrank,
                                         int cudaDev, ncclConfig_t* config, const char funcName[]) {
   if (nId <= 0 || nId > nranks) {
-    WARN("improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
+    ERR(ncclInvalidArgument, "improper usage of ncclCommInitRank: nId = %d, nranks=%d", nId, nranks);
     return ncclInvalidArgument;
   }
   ncclResult_t res = ncclSuccess;
@@ -2687,7 +2741,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(PtrCheck(newcomm, "CommInitRank", "newcomm"), res, fail);
   NCCLCHECKGOTO(PtrCheck(config, "CommInitRank", "config"), res, fail);
   if (nranks < 1 || myrank < 0 || myrank >= nranks) {
-    WARN("Invalid rank requested : %d/%d", myrank, nranks);
+    ERR(ncclInvalidArgument, "Invalid rank requested : %d/%d", myrank, nranks);
     res = ncclInvalidArgument;
     goto fail;
   }
@@ -2765,6 +2819,7 @@ ncclResult_t ncclCommInitRank(ncclComm_t* newcomm, int nranks, ncclUniqueId comm
 
   int cudaDev;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  NCCLCHECK(ncclxParseCommConfig(&config)); // [META:PER_COMM_CONFIG]
   CUDACHECK(cudaGetDevice(&cudaDev));
 
   NCCLCHECK(ncclGroupStartInternal());
@@ -2798,7 +2853,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
   CUDACHECK(cudaGetDevice(&oldDev));
   NCCLCHECKGOTO(PtrCheck(comms, "CommInitAll", "comms"), ret, fail);
   if (ndev < 0) {
-    WARN("Invalid device count requested : %d", ndev);
+    ERR(ncclInvalidArgument, "Invalid device count requested : %d", ndev);
     ret = ncclInvalidArgument;
     goto fail;
   }
@@ -2809,7 +2864,7 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
     for (int i = 0; i < ndev; ++i) {
       /* invalid device check. */
       if (devlist[i] < 0 || devlist[i] >= totalnDev) {
-        WARN("Invalid device %d (totalnDev=%d)", devlist[i], totalnDev);
+        ERR(ncclInvalidArgument, "Invalid device %d (totalnDev=%d)", devlist[i], totalnDev);
         ret = ncclInvalidArgument;
         goto fail;
       }
@@ -2833,6 +2888,13 @@ ncclResult_t ncclCommInitAll(ncclComm_t* comms, int ndev, const int* devlist) {
     // Ignore return codes .. we need to call ncclGroupEnd to clean up anyway
     int dev = devlist ? devlist[i] : i;
     CUDACHECKGOTO(cudaSetDevice(dev), ret, fail);
+    // [META:PER_COMM_CONFIG] Parse per iteration, not once outside the loop.
+    // parseCommConfig transfers ownership of the ncclx::Config to the comm and
+    // ncclxCommFree() deletes it, so a single parsed config shared across ndev
+    // comms would be freed ndev times. (v2_30 parses once outside the loop and
+    // has that double free.)
+    config = NCCL_CONFIG_INITIALIZER;
+    NCCLCHECKGOTO(ncclxParseCommConfig(&config), ret, fail);
     ncclCommInitRankDev(comms + i, ndev, 1, &uniqueId, i, dev, &config, __func__);
   }
   NCCLCHECKGOTO(ncclGroupEndInternal(), ret, fail);
@@ -2849,7 +2911,7 @@ fail:
 
 ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState) {
   if (nextState < 0 || nextState >= ncclNumResults || comm == NULL) {
-    WARN("ncclCommSetAsyncError: error comm %p sets state %d", comm, nextState);
+    ERR(ncclInvalidArgument, "ncclCommSetAsyncError: error comm %p sets state %d", comm, nextState);
     return ncclInvalidArgument;
   }
 
@@ -2874,8 +2936,14 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t* newcomm, int nranks, ncclUniqueI
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL) internalConfigPtr = &internalConfig;
-  else internalConfigPtr = config;
+  // [META:PER_COMM_CONFIG] Always go through the local copy so the parsed
+  // ncclx::Config is not written into the caller's struct.
+  if (config != NULL) {
+    internalConfig = *config;
+    internalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+  }
+  NCCLCHECKGOTO(ncclxParseCommConfig(&internalConfig), ret, fail);
+  internalConfigPtr = &internalConfig;
   NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, 1, &commId, myrank, cudaDev, internalConfigPtr, __func__), ret,
                 fail);
 
@@ -2911,8 +2979,14 @@ ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myran
   (void)ncclCudaLibraryInit();
   CUDACHECK(cudaGetDevice(&cudaDev));
 
-  if (config == NULL) internalConfigPtr = &internalConfig;
-  else internalConfigPtr = config;
+  // [META:PER_COMM_CONFIG] Always go through the local copy so the parsed
+  // ncclx::Config is not written into the caller's struct.
+  if (config != NULL) {
+    internalConfig = *config;
+    internalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+  }
+  NCCLCHECKGOTO(ncclxParseCommConfig(&internalConfig), ret, fail);
+  internalConfigPtr = &internalConfig;
   NCCLCHECKGOTO(ncclCommInitRankDev(newcomm, nranks, nId, commId, myrank, cudaDev, internalConfigPtr, __func__), ret,
                 fail);
 
@@ -3153,7 +3227,7 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
   NCCLCHECK(ncclGroupStartInternal());
   // Try and prevent a double free of the comm struct (user error)
   if (comm->rank == -1 || comm->nRanks == -1 || comm->cudaDev == -1 || comm->busId == -1) {
-    WARN("comm %p has already been destroyed", comm);
+    ERR(ncclInvalidArgument, "comm %p has already been destroyed", comm);
     return ncclInvalidArgument;
   }
 
@@ -3353,6 +3427,9 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
   struct ncclCommInitRankAsyncJob* job = NULL;
   struct ncclComm* childComm = NCCL_COMM_NULL;
   ncclResult_t res = ncclSuccess;
+  // [META:PER_COMM_CONFIG] Declared here rather than at the use site so the
+  // gotos below do not jump over its initialization.
+  ncclConfig_t childInternalConfig;
 
   int oldDev;
   CUDACHECK(cudaGetDevice(&oldDev));
@@ -3405,9 +3482,17 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
       *childComm->abortFlagRefCount = 1;
     }
     if (config == NULL) {
+      // copyCommConfig deep-copies, so the child inherits the parent's
+      // ncclx::Config (allgatherAlgo and friends) with its own copy.
       NCCLCHECKGOTO(copyCommConfig(childComm, comm), res, fail);
     } else {
-      NCCLCHECKGOTO(parseCommConfig(childComm, config), res, fail);
+      // [META:PER_COMM_CONFIG] Parse into a local copy: ncclxParseCommConfig
+      // allocates an ncclx::Config and stores the pointer in the struct it is
+      // given, and the caller's config is not ours to mutate or own.
+      childInternalConfig = *config;
+      childInternalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+      NCCLCHECKGOTO(ncclxParseCommConfig(&childInternalConfig), res, fail);
+      NCCLCHECKGOTO(parseCommConfig(childComm, &childInternalConfig), res, fail);
     }
 
     /* start with ncclInternalError and will be changed to ncclSuccess if init succeeds. */
@@ -3511,11 +3596,11 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
 
   if (newcomm == NULL) return ncclInvalidArgument;
   if (nRanks <= 0) {
-    WARN("ncclCommGrow: total ranks must be positive, got %d", nRanks);
+    ERR(ncclInvalidArgument, "ncclCommGrow: total ranks must be positive, got %d", nRanks);
     return ncclInvalidArgument;
   }
   if (comm && nRanks <= comm->nRanks) {
-    WARN("ncclCommGrow: total ranks %d is less than current ranks %d", nRanks, comm->nRanks);
+    ERR(ncclInvalidArgument, "ncclCommGrow: total ranks %d is less than current ranks %d", nRanks, comm->nRanks);
     return ncclInvalidArgument;
   }
 
@@ -3524,6 +3609,9 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   struct ncclCommInitRankAsyncJob* job = NULL;
   ncclComm_t newComm = NULL;
   struct ncclBootstrapHandle recvHandle;
+  // [META:PER_COMM_CONFIG] Declared up here so the gotos below do not jump over
+  // its initialization.
+  ncclConfig_t growInternalConfig;
 
   *newcomm = NULL; // Initialize output parameter early in case of early errors
 
@@ -3533,7 +3621,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
     NCCLCHECKGOTO(CommCheck(comm, __func__, "comm"), res, exit);
     NCCLCHECKGOTO(ncclCommEnsureReady(comm), res, exit);
     if (rank != -1) {
-      WARN("ncclCommGrow: existing ranks must pass rank=-1, got %d", rank);
+      ERR(ncclInvalidArgument, "ncclCommGrow: existing ranks must pass rank=-1, got %d", rank);
       res = ncclInvalidArgument;
       goto exit;
     }
@@ -3547,7 +3635,7 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
       NCCLCHECKGOTO(bcastGrowHandle(&recvHandle, comm, /*isRoot=*/false), res, exit);
       // verify the magic is the same as the one computed by the root
       if (recvHandle.magic != hashCombine(comm->magic, comm->childCount)) {
-        WARN("ncclCommGrow: magic mismatch computed by the root, got %lx expected %lx", recvHandle.magic,
+        ERR(ncclInvalidArgument, "ncclCommGrow: magic mismatch computed by the root, got %lx expected %lx", recvHandle.magic,
              hashCombine(comm->magic, comm->childCount));
         res = ncclInvalidArgument;
         goto exit;
@@ -3557,17 +3645,17 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
   } else {
     // New ranks: validate parameters
     if (rank < 0) {
-      WARN("ncclCommGrow: new ranks must pass valid rank >= 0, got %d", rank);
+      ERR(ncclInvalidArgument, "ncclCommGrow: new ranks must pass valid rank >= 0, got %d", rank);
       res = ncclInvalidArgument;
       goto exit;
     }
     if (uniqueId == NULL) {
-      WARN("ncclCommGrow: new ranks must pass non-NULL uniqueId");
+      ERR(ncclInvalidArgument, "ncclCommGrow: new ranks must pass non-NULL uniqueId");
       res = ncclInvalidArgument;
       goto exit;
     }
     if (rank >= nRanks) {
-      WARN("ncclCommGrow: new rank %d exceeds total ranks %d", rank, nRanks);
+      ERR(ncclInvalidArgument, "ncclCommGrow: new rank %d exceeds total ranks %d", rank, nRanks);
       res = ncclInvalidArgument;
       goto exit;
     }
@@ -3601,9 +3689,19 @@ ncclResult_t ncclCommGrow(ncclComm_t comm, int nRanks, const ncclUniqueId* uniqu
 
   // Configure the new communicator
   if (isExistingRank && config == NULL) {
+    // Deep copy, so the grown comm gets its own ncclx::Config.
     NCCLCHECKGOTO(copyCommConfig(newComm, comm), res, fail);
   } else {
-    NCCLCHECKGOTO(parseCommConfig(newComm, config), res, fail);
+    // [META:PER_COMM_CONFIG] New ranks without a config start from defaults;
+    // either way parse into a local copy rather than the caller's struct.
+    if (config != NULL) {
+      growInternalConfig = *config;
+    } else {
+      growInternalConfig = NCCL_CONFIG_INITIALIZER;
+    }
+    growInternalConfig.ncclxConfig = NCCL_CONFIG_UNDEF_PTR;
+    NCCLCHECKGOTO(ncclxParseCommConfig(&growInternalConfig), res, fail);
+    NCCLCHECKGOTO(parseCommConfig(newComm, &growInternalConfig), res, fail);
   }
 
   newComm->initState = ncclInProgress;
@@ -3734,7 +3832,19 @@ const char* ncclGetErrorString(ncclResult_t code) {
  */
 NCCL_API(const char*, ncclGetLastError, const ncclComm_t comm);
 const char* ncclGetLastError(ncclComm_t comm) {
-  return ncclLastError;
+  /* NCCLX: read the Meta last-error store, not upstream's ncclLastError[].
+   * ncclDebugLogV() rewrites that buffer on every WARN, and the propagation
+   * macros (NCCLCHECK and friends) emit one per frame, so it ends up holding
+   * the outermost "-> %d" trace rather than the root cause. ERR(code, ...)
+   * records the origin message here via setLastError().
+   */
+  thread_local static std::string lastErrorStorage;
+  try {
+    lastErrorStorage = meta::comms::logger::getLastCommsError();
+  } catch (...) {
+    lastErrorStorage.clear();
+  }
+  return lastErrorStorage.c_str();
 }
 
 NCCL_API(ncclResult_t, ncclCommGetAsyncError, ncclComm_t comm, ncclResult_t* asyncError);

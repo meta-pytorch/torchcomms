@@ -9,6 +9,10 @@
 #define NCCL_CPUSET_H_
 
 #include "nccl.h"
+// [META] cpuset.h names ncclAffinity and the ncclOs* helpers, which are
+// declared via os.h. It compiles today only because both includers happen to
+// pull os.h in first, directly or transitively.
+#include "os.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

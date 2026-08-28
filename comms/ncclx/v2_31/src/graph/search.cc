@@ -13,6 +13,8 @@
 #include "xml.h"
 #include <math.h>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 NCCL_PARAM(CrossNic, "CROSS_NIC", 2);
 
 // Initialize system->maxBw. This is the per-channel (i.e. per-SM)
@@ -71,7 +73,7 @@ static ncclResult_t findRevLink(struct ncclTopoNode* node1, struct ncclTopoNode*
       return ncclSuccess;
     }
   }
-  WARN("Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
+  ERR(ncclInternalError, "Could not find rev link for %d/%ld -> %d/%ld", node1->type, node1->id, node2->type, node2->id);
   return ncclInternalError;
 }
 
@@ -133,7 +135,7 @@ static ncclResult_t ncclTopoFollowPath(struct ncclTopoSystem* system, struct ncc
   struct ncclTopoNode* node2 = system->nodes[type2].nodes + index2;
 
   if (node1->paths[type2] == nullptr || node2->paths[type1] == nullptr) {
-    WARN("No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
+    ERR(ncclInternalError, "No path computed to go from %s/%d to %s/%d", topoNodeTypeStr[type1], index1, topoNodeTypeStr[type2], index2);
     return ncclInternalError;
   }
 
@@ -227,7 +229,7 @@ static ncclResult_t getGpuIndex(struct ncclTopoSystem* system, int rank, int* in
       return ncclSuccess;
     }
   }
-  WARN("Could not find gpu rank %d", rank);
+  ERR(ncclInternalError, "Could not find gpu rank %d", rank);
   return ncclInternalError;
 }
 
@@ -238,7 +240,7 @@ static ncclResult_t getNetIndex(struct ncclTopoSystem* system, int64_t id, int* 
       return ncclSuccess;
     }
   }
-  WARN("Could not find net id %lx", id);
+  ERR(ncclInternalError, "Could not find net id %lx", id);
   return ncclInternalError;
 }
 
@@ -947,7 +949,7 @@ ncclResult_t ncclTopoGetChannelFromXml(struct ncclXmlNode* xmlChannel, int c, st
           }
         }
         if (rank == -1) {
-          WARN("XML Import Channel : dev %ld not found.", dev);
+          ERR(ncclSystemError, "XML Import Channel : dev %ld not found.", dev);
           return ncclSystemError;
         }
       }
@@ -1017,7 +1019,7 @@ ncclResult_t ncclTopoGetXmlFromChannel(struct ncclTopoGraph* graph, int c, struc
       }
     }
     if (dev == -1) {
-      WARN("XML Export Channel : rank %d not found.", intra[g]);
+      ERR(ncclInternalError, "XML Export Channel : rank %d not found.", intra[g]);
       return ncclInternalError;
     }
     NCCLCHECK(xmlSetAttrLong(node, "dev", dev));
@@ -1094,8 +1096,16 @@ float sm90SpeedArrayInter[] = {48.0, 45.0, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0, 1
 float sm100SpeedArrayIntra[] = {90.0, 80.0, 70.0, 60.0, 50.0, 45.0, 40.0, 30.0, 24.0, 20.0, 19.0, 18.0};
 float sm100SpeedArrayInter[] = {96.0, 90.2, 86.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0,
                                 20.0, 17.5, 15.0, 12.0, 6.0,  3.0,  2.4,  1.2,  0.24, 0.12};
+// [META] NCCL_TOPO_BOND_V229 escape hatch: the 2.29 SM100 inter-node speed
+// table, byte-identical to v2_29's sm100SpeedArrayInter. Upstream has added two
+// tiers since -- 86.0 in 2.30 and 90.2 in 2.31 -- so selecting this on 2.31
+// drops both and restores 2.29 topology-search behaviour, which is what the
+// cvar name promises.
+const float sm100SpeedArrayInterV229[] = {96.0, 80.0, 48.0, 45.1, 42.0, 40.0, 30.0, 24.0, 22.0, 20.0,
+                                          17.5, 15.0, 12.0, 6.0,  3.0,  2.4,  1.2,  0.24, 0.12};
 #define NSPEEDSINTRA_SM100 (sizeof(sm100SpeedArrayIntra) / sizeof(float))
 #define NSPEEDSINTER_SM100 (sizeof(sm100SpeedArrayInter) / sizeof(float))
+#define NSPEEDSINTER_SM100_V229 (sizeof(sm100SpeedArrayInterV229) / sizeof(float))
 
 ncclResult_t ncclTopoCheckCrossNicSupport(bool* supported) {
   *supported = (ncclParamCrossNic() != 0);
@@ -1107,7 +1117,7 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
   struct ncclTopoGraph* tmpGraph = NULL;
   int ccMin;
   int nspeeds = 0;
-  float* speedArray = NULL;
+  const float* speedArray = NULL; // [META] const: sm100SpeedArrayInterV229 is const
   int pass = 1;
   int speedIndex = 0;
   float maxBw;
@@ -1194,9 +1204,14 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
   if (system->inter == 0) {
     nspeeds = ccMin >= 100 ? NSPEEDSINTRA_SM100 : (ccMin >= 90 ? NSPEEDSINTRA_SM90 : NSPEEDSINTRA);
     speedArray = ccMin >= 100 ? sm100SpeedArrayIntra : (ccMin >= 90 ? sm90SpeedArrayIntra : speedArrayIntra);
+  } else if (ccMin >= 100) {
+    // [META] SM100 inter-node tiers are cvar-selectable; see sm100SpeedArrayInterV229.
+    const bool useV229 = NCCL_TOPO_BOND_V229;
+    nspeeds = useV229 ? NSPEEDSINTER_SM100_V229 : NSPEEDSINTER_SM100;
+    speedArray = useV229 ? sm100SpeedArrayInterV229 : sm100SpeedArrayInter;
   } else {
-    nspeeds = ccMin >= 100 ? NSPEEDSINTER_SM100 : (ccMin >= 90 ? NSPEEDSINTER_SM90 : NSPEEDSINTER);
-    speedArray = ccMin >= 100 ? sm100SpeedArrayInter : (ccMin >= 90 ? sm90SpeedArrayInter : speedArrayInter);
+    nspeeds = ccMin >= 90 ? NSPEEDSINTER_SM90 : NSPEEDSINTER;
+    speedArray = ccMin >= 90 ? sm90SpeedArrayInter : speedArrayInter;
   }
   maxBw = system->maxBw;
   totalBw = system->totalBw;
