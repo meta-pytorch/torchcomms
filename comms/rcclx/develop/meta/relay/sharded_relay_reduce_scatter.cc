@@ -1604,6 +1604,299 @@ static ncclResult_t shardedRelayReduceScatterFlat(
 }
 
 /**
+ * Software-pipelined single-group A>2 flat reduce-scatter.
+ *
+ * Same reduce-at-helper relay as shardedRelayReduceScatterFlat, but for
+ * nGroups == 1 -- where the active ranks and the helpers are disjoint -- the
+ * offload is tiled so the scatter and the reduced return share a group and each
+ * cross link runs duplex. See relayPipelineTiles().
+ *
+ * This is the mirror of the pipelined all-gather and equally ASYMMETRIC: a
+ * source scatters the slice of ALL A-1 of its foreign blocks, so a cross link
+ * carries A-1 units UP for every 1 the reduced return brings DOWN. Merging is
+ * bounded by the up direction. With w = align(recvCount / ((H + A - 1)*T + 1))
+ * each of the first T groups carries (A-1)*w on the busiest link and the last
+ * carries w, giving ((A-1)*T + 1)*w: at A = H = 4 that is recvCount/2 at T = 1
+ * (identical to the two-group schedule) falling towards 3*recvCount/7.
+ *
+ * The divisor is derived from A and H rather than fixed at the A = H = 4 value
+ * of 7 because the layout below needs H*T + (A-1)*T + 1 units to fit: any other
+ * geometry that reaches this path (A = 4 with H = 5..8 on a 9-to-12-rank comm,
+ * or A = 8 with H = 8 on a 16-rank one) would otherwise push offloadTotal past
+ * rc and underflow directSz, so an enormous count would reach
+ * ncclSend/ncclRecv. relayShapeFanout() is shared with the all-gather because
+ * the two schedules have the same unit accounting.
+ *
+ * Block layout [0, recvCount):
+ *   [0, directSz)          direct region, one chunk per group sized to that
+ *                          group's cross load: (A-1)*w for the first T groups
+ * and the remainder (>= w) for the last [directSz, recvCount)  offload region;
+ * helper h owns T tiles of w
+ *
+ * Unlike allreduce, the helper's reduce here is per tile because it gates the
+ * return hop: after the group that receives tile k it sums that tile's A-1
+ * contributions per owner, and the next group ships one reduced tile per owner.
+ * The OWNER's reduce stays a single fused pass over the whole block at the end
+ * -- reduce-scatter has no gather phase to wait on it -- so dScratch keeps the
+ * flat path's shard-major layout and the closing reduction is unchanged.
+ */
+static ncclResult_t shardedRelayReduceScatterFlatPipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* recvCounts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nActiveRanksPerGroup,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t rc = recvCounts[0];
+  const int A = nActiveRanksPerGroup;
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t w = ((rc /
+                     (static_cast<size_t>(
+                          rcclx::relay::relayShapeFanout(A, H).totalPerTile) *
+                          T +
+                      1)) /
+                    CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (w == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * w;
+  const size_t offloadTotal = static_cast<size_t>(H) * tileStride;
+  const size_t directSz = rc - offloadTotal;
+  const size_t heavy = static_cast<size_t>(A - 1) * w;
+  auto directOffset = [&](int k) -> size_t {
+    return static_cast<size_t>(k) * heavy;
+  };
+  auto directSize = [&](int k) -> size_t {
+    return (k < T) ? heavy : (directSz - directOffset(T));
+  };
+
+  // Active-rank scratch, both mirroring the flat path so the closing reduction
+  // is identical: dScratch holds the A-1 peer contributions to my direct
+  // region, one contiguous directSz block each; oScratch mirrors my output's
+  // offload region.
+  void* dScratch = nullptr;
+  void* oScratch = nullptr;
+  bool isInPlace = false;
+  if (myActiveGroup == 0) {
+    const char* ownBlock = static_cast<const char*>(sendBuffs[0]) +
+        static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
+    isInPlace =
+        (static_cast<const void*>(recvBuffs[0]) ==
+         static_cast<const void*>(ownBlock));
+    dScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS,
+        static_cast<size_t>(A - 1) * directSz * elementSize,
+        stream);
+    oScratch = ScratchBufferCache::getInstance().get(
+        0, offloadTotal * elementSize, stream);
+    if (dScratch == nullptr || oScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  // Helper staging: one slot per (owner, contributing source) per ping-pong
+  // buffer. Laid out buffer-major so that for a fixed buffer and owner the A-1
+  // contributions are contiguous with stride w, which is what the fused
+  // multi-input reduce below requires.
+  char* hbuff = nullptr;
+  const size_t slotsPerBuf = static_cast<size_t>(A) * (A - 1);
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase, 2 * slotsPerBuf * w * elementSize, stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto helperSlot = [&](int owner, int t, int k) -> char* {
+    return hbuff +
+        ((static_cast<size_t>(k % 2) * slotsPerBuf +
+          static_cast<size_t>(owner) * (A - 1) + static_cast<size_t>(t)) *
+         w) *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
+      const int m = cfg.myActiveIndex;
+      const size_t dOff = directOffset(k);
+      const size_t dSz = directSize(k);
+
+      // Direct reduce-scatter: my chunk of block j goes to its owner j.
+      for (int j = 0; j < A; j++) {
+        if (j == m) {
+          continue;
+        }
+        NCCLCHECK(ncclSend(
+            sendbuff + (static_cast<size_t>(j) * rc + dOff) * elementSize,
+            dSz,
+            datatype,
+            cfg.activeRanks[j],
+            comm,
+            stream));
+      }
+      if (k < T) {
+        // Offload scatter: helper h gets tile k of each of my foreign blocks.
+        for (int h = 0; h < H; h++) {
+          for (int j = 0; j < A; j++) {
+            if (j == m) {
+              continue;
+            }
+            NCCLCHECK(ncclSend(
+                sendbuff +
+                    (static_cast<size_t>(j) * rc + directSz +
+                     static_cast<size_t>(h) * tileStride +
+                     static_cast<size_t>(k) * w) *
+                        elementSize,
+                w,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+      }
+      for (int s = 0; s < A; s++) {
+        if (s == m) {
+          continue;
+        }
+        const int p = (s < m) ? s : s - 1;
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(dScratch) +
+                (static_cast<size_t>(p) * directSz + dOff) * elementSize,
+            dSz,
+            datatype,
+            cfg.activeRanks[s],
+            comm,
+            stream));
+      }
+      if (k > 0) {
+        // One already-reduced tile per helper, landing where my output wants
+        // it.
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(oScratch) +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * w) *
+                      elementSize,
+              w,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+    } else {
+      if (k < T) {
+        // Collect owner j's tile k from every contributing source s != j. The
+        // per-peer order matches each source's send order above.
+        for (int s = 0; s < A; s++) {
+          for (int j = 0; j < A; j++) {
+            if (j == s) {
+              continue;
+            }
+            const int t = (s < j) ? s : s - 1;
+            NCCLCHECK(ncclRecv(
+                helperSlot(j, t, k),
+                w,
+                datatype,
+                cfg.activeRanks[s],
+                comm,
+                stream));
+          }
+        }
+      }
+      if (k > 0) {
+        for (int j = 0; j < A; j++) {
+          NCCLCHECK(ncclSend(
+              helperSlot(j, 0, k - 1),
+              w,
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    // Sum this tile's A-1 contributions per owner, before the next group ships
+    // them. No divisor here: the owner applies it once at the end.
+    if (!cfg.isActiveRank && k < T) {
+      for (int j = 0; j < A; j++) {
+        char* dst = helperSlot(j, 0, k);
+        DISPATCH_MULTI_REDUCE(
+            datatype, dst, dst + w * elementSize, A - 2, w, 1, stream);
+      }
+    }
+  }
+
+  // Owner reduce, identical to the flat path: one fused pass over the direct
+  // region and one over the offload region.
+  if (myActiveGroup == 0) {
+    char* out = static_cast<char*>(recvBuffs[0]);
+    const char* ownBlock = static_cast<const char*>(sendBuffs[0]) +
+        static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
+
+    if (A == 4 && !isInPlace) {
+      DISPATCH_SEEDED_MULTI_REDUCE(
+          datatype,
+          out,
+          ownBlock,
+          dScratch,
+          A - 1,
+          directSz,
+          reductionDivisor,
+          stream);
+    } else {
+      if (!isInPlace) {
+        cudaMemcpyAsync(
+            out,
+            ownBlock,
+            directSz * elementSize,
+            cudaMemcpyDeviceToDevice,
+            stream);
+      }
+      DISPATCH_MULTI_REDUCE(
+          datatype, out, dScratch, A - 1, directSz, reductionDivisor, stream);
+    }
+
+    char* oOut = out + directSz * elementSize;
+    if (isInPlace) {
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype, oOut, oScratch, offloadTotal, reductionDivisor, stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(
+            datatype, oOut, oScratch, offloadTotal, stream);
+      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          oOut,
+          ownBlock + directSz * elementSize,
+          oScratch,
+          offloadTotal,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * Fused Multi-Group Sharded Relay Reduce-Scatter.
  *
  * Executes multiple sharded relay reduce-scatters in one fused call,
@@ -1751,7 +2044,36 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
         elementSize);
   }
   // A>2: two-group flat relay with reduce-at-helper woven with a direct
-  // all-to-all reduce-scatter over the intra links.
+  // all-to-all reduce-scatter over the intra links. A single-group call with
+  // the offload enabled can additionally be software-pipelined so the scatter
+  // and the reduced return share each cross link's two directions.
+  const bool offload =
+      rcclx::relay::selectReduceScatterRoute(
+          nActiveRanksPerGroup, numHelpers, nGroups, recvCounts, elementSize) ==
+      rcclx::relay::ReduceScatterRoute::FlatOffload;
+  const int nTiles = offload
+      ? rcclx::relay::relayPipelineTiles(
+            nGroups,
+            rcclx::relay::relayShapeFanout(nActiveRanksPerGroup, numHelpers),
+            rcclx::relay::relayMaxCount(recvCounts, nGroups),
+            elementSize)
+      : 1;
+  if (nTiles > 1) {
+    return shardedRelayReduceScatterFlatPipelined(
+        sendBuffs,
+        recvBuffs,
+        recvCounts,
+        datatype,
+        reductionDivisor,
+        comm,
+        stream,
+        configs,
+        myActiveGroup,
+        numHelpers,
+        nActiveRanksPerGroup,
+        nTiles,
+        elementSize);
+  }
   return shardedRelayReduceScatterFlat(
       sendBuffs,
       recvBuffs,
