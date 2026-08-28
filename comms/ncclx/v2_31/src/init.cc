@@ -8,6 +8,8 @@
 #include "nccl.h"
 #include "meta/NcclxConfig.h" // @manual
 #include "meta/NcclxPerCommConfig.h" // @manual
+#include "meta/DeviceRackSerial.h" // @manual
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -835,6 +837,14 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
       }
       INFO(NCCL_INIT, "MNNVL busId 0x%lx fabric UUID %lx.%lx cliqueId 0x%x state %d healthMask 0x%x", info->busId,
            uuid0, uuid1, info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
+      // [META] Load rack serial for MNNVL trunk disable (string-based, supports alphanumeric serials)
+      if (NCCL_MNNVL_TRUNK_DISABLE) {
+        if (ncclx::loadRackSerial(NCCL_TOPO_FILE_PATH, info->rackSerial, sizeof(info->rackSerial))) {
+          INFO(NCCL_INIT, "Loaded rack serial: %s", info->rackSerial);
+        } else {
+          WARN("No rack serial information available, skipping rack serial check");
+        }
+      }
     }
   }
 
