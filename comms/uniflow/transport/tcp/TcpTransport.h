@@ -297,6 +297,34 @@ struct TcpInflight {
   void* stream{nullptr};
 };
 
+/// One chunk of a put(), fully planned before anything is queued. Holding the
+/// length separately keeps it readable after `entry` has been moved into the
+/// inflight map.
+struct PlannedChunk {
+  uint64_t reqId{0};
+  size_t len{0};
+  TcpInflight entry;
+};
+
+/// A ReadReply whose payload is still being copied out of VRAM. The frame is
+/// already built, header and all; only the staging copy into its payload is
+/// outstanding.
+///
+/// The lease lives here rather than on the reader thread. It has to outlive the
+/// copy, because it is what stops the owner deregistering and freeing the
+/// source buffer underneath the GPU, but nothing requires the reader to be the
+/// thread holding it. Moving it here is what lets the reader return to the
+/// socket immediately while the segment stays protected.
+struct PendingReadReply {
+  std::vector<uint8_t> frame;
+  TcpSegmentRegistry::Lease lease;
+  /// cudaEvent_t, kept opaque so this header does not need the CUDA runtime.
+  void* event{nullptr};
+  uint64_t reqId{0};
+  /// Needed at teardown to wait on the right device's stream.
+  int deviceId{-1};
+};
+
 /// One queued outbound frame. `onSent`, when set, is completed by the sender
 /// thread once the frame is flushed to the socket (two-sided send()).
 struct TcpOutItem {
@@ -433,6 +461,45 @@ class TcpTransport : public Transport {
   // two outcomes exclusive: either the insert precedes the sweep and the sweep
   // fails it, or the sweep precedes the insert and this returns false.
   Status admitInflight(uint64_t reqId, TcpInflight entry);
+  // Admits every chunk of one put() or none. A per-chunk reservation that runs
+  // out of slots partway through has already delivered the earlier chunks to
+  // the peer, which is a partial remote write the caller is told nothing about.
+  Status admitInflightBulk(std::span<PlannedChunk> chunks);
+  // Drops reservations for chunks that were never queued, from `fromIdx` on.
+  // Chunks already handed to enqueueFrame keep theirs, so their Acks still
+  // match.
+  void abandonInflight(std::span<const PlannedChunk> chunks, size_t fromIdx);
+  // Confirms a device can be selected before any frame is queued.
+  // CudaDeviceGuard throws on an unusable device, and from inside the send loop
+  // that exception would escape put() itself, abandoning the promise while
+  // whatever was already queued still lands on the peer.
+  Status validateDeviceForStaging(int deviceId);
+  // Starts the D2H copy for a ReadReply and hands the frame to the staging
+  // queue, so the reader thread can go back to draining the socket instead of
+  // waiting on the device. Consumes the lease. Returns an error only if the
+  // copy could not be started, in which case nothing was queued.
+  Status stageReadReply(
+      std::vector<uint8_t> frame,
+      TcpSegmentRegistry::Lease lease,
+      const void* src,
+      size_t len,
+      int deviceId,
+      uint64_t reqId);
+  // Retires staged replies whose copy has finished, oldest first. Runs on the
+  // EventBase, never on the reader thread: polling from the reader would put
+  // the head-of-line block straight back.
+  void pollPendingReadReplies();
+  // Kicks the poll loop if it is not already running. Safe from any thread.
+  void schedulePendingReplyPoll();
+  // Waits for outstanding staging copies and drops the frames. Called during
+  // teardown, because the GPU may still be writing into a pending frame's
+  // payload and that memory must not be freed underneath it.
+  /// Waits for a staged D2H copy on `deviceId` whose completion is otherwise
+  /// unknown, so the frame it targets can be released. Used on the paths where
+  /// a copy was issued but the event never became a usable completion signal.
+  void waitForStagedCopy(int deviceId) noexcept;
+
+  void drainPendingReadReplies();
 
   // Shared bodies for the zero-copy and copy-based send/recv overloads.
   // `options` is threaded through rather than dropped so a VRAM caller's stream
@@ -550,6 +617,18 @@ class TcpTransport : public Transport {
   // so two callers seeing it open both close it; the second reaps a descriptor
   // some unrelated thread has since been handed.
   std::atomic<bool> dataConnClosed_{false};
+
+  // Guards the staging queue, which the reader thread appends to and the
+  // EventBase drains.
+  std::mutex stagingMu_;
+  std::deque<PendingReadReply> pendingReplies_;
+  // Retired strictly front-first. Copies for one device go on that device's
+  // stream and so signal in issue order; across devices they are independent,
+  // so a reply that is ready can wait behind an older one still running.
+  // Ordered retirement is still correct -- offsets make out-of-order replies
+  // safe on the wire, this only costs latency -- and a transport serves one
+  // peer, which in practice means one device.
+  bool replyPollScheduled_{false};
 
   // Outbound frame queue drained by the sender thread. Decoupling all sends
   // from the reader thread is what prevents a mutual-READ deadlock (two peers'
