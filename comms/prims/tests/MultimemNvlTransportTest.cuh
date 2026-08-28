@@ -224,6 +224,15 @@ void launchLoadReduce(
     std::size_t sourceOffsetElems,
     cudaStream_t stream = nullptr);
 
+void launchReduceBroadcast(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream = nullptr);
+
 void launchMultimemStore(
     MultimemNvlTransportDevice transport,
     std::size_t destinationOffset,
