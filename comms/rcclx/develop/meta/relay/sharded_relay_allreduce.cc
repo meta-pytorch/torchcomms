@@ -775,7 +775,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
     srcStride,                                        \
     ownOffset,                                        \
     slotBytes,                                        \
-    epoch,                                            \
+    seq,                                              \
     divisor,                                          \
     stream)                                           \
   do {                                                \
@@ -794,7 +794,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -811,7 +811,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -828,7 +828,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -845,7 +845,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -862,7 +862,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -879,7 +879,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -896,7 +896,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -913,7 +913,7 @@ static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
             srcStride,                                \
             ownOffset,                                \
             slotBytes,                                \
-            epoch,                                    \
+            seq,                                      \
             divisor,                                  \
             stream);                                  \
         break;                                        \
@@ -964,13 +964,14 @@ static bool tryOneShotAllReduce(
   if (maxCount * elementSize > rcclx::relay::kRelayOneShotMaxBytes) {
     return false;
   }
-  // The epoch advances per host launch, so a replayed graph would reuse a stale
-  // value and the handshake would pass before the data arrived.
+  // Creating the region is not capturable: it does a bootstrap all-gather and a
+  // synchronous hipMemset. Using one that already exists is fine, so under
+  // capture take the path only if the region is already up.
   struct ncclCudaGraph graph;
   if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
     return false;
   }
-  if (ncclCudaGraphValid(graph)) {
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::oneShotReady(comm)) {
     return false;
   }
 
@@ -1005,7 +1006,7 @@ static bool tryOneShotAllReduce(
       /*srcStride=*/0,
       /*ownOffset=*/0,
       osl.slotBytes,
-      osl.epoch,
+      osl.seq,
       reductionDivisor,
       stream);
   // An unsupported datatype must not silently produce nothing. Falling back is
