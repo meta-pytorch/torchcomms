@@ -52,6 +52,9 @@ struct Region {
   // for is blocked on that same lock, unable to enter it. regionsMutex()
   // therefore guards only the map.
   std::mutex mu;
+  // The communicator this region belongs to. Kept so a POINTER that has been
+  // recycled by the allocator can be told apart from the comm it used to be.
+  const void* commPtr{nullptr};
   bool tried{false};
   bool valid{false};
   void* base{nullptr}; // local allocation, exported
@@ -68,8 +71,21 @@ std::mutex& regionsMutex() {
   return m;
 }
 
-std::map<const void*, Region>& regions() {
-  static std::map<const void*, Region> r;
+// Keyed on comm->commHash, NOT on the ncclComm_t pointer.
+//
+// Keying on the pointer deadlocks. A destroyed communicator leaves its entry
+// behind (there is no relay-visible hook on comm teardown), and the allocator
+// may hand the same address to the NEXT communicator -- on some ranks but not
+// others, since each rank is its own process with its own heap. A rank that
+// finds the stale entry skips creation, a rank that does not enters
+// bootstrapAllGather, and the participation mismatch hangs the bootstrap.
+// Observed exactly that way: a suite stuck 20 minutes in bootstrapAllGather
+// under oneShotAcquire.
+//
+// commHash is identical across the ranks of one communicator and different for
+// a different communicator, so it is consistent where the pointer is not.
+std::map<uint64_t, Region>& regions() {
+  static std::map<uint64_t, Region> r;
   return r;
 }
 
@@ -190,20 +206,39 @@ bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out) {
     return false;
   }
 
-  // regionsMutex() covers only the map lookup, never the collectives inside
-  // createRegion(). std::map is node based, so the reference stays valid once
-  // the map lock is dropped; only erasing this key invalidates it, and that
-  // happens at comm destroy, i.e. after the last acquire for this comm.
+  // regionsMutex() covers only the map -- the stale-pointer sweep and the
+  // lookup. It is deliberately NOT held across createRegion(), which runs two
+  // bootstrap all-gathers: one global lock spanning a collective deadlocks as
+  // soon as two communicators are set up concurrently and their peer processes
+  // reach the collectives in opposite order.
   Region* regp = nullptr;
   {
     std::lock_guard<std::mutex> mapLock(regionsMutex());
-    regp = &regions()[static_cast<const void*>(comm)];
+
+    // Drop any region left by a previous communicator that occupied this
+    // address. Its IPC mappings refer to memory that went away with it. That
+    // comm is gone, so nothing can be holding the region's mu.
+    for (auto it = regions().begin(); it != regions().end();) {
+      if (it->second.commPtr == static_cast<const void*>(comm) &&
+          it->first != comm->commHash) {
+        destroyRegion(it->second);
+        it = regions().erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    regp = &regions()[comm->commHash];
   }
+  // std::map is node based, so the reference stays valid once the map lock is
+  // dropped; only erasing this key invalidates it, and that happens at comm
+  // destroy or in the sweep above, both after the last acquire for that comm.
   Region& reg = *regp;
 
   std::lock_guard<std::mutex> lock(reg.mu);
   if (!reg.tried) {
     reg.tried = true;
+    reg.commPtr = static_cast<const void*>(comm);
     createRegion(comm, reg);
   }
   if (!reg.valid) {
@@ -231,7 +266,7 @@ void oneShotRelease(ncclComm_t comm) {
   // with an oneShotAcquire() for the same comm -- it is called from comm
   // teardown, after the last collective on that comm has been issued.
   std::lock_guard<std::mutex> lock(regionsMutex());
-  auto it = regions().find(static_cast<const void*>(comm));
+  auto it = regions().find(comm->commHash);
   if (it == regions().end()) {
     return;
   }
