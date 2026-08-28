@@ -16,6 +16,8 @@
 #include <atomic>
 #include <mutex>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 NCCL_PARAM(RetryCnt, "SOCKET_RETRY_CNT", 34);
 NCCL_PARAM(RetryTimeOut, "SOCKET_RETRY_SLEEP_MSEC", 100);
 NCCL_PARAM(PollTimeOut, "SOCKET_POLL_TIMEOUT_MSEC", 0);
@@ -73,6 +75,22 @@ static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int s
     }
   }
   return ncclSuccess;
+}
+
+std::string ncclSocketToIPv6String(union ncclSocketAddress* addr) {
+  if (addr == nullptr) {
+    return {};
+  }
+  const struct sockaddr* saddr = &addr->sa;
+  // getnameinfo rejects a salen larger than the family's sockaddr on strict implementations.
+  const socklen_t salen = (saddr->sa_family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
+  char host[NI_MAXHOST] = {0};
+  // On failure return empty rather than the uninitialized buffer, so a prefix comparison cannot
+  // match on garbage.
+  if (getnameinfo(saddr, salen, host, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST) != 0) {
+    return {};
+  }
+  return {host};
 }
 
 uint16_t ncclSocketToPort(union ncclSocketAddress* addr) {
@@ -457,7 +475,7 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int* running) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName) {
 #ifdef ENABLE_TRACE
   char line[SOCKET_NAME_MAXLEN + 1];
 #endif
@@ -477,6 +495,20 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
     return ncclInternalError;
   }
   TRACE(NCCL_INIT | NCCL_NET, "Connecting to socket %s", ncclSocketToString(&sock->addr, line));
+
+  if (!NCCL_CLIENT_SOCKET_IFNAME.empty() && localIfName == nullptr) {
+    localIfName = NCCL_CLIENT_SOCKET_IFNAME.c_str();
+  }
+  // bind client socket to specified interface
+  if (localIfName != nullptr && localIfName[0] != '\0') {
+    // Zero-initialize and force termination: the name comes from a user-supplied cvar, and
+    // strncpy does not terminate when it is IFNAMSIZ or longer.
+    ifreq ifr{};
+    strncpy(ifr.ifr_name, localIfName, sizeof(ifr.ifr_name) - 1);
+    ifr.ifr_name[sizeof(ifr.ifr_name) - 1] = '\0';
+    SYSCHECK(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)), "setsockopt");
+    INFO(NCCL_INIT, "ncclSocketConnect bind to interface %s", ifr.ifr_name);
+  }
 
   sock->state = ncclSocketStateConnecting;
   sock->finalizeCounter = 0;
@@ -591,6 +623,20 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
     // in case of error, we close the descriptor before returning as it's unclear if the caller has to
     // use ncclSocketClose for cleanup
     NCCLCHECKGOTO(ncclOsSocketResetFd(sock), ret, fail);
+    if (NCCL_SOCKET_TOS_CONFIG != -1) {
+      // referenced D77281608
+      if (family == AF_INET6) {
+        // For IPv6 set the traffic class field
+        SYSCHECKGOTO(setsockopt(sock->socketDescriptor, IPPROTO_IPV6, IPV6_TCLASS, (char*)&NCCL_SOCKET_TOS_CONFIG,
+                                sizeof(int)),
+                     "setsockopt", ret, fail);
+      } else {
+        // For IPv4 set the TOS field
+        SYSCHECKGOTO(
+          setsockopt(sock->socketDescriptor, IPPROTO_IP, IP_TOS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)),
+          "setsockopt", ret, fail);
+      }
+    }
   } else {
     memset(&sock->addr, 0, sizeof(union ncclSocketAddress));
   }

@@ -28,6 +28,8 @@
 #include "utils.h"
 #include "checks.h"
 #include "param.h"
+
+#include "comms/utils/cvars/nccl_cvars.h"
 #include <pthread.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -416,6 +418,18 @@ ncclResult_t ncclOsFindInterfaces(const char* prefixList, char* names, union ncc
     // check against user specified interfaces
     if (!(matchIfList(interface->ifa_name, -1, userIfs, nUserIfs, searchExact) ^ searchNot)) {
       continue;
+    }
+
+    // Only render the address when the filter is actually configured. v2_30 did this
+    // unconditionally, costing a getnameinfo and an INFO line per interface on every job,
+    // including the overwhelming majority that never set the prefix.
+    if (!NCCL_SOCKET_IPADDR_PREFIX.empty()) {
+      const auto addrString = ncclSocketToIPv6String((union ncclSocketAddress*)interface->ifa_addr);
+      if (addrString.compare(0, NCCL_SOCKET_IPADDR_PREFIX.length(), NCCL_SOCKET_IPADDR_PREFIX)) {
+        continue;
+      }
+      TRACE(NCCL_INIT, "NCCL_SOCKET_IPADDR_PREFIX %s, current addrString %s", NCCL_SOCKET_IPADDR_PREFIX.c_str(),
+            addrString.c_str());
     }
 
     // Check that this interface has not already been saved
