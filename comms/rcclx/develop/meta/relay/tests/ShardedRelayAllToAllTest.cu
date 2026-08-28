@@ -512,7 +512,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         initActiveSendBuffer(
             sendBuffs[g], segmentCount, myActiveIndex, nActiveRanksPerGroup);
         if (checkRegionBoundaries) {
-          const size_t directA = segmentCount / 3;
+          const size_t directA = relayCount;
           const size_t regionOffsets[5] = {
               directA - 1,
               directA,
@@ -561,7 +561,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
 
     if (checkRegionBoundaries) {
-      const size_t directA = segmentCount / 3;
+      const size_t directA = relayCount;
       const size_t regionOffsets[5] = {
           directA - 1,
           directA,
@@ -654,7 +654,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
       initActiveSendBuffer(
           sendBuff, segmentCount, myActiveIndex, nActiveRanksPerGroup);
       if (checkRegionBoundaries) {
-        const size_t directA = segmentCount / 3;
+        const size_t directA = relayCount;
         const size_t regionOffsets[5] = {
             directA - 1,
             directA,
@@ -703,7 +703,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
 
     if (isActive) {
       if (checkRegionBoundaries) {
-        const size_t directA = segmentCount / 3;
+        const size_t directA = relayCount;
         const size_t regionOffsets[5] = {
             directA - 1,
             directA,
@@ -1508,12 +1508,12 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
  */
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_RoutedLowerBoundary_63MiB) {
+    Correctness_4Active_RoutedLowerBoundary_27MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4CorrectnessCase(segmentCount, true);
 }
@@ -1525,7 +1525,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
   runA4CorrectnessCase(segmentCount, false);
 }
@@ -1537,21 +1537,26 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
   runA4CorrectnessCase(segmentCount, true, true);
 }
 
+// 256 MiB is a power of two, so segmentCount is not divisible by 3 and the
+// relay's leading direct region has to be aligned down rather than taken as an
+// exact third. Routed here (this size used to be the top of the window), with
+// the region boundaries checked so a misaligned split is caught.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_DirectUpperBoundary_256MiB) {
+    Correctness_4Active_RoutedPowerOfTwo_256MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
   constexpr size_t perActiveBytes = 256ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
-  runA4CorrectnessCase(segmentCount, false);
+  static_assert(segmentCount % 3 != 0, "256 MiB must not divide into thirds");
+  runA4CorrectnessCase(segmentCount, true, true);
 }
 
 // Single-group (nGroups=1) A=4 all-to-all: ranks {0,1,2,3} active, {4,5,6,7}
@@ -1559,12 +1564,12 @@ TEST_F(
 // tests cover, across the routed and direct regimes.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_SingleGroup_Routed_63MiB) {
+    Correctness_4Active_SingleGroup_Routed_9MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4SingleGroupCorrectnessCase(segmentCount, true);
 }
@@ -1576,7 +1581,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
   runA4SingleGroupCorrectnessCase(segmentCount, false);
 }
@@ -1588,7 +1593,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 9ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
   runA4SingleGroupCorrectnessCase(segmentCount, true, true);
 }
