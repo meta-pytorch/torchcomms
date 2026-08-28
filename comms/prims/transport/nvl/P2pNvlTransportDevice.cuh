@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <cstring>
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/BarrierState.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
@@ -13,7 +14,6 @@
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #include "comms/prims/transport/ll/LlOps.cuh"

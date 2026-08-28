@@ -6,8 +6,8 @@
 #include <cstdint>
 
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll/LlOps.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"

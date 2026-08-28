@@ -6,7 +6,7 @@
 
 #include "comms/prims/collectives/AllGather.cuh"
 #include "comms/prims/collectives/AllToAllv.cuh"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 
 namespace comms::prims::benchmark {
 

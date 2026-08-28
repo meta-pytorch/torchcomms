@@ -6,8 +6,8 @@
 #include <cstdint>
 
 #include "comms/prims/collectives/AllToAllv.cuh" // ChunkInfo
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
 

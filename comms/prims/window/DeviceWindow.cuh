@@ -4,9 +4,9 @@
 
 #include <cassert>
 #include <cstdint>
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/prims/transport/Transport.cuh"

@@ -6,7 +6,7 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
 #include "comms/common/fault_tolerance/Abort.h"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"

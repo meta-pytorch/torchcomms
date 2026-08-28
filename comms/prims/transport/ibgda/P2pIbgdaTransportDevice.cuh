@@ -24,11 +24,11 @@
 
 #include "comms/prims/platform/DocaVerbsUtils.cuh"
 #endif
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceImpl.cuh"

@@ -280,7 +280,7 @@ It never redirects all channel arrivals into one counter.
 
 Unicast publication uses the existing system-scope release store or atomic add in `SignalState`.
 Waiting polls `SignalState::load` with system-scope acquire semantics and the modular sequence predicate.
-A caller that enables a timeout starts the `Timeout` before entering the primitive.
+A caller that enables a timeout starts the `AbortDevice` before entering the primitive.
 
 Multicast per-peer publication uses `multimem.st.release.sys.global.u64`.
 Multicast aggregate publication uses `multimem.red.release.sys.global.add.u64`.
