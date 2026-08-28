@@ -2,8 +2,27 @@
 
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
-#include <folly/logging/xlog.h>
+#include <cstdio>
 #include <cstdlib>
+
+#ifndef CUDACHECKABORT
+// Fallback when CUDACHECKABORT is not provided by the NCCL headers included
+// in this build. Preserves abort-on-failure behavior. Writes to stderr because
+// abort() is not required to flush stdio, and test stdout is usually a pipe.
+#define CUDACHECKABORT(cmd)               \
+  do {                                    \
+    cudaError_t err = cmd;                \
+    if (err != cudaSuccess) {             \
+      fprintf(                            \
+          stderr,                         \
+          "Cuda failure '%s' at %s:%d\n", \
+          cudaGetErrorString(err),        \
+          __FILE__,                       \
+          __LINE__);                      \
+      abort();                            \
+    }                                     \
+  } while (0)
+#endif
 
 void NcclxBaseTestFixture::SetUp(const NcclxEnvs& envs) {
   distSetUp();
