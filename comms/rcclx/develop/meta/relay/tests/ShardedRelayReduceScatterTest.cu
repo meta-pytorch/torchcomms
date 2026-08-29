@@ -2003,6 +2003,160 @@ TEST(ShardedRelayReduceScatterFanoutShape, LayoutFitsAtEveryAcceptedGeometry) {
   EXPECT_EQ(shipped.totalFixed, 1);
 }
 
+/**
+ * Test: single group at 2 active ranks, large enough to overlap the owner
+ * reduce, with a POSITION-DEPENDENT fill.
+ *
+ * Above kRelayOverlapReduceMinBytes the pipelined 2-active relay stops reducing
+ * once at the end and instead reduces each pipeline region on a side stream as
+ * that region lands. That required re-indexing the shipped block from
+ * helper-major to stage-major, so region k holds exactly what group k receives.
+ *
+ * Every other reduce-scatter test fills a contribution block with a CONSTANT
+ * value, which means a region that arrives at the wrong offset still sums to
+ * the right number and the bug is invisible. These cases fill position
+ * dependently instead, so any permutation, shift, overlap or omission of a
+ * region changes the output and fails.
+ *
+ * Element i of every block on active rank r holds (r + 1) * kBase +
+ * (i % kPeriod). Owner m's output element i is the sum over r, which at A == 2
+ * is 3 * kBase + 2 * (i % kPeriod) -- always even, so AVG is exact in integer
+ * arithmetic and a divisor applied twice, or to the wrong region, is caught.
+ * kPeriod is coprime with the 128-element chunk alignment, so a misplacement by
+ * any whole number of chunks shifts the pattern rather than aliasing onto it.
+ */
+class ShardedRelayReduceScatterOverlapA2Test
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int32_t kBase = 1000;
+  static constexpr int32_t kPeriod = 977;
+
+  static int32_t fillValue(int activeIndex, size_t i) {
+    return static_cast<int32_t>(activeIndex + 1) * kBase +
+        static_cast<int32_t>(i % static_cast<size_t>(kPeriod));
+  }
+
+  void runOverlapCase(bool inPlace, ncclRedOp_t op) {
+    const int nGroups = 1;
+    const int A = 2;
+    // A * recvBytes must reach kRelayOverlapReduceMinBytes (256 MiB) for the
+    // side-stream path to engage at all.
+    const size_t recvBytes = 128ULL * 1024 * 1024;
+    const size_t recvCount = recvBytes / sizeof(int32_t);
+    const size_t inBytes = static_cast<size_t>(A) * recvBytes;
+
+    const int activeRanks[] = {0, 1};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < A;
+    const int myActiveIndex = this->globalRank;
+
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendBuff, inBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvBuff, recvBytes));
+    }
+
+    barrierSyncOn(sendBuff);
+
+    HIPCHECK_TEST(hipMemset(sendBuff, 0, inBytes));
+    if (isActive) {
+      std::vector<int32_t> host(static_cast<size_t>(A) * recvCount);
+      for (int j = 0; j < A; j++) {
+        int32_t* block = host.data() + static_cast<size_t>(j) * recvCount;
+        for (size_t i = 0; i < recvCount; i++) {
+          block[i] = fillValue(myActiveIndex, i);
+        }
+      }
+      HIPCHECK_TEST(
+          hipMemcpy(sendBuff, host.data(), inBytes, hipMemcpyHostToDevice));
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, recvBytes));
+      }
+    }
+
+    int32_t* out = inPlace
+        ? sendBuff + static_cast<size_t>(myActiveIndex) * recvCount
+        : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t recvCounts[1] = {recvCount};
+
+    const ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclInt32,
+        op,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        A,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      std::vector<int32_t> got(recvCount);
+      HIPCHECK_TEST(
+          hipMemcpy(got.data(), out, recvBytes, hipMemcpyDeviceToHost));
+      size_t mismatches = 0;
+      size_t firstBad = 0;
+      for (size_t i = 0; i < recvCount; i++) {
+        int32_t sum = 0;
+        for (int r = 0; r < A; r++) {
+          sum += fillValue(r, i);
+        }
+        const int32_t want = (op == ncclAvg) ? sum / A : sum;
+        if (got[i] != want) {
+          if (mismatches == 0) {
+            firstBad = i;
+          }
+          mismatches++;
+        }
+      }
+      ASSERT_EQ(mismatches, 0u)
+          << "2-active single-group overlapped reduce-scatter mismatch: "
+          << mismatches << " of " << recvCount << " elements, first at index "
+          << firstBad;
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_InPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclSum);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclAvg);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclAvg);
+}
+
 TEST_F(
     ShardedRelayMultiGroupReduceScatterTest,
     Correctness_4Active_2Groups_OutOfPlace) {
