@@ -402,7 +402,15 @@ static ncclResult_t shardedRelayAllToAll2Active(
   // =========================================================================
   // DIAGONAL COPY: recvSeg[m] = sendSeg[m]
   // =========================================================================
-  if (myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+  // For nGroups == 1 the diagonal rides along in group 1 below as a self P2P
+  // pair, which RCCL services as a local copy inside the same kernel: no
+  // transfer, and no second launch. Same gate as shardedRelayAllToAllFlat --
+  // in the fused case all eight ranks would issue a self pair, which made a
+  // fused all-gather routing test fail intermittently.
+  const bool foldDiagonalIntoGroup = (nGroups == 1);
+
+  if (!foldDiagonalIntoGroup && myActiveGroup >= 0 &&
+      segmentCounts[myActiveGroup] > 0) {
     cudaMemcpyAsync(
         static_cast<char*>(recvBuffs[myActiveGroup]) + diagOffset * elementSize,
         static_cast<const char*>(sendBuffs[myActiveGroup]) +
@@ -446,6 +454,24 @@ static ncclResult_t shardedRelayAllToAll2Active(
           exchangeSegOffset * elementSize;
       char* recvSeg =
           static_cast<char*>(recvBuffs[g]) + exchangeSegOffset * elementSize;
+
+      if (foldDiagonalIntoGroup) {
+        const int me = cfg.activeRanks[cfg.myActiveIndex];
+        NCCLCHECK(ncclSend(
+            static_cast<const char*>(sendBuffs[g]) + diagOffset * elementSize,
+            segmentCounts[g],
+            datatype,
+            me,
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(recvBuffs[g]) + diagOffset * elementSize,
+            segmentCounts[g],
+            datatype,
+            me,
+            comm,
+            stream));
+      }
 
       // Scatter: chunk h of my exchange segment goes to helper h.
       if (chunkSize > 0) {
@@ -614,18 +640,21 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
   const size_t directBase = static_cast<size_t>(H) * tileStride;
   const size_t lastDirect = sc - directBase - tileStride;
 
-  // Diagonal: recvSeg[m] = sendSeg[m].
+  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
+  // which RCCL services as a local copy inside the same kernel: no transfer,
+  // and no second launch. It is split one chunk per group so the self op stays
+  // the same order of size as the u-sized ops sharing its group -- RCCL budgets
+  // channels per operation, so a single sc-sized self op would be the outlier
+  // in whichever group it landed in.
   size_t exchangeSegOffset = 0;
+  size_t diagOffset = 0;
   if (myActiveGroup == 0) {
-    const size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
+    diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
     exchangeSegOffset = static_cast<size_t>(1 - cfg.myActiveIndex) * sc;
-    cudaMemcpyAsync(
-        static_cast<char*>(recvBuffs[0]) + diagOffset * elementSize,
-        static_cast<const char*>(sendBuffs[0]) + diagOffset * elementSize,
-        sc * elementSize,
-        cudaMemcpyDeviceToDevice,
-        stream);
   }
+  const size_t diagChunk =
+      ((sc / static_cast<size_t>(T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
 
   // Helper staging: two ping-pong units per active source.
   char* hbuff = nullptr;
@@ -649,6 +678,26 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       const size_t directOffset = directBase + static_cast<size_t>(k) * u;
       const size_t directSize = (k < T) ? u : lastDirect;
+
+      const size_t diagPieceOffset =
+          diagOffset + static_cast<size_t>(k) * diagChunk;
+      const size_t diagPieceSize =
+          (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
+      NCCLCHECK(ncclSend(
+          static_cast<const char*>(sendBuffs[0]) +
+              diagPieceOffset * elementSize,
+          diagPieceSize,
+          datatype,
+          cfg.activeRanks[cfg.myActiveIndex],
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
+          diagPieceSize,
+          datatype,
+          cfg.activeRanks[cfg.myActiveIndex],
+          comm,
+          stream));
 
       if (k < T) {
         for (int h = 0; h < H; h++) {
@@ -760,8 +809,16 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
     }
   }
 
-  // Keep the existing out-of-place diagonal copy unchanged.
-  if (myActiveGroup >= 0) {
+  // The diagonal (recvSeg[m] = sendSeg[m]) rides along in the first comm group
+  // below as a P2P pair whose peer is the issuing rank, which RCCL services as
+  // a local copy inside the same kernel: no transfer, and no second launch.
+  //
+  // Restricted to nGroups == 1, matching the gate in shardedRelayAllToAllFlat.
+  // There only the active ranks issue a self pair; in the fused case all eight
+  // would, which made a fused all-gather routing test fail intermittently.
+  const bool foldDiagonalIntoGroup = (nGroups == 1);
+
+  if (!foldDiagonalIntoGroup && myActiveGroup >= 0) {
     const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
     const size_t sc = segmentCounts[myActiveGroup];
     const size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
@@ -798,6 +855,24 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
     const size_t sc = segmentCounts[g];
     const size_t directA = directACounts[g];
     const size_t relay = relayCounts[g];
+    if (foldDiagonalIntoGroup && cfg.isActiveRank && sc > 0) {
+      const int me = cfg.activeRanks[cfg.myActiveIndex];
+      const size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
+      NCCLCHECK(ncclSend(
+          static_cast<const char*>(sendBuffs[g]) + diagOffset * elementSize,
+          sc,
+          datatype,
+          me,
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          static_cast<char*>(recvBuffs[g]) + diagOffset * elementSize,
+          sc,
+          datatype,
+          me,
+          comm,
+          stream));
+    }
     for (const A4RelayTask& task : tasks[g]) {
       if (cfg.isActiveRank) {
         const int myIndex = cfg.myActiveIndex;
@@ -971,16 +1046,17 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     return ncclInvalidArgument;
   }
 
-  // Diagonal stays a local copy.
-  if (myActiveGroup == 0) {
-    const size_t diagOffset = static_cast<size_t>(cfg.myActiveIndex) * sc;
-    cudaMemcpyAsync(
-        static_cast<char*>(recvBuffs[0]) + diagOffset * elementSize,
-        static_cast<const char*>(sendBuffs[0]) + diagOffset * elementSize,
-        sc * elementSize,
-        cudaMemcpyDeviceToDevice,
-        stream);
-  }
+  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
+  // which RCCL services as a local copy inside the same kernel: no transfer,
+  // and no second launch. It is split one chunk per group so the self op stays
+  // the same order of size as the relay and direct ops sharing its group --
+  // RCCL budgets channels per operation, so a single sc-sized self op alongside
+  // u-sized transfers would be the outlier in the group it landed in.
+  const size_t diagOffset =
+      cfg.isActiveRank ? static_cast<size_t>(cfg.myActiveIndex) * sc : 0;
+  const size_t diagChunk =
+      ((sc / static_cast<size_t>(T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
 
   // Helper staging: two ping-pong units per task.
   char* hbuff = nullptr;
@@ -999,6 +1075,28 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     const int m = cfg.myActiveIndex;
     const size_t directOffset = relayTotal + static_cast<size_t>(k) * u;
     const size_t directSize = (k < T) ? u : lastDirect;
+
+    if (cfg.isActiveRank) {
+      const size_t diagPieceOffset =
+          diagOffset + static_cast<size_t>(k) * diagChunk;
+      const size_t diagPieceSize =
+          (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
+      NCCLCHECK(ncclSend(
+          static_cast<const char*>(sendBuffs[0]) +
+              diagPieceOffset * elementSize,
+          diagPieceSize,
+          datatype,
+          cfg.activeRanks[m],
+          comm,
+          stream));
+      NCCLCHECK(ncclRecv(
+          static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
+          diagPieceSize,
+          datatype,
+          cfg.activeRanks[m],
+          comm,
+          stream));
+    }
 
     for (const A4RelayTask& task : tasks) {
       if (cfg.isActiveRank) {
