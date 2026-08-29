@@ -245,8 +245,7 @@ class HierarchicalAllGatherBenchmarkFixture
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
-        std::abort();
+        COMMS_ABORT("ncclGetUniqueId failed: {}", ncclGetErrorString(res));
       }
     }
     std::vector<ncclUniqueId> all_ids(worldSize);
@@ -257,8 +256,7 @@ class HierarchicalAllGatherBenchmarkFixture
                 all_ids.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
-      std::abort();
+      COMMS_ABORT("Bootstrap allGather for NCCL ID failed");
     }
     return all_ids[0];
   }
@@ -521,12 +519,10 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const int nvl_size = benchmark_nvl_size(worldSize);
   if (nvl_size <= 0 || nvl_size > kDirectNvlMaxRanks ||
       worldSize % nvl_size != 0) {
-    COMMS_LOG(
-        ERR,
+    COMMS_ABORT(
         "Invalid HIER_AG_BENCH_NVL_SIZE={} for worldSize={}",
         nvl_size,
         worldSize);
-    std::abort();
   }
 
   if (globalRank == 0) {
@@ -544,16 +540,13 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const int pipeline_depth = benchmark_pipeline_depth();
   const std::string ib_hca = benchmark_ib_hca();
   if (ib_links <= 0) {
-    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_IB_LINKS={}", ib_links);
-    std::abort();
+    COMMS_ABORT("Invalid HIER_AG_BENCH_IB_LINKS={}", ib_links);
   }
   if (data_buffer_size == 0) {
-    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_DATA_BUFFER_SIZE=0");
-    std::abort();
+    COMMS_ABORT("Invalid HIER_AG_BENCH_DATA_BUFFER_SIZE=0");
   }
   if (pipeline_depth <= 0) {
-    COMMS_LOG(ERR, "Invalid HIER_AG_BENCH_PIPELINE_DEPTH={}", pipeline_depth);
-    std::abort();
+    COMMS_ABORT("Invalid HIER_AG_BENCH_PIPELINE_DEPTH={}", pipeline_depth);
   }
   const std::size_t ib_signal_bytes =
       benchmark_ib_signal_bytes(data_buffer_size, num_blocks);
@@ -563,12 +556,10 @@ TEST_F(HierarchicalAllGatherBenchmarkFixture, VsNccl) {
   const bool skip_nccl = benchmark_skip_nccl();
   for (std::size_t total_bytes : configured_benchmark_sizes()) {
     if (total_bytes % static_cast<std::size_t>(worldSize) != 0) {
-      COMMS_LOG(
-          ERR,
+      COMMS_ABORT(
           "AllGather size {} is not divisible by {} ranks",
           total_bytes,
           worldSize);
-      std::abort();
     }
     configs.push_back({
         .total_bytes = total_bytes,
