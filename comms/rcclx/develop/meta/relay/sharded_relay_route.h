@@ -286,15 +286,40 @@ inline size_t allReduceOffloadPermille(AllReduceRoute route) {
 
 // Largest software-pipeline depth the single-group relays will use.
 //
-// Capped at 4 for stability rather than for throughput. Every group boundary is
-// a cross-rank sync point, so a deeper pipeline gives co-resident independent
-// jobs more opportunities to skew against each other: at depth 8 the 4-job
-// parallel sweep becomes erratic and non-reproducible (0.74x-1.46x outliers
-// scattered through the size axis, different sizes each run), while depth 4 is
-// as stable as the unpipelined schedule. Depth 4 also happens to be what the
-// cost model below picks at every size measured on the single-group sweep, so
-// the cap costs nothing there.
-inline constexpr int kRelayMaxPipelineTiles = 4;
+// 8 is where the measured optimum stops moving. Depth 16 is a wash at best
+// (2-active allreduce at 1 GB: 4.252 ms at depth 8, 4.253 ms at 16) and a loss
+// where the per-stage op count is already high (4-active all-to-all at 512 MB:
+// 1.836 ms -> 1.993 ms), so there is nothing past 8 to take.
+//
+// This was briefly capped at 4, on the belief that depth 8 destabilized
+// co-resident jobs. That was a measurement error worth recording, because the
+// sweep it came from will mislead the same way again: the parallel sweep's
+// relay times vary run to run by ~20-30%, in two loose clusters, and a single
+// run against a single-run baseline reads that as a regression. It is not the
+// pipeline: the spread is present at depth 1 with EQUAL OR LARGER magnitude
+// (max/min over 4 runs at 144 MB: 1.78 at depth 1 versus 1.24 at depth 4), and
+// it is identical across co-resident jobs to within 3%, so it is not cross-job
+// skew either.
+//
+// Contributors identified, in descending order of how sure we are:
+//  - Co-tenant GPU work on a shared node. Confirmed: while another workload had
+//    the GPUs, a 4-active single-group all-gather at 256 MB read 8.3-10.6 ms
+//    for the NCCL baseline against 5.08 ms on an idle node, and per-rep spreads
+//    went from 1.00-1.12 to 1.25-1.45. Always check BENCH_SWEEP_PER_REP spreads
+//    before trusting a number.
+//  - p2p channel resourcing. Pinning NCCL_MIN/MAX_P2P_NCHANNELS makes the
+//  timing
+//    deterministic to +/-1% but costs 1.75x at 32 channels and 20x at 8, since
+//    the default resolves to 64 channels with 8 per peer and forcing it lower
+//    puts all 7 peers on shared channels. Suggestive, not conclusive.
+// Ruled out: clocks (fclk stays pinned at 1500 MHz, sclk moves ~6%, and neither
+// tracks the slow runs) and the host allocator (expandable_segments changes
+// nothing).
+//
+// The single-group sweep does NOT show this: on an idle node it repeats to
+// within 0.3-0.6%, which is why it is the sweep the size gating above is tuned
+// on. Parallel comparisons need repeated invocations and must compare minima.
+inline constexpr int kRelayMaxPipelineTiles = 8;
 
 // What one extra ncclGroup boundary costs, expressed as the per-link bytes that
 // take the same time: a grouped-P2P launch plus work-FIFO upload plus fence is
