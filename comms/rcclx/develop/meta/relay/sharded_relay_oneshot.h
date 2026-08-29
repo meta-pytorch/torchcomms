@@ -101,13 +101,19 @@ struct OneShotRanks {
   int r[kOneShotMaxRanks];
 };
 
-// Everything one launch needs. Returned by value so the epoch is unique to the
-// call that took it.
+// Everything one launch needs.
 struct OneShotLaunch {
   OneShotPeerTable table;
   size_t slotBytes;
   int nRanks;
-  uint32_t epoch;
+  // Per-block handshake counter, device memory, one array per rank. The kernel
+  // bumps seq[blockIdx.x] itself and uses the result as the epoch for that
+  // block. It is NOT a host-side counter passed by value: as a kernel argument
+  // it got baked into a captured graph, and every replay then reused the same
+  // epoch, which every peer flag already satisfied. All ranks stay in step
+  // because all of them run the same one-shot calls in the same order, which is
+  // what the size-only gating in the callers guarantees.
+  uint32_t* seq;
 };
 
 /**
@@ -121,6 +127,21 @@ struct OneShotLaunch {
  * COLLECTIVE on first call for a given communicator. See the file comment.
  */
 bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out);
+
+/**
+ * True if this communicator's region already exists, without creating one.
+ *
+ * For callers under graph capture. Creation is not capturable -- it does a
+ * bootstrap all-gather and a synchronous hipMemset -- but a region that already
+ * exists is perfectly usable from a captured kernel, so a caller can consult
+ * this and fall back rather than refusing every captured call outright.
+ *
+ * Purely local and collective-safe to call: whether a region exists is agreed
+ * across the communicator, since it is only ever established by an all-gather
+ * that every rank takes part in. So every rank gets the same answer and either
+ * all of them fall back or none do.
+ */
+bool oneShotReady(ncclComm_t comm);
 
 /**
  * Free a communicator's region. Called from RCCL's commFree(), which is the
