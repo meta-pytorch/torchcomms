@@ -19,10 +19,11 @@
  *   G4 The reduce-scatter overlap side stream is forked from the caller stream,
  *      which has no defined relationship to its captured form.
  *
- * G1..G4 are all currently guarded by explicit bail-outs or are latent, so
- * every case in this file passes as-is: they are the regression guard the four
- * fixes are checked against, not a demonstration of a live bug. Each fix brings
- * its own failing-before/passing-after case with it.
+ * G2, G3 and G4 currently sit behind explicit capture bail-outs, so the cases
+ * covering them pass as-is and are the regression guard their fixes get
+ * measured against. The two ShardedRelayGraphCaptureScratchHazardTest cases are
+ * the exception: they fail without a graph-aware scratch cache, and landed with
+ * the fix for it.
  *
  * One ordering constraint worth knowing before adding a case:
  * ScratchBufferCache is a process-global keyed on (device, stream, key), so a
@@ -441,6 +442,111 @@ class ShardedRelayGraphCaptureReduceScatterTest
     release(b);
   }
 };
+
+// ---------------------------------------------------------------------------
+// Scratch-cache hazards
+//
+// These are the cases that fail on a relay without a graph-aware scratch cache.
+// ScratchBufferCache is a process-global keyed on (device, stream, key), so
+// they must run FIRST: a single earlier case at a larger size leaves an entry
+// big enough to satisfy them, the capture then allocates nothing, and they
+// silently stop testing anything. gtest runs suites in the order their first
+// TEST_F appears, which is why this block sits above the others.
+// ---------------------------------------------------------------------------
+
+class ShardedRelayGraphCaptureScratchHazardTest
+    : public ShardedRelayGraphCaptureReduceScatterTest {
+ protected:
+  void SetUp() override {
+    ShardedRelayGraphCaptureReduceScatterTest::SetUp();
+    // Run on a second, still-live stream. Keying the cache on the stream means
+    // a distinct live handle cannot collide with an entry left by the fixture
+    // stream, which hipStreamCreate is free to hand back after a destroy.
+    HIPCHECK_TEST(hipStreamCreate(&hazardStream));
+    baseStream = this->stream;
+    this->stream = hazardStream;
+  }
+
+  void TearDown() override {
+    this->stream = baseStream;
+    HIPEXPECT_TEST(hipStreamDestroy(hazardStream));
+    ShardedRelayGraphCaptureReduceScatterTest::TearDown();
+  }
+
+  hipStream_t hazardStream{};
+  hipStream_t baseStream{};
+};
+
+// G1 mode 1 and G3: the capture is the FIRST relay call on this comm, so the
+// scratch cache is cold and the one-shot region has never been created. Any
+// hipMallocAsync or region bootstrap the relay does lands inside the capture.
+TEST_F(ShardedRelayGraphCaptureScratchHazardTest, CaptureAsFirstRelayCall) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+  runCaptureReplay(
+      kOneShotBandCount, /*replays=*/2, /*warmUp=*/false, /*skew=*/true);
+}
+
+// G1 mode 3: growing the scratch cache AFTER a capture hipFreeAsyncs the
+// pointer the graph baked, handing it back to the pool while a live graph still
+// references it. The replay must still be correct.
+TEST_F(
+    ShardedRelayGraphCaptureScratchHazardTest,
+    ScratchGrowthAfterCaptureThenReplay) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+
+  const size_t smallCount = 256 * 1024; // 1 MiB out, 4 MiB in
+  const size_t largeCount = kSideStreamCount; // 64 MiB out, 256 MiB in
+
+  ReduceScatterBuffers small = allocate(smallCount);
+  barrier();
+
+  if (this->isActive) {
+    fillBlocks(small.send, smallCount, /*replay=*/0);
+  }
+  ASSERT_EQ(enqueue(small, smallCount), ncclSuccess);
+  syncStream("stream drain");
+  barrier();
+
+  ncclResult_t captured = ncclSuccess;
+  hipGraphExec_t exec =
+      captureGraph([&]() { captured = enqueue(small, smallCount); });
+  ASSERT_EQ(captured, ncclSuccess);
+  ASSERT_NE(exec, nullptr);
+
+  // Uncaptured call at a much larger size on the same stream. This is what
+  // forces the cache to free the entry the graph above captured.
+  ReduceScatterBuffers large = allocate(largeCount);
+  barrier();
+  if (this->isActive) {
+    fillBlocks(large.send, largeCount, /*replay=*/0);
+  }
+  ASSERT_EQ(enqueue(large, largeCount), ncclSuccess);
+  syncStream("stream drain");
+  release(large);
+  barrier();
+
+  for (int r = 0; r < 2; r++) {
+    if (this->isActive) {
+      fillBlocks(small.send, smallCount, r + 1);
+    }
+    barrier();
+    replay(exec, /*skew=*/true);
+    if (this->isActive) {
+      expectUniform(
+          small.recv,
+          smallCount,
+          expectedReduceScatter(this->myActiveIndex, r + 1),
+          "reduce-scatter replay after scratch growth");
+    }
+  }
+
+  HIPEXPECT_TEST(hipGraphExecDestroy(exec));
+  release(small);
+}
 
 // Baseline sanity: capture and replay work at all on this build and stream.
 TEST_F(ShardedRelayGraphCaptureReduceScatterTest, SmokeCaptureAndReplay) {
