@@ -1557,6 +1557,160 @@ TEST_F(
  * Each active rank fills its buffer with a distinct value (myActiveIndex+1) so
  * the SUM (1+2+3+4 = 10) detects a missing partner / mis-routed contribution.
  */
+/**
+ * Test: single group (nGroups == 1) at 4 active ranks, SUM and AVG, both
+ * placements.
+ *
+ * nGroups == 1 makes the active ranks {0,1,2,3} and the helpers {4,5,6,7}
+ * disjoint, which is what puts the flat allreduce on its software-pipelined
+ * schedule -- the only path that pipelines TWO dependencies at once (the
+ * offload's reduce-and-broadcast and the direct region's reduce-scatter into
+ * all-gather), and the only one using a tile-major dScratch. 128 MB clears the
+ * crossover where that schedule starts beating the two-group one, so this is
+ * its only coverage: every other 4-active case runs 2 groups and stays
+ * unpipelined.
+ *
+ * AVG is what pins the divisor, which the pipelined path applies once per tile
+ * at the owner and once per tile at the helper. Values are chosen so the
+ * average is exact in integers: contributions 1..4 average to 2 with A = 4...
+ * deliberately 2 + 8 + 14 + 16 = 40, so SUM is 40 and AVG is exactly 10.
+ */
+class ShardedRelayAllReduceSingleGroupA4Test
+    : public ShardedRelayMultiGroupAllReduceTest {
+ protected:
+  static int32_t contribution(int activeIndex) {
+    static const int32_t values[4] = {2, 8, 14, 16};
+    return values[activeIndex];
+  }
+
+  void runSingleGroupA4Case(bool inPlace, ncclRedOp_t op) {
+    const int nGroups = 1;
+    const int nActiveRanksPerGroup = 4;
+    const size_t dataBytes = 128ULL * 1024 * 1024;
+    const size_t count = dataBytes / sizeof(int32_t);
+    const int32_t sum =
+        contribution(0) + contribution(1) + contribution(2) + contribution(3);
+    const int32_t expected =
+        (op == ncclAvg) ? (sum / nActiveRanksPerGroup) : sum;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank;
+
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendBuff, dataBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvBuff, dataBytes));
+    }
+
+    barrierSyncOn(sendBuff);
+
+    if (isActive) {
+      std::vector<int32_t> hostData(count, contribution(myActiveIndex));
+      HIPCHECK_TEST(hipMemcpy(
+          sendBuff, hostData.data(), dataBytes, hipMemcpyHostToDevice));
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, dataBytes));
+      }
+    } else {
+      HIPCHECK_TEST(hipMemset(sendBuff, 0, dataBytes));
+    }
+    int32_t* out = inPlace ? sendBuff : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t counts[1] = {count};
+
+    const ncclResult_t result = callAllReduceCompat(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        ncclInt32,
+        op,
+        this->comm,
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyDeviceBufferEquals(
+          out, count, expected, 0, "4-active single-group allreduce mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Sum_OutOfPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/false, ncclSum);
+}
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Sum_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true, ncclSum);
+}
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Avg_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true, ncclAvg);
+}
+
+/**
+ * Test: the pipelined allreduce's region split fits inside the count at EVERY
+ * geometry buildShardedRelayRankConfig() accepts, not just the A = H = 4 one
+ * the 8-rank cases above exercise.
+ *
+ * The GPU cases here are pinned to 8 ranks, so a single-group A = 4 call always
+ * has exactly 4 helpers; the combinations a 9-to-16-rank comm would produce
+ * (A = 4 with H = 5..8, or A = 8 with H = 8) cannot be built from this harness.
+ * What those geometries break is arithmetic, not scheduling:
+ * shardedRelayAllReduceFlatPipelined() takes pO = 2*H*T*y and pD = count - pO,
+ * then dShard = pD/A with a last tile of dShard - (T-1)*y. If the unit count
+ * per tile is below 2H + A both subtractions underflow as size_t and a wild
+ * dShard reaches the reduce kernels and ncclSend. Assert the invariant directly
+ * over the whole accepted (A, H) space, which needs no ranks at all.
+ */
+TEST(ShardedRelayAllReducePipelineUnits, LayoutFitsAtEveryAcceptedGeometry) {
+  // Mirrors SHARDED_RELAY_MAX_ACTIVE / SHARDED_RELAY_MAX_HELPERS.
+  constexpr int kMaxActive = 8;
+  constexpr int kMaxHelpers = 8;
+
+  for (int a = 2; a <= kMaxActive; a *= 2) {
+    for (int h = 1; h <= kMaxHelpers; h++) {
+      const int unitsPerTile =
+          rcclx::relay::relayAllReducePipelineUnitsPerTile(a, h);
+      for (int t = 1; t <= 8; t *= 2) {
+        // Offload takes 2*H*T units; the direct region needs A*T so every
+        // owner's shard can still tile into T pieces of y.
+        EXPECT_LE(2 * h * t + a * t, unitsPerTile * t)
+            << "pipelined allreduce layout overruns the count at A=" << a
+            << " H=" << h << " T=" << t << ": needs " << (2 * h * t + a * t)
+            << " units out of " << (unitsPerTile * t);
+      }
+    }
+  }
+
+  // The shipped 8-GPU geometry must still resolve to the 12 the perf numbers
+  // were measured at, so the parameterization is a generalization and not a
+  // change.
+  EXPECT_EQ(rcclx::relay::relayAllReducePipelineUnitsPerTile(4, 4), 12);
+}
+
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
     Correctness_4Active_2Groups_InPlace) {
