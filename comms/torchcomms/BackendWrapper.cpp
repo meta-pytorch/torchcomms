@@ -1073,7 +1073,11 @@ c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
     commOpts.store = backendOpts->store;
     commOpts.hints = backendOpts->hints;
   }
-  auto new_comm = comm->split(ranks, opts->group_name, commOpts);
+  const auto rank = comm->getRank();
+  const auto rankIt = std::find(ranks.begin(), ranks.end(), rank);
+  const std::vector<int> emptyRanks;
+  const auto& splitRanks = rankIt == ranks.end() ? emptyRanks : ranks;
+  auto new_comm = comm->split(splitRanks, opts->group_name, commOpts);
   if (new_comm == nullptr) {
     return nullptr;
   }

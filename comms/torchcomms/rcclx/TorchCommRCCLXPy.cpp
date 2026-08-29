@@ -255,5 +255,86 @@ Returns:
           py::arg("all_active_ranks"),
           py::arg("per_group_send_counts"),
           py::arg("async_op") = false,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "relay_control_publish",
+          [](TorchCommRCCLX& self,
+             uint64_t epoch,
+             const std::vector<int64_t>& counts,
+             int64_t op_code,
+             int64_t dtype,
+             int64_t timeout_ns,
+             int64_t red_op,
+             int64_t flags) {
+            self.relay_control_publish(
+                epoch, counts, op_code, dtype, red_op, flags, timeout_ns);
+          },
+          R"(
+Publish the plan for one relay forward. Rank 0 only.
+
+A communicator is a data plane, not a scheduler: nothing in it can make a helper
+process post a collective. So the active side publishes what the forward will do
+into a shared-memory segment, and every rank that does not already know the plan
+consumes it before enqueueing. Host-only and synchronous -- no stream, no work
+handle.
+
+Bounded by timeout_ns rather than waiting forever, so a consumer that has fallen
+more than the ring depth behind raises instead of hanging.
+
+Args:
+    epoch: Monotonic forward counter. Must increase by 1 per forward.
+    counts: One element count per relay call in this forward. Its length is the
+        call count, so a forward with a different number of chunks needs no
+        separate field.
+    op_code: An ncclRelayOp_t value (0 = shutdown, 1 = all_reduce,
+        2 = reduce_scatter, 3 = all_gather, 4 = all_to_all).
+    dtype: ncclDataType_t value the calls will use.
+    timeout_ns: Bound on the wait for ring space. Precedes red_op and flags
+        because those two carry defaults and a defaulted parameter cannot come
+        before a required one -- listed here in the order a POSITIONAL caller
+        must pass them, which is the order py::arg enforces below.
+    red_op: ncclRedOp_t value, ignored for the non-reducing collectives.
+    flags: Reserved; pass 0.
+
+Raises:
+    RuntimeError: if publishing fails, including a rank other than 0 calling it
+        and a plan with more calls than NCCL_RELAY_CONTROL_MAX_CALLS.
+)",
+          py::arg("epoch"),
+          py::arg("counts"),
+          py::arg("op_code"),
+          py::arg("dtype"),
+          py::arg("timeout_ns"),
+          py::arg("red_op") = 0,
+          py::arg("flags") = 0,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "relay_control_consume",
+          [](TorchCommRCCLX& self, uint64_t epoch, int64_t timeout_ns) {
+            return self.relay_control_consume(epoch, timeout_ns);
+          },
+          R"(
+Consume the plan for one relay forward. Called by every rank that does not
+already know it -- in practice the helpers.
+
+Blocks until the publisher has written `epoch`, then returns it. The counts
+buffer is owned and sized by the wrapper from NCCL_RELAY_CONTROL_MAX_CALLS, so
+the caller passes nothing and gets back a right-sized list.
+
+Args:
+    epoch: The forward to read. Must match what the publisher wrote.
+    timeout_ns: Bound on the wait. A publisher that stops raises here rather
+        than leaving this rank blocked forever.
+
+Returns:
+    (op_code, dtype, red_op, flags, counts) -- counts has one entry per relay
+    call, so len(counts) is the number of calls to enqueue.
+
+Raises:
+    RuntimeError: on timeout, on a plan too large for the wrapper's buffer, or
+        if the publisher signalled an abort.
+)",
+          py::arg("epoch"),
+          py::arg("timeout_ns"),
           py::call_guard<py::gil_scoped_release>());
 }

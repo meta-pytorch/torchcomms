@@ -200,33 +200,79 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
  public:
   ShardedRelayMultiGroupAllReduceTest() = default;
 
-  void SetUp() override {
+  // Comms live for the whole binary instead of being rebuilt per case. They
+  // used to be created in SetUp and destroyed in TearDown, so every case freed
+  // everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu wipe it
+  // (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding mmap_lock
+  // for write, so 8 ranks cycling multi-GB comms serialise into a stall that
+  // takes the whole host down. Reusing also matches how comms are really used:
+  // a handful, kept for the life of the process.
+  //
+  // One comm per active-rank shape, because relay state is per-comm and a comm
+  // cannot be shared between the 2- and 4-active-rank configurations, plus a
+  // dedicated one for the rank barrier. A single store serves all three, with
+  // incrTestCount() between them: the unique-ID rendezvous key is derived from
+  // that counter, so without bumping it the second comm would read the first
+  // one's stale ID. Built eagerly in a fixed order so every rank consumes the
+  // same keys in the same sequence.
+  static void SetUpTestSuite() {
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    barrierComm = makeComm();
+    incrTestCount();
+    commA2 = makeComm();
+    incrTestCount();
+    commA4 = makeComm();
+  }
+
+  static ncclComm_t makeComm() {
+    return createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  // The comm for a given active-rank shape. Every collective call site has
+  // nActiveRanksPerGroup in scope, which is how a test reaches its comm.
+  static ncclComm_t commFor(int nActiveRanksPerGroup) {
+    switch (nActiveRanksPerGroup) {
+      case 2:
+        return commA2;
+      case 4:
+        return commA4;
+      default:
+        ADD_FAILURE() << "no comm cached for nActiveRanksPerGroup="
+                      << nActiveRanksPerGroup;
+        return nullptr;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    for (ncclComm_t* c : {&commA4, &commA2, &barrierComm}) {
+      if (*c != nullptr) {
+        NCCLCHECK_TEST(ncclCommDestroy(*c));
+        *c = nullptr;
+      }
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->commA2, nullptr)
+        << "suite-scoped comms were not created; SetUpTestSuite did not run";
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Standard 8-rank, 4-group, 2-active-per-group sparse parallelism layout:
@@ -287,7 +333,7 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
         1,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->barrierComm,
         this->stream));
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
     HIPCHECK_TEST(hipFree(barrierScratch));
@@ -498,7 +544,7 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
           counts,
           ncclBfloat16,
           testCase.op,
-          this->comm,
+          this->commFor(nActiveRanksPerGroup),
           this->stream,
           allActiveRanks,
           nActiveRanksPerGroup,
@@ -571,7 +617,7 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     const void* sendPtrs[1] = {buff};
     void* recvPtrs[1] = {buff};
     size_t counts[1] = {count};
-    // 64 MiB single-group A=4 sits far above the 9 MiB independent crossover,
+    // 64 MiB single-group A=4 sits far above the 1 MiB independent crossover,
     // so this case must exercise the helper offload rather than the
     // pure-direct reduce-scatter + all-gather.
     expectAllReduceRoute(
@@ -587,7 +633,7 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
         counts,
         ncclInt32,
         op,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -603,12 +649,14 @@ class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
     HIPCHECK_TEST(hipFree(buff));
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
-  ncclComm_t comm;
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
+  static inline ncclComm_t barrierComm{nullptr};
+  static inline ncclComm_t commA2{nullptr};
+  static inline ncclComm_t commA4{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   cudaStream_t stream;
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 /**
@@ -703,7 +751,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_4Groups_InPlace_64MB) {
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -810,7 +858,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -909,7 +957,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1024,7 +1072,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_InPlace_1GB) {
         counts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1163,7 +1211,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
         counts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1282,7 +1330,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_SingleGroup_64MB) {
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1396,7 +1444,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1525,7 +1573,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1557,6 +1605,214 @@ TEST_F(
  * Each active rank fills its buffer with a distinct value (myActiveIndex+1) so
  * the SUM (1+2+3+4 = 10) detects a missing partner / mis-routed contribution.
  */
+/**
+ * Test: single group (nGroups == 1) at 4 active ranks, SUM and AVG, both
+ * placements.
+ *
+ * nGroups == 1 makes the active ranks {0,1,2,3} and the helpers {4,5,6,7}
+ * disjoint, which is what puts the flat allreduce on its software-pipelined
+ * schedule -- the only path that pipelines TWO dependencies at once (the
+ * offload's reduce-and-broadcast and the direct region's reduce-scatter into
+ * all-gather), and the only one using a tile-major dScratch. 128 MB clears the
+ * crossover where that schedule starts beating the two-group one, so this is
+ * its only coverage: every other 4-active case runs 2 groups and stays
+ * unpipelined.
+ *
+ * AVG is what pins the divisor, which the pipelined path applies once per tile
+ * at the owner and once per tile at the helper. Values are chosen so the
+ * average is exact in integers: contributions 1..4 average to 2 with A = 4...
+ * deliberately 2 + 8 + 14 + 16 = 40, so SUM is 40 and AVG is exactly 10.
+ */
+class ShardedRelayAllReduceSingleGroupA4Test
+    : public ShardedRelayMultiGroupAllReduceTest {
+ protected:
+  static int32_t contribution(int activeIndex) {
+    static const int32_t values[4] = {2, 8, 14, 16};
+    return values[activeIndex];
+  }
+
+  void runSingleGroupA4Case(
+      bool inPlace,
+      ncclRedOp_t op,
+      size_t dataBytes = 128ULL * 1024 * 1024) {
+    const int nGroups = 1;
+    const int nActiveRanksPerGroup = 4;
+    const size_t count = dataBytes / sizeof(int32_t);
+    const int32_t sum =
+        contribution(0) + contribution(1) + contribution(2) + contribution(3);
+    const int32_t expected =
+        (op == ncclAvg) ? (sum / nActiveRanksPerGroup) : sum;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank;
+
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendBuff, dataBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvBuff, dataBytes));
+    }
+
+    barrierSyncOn(sendBuff);
+
+    if (isActive) {
+      std::vector<int32_t> hostData(count, contribution(myActiveIndex));
+      HIPCHECK_TEST(hipMemcpy(
+          sendBuff, hostData.data(), dataBytes, hipMemcpyHostToDevice));
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, dataBytes));
+      }
+    } else {
+      HIPCHECK_TEST(hipMemset(sendBuff, 0, dataBytes));
+    }
+    int32_t* out = inPlace ? sendBuff : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t counts[1] = {count};
+
+    const ncclResult_t result = callAllReduceCompat(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        ncclInt32,
+        op,
+        this->commFor(nActiveRanksPerGroup),
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyDeviceBufferEquals(
+          out, count, expected, 0, "4-active single-group allreduce mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Sum_OutOfPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/false, ncclSum);
+}
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Sum_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true, ncclSum);
+}
+
+TEST_F(ShardedRelayAllReduceSingleGroupA4Test, Correctness_Avg_InPlace) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true, ncclAvg);
+}
+
+/**
+ * Test: the pipelined allreduce's region split fits inside the count at EVERY
+ * geometry buildShardedRelayRankConfig() accepts, not just the A = H = 4 one
+ * the 8-rank cases above exercise.
+ *
+ * The GPU cases here are pinned to 8 ranks, so a single-group A = 4 call always
+ * has exactly 4 helpers; the combinations a 9-to-16-rank comm would produce
+ * (A = 4 with H = 5..8, or A = 8 with H = 8) cannot be built from this harness.
+ * What those geometries break is arithmetic, not scheduling:
+ * shardedRelayAllReduceFlatPipelined() takes pO = 2*H*T*y and pD = count - pO,
+ * then dShard = pD/A with a last tile of dShard - (T-1)*y. If the unit count
+ * per tile is below 2H + A both subtractions underflow as size_t and a wild
+ * dShard reaches the reduce kernels and ncclSend. Assert the invariant directly
+ * over the whole accepted (A, H) space, which needs no ranks at all.
+ */
+TEST(ShardedRelayAllReducePipelineUnits, LayoutFitsAtEveryAcceptedGeometry) {
+  // Mirrors SHARDED_RELAY_MAX_ACTIVE / SHARDED_RELAY_MAX_HELPERS.
+  constexpr int kMaxActive = 8;
+  constexpr int kMaxHelpers = 8;
+
+  for (int a = 2; a <= kMaxActive; a *= 2) {
+    for (int h = 1; h <= kMaxHelpers; h++) {
+      const int unitsPerTile =
+          rcclx::relay::relayAllReducePipelineUnitsPerTile(a, h);
+      for (int t = 1; t <= 8; t *= 2) {
+        // Offload takes 2*H*T units; the direct region needs A*T so every
+        // owner's shard can still tile into T pieces of y.
+        EXPECT_LE(2 * h * t + a * t, unitsPerTile * t)
+            << "pipelined allreduce layout overruns the count at A=" << a
+            << " H=" << h << " T=" << t << ": needs " << (2 * h * t + a * t)
+            << " units out of " << (unitsPerTile * t);
+      }
+    }
+  }
+
+  // The shipped 8-GPU geometry must still resolve to the 12 the perf numbers
+  // were measured at, so the parameterization is a generalization and not a
+  // change.
+  EXPECT_EQ(rcclx::relay::relayAllReducePipelineUnitsPerTile(4, 4), 12);
+}
+
+// The two cases below sit BELOW the 1 MiB A=4 independent crossover, where the
+// full-exchange fast path replaces the direct reduce-scatter + all-gather: one
+// group in which each active rank ships its whole buffer to the other three,
+// then one fused reduce over all four contributions. Both aliasing forms are
+// covered because they take different kernels (in-place seeds the reduce from
+// the destination, out-of-place seeds it from sendbuff), and AVG is covered
+// because the divisor is folded into that single reduce.
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Sum_OutOfPlace_FullExchange) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/false, ncclSum, /*dataBytes=*/256ULL * 1024);
+}
+
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Avg_InPlace_FullExchange) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/true, ncclAvg, /*dataBytes=*/256ULL * 1024);
+}
+
+// The two cases below sit ABOVE kRelayUniformDirectOpMinBytes (256 MiB), where
+// the offload is issued as two half-sized operations per link instead of one,
+// so that every operation in a group matches the direct tiles. The 128 MB cases
+// above stay below that threshold, so between them both sides of the gate are
+// covered. AVG is included because the divisor is applied per piece.
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Sum_OutOfPlace_UniformOps) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/false, ncclSum, /*dataBytes=*/256ULL * 1024 * 1024);
+}
+
+TEST_F(
+    ShardedRelayAllReduceSingleGroupA4Test,
+    Correctness_Avg_InPlace_UniformOps) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(
+      /*inPlace=*/true, ncclAvg, /*dataBytes=*/256ULL * 1024 * 1024);
+}
+
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
     Correctness_4Active_2Groups_InPlace) {
@@ -1615,7 +1871,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1702,7 +1958,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1785,7 +2041,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1866,7 +2122,7 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Correctness_4Active_2Groups_Avg) {
       counts,
       ncclInt32,
       ncclAvg,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1977,7 +2233,7 @@ TEST_F(
       counts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2048,20 +2304,71 @@ TEST_F(
   runBfloat16AllReduceCases(groupConfig.allActiveRanks, 4, 2, cases);
 }
 
+// One-shot IPC coverage. Below kRelayOneShotMaxBytes (1 MiB of per-rank count)
+// the allreduce runs a single kernel that pushes each rank's whole buffer into
+// every peer's staging, handshakes per block, and reduces all A contributions
+// -- replacing the group-plus-reduce pair.
+//
+// useShardPattern is the point: it fingerprints the contribution by active
+// index AND element offset. The constant fill the other cases use cannot see an
+// offset error inside a staging slot, because every element of a block holds
+// the same value, and that offset is exactly what the vectorized bulk / scalar
+// tail split could get wrong. 65535 is deliberately not a multiple of
+// 16/sizeof(bf16), so it drives the tail and the misaligned fallback rather
+// than the vector path.
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
-    Correctness_Phase2C02_BFloat16_A4_Independent9MiBBoundary) {
+    Correctness_OneShot_A2_SingleGroup_ShardPattern) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t thresholdCount = (9ULL * 1024 * 1024) / sizeof(uint16_t);
+  const int activeRanks[2] = {0, 1};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {65536, ncclSum, "A=2 one-shot BF16 SUM", true},
+      {65536, ncclAvg, "A=2 one-shot BF16 AVG", true},
+      {65535, ncclSum, "A=2 one-shot BF16 SUM unaligned tail", true},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 2, 1, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_OneShot_A4_SingleGroup_ShardPattern) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
   const int activeRanks[4] = {0, 1, 2, 3};
   const int* allActiveRanks[1] = {activeRanks};
   const std::vector<Bfloat16AllReduceCase> cases = {
-      {thresholdCount - 4, ncclSum, "A=4 9 MiB below-threshold BF16 SUM"},
-      {thresholdCount, ncclSum, "A=4 9 MiB at-threshold BF16 SUM"},
-      {thresholdCount + 4, ncclSum, "A=4 9 MiB above-threshold BF16 SUM"},
+      {65536, ncclSum, "A=4 one-shot BF16 SUM", true},
+      {65536, ncclAvg, "A=4 one-shot BF16 AVG", true},
+      // 65532 is divisible by A (the A>2 allreduce rejects counts that are
+      // not) yet not by 8, so rc*sizeof(bf16) is not a multiple of 16 and the
+      // scalar fallback runs. 65535 would be rejected as invalid input.
+      {65532, ncclSum, "A=4 one-shot BF16 SUM unaligned tail", true},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 4, 1, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_Phase2C02_BFloat16_A4_Independent1MiBBoundary) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t thresholdCount = (1ULL * 1024 * 1024) / sizeof(uint16_t);
+  const int activeRanks[4] = {0, 1, 2, 3};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {thresholdCount - 4, ncclSum, "A=4 1 MiB below-threshold BF16 SUM"},
+      {thresholdCount, ncclSum, "A=4 1 MiB at-threshold BF16 SUM"},
+      {thresholdCount + 4, ncclSum, "A=4 1 MiB above-threshold BF16 SUM"},
   };
 
   runBfloat16AllReduceCases(allActiveRanks, 4, 1, cases);
@@ -2133,7 +2440,7 @@ TEST_F(
         counts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -2186,19 +2493,19 @@ TEST_F(ShardedRelayMultiGroupAllReduceTest, Routing_SizeAdaptiveCrossovers) {
     size_t thresholdBytes;
     rcclx::relay::AllReduceRoute atOrAbove;
   };
-  // A==2: 2 MB fused / 6 MB independent. A>2: 2 MB fused / 9 MB independent.
+  // A==2: 2 MB fused / 2 MB independent. A>2: 2 MB fused / 1 MB independent.
   const Crossover crossovers[] = {
       {"A2 fused", 2, 4, 2ULL << 20, rcclx::relay::AllReduceRoute::A2Relay},
       {"A2 independent",
        2,
        1,
-       6ULL << 20,
+       2ULL << 20,
        rcclx::relay::AllReduceRoute::A2Relay},
       {"A4 fused", 4, 2, 2ULL << 20, rcclx::relay::AllReduceRoute::FlatOffload},
       {"A4 independent",
        4,
        1,
-       9ULL << 20,
+       1ULL << 20,
        rcclx::relay::AllReduceRoute::FlatOffload},
   };
 

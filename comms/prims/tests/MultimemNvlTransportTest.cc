@@ -26,6 +26,8 @@
 #include "comms/prims/memory/MultimemHandler.h"
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
+#include "comms/prims/transport/nvl/MultimemNvlRegistered.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlStore.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransport.h"
 #include "comms/testinfra/DistEnvironmentBase.h"
 #include "comms/testinfra/DistTestBase.h"
@@ -1326,6 +1328,115 @@ void verifyUnicastPeerViews(
 
 } // namespace
 
+TEST(MultimemNvlStoreValidationTest, ValidatesAddressAndExtent) {
+  EXPECT_TRUE(detail::is_multimem_store_valid(/*destination=*/1, /*bytes=*/0));
+  EXPECT_TRUE(detail::is_multimem_store_valid(/*destination=*/4, /*bytes=*/4));
+  EXPECT_FALSE(detail::is_multimem_store_valid(/*destination=*/2, /*bytes=*/4));
+  EXPECT_FALSE(detail::is_multimem_store_valid(/*destination=*/4, /*bytes=*/2));
+}
+
+TEST(MultimemNvlReduceBroadcastValidationTest, ValidatesAddressAndExtent) {
+  EXPECT_TRUE(detail::is_reduce_broadcast_valid<float>(4, 8, 1));
+  EXPECT_TRUE(detail::is_reduce_broadcast_valid<__half>(16, 32, 8));
+  EXPECT_TRUE(detail::is_reduce_broadcast_valid<__nv_bfloat16>(16, 32, 8));
+  EXPECT_TRUE(detail::is_reduce_broadcast_valid<__half>(1, 1, 0));
+  EXPECT_FALSE(detail::is_reduce_broadcast_valid<float>(2, 8, 1));
+  EXPECT_FALSE(detail::is_reduce_broadcast_valid<__half>(2, 32, 8));
+  EXPECT_FALSE(detail::is_reduce_broadcast_valid<__half>(16, 32, 7));
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    DeviceMultimemStoreBroadcastsArbitraryRanges) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_device_store_arbitrary_ranges");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kDataBytes = 4096;
+  constexpr uint8_t kGuard = 0xA5;
+  MultimemNvlTransport transport(
+      bootstrap, globalRank, identityRankMap(numRanks), makeConfig(kDataBytes));
+  transport.exchange();
+  const auto deviceTransport = transport.getDeviceTransport();
+
+  std::vector<uint8_t> source(kDataBytes + 1);
+  for (std::size_t index = 0; index < source.size(); ++index) {
+    source[index] = static_cast<uint8_t>(index ^ 0x5A);
+  }
+  void* deviceSource = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&deviceSource, source.size()));
+  CUDACHECK_TEST(cudaMemcpy(
+      deviceSource, source.data(), source.size(), cudaMemcpyHostToDevice));
+  DeviceUint64Slot acquiredSignal;
+
+  struct StoreCase {
+    std::size_t destinationOffset;
+    std::size_t sourceOffset;
+    std::size_t bytes;
+    int unroll;
+  };
+  constexpr StoreCase kCases[] = {
+      {.destinationOffset = 1, .sourceOffset = 1, .bytes = 0, .unroll = 1},
+      {.destinationOffset = 4, .sourceOffset = 1, .bytes = 4, .unroll = 1},
+      {.destinationOffset = 8, .sourceOffset = 1, .bytes = 12, .unroll = 1},
+      {.destinationOffset = 64, .sourceOffset = 0, .bytes = 64, .unroll = 4},
+      {.destinationOffset = 128, .sourceOffset = 1, .bytes = 68, .unroll = 4},
+      {.destinationOffset = 512, .sourceOffset = 0, .bytes = 260, .unroll = 4},
+      {.destinationOffset = 1024,
+       .sourceOffset = 0,
+       .bytes = 2064,
+       .unroll = 4},
+      {.destinationOffset = 2048, .sourceOffset = 1, .bytes = 516, .unroll = 4},
+  };
+
+  uint64_t epoch = 0;
+  for (const auto& storeCase : kCases) {
+    ++epoch;
+    CUDACHECK_TEST(cudaMemset(deviceTransport.localData, kGuard, kDataBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+    if (globalRank == 0) {
+      test::launchMultimemStore(
+          deviceTransport,
+          storeCase.destinationOffset,
+          static_cast<const char*>(deviceSource) + storeCase.sourceOffset,
+          storeCase.bytes,
+          storeCase.unroll);
+      test::launchSetUserSignal(deviceTransport, /*signalId=*/0, epoch);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+    }
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+    test::launchWaitAndReadUserSignal(
+        deviceTransport,
+        /*signalId=*/0,
+        CmpOp::CMP_EQ,
+        epoch,
+        acquiredSignal.device_ptr());
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    std::vector<uint8_t> actual(kDataBytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        actual.data(),
+        deviceTransport.localData,
+        actual.size(),
+        cudaMemcpyDeviceToHost));
+    std::vector<uint8_t> expected(kDataBytes, kGuard);
+    for (std::size_t index = 0; index < storeCase.bytes; ++index) {
+      expected[storeCase.destinationOffset + index] =
+          source[storeCase.sourceOffset + index];
+    }
+    EXPECT_EQ(actual, expected);
+  }
+
+  CUDACHECK_TEST(cudaFree(deviceSource));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
 TEST_F(
     MultimemNvlTransportTestFixture,
     DeviceUnicastPeerViewsUseIdentityNvlRankOrder) {
@@ -2384,6 +2495,219 @@ TEST_F(MultimemNvlTransportTestFixture, DeviceLoadReduceCoversPublicTypes) {
               }
             });
       }
+    }
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    DeviceReduceBroadcastCoversPublicTypesAndAccModes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_device_reduce_broadcast_types");
+  auto transport = makeExchangedTransport(
+      bootstrap,
+      globalRank,
+      numRanks,
+      localRank,
+      /*userSignalCount=*/0,
+      /*needsInternalSignals=*/true);
+  if (!transport) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  constexpr std::size_t kElements = 128;
+  constexpr std::size_t kDestinationOffsetBytes = 2048;
+  const float rankValue = static_cast<float>(globalRank + 1);
+  const float expected = static_cast<float>(numRanks * (numRanks + 1) / 2);
+  const auto handle = transport->getDeviceTransport();
+
+  auto run = [&](test::MultimemReductionTestType type,
+                 bool accF32,
+                 std::size_t elementSize,
+                 bool inPlace,
+                 std::size_t sourceOffsetElems,
+                 std::size_t outOfPlaceDestinationOffsetElems,
+                 auto verify) {
+    const std::size_t destinationOffsetElems =
+        inPlace ? sourceOffsetElems : outOfPlaceDestinationOffsetElems;
+    CUDACHECK_TEST(cudaMemset(handle.localData, 0, handle.dataBufferSize));
+    test::launchFillReductionInput(
+        handle, type, rankValue, kElements, sourceOffsetElems);
+    test::launchReduceBroadcast(
+        handle,
+        type,
+        accF32,
+        sourceOffsetElems,
+        destinationOffsetElems,
+        kElements);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    verify(handle.localData + destinationOffsetElems * elementSize, expected);
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  };
+
+  for (const bool inPlace : {false, true}) {
+    run(test::MultimemReductionTestType::Float,
+        /*accF32=*/true,
+        sizeof(float),
+        inPlace,
+        /*sourceOffsetElems=*/0,
+        kDestinationOffsetBytes / sizeof(float),
+        [&](const void* output, float expectedValue) {
+          std::vector<float> values(kElements);
+          CUDACHECK_TEST(cudaMemcpy(
+              values.data(),
+              output,
+              values.size() * sizeof(float),
+              cudaMemcpyDeviceToHost));
+          for (float value : values) {
+            EXPECT_EQ(value, expectedValue);
+          }
+        });
+    run(test::MultimemReductionTestType::Float,
+        /*accF32=*/true,
+        sizeof(float),
+        inPlace,
+        /*sourceOffsetElems=*/1,
+        kDestinationOffsetBytes / sizeof(float) + 1,
+        [&](const void* output, float expectedValue) {
+          std::vector<float> values(kElements);
+          CUDACHECK_TEST(cudaMemcpy(
+              values.data(),
+              output,
+              values.size() * sizeof(float),
+              cudaMemcpyDeviceToHost));
+          for (float value : values) {
+            EXPECT_EQ(value, expectedValue);
+          }
+        });
+    run(test::MultimemReductionTestType::Int32,
+        /*accF32=*/true,
+        sizeof(int32_t),
+        inPlace,
+        /*sourceOffsetElems=*/0,
+        kDestinationOffsetBytes / sizeof(int32_t),
+        [&](const void* output, float expectedValue) {
+          std::vector<int32_t> values(kElements);
+          CUDACHECK_TEST(cudaMemcpy(
+              values.data(),
+              output,
+              values.size() * sizeof(int32_t),
+              cudaMemcpyDeviceToHost));
+          for (int32_t value : values) {
+            EXPECT_EQ(value, static_cast<int32_t>(expectedValue));
+          }
+        });
+
+    for (const auto type :
+         {test::MultimemReductionTestType::Float16,
+          test::MultimemReductionTestType::Bfloat16}) {
+      for (const bool accF32 : {false, true}) {
+        run(type,
+            accF32,
+            sizeof(uint16_t),
+            inPlace,
+            /*sourceOffsetElems=*/0,
+            kDestinationOffsetBytes / sizeof(uint16_t),
+            [&, type](const void* output, float expectedValue) {
+              std::vector<uint16_t> values(kElements);
+              CUDACHECK_TEST(cudaMemcpy(
+                  values.data(),
+                  output,
+                  values.size() * sizeof(uint16_t),
+                  cudaMemcpyDeviceToHost));
+              for (uint16_t bits : values) {
+                float value = 0;
+                if (type == test::MultimemReductionTestType::Float16) {
+                  __half raw{};
+                  std::memcpy(&raw, &bits, sizeof(raw));
+                  value = __half2float(raw);
+                } else {
+                  __nv_bfloat16 raw{};
+                  std::memcpy(&raw, &bits, sizeof(raw));
+                  value = __bfloat162float(raw);
+                  expectedValue =
+                      __bfloat162float(__float2bfloat16(expectedValue));
+                }
+                EXPECT_EQ(value, expectedValue);
+              }
+            });
+      }
+    }
+  }
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    PhasedReduceBlockPreservesOwnedFp16AndBf16Lanes) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+
+  // 1. Create a transport shared by all participating NVL ranks.
+  auto bootstrap = makeBootstrap("mmnvl_phased_reduce_block");
+  auto transport = makeExchangedTransport(
+      bootstrap,
+      globalRank,
+      numRanks,
+      localRank,
+      /*userSignalCount=*/0,
+      /*needsInternalSignals=*/true);
+  if (!transport) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+
+  const auto deviceTransport = transport->getDeviceTransport();
+  ASSERT_GT(deviceTransport.nvlRanks, 0);
+  ASSERT_GE(deviceTransport.nvlRank, 0);
+  ASSERT_LT(deviceTransport.nvlRank, deviceTransport.nvlRanks);
+  const std::size_t nvlRank = static_cast<std::size_t>(deviceTransport.nvlRank);
+  const std::size_t nvlRanks =
+      static_cast<std::size_t>(deviceTransport.nvlRanks);
+  constexpr std::size_t kElements = 8;
+  const float localValue = test::phasedReduceBlockRankValue(nvlRank);
+  const float expectedValue = test::phasedReduceBlockExpectedValue(nvlRanks);
+  const std::size_t ownedFirstLane = kElements * nvlRank / nvlRanks;
+  const std::size_t ownedEndLane = kElements * (nvlRank + 1) / nvlRanks;
+
+  // 2. Exercise both two-byte types and both accumulation modes.
+  for (const auto type :
+       {test::MultimemReductionTestType::Float16,
+        test::MultimemReductionTestType::Bfloat16}) {
+    for (const bool accF32 : {false, true}) {
+      test::launchPhasedReduceBlock(deviceTransport, type, accF32);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      // 3. Decode this rank's in-place multicast backing block.
+      std::vector<uint16_t> values(kElements);
+      CUDACHECK_TEST(cudaMemcpy(
+          values.data(),
+          deviceTransport.localData,
+          16,
+          cudaMemcpyDeviceToHost));
+
+      std::vector<float> actualValues(kElements);
+      for (std::size_t lane = 0; lane < kElements; ++lane) {
+        if (type == test::MultimemReductionTestType::Float16) {
+          __half raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          actualValues[lane] = __half2float(raw);
+        } else {
+          __nv_bfloat16 raw{};
+          std::memcpy(&raw, &values[lane], sizeof(raw));
+          actualValues[lane] = __bfloat162float(raw);
+        }
+      }
+
+      // 4. Compare against an independently constructed ownership layout.
+      std::vector<float> expectedValues(kElements, localValue);
+      std::fill(
+          expectedValues.begin() + ownedFirstLane,
+          expectedValues.begin() + ownedEndLane,
+          expectedValue);
+      EXPECT_EQ(actualValues, expectedValues);
+      ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     }
   }
 }

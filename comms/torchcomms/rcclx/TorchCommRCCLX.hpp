@@ -10,6 +10,7 @@
 #include <queue>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -238,7 +239,30 @@ class TorchCommRCCLX : public TorchCommBackend,
       const std::vector<int64_t>& per_group_send_counts,
       bool async_op);
 
-  // Scatter and Gather Operations
+  // Relay control plane: how a helper rank learns what collectives to call.
+  //
+  // A communicator is a data plane, not a scheduler -- nothing in it can make a
+  // helper process post a call -- so the plan for each forward is published by
+  // rank 0 into a shared-memory segment and consumed by every rank that does
+  // not already know it. Both are host-only and synchronous: no stream, no work
+  // handle, and bounded by timeout_ns rather than waiting forever, so a stalled
+  // publisher surfaces as an error instead of a hang.
+  //
+  // `counts` carries one entry per relay call in the forward; op_code is an
+  // ncclRelayOp_t value.
+  void relay_control_publish(
+      uint64_t epoch,
+      const std::vector<int64_t>& counts,
+      int64_t op_code,
+      int64_t dtype,
+      int64_t red_op,
+      int64_t flags,
+      int64_t timeout_ns);
+
+  // Returns (op_code, dtype, red_op, flags, counts) for `epoch`.
+  std::tuple<int64_t, int64_t, int64_t, int64_t, std::vector<int64_t>>
+  relay_control_consume(uint64_t epoch, int64_t timeout_ns);
+
   c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
       const std::vector<at::Tensor>& input_tensor_list,

@@ -147,6 +147,29 @@ function build_openssl() {
   popd
 }
 
+function strip_folly_exception_tracer {
+  # folly's monolithic libfolly.a bundles ExceptionTracerLib.cpp.o, which DEFINES
+  # __cxa_throw as an interposer that forwards via dlsym(RTLD_NEXT, ...). Any
+  # throwing code needs __cxa_throw, so the linker resolves it out of libfolly.a
+  # (searched before libstdc++) and pulls the interposer into librccl.so, which
+  # then exports it and hijacks throws for the whole process. Inside a dlopen'd
+  # .so that RTLD_NEXT lookup finds nothing (libstdc++ is already loaded), so
+  # orig_cxa_throw is NULL and the first throw jumps to address 0. Nothing in
+  # rccl uses the tracer; drop the object so __cxa_throw resolves from libstdc++.
+  # The opt-in libfolly_debugging_exception_tracer_*.a archives are untouched.
+  local folly_a="${CONDA_PREFIX}/lib/libfolly.a"
+  [ -f "$folly_a" ] || return 0
+  if ar t "$folly_a" | grep -qx "ExceptionTracerLib.cpp.o"; then
+    echo "Removing ExceptionTracerLib.cpp.o (__cxa_throw interposer) from libfolly.a"
+    ar d "$folly_a" ExceptionTracerLib.cpp.o
+    ranlib "$folly_a"
+  fi
+  if nm "$folly_a" 2>/dev/null | grep -qw "T __cxa_throw"; then
+    echo "ERROR: libfolly.a still defines __cxa_throw after stripping" >&2
+    exit 1
+  fi
+}
+
 function build_third_party {
   # build third-party libraries
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
@@ -190,6 +213,7 @@ function build_third_party {
     export CXXFLAGS="${CXXFLAGS_SAVED} -DSO_INCOMING_NAPI_ID=56 -msse4.2"
     build_fb_oss_library "https://github.com/facebook/folly.git" "$folly_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON -DLIBEVENT_INCLUDE_DIR=${CONDA_PREFIX}/include -DLIBEVENT_LIB=${CONDA_PREFIX}/lib/libevent.a"
     export CXXFLAGS="${CXXFLAGS_SAVED}"
+    strip_folly_exception_tracer
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
       DEPS=(

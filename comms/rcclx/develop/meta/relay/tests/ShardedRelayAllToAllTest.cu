@@ -167,33 +167,79 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
  public:
   ShardedRelayMultiGroupAllToAllTest() = default;
 
-  void SetUp() override {
+  // Comms live for the whole binary instead of being rebuilt per case. They
+  // used to be created in SetUp and destroyed in TearDown, so every case freed
+  // everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu wipe it
+  // (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding mmap_lock
+  // for write, so 8 ranks cycling multi-GB comms serialise into a stall that
+  // takes the whole host down. Reusing also matches how comms are really used:
+  // a handful, kept for the life of the process.
+  //
+  // One comm per active-rank shape, because relay state is per-comm and a comm
+  // cannot be shared between the 2- and 4-active-rank configurations, plus a
+  // dedicated one for the rank barrier. A single store serves all three, with
+  // incrTestCount() between them: the unique-ID rendezvous key is derived from
+  // that counter, so without bumping it the second comm would read the first
+  // one's stale ID. Built eagerly in a fixed order so every rank consumes the
+  // same keys in the same sequence.
+  static void SetUpTestSuite() {
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    barrierComm = makeComm();
+    incrTestCount();
+    commA2 = makeComm();
+    incrTestCount();
+    commA4 = makeComm();
+  }
+
+  static ncclComm_t makeComm() {
+    return createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  // The comm for a given active-rank shape. Every collective call site has
+  // nActiveRanksPerGroup in scope, which is how a test reaches its comm.
+  static ncclComm_t commFor(int nActiveRanksPerGroup) {
+    switch (nActiveRanksPerGroup) {
+      case 2:
+        return commA2;
+      case 4:
+        return commA4;
+      default:
+        ADD_FAILURE() << "no comm cached for nActiveRanksPerGroup="
+                      << nActiveRanksPerGroup;
+        return nullptr;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    for (ncclComm_t* c : {&commA4, &commA2, &barrierComm}) {
+      if (*c != nullptr) {
+        NCCLCHECK_TEST(ncclCommDestroy(*c));
+        *c = nullptr;
+      }
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->commA2, nullptr)
+        << "suite-scoped comms were not created; SetUpTestSuite did not run";
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Standard 8-rank, 4-group, 2-active-per-group sparse parallelism layout.
@@ -272,7 +318,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         1,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->barrierComm,
         this->stream));
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
     HIPCHECK_TEST(hipFree(barrierScratch));
@@ -438,7 +484,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         recvPtrs.data(),
         segmentCounts.data(),
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -512,7 +558,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         initActiveSendBuffer(
             sendBuffs[g], segmentCount, myActiveIndex, nActiveRanksPerGroup);
         if (checkRegionBoundaries) {
-          const size_t directA = segmentCount / 3;
+          const size_t directA = relayCount;
           const size_t regionOffsets[5] = {
               directA - 1,
               directA,
@@ -552,7 +598,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         recvPtrs,
         segmentCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -561,7 +607,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
 
     if (checkRegionBoundaries) {
-      const size_t directA = segmentCount / 3;
+      const size_t directA = relayCount;
       const size_t regionOffsets[5] = {
           directA - 1,
           directA,
@@ -654,7 +700,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
       initActiveSendBuffer(
           sendBuff, segmentCount, myActiveIndex, nActiveRanksPerGroup);
       if (checkRegionBoundaries) {
-        const size_t directA = segmentCount / 3;
+        const size_t directA = relayCount;
         const size_t regionOffsets[5] = {
             directA - 1,
             directA,
@@ -693,7 +739,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
         recvPtrs,
         segmentCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -703,7 +749,7 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
 
     if (isActive) {
       if (checkRegionBoundaries) {
-        const size_t directA = segmentCount / 3;
+        const size_t directA = relayCount;
         const size_t regionOffsets[5] = {
             directA - 1,
             directA,
@@ -741,12 +787,14 @@ class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
     }
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
-  ncclComm_t comm;
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
+  static inline ncclComm_t barrierComm{nullptr};
+  static inline ncclComm_t commA2{nullptr};
+  static inline ncclComm_t commA4{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   cudaStream_t stream;
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 /**
@@ -820,7 +868,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -894,7 +942,7 @@ TEST_F(
       std::vector<size_t>(4, 262145), groupConfig.allActiveRanks, true);
 }
 
-// The independent A=2 cutoff is 27 MiB, or 3538944 int32 elements per segment.
+// The independent A=2 cutoff is 3 MiB, or 393216 int32 elements per segment.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
     Correctness_A2_IndependentThreshold_Below_UnalignedTail) {
@@ -905,7 +953,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538943}, allActiveRanks, false);
+  runA2CorrectnessCase({393215}, allActiveRanks, false);
 }
 
 TEST_F(
@@ -918,7 +966,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538944}, allActiveRanks, true);
+  runA2CorrectnessCase({393216}, allActiveRanks, true);
 }
 
 TEST_F(
@@ -931,7 +979,7 @@ TEST_F(
 
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
-  runA2CorrectnessCase({3538945}, allActiveRanks, true);
+  runA2CorrectnessCase({393217}, allActiveRanks, true);
 }
 
 TEST_F(
@@ -1003,7 +1051,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1075,7 +1123,7 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, InPlace_Rejected) {
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1144,7 +1192,7 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Correctness_SingleGroup_64MB) {
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1242,7 +1290,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1340,7 +1388,7 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Correctness_PartialGroupsZeroCount) {
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1446,7 +1494,7 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
         recvPtrs,
         segmentCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1508,12 +1556,12 @@ TEST_F(ShardedRelayMultiGroupAllToAllTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
  */
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_RoutedLowerBoundary_63MiB) {
+    Correctness_4Active_RoutedLowerBoundary_27MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4CorrectnessCase(segmentCount, true);
 }
@@ -1525,7 +1573,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
   runA4CorrectnessCase(segmentCount, false);
 }
@@ -1537,21 +1585,26 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 27ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
   runA4CorrectnessCase(segmentCount, true, true);
 }
 
+// 256 MiB is a power of two, so segmentCount is not divisible by 3 and the
+// relay's leading direct region has to be aligned down rather than taken as an
+// exact third. Routed here (this size used to be the top of the window), with
+// the region boundaries checked so a misaligned split is caught.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_DirectUpperBoundary_256MiB) {
+    Correctness_4Active_RoutedPowerOfTwo_256MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
   constexpr size_t perActiveBytes = 256ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
-  runA4CorrectnessCase(segmentCount, false);
+  static_assert(segmentCount % 3 != 0, "256 MiB must not divide into thirds");
+  runA4CorrectnessCase(segmentCount, true, true);
 }
 
 // Single-group (nGroups=1) A=4 all-to-all: ranks {0,1,2,3} active, {4,5,6,7}
@@ -1559,12 +1612,12 @@ TEST_F(
 // tests cover, across the routed and direct regimes.
 TEST_F(
     ShardedRelayMultiGroupAllToAllTest,
-    Correctness_4Active_SingleGroup_Routed_63MiB) {
+    Correctness_4Active_SingleGroup_Routed_10MiB) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
   runA4SingleGroupCorrectnessCase(segmentCount, true);
 }
@@ -1576,7 +1629,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) - 1;
   runA4SingleGroupCorrectnessCase(segmentCount, false);
 }
@@ -1588,9 +1641,32 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t perActiveBytes = 63ULL * 1024 * 1024;
+  constexpr size_t perActiveBytes = 10ULL * 1024 * 1024;
   constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t)) + 1;
   runA4SingleGroupCorrectnessCase(segmentCount, true, true);
+}
+
+/**
+ * A=4 single group at a size the software pipeline covers.
+ *
+ * The 10 MiB single-group cases above are just above the routing threshold,
+ * which the depth cost model resolves to depth 1 -- so they exercise the
+ * unpipelined XOR schedule. 64 MiB per active rank is the first swept size deep
+ * enough to tile, so this is the coverage for the pipelined schedule, where
+ * each cross link carries the relay's two hops at once in opposite directions.
+ * Verified over whole segments rather than at region boundaries, since the
+ * pipelined layout splits the segment differently.
+ */
+TEST_F(
+    ShardedRelayMultiGroupAllToAllTest,
+    Correctness_4Active_SingleGroup_Pipelined_64MiB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  constexpr size_t perActiveBytes = 64ULL * 1024 * 1024;
+  constexpr size_t segmentCount = perActiveBytes / (4 * sizeof(int32_t));
+  runA4SingleGroupCorrectnessCase(segmentCount, true);
 }
 
 /**
@@ -1655,7 +1731,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1727,7 +1803,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1821,7 +1897,7 @@ TEST_F(
       recvPtrs,
       segmentCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1918,7 +1994,7 @@ TEST_F(
         recvPtrs,
         segmentCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,

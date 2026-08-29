@@ -170,33 +170,79 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
  public:
   ShardedRelayMultiGroupAllGatherTest() = default;
 
-  void SetUp() override {
+  // Comms live for the whole binary instead of being rebuilt per case. They
+  // used to be created in SetUp and destroyed in TearDown, so every case freed
+  // everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu wipe it
+  // (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding mmap_lock
+  // for write, so 8 ranks cycling multi-GB comms serialise into a stall that
+  // takes the whole host down. Reusing also matches how comms are really used:
+  // a handful, kept for the life of the process.
+  //
+  // One comm per active-rank shape, because relay state is per-comm and a comm
+  // cannot be shared between the 2- and 4-active-rank configurations, plus a
+  // dedicated one for the rank barrier. A single store serves all three, with
+  // incrTestCount() between them: the unique-ID rendezvous key is derived from
+  // that counter, so without bumping it the second comm would read the first
+  // one's stale ID. Built eagerly in a fixed order so every rank consumes the
+  // same keys in the same sequence.
+  static void SetUpTestSuite() {
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    barrierComm = makeComm();
+    incrTestCount();
+    commA2 = makeComm();
+    incrTestCount();
+    commA4 = makeComm();
+  }
+
+  static ncclComm_t makeComm() {
+    return createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  // The comm for a given active-rank shape. Every collective call site has
+  // nActiveRanksPerGroup in scope, which is how a test reaches its comm.
+  static ncclComm_t commFor(int nActiveRanksPerGroup) {
+    switch (nActiveRanksPerGroup) {
+      case 2:
+        return commA2;
+      case 4:
+        return commA4;
+      default:
+        ADD_FAILURE() << "no comm cached for nActiveRanksPerGroup="
+                      << nActiveRanksPerGroup;
+        return nullptr;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    for (ncclComm_t* c : {&commA4, &commA2, &barrierComm}) {
+      if (*c != nullptr) {
+        NCCLCHECK_TEST(ncclCommDestroy(*c));
+        *c = nullptr;
+      }
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->commA2, nullptr)
+        << "suite-scoped comms were not created; SetUpTestSuite did not run";
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Standard 8-rank, 4-group, 2-active-per-group sparse parallelism layout.
@@ -253,7 +299,7 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
         1,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->barrierComm,
         this->stream));
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
     HIPCHECK_TEST(hipFree(barrierScratch));
@@ -414,7 +460,7 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
           recvPtrs.data(),
           sendCounts.data(),
           ncclInt32,
-          this->comm,
+          this->commFor(nActiveRanksPerGroup),
           this->stream,
           allActiveRanks,
           nActiveRanksPerGroup,
@@ -450,12 +496,14 @@ class ShardedRelayMultiGroupAllGatherTest : public ::testing::Test {
     }
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
-  ncclComm_t comm;
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
+  static inline ncclComm_t barrierComm{nullptr};
+  static inline ncclComm_t commA2{nullptr};
+  static inline ncclComm_t commA4{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   cudaStream_t stream;
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 TEST_F(
@@ -496,7 +544,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t kThresholdElements = (9ULL * 1024 * 1024) / sizeof(int32_t);
+  constexpr size_t kThresholdElements = (2ULL * 1024 * 1024) / sizeof(int32_t);
   const int activeRanks[] = {0, 1};
   const int* allActiveRanks[] = {activeRanks};
   runOutOfPlaceRoutingCases(
@@ -531,7 +579,7 @@ TEST_F(
     GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
   }
 
-  constexpr size_t kThresholdElements = (8ULL * 1024 * 1024) / sizeof(int32_t);
+  constexpr size_t kThresholdElements = (3ULL * 1024 * 1024) / sizeof(int32_t);
   const int activeRanks[] = {0, 1, 2, 3};
   const int* allActiveRanks[] = {activeRanks};
   runOutOfPlaceRoutingCases(
@@ -611,7 +659,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -699,7 +747,7 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Correctness_4Groups_InPlace_64MB) {
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -768,7 +816,7 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Correctness_SingleGroup_64MB) {
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -784,6 +832,73 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Correctness_SingleGroup_64MB) {
   if (isActive) {
     HIPCHECK_TEST(hipFree(recvBuff));
   }
+}
+
+/**
+ * Test: Single group, IN-PLACE, at a size the software pipeline covers.
+ *
+ * nGroups == 1 puts the relay on the pipelined schedule (the active ranks and
+ * the helpers are disjoint there, so the scatter and the forward run on
+ * opposite directions of each cross link and are interleaved). 64 MB clears the
+ * pipeline floor, so this pins the pipelined path's in-place handling -- the
+ * diagonal is already in the send slot and must not be re-copied, while the
+ * gather slot is written tile by tile across the pipeline stages.
+ */
+TEST_F(
+    ShardedRelayMultiGroupAllGatherTest,
+    Correctness_SingleGroup_InPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks
+                 << " available";
+  }
+
+  const int nGroups = 1;
+  const int nActiveRanksPerGroup = 2;
+  const size_t sendBytes = 64ULL * 1024 * 1024;
+  const size_t sendCount = sendBytes / sizeof(int32_t);
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+
+  const bool isActive = (this->globalRank == 0 || this->globalRank == 1);
+  const int myActiveIndex = this->globalRank;
+
+  int32_t* buff = nullptr;
+  const size_t buffBytes =
+      static_cast<size_t>(nActiveRanksPerGroup) * sendBytes;
+  HIPCHECK_TEST(hipMalloc(&buff, buffBytes));
+
+  barrierSyncOn(buff);
+
+  HIPCHECK_TEST(hipMemset(buff, 0, buffBytes));
+  // In-place: this rank's contribution already sits in its own output slot.
+  int32_t* mySlot = buff + static_cast<size_t>(myActiveIndex) * sendCount;
+  if (isActive) {
+    fillDeviceRegion(mySlot, sendCount, rankFillValue(myActiveIndex));
+  }
+
+  const void* sendPtrs[1] = {isActive ? mySlot : buff};
+  void* recvPtrs[1] = {buff};
+  size_t sendCounts[] = {sendCount};
+
+  const ncclResult_t result = callAllGatherCompat(
+      sendPtrs,
+      recvPtrs,
+      sendCounts,
+      ncclInt32,
+      this->commFor(nActiveRanksPerGroup),
+      this->stream,
+      allActiveRanks,
+      nActiveRanksPerGroup,
+      nGroups);
+  ASSERT_EQ(result, ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (isActive) {
+    verifyAllGatherOutput(buff, sendCount, 0);
+  }
+
+  HIPCHECK_TEST(hipFree(buff));
 }
 
 /**
@@ -865,7 +980,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -961,7 +1076,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1071,7 +1186,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1170,7 +1285,7 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Z_BusBW_4Groups_OutOfPlace_1GB) {
         recvPtrs,
         sendCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1289,7 +1404,7 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Z_BusBW_4Groups_InPlace_1GB) {
         recvPtrs,
         sendCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1335,6 +1450,145 @@ TEST_F(ShardedRelayMultiGroupAllGatherTest, Z_BusBW_4Groups_InPlace_1GB) {
   for (int g = 0; g < nGroups; g++) {
     HIPCHECK_TEST(hipFree(recvBuffs[g]));
   }
+}
+
+/**
+ * Test: single group (nGroups == 1) at 4 active ranks, both placements.
+ *
+ * nGroups == 1 makes the active ranks {0,1,2,3} and the helpers {4,5,6,7}
+ * disjoint, which is what puts the flat relay on its software-pipelined
+ * schedule: the offload scatter and the helper fan-out share a group so each
+ * cross link runs duplex. 64 MB is above the offload threshold and deep enough
+ * for the cost model to tile, so this is the only coverage of that path -- the
+ * other 4-active cases all run 2 groups, where the relay stays unpipelined.
+ */
+class ShardedRelayAllGatherSingleGroupA4Test
+    : public ShardedRelayMultiGroupAllGatherTest {
+ protected:
+  void runSingleGroupA4Case(bool inPlace) {
+    const int nGroups = 1;
+    const int nActiveRanksPerGroup = 4;
+    const size_t sendBytes = 64ULL * 1024 * 1024;
+    const size_t sendCount = sendBytes / sizeof(int32_t);
+    const size_t outBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * sendBytes;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank;
+
+    // Helpers hand in a placeholder; the kernel stages into its own scratch.
+    int32_t* recvBuff = nullptr;
+    int32_t* sendBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&recvBuff, outBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&sendBuff, sendBytes));
+    }
+
+    barrierSyncOn(recvBuff);
+
+    HIPCHECK_TEST(hipMemset(recvBuff, 0, outBytes));
+    // Only the active ranks have a slot in recvBuff; forming the pointer on a
+    // helper (globalRank 4..7) would run past the A=4 slots allocated.
+    int32_t* mySlot = isActive
+        ? recvBuff + static_cast<size_t>(myActiveIndex) * sendCount
+        : nullptr;
+    if (isActive) {
+      // In-place: the contribution already sits in this rank's output slot.
+      fillDeviceRegion(
+          inPlace ? mySlot : sendBuff, sendCount, rankFillValue(myActiveIndex));
+    }
+
+    const void* sendPtrs[1] = {
+        isActive ? (inPlace ? mySlot : sendBuff) : recvBuff};
+    void* recvPtrs[1] = {recvBuff};
+    size_t sendCounts[1] = {sendCount};
+
+    const ncclResult_t result = callAllGatherCompat(
+        sendPtrs,
+        recvPtrs,
+        sendCounts,
+        ncclInt32,
+        this->commFor(nActiveRanksPerGroup),
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyAllGatherOutput(recvBuff, sendCount, 0, nActiveRanksPerGroup);
+    }
+
+    HIPCHECK_TEST(hipFree(recvBuff));
+    if (sendBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(sendBuff));
+    }
+  }
+};
+
+TEST_F(ShardedRelayAllGatherSingleGroupA4Test, Correctness_OutOfPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/false);
+}
+
+TEST_F(ShardedRelayAllGatherSingleGroupA4Test, Correctness_InPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true);
+}
+
+/**
+ * Test: the pipelined fanout layout fits inside the count at EVERY geometry
+ * buildShardedRelayRankConfig() accepts, not just the A = H = 4 one the 8-rank
+ * cases above exercise.
+ *
+ * The GPU cases here are pinned to 8 ranks, so a single-group A = 4 call always
+ * has exactly 4 helpers and the A + H combinations that a 9-to-16-rank comm
+ * would produce (A = 4 with H = 5..8, or A = 8 with H = 8) are unreachable from
+ * this harness. What those geometries can break is arithmetic, not scheduling:
+ * shardedRelayAllGatherFlatPipelined() lays out H*T + 1 + (T-1)*(A-1) units
+ * before its final direct chunk, and if totalUnits(T) is smaller than that then
+ * directSize(T) = sc - directOffset(T) underflows as size_t and a wild count
+ * reaches ncclSend/ncclRecv. So assert the invariant against the shape directly
+ * over the whole accepted (A, H) space, which needs no ranks at all.
+ */
+TEST(ShardedRelayAllGatherFanoutShape, LayoutFitsAtEveryAcceptedGeometry) {
+  // Mirrors SHARDED_RELAY_MAX_ACTIVE / SHARDED_RELAY_MAX_HELPERS.
+  constexpr int kMaxActive = 8;
+  constexpr int kMaxHelpers = 8;
+
+  for (int a = 2; a <= kMaxActive; a *= 2) {
+    for (int h = 1; h <= kMaxHelpers; h++) {
+      const rcclx::relay::RelayPipelineShape shape =
+          rcclx::relay::relayShapeFanout(a, h);
+      for (int t = 1; t <= 8; t *= 2) {
+        const int totalUnits = shape.totalPerTile * t + shape.totalFixed;
+        // Units the layout consumes before the final direct chunk, which must
+        // itself be at least one heavy chunk of A-1 units.
+        const int consumed = h * t + 1 + (t - 1) * (a - 1);
+        EXPECT_LE(consumed + (a - 1), totalUnits)
+            << "fanout layout overruns the count at A=" << a << " H=" << h
+            << " T=" << t << ": consumes " << consumed << " units plus a final "
+            << (a - 1) << "-unit chunk out of " << totalUnits;
+      }
+    }
+  }
+
+  // Depth 1 must reproduce the two-group schedule, and the shipped 8-GPU
+  // geometry must still resolve to the constants the perf numbers were measured
+  // at, so the parameterization is a generalization and not a change.
+  const rcclx::relay::RelayPipelineShape shipped =
+      rcclx::relay::relayShapeFanout(4, 4);
+  EXPECT_EQ(shipped.linkPerTile, 3);
+  EXPECT_EQ(shipped.linkFixed, 1);
+  EXPECT_EQ(shipped.totalPerTile, 7);
+  EXPECT_EQ(shipped.totalFixed, 1);
 }
 
 /**
@@ -1411,7 +1665,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1491,7 +1745,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1573,7 +1827,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1670,7 +1924,7 @@ TEST_F(
       recvPtrs,
       sendCounts,
       ncclInt32,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1770,7 +2024,7 @@ TEST_F(
         recvPtrs,
         sendCounts,
         ncclInt32,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,

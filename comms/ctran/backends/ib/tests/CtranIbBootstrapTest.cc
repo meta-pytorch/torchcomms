@@ -570,11 +570,11 @@ std::string createValidRemoteBusCard() {
     busCard.dataQpn[i] = 200 + i;
   }
 
-  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+  for (int i = 0; i < CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
     busCard.ports[i] = 1; // Port 1 is typical for IB devices
   }
 
-  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+  for (int i = 0; i < CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
     busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
     busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
   }

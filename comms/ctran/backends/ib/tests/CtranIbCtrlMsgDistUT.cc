@@ -69,14 +69,32 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
     // ctrlMsg into pendingOps
     const int sendRank = 2, recvRank0 = 0, recvRank1 = 1;
 
+    // Fill every rkey slot in the message rather than the cvar's worth: the
+    // struct is sized by CTRAN_MAX_IB_DEVICES_PER_RANK and the whole
+    // sizeof(ControlMsg) goes on the wire, so this covers the full array
+    // regardless of how many NICs this host is configured with.
+    const int nKeys = CTRAN_MAX_IB_DEVICES_PER_RANK;
+    auto fillKeys = [nKeys](ControlMsg& msg, uint64_t remoteAddr, int value) {
+      msg.ibDesc.remoteAddr = remoteAddr;
+      for (int i = 0; i < nKeys; i++) {
+        msg.ibDesc.rkeys[i] = value;
+      }
+      msg.ibDesc.nKeys = nKeys;
+    };
+    auto expectKeys =
+        [nKeys](const ControlMsg& msg, uint64_t remoteAddr, int value) {
+          for (int i = 0; i < nKeys; i++) {
+            EXPECT_EQ(msg.ibDesc.rkeys[i], value) << "rkeys[" << i << "]";
+          }
+          EXPECT_EQ(msg.ibDesc.nKeys, nKeys);
+          EXPECT_EQ(msg.ibDesc.remoteAddr, remoteAddr);
+        };
+
     if (this->globalRank == sendRank) {
       reqs.resize(3, CtranIbRequest());
       smsgs.resize(3, ControlMsg(ControlMsgType::IB_EXPORT_MEM));
       // send two msgs to rank 1
-      smsgs[0].ibDesc.remoteAddr = 99;
-      smsgs[0].ibDesc.rkeys[0] = recvRank0;
-      smsgs[0].ibDesc.rkeys[1] = recvRank0;
-      smsgs[0].ibDesc.nKeys = 2;
+      fillKeys(smsgs[0], 99, recvRank0);
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[0].type, &smsgs[0], sizeof(smsgs[0]), recvRank0, reqs[0]));
 
@@ -85,19 +103,13 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
       // arrived in order
       sleep(2);
 
-      smsgs[1].ibDesc.remoteAddr = 100;
-      smsgs[1].ibDesc.rkeys[0] = recvRank0;
-      smsgs[1].ibDesc.rkeys[1] = recvRank0;
-      smsgs[1].ibDesc.nKeys = 2;
+      fillKeys(smsgs[1], 100, recvRank0);
 
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[1].type, &smsgs[1], sizeof(smsgs[1]), recvRank0, reqs[1]));
 
       // send one msg to rank 2
-      smsgs[2].ibDesc.remoteAddr = 101;
-      smsgs[2].ibDesc.rkeys[0] = recvRank1;
-      smsgs[2].ibDesc.rkeys[1] = recvRank1;
-      smsgs[2].ibDesc.nKeys = 2;
+      fillKeys(smsgs[2], 101, recvRank1);
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[2].type, &smsgs[2], sizeof(smsgs[2]), recvRank1, reqs[2]));
     } else if (this->globalRank == recvRank0) {
@@ -122,19 +134,10 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
     }
 
     if (this->globalRank == recvRank0) {
-      EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank0);
-      EXPECT_EQ(rmsg0.ibDesc.rkeys[1], recvRank0);
-      EXPECT_EQ(rmsg0.ibDesc.nKeys, 2);
-      EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 99);
-      EXPECT_EQ(rmsg1.ibDesc.rkeys[0], recvRank0);
-      EXPECT_EQ(rmsg1.ibDesc.rkeys[1], recvRank0);
-      EXPECT_EQ(rmsg1.ibDesc.nKeys, 2);
-      EXPECT_EQ(rmsg1.ibDesc.remoteAddr, 100);
+      expectKeys(rmsg0, 99, recvRank0);
+      expectKeys(rmsg1, 100, recvRank0);
     } else if (this->globalRank == recvRank1) {
-      EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank1);
-      EXPECT_EQ(rmsg0.ibDesc.rkeys[1], recvRank1);
-      EXPECT_EQ(rmsg0.ibDesc.nKeys, 2);
-      EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 101);
+      expectKeys(rmsg0, 101, recvRank1);
     }
   } catch (const std::bad_alloc& _) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";

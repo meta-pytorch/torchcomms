@@ -9,6 +9,8 @@
 #include "sharded_relay_allreduce.h"
 #include "comm.h"
 #include "sharded_relay_allreduce_kernels.h"
+#include "sharded_relay_graph_scratch.h"
+#include "sharded_relay_oneshot.h"
 #include "sharded_relay_route.h"
 
 #include <hip/hip_bfloat16.h>
@@ -71,6 +73,25 @@ class ScratchBufferCache {
   void* get(int key, size_t requiredBytes, cudaStream_t stream) {
     if (requiredBytes == 0) {
       return nullptr;
+    }
+
+    // A capturing stream must not use this cache. hipMallocAsync would record
+    // an allocation node whose address is only valid while the graph runs, and
+    // a later growth would hipFreeAsync a pointer this graph has already baked
+    // in. Captures get a graph-scoped buffer instead; see
+    // sharded_relay_graph_scratch.h.
+    //
+    // Ahead of the lock on purpose: this is a HIP runtime call, and there is no
+    // reason to hold a process-wide mutex across it while relay collectives run
+    // concurrently on other streams. Measured either way it is in the noise, so
+    // this is hygiene rather than a fix for anything.
+    struct ncclCudaGraph graph;
+    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+      return nullptr;
+    }
+    if (ncclCudaGraphValid(graph)) {
+      return rcclx::relay::graphScratchGet(
+          this, key, requiredBytes, stream, graph);
     }
 
     int device;
@@ -410,6 +431,102 @@ class ScratchBufferCache {
     }                                                                       \
   } while (0)
 
+#define LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                          \
+    TYPE, dst, seed, contribs, numContribs, count, divisor, stream) \
+  launchSeededMultiReduceKernel<TYPE>(                              \
+      dst, seed, contribs, numContribs, count, divisor, stream)
+
+#define DISPATCH_SEEDED_MULTI_REDUCE(                                          \
+    datatype, dst, seed, contribs, numContribs, count, divisor, stream)        \
+  do {                                                                         \
+    switch (datatype) {                                                        \
+      case ncclInt8:                                                           \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int8_t, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclUint8:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint8_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt32:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int32_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint32:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint32_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclInt64:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            int64_t,                                                           \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclUint64:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            uint64_t,                                                          \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      case ncclFloat16:                                                        \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __half, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclFloat:                                                          \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            float, dst, seed, contribs, numContribs, count, divisor, stream);  \
+        break;                                                                 \
+      case ncclDouble:                                                         \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            double, dst, seed, contribs, numContribs, count, divisor, stream); \
+        break;                                                                 \
+      case ncclBfloat16:                                                       \
+        LAUNCH_SEEDED_MULTI_REDUCE_KERNEL(                                     \
+            __nv_bfloat16,                                                     \
+            dst,                                                               \
+            seed,                                                              \
+            contribs,                                                          \
+            numContribs,                                                       \
+            count,                                                             \
+            divisor,                                                           \
+            stream);                                                           \
+        break;                                                                 \
+      default:                                                                 \
+        break;                                                                 \
+    }                                                                          \
+  } while (0)
+
 #define LAUNCH_MULTI_REDUCE_KERNEL(                           \
     TYPE, dst, contribs, numContribs, count, divisor, stream) \
   launchMultiReduceKernel<TYPE>(                              \
@@ -644,6 +761,261 @@ static bool buildShardedRelayRankConfig(
 // groups where they are a helper.
 static constexpr int kHelperScratchKeyBase = SHARDED_RELAY_MAX_GROUPS + 1;
 
+#define DISPATCH_ONESHOT_PUSH_REDUCE(                 \
+    datatype,                                         \
+    handled,                                          \
+    out,                                              \
+    sendBuff,                                         \
+    table,                                            \
+    ranks,                                            \
+    nActive,                                          \
+    myRank,                                           \
+    mySlot,                                           \
+    rc,                                               \
+    srcStride,                                        \
+    ownOffset,                                        \
+    slotBytes,                                        \
+    seq,                                              \
+    divisor,                                          \
+    stream)                                           \
+  do {                                                \
+    (handled) = true;                                 \
+    switch (datatype) {                               \
+      case ncclInt32:                                 \
+        launchOneShotPushReduceKernel<int32_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint32:                                \
+        launchOneShotPushReduceKernel<uint32_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclInt64:                                 \
+        launchOneShotPushReduceKernel<int64_t>(       \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclUint64:                                \
+        launchOneShotPushReduceKernel<uint64_t>(      \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat16:                               \
+        launchOneShotPushReduceKernel<__half>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclFloat:                                 \
+        launchOneShotPushReduceKernel<float>(         \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclDouble:                                \
+        launchOneShotPushReduceKernel<double>(        \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      case ncclBfloat16:                              \
+        launchOneShotPushReduceKernel<__nv_bfloat16>( \
+            out,                                      \
+            sendBuff,                                 \
+            table,                                    \
+            ranks,                                    \
+            nActive,                                  \
+            myRank,                                   \
+            mySlot,                                   \
+            rc,                                       \
+            srcStride,                                \
+            ownOffset,                                \
+            slotBytes,                                \
+            seq,                                      \
+            divisor,                                  \
+            stream);                                  \
+        break;                                        \
+      default:                                        \
+        (handled) = false;                            \
+        break;                                        \
+    }                                                 \
+  } while (0)
+
+// Try the one-shot IPC kernel for a single-group A-active allreduce, and report
+// whether it ran.
+//
+// The pure-direct allreduce schedules -- the A==2 full exchange and the A>2 one
+// added alongside it -- are both TWO launches: one group, then one reduce. That
+// is one more than NCCL, and it is the same shape the reduce-scatter had before
+// the one-shot path replaced it. The fix transfers directly: allreduce is the
+// srcStride == 0 case of the same push-reduce kernel, because every peer is
+// owed the whole buffer rather than a per-peer block, and every rank keeps the
+// whole result rather than a shard.
+//
+// Bytes moved are unchanged -- (A-1)*count pushed per rank, exactly what the
+// group form sent -- so this trades a launch for nothing.
+//
+// Every predicate is derived from sizes and the communicator only, so all ranks
+// reach the same decision: a rank that ran the one-shot kernel while a peer
+// took the ncclSend path would spin forever rather than merely run slower.
+// oneShotAcquire() is COLLECTIVE on first use, so it is called before any
+// branch on myActiveGroup and it agrees its own success across ranks.
+static bool tryOneShotAllReduce(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int nActiveRanksPerGroup,
+    int nGroups,
+    size_t elementSize) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  if (nGroups != 1 || maxCount == 0) {
+    return false;
+  }
+  // Each of the A staging slots holds a whole contribution here, not a shard,
+  // so the gate is the per-rank count directly.
+  if (maxCount * elementSize > rcclx::relay::kRelayOneShotMaxBytes) {
+    return false;
+  }
+  // Creating the region is not capturable: it does a bootstrap all-gather and a
+  // synchronous hipMemset. Using one that already exists is fine, so under
+  // capture take the path only if the region is already up.
+  struct ncclCudaGraph graph;
+  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    return false;
+  }
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::oneShotReady(comm)) {
+    return false;
+  }
+
+  rcclx::relay::OneShotLaunch osl{};
+  if (!rcclx::relay::oneShotAcquire(comm, &osl)) {
+    return false;
+  }
+
+  // Helpers have nothing to do, but they DID have to reach the acquire above,
+  // which is the whole reason it sits before this branch.
+  if (myActiveGroup < 0 || counts[myActiveGroup] == 0) {
+    return true;
+  }
+
+  const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+  rcclx::relay::OneShotRanks ranks{};
+  for (int a = 0; a < nActiveRanksPerGroup; a++) {
+    ranks.r[a] = cfg.activeRanks[a];
+  }
+  bool handled = false;
+  DISPATCH_ONESHOT_PUSH_REDUCE(
+      datatype,
+      handled,
+      recvBuffs[myActiveGroup],
+      sendBuffs[myActiveGroup],
+      osl.table,
+      ranks,
+      nActiveRanksPerGroup,
+      comm->rank,
+      cfg.myActiveIndex,
+      counts[myActiveGroup],
+      /*srcStride=*/0,
+      /*ownOffset=*/0,
+      osl.slotBytes,
+      osl.seq,
+      reductionDivisor,
+      stream);
+  // An unsupported datatype must not silently produce nothing. Falling back is
+  // safe only because the dtype is identical on every rank, so either all of
+  // them fall back or none do -- and in pure-direct mode the helpers post
+  // nothing anyway, so a helper that already returned true is equivalent.
+  return handled;
+}
+
 static ncclResult_t shardedRelayAllReduce2Active(
     const void* const* sendBuffs,
     void* const* recvBuffs,
@@ -671,6 +1043,24 @@ static ncclResult_t shardedRelayAllReduce2Active(
   // about A==2.
   if (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
       rcclx::relay::AllReduceRoute::PureDirect) {
+    // One kernel instead of the group-plus-reduce pair below. See
+    // tryOneShotAllReduce().
+    if (tryOneShotAllReduce(
+            sendBuffs,
+            recvBuffs,
+            counts,
+            datatype,
+            reductionDivisor,
+            comm,
+            stream,
+            configs,
+            myActiveGroup,
+            2,
+            nGroups,
+            elementSize)) {
+      return ncclSuccess;
+    }
+
     void* pdScratch = nullptr;
     if (myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
       pdScratch = ScratchBufferCache::getInstance().get(
@@ -988,6 +1378,223 @@ static ncclResult_t shardedRelayAllReduce2Active(
 }
 
 /**
+ * Software-pipelined single-group 2-active sharded relay allreduce.
+ *
+ * Same logical collective and the same reduce-at-helper as
+ * shardedRelayAllReduce2Active, but for nGroups == 1 -- where the active ranks
+ * and the helpers are disjoint sets -- the relay is tiled and pipelined so both
+ * directions of every cross link stay busy. See relayPipelineTiles() for why
+ * the two-group schedule cannot do that and what it costs.
+ *
+ * With T tiles and unit u = align(count / ((H+1)*T + 1)):
+ *   [0, H*T*u)     relay region; helper h owns [h*T*u, (h+1)*T*u), its tile t
+ * at h*T*u + t*u [H*T*u, count) direct region as T+1 chunks of u, the last
+ * absorbing the
+ *                  /((H+1)*T + 1) remainder and the alignment loss
+ *
+ * Group k, for k in [0, T]: the active rank scatters tile k (k < T) to every
+ * helper, receives helper h's REDUCED tile k-1 (k > 0) straight into its final
+ * place in recvBuff, and exchanges direct chunk k over the active<->active
+ * link. Helper h receives tile k into ping-pong buffer k%2 and forwards the
+ * already reduced buffer (k-1)%2 to both active ranks.
+ *
+ * The helper's reduce of tile k is issued between group k, which receives it,
+ * and group k+1, which sends it -- so it is one launch per tile over u elements
+ * instead of one over the whole chunk. Both active ranks send the same logical
+ * tile index, so their sum is already the final allreduced value and the return
+ * hop stays one chunk per active rank.
+ *
+ * Both in-place and out-of-place are supported. The relay region cannot alias
+ * dangerously even in place: group k reads tile k from sendBuff while writing
+ * tile k-1 into recvBuff, which are different offsets.
+ */
+static ncclResult_t shardedRelayAllReduce2ActivePipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t count = counts[0];
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t u =
+      ((count / (static_cast<size_t>(H + 1) * T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (u == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * u;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  const size_t directTotal = count - directBase;
+  const size_t lastDirect = directTotal - tileStride;
+
+  // In-place must stage the received direct chunks so the local contribution is
+  // still readable when the fused reduce runs; out-of-place lands them straight
+  // in recvBuff and reduces against sendBuff.
+  void* directScratch = nullptr;
+  const bool isInPlace = (myActiveGroup == 0) && (sendBuffs[0] == recvBuffs[0]);
+  if (myActiveGroup == 0 && isInPlace) {
+    directScratch = ScratchBufferCache::getInstance().get(
+        0, directTotal * elementSize, stream);
+    if (directScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto directDst = [&](size_t offsetWithinDirect) -> char* {
+    if (isInPlace) {
+      return static_cast<char*>(directScratch) +
+          offsetWithinDirect * elementSize;
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (directBase + offsetWithinDirect) * elementSize;
+  };
+
+  // Helper staging: two ping-pong slot pairs, one pair per pipeline stage in
+  // flight. Small enough that a tile is reduced and forwarded out of cache.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  // Slot for active source a of the buffer that stage k uses.
+  auto helperSlot = [&](int a, int k) -> char* {
+    return hbuff +
+        (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) * u *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
+      char* recvbuff = static_cast<char*>(recvBuffs[0]);
+      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      const size_t directOffset = static_cast<size_t>(k) * u;
+      const size_t directSize = (k < T) ? u : lastDirect;
+
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclSend(
+          sendbuff + (directBase + directOffset) * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      if (k > 0) {
+        // Already reduced by the helper, so this is its final value.
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclRecv(
+          directDst(directOffset),
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      if (k < T) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclRecv(
+              helperSlot(a, k), u, datatype, cfg.activeRanks[a], comm, stream));
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclSend(
+              helperSlot(0, k - 1),
+              u,
+              datatype,
+              cfg.activeRanks[a],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    // Reduce the tile this group received, before the next group forwards it.
+    if (!cfg.isActiveRank && k < T) {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          helperSlot(0, k),
+          helperSlot(0, k),
+          helperSlot(1, k),
+          u,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  // Fold both received direct chunks in one fused pass; they are adjacent in
+  // recvBuff and in the scratch.
+  if (myActiveGroup == 0 && directTotal > 0) {
+    char* dst = static_cast<char*>(recvBuffs[0]) + directBase * elementSize;
+    if (isInPlace) {
+      if (reductionDivisor > 1) {
+        DISPATCH_INCREMENTAL_ADD_AND_SCALE(
+            datatype,
+            dst,
+            directScratch,
+            directTotal,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_INCREMENTAL_ADD(
+            datatype, dst, directScratch, directTotal, stream);
+      }
+    } else {
+      DISPATCH_FUSED_REDUCE(
+          datatype,
+          dst,
+          static_cast<const char*>(sendBuffs[0]) + directBase * elementSize,
+          dst,
+          directTotal,
+          reductionDivisor,
+          stream);
+    }
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * AllReduce for > 2 active ranks (flat helper-reduce-AND-broadcast). Combines
  * the two patterns that individually beat NCCL at 4-active: the
  * reduce-AT-helper of the flat reduce-scatter and the broadcast-AT-helper of
@@ -1050,6 +1657,108 @@ static ncclResult_t shardedRelayAllReduceFlat(
     if (counts[g] != 0 && (counts[g] % static_cast<size_t>(A)) != 0) {
       return ncclInvalidArgument;
     }
+  }
+
+  // ==========================================================================
+  // SINGLE-GROUP SMALL-MESSAGE FULL-EXCHANGE FAST PATH (A > 2)
+  // ==========================================================================
+  // Below the crossover this schedule's cost is entirely launch latency, and
+  // the reduce-scatter + all-gather form it would otherwise run is the most
+  // expensive shape in the relay set at FOUR launches on the critical path: the
+  // sendbuff -> recvbuff staging copy, the reduce-scatter group, the shard
+  // reduce, and the all-gather group. A plain full exchange needs TWO -- one
+  // group in which every active rank ships its whole buffer to the other A-1,
+  // then one fused reduce over all A contributions. It moves (A-1)*count per
+  // link instead of 2*(A-1)*count/A, but below the crossover the bytes are not
+  // what is being paid for. This is the same trade the A==2 path already makes
+  // (see shardedRelayAllReduce2Active), generalized to A > 2.
+  //
+  // No separate size gate: the route selector already bounds the pure-direct
+  // regime, so "offload disabled" IS "below the crossover". Restricted to
+  // nGroups == 1 because a fused call has every rank active in one group and a
+  // helper in the others, so its links carry several groups' traffic at once
+  // and the bytes this trades away are not free there.
+  if (kOffPermille == 0 && nGroups == 1) {
+    // One kernel instead of the group-plus-reduce pair below. See
+    // tryOneShotAllReduce().
+    if (tryOneShotAllReduce(
+            sendBuffs,
+            recvBuffs,
+            counts,
+            datatype,
+            reductionDivisor,
+            comm,
+            stream,
+            configs,
+            myActiveGroup,
+            A,
+            nGroups,
+            elementSize)) {
+      return ncclSuccess;
+    }
+
+    const size_t count = counts[0];
+    void* xScratch = nullptr;
+    if (myActiveGroup >= 0 && count > 0) {
+      xScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS,
+          static_cast<size_t>(A - 1) * count * elementSize,
+          stream);
+      if (xScratch == nullptr) {
+        return ncclInternalError;
+      }
+    }
+
+    if (count > 0) {
+      NCCLCHECK(ncclGroupStart());
+      const ShardedRelayRankConfig& cfg = configs[0];
+      if (cfg.isActiveRank) {
+        const int m = cfg.myActiveIndex;
+        for (int k = 0; k < A; k++) {
+          if (k == m) {
+            continue;
+          }
+          NCCLCHECK(ncclSend(
+              sendBuffs[0], count, datatype, cfg.activeRanks[k], comm, stream));
+        }
+        for (int s = 0; s < A; s++) {
+          if (s == m) {
+            continue;
+          }
+          const int p = (s < m) ? s : s - 1;
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(xScratch) +
+                  static_cast<size_t>(p) * count * elementSize,
+              count,
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclGroupEnd());
+    }
+
+    if (myActiveGroup >= 0 && count > 0) {
+      void* out = recvBuffs[0];
+      if (out == sendBuffs[0]) {
+        // In-place: recvbuff already holds this rank's contribution, so it is
+        // both the seed and the destination.
+        DISPATCH_MULTI_REDUCE(
+            datatype, out, xScratch, A - 1, count, reductionDivisor, stream);
+      } else {
+        DISPATCH_SEEDED_MULTI_REDUCE(
+            datatype,
+            out,
+            sendBuffs[0],
+            xScratch,
+            A - 1,
+            count,
+            reductionDivisor,
+            stream);
+      }
+    }
+    return ncclSuccess;
   }
 
   // Per-group geometry: pO (offload) aligned to H*CHUNK_ALIGN; pD = count - pO
@@ -1288,6 +1997,319 @@ static ncclResult_t shardedRelayAllReduceFlat(
 }
 
 /**
+ * Software-pipelined single-group A>2 flat allreduce.
+ *
+ * Same two regions as shardedRelayAllReduceFlat -- a direct reduce-scatter plus
+ * all-gather over the intra links, and an offload region the helpers reduce and
+ * broadcast -- but for nGroups == 1, where the active ranks and the helpers are
+ * disjoint, both are tiled and pipelined. See relayAllReducePipelineTiles()
+ * for why this schedule needs its own depth selector and why it only pays from
+ * depth 4 up.
+ *
+ * Two dependencies are pipelined here, not one:
+ *   offload   scatter tile k in group k; the helper sums the A chunks; the
+ *             reduced tile is broadcast back in group k+1. Because the helper
+ *             takes one chunk per active rank and returns one per active rank,
+ *             the cross link carries the same in each direction -- this is the
+ *             4-active shape that is NOT throttled by a heavy direction.
+ *   direct    reduce-scatter tile k in group k, the owner reduces its shard's
+ *             tile k, and the all-gather of that tile goes out in group k+1.
+ *
+ * With y = align(count / ((A + 2H)*T)): the offload region is H*2*T*y (tile
+ * 2y), the direct region is the rest with per-owner shard dShard = pD/A (tile
+ * y, the last absorbing the remainder), and each of the T+1 groups carries 2y
+ * on the busiest link, so the cost is 2*(T+1)*y -- at A = H = 4, count/4 for
+ * the two-group schedule falling to 5*count/24 at depth 4 and 3*count/16 at
+ * depth 8.
+ *
+ * The divisor is A + 2H rather than a fixed 12 because the layout consumes
+ * 2*H*T units for the offload region and A*T for the direct region's shards. A
+ * = 4 with H = 5..8 (a 9-to-12-rank comm) and A = 8 with H = 8 (a 16-rank one)
+ * also reach this path, and a fixed 12 would make pO exceed count so pD = count
+ * - pO underflows, handing a wild dShard to the reduce kernels and to ncclSend.
+ *
+ * dScratch is laid out TILE-major, not shard-major as in the flat path: the
+ * owner's per-tile reduce has to fold the A-1 peer contributions for one tile
+ * while the next group is already in flight, and the fused multi-input reduce
+ * requires those to be contiguous with stride tileSz.
+ *
+ * Both in-place and out-of-place are supported; out-of-place seeds recvBuff
+ * from sendBuff once and then operates in place, as the flat path does.
+ */
+static ncclResult_t shardedRelayAllReduceFlatPipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* counts,
+    ncclDataType_t datatype,
+    int reductionDivisor,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nActiveRanksPerGroup,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t count = counts[0];
+  const int A = nActiveRanksPerGroup;
+  const int H = numHelpers;
+  const int T = nTiles;
+  if ((count % static_cast<size_t>(A)) != 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t y =
+      ((count /
+        (static_cast<size_t>(
+             rcclx::relay::relayAllReducePipelineUnitsPerTile(A, H)) *
+         T)) /
+       CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (y == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t oTile = 2 * y;
+  // The offload moves oTile = 2*y per link per group while the direct exchange
+  // moves y, and RCCL budgets channels per operation -- so a cross link
+  // carrying its bytes as one op gets half the channels of an intra link
+  // carrying the same bytes as two. Splitting the offload into y-sized pieces
+  // makes every operation in the group the same size. Gated on size for the
+  // same reason as the all-gather mirror: measured 1.98x -> 2.05x at 1 GB
+  // and 1.88x -> 1.97x at 512 MB, but ~1% worse at 135-144 MB where the extra
+  // ops do not amortize.
+  const int oN =
+      (count * elementSize >= rcclx::relay::kRelayUniformDirectOpMinBytes) ? 2
+                                                                           : 1;
+  const size_t oPiece = oTile / static_cast<size_t>(oN);
+  const size_t oChunk = static_cast<size_t>(T) * oTile;
+  const size_t pO = static_cast<size_t>(H) * oChunk;
+  const size_t pD = count - pO;
+  const size_t dShard = pD / static_cast<size_t>(A);
+  auto tileOffset = [&](int t) -> size_t { return static_cast<size_t>(t) * y; };
+  auto tileSize = [&](int t) -> size_t {
+    return (t < T - 1) ? y : (dShard - tileOffset(T - 1));
+  };
+  // Peer p's contribution to tile t, tile-major so one tile's A-1 inputs are
+  // contiguous with stride tileSize(t).
+  auto dSlot = [&](int t, int p) -> size_t {
+    return static_cast<size_t>(A - 1) * tileOffset(t) +
+        static_cast<size_t>(p) * tileSize(t);
+  };
+
+  void* dScratch = nullptr;
+  if (myActiveGroup == 0) {
+    if (sendBuffs[0] != recvBuffs[0]) {
+      cudaMemcpyAsync(
+          recvBuffs[0],
+          sendBuffs[0],
+          count * elementSize,
+          cudaMemcpyDeviceToDevice,
+          stream);
+    }
+    dScratch = ScratchBufferCache::getInstance().get(
+        SHARDED_RELAY_MAX_GROUPS,
+        static_cast<size_t>(A - 1) * dShard * elementSize,
+        stream);
+    if (dScratch == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  // Helper staging: A chunks per ping-pong buffer, buffer-major so the A inputs
+  // of one stage are contiguous with stride oTile for the fused reduce.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        2 * static_cast<size_t>(A) * oTile * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto helperSlot = [&](int a, int k) -> char* {
+    return hbuff +
+        ((static_cast<size_t>(k % 2) * A + static_cast<size_t>(a)) * oTile) *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      char* recvbuff = static_cast<char*>(recvBuffs[0]);
+      const int m = cfg.myActiveIndex;
+
+      // Sends: reduce-scatter tile k, then all-gather tile k-1. The receive
+      // loops below use the same order, which is what keeps each peer's matched
+      // pair in step.
+      if (k < T) {
+        for (int j = 0; j < A; j++) {
+          if (j == m) {
+            continue;
+          }
+          NCCLCHECK(ncclSend(
+              recvbuff +
+                  (static_cast<size_t>(j) * dShard + tileOffset(k)) *
+                      elementSize,
+              tileSize(k),
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
+      }
+      if (k > 0) {
+        for (int j = 0; j < A; j++) {
+          if (j == m) {
+            continue;
+          }
+          NCCLCHECK(ncclSend(
+              recvbuff +
+                  (static_cast<size_t>(m) * dShard + tileOffset(k - 1)) *
+                      elementSize,
+              tileSize(k - 1),
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
+      }
+      if (k < T) {
+        // Offload scatter, split into y-sized pieces so every operation in the
+        // group is the same size as the direct tiles. oTile is exactly 2*y, so
+        // the split is exact. See kRelayUniformDirectOpMinBytes for why this
+        // matters: RCCL budgets channels per operation, so a link carrying its
+        // bytes as one large op gets half the channels of a link carrying the
+        // same bytes as two.
+        for (int h = 0; h < H; h++) {
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclSend(
+                recvbuff +
+                    (pD + static_cast<size_t>(h) * oChunk +
+                     static_cast<size_t>(k) * oTile +
+                     static_cast<size_t>(i) * oPiece) *
+                        elementSize,
+                oPiece,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+      }
+
+      if (k < T) {
+        for (int s = 0; s < A; s++) {
+          if (s == m) {
+            continue;
+          }
+          const int p = (s < m) ? s : s - 1;
+          NCCLCHECK(ncclRecv(
+              static_cast<char*>(dScratch) + dSlot(k, p) * elementSize,
+              tileSize(k),
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+      if (k > 0) {
+        for (int j = 0; j < A; j++) {
+          if (j == m) {
+            continue;
+          }
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (static_cast<size_t>(j) * dShard + tileOffset(k - 1)) *
+                      elementSize,
+              tileSize(k - 1),
+              datatype,
+              cfg.activeRanks[j],
+              comm,
+              stream));
+        }
+        // Already reduced by the helper, so this is the final value. Split to
+        // match the scatter above.
+        for (int h = 0; h < H; h++) {
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclRecv(
+                recvbuff +
+                    (pD + static_cast<size_t>(h) * oChunk +
+                     static_cast<size_t>(k - 1) * oTile +
+                     static_cast<size_t>(i) * oPiece) *
+                        elementSize,
+                oPiece,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+      }
+    } else {
+      if (k < T) {
+        for (int a = 0; a < A; a++) {
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclRecv(
+                helperSlot(a, k) +
+                    static_cast<size_t>(i) * oPiece * elementSize,
+                oPiece,
+                datatype,
+                cfg.activeRanks[a],
+                comm,
+                stream));
+          }
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < A; a++) {
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclSend(
+                helperSlot(0, k - 1) +
+                    static_cast<size_t>(i) * oPiece * elementSize,
+                oPiece,
+                datatype,
+                cfg.activeRanks[a],
+                comm,
+                stream));
+          }
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+
+    if (k < T) {
+      if (cfg.isActiveRank) {
+        // Fold this tile of my own shard, before the next group gathers it.
+        char* dst = static_cast<char*>(recvBuffs[0]) +
+            (static_cast<size_t>(cfg.myActiveIndex) * dShard + tileOffset(k)) *
+                elementSize;
+        DISPATCH_MULTI_REDUCE(
+            datatype,
+            dst,
+            static_cast<char*>(dScratch) + dSlot(k, 0) * elementSize,
+            A - 1,
+            tileSize(k),
+            reductionDivisor,
+            stream);
+      } else {
+        // Sum all A chunks into slot 0, which the next group broadcasts.
+        DISPATCH_MULTI_REDUCE(
+            datatype,
+            helperSlot(0, k),
+            helperSlot(1, k),
+            A - 1,
+            oTile,
+            reductionDivisor,
+            stream);
+      }
+    }
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * Fused Multi-Group Sharded Relay AllReduce.
  *
  * Executes multiple sharded relay allreduces in one fused call, phase-synced
@@ -1384,22 +2406,73 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
 
   ncclResult_t r;
   if (nActiveRanksPerGroup == 2) {
-    r = shardedRelayAllReduce2Active(
-        sendBuffs2,
-        recvBuffs2,
-        counts,
-        datatype,
-        reductionDivisor,
-        comm,
-        stream,
-        configs,
-        myActiveGroup,
-        numHelpers,
-        nGroups,
-        elementSize);
+    // A single-group relay call has the helpers to itself, so the scatter and
+    // the reduced forward run on opposite directions of each cross link and can
+    // be software-pipelined into one duplex stream. relayPipelineTiles()
+    // returns 1 whenever that does not apply, and the small-message pure-direct
+    // route (owned by shardedRelayAllReduce2Active) never pipelines.
+    const int nTiles =
+        (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
+         rcclx::relay::AllReduceRoute::A2Relay)
+        ? rcclx::relay::relayPipelineTiles(
+              nGroups,
+              rcclx::relay::relayShapeA2(numHelpers),
+              rcclx::relay::relayMaxCount(counts, nGroups),
+              elementSize)
+        : 1;
+    r = (nTiles > 1) ? shardedRelayAllReduce2ActivePipelined(
+                           sendBuffs2,
+                           recvBuffs2,
+                           counts,
+                           datatype,
+                           reductionDivisor,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nTiles,
+                           elementSize)
+                     : shardedRelayAllReduce2Active(
+                           sendBuffs2,
+                           recvBuffs2,
+                           counts,
+                           datatype,
+                           reductionDivisor,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nGroups,
+                           elementSize);
   } else {
     // A>2: flat helper-reduce-and-broadcast (direct RS+AG over intra woven with
-    // offload reduce+broadcast through the helpers).
+    // offload reduce+broadcast through the helpers). A single-group call can
+    // pipeline both dependencies so each cross link runs duplex; the selector
+    // returns 1 below the crossover, where the two-group schedule is better.
+    const int nTiles = rcclx::relay::relayAllReducePipelineTiles(
+        nGroups,
+        nActiveRanksPerGroup,
+        numHelpers,
+        rcclx::relay::relayMaxCount(counts, nGroups),
+        elementSize);
+    if (nTiles > 1) {
+      return shardedRelayAllReduceFlatPipelined(
+          sendBuffs2,
+          recvBuffs2,
+          counts,
+          datatype,
+          reductionDivisor,
+          comm,
+          stream,
+          configs,
+          myActiveGroup,
+          numHelpers,
+          nActiveRanksPerGroup,
+          nTiles,
+          elementSize);
+    }
     r = shardedRelayAllReduceFlat(
         sendBuffs2,
         recvBuffs2,

@@ -8,6 +8,7 @@
 
 #include "sharded_relay_all_gather.h"
 #include "comm.h"
+#include "sharded_relay_graph_scratch.h"
 #include "sharded_relay_route.h"
 
 #include <cstdint>
@@ -44,6 +45,25 @@ class ScratchBufferCache {
   void* get(int key, size_t requiredBytes, cudaStream_t stream) {
     if (requiredBytes == 0) {
       return nullptr;
+    }
+
+    // A capturing stream must not use this cache. hipMallocAsync would record
+    // an allocation node whose address is only valid while the graph runs, and
+    // a later growth would hipFreeAsync a pointer this graph has already baked
+    // in. Captures get a graph-scoped buffer instead; see
+    // sharded_relay_graph_scratch.h.
+    //
+    // Ahead of the lock on purpose: this is a HIP runtime call, and there is no
+    // reason to hold a process-wide mutex across it while relay collectives run
+    // concurrently on other streams. Measured either way it is in the noise, so
+    // this is hygiene rather than a fix for anything.
+    struct ncclCudaGraph graph;
+    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+      return nullptr;
+    }
+    if (ncclCudaGraphValid(graph)) {
+      return rcclx::relay::graphScratchGet(
+          this, key, requiredBytes, stream, graph);
     }
     int device;
     cudaGetDevice(&device);
@@ -496,6 +516,178 @@ static ncclResult_t shardedRelayAllGather2Active(
 }
 
 /**
+ * Software-pipelined single-group 2-active sharded relay all-gather.
+ *
+ * Same logical collective and the same helper roles as
+ * shardedRelayAllGather2Active, but for nGroups == 1 -- where the active ranks
+ * and the helpers are disjoint sets -- the relay is tiled and pipelined so both
+ * directions of every cross link stay busy. See relayPipelineTiles() for why
+ * the two-group schedule cannot do that and what it costs.
+ *
+ * With T tiles and unit u = align(sendCount / ((H+1)*T + 1)):
+ *   sendBuff [0, H*T*u)   offload region; helper h owns [h*T*u, (h+1)*T*u),
+ *                         its tile t at h*T*u + t*u
+ *   sendBuff [H*T*u, sc)  direct region as T+1 chunks of u, the last absorbing
+ *                         the /((H+1)*T + 1) remainder and the alignment loss
+ *
+ * Group k, for k in [0, T]:
+ *   active   scatter tile k (k < T) to every helper, receive the partner's
+ *            tile k-1 (k > 0) from every helper straight into the gather slot,
+ *            and exchange direct chunk k over the active<->active link.
+ *   helper h receive tile k of each active's chunk into ping-pong buffer k%2,
+ *            forward buffer (k-1)%2 to the OTHER active.
+ *
+ * Every rank therefore posts exactly one send and one recv per link per group,
+ * which is also the best case for p2p channel assignment. The helper's staging
+ * is two units per active rather than the whole chunk, so a forwarded tile is
+ * still cache-resident when it is read back.
+ *
+ * Both in-place and out-of-place are supported: the gather slot never overlaps
+ * the send source.
+ */
+static ncclResult_t shardedRelayAllGather2ActivePipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* sendCounts,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t sc = sendCounts[0];
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t u =
+      ((sc / (static_cast<size_t>(H + 1) * T + 1)) / CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (u == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * u;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  const size_t lastDirect = sc - directBase - tileStride;
+
+  // Diagonal: recvBuff[m*sc] = sendBuff, a no-op when in-place.
+  size_t gatherSlot = 0;
+  if (myActiveGroup == 0) {
+    const size_t diagSlot = static_cast<size_t>(cfg.myActiveIndex) * sc;
+    gatherSlot = static_cast<size_t>(1 - cfg.myActiveIndex) * sc;
+    char* diag = static_cast<char*>(recvBuffs[0]) + diagSlot * elementSize;
+    if (static_cast<const void*>(sendBuffs[0]) !=
+        static_cast<const void*>(diag)) {
+      cudaMemcpyAsync(
+          diag,
+          sendBuffs[0],
+          sc * elementSize,
+          cudaMemcpyDeviceToDevice,
+          stream);
+    }
+  }
+
+  // Helper staging: two ping-pong units per active source. Tiny by design, so a
+  // tile is forwarded out of cache rather than re-read from HBM.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
+      char* recvbuff = static_cast<char*>(recvBuffs[0]);
+      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+      const size_t directOffset = directBase + static_cast<size_t>(k) * u;
+      const size_t directSize = (k < T) ? u : lastDirect;
+
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclSend(
+          sendbuff + directOffset * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+      if (k > 0) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (gatherSlot + static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k - 1) * u) *
+                      elementSize,
+              u,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      NCCLCHECK(ncclRecv(
+          recvbuff + (gatherSlot + directOffset) * elementSize,
+          directSize,
+          datatype,
+          partner,
+          comm,
+          stream));
+    } else {
+      if (k < T) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclRecv(
+              hbuff +
+                  (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) *
+                      u * elementSize,
+              u,
+              datatype,
+              cfg.activeRanks[a],
+              comm,
+              stream));
+        }
+      }
+      if (k > 0) {
+        for (int a = 0; a < cfg.nActiveRanks; a++) {
+          NCCLCHECK(ncclSend(
+              hbuff +
+                  (static_cast<size_t>(a) * 2 +
+                   static_cast<size_t>((k - 1) % 2)) *
+                      u * elementSize,
+              u,
+              datatype,
+              cfg.activeRanks[1 - a],
+              comm,
+              stream));
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * All-gather for > 2 active ranks (two-group scatter/forward relay).
  *
  * Every active SOURCE must deliver its sc elements to the A-1 other active
@@ -595,7 +787,26 @@ static ncclResult_t shardedRelayAllGatherFlat(
   }
 
   // Diagonal: recvBuff[m*sc] = sendBuff.
-  if (myActiveGroup >= 0 && sendCounts[myActiveGroup] > 0 && !isInPlace) {
+  //
+  // With the offload disabled the whole shard goes out in one group, so the
+  // diagonal can ride along in it as a P2P pair whose peer is the issuing rank:
+  // that is serviced as a local copy inside the same kernel, costing no
+  // transfer and, unlike this cudaMemcpyAsync, no second launch. With the
+  // offload enabled the direct region is only d1 of the sc elements, so the
+  // diagonal does not correspond to any single operation in the group and has
+  // to stay a separate copy.
+  //
+  // Restricted to nGroups == 1. Folding it in the FUSED case made
+  // Correctness_4Groups_A2_FusedRoutingThresholds fail intermittently (once in
+  // four runs) with mismatched slots. There, all eight ranks issue a self pair
+  // alongside a real one in the same group, rather than just the two active
+  // ranks; whether that is an RCCL self-P2P ordering issue or something else
+  // was not chased, because every sub-1x cell this targets is single-group and
+  // the fused route has its own tuned reference. Do not lift this gate without
+  // running the fused suite repeatedly -- a single green run is not evidence.
+  const bool foldDiagonalIntoGroup = !useOffload && !isInPlace && nGroups == 1;
+  if (myActiveGroup >= 0 && sendCounts[myActiveGroup] > 0 && !isInPlace &&
+      !foldDiagonalIntoGroup) {
     cudaMemcpyAsync(
         static_cast<char*>(recvBuffs[myActiveGroup]) +
             myDiagOffset * elementSize,
@@ -643,13 +854,13 @@ static ncclResult_t shardedRelayAllGatherFlat(
 
       if (d1 > 0) {
         for (int d = 0; d < A; d++) {
-          if (d == m)
+          if (d == m && !foldDiagonalIntoGroup)
             continue;
           NCCLCHECK(ncclSend(
               sendbuff, d1, datatype, cfg.activeRanks[d], comm, stream));
         }
         for (int s = 0; s < A; s++) {
-          if (s == m)
+          if (s == m && !foldDiagonalIntoGroup)
             continue;
           NCCLCHECK(ncclRecv(
               recvbuff + static_cast<size_t>(s) * sc * elementSize,
@@ -786,6 +997,236 @@ static ncclResult_t shardedRelayAllGatherFlat(
 }
 
 /**
+ * Software-pipelined single-group A>2 flat all-gather.
+ *
+ * Same scatter/forward relay as shardedRelayAllGatherFlat, but for nGroups == 1
+ * -- where the active ranks and the helpers are disjoint -- the offload is
+ * tiled so the scatter and the forward share a group and each cross link runs
+ * duplex. See relayPipelineTiles().
+ *
+ * This schedule is ASYMMETRIC, unlike the 2-active one: a helper fans each
+ * source's slice out to the A-1 other destinations, so a cross link carries one
+ * unit UP and A-1 units DOWN. Merging is therefore bounded by the down
+ * direction and the up direction stays underused, which is why the payoff is
+ * smaller here. With v = align(sc / ((H + A - 1)*T + 1)) each group carries
+ * (A-1)*v on the busiest link and the direct region is split to match, so the
+ * cost is ((A-1)*T + 1)*v: at A = H = 4 that is sc/2 at T = 1 (identical to the
+ * two-group schedule) falling towards 3*sc/7. That floor is also the hard one
+ * -- an active rank has to take in A-1 = 3 whole buffers across its 7 links.
+ *
+ * The divisor is derived from A and H rather than fixed at the A = H = 4 value
+ * of 7 because the layout below consumes H*T + 1 + (T-1)*(A-1) units before the
+ * final direct chunk; any other geometry that reaches this path (A = 4 with
+ * H = 5..8 on a 9-to-12-rank comm, or A = 8 with H = 8 on a 16-rank one) would
+ * otherwise push directOffset(T) past sc and underflow directSize(T).
+ *
+ * Buffer layout of sendBuff [0, sc):
+ *   [0, H*T*v)   offload region; helper h owns [h*T*v, (h+1)*T*v), tile t at
+ *                h*T*v + t*v
+ *   [H*T*v, sc)  direct region, one chunk per group sized to that group's cross
+ *                load: v for group 0 (which has no forward to receive yet) and
+ *                (A-1)*v for the rest, the last absorbing the remainder
+ *
+ * Both in-place and out-of-place are supported; the gather slots never overlap
+ * the send source.
+ */
+static ncclResult_t shardedRelayAllGatherFlatPipelined(
+    const void* const* sendBuffs,
+    void* const* recvBuffs,
+    const size_t* sendCounts,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const ShardedRelayRankConfig* configs,
+    int myActiveGroup,
+    int numHelpers,
+    int nActiveRanksPerGroup,
+    int nTiles,
+    size_t elementSize) {
+  const ShardedRelayRankConfig& cfg = configs[0];
+  const size_t sc = sendCounts[0];
+  const int A = nActiveRanksPerGroup;
+  const int H = numHelpers;
+  const int T = nTiles;
+  const size_t v = ((sc /
+                     (static_cast<size_t>(
+                          rcclx::relay::relayShapeFanout(A, H).totalPerTile) *
+                          T +
+                      1)) /
+                    CHUNK_ALIGN_ELEMENTS) *
+      CHUNK_ALIGN_ELEMENTS;
+  if (v == 0) {
+    return ncclInvalidArgument;
+  }
+  const size_t tileStride = static_cast<size_t>(T) * v;
+  const size_t directBase = static_cast<size_t>(H) * tileStride;
+  // Group 0 carries one unit of direct traffic, every later group carries A-1.
+  const size_t heavy = static_cast<size_t>(A - 1) * v;
+  auto directOffset = [&](int k) -> size_t {
+    return directBase + (k == 0 ? 0 : v + static_cast<size_t>(k - 1) * heavy);
+  };
+  auto directSize = [&](int k) -> size_t {
+    if (k == 0) {
+      return v;
+    }
+    return (k < T) ? heavy : (sc - directOffset(T));
+  };
+
+  // Diagonal: recvBuff[m*sc] = sendBuff, a no-op when in-place.
+  if (myActiveGroup == 0) {
+    char* diag = static_cast<char*>(recvBuffs[0]) +
+        static_cast<size_t>(cfg.myActiveIndex) * sc * elementSize;
+    if (static_cast<const void*>(sendBuffs[0]) !=
+        static_cast<const void*>(diag)) {
+      cudaMemcpyAsync(
+          diag,
+          sendBuffs[0],
+          sc * elementSize,
+          cudaMemcpyDeviceToDevice,
+          stream);
+    }
+  }
+
+  // Helper staging: two ping-pong tiles per active source.
+  char* hbuff = nullptr;
+  if (!cfg.isActiveRank) {
+    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+        kHelperScratchKeyBase,
+        static_cast<size_t>(A) * 2 * v * elementSize,
+        stream));
+    if (hbuff == nullptr) {
+      return ncclInternalError;
+    }
+  }
+  auto helperSlot = [&](int s, int k) -> char* {
+    return hbuff +
+        (static_cast<size_t>(s) * 2 + static_cast<size_t>(k % 2)) * v *
+        elementSize;
+  };
+
+  for (int k = 0; k <= T; k++) {
+    NCCLCHECK(ncclGroupStart());
+    if (cfg.isActiveRank) {
+      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
+      char* recvbuff = static_cast<char*>(recvBuffs[0]);
+      const int m = cfg.myActiveIndex;
+      const size_t dOff = directOffset(k);
+      const size_t dSz = directSize(k);
+
+      // Direct exchange, issued as v-sized pieces rather than one (A-1)*v op,
+      // so that every operation in the group is the same size and all seven
+      // links get a comparable channel budget. See
+      // kRelayUniformDirectOpMinBytes for why this is size-gated here but
+      // unconditional in the reduce-scatter mirror.
+      const size_t dPiece = v;
+      const int dN =
+          (sc * elementSize >= rcclx::relay::kRelayUniformDirectOpMinBytes &&
+           dSz >= dPiece)
+          ? static_cast<int>(dSz / dPiece)
+          : 1;
+      auto dPieceOff = [&](int i) -> size_t {
+        return dOff + static_cast<size_t>(i) * dPiece;
+      };
+      auto dPieceSz = [&](int i) -> size_t {
+        return (i < dN - 1) ? dPiece
+                            : (dSz - static_cast<size_t>(dN - 1) * dPiece);
+      };
+      for (int d = 0; d < A; d++) {
+        if (d == m) {
+          continue;
+        }
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclSend(
+              sendbuff + dPieceOff(i) * elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[d],
+              comm,
+              stream));
+        }
+      }
+      if (k < T) {
+        for (int h = 0; h < H; h++) {
+          NCCLCHECK(ncclSend(
+              sendbuff +
+                  (static_cast<size_t>(h) * tileStride +
+                   static_cast<size_t>(k) * v) *
+                      elementSize,
+              v,
+              datatype,
+              cfg.helperRanks[h],
+              comm,
+              stream));
+        }
+      }
+      for (int s = 0; s < A; s++) {
+        if (s == m) {
+          continue;
+        }
+        for (int i = 0; i < dN; i++) {
+          NCCLCHECK(ncclRecv(
+              recvbuff +
+                  (static_cast<size_t>(s) * sc + dPieceOff(i)) * elementSize,
+              dPieceSz(i),
+              datatype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
+        }
+      }
+      if (k > 0) {
+        // Helper h delivers tile k-1 of every other source's offload chunk.
+        for (int h = 0; h < H; h++) {
+          for (int s = 0; s < A; s++) {
+            if (s == m) {
+              continue;
+            }
+            NCCLCHECK(ncclRecv(
+                recvbuff +
+                    (static_cast<size_t>(s) * sc +
+                     static_cast<size_t>(h) * tileStride +
+                     static_cast<size_t>(k - 1) * v) *
+                        elementSize,
+                v,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+      }
+    } else {
+      if (k < T) {
+        for (int s = 0; s < A; s++) {
+          NCCLCHECK(ncclRecv(
+              helperSlot(s, k), v, datatype, cfg.activeRanks[s], comm, stream));
+        }
+      }
+      if (k > 0) {
+        // Per-peer send order matches each destination's receive order above.
+        for (int s = 0; s < A; s++) {
+          for (int d = 0; d < A; d++) {
+            if (d == s) {
+              continue;
+            }
+            NCCLCHECK(ncclSend(
+                helperSlot(s, k - 1),
+                v,
+                datatype,
+                cfg.activeRanks[d],
+                comm,
+                stream));
+          }
+        }
+      }
+    }
+    NCCLCHECK(ncclGroupEnd());
+  }
+
+  return ncclSuccess;
+}
+
+/**
  * Fused Multi-Group Sharded Relay All-Gather.
  *
  * Executes multiple sharded relay all-gathers in one fused call, phase-synced
@@ -888,37 +1329,84 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
   // shard exchange with minimal latency. The size -> route mapping lives in
   // selectAllGatherRoute() so the tests assert the same definition this
   // dispatch uses.
-  if (rcclx::relay::selectAllGatherRoute(
-          nActiveRanksPerGroup, numHelpers, nGroups, sendCounts, elementSize) ==
-      rcclx::relay::AllGatherRoute::A2Relay) {
-    r = shardedRelayAllGather2Active(
-        sendBuffs2,
-        recvBuffs2,
-        sendCounts,
-        datatype,
-        comm,
-        stream,
-        configs,
-        myActiveGroup,
-        numHelpers,
+  const rcclx::relay::AllGatherRoute route = rcclx::relay::selectAllGatherRoute(
+      nActiveRanksPerGroup, numHelpers, nGroups, sendCounts, elementSize);
+  if (route == rcclx::relay::AllGatherRoute::A2Relay) {
+    // A single-group call has the helpers to itself, so the scatter and the
+    // forward run on opposite directions of each cross link and can be
+    // software-pipelined into one duplex stream; relayPipelineTiles() returns
+    // 1 whenever that does not apply.
+    const int nTiles = rcclx::relay::relayPipelineTiles(
         nGroups,
+        rcclx::relay::relayShapeA2(numHelpers),
+        rcclx::relay::relayMaxCount(sendCounts, nGroups),
         elementSize);
+    r = (nTiles > 1) ? shardedRelayAllGather2ActivePipelined(
+                           sendBuffs2,
+                           recvBuffs2,
+                           sendCounts,
+                           datatype,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nTiles,
+                           elementSize)
+                     : shardedRelayAllGather2Active(
+                           sendBuffs2,
+                           recvBuffs2,
+                           sendCounts,
+                           datatype,
+                           comm,
+                           stream,
+                           configs,
+                           myActiveGroup,
+                           numHelpers,
+                           nGroups,
+                           elementSize);
   } else {
     // A>2, or small A==2: flat scatter->forward relay (dual of reduce-scatter)
-    // with a size-adaptive pure-direct small-size mode.
-    r = shardedRelayAllGatherFlat(
-        sendBuffs2,
-        recvBuffs2,
-        sendCounts,
-        datatype,
-        comm,
-        stream,
-        configs,
-        myActiveGroup,
-        numHelpers,
-        nActiveRanksPerGroup,
-        nGroups,
-        elementSize);
+    // with a size-adaptive pure-direct small-size mode. A single-group call
+    // with the offload enabled can additionally be software-pipelined so the
+    // scatter and the forward share each cross link's two directions.
+    const bool offload = route == rcclx::relay::AllGatherRoute::FlatOffload;
+    const int nTiles = offload
+        ? rcclx::relay::relayPipelineTiles(
+              nGroups,
+              rcclx::relay::relayShapeFanout(nActiveRanksPerGroup, numHelpers),
+              rcclx::relay::relayMaxCount(sendCounts, nGroups),
+              elementSize)
+        : 1;
+    if (nTiles > 1) {
+      r = shardedRelayAllGatherFlatPipelined(
+          sendBuffs2,
+          recvBuffs2,
+          sendCounts,
+          datatype,
+          comm,
+          stream,
+          configs,
+          myActiveGroup,
+          numHelpers,
+          nActiveRanksPerGroup,
+          nTiles,
+          elementSize);
+    } else {
+      r = shardedRelayAllGatherFlat(
+          sendBuffs2,
+          recvBuffs2,
+          sendCounts,
+          datatype,
+          comm,
+          stream,
+          configs,
+          myActiveGroup,
+          numHelpers,
+          nActiveRanksPerGroup,
+          nGroups,
+          elementSize);
+    }
   }
 
   return r;
