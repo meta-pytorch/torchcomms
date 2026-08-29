@@ -2256,6 +2256,57 @@ TEST_F(
   runBfloat16AllReduceCases(groupConfig.allActiveRanks, 4, 2, cases);
 }
 
+// One-shot IPC coverage. Below kRelayOneShotMaxBytes (1 MiB of per-rank count)
+// the allreduce runs a single kernel that pushes each rank's whole buffer into
+// every peer's staging, handshakes per block, and reduces all A contributions
+// -- replacing the group-plus-reduce pair.
+//
+// useShardPattern is the point: it fingerprints the contribution by active
+// index AND element offset. The constant fill the other cases use cannot see an
+// offset error inside a staging slot, because every element of a block holds
+// the same value, and that offset is exactly what the vectorized bulk / scalar
+// tail split could get wrong. 65535 is deliberately not a multiple of
+// 16/sizeof(bf16), so it drives the tail and the misaligned fallback rather
+// than the vector path.
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_OneShot_A2_SingleGroup_ShardPattern) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  const int activeRanks[2] = {0, 1};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {65536, ncclSum, "A=2 one-shot BF16 SUM", true},
+      {65536, ncclAvg, "A=2 one-shot BF16 AVG", true},
+      {65535, ncclSum, "A=2 one-shot BF16 SUM unaligned tail", true},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 2, 1, cases);
+}
+
+TEST_F(
+    ShardedRelayMultiGroupAllReduceTest,
+    Correctness_OneShot_A4_SingleGroup_ShardPattern) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+
+  const int activeRanks[4] = {0, 1, 2, 3};
+  const int* allActiveRanks[1] = {activeRanks};
+  const std::vector<Bfloat16AllReduceCase> cases = {
+      {65536, ncclSum, "A=4 one-shot BF16 SUM", true},
+      {65536, ncclAvg, "A=4 one-shot BF16 AVG", true},
+      // 65532 is divisible by A (the A>2 allreduce rejects counts that are
+      // not) yet not by 8, so rc*sizeof(bf16) is not a multiple of 16 and the
+      // scalar fallback runs. 65535 would be rejected as invalid input.
+      {65532, ncclSum, "A=4 one-shot BF16 SUM unaligned tail", true},
+  };
+
+  runBfloat16AllReduceCases(allActiveRanks, 4, 1, cases);
+}
+
 TEST_F(
     ShardedRelayMultiGroupAllReduceTest,
     Correctness_Phase2C02_BFloat16_A4_Independent1MiBBoundary) {
