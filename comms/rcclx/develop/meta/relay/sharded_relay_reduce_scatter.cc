@@ -15,9 +15,11 @@
 
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <tuple>
+#include <vector>
 
 // GPU memory access alignment in elements for chunk size rounding.
 // Distinct from the CPU CACHE_LINE_SIZE (64 bytes) defined in comm.h
@@ -159,9 +161,10 @@ class ScratchBufferCache {
  * closing join creates a side -> caller dependency, so group k+1 never waits on
  * the reduce of stage k.
  *
- * One stream and one event pool per (device, caller stream), for the same
- * reason ScratchBufferCache keys on the stream: two relay collectives can run
- * concurrently on one device on different streams.
+ * One stream and one event pool per (device, caller stream, graph id), for the
+ * same reason ScratchBufferCache keys on the stream: two relay collectives can
+ * run concurrently on one device on different streams. The graph id is part of
+ * the key because a stream can only belong to one capture at a time.
  */
 class ReduceOverlapCache {
  public:
@@ -184,20 +187,78 @@ class ReduceOverlapCache {
 
   // Returns nullptr if the resources could not be created, in which case the
   // caller must fall back to one reduce on its own stream.
-  const Handle* get(cudaStream_t callerStream) {
+  //
+  // A capture gets its own stream and event pool, keyed on the graph id. The
+  // handshake here (record on the caller's stream, wait on the side stream,
+  // rejoin at the end) is exactly the fork/join shape capture understands, so
+  // the side stream is pulled into the graph by the event dependency and its
+  // reduces become a parallel branch. What is NOT safe is sharing one side
+  // stream between a capture and anything else, since a stream can only belong
+  // to one capture at a time -- hence one per graph.
+  const Handle* get(cudaStream_t callerStream, struct ncclCudaGraph graph) {
     int device;
     if (cudaGetDevice(&device) != cudaSuccess) {
       return nullptr;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    auto& entry = handles_[std::make_pair(
-        device, static_cast<const void*>(callerStream))];
-    if (!entry.tried) {
-      entry.tried = true;
-      entry.valid = create(&entry.handle);
+    // Drains outside mutex_, so a blocking stream/event destroy cannot stall
+    // every other relay collective waiting for this cache.
+    reclaimDead();
+
+    const Key key{
+        device, static_cast<const void*>(callerStream), graph.graphId};
+
+    Handle orphaned{};
+    bool haveOrphan = false;
+    const Handle* result = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      Entry& entry = handles_[key];
+      if (!entry.tried) {
+        entry.tried = true;
+        {
+          // create() is stream/event creation, which is exactly the kind of
+          // potentially-unsafe runtime call that invalidates an in-progress
+          // capture under the default thread-local mode. get() is now called
+          // WHILE the caller's stream is capturing, so the exchange is
+          // required; sharded_relay_graph_scratch.cc does the same around its
+          // allocation.
+          RelaxedCaptureMode relaxed;
+          entry.valid = create(&entry.handle);
+        }
+        if (ncclCudaGraphValid(graph)) {
+          // The stream and events only carry capture topology; the graph holds
+          // its own copy of the resulting nodes and does not touch either at
+          // replay. So they are dead weight the moment the graph is gone, and
+          // tying them to it keeps a process that captures repeatedly from
+          // accumulating a stream and 10 events per graph forever.
+          //
+          // Registered even when create() FAILED: the destructor is what erases
+          // this entry, so without it a failed attempt would leave a node per
+          // graph id behind for the life of the process. destroy() on an
+          // all-null handle is a no-op, so reclaim handles both cases.
+          auto* tag = new unsigned long long(graph.graphId);
+          if (ncclCudaGraphAddDestructor(graph, graphDiedCallback, tag) !=
+              ncclSuccess) {
+            delete tag;
+            // Nothing will ever reclaim this entry now, so do not leave it (or
+            // its stream and 10 events) behind. Destroyed after the lock drops.
+            orphaned = entry.handle;
+            haveOrphan = true;
+            handles_.erase(key);
+          }
+        }
+      }
+      if (!haveOrphan) {
+        result = entry.valid ? &entry.handle : nullptr;
+      }
     }
-    return entry.valid ? &entry.handle : nullptr;
+
+    if (haveOrphan) {
+      RelaxedCaptureMode relaxed;
+      destroy(&orphaned);
+    }
+    return result;
   }
 
   ReduceOverlapCache(const ReduceOverlapCache&) = delete;
@@ -206,6 +267,30 @@ class ReduceOverlapCache {
  private:
   ReduceOverlapCache() = default;
   ~ReduceOverlapCache() = default;
+
+  using Key = std::tuple<int, const void*, unsigned long long>;
+
+  // Puts the calling thread in relaxed capture mode for its lifetime. Under the
+  // default mode, a potentially-unsafe runtime call made on a thread with a
+  // capture in progress invalidates that capture; relaxed mode is what makes
+  // stream/event creation and destruction legal here.
+  class RelaxedCaptureMode {
+   public:
+    RelaxedCaptureMode() {
+      ok_ = cudaThreadExchangeStreamCaptureMode(&mode_) == cudaSuccess;
+    }
+    ~RelaxedCaptureMode() {
+      if (ok_) {
+        (void)cudaThreadExchangeStreamCaptureMode(&mode_);
+      }
+    }
+    RelaxedCaptureMode(const RelaxedCaptureMode&) = delete;
+    RelaxedCaptureMode& operator=(const RelaxedCaptureMode&) = delete;
+
+   private:
+    cudaStreamCaptureMode mode_{cudaStreamCaptureModeRelaxed};
+    bool ok_{true};
+  };
 
   // cudaStreamNonBlocking so the side stream does not implicitly synchronize
   // with the legacy default stream; all ordering here is explicit via events.
@@ -255,9 +340,73 @@ class ReduceOverlapCache {
     bool valid = false;
   };
 
+  // Runs when a graph is destroyed, possibly on a HIP-internal thread, so it
+  // records the id and nothing more -- destroying a stream or an event from
+  // here would be a HIP call in an unspecified context. reclaimDeadLocked does
+  // the work on the next get(), on a user thread.
+  static void graphDiedCallback(void* arg) {
+    auto* graphId = static_cast<unsigned long long*>(arg);
+    {
+      std::lock_guard<std::mutex> lock(deadMutex());
+      deadGraphs().push_back(*graphId);
+    }
+    delete graphId;
+  }
+
+  static std::mutex& deadMutex() {
+    static std::mutex m;
+    return m;
+  }
+
+  static std::vector<unsigned long long>& deadGraphs() {
+    static std::vector<unsigned long long> v;
+    return v;
+  }
+
+  // Erases the entries of every graph whose destructor has fired, then destroys
+  // their streams and events OUTSIDE mutex_. Stream and event destruction can
+  // block on in-flight work, and this runs at the start of every get(), so
+  // doing it under the lock would serialize every other relay collective on the
+  // device. sharded_relay_graph_scratch.cc's reclaimDeadGraphs() frees outside
+  // its table lock for the same reason.
+  void reclaimDead() {
+    std::vector<unsigned long long> dead;
+    {
+      std::lock_guard<std::mutex> lock(deadMutex());
+      if (deadGraphs().empty()) {
+        return;
+      }
+      dead.swap(deadGraphs());
+    }
+
+    std::vector<Handle> stale;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto it = handles_.begin(); it != handles_.end();) {
+        const unsigned long long id = std::get<2>(it->first);
+        if (std::find(dead.begin(), dead.end(), id) != dead.end()) {
+          stale.push_back(it->second.handle);
+          it = handles_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    if (stale.empty()) {
+      return;
+    }
+    RelaxedCaptureMode relaxed;
+    for (Handle& h : stale) {
+      destroy(&h);
+    }
+  }
+
   std::mutex mutex_;
-  // (device, caller stream) -> side stream and its event pool.
-  std::map<std::pair<int, const void*>, Entry> handles_;
+  // (device, caller stream, graph id) -> side stream and its event pool. The
+  // graph id is ULLONG_MAX for uncaptured calls, so they all share one entry
+  // per stream exactly as before.
+  std::map<Key, Entry> handles_;
 };
 
 // Maximum number of helper ranks supported per group.
@@ -1578,14 +1727,19 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
   };
 
   // Per-region reduces run on a side stream so they overlap the transfers that
-  // follow. Four things force the single trailing pass on the caller's stream
+  // follow. Three things force the single trailing pass on the caller's stream
   // instead: a depth deeper than the event pool (a depth-T pipeline runs T+1
   // groups and each needs its own event, so this bounds the overlap to the pool
   // rather than letting a raised kRelayMaxPipelineTiles index past it); a
   // message too small for the overlap to pay for its event traffic (see
-  // kRelayOverlapReduceMinBytes); graph capture, because RCCL requires every
-  // stream in a group to be captured by the same graph and the side stream is
-  // uncaptured; and any failure to create the side stream or its events.
+  // kRelayOverlapReduceMinBytes); and any failure to create the side stream or
+  // its events.
+  //
+  // Graph capture used to be a fourth. It is not, because the record/wait pair
+  // below is the fork/join shape capture is defined for: the side stream joins
+  // the capture through the event dependency, its reduces are captured as a
+  // parallel branch, and the allDone wait rejoins the origin before the capture
+  // ends. Only the resources have to be per graph, which the cache key handles.
   const bool ownerReduces = (myActiveGroup == 0);
   const ReduceOverlapCache::Handle* ovl = nullptr;
   if (ownerReduces && T + 1 <= ReduceOverlapCache::kStageEvents &&
@@ -1593,88 +1747,121 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
           rcclx::relay::kRelayOverlapReduceMinBytes) {
     struct ncclCudaGraph graph;
     NCCLCHECK(ncclCudaGetCapturingGraph(&graph, stream));
-    if (!ncclCudaGraphValid(graph)) {
-      ovl = ReduceOverlapCache::getInstance().get(stream);
-    }
+    ovl = ReduceOverlapCache::getInstance().get(stream, graph);
   }
 
-  for (int k = 0; k <= T; k++) {
-    NCCLCHECK(ncclGroupStart());
-    if (cfg.isActiveRank) {
-      const char* sendBlock = static_cast<const char*>(sendBuffs[0]) +
-          sendBlockOffset * elementSize;
-      char* scratch = static_cast<char*>(foreignScratch);
-      const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
-      const size_t dOff = directOffset(k);
-      const size_t dSz = directSize(k);
+  // Once the side stream has been attached to the caller's stream, EVERY exit
+  // from here has to rejoin it, error paths included. A capture that ends with
+  // a forked-but-unjoined branch fails at cudaStreamEndCapture -- so an error
+  // mid-pipeline would cost the whole graph rather than just this call -- and
+  // leaves the cached side stream in a capturing state, poisoning it for every
+  // later call that keys onto the same handle. The pipeline therefore runs in a
+  // lambda whose result is held until after the join below.
+  bool forked = false;
+  const ncclResult_t pipelineResult = [&]() -> ncclResult_t {
+    for (int k = 0; k <= T; k++) {
+      NCCLCHECK(ncclGroupStart());
+      if (cfg.isActiveRank) {
+        const char* sendBlock = static_cast<const char*>(sendBuffs[0]) +
+            sendBlockOffset * elementSize;
+        char* scratch = static_cast<char*>(foreignScratch);
+        const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
+        const size_t dOff = directOffset(k);
+        const size_t dSz = directSize(k);
 
-      if (k < T) {
-        for (int h = 0; h < H; h++) {
-          NCCLCHECK(ncclSend(
-              sendBlock + relayOffset(h, k) * elementSize,
-              u,
-              datatype,
-              cfg.helperRanks[h],
-              comm,
-              stream));
+        if (k < T) {
+          for (int h = 0; h < H; h++) {
+            NCCLCHECK(ncclSend(
+                sendBlock + relayOffset(h, k) * elementSize,
+                u,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+        NCCLCHECK(ncclSend(
+            sendBlock + dOff * elementSize,
+            dSz,
+            datatype,
+            partner,
+            comm,
+            stream));
+        if (k > 0) {
+          for (int h = 0; h < H; h++) {
+            NCCLCHECK(ncclRecv(
+                scratch + relayOffset(h, k - 1) * elementSize,
+                u,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
+        }
+        NCCLCHECK(ncclRecv(
+            scratch + dOff * elementSize,
+            dSz,
+            datatype,
+            partner,
+            comm,
+            stream));
+      } else {
+        if (k < T) {
+          for (int a = 0; a < cfg.nActiveRanks; a++) {
+            NCCLCHECK(ncclRecv(
+                helperSlot(a, k),
+                u,
+                datatype,
+                cfg.activeRanks[a],
+                comm,
+                stream));
+          }
+        }
+        if (k > 0) {
+          for (int a = 0; a < cfg.nActiveRanks; a++) {
+            NCCLCHECK(ncclSend(
+                helperSlot(a, k - 1),
+                u,
+                datatype,
+                cfg.activeRanks[1 - a],
+                comm,
+                stream));
+          }
         }
       }
-      NCCLCHECK(ncclSend(
-          sendBlock + dOff * elementSize,
-          dSz,
-          datatype,
-          partner,
-          comm,
-          stream));
-      if (k > 0) {
-        for (int h = 0; h < H; h++) {
-          NCCLCHECK(ncclRecv(
-              scratch + relayOffset(h, k - 1) * elementSize,
-              u,
-              datatype,
-              cfg.helperRanks[h],
-              comm,
-              stream));
-        }
-      }
-      NCCLCHECK(ncclRecv(
-          scratch + dOff * elementSize, dSz, datatype, partner, comm, stream));
-    } else {
-      if (k < T) {
-        for (int a = 0; a < cfg.nActiveRanks; a++) {
-          NCCLCHECK(ncclRecv(
-              helperSlot(a, k), u, datatype, cfg.activeRanks[a], comm, stream));
-        }
-      }
-      if (k > 0) {
-        for (int a = 0; a < cfg.nActiveRanks; a++) {
-          NCCLCHECK(ncclSend(
-              helperSlot(a, k - 1),
-              u,
-              datatype,
-              cfg.activeRanks[1 - a],
-              comm,
-              stream));
-        }
+      NCCLCHECK(ncclGroupEnd());
+
+      // Region k has landed in full. Reduce it now, on the side stream, so it
+      // overlaps groups k+1..T instead of waiting behind them.
+      if (ovl != nullptr) {
+        CUDACHECK(cudaEventRecord(ovl->stageDone[k], stream));
+        CUDACHECK(cudaStreamWaitEvent(ovl->stream, ovl->stageDone[k], 0));
+        // The wait is what attaches the side stream, so the join is owed from
+        // here on -- not from the record, which on its own leaves it detached.
+        forked = true;
+        reduceSpan(regionOffset(k), regionSize(k), ovl->stream);
       }
     }
-    NCCLCHECK(ncclGroupEnd());
+    return ncclSuccess;
+  }();
 
-    // Region k has landed in full. Reduce it now, on the side stream, so it
-    // overlaps groups k+1..T instead of waiting behind them.
-    if (ovl != nullptr) {
-      CUDACHECK(cudaEventRecord(ovl->stageDone[k], stream));
-      CUDACHECK(cudaStreamWaitEvent(ovl->stream, ovl->stageDone[k], 0));
-      reduceSpan(regionOffset(k), regionSize(k), ovl->stream);
-    }
-  }
-
-  if (ovl != nullptr) {
+  if (forked) {
     // The caller's stream must not observe the output before the last region's
-    // reduce has retired. This is the only side -> caller dependency.
-    CUDACHECK(cudaEventRecord(ovl->allDone, ovl->stream));
-    CUDACHECK(cudaStreamWaitEvent(stream, ovl->allDone, 0));
-  } else if (ownerReduces) {
+    // reduce has retired. This is the only side -> caller dependency, and it is
+    // issued even when the pipeline failed, to close the fork. Both calls are
+    // attempted before any error is reported, and the pipeline's own failure
+    // takes precedence, since that is the one that describes what went wrong.
+    const cudaError_t joinRecord = cudaEventRecord(ovl->allDone, ovl->stream);
+    const cudaError_t joinWait = cudaStreamWaitEvent(stream, ovl->allDone, 0);
+    if (pipelineResult != ncclSuccess) {
+      return pipelineResult;
+    }
+    CUDACHECK(joinRecord);
+    CUDACHECK(joinWait);
+  } else if (pipelineResult != ncclSuccess) {
+    return pipelineResult;
+  }
+  if (ovl == nullptr && ownerReduces) {
     // Fallback: one pass over the whole output block on the caller's stream.
     reduceSpan(0, recvcount, stream);
   }
