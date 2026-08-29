@@ -2040,9 +2040,10 @@ class ShardedRelayReduceScatterOverlapA2Test
       bool inPlace,
       ncclRedOp_t op,
       size_t recvCountOverride = 0,
-      size_t misalignElemsOnOddRanks = 0) {
+      size_t misalignElemsOnOddRanks = 0,
+      int activeRanksPerGroup = 2) {
     const int nGroups = 1;
-    const int A = 2;
+    const int A = activeRanksPerGroup;
     // Default: A * recvBytes reaches kRelayOverlapReduceMinBytes (256 MiB) so
     // the side-stream path engages. recvCountOverride instead pins a small
     // count so the one-shot IPC path is exercised (it needs A * recvCount *
@@ -2053,7 +2054,7 @@ class ShardedRelayReduceScatterOverlapA2Test
     const size_t recvBytes = recvCount * sizeof(int32_t);
     const size_t inBytes = static_cast<size_t>(A) * recvBytes;
 
-    const int activeRanks[] = {0, 1};
+    const int activeRanks[] = {0, 1, 2, 3};
     const int* allActiveRanks[] = {activeRanks};
     const bool isActive = this->globalRank < A;
     const int myActiveIndex = this->globalRank;
@@ -2136,9 +2137,8 @@ class ShardedRelayReduceScatterOverlapA2Test
         }
       }
       ASSERT_EQ(mismatches, 0u)
-          << "2-active single-group overlapped reduce-scatter mismatch: "
-          << mismatches << " of " << recvCount << " elements, first at index "
-          << firstBad;
+          << A << "-active single-group reduce-scatter mismatch: " << mismatches
+          << " of " << recvCount << " elements, first at index " << firstBad;
     }
 
     HIPCHECK_TEST(hipFree(sendBuff));
@@ -2251,6 +2251,56 @@ TEST_F(
       ncclAvg,
       /*recvCountOverride=*/16389,
       /*misalignElemsOnOddRanks=*/1);
+}
+
+// A=4 counterparts of the one-shot cases above. The one-shot kernel indexes
+// peer staging by ACTIVE INDEX, so a slot permutation is the characteristic
+// bug, and at A=4 there are three sources to get wrong instead of one. The A=4
+// fixture elsewhere in this file fills each block with a constant, which cannot
+// see such a bug -- these reuse this fixture's position-dependent fill instead.
+//
+// AVG stays integer-exact at A=4: the per-element sum is
+// kBase*A*(A+1)/2 + A*(i%kPeriod), so dividing by 4 gives 2500 + (i%kPeriod).
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/32768,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/true,
+      ncclAvg,
+      /*recvCountOverride=*/32768,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_OutOfPlace_Sum_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/32767,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
 }
 
 TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Sum) {

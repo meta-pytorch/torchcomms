@@ -93,6 +93,13 @@ struct OneShotPeerTable {
   uint32_t* flags[kOneShotMaxRanks];
 };
 
+// The communicator ranks of a group's active set, indexed by active index.
+// Passed to the kernel by value so it can resolve "active index j" to a peer
+// table slot.
+struct OneShotRanks {
+  int r[kOneShotMaxRanks];
+};
+
 // Everything one launch needs. Returned by value so the epoch is unique to the
 // call that took it.
 struct OneShotLaunch {
