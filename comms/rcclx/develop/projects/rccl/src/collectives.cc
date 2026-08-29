@@ -22,6 +22,11 @@
 #include "meta/relay/sharded_relay_reduce_scatter.h"
 #include "meta/relay/sharded_relay_all_to_all.h"
 #include "meta/relay/sharded_relay_all_gather.h"
+#include "meta/relay/relay_control.h"
+
+#include <cstddef>
+#include <cstring>
+#include <type_traits>
 #include "comms/ctran/Ctran.h"
 #include "MetaFactory.h"
 
@@ -670,6 +675,132 @@ ncclResult_t ncclShardedRelayMultiGroupAllGather(
   return ncclShardedRelayMultiGroupAllGather_impl(
       sendBuffs, recvBuffs, sendCounts,
       datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+}
+
+// Host control plane for the relay collectives. Two functions and one struct is
+// the entire surface: everything else rides hooks that already exist. Setup and
+// teardown are not exported because commInitRank and commFree already run them,
+// capacity is not queryable because it is validated at attach so a mismatch
+// fails at init rather than at runtime, abort is folded into Consume's return,
+// and shutdown is an opCode rather than a third entry point.
+//
+// Both take ncclComm_t instead of a handle, so there is no object for a caller
+// to own, thread through, or leak.
+
+NCCL_API(ncclResult_t, ncclRelayControlPublish,
+    ncclComm_t comm, uint64_t epoch,
+    const ncclRelayPlanInfo* info, const size_t* counts, int64_t timeoutNs);
+
+// The exported record and the internal one are the SAME 32-byte wire format, so
+// the conversions below are a memcpy rather than a field list. This is the only
+// translation unit where both types are visible, which makes it the only place
+// these assertions can live -- and a memcpy behind them cannot silently drop a
+// field the way a hand-written field list does the moment one is added to both.
+static_assert(
+    sizeof(ncclRelayPlanInfo) == sizeof(rcclx::relay::RelayPlanInfo),
+    "the exported and internal relay plan records must be the same size");
+static_assert(
+    offsetof(ncclRelayPlanInfo, nCalls) ==
+            offsetof(rcclx::relay::RelayPlanInfo, nCalls) &&
+        offsetof(ncclRelayPlanInfo, opCode) ==
+            offsetof(rcclx::relay::RelayPlanInfo, opCode) &&
+        offsetof(ncclRelayPlanInfo, dtype) ==
+            offsetof(rcclx::relay::RelayPlanInfo, dtype) &&
+        offsetof(ncclRelayPlanInfo, redOp) ==
+            offsetof(rcclx::relay::RelayPlanInfo, redOp) &&
+        offsetof(ncclRelayPlanInfo, flags) ==
+            offsetof(rcclx::relay::RelayPlanInfo, flags) &&
+        offsetof(ncclRelayPlanInfo, reserved) ==
+            offsetof(rcclx::relay::RelayPlanInfo, reserved),
+    "the exported and internal relay plan records must agree field for field");
+static_assert(
+    std::is_trivially_copyable<ncclRelayPlanInfo>::value &&
+        std::is_trivially_copyable<rcclx::relay::RelayPlanInfo>::value,
+    "the relay plan records are memcpy'd between exported and internal form");
+
+ncclResult_t ncclRelayControlPublish_impl(
+    ncclComm_t comm, uint64_t epoch,
+    const ncclRelayPlanInfo* info, const size_t* counts, int64_t timeoutNs) {
+  if (comm == nullptr || info == nullptr) {
+    WARN("ncclRelayControlPublish: comm and info must be non-null");
+    return ncclInvalidArgument;
+  }
+  // Validated HERE, at the boundary, even though relayControlPublish checks
+  // flags again: the public contract declares flags and reserved "must be 0",
+  // and a caller that violates it should see the diagnostic attributed to the
+  // symbol it called. reserved had no check at all before, so non-zero bytes in
+  // a field documented as reserved were accepted and then silently dropped.
+  if (info->flags != 0) {
+    WARN(
+        "ncclRelayControlPublish: info->flags must be 0, got %u", info->flags);
+    return ncclInvalidArgument;
+  }
+  for (size_t i = 0; i < sizeof(info->reserved) / sizeof(info->reserved[0]);
+       i++) {
+    if (info->reserved[i] != 0) {
+      WARN(
+          "ncclRelayControlPublish: info->reserved must be 0, got reserved[%zu]=%u",
+          i, info->reserved[i]);
+      return ncclInvalidArgument;
+    }
+  }
+  if (info->nCalls > 0 && counts == nullptr) {
+    WARN(
+        "ncclRelayControlPublish: counts must be non-null when nCalls is %u",
+        info->nCalls);
+    return ncclInvalidArgument;
+  }
+  rcclx::relay::RelayPlanInfo plan;
+  memcpy(&plan, info, sizeof(plan));
+  return rcclx::relay::relayControlPublish(
+      comm, epoch, plan, counts, timeoutNs);
+}
+
+ncclResult_t ncclRelayControlPublish(
+    ncclComm_t comm, uint64_t epoch,
+    const ncclRelayPlanInfo* info, const size_t* counts, int64_t timeoutNs) {
+  return ncclRelayControlPublish_impl(comm, epoch, info, counts, timeoutNs);
+}
+
+NCCL_API(ncclResult_t, ncclRelayControlConsume,
+    ncclComm_t comm, uint64_t epoch,
+    ncclRelayPlanInfo* info, size_t* counts, uint32_t countsCapacity,
+    int64_t timeoutNs);
+
+ncclResult_t ncclRelayControlConsume_impl(
+    ncclComm_t comm, uint64_t epoch,
+    ncclRelayPlanInfo* info, size_t* counts, uint32_t countsCapacity,
+    int64_t timeoutNs) {
+  if (comm == nullptr || info == nullptr) {
+    WARN("ncclRelayControlConsume: comm and info must be non-null");
+    return ncclInvalidArgument;
+  }
+  rcclx::relay::RelayPlanInfo plan{};
+  const ncclResult_t res = rcclx::relay::relayControlConsume(
+      comm, epoch, &plan, counts, countsCapacity, timeoutNs);
+  // Copied out on success, and on the ONE failure that carries information: an
+  // over-capacity plan reports the size the caller needed, which is only
+  // actionable if the caller can see it.
+  //
+  // Every other failure -- timeout, a peer abort, no control plane on this comm
+  // -- leaves `plan` untouched, so copying it out unconditionally would hand the
+  // caller a zeroed record. That is NOT a neutral value: nCalls 0 with opCode 0
+  // is exactly ncclRelayOpShutdown, so a failure would be indistinguishable from
+  // a valid instruction to stop. The caller's buffer is therefore left alone,
+  // which the header documents.
+  if (res == ncclSuccess ||
+      (res == ncclInvalidArgument && plan.nCalls > countsCapacity)) {
+    memcpy(info, &plan, sizeof(*info));
+  }
+  return res;
+}
+
+ncclResult_t ncclRelayControlConsume(
+    ncclComm_t comm, uint64_t epoch,
+    ncclRelayPlanInfo* info, size_t* counts, uint32_t countsCapacity,
+    int64_t timeoutNs) {
+  return ncclRelayControlConsume_impl(
+      comm, epoch, info, counts, countsCapacity, timeoutNs);
 }
 
 NCCL_API(ncclResult_t, ncclBroadcast, const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
