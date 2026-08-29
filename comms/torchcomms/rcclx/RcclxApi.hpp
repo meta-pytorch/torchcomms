@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -12,6 +13,19 @@ namespace torch::comms {
 
 // Hints type for persistent collective operations
 using RcclxHints = std::unordered_map<std::string, std::string>;
+
+// Plan for one relay forward. Mirrors `ncclRelayPlanInfo` field for field
+// without naming it, because this header is also compiled against the frozen
+// rcclx-stable snapshots where that type does not exist -- the same reason
+// RcclxHints exists rather than `ncclx::Hints`. The conversion happens in
+// RcclxApiShardedRelay.cpp, which is only linked under rcclx-dev.
+struct RcclxRelayPlan {
+  uint32_t nCalls{0};
+  uint32_t opCode{0};
+  uint32_t dtype{0};
+  uint32_t redOp{0};
+  uint32_t flags{0};
+};
 
 #ifdef NCCL_RMA_SUPPORTED
 using RcclxWindow = ncclWindow_t;
@@ -314,6 +328,25 @@ class RcclxApi {
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
       int nGroups) = 0;
+
+  // Relay control plane. Host-only: publishes/consumes the plan for one forward
+  // through the communicator's shared-memory segment, choosing nothing about
+  // the collectives themselves. Publish is rank 0 only; every non-active rank
+  // consumes. Both are bounded by timeoutNs rather than waiting forever.
+  virtual ncclResult_t relayControlPublish(
+      ncclComm_t comm,
+      uint64_t epoch,
+      const RcclxRelayPlan& plan,
+      const size_t* counts,
+      int64_t timeoutNs) = 0;
+
+  virtual ncclResult_t relayControlConsume(
+      ncclComm_t comm,
+      uint64_t epoch,
+      RcclxRelayPlan* plan,
+      size_t* counts,
+      uint32_t countsCapacity,
+      int64_t timeoutNs) = 0;
 };
 
 /**
@@ -605,6 +638,21 @@ class DefaultRcclxApi : public RcclxApi {
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
       int nGroups) override;
+
+  ncclResult_t relayControlPublish(
+      ncclComm_t comm,
+      uint64_t epoch,
+      const RcclxRelayPlan& plan,
+      const size_t* counts,
+      int64_t timeoutNs) override;
+
+  ncclResult_t relayControlConsume(
+      ncclComm_t comm,
+      uint64_t epoch,
+      RcclxRelayPlan* plan,
+      size_t* counts,
+      uint32_t countsCapacity,
+      int64_t timeoutNs) override;
 };
 
 } // namespace torch::comms
