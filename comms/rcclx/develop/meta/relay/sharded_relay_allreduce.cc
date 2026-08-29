@@ -1577,6 +1577,18 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
     return ncclInvalidArgument;
   }
   const size_t oTile = 2 * y;
+  // The offload moves oTile = 2*y per link per group while the direct exchange
+  // moves y, and RCCL budgets channels per operation -- so a cross link
+  // carrying its bytes as one op gets half the channels of an intra link
+  // carrying the same bytes as two. Splitting the offload into y-sized pieces
+  // makes every operation in the group the same size. Gated on size for the
+  // same reason as the all-gather mirror: measured 1.98x -> 2.05x at 1 GB
+  // and 1.88x -> 1.97x at 512 MB, but ~1% worse at 135-144 MB where the extra
+  // ops do not amortize.
+  const int oN =
+      (count * elementSize >= rcclx::relay::kRelayUniformDirectOpMinBytes) ? 2
+                                                                           : 1;
+  const size_t oPiece = oTile / static_cast<size_t>(oN);
   const size_t oChunk = static_cast<size_t>(T) * oTile;
   const size_t pO = static_cast<size_t>(H) * oChunk;
   const size_t pD = count - pO;
@@ -1671,17 +1683,26 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
         }
       }
       if (k < T) {
+        // Offload scatter, split into y-sized pieces so every operation in the
+        // group is the same size as the direct tiles. oTile is exactly 2*y, so
+        // the split is exact. See kRelayUniformDirectOpMinBytes for why this
+        // matters: RCCL budgets channels per operation, so a link carrying its
+        // bytes as one large op gets half the channels of a link carrying the
+        // same bytes as two.
         for (int h = 0; h < H; h++) {
-          NCCLCHECK(ncclSend(
-              recvbuff +
-                  (pD + static_cast<size_t>(h) * oChunk +
-                   static_cast<size_t>(k) * oTile) *
-                      elementSize,
-              oTile,
-              datatype,
-              cfg.helperRanks[h],
-              comm,
-              stream));
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclSend(
+                recvbuff +
+                    (pD + static_cast<size_t>(h) * oChunk +
+                     static_cast<size_t>(k) * oTile +
+                     static_cast<size_t>(i) * oPiece) *
+                        elementSize,
+                oPiece,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
         }
       }
 
@@ -1715,41 +1736,51 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
               comm,
               stream));
         }
-        // Already reduced by the helper, so this is the final value.
+        // Already reduced by the helper, so this is the final value. Split to
+        // match the scatter above.
         for (int h = 0; h < H; h++) {
-          NCCLCHECK(ncclRecv(
-              recvbuff +
-                  (pD + static_cast<size_t>(h) * oChunk +
-                   static_cast<size_t>(k - 1) * oTile) *
-                      elementSize,
-              oTile,
-              datatype,
-              cfg.helperRanks[h],
-              comm,
-              stream));
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclRecv(
+                recvbuff +
+                    (pD + static_cast<size_t>(h) * oChunk +
+                     static_cast<size_t>(k - 1) * oTile +
+                     static_cast<size_t>(i) * oPiece) *
+                        elementSize,
+                oPiece,
+                datatype,
+                cfg.helperRanks[h],
+                comm,
+                stream));
+          }
         }
       }
     } else {
       if (k < T) {
         for (int a = 0; a < A; a++) {
-          NCCLCHECK(ncclRecv(
-              helperSlot(a, k),
-              oTile,
-              datatype,
-              cfg.activeRanks[a],
-              comm,
-              stream));
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclRecv(
+                helperSlot(a, k) +
+                    static_cast<size_t>(i) * oPiece * elementSize,
+                oPiece,
+                datatype,
+                cfg.activeRanks[a],
+                comm,
+                stream));
+          }
         }
       }
       if (k > 0) {
         for (int a = 0; a < A; a++) {
-          NCCLCHECK(ncclSend(
-              helperSlot(0, k - 1),
-              oTile,
-              datatype,
-              cfg.activeRanks[a],
-              comm,
-              stream));
+          for (int i = 0; i < oN; i++) {
+            NCCLCHECK(ncclSend(
+                helperSlot(0, k - 1) +
+                    static_cast<size_t>(i) * oPiece * elementSize,
+                oPiece,
+                datatype,
+                cfg.activeRanks[a],
+                comm,
+                stream));
+          }
         }
       }
     }
