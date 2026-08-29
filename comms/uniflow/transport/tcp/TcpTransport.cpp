@@ -328,8 +328,23 @@ std::future<Status> TcpTransport::put(
   auto state = std::make_shared<TcpOpState>();
   auto future = state->promise.get_future();
 
-  // Validate and count chunks up front so the completion counter is exact.
-  size_t totalChunks = 0;
+  // Pre-flight. Everything that can fail is settled before the first frame is
+  // queued, because once a frame reaches enqueueFrame the sender thread may
+  // flush it and a Write the peer has applied cannot be recalled. A bail from
+  // the middle of the send loop therefore reports failure to the caller while a
+  // partial write has landed remotely, with nothing telling the peer about it.
+  struct PlannedRequest {
+    uint64_t segId{0};
+    uint64_t baseOffset{0};
+    const uint8_t* src{nullptr};
+    size_t len{0};
+    bool vram{false};
+    int deviceId{-1};
+  };
+  std::vector<PlannedRequest> planned;
+  planned.reserve(requests.size());
+  std::vector<PlannedChunk> chunks;
+
   for (const auto& req : requests) {
     if (req.local.size() != req.remote.size()) {
       state->fail(
@@ -337,73 +352,97 @@ std::future<Status> TcpTransport::put(
               "tcp put: local and remote buffer sizes must match"));
       return future;
     }
-    const size_t len = req.local.size();
-    totalChunks += (len == 0) ? 1 : (len + kMaxChunkSize - 1) / kMaxChunkSize;
-  }
-  state->remaining = totalChunks;
-
-  for (const auto& req : requests) {
     auto remoteHandle = findRemoteHandle(req.remote);
     if (!remoteHandle) {
       state->fail(std::move(remoteHandle).error());
       return future;
     }
-    const uint64_t segId = remoteHandle.value()->segId();
-    const uint64_t baseOffset = static_cast<uint64_t>(req.remote.remoteOffset_);
     const size_t len = req.local.size();
     const bool vram = req.local.memType() == MemoryType::VRAM;
     const int deviceId = req.local.deviceId();
-    const auto* src = static_cast<const uint8_t*>(req.local.data());
+    // Probed once per request rather than once per chunk: the cost is a device
+    // set/restore, and the point is to reject an unusable device while the peer
+    // is still untouched.
+    if (vram && len > 0) {
+      if (auto usable = validateDeviceForStaging(deviceId); !usable) {
+        state->fail(std::move(usable));
+        return future;
+      }
+    }
+    planned.push_back(
+        PlannedRequest{
+            remoteHandle.value()->segId(),
+            static_cast<uint64_t>(req.remote.remoteOffset_),
+            static_cast<const uint8_t*>(req.local.data()),
+            len,
+            vram,
+            deviceId});
 
     size_t off = 0;
     do {
       const size_t chunk = std::min(kMaxChunkSize, len - off);
-      const uint64_t reqId = nextReqId_.fetch_add(1, std::memory_order_relaxed);
-      if (auto admitted =
-              admitInflight(reqId, TcpInflight{state, nullptr, chunk, false});
-          admitted.hasError()) {
-        state->fail(std::move(admitted));
-        return future;
-      }
+      chunks.push_back(
+          PlannedChunk{
+              nextReqId_.fetch_add(1, std::memory_order_relaxed),
+              chunk,
+              TcpInflight{state, nullptr, chunk, false}});
+      off += chunk;
+    } while (off < len);
+  }
+  // Exact by construction: one entry per frame this put will send.
+  state->remaining = chunks.size();
+
+  if (auto admitted = admitInflightBulk(chunks); !admitted) {
+    state->fail(std::move(admitted));
+    return future;
+  }
+
+  // Commit. Only a genuine staging error or transport teardown remains
+  // reachable, and both abandon the reservations for frames never queued.
+  size_t chunkIdx = 0;
+  for (const auto& req : planned) {
+    size_t off = 0;
+    do {
+      const uint64_t reqId = chunks[chunkIdx].reqId;
+      const size_t chunk = chunks[chunkIdx].len;
+      ++chunkIdx;
       std::vector<uint8_t> frame(sizeof(TcpMsgHeader) + chunk);
       TcpMsgHeader header;
       header.op = static_cast<uint8_t>(TcpOp::Write);
       header.reqId = reqId;
-      header.segId = segId;
-      header.offset = baseOffset + off;
+      header.segId = req.segId;
+      header.offset = req.baseOffset + off;
       header.len = static_cast<uint64_t>(chunk);
       std::memcpy(frame.data(), &header, sizeof(header));
       if (chunk > 0) {
         Status st = Ok();
-        if (vram) {
+        if (req.vram) {
           st = hostFromDevice(
               frame.data() + sizeof(header),
-              src + off,
+              req.src + off,
               chunk,
-              deviceId,
+              req.deviceId,
               options.stream.has_value()
                   ? static_cast<void*>(options.stream.value())
                   : nullptr);
         } else {
-          std::memcpy(frame.data() + sizeof(header), src + off, chunk);
+          std::memcpy(frame.data() + sizeof(header), req.src + off, chunk);
         }
         if (!st) {
-          {
-            std::lock_guard<std::mutex> lk(inflightMu_);
-            inflight_.erase(reqId);
-          }
+          abandonInflight(chunks, chunkIdx - 1);
           state->fail(std::move(st));
           return future;
         }
       }
       if (!enqueueFrame(std::move(frame), /*mayBlock=*/true)) {
+        abandonInflight(chunks, chunkIdx - 1);
         state->fail(
             Err(ErrCode::NotConnected,
                 "tcp put: transport closed before the write was queued"));
         return future;
       }
       off += chunk;
-    } while (off < len);
+    } while (off < req.len);
   }
 
   return future;
@@ -487,6 +526,228 @@ std::future<Status> TcpTransport::get(
   }
 
   return future;
+}
+
+Status TcpTransport::stageReadReply(
+    std::vector<uint8_t> frame,
+    TcpSegmentRegistry::Lease lease,
+    const void* src,
+    size_t len,
+    int deviceId,
+    uint64_t reqId) {
+  if (cudaApi_ == nullptr) {
+    return Err(ErrCode::InvalidArgument, "tcp read: no CUDA API for VRAM");
+  }
+  cudaEvent_t event{};
+  // Once the copy is enqueued, every way out of this function has to wait for
+  // it. Returning an error unwinds `frame` and `lease`, and the copy is
+  // asynchronous: the GPU would be left writing into a buffer the allocator has
+  // taken back, and reading from a segment a waiting erase() is now free to
+  // deregister. drainPendingReadReplies() waits for exactly this reason; the
+  // error paths here need the same barrier.
+  bool copyIssued = false;
+  try {
+    CudaDeviceGuard guard(*cudaApi_, deviceId);
+    if (auto st = cudaApi_->memcpyAsync(
+            frame.data() + sizeof(TcpMsgHeader),
+            src,
+            len,
+            cudaMemcpyDeviceToHost,
+            /*stream=*/nullptr);
+        !st) {
+      // A launch that reported an error enqueued nothing, so there is no copy
+      // to wait for here.
+      return st;
+    }
+    copyIssued = true;
+    // The guard already has deviceId current, so these wait on the right device
+    // without nesting another guard.
+    if (auto st = cudaApi_->eventCreate(&event); !st) {
+      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+      return st;
+    }
+    if (auto st = cudaApi_->eventRecord(event, /*stream=*/nullptr); !st) {
+      (void)cudaApi_->eventDestroy(event);
+      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+      return st;
+    }
+  } catch (const std::exception& e) {
+    if (copyIssued) {
+      waitForStagedCopy(deviceId);
+    }
+    return Err(
+        ErrCode::InvalidArgument,
+        "tcp read: VRAM staging needs a selectable deviceId, got " +
+            std::to_string(deviceId) + ": " + e.what());
+  }
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    pendingReplies_.push_back(
+        PendingReadReply{
+            std::move(frame), std::move(lease), event, reqId, deviceId});
+  }
+  schedulePendingReplyPoll();
+  return Ok();
+}
+
+void TcpTransport::schedulePendingReplyPoll() {
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    if (replyPollScheduled_ || pendingReplies_.empty()) {
+      return;
+    }
+    replyPollScheduled_ = true;
+  }
+  evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+}
+
+void TcpTransport::pollPendingReadReplies() {
+  while (true) {
+    std::vector<uint8_t> ready;
+    PendingReadReply failed;
+    int failedDeviceId = -1;
+    uint64_t failedReqId = 0;
+    bool haveReady = false;
+    bool haveFailure = false;
+    bool stillRunning = false;
+    {
+      std::lock_guard<std::mutex> lk(stagingMu_);
+      if (pendingReplies_.empty()) {
+        replyPollScheduled_ = false;
+        return;
+      }
+      auto& front = pendingReplies_.front();
+      auto done = cudaApi_->eventQuery(static_cast<cudaEvent_t>(front.event));
+      if (done.hasValue() && !done.value()) {
+        stillRunning = true;
+      } else {
+        (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(front.event));
+        if (done.hasError()) {
+          failedReqId = front.reqId;
+          failedDeviceId = front.deviceId;
+          haveFailure = true;
+          // A query that failed says nothing about the copy -- it may still be
+          // running. The record is carried out of the deque rather than dropped
+          // here so the wait for it happens outside this lock: the reader takes
+          // stagingMu_ to enqueue, and must not be held behind a device wait.
+          failed = std::move(front);
+        } else {
+          // The event completed, so the copy is done and the frame is safe to
+          // hand on with no further wait.
+          ready = std::move(front.frame);
+          haveReady = true;
+        }
+        // Releases the lease, which is what lets a waiting erase() proceed.
+        pendingReplies_.pop_front();
+      }
+    }
+    if (stillRunning) {
+      // Querying is the only way to learn the copy finished -- there is no
+      // completion callback, and EventBase has no timer to defer against -- so
+      // this cannot back off by sleeping. Yielding first keeps the poll from
+      // monopolising a core the reader and sender threads need, and
+      // re-dispatching rather than looping inline lets anything else sharing
+      // this EventBase run in between. Dispatched outside the lock: the reader
+      // takes stagingMu_ to enqueue, and it should never wait on the
+      // EventBase's queue to do it.
+      std::this_thread::yield();
+      evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+      return;
+    }
+    // Queued outside the lock: enqueueFrame takes outMu_, and holding two of
+    // the transport's mutexes at once is how lock cycles start.
+    if (haveReady) {
+      (void)enqueueFrame(std::move(ready), /*mayBlock=*/false);
+    } else if (haveFailure) {
+      // Wait before `failed` goes out of scope, for the same reason
+      // drainPendingReadReplies() waits: a copy that may still be running would
+      // otherwise be left writing into a freed buffer.
+      waitForStagedCopy(failedDeviceId);
+      failed = PendingReadReply{};
+      (void)enqueueFrame(
+          makeHeaderFrame(TcpOp::Error, failedReqId), /*mayBlock=*/false);
+    }
+  }
+}
+
+void TcpTransport::waitForStagedCopy(int deviceId) noexcept {
+  if (cudaApi_ == nullptr) {
+    return;
+  }
+  try {
+    // Per-device: a bare streamSynchronize would only cover whichever device
+    // happened to be current, leaving a copy on any other device still running.
+    CudaDeviceGuard guard(*cudaApi_, deviceId);
+    (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+  } catch (const std::exception&) {
+    // The device is already unusable, so there is nothing left to wait for.
+  }
+}
+
+void TcpTransport::drainPendingReadReplies() {
+  std::deque<PendingReadReply> pending;
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    pending.swap(pendingReplies_);
+  }
+  if (pending.empty()) {
+    return;
+  }
+  // The device may still be writing into these frames. Freeing them now would
+  // hand the GPU a buffer the allocator has taken back, so wait for the copies
+  // first even though the replies themselves are being abandoned.
+  if (cudaApi_ != nullptr) {
+    for (auto& reply : pending) {
+      waitForStagedCopy(reply.deviceId);
+      (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(reply.event));
+    }
+  }
+}
+
+Status TcpTransport::admitInflightBulk(std::span<PlannedChunk> chunks) {
+  std::lock_guard<std::mutex> lk(inflightMu_);
+  if (connBroken_.load(std::memory_order_acquire)) {
+    return Err(
+        ErrCode::NotConnected, "tcp: transport closed while admitting request");
+  }
+  // Written as a subtraction against the remaining headroom so a large request
+  // cannot overflow its way past the cap.
+  if (inflight_.size() >= kMaxInflightRequests ||
+      chunks.size() > kMaxInflightRequests - inflight_.size()) {
+    return Err(
+        ErrCode::ResourceExhausted,
+        "tcp: too many outstanding requests (" +
+            std::to_string(kMaxInflightRequests) + ")");
+  }
+  for (auto& chunk : chunks) {
+    inflight_[chunk.reqId] = std::move(chunk.entry);
+  }
+  return Ok();
+}
+
+void TcpTransport::abandonInflight(
+    std::span<const PlannedChunk> chunks,
+    size_t fromIdx) {
+  if (fromIdx >= chunks.size()) {
+    return;
+  }
+  std::lock_guard<std::mutex> lk(inflightMu_);
+  for (const auto& chunk : chunks.subspan(fromIdx)) {
+    inflight_.erase(chunk.reqId);
+  }
+}
+
+Status TcpTransport::validateDeviceForStaging(int deviceId) {
+  try {
+    CudaDeviceGuard guard(*cudaApi_, deviceId);
+    (void)guard;
+  } catch (const std::exception& e) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "tcp: VRAM transfer needs a selectable deviceId, got " +
+            std::to_string(deviceId) + ": " + e.what());
+  }
+  return Ok();
 }
 
 Status TcpTransport::admitInflight(uint64_t reqId, TcpInflight entry) {
@@ -731,16 +992,24 @@ void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
           const void* src =
               static_cast<const uint8_t*>(entry->ptr) + header.offset;
           if (entry->memType == MemoryType::VRAM) {
-            readStatus = hostFromDevice(
-                reply.data() + sizeof(replyHeader),
+            // Read before the lease is moved out.
+            const int deviceId = entry->deviceId;
+            // Staged rather than synchronous: the reply is queued once the copy
+            // signals. Waiting here would stop the reader draining the socket
+            // for the length of a device operation, and the lease it holds
+            // would stall any concurrent deregistration for just as long.
+            readStatus = stageReadReply(
+                std::move(reply),
+                std::move(entry),
                 src,
                 header.len,
-                entry->deviceId);
+                deviceId,
+                header.reqId);
           } else {
             std::memcpy(reply.data() + sizeof(replyHeader), src, header.len);
+            (void)enqueueFrame(std::move(reply), /*mayBlock=*/false);
           }
-        }
-        if (!readStatus.hasError()) {
+        } else {
           (void)enqueueFrame(std::move(reply), /*mayBlock=*/false);
         }
       } else {
@@ -1137,6 +1406,11 @@ void TcpTransport::shutdown() {
   }
 
   failAllPending("tcp transport shut down");
+
+  // After the reader is joined, so nothing can add to the queue, and before the
+  // transport goes away: a staged reply's frame is memory the device may still
+  // be writing into.
+  drainPendingReadReplies();
 
   // Compare-exchange, not load-then-store: a concurrent bind() failure setting
   // Error in the gap between a load and a store would be clobbered back to

@@ -179,6 +179,43 @@ class TcpTransportFrameTest : public ::testing::Test {
     return transport_->admitInflight(reqId, std::move(entry));
   }
 
+  Status admitInflightBulk(std::span<PlannedChunk> chunks) {
+    return transport_->admitInflightBulk(chunks);
+  }
+
+  void abandonInflight(std::span<const PlannedChunk> chunks, size_t fromIdx) {
+    transport_->abandonInflight(chunks, fromIdx);
+  }
+
+  /// Occupies `n` admission slots so the cap can be reached without moving the
+  /// gigabytes of payload a real put() would need to get there.
+  void fillInflight(size_t n) {
+    auto state = std::make_shared<TcpOpState>();
+    for (size_t i = 0; i < n; ++i) {
+      ASSERT_FALSE(transport_
+                       ->admitInflight(
+                           kFillReqIdBase + i,
+                           TcpInflight{state, nullptr, /*len=*/1, false})
+                       .hasError());
+    }
+  }
+
+  static std::vector<PlannedChunk> makeChunks(
+      const std::shared_ptr<TcpOpState>& state,
+      size_t count,
+      uint64_t baseReqId) {
+    std::vector<PlannedChunk> chunks;
+    chunks.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+      chunks.push_back(
+          PlannedChunk{
+              baseReqId + i,
+              /*len=*/64,
+              TcpInflight{state, nullptr, /*len=*/64, false}});
+    }
+    return chunks;
+  }
+
   bool enqueueReaderFrame(size_t bytes) {
     return transport_->enqueueFrame(
         std::vector<uint8_t>(bytes, 0), /*mayBlock=*/false);
@@ -196,6 +233,9 @@ class TcpTransportFrameTest : public ::testing::Test {
   static constexpr size_t inflightCap() {
     return TcpTransport::kMaxInflightRequests;
   }
+
+  // Far from the reqIds the tests pick by hand, so filler cannot collide.
+  static constexpr uint64_t kFillReqIdBase = 1'000'000;
 
   /// Installs a connection whose send() always fails, so senderLoop() can be
   /// driven down its error path without a peer.
@@ -546,6 +586,51 @@ TEST_F(TcpTransportFrameTest, AdmissionSucceedsOnAHealthyTransport) {
   EXPECT_EQ(inflightCount(), 1u);
 }
 
+// put() reserves a slot per chunk. Reserving them one at a time inside the send
+// loop means a put larger than the cap allows -- above ~16 GiB at 4 MiB chunks
+// and 4096 slots -- delivers chunks until the slots run out and only then
+// fails, so the caller is told the whole put failed while most of it landed in
+// the peer's segment with nothing to tell the peer about it. A put that cannot
+// fit must be refused before any chunk is staged.
+TEST_F(TcpTransportFrameTest, BulkAdmissionIsAllOrNothingAtTheCap) {
+  setConnected();
+  auto state = std::make_shared<TcpOpState>();
+
+  constexpr size_t kHeadroom = 3;
+  fillInflight(inflightCap() - kHeadroom);
+  ASSERT_EQ(inflightCount(), inflightCap() - kHeadroom);
+
+  auto tooMany = makeChunks(state, kHeadroom + 1, /*baseReqId=*/9000);
+  EXPECT_TRUE(admitInflightBulk(tooMany).hasError())
+      << "a put that does not fit must be refused whole";
+  EXPECT_EQ(inflightCount(), inflightCap() - kHeadroom)
+      << "a refused put must leave no partial reservation, because every slot it "
+         "did take is a chunk already on its way to the peer";
+
+  auto exactFit = makeChunks(state, kHeadroom, /*baseReqId=*/9100);
+  EXPECT_FALSE(admitInflightBulk(exactFit).hasError())
+      << "a put that exactly fills the remaining slots must be admitted";
+  EXPECT_EQ(inflightCount(), inflightCap());
+}
+
+// When staging or the out queue fails partway through the send loop, the chunks
+// already handed to enqueueFrame keep their reservations so their Acks still
+// match an entry; only the ones that never reached the wire are dropped.
+TEST_F(TcpTransportFrameTest, AbandonInflightDropsOnlyTheUnsentTail) {
+  setConnected();
+  auto state = std::make_shared<TcpOpState>();
+
+  auto chunks = makeChunks(state, 5, /*baseReqId=*/700);
+  ASSERT_FALSE(admitInflightBulk(chunks).hasError());
+  ASSERT_EQ(inflightCount(), 5u);
+
+  abandonInflight(chunks, /*fromIdx=*/2);
+
+  EXPECT_EQ(inflightCount(), 2u)
+      << "only the unsent tail may be dropped; dropping a sent chunk's entry "
+         "would leave its Ack unmatched";
+}
+
 // A dead sender used to leave the out queue open: enqueueFrame() gates only on
 // outClosed_, so the still-running reader thread kept appending Ack/Error/
 // ReadReply frames (up to 4 MiB each) to a queue nothing drained, and
@@ -595,6 +680,180 @@ TEST_F(TcpTransportFrameTest, OversizedReadRequestIsRefusedPerRequest) {
       << "an oversized read must get a per-request Error rather than a "
          "ReadReply the controller will refuse and the sender will treat as "
          "fatal";
+}
+
+// A VRAM ReadRequest used to be answered with a blocking device copy on the
+// reader thread, so the reader stopped draining the socket for the length of an
+// application GPU step. That re-arms the mutual-READ deadlock the reader/sender
+// split exists to prevent, and the registry lease held across the copy stalled
+// any concurrent erase() for just as long. The copy is staged instead: the
+// reader posts it and returns to the socket, and the EventBase queues the reply
+// once the copy signals.
+TEST_F(TcpTransportFrameTest, AStagedVramReadReplyDoesNotBlockTheReader) {
+  setConnected();
+
+  constexpr uint64_t kVramSegId = kSegId + 200;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x77});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  std::atomic<bool> copyDone{false};
+  ON_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          ::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillByDefault([](auto* event) -> Status {
+        // Spelled with auto because this TU is not hipified: cudaEvent_t is
+        // ihipEvent_t* here, and naming it does not compile under ROCm.
+        *event = {};
+        return Ok();
+      });
+  ON_CALL(*cudaApi_, eventRecord(::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  // The copy stays unfinished until the test releases it.
+  ON_CALL(*cudaApi_, eventQuery(::testing::_))
+      .WillByDefault([&](auto) -> Result<bool> {
+        return Result<bool>(copyDone.load(std::memory_order_acquire));
+      });
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  EXPECT_EQ(outQueueDepth(), 0u)
+      << "a reply whose payload is still being copied must not be queued; the "
+         "peer would receive an unfilled buffer";
+
+  // The reader is not parked, so a request arriving behind the staged one is
+  // answered while that copy is still running.
+  feed(makeFrame(
+      TcpOp::ReadRequest, kSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+  EXPECT_EQ(outQueueDepth(), 1u)
+      << "the reader is blocked behind the VRAM copy: a request queued after it "
+         "was not answered until the device finished";
+
+  copyDone.store(true, std::memory_order_release);
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (outQueueDepth() < 2u && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_EQ(outQueueDepth(), 2u)
+      << "the staged reply must be queued once its copy signals";
+}
+
+// The copy is issued before the event exists, so any failure after that point
+// leaves a D2H copy running into `frame` -- and returning an error unwinds
+// `frame` and its lease. The GPU is then writing into memory the allocator has
+// taken back, and reading from a segment a waiting erase() is now free to
+// deregister. drainPendingReadReplies() waits per-device for exactly this
+// reason; these error paths did not.
+//
+// The wait is the only observable evidence available: MockCudaApi mocks
+// memcpyAsync, so the out-of-bounds write itself cannot be seen from a unit
+// test. What is pinned is that nothing releases the buffer without waiting.
+TEST_F(TcpTransportFrameTest, AReadReplyWhoseEventFailsWaitsForTheIssuedCopy) {
+  setConnected();
+
+  constexpr uint64_t kVramSegId = kSegId + 300;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x77});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  std::atomic<int> syncs{0};
+  ON_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          ::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  // Fails only after memcpyAsync has already reported success, which is what
+  // leaves a copy in flight with no event to track it.
+  ON_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillByDefault(
+          ::testing::Return(Err(ErrCode::DriverError, "test: no event")));
+  ON_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, streamSynchronize(::testing::_))
+      .WillByDefault([&](auto) -> Status {
+        syncs.fetch_add(1, std::memory_order_release);
+        return Ok();
+      });
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  EXPECT_GE(syncs.load(std::memory_order_acquire), 1)
+      << "the staging frame was released with a copy still in flight: the event "
+         "failed after memcpyAsync succeeded, and nothing waited for the device "
+         "before the frame and its lease went out of scope";
+  EXPECT_TRUE(queuedErrorFrame())
+      << "the failed read must still be answered per-request";
+}
+
+// eventQuery failing says nothing about the copy -- it may still be running --
+// but the record was popped and its frame destroyed anyway, which is the same
+// use-after-free as the staging path above.
+//
+// The Error frame is queued after the wait, so waiting for the frame and then
+// asserting on the count is what makes this deterministic: observing the frame
+// means the barrier already ran.
+TEST_F(TcpTransportFrameTest, AFailedEventQueryWaitsBeforeDroppingTheReply) {
+  setConnected();
+
+  constexpr uint64_t kVramSegId = kSegId + 301;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x77});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  std::atomic<int> syncs{0};
+  ON_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          ::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillByDefault([](auto* event) -> Status {
+        // Spelled with auto because this TU is not hipified: cudaEvent_t is
+        // ihipEvent_t* here, and naming it does not compile under ROCm.
+        *event = {};
+        return Ok();
+      });
+  ON_CALL(*cudaApi_, eventRecord(::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillByDefault(::testing::Return(Ok()));
+  ON_CALL(*cudaApi_, eventQuery(::testing::_))
+      .WillByDefault([](auto) -> Result<bool> {
+        return Result<bool>(Err(ErrCode::DriverError, "test: query failed"));
+      });
+  ON_CALL(*cudaApi_, streamSynchronize(::testing::_))
+      .WillByDefault([&](auto) -> Status {
+        syncs.fetch_add(1, std::memory_order_release);
+        return Ok();
+      });
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  // The poll runs on the EventBase, so this waits for its observable result.
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!queuedErrorFrame() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(queuedErrorFrame())
+      << "the reply whose event query failed must still be answered "
+         "per-request";
+  EXPECT_GE(syncs.load(std::memory_order_acquire), 1)
+      << "the reply was dropped without waiting for the copy, so the GPU may "
+         "still be writing into the frame that was just freed";
 }
 
 // unmatchedSends_ buffers every inbound Send that finds no posted recv. The
