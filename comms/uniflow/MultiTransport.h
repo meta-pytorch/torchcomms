@@ -29,9 +29,23 @@ struct MultiTransportFactoryOptions {
   // the on-host interconnect tier (NVLink on NVIDIA, P2P/XGMI on AMD). Set this
   // to flip that choice -- e.g. TransportType::RDMA to route intra-node traffic
   // over RDMA instead. Both tiers stay registered, so this is a selection
-  // override, not a kill-switch; inter-node stays RDMA. Caller-owned (no
-  // transport-internal config-system dependency).
+  // override, not a kill-switch. Caller-owned (no transport-internal
+  // config-system dependency).
   std::optional<TransportType> intraNodeTransport;
+  // preferredTransport: global force, checked first in selectTransport --
+  // applies to both intra- and inter-node. interNodeTransport: inter-node
+  // override (default RDMA). Each falls through to the remaining tiers if the
+  // chosen transport is unavailable on all requests.
+  std::optional<TransportType> preferredTransport;
+  std::optional<TransportType> interNodeTransport;
+  // The TCP data transport auto-registers whenever a routable bind address is
+  // available (tcpBindHost if set, else resolveTcpBindHost: netdevPrefix match,
+  // else first global address). It is skipped when only loopback resolves,
+  // since advertising loopback in the connect handshake breaks cross-host
+  // connections for all transports. Set enableTcp to force-register even on
+  // loopback (e.g. same-host testing).
+  bool enableTcp{false};
+  std::string tcpBindHost{};
 };
 
 class MultiTransport {
@@ -39,9 +53,13 @@ class MultiTransport {
   explicit MultiTransport(
       int deviceId,
       std::shared_ptr<ScopedEventBaseThread> evbThread = nullptr,
-      std::optional<TransportType> intraNodeTransport = std::nullopt)
+      std::optional<TransportType> intraNodeTransport = std::nullopt,
+      std::optional<TransportType> preferredTransport = std::nullopt,
+      std::optional<TransportType> interNodeTransport = std::nullopt)
       : deviceId_(deviceId),
+        preferredTransport_(preferredTransport),
         intraNodeTransport_(intraNodeTransport),
+        interNodeTransport_(interNodeTransport),
         evbThread_(std::move(evbThread)) {
     if (!evbThread_) {
       evbThread_ = std::make_shared<ScopedEventBaseThread>();
@@ -108,7 +126,9 @@ class MultiTransport {
   Transport* findTransport(TransportType type) const;
 
   const int deviceId_;
+  std::optional<TransportType> preferredTransport_;
   std::optional<TransportType> intraNodeTransport_;
+  std::optional<TransportType> interNodeTransport_;
   // Prevents destruction of the shared EventBase while transports are live.
   // Transports hold raw EventBase* borrowed from the ScopedEventBaseThread
   // owned by MultiTransportFactory; this shared_ptr ensures the thread (and

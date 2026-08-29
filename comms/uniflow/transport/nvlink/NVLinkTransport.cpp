@@ -210,7 +210,7 @@ std::future<Status> NVLinkTransport::put(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteDst = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.nvlinkOffset_;
+        req.remote.remoteOffset_;
     ops.emplace_back(remoteDst, req.local.data(), req.local.size());
   }
 
@@ -253,7 +253,7 @@ std::future<Status> NVLinkTransport::get(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteSrc = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.nvlinkOffset_;
+        req.remote.remoteOffset_;
     ops.emplace_back(req.local.mutable_data(), remoteSrc, req.remote.size());
   }
 

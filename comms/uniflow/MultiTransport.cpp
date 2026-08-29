@@ -8,13 +8,24 @@
 // RDMA is the GPU transport on AMD as well as NVIDIA. NVLink is NVIDIA-only
 // (NVML-backed topology, fabric/FD IPC) and is compiled out on AMD/HIP.
 #include "comms/uniflow/transport/rdma/RdmaTransport.h"
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+#include "comms/uniflow/transport/tcp/TcpTransport.h"
+#endif
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/uniflow/transport/nvlink/NVLinkTransport.h"
 #else
 #include "comms/uniflow/transport/p2p/P2pTransport.h"
 #endif
 
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
+
 #include <cstring>
+#include <optional>
 
 namespace uniflow {
 
@@ -23,6 +34,93 @@ namespace {
 bool isCpu(int deviceId) {
   return deviceId == -1;
 }
+
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+// Resolve a routable bind host for the TCP transport. Prefers an interface
+// whose name starts with netdevPrefix, else the first global (non-loopback,
+// non-link-local) address found, else falls back to loopback. Binding a
+// routable address (instead of 127.0.0.1) is what lets the TCP transport's
+// connect() succeed across hosts.
+std::string resolveTcpBindHost(const std::string& netdevPrefix) {
+  struct ifaddrs* ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) != 0 || ifaddr == nullptr) {
+    return "127.0.0.1";
+  }
+  std::string prefixMatch;
+  std::string anyGlobal;
+  for (auto* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr) {
+      continue;
+    }
+    char buf[INET6_ADDRSTRLEN] = {};
+    std::string addr;
+    const int family = ifa->ifa_addr->sa_family;
+    if (family == AF_INET6) {
+      auto* sa = reinterpret_cast<sockaddr_in6*>(ifa->ifa_addr);
+      const auto* b = sa->sin6_addr.s6_addr;
+      const bool linkLocal = b[0] == 0xfe && (b[1] & 0xc0) == 0x80;
+      bool loopback = true;
+      for (int i = 0; i < 15; ++i) {
+        loopback = loopback && b[i] == 0;
+      }
+      loopback = loopback && b[15] == 1;
+      // Unspecified (::) and IPv4-mapped-IPv6 loopback (::ffff:127.0.0.0/8) are
+      // not routable; skip them so anyGlobal never holds a loopback-equivalent
+      // over a genuinely global address enumerated later on the same host.
+      bool unspecified = true;
+      for (int i = 0; i < 16; ++i) {
+        unspecified = unspecified && b[i] == 0;
+      }
+      bool v4Mapped = true;
+      for (int i = 0; i < 10; ++i) {
+        v4Mapped = v4Mapped && b[i] == 0;
+      }
+      const bool v4MappedLoopback =
+          v4Mapped && b[10] == 0xff && b[11] == 0xff && b[12] == 127;
+      if (linkLocal || loopback || unspecified || v4MappedLoopback ||
+          inet_ntop(AF_INET6, &sa->sin6_addr, buf, sizeof(buf)) == nullptr) {
+        continue;
+      }
+      addr = buf;
+    } else if (family == AF_INET) {
+      auto* sa = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+      if ((ntohl(sa->sin_addr.s_addr) >> 24) == 127 ||
+          inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf)) == nullptr) {
+        continue;
+      }
+      addr = buf;
+    } else {
+      continue;
+    }
+    const std::string name = ifa->ifa_name != nullptr ? ifa->ifa_name : "";
+    if (prefixMatch.empty() && !netdevPrefix.empty() &&
+        name.rfind(netdevPrefix, 0) == 0) {
+      prefixMatch = addr;
+    }
+    if (anyGlobal.empty()) {
+      anyGlobal = addr;
+    }
+  }
+  freeifaddrs(ifaddr);
+  std::string host = !prefixMatch.empty()
+      ? prefixMatch
+      : (!anyGlobal.empty() ? anyGlobal : std::string("127.0.0.1"));
+  UNIFLOW_LOG_INFO(
+      "TCP transport bind host resolved to {} (netdevPrefix={})",
+      host,
+      netdevPrefix);
+  return host;
+}
+
+// True if @p host is empty or loopback. Advertising a loopback bind address in
+// the connect handshake would break cross-host connections for all transports,
+// so TCP is not auto-registered in that case.
+bool isLoopbackHost(const std::string& host) {
+  return host.empty() || host == "::1" || host.rfind("127.", 0) == 0 ||
+      // IPv4-mapped-IPv6 loopback forms (dotted and pure-hex 127.0.0.0/8).
+      host.rfind("::ffff:127.", 0) == 0 || host.rfind("::ffff:7f", 0) == 0;
+}
+#endif
 
 } // namespace
 
@@ -83,7 +181,13 @@ Status MultiTransportFactory::supported(TransportType type) {
       return P2pTransportFactory::supported();
 #endif
     case TransportType::TCP:
-      return Err(ErrCode::NotImplemented, "tcp transport is not implemented");
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+      return TcpTransportFactory::supported();
+#else
+      return Err(
+          ErrCode::NotImplemented,
+          "tcp transport is not enabled in this platform build");
+#endif
     case TransportType::Mock:
       return Ok();
     case TransportType::NumTransportType:
@@ -144,6 +248,22 @@ MultiTransportFactory::MultiTransportFactory(
       deviceId_ >= -1 && deviceId_ < static_cast<int>(topo.gpuCount()),
       std::runtime_error);
 
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+  // An explicit TCP request (via preferred/intra/interNodeTransport) must carry
+  // a bind host AND enableTcp; otherwise TCP would not register (silently
+  // falling back to RDMA/NVLink) or would auto-resolve a non-front-end NIC.
+  // Fail fast at construction rather than mis-routing at transfer time.
+  const auto requestsTcp = [](const std::optional<TransportType>& t) {
+    return t.has_value() && *t == TransportType::TCP;
+  };
+  CHECK_THROW_EXCEPTION(
+      !((requestsTcp(options_.preferredTransport) ||
+         requestsTcp(options_.intraNodeTransport) ||
+         requestsTcp(options_.interNodeTransport)) &&
+        (options_.tcpBindHost.empty() || !options_.enableTcp)),
+      std::invalid_argument);
+#endif
+
   // Register the intra-node interconnect tier whenever the hardware is present
   // (NVLink on NVIDIA, P2P/XGMI on AMD). This tier and RDMA are both registered
   // when available; selectTransport chooses per transfer (intraNodeTransport
@@ -182,6 +302,32 @@ MultiTransportFactory::MultiTransportFactory(
         std::move(nics), eventBaseThread_->getEventBase(), config);
     factories_.emplace_back(std::move(rdma));
   }
+
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+  // TCP joins the transport pool automatically whenever a routable bind address
+  // is available (selectTransport still prefers NVLink/P2P -> RDMA and uses TCP
+  // only as the common fallback or when explicitly selected). Registration is
+  // skipped when only a loopback address resolves, since advertising loopback
+  // in the connect handshake would break cross-host connections for all
+  // transports. enableTcp force-registers even on loopback (e.g. same-host
+  // testing).
+  std::string tcpHost = options_.tcpBindHost;
+  if (tcpHost.empty()) {
+    tcpHost = resolveTcpBindHost(options_.netdevPrefix);
+  }
+  if (!isLoopbackHost(tcpHost) || options_.enableTcp) {
+    auto tcp = std::make_shared<TcpTransportFactory>(
+        deviceId,
+        eventBaseThread_->getEventBase(),
+        controller::TcpSocketConfig{},
+        tcpHost);
+    factories_.emplace_back(std::move(tcp));
+  } else {
+    UNIFLOW_LOG_INFO(
+        "TCP transport not registered: only a loopback bind address is "
+        "available (set tcpBindHost or enableTcp to force)");
+  }
+#endif
 }
 
 void MultiTransport::addTransport(std::unique_ptr<Transport> transport) {
@@ -309,40 +455,74 @@ Result<Transport*> MultiTransport::selectTransport(
     return true;
   };
 
-  // Intra-node (VRAM<->VRAM on this device): default to the interconnect tier
-  // (NVLink/P2P). intraNodeTransport flips that choice (e.g. to RDMA) -- both
-  // tiers are registered, so this is a per-transfer selection override, not a
-  // kill-switch.
-  if (localMemType == MemoryType::VRAM && remoteMemType == MemoryType::VRAM &&
-      localDeviceId == deviceId_) {
-    // Try the intra-node override first (only if set and distinct from the
-    // NVLink/P2P default), then the default. Two explicit checks -> no
-    // per-transfer heap allocation, and no redundant re-check when the override
-    // is itself NVLink/P2P.
-    if (intraNodeTransport_.has_value() &&
-        *intraNodeTransport_ != TransportType::NVLink &&
-        allHaveTransport(*intraNodeTransport_)) {
-      if (auto* t = findTransport(*intraNodeTransport_)) {
-        return t;
-      }
-    }
-    if (allHaveTransport(TransportType::NVLink)) {
-      if (auto* t = findTransport(TransportType::NVLink)) {
-        return t;
-      }
+#ifndef UNIFLOW_ENABLE_TCP_TRANSPORT
+  const auto tcpUnavailable = [&]() -> Result<Transport*> {
+    return Err(
+        ErrCode::NotImplemented,
+        "tcp transport is not enabled in this platform build");
+  };
+  if (preferredTransport_ == TransportType::TCP) {
+    return tcpUnavailable();
+  }
+#endif
+
+  // preferredTransport: global force -- if set and available on all requests,
+  // it wins regardless of topology (both intra- and inter-node).
+  if (preferredTransport_.has_value() &&
+      allHaveTransport(*preferredTransport_)) {
+    if (auto* t = findTransport(*preferredTransport_)) {
+      return t;
     }
   }
 
-  // Fallback: RDMA → TCP, must be available in ALL requests.
-  static constexpr TransportType kFallback[] = {
-      TransportType::RDMA, TransportType::TCP};
-  for (auto type : kFallback) {
-    if (allHaveTransport(type)) {
-      if (auto* t = findTransport(type)) {
-        return t;
-      }
+  // Intra-node = VRAM<->VRAM on this device (reachable over the on-host
+  // interconnect tier); otherwise inter-node. One transport per batch.
+  const bool intraNode = localMemType == MemoryType::VRAM &&
+      remoteMemType == MemoryType::VRAM && localDeviceId == deviceId_;
+
+  // Per-case ordered preference, evaluated allocation-free with no transport
+  // checked twice: the case override first (if set), then the case defaults
+  // skipping whichever tier equals the override.
+  //   intra-node: [intraNodeTransport?] NVLink -> RDMA -> TCP
+  //   inter-node: [interNodeTransport?] RDMA -> TCP
+  const std::optional<TransportType>& caseOverride =
+      intraNode ? intraNodeTransport_ : interNodeTransport_;
+  auto tryTier = [&](TransportType type) -> Transport* {
+    return allHaveTransport(type) ? findTransport(type) : nullptr;
+  };
+
+#ifndef UNIFLOW_ENABLE_TCP_TRANSPORT
+  if (caseOverride == TransportType::TCP) {
+    return tcpUnavailable();
+  }
+#endif
+
+  if (caseOverride.has_value()) {
+    if (auto* t = tryTier(*caseOverride)) {
+      return t;
     }
   }
+  if (intraNode && caseOverride != TransportType::NVLink) {
+    if (auto* t = tryTier(TransportType::NVLink)) {
+      return t;
+    }
+  }
+  if (caseOverride != TransportType::RDMA) {
+    if (auto* t = tryTier(TransportType::RDMA)) {
+      return t;
+    }
+  }
+#ifdef UNIFLOW_ENABLE_TCP_TRANSPORT
+  if (caseOverride != TransportType::TCP) {
+    if (auto* t = tryTier(TransportType::TCP)) {
+      return t;
+    }
+  }
+#else
+  if (allHaveTransport(TransportType::TCP)) {
+    return tcpUnavailable();
+  }
+#endif
 
   return Err(
       ErrCode::NotConnected,
@@ -498,7 +678,11 @@ Result<std::unique_ptr<MultiTransport>> MultiTransportFactory::createTransport(
   }
 
   auto mt = std::make_unique<MultiTransport>(
-      deviceId_, eventBaseThread_, options_.intraNodeTransport);
+      deviceId_,
+      eventBaseThread_,
+      options_.intraNodeTransport,
+      options_.preferredTransport,
+      options_.interNodeTransport);
   for (size_t i = 0, j = 0; i < entries.size() && j < factories_.size();) {
     if (entries[i].type < factories_[j]->transportType()) {
       ++i;
