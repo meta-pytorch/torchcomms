@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "meta/relay/sharded_relay_oneshot.h"
 #include "nccl.h"
 
 /*
@@ -68,6 +69,39 @@ void launchMultiReduceKernel(
     int divisor,
     cudaStream_t stream);
 
+/**
+ * One-shot 2-rank reduce-scatter: transfer AND reduction in a single launch.
+ *
+ * sendBuff holds 2*rc elements. Rank m must produce
+ *   out[i] = (sendBuff[m*rc + i] + peerSendBuff[m*rc + i]) / divisor
+ *
+ * Step 1  store my foreign block into the PEER's staging slot mySlot.
+ * Step 2  fence, then raise the peer's flag for this block.
+ * Step 3  spin until the peer raised MY flag for this block.
+ * Step 4  out = own block + what the peer staged.
+ *
+ * Blocks handshake pairwise, so no global barrier and no co-residency
+ * requirement: every block writes and flags before it waits.
+ *
+ * `inPlace` means out aliases sendBuff + mySlot*rc; the reduce reads that as
+ * its own contribution and writes it back, which is safe because it is the same
+ * element index.
+ */
+template <typename T>
+void launchOneShotReduceScatter2Kernel(
+    void* out,
+    const void* sendBuff,
+    const rcclx::relay::OneShotPeerTable& table,
+    int myRank,
+    int peerRank,
+    int mySlot,
+    int peerSlot,
+    size_t rc,
+    size_t slotBytes,
+    uint32_t epoch,
+    int divisor,
+    cudaStream_t stream);
+
 template <typename T>
 void launchSeededMultiReduceKernel(
     void* dst,
@@ -111,6 +145,19 @@ void launchSeededMultiReduceKernel(
       const void* contribs,                                                \
       int numContribs,                                                     \
       size_t count,                                                        \
+      int divisor,                                                         \
+      cudaStream_t stream);                                                \
+  extern template void launchOneShotReduceScatter2Kernel<T>(               \
+      void* out,                                                           \
+      const void* sendBuff,                                                \
+      const rcclx::relay::OneShotPeerTable& table,                         \
+      int myRank,                                                          \
+      int peerRank,                                                        \
+      int mySlot,                                                          \
+      int peerSlot,                                                        \
+      size_t rc,                                                           \
+      size_t slotBytes,                                                    \
+      uint32_t epoch,                                                      \
       int divisor,                                                         \
       cudaStream_t stream);
 
