@@ -18,6 +18,7 @@
 #include "comm.h"
 #include "debug.h"
 #include "meta/relay/sharded_relay_route.h"
+#include "param.h"
 
 namespace rcclx::relay {
 
@@ -272,6 +273,20 @@ bool createRegion(ncclComm_t comm, Region& reg) {
 }
 
 } // namespace
+
+// Opt-in eager creation. Off by default, which keeps the lazy first-use path
+// that every existing deployment measures.
+NCCL_PARAM(ShardedRelayModeEnable, "SHARDED_RELAY_MODE_ENABLE", 0);
+
+void oneShotInit(ncclComm_t comm) {
+  if (comm == nullptr || ncclParamShardedRelayModeEnable() != 1) {
+    return;
+  }
+  // Discard the launch: this is only here to force creation. The region itself
+  // is kept on the comm, so the next real caller finds it ready.
+  OneShotLaunch unused{};
+  (void)oneShotAcquire(comm, &unused);
+}
 
 bool oneShotReady(ncclComm_t comm) {
   if (comm == nullptr) {

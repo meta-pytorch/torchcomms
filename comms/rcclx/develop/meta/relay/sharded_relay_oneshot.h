@@ -129,6 +129,24 @@ struct OneShotLaunch {
 bool oneShotAcquire(ncclComm_t comm, OneShotLaunch* out);
 
 /**
+ * Build this communicator's region now, during ncclCommInitRank.
+ *
+ * Only acts when NCCL_SHARDED_RELAY_MODE_ENABLE=1. Creation is COLLECTIVE (see
+ * the file comment), so init is the one place it can be done for free: every
+ * rank is already there, and doing it here means no later call -- including the
+ * first call of a graph capture -- has to pay for it or refuse it.
+ *
+ * Like every NCCL parameter this assumes the variable is set identically on
+ * every rank of the communicator. Setting it on some ranks only would leave
+ * those ranks in a bootstrap all-gather the others never join.
+ *
+ * Failure is not an error: the region is optional and every caller already has
+ * a fallback, so a comm that cannot build one simply behaves as if the variable
+ * were unset.
+ */
+void oneShotInit(ncclComm_t comm);
+
+/**
  * True if this communicator's region already exists, without creating one.
  *
  * For callers under graph capture. Creation is not capturable -- it does a
