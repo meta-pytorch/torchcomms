@@ -2,6 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
+#include <folly/String.h>
+
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 
 class CtranIbRequestTest : public ::testing::Test {
@@ -81,12 +86,16 @@ TEST_F(CtranIbRequestTest, RemoteAccessKeyToString) {
   multiKey.nKeys = 2;
   EXPECT_EQ(multiKey.toString(), "111, 222");
 
-  // Test max keys (CTRAN_MAX_IB_DEVICES_PER_RANK = 2)
+  // Test max keys: a full CTRAN_MAX_IB_DEVICES_PER_RANK-wide key round-trips
+  // every entry, so the expectation is derived from the constant.
   CtranIbRemoteAccessKey maxKey;
-  maxKey.rkeys[0] = 0xFFFFFFFF;
-  maxKey.rkeys[1] = 0x12345678;
+  std::vector<std::string> expectedTokens;
+  for (int i = 0; i < CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
+    maxKey.rkeys[i] = 0xFFFFFFFF - i;
+    expectedTokens.push_back(std::to_string(maxKey.rkeys[i]));
+  }
   maxKey.nKeys = CTRAN_MAX_IB_DEVICES_PER_RANK;
-  EXPECT_EQ(maxKey.toString(), "4294967295, 305419896");
+  EXPECT_EQ(maxKey.toString(), folly::join(", ", expectedTokens));
 }
 
 TEST_F(CtranIbRequestTest, RemoteAccessKeyFromString) {
@@ -125,9 +134,14 @@ TEST_F(CtranIbRequestTest, RemoteAccessKeyFromString) {
 }
 
 TEST_F(CtranIbRequestTest, RemoteAccessKeyFromStringErrors) {
-  // Test too many keys (more than CTRAN_MAX_IB_DEVICES_PER_RANK = 2)
+  // Test too many keys (more than CTRAN_MAX_IB_DEVICES_PER_RANK)
+  std::vector<std::string> tooManyKeys;
+  for (int i = 0; i <= CTRAN_MAX_IB_DEVICES_PER_RANK; i++) {
+    tooManyKeys.push_back(std::to_string(111 + i));
+  }
   EXPECT_THROW(
-      CtranIbRemoteAccessKey::fromString("111,222,333"), std::invalid_argument);
+      CtranIbRemoteAccessKey::fromString(folly::join(",", tooManyKeys)),
+      std::invalid_argument);
 
   // Test invalid number format
   EXPECT_THROW(
