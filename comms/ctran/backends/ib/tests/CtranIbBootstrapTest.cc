@@ -6,6 +6,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <folly/SocketAddress.h>
 #include <folly/futures/Future.h>
@@ -681,7 +682,7 @@ class CtranIbAbortCtrlMsgTest
           &msg, sizeof(msg), kPeerRank, req, &peerServerAddr);
     }
 
-    XLOGF(INFO, "i(send|recv)CtrlMsg received result={}", result);
+    CTRAN_LOG(INFO, "i(send|recv)CtrlMsg received result={}", result);
 
     auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -694,7 +695,7 @@ class CtranIbAbortCtrlMsgTest
 
     EXPECT_LT(elapsed, 5s) << "Abort should fail quickly";
 
-    XLOGF(
+    CTRAN_LOG(
         INFO,
         "Control message {} {}",
         operation == CtrlMsgOperation::Send ? "send" : "recv",
@@ -1202,7 +1203,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
     // Set timeout to abort waitNotify
     abortCtrl->startTimeout(std::chrono::milliseconds(500));
 
-    XLOG(INFO) << "Rank 0 calling ctranIb->waitNotify(1, 1)";
+    CTRAN_LOG_STREAM(INFO) << "Rank 0 calling ctranIb->waitNotify(1, 1)";
 
     // Try to wait for a notify that will never come
     auto startWaitNotify = std::chrono::steady_clock::now();
@@ -1212,7 +1213,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
     // Should abort after timeout
     EXPECT_LT(elapsed, std::chrono::seconds(5));
     EXPECT_TRUE(abortCtrl->isAborted());
-    XLOGF(INFO, "Rank 0 waitNotify aborted by timeout as expected");
+    CTRAN_LOG(INFO, "Rank 0 waitNotify aborted by timeout as expected");
   };
 
   auto rank1Action = [this](
@@ -1227,7 +1228,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
     // Don't send notifications - let rank 0 timeout
     std::this_thread::sleep_for(std::chrono::seconds(2));
 
-    XLOGF(INFO, "Rank 1 completed without sending notify");
+    CTRAN_LOG(INFO, "Rank 1 completed without sending notify");
   };
 
   TwoRankTestHelper(rank0Action, rank1Action).run();
@@ -1235,24 +1236,26 @@ TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
 
 // Test multiple sequential control messages over the same connection
 TEST_P(CtranIbBootstrapParameterizedTest, MultipleSequentialCtrlMsg) {
-  auto rank0Action = [this](
-                         CtranIb* ctranIb,
-                         const folly::SocketAddress& peerAddr,
-                         AbortPtr abortCtrl) {
-    SocketServerAddr peerServerAddr = getSocketServerAddress(
-        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+  auto rank0Action =
+      [this](
+          CtranIb* ctranIb,
+          const folly::SocketAddress& peerAddr,
+          AbortPtr abortCtrl) {
+        SocketServerAddr peerServerAddr = getSocketServerAddress(
+            peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
-    // Send first control message
-    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+        // Send first control message
+        sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
-    // Send second control message over the same established connection
-    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+        // Send second control message over the same established connection
+        sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
-    // Send third control message
-    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+        // Send third control message
+        sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
-    XLOG(INFO) << "Rank 0 successfully sent 3 sequential control messages";
-  };
+        CTRAN_LOG_STREAM(INFO)
+            << "Rank 0 successfully sent 3 sequential control messages";
+      };
 
   auto rank1Action = [this](
                          CtranIb* ctranIb,
@@ -1265,7 +1268,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, MultipleSequentialCtrlMsg) {
     for (int i = 0; i < 3; ++i) {
       recvCtrlMsg(ctranIb, 0, &peerServerAddr);
 
-      XLOGF(INFO, "Rank 1 received control message {}", i + 1);
+      CTRAN_LOG(INFO, "Rank 1 received control message {}", i + 1);
     }
   };
 
@@ -1289,7 +1292,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BidirectionalCtrlMsg) {
     // Receive control message from rank 1
     recvCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
-    XLOG(INFO) << "Rank 0 completed bidirectional communication";
+    CTRAN_LOG_STREAM(INFO) << "Rank 0 completed bidirectional communication";
 
     rank0Complete.post();
     rank1Complete.wait();
@@ -1308,7 +1311,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BidirectionalCtrlMsg) {
     // Send control message to rank 0
     sendCtrlMsg(ctranIb, /*peerRank=*/0, &peerServerAddr);
 
-    XLOG(INFO) << "Rank 1 completed bidirectional communication";
+    CTRAN_LOG_STREAM(INFO) << "Rank 1 completed bidirectional communication";
 
     rank1Complete.post();
     rank0Complete.wait();
@@ -1369,8 +1372,8 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
       std::this_thread::sleep_for(10ms);
     }
 
-    XLOG(INFO) << "Rank 0 verified VC state and sent " << kNumNotifications
-               << " notifications";
+    CTRAN_LOG_STREAM(INFO) << "Rank 0 verified VC state and sent "
+                           << kNumNotifications << " notifications";
   };
 
   auto rank1Action = [this](
@@ -1433,8 +1436,8 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
     EXPECT_EQ(notificationsReceived, kNumNotifications)
         << "Should have received all notifications from rank 0";
 
-    XLOG(INFO) << "Rank 1 verified VC state and received "
-               << notificationsReceived << " notifications";
+    CTRAN_LOG_STREAM(INFO) << "Rank 1 verified VC state and received "
+                           << notificationsReceived << " notifications";
   };
 
   TwoRankTestHelper(rank0Action, rank1Action).run();

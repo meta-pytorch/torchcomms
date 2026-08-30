@@ -17,7 +17,6 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
@@ -26,6 +25,7 @@
 #include "comms/ctran/transport/ib/HostTransportImpl.h"
 #include "comms/ctran/transport/ib/HostZcTransport.h"
 #include "comms/ctran/transport/ib/tests/HostTestKernels.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -380,10 +380,10 @@ class HostTransportParamTest : public ctran::CtranDistTestFixture,
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
-    XLOG_IF(WARN, this->globalRank == 0)
+    CTRAN_LOG_STREAM_IF(WARN, this->globalRank == 0)
         << testName << "/" << (isZc() ? "Zc" : "Cb")
         << "/Channels=" << numChannels() << " numRanks " << this->numRanks
-        << ". Description: " << testDesc << std::endl;
+        << ". Description: " << testDesc;
   }
 
   void verifyData(

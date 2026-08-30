@@ -11,11 +11,11 @@
 
 #include <fmt/format.h>
 #include <folly/Expected.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ibverbx {
@@ -77,9 +77,9 @@ inline folly::Expected<RdmaResources, Error> initRdmaResources(
     return folly::makeUnexpected(Error(ENODEV, "Failed to get device list"));
   }
 
-  XLOGF(DBG, "Found {} RDMA devices", devices->size());
+  CTRAN_LOG(DBG, "Found {} RDMA devices", devices->size());
   for (size_t i = 0; i < devices->size(); ++i) {
-    XLOGF(DBG, "  Device {}: {}", i, devices->at(i).device()->name);
+    CTRAN_LOG(DBG, "  Device {}: {}", i, devices->at(i).device()->name);
   }
 
   if (deviceIndex < 0 || deviceIndex >= static_cast<int>(devices->size())) {
@@ -94,7 +94,7 @@ inline folly::Expected<RdmaResources, Error> initRdmaResources(
   RdmaResources resources;
   resources.device =
       std::make_unique<IbvDevice>(std::move(devices->at(deviceIndex)));
-  XLOGF(
+  CTRAN_LOG(
       DBG,
       "Using device {}: {}",
       deviceIndex,
@@ -173,12 +173,12 @@ class EndPointBase {
     while (completed < expectedCompletions) {
       int n = rawCq->context->ops.poll_cq(rawCq, 1, &wc);
       if (n < 0) {
-        XLOGF(ERR, "CQ poll error: returned {}", n);
+        CTRAN_LOG(ERR, "CQ poll error: returned {}", n);
         return false;
       }
       if (n == 1) {
         if (wc.status != IBV_WC_SUCCESS) {
-          XLOGF(
+          CTRAN_LOG(
               ERR,
               "WC error: status={}, opcode={}, vendor_err={}",
               wc.status,
@@ -192,7 +192,7 @@ class EndPointBase {
         auto elapsed = std::chrono::steady_clock::now() - start;
         if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
                 .count() > timeoutMs) {
-          XLOGF(
+          CTRAN_LOG(
               ERR,
               "CQ busy-spin timeout: got {}/{} completions",
               completed,
@@ -214,13 +214,13 @@ class EndPointBase {
     while (completed < expectedCompletions) {
       auto result = cq_->pollCq(expectedCompletions - completed);
       if (result.hasError()) {
-        XLOGF(ERR, "CQ poll error: {}", result.error().errStr);
+        CTRAN_LOG(ERR, "CQ poll error: {}", result.error().errStr);
         return false;
       }
 
       for (const auto& wc : *result) {
         if (wc.status != IBV_WC_SUCCESS) {
-          XLOGF(
+          CTRAN_LOG(
               ERR,
               "WC error: status={}, opcode={}, vendor_err={}",
               wc.status,
@@ -234,7 +234,7 @@ class EndPointBase {
       auto elapsed = std::chrono::steady_clock::now() - start;
       if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
               .count() > timeoutMs) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "CQ poll timeout: got {}/{} completions",
             completed,
@@ -388,19 +388,19 @@ class RdmaAvailabilityChecker {
 
     ncclCvarInit();
     if (!ibvInit()) {
-      XLOG(WARNING) << "Failed to initialize ibverbs";
+      CTRAN_LOG_STREAM(WARN) << "Failed to initialize ibverbs";
       return false;
     }
 
     auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
     if (!devices || devices->empty()) {
-      XLOG(WARNING) << "No RDMA devices found";
+      CTRAN_LOG_STREAM(WARN) << "No RDMA devices found";
       return false;
     }
 
     if (devices->size() < 2) {
-      XLOG(WARNING) << "Need at least 2 RDMA devices, found "
-                    << devices->size();
+      CTRAN_LOG_STREAM(WARN)
+          << "Need at least 2 RDMA devices, found " << devices->size();
       return false;
     }
 
@@ -415,14 +415,14 @@ class RdmaAvailabilityChecker {
     dcChecked_ = true;
 
     if (!checkRdmaAvailable()) {
-      XLOG(WARNING) << "DC check: RDMA not available";
+      CTRAN_LOG_STREAM(WARN) << "DC check: RDMA not available";
       return false;
     }
 
     ncclCvarInit();
     auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
     if (!devices || devices->empty()) {
-      XLOG(WARNING) << "DC check: No RDMA devices found";
+      CTRAN_LOG_STREAM(WARN) << "DC check: No RDMA devices found";
       return false;
     }
 
@@ -431,8 +431,8 @@ class RdmaAvailabilityChecker {
       DcEndPoint testEndpoint;
       auto initResult = testEndpoint.init(static_cast<int>(i));
       if (!initResult) {
-        XLOGF(
-            WARNING,
+        CTRAN_LOG(
+            WARN,
             "DC check: device {} ({}) init failed: {}",
             i,
             devices->at(i).device()->name,
@@ -442,8 +442,8 @@ class RdmaAvailabilityChecker {
 
       auto dcResult = testEndpoint.initDc();
       if (!dcResult) {
-        XLOGF(
-            WARNING,
+        CTRAN_LOG(
+            WARN,
             "DC check: device {} ({}) initDc failed: {}",
             i,
             devices->at(i).device()->name,
@@ -451,7 +451,7 @@ class RdmaAvailabilityChecker {
         continue;
       }
 
-      XLOGF(
+      CTRAN_LOG(
           DBG,
           "DC check: device {} ({}) supports DC",
           i,
@@ -460,8 +460,8 @@ class RdmaAvailabilityChecker {
     }
 
     if (dcCapableDevices.size() < 2) {
-      XLOGF(
-          WARNING,
+      CTRAN_LOG(
+          WARN,
           "Need at least 2 DC-capable devices, found {}",
           dcCapableDevices.size());
       return false;
@@ -469,7 +469,7 @@ class RdmaAvailabilityChecker {
 
     dcCapableDevices_ = std::move(dcCapableDevices);
     dcAvailable_ = true;
-    XLOGF(
+    CTRAN_LOG(
         DBG,
         "DC transport is available - using devices {} and {} for benchmarks",
         dcCapableDevices_[0],
@@ -714,12 +714,12 @@ inline bool pollCqBusySpin(
   while (completed < expected) {
     int n = rawCq->context->ops.poll_cq(rawCq, 1, &wc);
     if (n < 0) {
-      XLOGF(ERR, "CQ poll error: returned {}", n);
+      CTRAN_LOG(ERR, "CQ poll error: returned {}", n);
       return false;
     }
     if (n == 1) {
       if (wc.status != IBV_WC_SUCCESS) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "WC error: status={}, opcode={}, vendor_err={}",
             wc.status,
@@ -732,7 +732,7 @@ inline bool pollCqBusySpin(
       auto elapsed = std::chrono::steady_clock::now() - start;
       if (std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
               .count() > timeoutMs) {
-        XLOGF(
+        CTRAN_LOG(
             ERR,
             "CQ busy-spin timeout: got {}/{} completions",
             completed,
