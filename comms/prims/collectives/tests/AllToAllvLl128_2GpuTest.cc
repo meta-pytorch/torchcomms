@@ -69,8 +69,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_4KB) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
@@ -196,8 +195,7 @@ TEST_F(AllToAllvLl128_2GpuTestFixture, EqualSize_2GPU_64KB) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
