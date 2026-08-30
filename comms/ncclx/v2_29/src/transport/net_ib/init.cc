@@ -5,6 +5,8 @@
  * See LICENSE.txt for more license information
  *************************************************************************/
 
+#include <limits.h>
+
 #include "common.h"
 // [NCCLX-PerCommConfig] Per-comm IB config via side-channel
 #include "meta/NcclxConfig.h"
@@ -14,6 +16,7 @@
 NCCL_PARAM(IbPciRelaxedOrdering, "IB_PCI_RELAXED_ORDERING", 2);
 NCCL_PARAM(IbAdaptiveRouting, "IB_ADAPTIVE_ROUTING", -2);
 NCCL_PARAM(IbDataDirect,"IB_DATA_DIRECT",1);
+NCCL_PARAM(IbPortSpeed, "IB_PORT_SPEED", 0);
 
 static std::mutex ncclIbMutex;
 
@@ -226,6 +229,14 @@ ncclResult_t ncclIbInitDevices(ncclDebugLogger_t logFunction, ncclProfilerCallba
   static int shownIbHcaEnv = 0;
   if(wrap_ibv_symbols() != ncclSuccess) { return ncclInternalError; }
   if(wrap_mlx5dv_symbols() != ncclSuccess) { INFO(NCCL_NET, "NET/IB : Failed to open mlx5dv symbols. Advance features like CX-8 Direct-NIC will be disabled."); }
+  int64_t portSpeedOverride = ncclParamIbPortSpeed();
+  if (portSpeedOverride < 0 || portSpeedOverride > INT_MAX) {
+    INFO(NCCL_NET | NCCL_ENV, "Invalid NCCL_IB_PORT_SPEED %lld; expected 0 to %d Mbps, ignoring",
+         (long long)portSpeedOverride, INT_MAX);
+    portSpeedOverride = 0;
+  } else if (portSpeedOverride > 0) {
+    INFO(NCCL_NET | NCCL_ENV, "NCCL_IB_PORT_SPEED set to %lld Mbps", (long long)portSpeedOverride);
+  }
 
   if (ncclNIbDevs == -1) {
     std::lock_guard<std::mutex> lock(ncclIbMutex);
@@ -317,11 +328,15 @@ ncclResult_t ncclIbInitDevices(ncclDebugLogger_t logFunction, ncclProfilerCallba
               ncclIbDevs[ncclNIbDevs].portAttr = portAttr;
               ncclIbDevs[ncclNIbDevs].portNum = port_num;
               ncclIbDevs[ncclNIbDevs].link = portAttr.link_layer;
-              if (portAttr.active_speed_ex) {
-                // A non-zero active_speed_ex indicates XDR rate (0x100) or higher
-                ncclIbDevs[ncclNIbDevs].speed = ncclIbSpeed(portAttr.active_speed_ex) * ncclIbWidth(portAttr.active_width);
+              if (portSpeedOverride > 0) {
+                ncclIbDevs[ncclNIbDevs].speed = (int)portSpeedOverride;
               } else {
-                ncclIbDevs[ncclNIbDevs].speed = ncclIbSpeed(portAttr.active_speed) * ncclIbWidth(portAttr.active_width);
+                if (portAttr.active_speed_ex) {
+                  // A non-zero active_speed_ex indicates XDR rate (0x100) or higher
+                  ncclIbDevs[ncclNIbDevs].speed = ncclIbSpeed(portAttr.active_speed_ex) * ncclIbWidth(portAttr.active_width);
+                } else {
+                  ncclIbDevs[ncclNIbDevs].speed = ncclIbSpeed(portAttr.active_speed) * ncclIbWidth(portAttr.active_width);
+                }
               }
               ncclIbDevs[ncclNIbDevs].context = context;
               ncclIbDevs[ncclNIbDevs].pdRefs = 0;
