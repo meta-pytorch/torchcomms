@@ -370,8 +370,6 @@ void TorchCommXCCL::init(
       xccl_api_->commUserRank(xccl_comm_, &rank_),
       "XCCL commUserRank failed");
 
-  tryTorchCommLoggingInit("torchcomm");
-
   xccl_api_->setVersionInfo();
   backend_version_ = std::to_string(xccl_api_->getVersion());
 

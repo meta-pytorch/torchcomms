@@ -205,8 +205,6 @@ void TorchCommNCCL::initNcclResources() {
       nccl_api_->commUserRank(nccl_comm_, &rank_),
       "NCCL User Rank failed");
 
-  tryTorchCommLoggingInit("torchcomm");
-
   NCCL_CHECK(
       nccl_api_,
       nccl_comm_,
