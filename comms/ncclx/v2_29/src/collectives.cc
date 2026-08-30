@@ -13,6 +13,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/NcclxConfig.h"
+#include "meta/algoconf/ConfiguredCollective.h"
 #include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -255,13 +256,8 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
     sendbuff, recvbuff, recvcount, datatype, op, 0, comm, stream, /* Args */
     REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS };
 
-  // [META:PAT_AVG] Set up infoExt for per-comm PAT AVG control
-  // Only for types with enough exponent range (bf16, f32, f64, integers)
-  if (comm->usePatAvg_ && op == ncclAvg &&
-      ncclx::isPatAvgSupportedType(datatype)) {
-    size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
-    info.ext = ncclx::setupPatAvgInfoExt(comm, nBytes, datatype);
-  }
+  // [META:INFO_EXT] Per-comm algorithm/protocol override, PAT AVG included.
+  info.ext = ncclx::algoconf::maybeInfoExtOverride(comm, info);
 
   return ncclEnqueueCheck(&info);
 }
