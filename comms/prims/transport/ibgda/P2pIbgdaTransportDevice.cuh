@@ -2263,6 +2263,66 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * Post a registered-source send directly into an explicit registered remote
+   * destination while retaining the fixed-channel DATA_READY/SLOT_FREE
+   * protocol.
+   */
+  template <typename = void>
+  __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+  progress_registered_put_once(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
+      const IbgdaRemoteBuffer& dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes = 0,
+      const Timeout& timeout = Timeout()) {
+    return detail::progress_registered_put_once(
+        *this, group, src, dst, nbytes, max_signal_bytes, timeout);
+  }
+
+  /**
+   * Flush inbound RDMA writes to a locally registered GPU buffer before a
+   * different NIC is allowed to read that buffer for forwarding.
+   */
+  __device__ __forceinline__ bool flush_remote_writes(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& localBuffer,
+      const Timeout& timeout = Timeout()) {
+#if defined(__CUDA_ARCH__)
+    for (uint32_t nicId = 0; nicId < nicDevices_.size(); ++nicId) {
+      if (group.is_leader()) {
+        const IbgdaLane lane =
+            lane_from_ordinal(group.group_id, IbDirection::Send, nicId);
+        const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
+        const doca_gpu_dev_verbs_addr remoteAddr = {
+            .addr = reinterpret_cast<uint64_t>(localBuffer.ptr),
+            .key = localBuffer.rkey_per_device[nicId].value};
+        const doca_gpu_dev_verbs_addr sinkAddr = {
+            .addr = 0, .key = nic.sink_lkey.value};
+        doca_gpu_dev_verbs_ticket_t ticket = 0;
+        doca_gpu_dev_verbs_get_thread(
+            lane.companion_qp,
+            remoteAddr,
+            sinkAddr,
+            1,
+            doca_gpu_dev_verbs_addr{},
+            &ticket);
+        wait_local_on_qp(lane.companion_qp, ticket, timeout);
+      }
+      group.sync();
+      if (groupAborted(group, timeout)) {
+        return false;
+      }
+    }
+#else
+    (void)group;
+    (void)localBuffer;
+    (void)timeout;
+#endif
+    return true;
+  }
+
+  /**
    * Poll all outstanding send completion tickets for this channel. `Drained`
    * means registered source ranges posted before the call are reusable.
    */

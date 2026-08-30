@@ -82,6 +82,17 @@ progress_registered_send_once(
 
 template <typename Transport>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
+progress_registered_put_once(
+    Transport& transport,
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
+    const IbgdaRemoteBuffer& dst,
+    std::size_t nbytes,
+    std::size_t max_signal_bytes = 0,
+    const Timeout& timeout = Timeout());
+
+template <typename Transport>
+__device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
