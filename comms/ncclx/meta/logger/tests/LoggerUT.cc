@@ -21,7 +21,7 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/logger/tests/MockScubaTable.h"
 #include "comms/utils/trainer/TrainerContext.h"
 
@@ -37,7 +37,7 @@ static constexpr int kNranks = 8;
 static constexpr std::string_view kGlobalRank = "5";
 static constexpr std::string_view kWorldSize = "16";
 
-static const char* kcommDesc = "test_pg:20";
+static constexpr char kcommDesc[] = "test_pg:20";
 static const struct CommLogData kcommLogMetadata =
     CommLogData{kcommId, kcommHash, kcommDesc, kRank, kNranks};
 static constexpr std::string_view kScubaTableComm = "nccl_structured_logging";
@@ -69,8 +69,7 @@ class NcclLoggerTestEnv : public ::testing::Environment {
     setenv("NCCL_DEBUG_LOGGING_ASYNC", "0", 1);
 
     initEnv();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
+    meta::comms::logger::shutdownCommLoggerRuntime();
   }
 
   void TearDown() override {}
@@ -87,7 +86,7 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
   void TearDown() override {}
 
   void finishLogging() {
-    NcclLogger::close();
+    meta::comms::logger::shutdownCommLoggerRuntime();
   }
 
   void initLogging() {
@@ -95,6 +94,7 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
         make_mock([this]() {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
+    meta::comms::logger::initCommLoggerRuntime();
     ncclDebugLevel = -1;
     initNcclLogger();
   }
@@ -370,6 +370,7 @@ TEST_F(NcclLoggerTest, CommConcurrentLog) {
     });
   }
 
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::seconds(5));
   run_threads = false;
 
@@ -382,22 +383,6 @@ TEST_F(NcclLoggerTest, CommConcurrentLog) {
   finishLogging();
 }
 
-// Equivalent to recordStart/End with a logger event.
-// NcclLogger::recordStart(
-//     std::make_unique<CommEvent>(
-//         &comm->logMetaData,
-//         std::string(kncclCommFinalize) + " START",
-//         ""),
-//     getThreadUniqueId(kncclCommFinalize.data()));
-//
-// code to measusre
-//
-// NcclLogger::recordEnd(
-// std::make_unique<CommEvent>(
-//     &comm->logMetaData,
-//     std::string(kncclCommFinalize) + " COMPLETE",
-//     ""),
-// getThreadUniqueId(kncclCommFinalize.data()));
 TEST_F(NcclLoggerTest, NcclScubaEventRecordStartEnd) {
   folly::test::TemporaryDirectory tmpDir;
   auto scubaLogDirGuard =
@@ -412,6 +397,7 @@ TEST_F(NcclLoggerTest, NcclScubaEventRecordStartEnd) {
           &kcommLogMetadata, keventStage[0], keventStage[0]));
   event1.startAndRecord();
   // code to measure
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep)
   sleep(1);
   event1.stopAndRecord();
   finishLogging();
@@ -469,9 +455,11 @@ TEST_F(NcclLoggerTest, NcclScubaEventRecordAndLap) {
 
   NcclScubaEvent event3(&kcommLogMetadata);
   // code1 to measure
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep)
   sleep(1);
   event3.lapAndRecord("stage1");
   // code2 to measure
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep)
   sleep(1);
   event3.lapAndRecord("stage2");
 
