@@ -1167,6 +1167,12 @@ static commResult_t impl(
           op->allreduce.datatype == commFloat32 ||
           op->allreduce.datatype == commFloat ||
           op->allreduce.datatype == commFloat64 ||
+// Kept in sync with makeKernelMap()'s bf16 registration: accepting a
+// datatype here that has no kernel entry fails later in kernelFuncMap
+// lookup with a much less obvious error.
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+          op->allreduce.datatype == commBfloat16 ||
+#endif
           op->allreduce.datatype == commDouble) {
         // TODO: enable other data types
       } else {
