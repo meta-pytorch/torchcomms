@@ -1,8 +1,10 @@
 """Multi-GPU tests for UB-X a2av token bf16->bf16 dispatch kernel."""
 
 import os
+
 import pytest
-from .conftest import run_distributed_test, requires_multi_gpu
+
+from .conftest import requires_multi_gpu, run_distributed_test
 
 WORKER = os.path.join(os.path.dirname(__file__), "_workers", "_run_a2av_bf16.py")
 
@@ -24,23 +26,31 @@ class TestA2avTokenBf16Bf16:
         )
         assert result.stdout.count("PASS") >= 2
 
-    @pytest.mark.parametrize("ntokens,hidden,experts_per_rank", [
-        (8,   32, 1),
-        (16, 128, 2),
-        (32, 256, 2),
-    ])
+    @pytest.mark.parametrize(
+        "ntokens,hidden,experts_per_rank",
+        [
+            (8, 32, 1),
+            (16, 128, 2),
+            (32, 256, 2),
+        ],
+    )
     def test_random(self, ntokens, hidden, experts_per_rank):
         """Random bf16 tokens, each routed to one random expert.
 
         Verifies that every received token matches the source bf16 exactly.
         """
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=[
-                "--mode",            "random",
-                "--ntokens",         str(ntokens),
-                "--hidden",          str(hidden),
-                "--experts_per_rank", str(experts_per_rank),
+                "--mode",
+                "random",
+                "--ntokens",
+                str(ntokens),
+                "--hidden",
+                str(hidden),
+                "--experts_per_rank",
+                str(experts_per_rank),
             ],
         )
         assert result.returncode == 0, (
@@ -61,19 +71,27 @@ class TestA2avTokenBf16Bf16Topk:
     verification still applies.
     """
 
-    @pytest.mark.parametrize("ntokens,hidden,experts_per_rank", [
-        (8,   32, 1),
-        (16, 128, 2),
-        (32, 256, 2),
-    ])
+    @pytest.mark.parametrize(
+        "ntokens,hidden,experts_per_rank",
+        [
+            (8, 32, 1),
+            (16, 128, 2),
+            (32, 256, 2),
+        ],
+    )
     def test_random_topk(self, ntokens, hidden, experts_per_rank):
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=[
-                "--mode",            "random",
-                "--ntokens",         str(ntokens),
-                "--hidden",          str(hidden),
-                "--experts_per_rank", str(experts_per_rank),
+                "--mode",
+                "random",
+                "--ntokens",
+                str(ntokens),
+                "--hidden",
+                str(hidden),
+                "--experts_per_rank",
+                str(experts_per_rank),
                 "--topk",
             ],
         )

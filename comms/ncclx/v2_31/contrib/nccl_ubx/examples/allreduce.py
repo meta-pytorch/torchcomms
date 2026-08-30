@@ -15,6 +15,7 @@ Launch (2 or more GPUs on a single node):
 """
 
 import os
+
 import torch
 import torch.distributed as dist
 
@@ -28,7 +29,7 @@ def main():
     dist.init_process_group(backend="nccl", init_method="env://")
     device = torch.device(f"cuda:{local_rank}")
 
-    from ubx.ops import request_allocator, get_sym_tensor, allreduce
+    from ubx.ops import allreduce, get_sym_tensor, request_allocator
 
     shape = (4096,)
     dtype = torch.bfloat16
@@ -53,8 +54,10 @@ def main():
 
     torch.testing.assert_close(out.float(), ref, atol=0.0625, rtol=0.02)
     if rank == 0:
-        print(f"OK: allreduce on {world_size} GPUs matches NCCL reference "
-              f"(shape={tuple(shape)}, dtype={dtype})")
+        print(
+            f"OK: allreduce on {world_size} GPUs matches NCCL reference "
+            f"(shape={tuple(shape)}, dtype={dtype})"
+        )
 
     dist.destroy_process_group()
 

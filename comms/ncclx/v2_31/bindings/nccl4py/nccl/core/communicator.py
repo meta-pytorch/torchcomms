@@ -13,43 +13,35 @@ registration, custom reduction operators, and resource management.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 import numpy as _np
-
-from cuda.core import Device
-from cuda.core import system
-
+from cuda.core import Device, system
 from nccl.bindings import nccl as _nccl_bindings
-
-from nccl.core._binding_helpers import LowppSpec, Field
+from nccl.core._binding_helpers import Field, LowppSpec
 from nccl.core.buffer import NcclBuffer
-from nccl.core.constants import (
-    CTAPolicy,
-    CommShrinkFlag,
-    CommSuspendFlag,
-    WindowFlag,
-)
+from nccl.core.constants import CommShrinkFlag, CommSuspendFlag, CTAPolicy, WindowFlag
 from nccl.core.cuda import get_stream_ptr
-from nccl.core.team import NCCLTeam
 from nccl.core.resources import (
     CommResource,
-    RegisteredBufferHandle,
-    RegisteredWindowHandle,
     CustomRedOp,
     DevCommResource,
+    RegisteredBufferHandle,
+    RegisteredWindowHandle,
 )
+from nccl.core.team import NCCLTeam
 from nccl.core.typing import (
-    NcclDataType,
     NcclBufferSpec,
-    NcclRedOp,
-    NcclGinType,
-    NcclGinConnectionType,
-    NcclStreamSpec,
-    NcclScalarSpec,
-    NcclInvalid,
     NcclCommMemStat,
+    NcclDataType,
+    NcclGinConnectionType,
+    NcclGinType,
+    NcclInvalid,
+    NcclRedOp,
+    NcclScalarSpec,
+    NcclStreamSpec,
 )
 from nccl.core.utils import UniqueId
 
@@ -296,7 +288,9 @@ class NCCLDevCommRequirements(LowppSpec, lowpp_cls=_nccl_bindings.DevCommRequire
     multimem handle retrievable via
     :py:meth:`~nccl.core.DevCommResource.multimem_handle`."""
 
-    resources: tuple[LsaBarrierRequirement | GinBarrierRequirement | LLA2ARequirement, ...] = ()
+    resources: tuple[
+        LsaBarrierRequirement | GinBarrierRequirement | LLA2ARequirement, ...
+    ] = ()
     """Device resource requirements (LSA/GIN barriers, low-latency all-to-all).
     Each entry yields, in order, a handle in
     :py:attr:`~nccl.core.DevCommResource.resource_handles`. Entries are
@@ -323,7 +317,9 @@ def _materialize_team_requirements(
     """
     merged: dict[NCCLTeam, bool] = {}
     for team_req in teams:
-        merged[team_req.team] = merged.get(team_req.team, False) or bool(team_req.multimem)
+        merged[team_req.team] = merged.get(team_req.team, False) or bool(
+            team_req.multimem
+        )
 
     team_nodes: list[_nccl_bindings.TeamRequirements] = []
     multimem_handles: dict[NCCLTeam, _nccl_bindings.MultimemHandle] = {}
@@ -350,7 +346,9 @@ def _materialize_team_requirements(
 
 def _materialize_resource_requirements(
     comm_ptr: int,
-    resources: tuple[LsaBarrierRequirement | GinBarrierRequirement | LLA2ARequirement, ...],
+    resources: tuple[
+        LsaBarrierRequirement | GinBarrierRequirement | LLA2ARequirement, ...
+    ],
 ) -> tuple[
     tuple[_nccl_bindings.DevResourceRequirements, ...],
     tuple[
@@ -462,7 +460,9 @@ class Communicator:
         if self._comm == 0:
             raise NcclInvalid(f"Cannot {operation}: Communicator not initialized")
 
-    def _validate_buffer_device(self, buffer: NcclBuffer, buffer_name: str = "buffer") -> None:
+    def _validate_buffer_device(
+        self, buffer: NcclBuffer, buffer_name: str = "buffer"
+    ) -> None:
         """Validates that the buffer is on the same device as the communicator.
 
         Args:
@@ -630,7 +630,12 @@ class Communicator:
 
         commIds = bytearray().join(bytes(uid) for uid in unique_id)
         _nccl_bindings.comm_init_rank_scalable(
-            self._comm_box.address, int(nranks), int(rank), int(len(unique_id)), commIds, cfg_ptr
+            self._comm_box.address,
+            int(nranks),
+            int(rank),
+            int(len(unique_id)),
+            commIds,
+            cfg_ptr,
         )
 
         self._resources = []
@@ -829,7 +834,12 @@ class Communicator:
         cfg_ptr = 0 if config_lowpp is None else config_lowpp.ptr
         newcomm = type(self)()
         _nccl_bindings.comm_grow(
-            self._comm, int(nranks), uid_ptr, rank_val, newcomm._comm_box.address, cfg_ptr
+            self._comm,
+            int(nranks),
+            uid_ptr,
+            rank_val,
+            newcomm._comm_box.address,
+            cfg_ptr,
         )
 
         return newcomm
@@ -1204,7 +1214,11 @@ class Communicator:
 
     # --- Point-to-Point Communication ---
     def send(
-        self, sendbuf: NcclBufferSpec, peer: int, *, stream: NcclStreamSpec | None = None
+        self,
+        sendbuf: NcclBufferSpec,
+        peer: int,
+        *,
+        stream: NcclStreamSpec | None = None,
     ) -> None:
         """Sends a buffer to a peer rank.
 
@@ -1227,11 +1241,20 @@ class Communicator:
         self._validate_buffer_device(s, "sendbuf")
 
         _nccl_bindings.send(
-            s.ptr, s.count, int(s.dtype), int(peer), int(self._comm), get_stream_ptr(stream)
+            s.ptr,
+            s.count,
+            int(s.dtype),
+            int(peer),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def recv(
-        self, recvbuf: NcclBufferSpec, peer: int, *, stream: NcclStreamSpec | None = None
+        self,
+        recvbuf: NcclBufferSpec,
+        peer: int,
+        *,
+        stream: NcclStreamSpec | None = None,
     ) -> None:
         """Receives data into a buffer from a peer rank.
 
@@ -1254,7 +1277,12 @@ class Communicator:
         self._validate_buffer_device(r, "recvbuf")
 
         _nccl_bindings.recv(
-            r.ptr, r.count, int(r.dtype), int(peer), int(self._comm), get_stream_ptr(stream)
+            r.ptr,
+            r.count,
+            int(r.dtype),
+            int(peer),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def wait_signal(
@@ -1290,7 +1318,9 @@ class Communicator:
 
         lowpp_descs = [d._to_lowpp() for d in descs]
         buf = bytearray().join(bytes(d) for d in lowpp_descs)
-        _nccl_bindings.wait_signal(len(descs), buf, int(self._comm), get_stream_ptr(stream))
+        _nccl_bindings.wait_signal(
+            len(descs), buf, int(self._comm), get_stream_ptr(stream)
+        )
 
     def signal(
         self,
@@ -1472,7 +1502,13 @@ class Communicator:
         dtype = r.dtype
 
         _nccl_bindings.broadcast(
-            s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(root),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def reduce(
@@ -1546,7 +1582,13 @@ class Communicator:
 
         if root is None:
             _nccl_bindings.all_reduce(
-                s_ptr, r_ptr, count, int(dtype), int(op), int(self._comm), get_stream_ptr(stream)
+                s_ptr,
+                r_ptr,
+                count,
+                int(dtype),
+                int(op),
+                int(self._comm),
+                get_stream_ptr(stream),
             )
         else:
             _nccl_bindings.reduce(
@@ -1645,7 +1687,13 @@ class Communicator:
         dtype = s.dtype
 
         _nccl_bindings.reduce_scatter(
-            s_ptr, r_ptr, count, int(dtype), int(op), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(op),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     def alltoall(
@@ -1785,7 +1833,13 @@ class Communicator:
             )
         else:
             _nccl_bindings.gather(
-                s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+                s_ptr,
+                r_ptr,
+                count,
+                int(dtype),
+                int(root),
+                int(self._comm),
+                get_stream_ptr(stream),
             )
 
     def scatter(
@@ -1855,7 +1909,13 @@ class Communicator:
         dtype = r.dtype
 
         _nccl_bindings.scatter(
-            s_ptr, r_ptr, count, int(dtype), int(root), int(self._comm), get_stream_ptr(stream)
+            s_ptr,
+            r_ptr,
+            count,
+            int(dtype),
+            int(root),
+            int(self._comm),
+            get_stream_ptr(stream),
         )
 
     # --- Registration ---
@@ -2114,7 +2174,9 @@ class Communicator:
 
         reqs = requirements._to_lowpp()
         if requirements.teams:
-            team_nodes, multimem_handles = _materialize_team_requirements(requirements.teams)
+            team_nodes, multimem_handles = _materialize_team_requirements(
+                requirements.teams
+            )
             reqs.team_requirements_list = team_nodes[0].ptr
 
         if requirements.resources:

@@ -12,6 +12,7 @@ Usage:
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -33,7 +34,9 @@ def get_rank_info():
         world_size = int(os.environ["SLURM_NTASKS"])
         local_rank = int(os.environ.get("SLURM_LOCALID", rank))
     else:
-        raise RuntimeError("Cannot determine rank — not launched via srun/mpirun/torchrun")
+        raise RuntimeError(
+            "Cannot determine rank — not launched via srun/mpirun/torchrun"
+        )
     return rank, world_size, local_rank
 
 
@@ -43,8 +46,10 @@ def init_distributed():
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
         dist.init_process_group(
-            backend="nccl", init_method="env://",
-            world_size=world_size, rank=rank,
+            backend="nccl",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
         )
     return rank, world_size, local_rank
 
@@ -73,6 +78,7 @@ def run_residual_only_test(args):
     # UB-X fused path
     from ubx import SymmAllocator
     from ubx.fused import allreduce_fused
+
     group = dist.group.WORLD
     pool_bytes = num_tokens * hidden_size * 2 * 6
     allocator = SymmAllocator(pool_bytes, device, group)
@@ -83,7 +89,8 @@ def run_residual_only_test(args):
     residual_out = torch.empty(shape, dtype=dtype, device=device)
 
     result = allreduce_fused(
-        allocator, symm_tensor,
+        allocator,
+        symm_tensor,
         hidden_size=hidden_size,
         residual_in=residual_in,
         residual_out=residual_out,
@@ -92,14 +99,22 @@ def run_residual_only_test(args):
 
     atol, rtol = 0.125, 0.05
     try:
-        torch.testing.assert_close(result.detach().float(), ref_result, atol=atol, rtol=rtol)
+        torch.testing.assert_close(
+            result.detach().float(), ref_result, atol=atol, rtol=rtol
+        )
         print(f"PASS rank={rank} mode=residual_only hidden_size={hidden_size}")
     except AssertionError as e:
-        print(f"FAIL rank={rank} mode=residual_only hidden_size={hidden_size}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=residual_only hidden_size={hidden_size}: {e}",
+            flush=True,
+        )
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} mode=residual_only hidden_size={hidden_size}: "
-              f"{type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=residual_only hidden_size={hidden_size}: "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -135,6 +150,7 @@ def run_rmsnorm_test(args):
     # UB-X fused path
     from ubx import SymmAllocator
     from ubx.fused import allreduce_fused
+
     group = dist.group.WORLD
     pool_bytes = num_tokens * hidden_size * 2 * 6
     allocator = SymmAllocator(pool_bytes, device, group)
@@ -145,7 +161,8 @@ def run_rmsnorm_test(args):
     residual_out = torch.empty(shape, dtype=dtype, device=device)
 
     result = allreduce_fused(
-        allocator, symm_tensor,
+        allocator,
+        symm_tensor,
         hidden_size=hidden_size,
         residual_in=residual_in,
         residual_out=residual_out,
@@ -156,14 +173,21 @@ def run_rmsnorm_test(args):
 
     atol, rtol = 0.125, 0.05
     try:
-        torch.testing.assert_close(result.detach().float(), ref_normed, atol=atol, rtol=rtol)
+        torch.testing.assert_close(
+            result.detach().float(), ref_normed, atol=atol, rtol=rtol
+        )
         print(f"PASS rank={rank} mode=rmsnorm hidden_size={hidden_size}")
     except AssertionError as e:
-        print(f"FAIL rank={rank} mode=rmsnorm hidden_size={hidden_size}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=rmsnorm hidden_size={hidden_size}: {e}", flush=True
+        )
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} mode=rmsnorm hidden_size={hidden_size}: "
-              f"{type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=rmsnorm hidden_size={hidden_size}: "
+            f"{type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -190,6 +214,7 @@ def run_fused_vs_unfused_test(args):
     # Unfused path: plain allreduce then manual residual + RMSNorm
     from ubx import SymmAllocator
     from ubx.fused import allreduce_fused
+
     group = dist.group.WORLD
     pool_bytes = num_tokens * hidden_size * 2 * 12
 
@@ -212,7 +237,8 @@ def run_fused_vs_unfused_test(args):
     residual_out = torch.empty(shape, dtype=dtype, device=device)
 
     result_fused = allreduce_fused(
-        allocator2, symm2,
+        allocator2,
+        symm2,
         hidden_size=hidden_size,
         residual_in=residual_in,
         residual_out=residual_out,
@@ -223,13 +249,18 @@ def run_fused_vs_unfused_test(args):
 
     atol, rtol = 0.125, 0.05
     try:
-        torch.testing.assert_close(result_fused.detach().float(), manual_normed, atol=atol, rtol=rtol)
+        torch.testing.assert_close(
+            result_fused.detach().float(), manual_normed, atol=atol, rtol=rtol
+        )
         print(f"PASS rank={rank} mode=fused_vs_unfused")
     except AssertionError as e:
         print(f"FAIL rank={rank} mode=fused_vs_unfused: {e}", flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} mode=fused_vs_unfused: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} mode=fused_vs_unfused: {type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -237,8 +268,11 @@ def run_fused_vs_unfused_test(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UB-X fused ops test worker")
-    parser.add_argument("--mode", required=True,
-                        choices=["residual_only", "rmsnorm", "fused_vs_unfused"])
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=["residual_only", "rmsnorm", "fused_vs_unfused"],
+    )
     parser.add_argument("--hidden_size", type=int, default=1024)
     args = parser.parse_args()
 

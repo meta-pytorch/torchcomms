@@ -1,8 +1,10 @@
 """Multi-GPU tests for UB-X alltoall."""
 
 import os
+
 import pytest
-from .conftest import run_distributed_test, requires_multi_gpu
+
+from .conftest import requires_multi_gpu, run_distributed_test
 
 WORKER = os.path.join(os.path.dirname(__file__), "_workers", "_run_ubx_op.py")
 
@@ -14,9 +16,12 @@ class TestAlltoall:
 
     @pytest.mark.parametrize("size", [1024, 8192, 65536])
     def test_alltoall_basic(self, size):
-        result = run_distributed_test(WORKER, num_procs=2,
-                                      args=["--op", "alltoall", "--size", str(size)])
-        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        result = run_distributed_test(
+            WORKER, num_procs=2, args=["--op", "alltoall", "--size", str(size)]
+        )
+        assert result.returncode == 0, (
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "PASS" in result.stdout
 
 
@@ -27,9 +32,12 @@ class TestAlltoallLamport:
 
     @pytest.mark.parametrize("size", [1024, 8192, 65536])
     def test_alltoall_lamport_basic(self, size):
-        result = run_distributed_test(WORKER, num_procs=2,
-                                      args=["--op", "alltoall_lamport", "--size", str(size)])
-        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        result = run_distributed_test(
+            WORKER, num_procs=2, args=["--op", "alltoall_lamport", "--size", str(size)]
+        )
+        assert result.returncode == 0, (
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "PASS" in result.stdout
 
 
@@ -40,9 +48,12 @@ class TestAlltoallFullNode:
 
     @pytest.mark.parametrize("size", [1024, 8192, 65536])
     def test_alltoall_4gpu(self, size):
-        result = run_distributed_test(WORKER, num_procs=4,
-                                      args=["--op", "alltoall", "--size", str(size)])
-        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        result = run_distributed_test(
+            WORKER, num_procs=4, args=["--op", "alltoall", "--size", str(size)]
+        )
+        assert result.returncode == 0, (
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "PASS" in result.stdout
 
 
@@ -54,11 +65,14 @@ class TestAlltoallNoMulticast:
     @pytest.mark.parametrize("size", [1024, 8192, 65536, 262144, 1048576])
     def test_alltoall_no_mc(self, size):
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--op", "alltoall", "--size", str(size)],
             env_extra={"NCCL_NVLS_ENABLE": "0"},
         )
-        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        assert result.returncode == 0, (
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "PASS" in result.stdout
 
 
@@ -70,9 +84,12 @@ class TestAlltoallLamportNoMulticast:
     @pytest.mark.parametrize("size", [1024, 8192, 65536, 262144, 1048576])
     def test_alltoall_lamport_no_mc(self, size):
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--op", "alltoall_lamport", "--size", str(size)],
             env_extra={"NCCL_NVLS_ENABLE": "0"},
         )
-        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        assert result.returncode == 0, (
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
         assert "PASS" in result.stdout

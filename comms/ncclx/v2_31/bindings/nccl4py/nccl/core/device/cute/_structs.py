@@ -13,6 +13,7 @@ from cutlass.cutlass_dsl import ir
 
 # === MLIR type adapters ===
 
+
 class _LLVMPtrType:
     """Wraps ``!llvm.ptr`` for use in ``@cute.extern`` signatures and as a
     ``@cute.native_struct`` field annotation."""
@@ -60,6 +61,7 @@ def _array_ptr(n: int):
 
 
 # === Native structs ===
+
 
 @cute.native_struct
 class ncclTeam:

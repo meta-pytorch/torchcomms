@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import os
 import time
+
 import torch
 import torch.distributed as dist
 
@@ -12,8 +13,13 @@ from ..report import BenchResult, compute_bandwidth
 
 
 def bench_alltoall_nccl(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    cudagraph: int = 10000,
 ) -> BenchResult:
     """Benchmark NCCL all_to_all."""
     element_size = torch.tensor(0, dtype=dtype).element_size()
@@ -73,17 +79,27 @@ def bench_alltoall_nccl(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=total_count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=total_count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )
 
 
 def bench_alltoall_ubx(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int,
-    smlimit: int = 0, nthreads_per_block: int = 0,
-    group=None, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    smlimit: int = 0,
+    nthreads_per_block: int = 0,
+    group=None,
+    cudagraph: int = 10000,
     kernel: str = "auto",
 ) -> BenchResult:
     """Benchmark UB-X alltoall. kernel='lamport' uses barrier-free Lamport polling.
@@ -117,13 +133,16 @@ def bench_alltoall_ubx(
 
     if kernel == "lamport":
         op_fn = lambda t: allocator.alltoall_lamport(
-            t, smlimit=smlimit, nthreads=nthreads_per_block)
+            t, smlimit=smlimit, nthreads=nthreads_per_block
+        )
     elif kernel == "auto":
         op_fn = lambda t: allocator.alltoall_auto(
-            t, smlimit=smlimit, nthreads=nthreads_per_block)
+            t, smlimit=smlimit, nthreads=nthreads_per_block
+        )
     else:
         op_fn = lambda t: allocator.alltoall(
-            t, smlimit=smlimit, nthreads=nthreads_per_block)
+            t, smlimit=smlimit, nthreads=nthreads_per_block
+        )
 
     if cudagraph > 0:
         for _ in range(warmup):
@@ -177,7 +196,11 @@ def bench_alltoall_ubx(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

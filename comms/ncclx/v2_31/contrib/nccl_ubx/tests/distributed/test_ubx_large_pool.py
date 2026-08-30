@@ -18,7 +18,7 @@ import os
 
 import pytest
 
-from .conftest import run_distributed_test, requires_multi_gpu
+from .conftest import requires_multi_gpu, run_distributed_test
 
 WORKER = os.path.join(os.path.dirname(__file__), "_workers", "_run_large_pool.py")
 
@@ -28,11 +28,13 @@ WORKER = os.path.join(os.path.dirname(__file__), "_workers", "_run_large_pool.py
 class TestLauncherInt64Fix:
     """Each op exercises a different launcher that was broken pre-95d5a6c."""
 
-    @pytest.mark.parametrize("op", ["alltoall", "alltoall_lamport",
-                                    "allgather_uc", "allreduce_uc"])
+    @pytest.mark.parametrize(
+        "op", ["alltoall", "alltoall_lamport", "allgather_uc", "allreduce_uc"]
+    )
     def test_op_default_pool(self, op):
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--op", op, "--elems", "8192"],
             timeout=180,
         )
@@ -51,7 +53,8 @@ class TestAllLaunchersOneShot:
 
     def test_all_ops_default_pool(self):
         result = run_distributed_test(
-            WORKER, num_procs=4,
+            WORKER,
+            num_procs=4,
             args=["--op", "all", "--elems", "8192"],
             timeout=240,
         )
@@ -60,9 +63,7 @@ class TestAllLaunchersOneShot:
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         # Expect PASS for each op per rank.
-        assert result.stdout.count("PASS") >= 16, (
-            f"stdout: {result.stdout}"
-        )
+        assert result.stdout.count("PASS") >= 16, f"stdout: {result.stdout}"
 
 
 @requires_multi_gpu(2)
@@ -73,11 +74,13 @@ class TestLargePoolInt64:
     INT_MAX / sizeof(uint4), so the kernel signature's int64_t precision
     is exercised end-to-end. Requires GPUs with ≥40 GiB free."""
 
-    @pytest.mark.parametrize("op", ["alltoall", "alltoall_lamport",
-                                    "allgather_uc", "allreduce_uc"])
+    @pytest.mark.parametrize(
+        "op", ["alltoall", "alltoall_lamport", "allgather_uc", "allreduce_uc"]
+    )
     def test_op_large_pool(self, op):
         result = run_distributed_test(
-            WORKER, num_procs=2,
+            WORKER,
+            num_procs=2,
             args=["--op", op, "--elems", "65536", "--large-pool"],
             timeout=300,
         )

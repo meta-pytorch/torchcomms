@@ -4,9 +4,10 @@ These tests use a mock allocator that provides the minimal interface
 SymmTensor needs, without requiring actual symmetric memory or distributed init.
 """
 
+import weakref
+
 import pytest
 import torch
-import weakref
 
 
 class MockAllocator:
@@ -39,29 +40,40 @@ class TestSymmTensorCreation:
 
     def test_create_basic_shapes(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
         for shape in [(1,), (8, 8), (4, 16, 32)]:
-            t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size(shape),
-                                    torch.bfloat16, allocator)
+            t = SymmTensor.__new__(
+                SymmTensor,
+                mock_pool,
+                1024,
+                torch.Size(shape),
+                torch.bfloat16,
+                allocator,
+            )
             assert t.shape == torch.Size(shape)
             assert t.dtype == torch.bfloat16
 
     def test_dtype_support(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
         for dtype in [torch.bfloat16, torch.float32, torch.float16]:
-            t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([64]),
-                                    dtype, allocator)
+            t = SymmTensor.__new__(
+                SymmTensor, mock_pool, 1024, torch.Size([64]), dtype, allocator
+            )
             assert t.dtype == dtype
 
     def test_data_ptr_in_pool(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 2048, torch.Size([32]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 2048, torch.Size([32]), torch.bfloat16, allocator
+        )
         ptr = t.data_ptr()
         pool_start = mock_pool.data_ptr()
         pool_end = pool_start + mock_pool.numel()
@@ -69,19 +81,23 @@ class TestSymmTensorCreation:
 
     def test_fill_and_read(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 4096, torch.Size([16]),
-                                torch.float32, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 4096, torch.Size([16]), torch.float32, allocator
+        )
         t.fill_(42.0)
         assert torch.all(t == 42.0)
 
     def test_clone_is_regular(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 4096, torch.Size([16]),
-                                torch.float32, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 4096, torch.Size([16]), torch.float32, allocator
+        )
         t.fill_(7.0)
         cloned = t.clone()
         # clone() should return a regular tensor, not a SymmTensor
@@ -95,10 +111,12 @@ class TestSymmTensorView:
 
     def test_view_reshape(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([4, 8]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([4, 8]), torch.bfloat16, allocator
+        )
         v = t.view(32)
         assert isinstance(v, SymmTensor)
         assert v.shape == torch.Size([32])
@@ -107,29 +125,35 @@ class TestSymmTensorView:
 
     def test_view_with_minus_one(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([4, 8]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([4, 8]), torch.bfloat16, allocator
+        )
         v = t.view(-1, 4)
         assert v.shape == torch.Size([8, 4])
         assert isinstance(v, SymmTensor)
 
     def test_view_size_mismatch_raises(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([4, 8]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([4, 8]), torch.bfloat16, allocator
+        )
         with pytest.raises(RuntimeError, match="View size mismatch"):
             t.view(100)
 
     def test_view_multiple_minus_one_raises(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([4, 8]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([4, 8]), torch.bfloat16, allocator
+        )
         with pytest.raises(RuntimeError, match="Only one dimension"):
             t.view(-1, -1)
 
@@ -140,20 +164,24 @@ class TestSymmTensorLifecycle:
 
     def test_del_returns_memory(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([32]),
-                                torch.bfloat16, allocator)
+        t = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([32]), torch.bfloat16, allocator
+        )
         assert len(allocator._freed) == 0
         del t
         assert len(allocator._freed) == 1
 
     def test_refcount_tracking(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
-        t1 = SymmTensor.__new__(SymmTensor, mock_pool, 1024, torch.Size([32]),
-                                 torch.bfloat16, allocator)
+        t1 = SymmTensor.__new__(
+            SymmTensor, mock_pool, 1024, torch.Size([32]), torch.bfloat16, allocator
+        )
         # Create a view — new SymmTensor at same offset
         t2 = t1.view(8, 4)
         # Both should be tracked
@@ -172,19 +200,28 @@ class TestSymmTensorLifecycle:
 
     def test_pool_validation(self, mock_pool, cuda_device):
         from ubx.tensor import SymmTensor
+
         allocator = MockAllocator(mock_pool)
 
         # Trying to create a tensor that exceeds pool bounds should fail
         pool_size = mock_pool.numel()
         with pytest.raises(AssertionError):
-            SymmTensor.__new__(SymmTensor, mock_pool, pool_size - 10,
-                                torch.Size([1024]), torch.float32, allocator)
+            SymmTensor.__new__(
+                SymmTensor,
+                mock_pool,
+                pool_size - 10,
+                torch.Size([1024]),
+                torch.float32,
+                allocator,
+            )
 
     def test_wrong_pool_dtype_raises(self, cuda_device):
         from ubx.tensor import SymmTensor
+
         wrong_pool = torch.zeros(1024, dtype=torch.float32, device=cuda_device)
         allocator = MockAllocator(wrong_pool)
 
         with pytest.raises(AssertionError, match="Expected uint8"):
-            SymmTensor.__new__(SymmTensor, wrong_pool, 0, torch.Size([8]),
-                                torch.float32, allocator)
+            SymmTensor.__new__(
+                SymmTensor, wrong_pool, 0, torch.Size([8]), torch.float32, allocator
+            )

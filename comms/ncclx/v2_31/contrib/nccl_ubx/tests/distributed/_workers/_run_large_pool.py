@@ -41,14 +41,17 @@ def _init_distributed():
     torch.cuda.set_device(local_rank)
     if not dist.is_initialized():
         dist.init_process_group(
-            backend="nccl", init_method="env://",
-            world_size=world_size, rank=rank,
+            backend="nccl",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
         )
     return rank, world_size, local_rank
 
 
 def _alloc_pool(pool_bytes, device, group):
     from ubx import SymmAllocator
+
     return SymmAllocator(pool_bytes, device, group)
 
 
@@ -60,7 +63,9 @@ def _run_alltoall(allocator, rank, world_size, device, elems, dtype):
 
     chunk = size // world_size
     send_chunks = list(tensor_in.split(chunk))
-    recv_chunks = [torch.empty(chunk, dtype=dtype, device=device) for _ in range(world_size)]
+    recv_chunks = [
+        torch.empty(chunk, dtype=dtype, device=device) for _ in range(world_size)
+    ]
     dist.all_to_all(recv_chunks, send_chunks)
     ref = torch.cat(recv_chunks, dim=0)
 
@@ -80,7 +85,9 @@ def _run_alltoall_lamport(allocator, rank, world_size, device, elems, dtype):
 
     chunk = size // world_size
     send_chunks = list(tensor_in.split(chunk))
-    recv_chunks = [torch.empty(chunk, dtype=dtype, device=device) for _ in range(world_size)]
+    recv_chunks = [
+        torch.empty(chunk, dtype=dtype, device=device) for _ in range(world_size)
+    ]
     dist.all_to_all(recv_chunks, send_chunks)
     ref = torch.cat(recv_chunks, dim=0)
 
@@ -138,12 +145,23 @@ _OPS = {
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--op", required=True, choices=list(_OPS) + ["all"])
-    parser.add_argument("--elems", type=int, default=8192,
-                        help="Data elements per rank (must divide by world_size for a2a/a2a_lamport).")
-    parser.add_argument("--pool-bytes", type=int, default=0,
-                        help="Pool size in bytes. Default: 6 * tensor_bytes (small).")
-    parser.add_argument("--large-pool", action="store_true",
-                        help="Use a >32 GB pool to push lineoffset_out past INT_MAX (uint4 units).")
+    parser.add_argument(
+        "--elems",
+        type=int,
+        default=8192,
+        help="Data elements per rank (must divide by world_size for a2a/a2a_lamport).",
+    )
+    parser.add_argument(
+        "--pool-bytes",
+        type=int,
+        default=0,
+        help="Pool size in bytes. Default: 6 * tensor_bytes (small).",
+    )
+    parser.add_argument(
+        "--large-pool",
+        action="store_true",
+        help="Use a >32 GB pool to push lineoffset_out past INT_MAX (uint4 units).",
+    )
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     args = parser.parse_args()
 
@@ -158,21 +176,25 @@ if __name__ == "__main__":
         # 34 GB — 32 GB threshold + headroom. With uint4 (16B) lines this is
         # 2^31 + epsilon lines, so lineoffset_out at the high end of the
         # pool requires int64_t precision.
-        pool_bytes = 34 * (1024 ** 3)
+        pool_bytes = 34 * (1024**3)
     elif args.pool_bytes > 0:
         pool_bytes = args.pool_bytes
     else:
         pool_bytes = max(base_bytes * world_size * 6, 64 * 1024 * 1024)
 
     if rank == 0:
-        print(f"[r{rank}] pool_bytes={pool_bytes} ({pool_bytes/(1024**3):.2f} GiB) "
-              f"world={world_size} elems={args.elems} dtype={dtype}",
-              flush=True)
+        print(
+            f"[r{rank}] pool_bytes={pool_bytes} ({pool_bytes / (1024**3):.2f} GiB) "
+            f"world={world_size} elems={args.elems} dtype={dtype}",
+            flush=True,
+        )
 
     try:
         allocator = _alloc_pool(pool_bytes, device, dist.group.WORLD)
     except Exception as e:
-        print(f"FAIL rank={rank} SymmAllocator init: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} SymmAllocator init: {type(e).__name__}: {e}", flush=True
+        )
         sys.exit(2)
 
     ops = list(_OPS) if args.op == "all" else [args.op]

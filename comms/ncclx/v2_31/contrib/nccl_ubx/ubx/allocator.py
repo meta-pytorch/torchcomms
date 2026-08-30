@@ -11,35 +11,37 @@ multicast pointers via the NCCL device API on the registered window
 from __future__ import annotations
 
 import os
-import torch
 import weakref
-from typing import Dict, List, Tuple, Optional
 from threading import Lock
+from typing import Dict, List, Optional, Tuple
 
-from ._nccl_backend import NcclSymPool, get_or_create_nccl_comm
-from .tensor import SymmTensor
+import torch
 
 # Import C extension functions
 from ubx._C import (
-    ubx_allreduce_2shot_uc,
-    ubx_allreduce_2shot_mc,
-    ubx_allreduce_2shot_mc_lamport,
-    ubx_allgather_mc,
-    ubx_allgather_uc,
-    ubx_alltoall,
-    ubx_alltoall_lamport,
-    ubx_a2av_token_bf16_mxfp8,
-    ubx_a2av_token_bf16_mxfp8_persistent,
     ubx_a2av_token_bf16_bf16,
     ubx_a2av_token_bf16_bf16_topk,
+    ubx_a2av_token_bf16_mxfp8,
+    ubx_a2av_token_bf16_mxfp8_persistent,
+    ubx_allgather_mc,
+    ubx_allgather_uc,
+    ubx_allreduce_2shot_mc,
+    ubx_allreduce_2shot_mc_lamport,
+    ubx_allreduce_2shot_uc,
+    ubx_alltoall,
+    ubx_alltoall_lamport,
     ubx_combine_bf16_bf16,
-    ubx_combine_mxfp8_bf16,
     ubx_combine_bf16_bf16_lamport_push,
     ubx_combine_bf16_bf16_push,
+    ubx_combine_mxfp8_bf16,
     ubx_combine_wait_bf16,
     ubx_combine_wait_mxfp8,
     ubx_set_timeout,
 )
+
+from ._nccl_backend import get_or_create_nccl_comm, NcclSymPool
+from .tensor import SymmTensor
+
 # ubx_barrier is new — present only in containers built after 2026-05-19.
 # Tolerate older containers that don't have it.
 try:
@@ -72,9 +74,9 @@ try:
         ubx_combine_push3_phase3_sum,
     )
 except ImportError:
-    ubx_combine_push3_phase1_write = None   # type: ignore[assignment]
+    ubx_combine_push3_phase1_write = None  # type: ignore[assignment]
     ubx_combine_push3_phase2_signal = None  # type: ignore[assignment]
-    ubx_combine_push3_phase3_sum = None     # type: ignore[assignment]
+    ubx_combine_push3_phase3_sum = None  # type: ignore[assignment]
 
 # `auto` allreduce / alltoall picks Lamport at or below this total tensor size,
 # and the "simple" variant (MC for allreduce, UC for alltoall) above it.
@@ -112,8 +114,9 @@ class SymmAllocator:
         need = world_size * 8 + SymmAllocator._MAX_FLAG_SLOTS * 4
         return ((max(1024, need) + 4095) // 4096) * 4096
 
-    def __init__(self, size_bytes: int, device: torch.device,
-                 dist_group: torch.distributed.group):
+    def __init__(
+        self, size_bytes: int, device: torch.device, dist_group: torch.distributed.group
+    ):
         """Initialize the allocator with a preallocated NCCL-backed pool."""
         self.device = device
         self.world_size = torch.distributed.get_world_size(dist_group)
@@ -137,7 +140,10 @@ class SymmAllocator:
         # fresh one. ``_owns_comm`` controls whether close() destroys it —
         # destroying the PG's comm would break the parent PG.
         self._nccl_comm, self._owns_comm = get_or_create_nccl_comm(
-            dist_group, device, self.world_size, self.myrank,
+            dist_group,
+            device,
+            self.world_size,
+            self.myrank,
         )
 
         # ncclMemAlloc + register window + create dev comm.
@@ -175,17 +181,28 @@ class SymmAllocator:
             try:
                 _prewarm_elems = int(os.environ.get("UBX_PREWARM_NCCL_ELEMS", "262144"))
                 _src = torch.zeros(_prewarm_elems, dtype=torch.bfloat16, device=device)
-                _dst = torch.zeros(_prewarm_elems * self.world_size, dtype=torch.bfloat16, device=device)
+                _dst = torch.zeros(
+                    _prewarm_elems * self.world_size,
+                    dtype=torch.bfloat16,
+                    device=device,
+                )
                 torch.distributed.all_gather_into_tensor(_dst, _src, group=dist_group)
                 # also exercise alltoall_single (megatron's MoE token a2av)
-                _a2a_send = torch.zeros(self.world_size * 16, dtype=torch.bfloat16, device=device)
+                _a2a_send = torch.zeros(
+                    self.world_size * 16, dtype=torch.bfloat16, device=device
+                )
                 _a2a_recv = torch.empty_like(_a2a_send)
-                torch.distributed.all_to_all_single(_a2a_recv, _a2a_send, group=dist_group)
+                torch.distributed.all_to_all_single(
+                    _a2a_recv, _a2a_send, group=dist_group
+                )
                 torch.cuda.synchronize()
                 del _src, _dst, _a2a_send, _a2a_recv
             except Exception as _e:
                 if int(os.environ.get("RANK", "-1")) == 0:
-                    print(f"[ubx.allocator] prewarm NCCL skipped: {type(_e).__name__}: {_e}", flush=True)
+                    print(
+                        f"[ubx.allocator] prewarm NCCL skipped: {type(_e).__name__}: {_e}",
+                        flush=True,
+                    )
         torch.distributed.barrier(group=dist_group)
         # Track allocated segments: (offset, size, reference count)
         self.allocated: Dict[bool, List[Tuple[int, int, int]]] = {True: [], False: []}
@@ -213,10 +230,10 @@ class SymmAllocator:
         nongraph_lo = graph_hi
         nongraph_hi = self.pool_size
         self.freelist: Dict[bool, List[Tuple[int, int]]] = {
-            True:  [(graph_lo, graph_hi - graph_lo)]
-                    if graph_hi > graph_lo else [],
+            True: [(graph_lo, graph_hi - graph_lo)] if graph_hi > graph_lo else [],
             False: [(nongraph_lo, nongraph_hi - nongraph_lo)]
-                    if nongraph_hi > nongraph_lo else [],
+            if nongraph_hi > nongraph_lo
+            else [],
         }
         self.nextpoisoned: Dict[bool, Optional[SymmTensor]] = {True: None, False: None}
         # alltoall_lamport state: 4 persistent symmetric buffers per
@@ -238,14 +255,16 @@ class SymmAllocator:
         # max_tokens_per_rank-driven sizing changes between calls require
         # only routing-shape stability, not max_tpr stability.
         self.combine_push_triple_buf: Dict[bool, List[Optional[SymmTensor]]] = {
-            True: [None, None, None], False: [None, None, None],
+            True: [None, None, None],
+            False: [None, None, None],
         }
         self.combine_push_call_count: Dict[bool, int] = {True: 0, False: 0}
         # Double buffer for PUSH non-Lamport combine. Two dest bufs alternating
         # — call N writes/reads bufs[N%2], call N+1 uses the other so peer's
         # call N+1 Phase 1 push doesn't race with my call N Phase 2 read.
         self.combine_push_nl_double_buf: Dict[bool, List[Optional[SymmTensor]]] = {
-            True: [None, None], False: [None, None],
+            True: [None, None],
+            False: [None, None],
         }
         self.combine_push_nl_call_count: Dict[bool, int] = {True: 0, False: 0}
         self.residual = None
@@ -279,7 +298,9 @@ class SymmAllocator:
         ubx_set_timeout(int(_ubx_timeout_sec * 2_000_000_000))
         if self.debug:
             print(f"Rank {self.myrank} Graph pool size: {self.graph_pool_size}")
-            print(f"Rank {self.myrank} Non-graph pool size: {self.pool_size - self.graph_pool_size}")
+            print(
+                f"Rank {self.myrank} Non-graph pool size: {self.pool_size - self.graph_pool_size}"
+            )
             print(f"Rank {self.myrank} Reg0 size: {self.reg0_size}")
             print(f"Rank {self.myrank} Total pool size: {self.pool_size}")
         self.used_uc = False
@@ -326,7 +347,10 @@ class SymmAllocator:
         # extracted (reused) the PG's comm, destroy() would break the
         # parent PG. Without this, every SymmAllocator instance leaks an
         # ncclComm_t and its device-side state.
-        if getattr(self, "_owns_comm", False) and getattr(self, "_nccl_comm", None) is not None:
+        if (
+            getattr(self, "_owns_comm", False)
+            and getattr(self, "_nccl_comm", None) is not None
+        ):
             try:
                 self._nccl_comm.destroy()
             except Exception:
@@ -353,21 +377,33 @@ class SymmAllocator:
                     self.freelist[graph_mode].pop(i)
                     self.allocated[graph_mode].append((offset, nbytes, 0))
                     if size > nbytes:
-                        self.freelist[graph_mode].append((offset + nbytes, size - nbytes))
+                        self.freelist[graph_mode].append(
+                            (offset + nbytes, size - nbytes)
+                        )
                     if self.debug:
-                        print(f"Rank {self.myrank} Allocated {nbytes} bytes at {offset} "
-                              f"cudagraph capturing: {graph_mode}")
+                        print(
+                            f"Rank {self.myrank} Allocated {nbytes} bytes at {offset} "
+                            f"cudagraph capturing: {graph_mode}"
+                        )
                     import os as _os_at
-                    if _os_at.environ.get("UBX_ALLOC_TRACE", "0") == "1" and self.myrank == 0:
-                        print(f"[ALLOC-TRACE r{self.myrank}] ALLOC offset={offset} "
-                              f"size={nbytes} end={offset + nbytes} graph={int(graph_mode)}",
-                              flush=True)
+
+                    if (
+                        _os_at.environ.get("UBX_ALLOC_TRACE", "0") == "1"
+                        and self.myrank == 0
+                    ):
+                        print(
+                            f"[ALLOC-TRACE r{self.myrank}] ALLOC offset={offset} "
+                            f"size={nbytes} end={offset + nbytes} graph={int(graph_mode)}",
+                            flush=True,
+                        )
                     return self.pool_ptr + offset, self.internal_pool
             if self.debug:
-                print(f"Rank {self.myrank} No suitable free segment found for {nbytes} bytes, "
-                      f"allocated list: {self.allocated[graph_mode]}, "
-                      f"free list: {self.freelist[graph_mode]} "
-                      f"cudagraph capturing mode: {graph_mode}")
+                print(
+                    f"Rank {self.myrank} No suitable free segment found for {nbytes} bytes, "
+                    f"allocated list: {self.allocated[graph_mode]}, "
+                    f"free list: {self.freelist[graph_mode]} "
+                    f"cudagraph capturing mode: {graph_mode}"
+                )
             return None, None
 
     def allocated_change(self, ptr: int, change: int):
@@ -375,7 +411,9 @@ class SymmAllocator:
         offset = ptr - self.pool_ptr
         graph_mode = offset < self.graph_pool_size
         with self.lock:
-            for i, (alloc_offset, size, ref_count) in enumerate(self.allocated[graph_mode]):
+            for i, (alloc_offset, size, ref_count) in enumerate(
+                self.allocated[graph_mode]
+            ):
                 if alloc_offset == offset:
                     self.allocated[graph_mode].pop(i)
                     ref_count += change
@@ -384,18 +422,28 @@ class SymmAllocator:
                         self.freelist[graph_mode].sort(key=lambda x: x[0])
                         self._merge_free_segments(graph_mode)
                         if self.debug:
-                            print(f"Rank {self.myrank} Freed {size} bytes at {offset} "
-                                  f"cudagraph capturing: {graph_mode}")
+                            print(
+                                f"Rank {self.myrank} Freed {size} bytes at {offset} "
+                                f"cudagraph capturing: {graph_mode}"
+                            )
                         import os as _os_at
-                        if _os_at.environ.get("UBX_ALLOC_TRACE", "0") == "1" and self.myrank == 0:
-                            print(f"[ALLOC-TRACE r{self.myrank}] FREE  offset={offset} "
-                                  f"size={size} end={offset + size} graph={int(graph_mode)}",
-                                  flush=True)
+
+                        if (
+                            _os_at.environ.get("UBX_ALLOC_TRACE", "0") == "1"
+                            and self.myrank == 0
+                        ):
+                            print(
+                                f"[ALLOC-TRACE r{self.myrank}] FREE  offset={offset} "
+                                f"size={size} end={offset + size} graph={int(graph_mode)}",
+                                flush=True,
+                            )
                     else:
                         self.allocated[graph_mode].append((offset, size, ref_count))
                         if self.debug:
-                            print(f"Rank {self.myrank} Refcount changed to {ref_count} "
-                                  f"for {size} bytes at {offset} cudagraph capturing: {graph_mode}")
+                            print(
+                                f"Rank {self.myrank} Refcount changed to {ref_count} "
+                                f"for {size} bytes at {offset} cudagraph capturing: {graph_mode}"
+                            )
                     return
             # Ignore invalid pointers silently
             pass
@@ -437,7 +485,9 @@ class SymmAllocator:
                 data region aligned to UBX_BLOCK_ALIGN bytes.
         """
         if blocked is not None and blocked != "mxfp8":
-            raise ValueError(f"Unsupported blocked format: {blocked!r}. Only 'mxfp8' is supported.")
+            raise ValueError(
+                f"Unsupported blocked format: {blocked!r}. Only 'mxfp8' is supported."
+            )
         num_elements = torch.Size(shape).numel()
         element_size = torch.tensor(0, dtype=dtype).element_size()
         data_nbytes = element_size * num_elements
@@ -449,7 +499,9 @@ class SymmAllocator:
             data_nbytes_aligned = (
                 (data_nbytes + self.block_align - 1) // self.block_align
             ) * self.block_align
-            metadata_nbytes = (num_elements + self._MXFP8_BLOCK_SIZE - 1) // self._MXFP8_BLOCK_SIZE
+            metadata_nbytes = (
+                num_elements + self._MXFP8_BLOCK_SIZE - 1
+            ) // self._MXFP8_BLOCK_SIZE
             metadata_offset = data_nbytes_aligned
             total_nbytes = data_nbytes_aligned + metadata_nbytes
 
@@ -458,8 +510,13 @@ class SymmAllocator:
             return None
         offset = ptr - self.pool_ptr
         tensor = SymmTensor(
-            pool, offset, torch.Size(shape), dtype, self,
-            blocked_format=blocked, metadata_offset=metadata_offset,
+            pool,
+            offset,
+            torch.Size(shape),
+            dtype,
+            self,
+            blocked_format=blocked,
+            metadata_offset=metadata_offset,
         )
         return tensor
 
@@ -487,9 +544,13 @@ class SymmAllocator:
     ) -> torch.Tensor:
         """Performs in-place allreduce using unicast (UC) path."""
         self._check_not_blocked(tensor_in, "allreduce_uc")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
 
-        nbytes = tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        nbytes = (
+            tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        )
         chunk = tensor_in._allocator.current_chunk
         # Byte offset within the symmetric window for this rank's chunk.
         in_offset = (tensor_in.data_ptr() - self.pool_ptr) + nbytes * chunk
@@ -500,10 +561,15 @@ class SymmAllocator:
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            in_offset, in_offset,  # in-place: out_offset == in_offset
+            in_offset,
+            in_offset,  # in-place: out_offset == in_offset
             nbytes,
-            (residual_in.data_ptr() + nbytes * chunk * residual_in.element_size()) if residual_in is not None else 0,
-            (residual_out.data_ptr() + nbytes * chunk * residual_out.element_size()) if residual_out is not None else 0,
+            (residual_in.data_ptr() + nbytes * chunk * residual_in.element_size())
+            if residual_in is not None
+            else 0,
+            (residual_out.data_ptr() + nbytes * chunk * residual_out.element_size())
+            if residual_out is not None
+            else 0,
             fuse_layernorm,
             gamma.data_ptr() if gamma is not None else 0,
             eps if eps is not None else 0.0,
@@ -534,9 +600,13 @@ class SymmAllocator:
     ) -> torch.Tensor:
         """Performs in-place allreduce using multicast (MC) path."""
         self._check_not_blocked(tensor_in, "allreduce_mc")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
 
-        nbytes = tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        nbytes = (
+            tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        )
         chunk = tensor_in._allocator.current_chunk
         in_offset = (tensor_in.data_ptr() - self.pool_ptr) + nbytes * chunk
 
@@ -546,10 +616,15 @@ class SymmAllocator:
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            in_offset, in_offset,  # in-place: out_offset == in_offset
+            in_offset,
+            in_offset,  # in-place: out_offset == in_offset
             nbytes,
-            (residual_in.data_ptr() + nbytes * chunk * residual_in.element_size()) if residual_in is not None else 0,
-            (residual_out.data_ptr() + nbytes * chunk * residual_out.element_size()) if residual_out is not None else 0,
+            (residual_in.data_ptr() + nbytes * chunk * residual_in.element_size())
+            if residual_in is not None
+            else 0,
+            (residual_out.data_ptr() + nbytes * chunk * residual_out.element_size())
+            if residual_out is not None
+            else 0,
             fuse_layernorm,
             gamma.data_ptr() if gamma is not None else 0,
             eps if eps is not None else 0.0,
@@ -584,18 +659,35 @@ class SymmAllocator:
         Falls back to UC if multicast unavailable, or to MC if pool is exhausted.
         """
         self._check_not_blocked(tensor_in, "allreduce_lamport")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
         if self.mc0_ptr is None or self.mc0_ptr == 0 or tensor_in._allocator.used_uc:
             return self.allreduce_uc(
-                tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm, gamma, eps,
-                smlimit, cgasize
+                tensor_in,
+                hidden_size,
+                residual_in,
+                residual_out,
+                fuse_layernorm,
+                gamma,
+                eps,
+                smlimit,
+                cgasize,
             )
 
         graph_mode = torch.cuda.is_current_stream_capturing()
-        tensor_out = self.nextpoisoned[graph_mode] if tensor_in._allocator.current_chunk == 0 else self.lamport_out
-        poisonedout = True if tensor_in._allocator.current_chunk == 0 else self.lamport_poisoned
+        tensor_out = (
+            self.nextpoisoned[graph_mode]
+            if tensor_in._allocator.current_chunk == 0
+            else self.lamport_out
+        )
+        poisonedout = (
+            True if tensor_in._allocator.current_chunk == 0 else self.lamport_poisoned
+        )
 
-        if tensor_in._allocator.current_chunk == 0 and (tensor_out is None or tensor_out.shape != tensor_in.shape):
+        if tensor_in._allocator.current_chunk == 0 and (
+            tensor_out is None or tensor_out.shape != tensor_in.shape
+        ):
             if self.nextpoisoned[graph_mode] is not None:
                 del self.nextpoisoned[graph_mode]
                 self.nextpoisoned[graph_mode] = None
@@ -604,23 +696,35 @@ class SymmAllocator:
 
         if tensor_out is None or tensor_in._allocator.used_simple:
             return self.allreduce_mc(
-                tensor_in, hidden_size, residual_in, residual_out, fuse_layernorm, gamma, eps,
-                smlimit, cgasize
+                tensor_in,
+                hidden_size,
+                residual_in,
+                residual_out,
+                fuse_layernorm,
+                gamma,
+                eps,
+                smlimit,
+                cgasize,
             )
         tensor_in._allocator.lamport_out = tensor_out
         tensor_in._allocator.lamport_poisoned = poisonedout
         # allocate potential output for next allreduce (speculative) and poison it now
         if tensor_in._allocator.current_chunk == 0:
-            self.nextpoisoned[graph_mode] = self.create_tensor(tensor_in.shape, tensor_in.dtype)
+            self.nextpoisoned[graph_mode] = self.create_tensor(
+                tensor_in.shape, tensor_in.dtype
+            )
 
-        nbytes = tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        nbytes = (
+            tensor_in.numel() * tensor_in.element_size() // tensor_in._allocator.nchunks
+        )
         chunk = tensor_in._allocator.current_chunk
         in_offset = (tensor_in.data_ptr() - self.pool_ptr) + nbytes * chunk
         out_offset = (tensor_out.data_ptr() - self.pool_ptr) + nbytes * chunk
         ucptr_out_arg = tensor_out.data_ptr() + nbytes * chunk
         clear_ptr_arg = (
             self.nextpoisoned[graph_mode].data_ptr() + nbytes * chunk
-            if self.nextpoisoned[graph_mode] is not None else 0
+            if self.nextpoisoned[graph_mode] is not None
+            else 0
         )
 
         ubx_allreduce_2shot_mc_lamport(
@@ -630,12 +734,29 @@ class SymmAllocator:
             self.window_handle,
             self.pool_ptr,
             ucptr_out_arg,
-            in_offset, out_offset,
+            in_offset,
+            out_offset,
             clear_ptr_arg,
             nbytes,
             poisonedout,
-            (residual_in.data_ptr() + residual_in.numel() // tensor_in._allocator.nchunks * chunk * residual_in.element_size()) if residual_in is not None else 0,
-            (residual_out.data_ptr() + residual_out.numel() // tensor_in._allocator.nchunks * chunk * residual_out.element_size()) if residual_out is not None else 0,
+            (
+                residual_in.data_ptr()
+                + residual_in.numel()
+                // tensor_in._allocator.nchunks
+                * chunk
+                * residual_in.element_size()
+            )
+            if residual_in is not None
+            else 0,
+            (
+                residual_out.data_ptr()
+                + residual_out.numel()
+                // tensor_in._allocator.nchunks
+                * chunk
+                * residual_out.element_size()
+            )
+            if residual_out is not None
+            else 0,
             fuse_layernorm,
             gamma.data_ptr() if gamma is not None else 0,
             eps if eps is not None else 0.0,
@@ -677,7 +798,9 @@ class SymmAllocator:
         groups, large EP groups >36 ranks, etc.).
         """
         self._check_not_blocked(tensor_in, "allgather")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
 
         tensor_out = self.create_tensor(
             torch.Size([self.world_size * tensor_in.shape[0], *tensor_in.shape[1:]]),
@@ -695,8 +818,8 @@ class SymmAllocator:
             _n = SymmAllocator._ag_dbg_n
             if _n <= 6 and self.myrank == 0:
                 _in_first = tensor_in.flatten()[:4].tolist()
-                _in_last  = tensor_in.flatten()[-4:].tolist()
-                _in_sum   = int(tensor_in.int().sum().item())
+                _in_last = tensor_in.flatten()[-4:].tolist()
+                _in_sum = int(tensor_in.int().sum().item())
                 _out_first_before = tensor_out.flatten()[:4].tolist()
                 print(
                     f"[AG_DBG r0 call#{_n}] tensor_in: dtype={tensor_in.dtype} "
@@ -704,7 +827,8 @@ class SymmAllocator:
                     f"bytes_in={bytes_in} (16B-aligned: {bytes_in % 16 == 0}) "
                     f"data_ptr={tensor_in.data_ptr():#x} (16B-aligned: {tensor_in.data_ptr() % 16 == 0}) "
                     f"sum={_in_sum} first={_in_first} last={_in_last}",
-                    flush=True)
+                    flush=True,
+                )
                 print(
                     f"[AG_DBG r0 call#{_n}] tensor_out: shape={tuple(tensor_out.shape)} "
                     f"data_ptr={tensor_out.data_ptr():#x} "
@@ -712,20 +836,33 @@ class SymmAllocator:
                     f"(out_offset 16B-aligned: {out_offset % 16 == 0}) "
                     f"out_first_before_kernel={_out_first_before} "
                     f"mc0_ptr={self.mc0_ptr:#x} (will_use={'MC' if self.mc0_ptr else 'UC'})",
-                    flush=True)
+                    flush=True,
+                )
         if self.mc0_ptr is None or self.mc0_ptr == 0:
             ubx_allgather_uc(
-                self.world_size, self.myrank,
-                self.dev_comm_handle, self.window_handle, self.pool_ptr,
-                tensor_in.data_ptr(), out_offset, bytes_in,
-                self.default_sms, smlimit,
+                self.world_size,
+                self.myrank,
+                self.dev_comm_handle,
+                self.window_handle,
+                self.pool_ptr,
+                tensor_in.data_ptr(),
+                out_offset,
+                bytes_in,
+                self.default_sms,
+                smlimit,
             )
         else:
             ubx_allgather_mc(
-                self.world_size, self.myrank,
-                self.dev_comm_handle, self.window_handle, self.pool_ptr,
-                tensor_in.data_ptr(), out_offset, bytes_in,
-                self.default_sms, smlimit,
+                self.world_size,
+                self.myrank,
+                self.dev_comm_handle,
+                self.window_handle,
+                self.pool_ptr,
+                tensor_in.data_ptr(),
+                out_offset,
+                bytes_in,
+                self.default_sms,
+                smlimit,
             )
         if os.environ.get("UBX_AG_DBG", "0") == "1":
             torch.cuda.synchronize()
@@ -733,8 +870,13 @@ class SymmAllocator:
             if _n <= 6 and self.myrank == 0:
                 _out_first = tensor_out.flatten()[:4].tolist()
                 _out_last = tensor_out.flatten()[-4:].tolist()
-                _slice_start = tensor_out[0:tensor_in.shape[0]].int().sum().item()
-                _slice_mid = tensor_out[tensor_in.shape[0]:2*tensor_in.shape[0]].int().sum().item()
+                _slice_start = tensor_out[0 : tensor_in.shape[0]].int().sum().item()
+                _slice_mid = (
+                    tensor_out[tensor_in.shape[0] : 2 * tensor_in.shape[0]]
+                    .int()
+                    .sum()
+                    .item()
+                )
                 _out_sum = int(tensor_out.int().sum().item())
                 # max byte
                 _max_byte = int(tensor_out.max().item())
@@ -744,7 +886,8 @@ class SymmAllocator:
                     f"slice[0]={_slice_start} (expect={tensor_in.int().sum().item()}) "
                     f"slice[1]={_slice_mid} "
                     f"first={_out_first} last={_out_last}",
-                    flush=True)
+                    flush=True,
+                )
         return tensor_out
 
     def allgather_uc(
@@ -758,7 +901,9 @@ class SymmAllocator:
         path when multicast is also available.
         """
         self._check_not_blocked(tensor_in, "allgather_uc")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
 
         tensor_out = self.create_tensor(
             torch.Size([self.world_size * tensor_in.shape[0], *tensor_in.shape[1:]]),
@@ -766,11 +911,16 @@ class SymmAllocator:
         )
         out_offset = tensor_out.data_ptr() - self.pool_ptr
         ubx_allgather_uc(
-            self.world_size, self.myrank,
-            self.dev_comm_handle, self.window_handle, self.pool_ptr,
-            tensor_in.data_ptr(), out_offset,
+            self.world_size,
+            self.myrank,
+            self.dev_comm_handle,
+            self.window_handle,
+            self.pool_ptr,
+            tensor_in.data_ptr(),
+            out_offset,
             tensor_in.numel() * tensor_in.element_size(),
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
         return tensor_out
 
@@ -795,10 +945,13 @@ class SymmAllocator:
         Launches on the current PyTorch CUDA stream.
         """
         ubx_barrier(
-            self.world_size, self.myrank,
-            self._nccl_pool.dev_comm_handle, self._nccl_pool.window_handle,
+            self.world_size,
+            self.myrank,
+            self._nccl_pool.dev_comm_handle,
+            self._nccl_pool.window_handle,
             self.pool_ptr,
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
 
     def peer_atomic_test(self, test_id: int = 1) -> None:
@@ -821,8 +974,11 @@ class SymmAllocator:
                 "ubx_peer_atomic_test not available in this container — rebuild."
             )
         ubx_peer_atomic_test(
-            self.world_size, self.myrank, test_id,
-            self._nccl_pool.dev_comm_handle, self._nccl_pool.window_handle,
+            self.world_size,
+            self.myrank,
+            test_id,
+            self._nccl_pool.dev_comm_handle,
+            self._nccl_pool.window_handle,
             self.pool_ptr,
         )
 
@@ -840,11 +996,11 @@ class SymmAllocator:
             raise RuntimeError(
                 "ubx_peer_ptr_dump not available in this container — rebuild."
             )
-        dev_buf = torch.zeros(self.world_size, dtype=torch.int64,
-                              device=self.device)
+        dev_buf = torch.zeros(self.world_size, dtype=torch.int64, device=self.device)
         ubx_peer_ptr_dump(
             self.world_size,
-            self._nccl_pool.dev_comm_handle, self._nccl_pool.window_handle,
+            self._nccl_pool.dev_comm_handle,
+            self._nccl_pool.window_handle,
             dev_buf.data_ptr(),
         )
         torch.cuda.synchronize()
@@ -868,7 +1024,9 @@ class SymmAllocator:
         smlimit caps from the default — so callers can sweep both up and down here.
         """
         self._check_not_blocked(tensor_in, "alltoall")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
         tensor_out = self.create_tensor(tensor_in.shape, tensor_in.dtype)
         out_offset = tensor_out.data_ptr() - self.pool_ptr
 
@@ -927,17 +1085,19 @@ class SymmAllocator:
         # All kernel offsets and counts are in BYTES (int64 — pool can be 24 GiB,
         # so byte offsets exceed int32 range). The kernel does a uint4 bulk
         # loop + 2 B tail per source, so arbitrary byte counts are OK.
-        send_byte_counts_t = (input_split_sizes.to(torch.int64) * elem_size)
+        send_byte_counts_t = input_split_sizes.to(torch.int64) * elem_size
         send_byte_offsets_t = torch.zeros_like(send_byte_counts_t)
         send_byte_offsets_t[1:] = send_byte_counts_t[:-1].cumsum(0)
 
         # Gather all ranks' input splits to compute remote recv byte offsets
-        all_input_splits = [torch.zeros_like(input_split_sizes)
-                            for _ in range(self.world_size)]
+        all_input_splits = [
+            torch.zeros_like(input_split_sizes) for _ in range(self.world_size)
+        ]
         dist.all_gather(all_input_splits, input_split_sizes, group=self.dist_group)
 
-        remote_recv_byte_offsets = torch.zeros(self.world_size, dtype=torch.int64,
-                                                device=self.device)
+        remote_recv_byte_offsets = torch.zeros(
+            self.world_size, dtype=torch.int64, device=self.device
+        )
         for d in range(self.world_size):
             offset_bytes = 0
             for src in range(self.myrank):
@@ -950,15 +1110,21 @@ class SymmAllocator:
 
         # Gather output pool byte offsets from all ranks.
         my_out_pool_offset_b = tensor_out.data_ptr() - self.pool_ptr
-        all_out_byte_offsets = torch.zeros(self.world_size, dtype=torch.int64, device=self.device)
-        my_offset_t = torch.tensor([my_out_pool_offset_b], dtype=torch.int64, device=self.device)
-        dist.all_gather_into_tensor(all_out_byte_offsets, my_offset_t, group=self.dist_group)
+        all_out_byte_offsets = torch.zeros(
+            self.world_size, dtype=torch.int64, device=self.device
+        )
+        my_offset_t = torch.tensor(
+            [my_out_pool_offset_b], dtype=torch.int64, device=self.device
+        )
+        dist.all_gather_into_tensor(
+            all_out_byte_offsets, my_offset_t, group=self.dist_group
+        )
 
-        dest_byte_offsets = (all_out_byte_offsets + remote_recv_byte_offsets)
+        dest_byte_offsets = all_out_byte_offsets + remote_recv_byte_offsets
 
         return {
             "send_byte_offsets": send_byte_offsets_t,
-            "send_byte_counts":  send_byte_counts_t,
+            "send_byte_counts": send_byte_counts_t,
             "dest_byte_offsets": dest_byte_offsets,
             "tensor_out": tensor_out,
             "total_recv_elems": total_recv_elems,
@@ -990,7 +1156,7 @@ class SymmAllocator:
             self.default_sms,
             smlimit,
         )
-        return state["tensor_out"][:state["total_recv_elems"]]
+        return state["tensor_out"][: state["total_recv_elems"]]
 
     def alltoallv(
         self,
@@ -1007,7 +1173,9 @@ class SymmAllocator:
         self._check_not_blocked(tensor_in, "alltoallv")
         assert tensor_in.device == self.device, "Tensor device mismatch"
         assert tensor_in.is_contiguous(), "Input must be contiguous"
-        state = self.alltoallv_prepare(output_split_sizes, input_split_sizes, tensor_in.dtype)
+        state = self.alltoallv_prepare(
+            output_split_sizes, input_split_sizes, tensor_in.dtype
+        )
         return self.alltoallv_run(tensor_in, state, smlimit)
 
     def alltoall_lamport(
@@ -1033,7 +1201,9 @@ class SymmAllocator:
         Falls back to regular alltoall if pool exhausted.
         """
         self._check_not_blocked(tensor_in, "alltoall_lamport")
-        assert tensor_in.device == self.device, "Tensor device mismatch with allocator device"
+        assert tensor_in.device == self.device, (
+            "Tensor device mismatch with allocator device"
+        )
 
         graph_mode = torch.cuda.is_current_stream_capturing()
         key = (graph_mode, tuple(tensor_in.shape), tensor_in.dtype)
@@ -1074,11 +1244,14 @@ class SymmAllocator:
 
         tensor_out = bufs[out_idx]
         clear_buf = bufs[poison_idx]
-        nbytes_per_rank = tensor_in.numel() * tensor_in.element_size() // self.world_size
+        nbytes_per_rank = (
+            tensor_in.numel() * tensor_in.element_size() // self.world_size
+        )
         out_offset = tensor_out.data_ptr() - self.pool_ptr
 
         ubx_alltoall_lamport(
-            self.world_size, self.myrank,
+            self.world_size,
+            self.myrank,
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
@@ -1087,12 +1260,15 @@ class SymmAllocator:
             clear_buf.data_ptr(),
             nbytes_per_rank,
             True,  # poisoned: Python handles the upfront fills
-            self.default_sms, smlimit, nthreads,
+            self.default_sms,
+            smlimit,
+            nthreads,
             skip_barrier,
         )
 
         state["counter"] = counter + 1
         return tensor_out
+
     def a2av_token_bf16_mxfp8(
         self,
         tokens_bf16: torch.Tensor,
@@ -1151,31 +1327,32 @@ class SymmAllocator:
             Received fp8 data is at output.data_ptr(); E8M0 scale bytes are at
             output.metadata_ptr.
         """
-        assert output is not None, \
-            "output must be a pre-allocated mxfp8 SymmTensor"
-        assert isinstance(output, SymmTensor) and output.blocked_format == "mxfp8", \
+        assert output is not None, "output must be a pre-allocated mxfp8 SymmTensor"
+        assert isinstance(output, SymmTensor) and output.blocked_format == "mxfp8", (
             "output must be a SymmTensor with blocked_format='mxfp8'"
+        )
         assert tokens_bf16.dtype == torch.bfloat16, "tokens_bf16 must be bfloat16"
-        assert token_offsets.dtype == torch.int32,   "token_offsets must be int32"
-        assert tokens_bf16.device == self.device,    "tokens_bf16 device mismatch"
-        assert token_offsets.device == self.device,  "token_offsets device mismatch"
-        assert output.device == self.device,         "output device mismatch"
+        assert token_offsets.dtype == torch.int32, "token_offsets must be int32"
+        assert tokens_bf16.device == self.device, "tokens_bf16 device mismatch"
+        assert token_offsets.device == self.device, "token_offsets device mismatch"
+        assert output.device == self.device, "output device mismatch"
 
-        ntokens          = tokens_bf16.shape[0]
-        hidden           = tokens_bf16.numel() // ntokens
-        total_experts    = self.world_size * experts_per_rank
+        ntokens = tokens_bf16.shape[0]
+        hidden = tokens_bf16.numel() // ntokens
+        total_experts = self.world_size * experts_per_rank
         blocks_per_token = hidden // 32
 
         assert hidden % 32 == 0, f"hidden ({hidden}) must be a multiple of 32"
-        assert output.shape[1] == hidden, \
+        assert output.shape[1] == hidden, (
             f"output.shape[1]={output.shape[1]} != hidden={hidden}"
+        )
         assert token_offsets.shape == (ntokens, total_experts), (
             f"token_offsets must be [{ntokens}, {total_experts}], "
             f"got {list(token_offsets.shape)}"
         )
 
-        lineoffset_out    = (output.data_ptr()    - self.pool_ptr) // 16
-        lineoffset_scales = (output.metadata_ptr  - self.pool_ptr) // 16
+        lineoffset_out = (output.data_ptr() - self.pool_ptr) // 16
+        lineoffset_scales = (output.metadata_ptr - self.pool_ptr) // 16
 
         ubx_a2av_token_bf16_mxfp8(
             self.world_size,
@@ -1236,28 +1413,27 @@ class SymmAllocator:
         Returns:
             output (the same tensor passed in).
         """
-        assert output is not None, \
-            "output must be a pre-allocated bf16 SymmTensor"
-        assert isinstance(output, SymmTensor), \
-            "output must be a SymmTensor"
-        assert output.blocked_format is None, \
+        assert output is not None, "output must be a pre-allocated bf16 SymmTensor"
+        assert isinstance(output, SymmTensor), "output must be a SymmTensor"
+        assert output.blocked_format is None, (
             "output must NOT be a blocked SymmTensor (no scale region for bf16)"
-        assert output.dtype == torch.bfloat16, \
-            "output dtype must be bfloat16"
+        )
+        assert output.dtype == torch.bfloat16, "output dtype must be bfloat16"
         assert tokens_bf16.dtype == torch.bfloat16, "tokens_bf16 must be bfloat16"
-        assert token_offsets.dtype == torch.int32,  "token_offsets must be int32"
-        assert tokens_bf16.device == self.device,   "tokens_bf16 device mismatch"
+        assert token_offsets.dtype == torch.int32, "token_offsets must be int32"
+        assert tokens_bf16.device == self.device, "tokens_bf16 device mismatch"
         assert token_offsets.device == self.device, "token_offsets device mismatch"
-        assert output.device == self.device,        "output device mismatch"
+        assert output.device == self.device, "output device mismatch"
 
-        ntokens          = tokens_bf16.shape[0]
-        hidden           = tokens_bf16.numel() // ntokens
-        total_experts    = self.world_size * experts_per_rank
+        ntokens = tokens_bf16.shape[0]
+        hidden = tokens_bf16.numel() // ntokens
+        total_experts = self.world_size * experts_per_rank
         blocks_per_token = hidden // 32
 
         assert hidden % 32 == 0, f"hidden ({hidden}) must be a multiple of 32"
-        assert output.shape[1] == hidden, \
+        assert output.shape[1] == hidden, (
             f"output.shape[1]={output.shape[1]} != hidden={hidden}"
+        )
         assert token_offsets.shape == (ntokens, total_experts), (
             f"token_offsets must be [{ntokens}, {total_experts}], "
             f"got {list(token_offsets.shape)}"
@@ -1319,10 +1495,10 @@ class SymmAllocator:
         assert output.device == self.device
         assert topk_expert.shape == topk_slot.shape
 
-        ntokens          = tokens_bf16.shape[0]
-        hidden           = tokens_bf16.numel() // ntokens
+        ntokens = tokens_bf16.shape[0]
+        hidden = tokens_bf16.numel() // ntokens
         blocks_per_token = hidden // 32
-        topk_max         = topk_expert.shape[1]
+        topk_max = topk_expert.shape[1]
 
         assert hidden % 32 == 0
         assert output.shape[1] == hidden
@@ -1387,14 +1563,16 @@ class SymmAllocator:
         Returns:
             output (same tensor passed in).
         """
-        assert output is not None and isinstance(output, SymmTensor) \
-            and output.blocked_format == "mxfp8", \
-            "output must be a pre-allocated mxfp8 SymmTensor"
+        assert (
+            output is not None
+            and isinstance(output, SymmTensor)
+            and output.blocked_format == "mxfp8"
+        ), "output must be a pre-allocated mxfp8 SymmTensor"
         assert tokens_bf16.dtype == torch.bfloat16, "tokens_bf16 must be bfloat16"
-        assert token_offsets.dtype == torch.int32,   "token_offsets must be int32"
-        assert tokens_bf16.device == self.device,    "tokens_bf16 device mismatch"
-        assert token_offsets.device == self.device,  "token_offsets device mismatch"
-        assert output.device == self.device,         "output device mismatch"
+        assert token_offsets.dtype == torch.int32, "token_offsets must be int32"
+        assert tokens_bf16.device == self.device, "tokens_bf16 device mismatch"
+        assert token_offsets.device == self.device, "token_offsets device mismatch"
+        assert output.device == self.device, "output device mismatch"
         assert nexperts_per_chunk >= 1, "nexperts_per_chunk must be >= 1"
 
         nchunks = (experts_per_rank + nexperts_per_chunk - 1) // nexperts_per_chunk
@@ -1403,21 +1581,22 @@ class SymmAllocator:
             f"Raise nexperts_per_chunk or reduce experts_per_rank."
         )
 
-        ntokens          = tokens_bf16.shape[0]
-        hidden           = tokens_bf16.numel() // ntokens
-        total_experts    = self.world_size * experts_per_rank
+        ntokens = tokens_bf16.shape[0]
+        hidden = tokens_bf16.numel() // ntokens
+        total_experts = self.world_size * experts_per_rank
         blocks_per_token = hidden // 32
 
         assert hidden % 32 == 0, f"hidden ({hidden}) must be a multiple of 32"
-        assert output.shape[1] == hidden, \
+        assert output.shape[1] == hidden, (
             f"output.shape[1]={output.shape[1]} != hidden={hidden}"
+        )
         assert token_offsets.shape == (ntokens, total_experts), (
             f"token_offsets must be [{ntokens}, {total_experts}], "
             f"got {list(token_offsets.shape)}"
         )
 
-        lineoffset_out    = (output.data_ptr()    - self.pool_ptr) // 16
-        lineoffset_scales = (output.metadata_ptr  - self.pool_ptr) // 16
+        lineoffset_out = (output.data_ptr() - self.pool_ptr) // 16
+        lineoffset_scales = (output.metadata_ptr - self.pool_ptr) // 16
 
         ubx_a2av_token_bf16_mxfp8_persistent(
             self.world_size,
@@ -1446,6 +1625,7 @@ class SymmAllocator:
         before reading the output tensor.
         """
         from ubx._C import ubx_a2av_wait
+
         ubx_a2av_wait(
             self.world_size,
             self.dev_comm_handle,
@@ -1457,21 +1637,28 @@ class SymmAllocator:
     # MoE token-combine (reverse of a2av_token dispatch).
     # =========================================================================
 
-    def _check_combine_inputs(self, expert_outputs, token_offsets, gate_weights,
-                              experts_per_rank, max_tokens_per_rank):
+    def _check_combine_inputs(
+        self,
+        expert_outputs,
+        token_offsets,
+        gate_weights,
+        experts_per_rank,
+        max_tokens_per_rank,
+    ):
         """Shared pre-flight for combine_bf16_bf16 / combine_mxfp8_bf16."""
-        assert expert_outputs.dtype == torch.bfloat16, \
-            "expert_outputs must be bfloat16"
-        assert expert_outputs.is_cuda and expert_outputs.device == self.device, \
+        assert expert_outputs.dtype == torch.bfloat16, "expert_outputs must be bfloat16"
+        assert expert_outputs.is_cuda and expert_outputs.device == self.device, (
             "expert_outputs device mismatch"
+        )
         assert token_offsets.dtype == torch.int32, "token_offsets must be int32"
         assert token_offsets.device == self.device, "token_offsets device mismatch"
 
         assert expert_outputs.dim() == 2, "expert_outputs must be 2D [n_recv, hidden]"
         n_recv, hidden = expert_outputs.shape
         assert hidden % 32 == 0, f"hidden ({hidden}) must be a multiple of 32"
-        assert n_recv <= max_tokens_per_rank, \
+        assert n_recv <= max_tokens_per_rank, (
             f"n_recv ({n_recv}) exceeds max_tokens_per_rank ({max_tokens_per_rank})"
+        )
 
         local_ntokens, total_experts = token_offsets.shape
         assert total_experts == self.world_size * experts_per_rank, (
@@ -1480,12 +1667,11 @@ class SymmAllocator:
         )
 
         if gate_weights is not None:
-            assert gate_weights.dtype == torch.float32, \
-                "gate_weights must be float32"
-            assert gate_weights.shape == token_offsets.shape, \
+            assert gate_weights.dtype == torch.float32, "gate_weights must be float32"
+            assert gate_weights.shape == token_offsets.shape, (
                 "gate_weights shape must match token_offsets"
-            assert gate_weights.device == self.device, \
-                "gate_weights device mismatch"
+            )
+            assert gate_weights.device == self.device, "gate_weights device mismatch"
 
         return n_recv, hidden, local_ntokens, total_experts
 
@@ -1530,8 +1716,12 @@ class SymmAllocator:
             after combine_wait() returns.
         """
         n_recv, hidden, local_ntokens, _ = self._check_combine_inputs(
-            expert_outputs, token_offsets, gate_weights,
-            experts_per_rank, max_tokens_per_rank)
+            expert_outputs,
+            token_offsets,
+            gate_weights,
+            experts_per_rank,
+            max_tokens_per_rank,
+        )
         blocks_per_token = hidden // 32
 
         # The kernel's `lineoffset_temp` is a single scalar — it ASSUMES every
@@ -1541,39 +1731,49 @@ class SymmAllocator:
         # supply a pre-allocated symmetric temp via this argument. Otherwise
         # we allocate here and trust the caller to keep allocations symmetric.
         if temp is None:
-            temp = self.create_tensor(
-                (max_tokens_per_rank, hidden), torch.bfloat16)
+            temp = self.create_tensor((max_tokens_per_rank, hidden), torch.bfloat16)
             if temp is None:
                 raise RuntimeError(
                     f"combine_bf16_bf16: failed to allocate temp symm buffer "
-                    f"({max_tokens_per_rank} x {hidden} bf16)")
+                    f"({max_tokens_per_rank} x {hidden} bf16)"
+                )
         else:
-            assert isinstance(temp, SymmTensor), \
+            assert isinstance(temp, SymmTensor), (
                 "temp must be a SymmTensor from this allocator"
-            assert temp.shape == (max_tokens_per_rank, hidden), (
-                f"temp shape {tuple(temp.shape)} != "
-                f"({max_tokens_per_rank}, {hidden})"
             )
-            assert temp.dtype == torch.bfloat16, \
+            assert temp.shape == (max_tokens_per_rank, hidden), (
+                f"temp shape {tuple(temp.shape)} != ({max_tokens_per_rank}, {hidden})"
+            )
+            assert temp.dtype == torch.bfloat16, (
                 f"temp dtype {temp.dtype} != torch.bfloat16"
+            )
 
-        out = torch.empty((local_ntokens, hidden),
-                          dtype=torch.bfloat16, device=self.device)
+        out = torch.empty(
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
 
         lineoffset_temp = (temp.data_ptr() - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
 
         ubx_combine_bf16_bf16(
-            self.world_size, self.myrank,
-            local_ntokens, n_recv, blocks_per_token,
-            experts_per_rank, max_tokens_per_rank,
-            token_offsets.data_ptr(), gate_ptr,
+            self.world_size,
+            self.myrank,
+            local_ntokens,
+            n_recv,
+            blocks_per_token,
+            experts_per_rank,
+            max_tokens_per_rank,
+            token_offsets.data_ptr(),
+            gate_ptr,
             lineoffset_temp,
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            expert_outputs.data_ptr(), out.data_ptr(),
-            self.default_sms, smlimit, 1 if sync else 0,
+            expert_outputs.data_ptr(),
+            out.data_ptr(),
+            self.default_sms,
+            smlimit,
+            1 if sync else 0,
         )
         if not sync:
             # Stash everything Phase 2 needs. combine_wait() will replay it
@@ -1582,7 +1782,7 @@ class SymmAllocator:
             # need to read it during Phase 2.
             self._pending_combine = {
                 "wire": "bf16",
-                "temp": temp,                       # holds symm buffer alive
+                "temp": temp,  # holds symm buffer alive
                 "out": out,
                 "token_offsets": token_offsets,
                 "gate_weights": gate_weights,
@@ -1627,13 +1827,16 @@ class SymmAllocator:
                 "kernels — rebuild ub-x at HEAD that has UBX_FLAG_COMBINE2_BAR."
             )
         n_recv, hidden, local_ntokens, _ = self._check_combine_inputs(
-            expert_outputs, token_offsets, gate_weights,
-            experts_per_rank, max_tokens_per_rank)
+            expert_outputs,
+            token_offsets,
+            gate_weights,
+            experts_per_rank,
+            max_tokens_per_rank,
+        )
         blocks_per_token = hidden // 32
 
         if temp is None:
-            temp = self.create_tensor(
-                (max_tokens_per_rank, hidden), torch.bfloat16)
+            temp = self.create_tensor((max_tokens_per_rank, hidden), torch.bfloat16)
             if temp is None:
                 raise RuntimeError(
                     f"combine_v2_bf16_bf16: failed to allocate temp symm "
@@ -1645,7 +1848,8 @@ class SymmAllocator:
             assert temp.dtype == torch.bfloat16
 
         out = torch.empty(
-            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device)
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
         lineoffset_temp = (temp.data_ptr() - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
 
@@ -1656,19 +1860,29 @@ class SymmAllocator:
         reduce_id = self._combine_v2_call_counter
 
         ubx_combine_v2_phase1_bf16(
-            n_recv, blocks_per_token,
-            self.pool_ptr, lineoffset_temp,
+            n_recv,
+            blocks_per_token,
+            self.pool_ptr,
+            lineoffset_temp,
             expert_outputs.data_ptr(),
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
         ubx_combine_v2_phase2_bf16(
-            self.world_size, reduce_id, local_ntokens, blocks_per_token,
+            self.world_size,
+            reduce_id,
+            local_ntokens,
+            blocks_per_token,
             experts_per_rank,
-            token_offsets.data_ptr(), gate_ptr,
+            token_offsets.data_ptr(),
+            gate_ptr,
             lineoffset_temp,
-            self.dev_comm_handle, self.window_handle, self.pool_ptr,
+            self.dev_comm_handle,
+            self.window_handle,
+            self.pool_ptr,
             out.data_ptr(),
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
         return out
 
@@ -1690,36 +1904,51 @@ class SymmAllocator:
         for the sync vs async semantics.
         """
         n_recv, hidden, local_ntokens, _ = self._check_combine_inputs(
-            expert_outputs, token_offsets, gate_weights,
-            experts_per_rank, max_tokens_per_rank)
+            expert_outputs,
+            token_offsets,
+            gate_weights,
+            experts_per_rank,
+            max_tokens_per_rank,
+        )
         blocks_per_token = hidden // 32
 
         temp = self.create_tensor(
-            (max_tokens_per_rank, hidden),
-            torch.float8_e4m3fn, blocked='mxfp8')
+            (max_tokens_per_rank, hidden), torch.float8_e4m3fn, blocked="mxfp8"
+        )
         if temp is None:
             raise RuntimeError(
                 f"combine_mxfp8_bf16: failed to allocate temp mxfp8 symm buffer "
-                f"({max_tokens_per_rank} x {hidden})")
+                f"({max_tokens_per_rank} x {hidden})"
+            )
 
-        out = torch.empty((local_ntokens, hidden),
-                          dtype=torch.bfloat16, device=self.device)
+        out = torch.empty(
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
 
-        lineoffset_temp   = (temp.data_ptr()      - self.pool_ptr) // 16
-        lineoffset_scales = (temp.metadata_ptr    - self.pool_ptr) // 16
+        lineoffset_temp = (temp.data_ptr() - self.pool_ptr) // 16
+        lineoffset_scales = (temp.metadata_ptr - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
 
         ubx_combine_mxfp8_bf16(
-            self.world_size, self.myrank,
-            local_ntokens, n_recv, blocks_per_token,
-            experts_per_rank, max_tokens_per_rank,
-            token_offsets.data_ptr(), gate_ptr,
-            lineoffset_temp, lineoffset_scales,
+            self.world_size,
+            self.myrank,
+            local_ntokens,
+            n_recv,
+            blocks_per_token,
+            experts_per_rank,
+            max_tokens_per_rank,
+            token_offsets.data_ptr(),
+            gate_ptr,
+            lineoffset_temp,
+            lineoffset_scales,
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            expert_outputs.data_ptr(), out.data_ptr(),
-            self.default_sms, smlimit, 1 if sync else 0,
+            expert_outputs.data_ptr(),
+            out.data_ptr(),
+            self.default_sms,
+            smlimit,
+            1 if sync else 0,
         )
         if not sync:
             self._pending_combine = {
@@ -1798,8 +2027,10 @@ class SymmAllocator:
 
         if gate_weights is not None:
             assert gate_weights.dtype == torch.float32
-            assert gate_weights.shape == (local_ntokens,
-                                          self.world_size * experts_per_rank)
+            assert gate_weights.shape == (
+                local_ntokens,
+                self.world_size * experts_per_rank,
+            )
             assert gate_weights.device == self.device
 
         graph_mode = torch.cuda.is_current_stream_capturing()
@@ -1811,17 +2042,21 @@ class SymmAllocator:
         # Shape change → reset (different routing topology may yield a
         # different topk_max / local_ntokens combination).
         expected_shape = (local_ntokens, topk_max, hidden)
-        if (bufs[out_idx] is not None
-                and tuple(bufs[out_idx].shape) != expected_shape):
+        if bufs[out_idx] is not None and tuple(bufs[out_idx].shape) != expected_shape:
             for i in range(3):
                 if bufs[i] is not None:
                     del bufs[i]
                     bufs[i] = None
             self.combine_push_call_count[graph_mode] = 0
             return self.combine_bf16_bf16_lamport_push(
-                expert_outputs, inverse_map, topk_idx,
-                experts_per_rank, max_tokens_per_rank,
-                gate_weights, smlimit)
+                expert_outputs,
+                inverse_map,
+                topk_idx,
+                experts_per_rank,
+                max_tokens_per_rank,
+                gate_weights,
+                smlimit,
+            )
 
         for i in range(3):
             if bufs[i] is None:
@@ -1829,13 +2064,15 @@ class SymmAllocator:
                 if bufs[i] is None:
                     raise RuntimeError(
                         f"combine_bf16_bf16_lamport_push: failed to allocate "
-                        f"persistent dest buf {i} of shape {expected_shape}")
+                        f"persistent dest buf {i} of shape {expected_shape}"
+                    )
 
-        dest_now   = bufs[out_idx]
+        dest_now = bufs[out_idx]
         dest_clear = bufs[clear_idx]
 
-        out = torch.empty((local_ntokens, hidden),
-                          dtype=torch.bfloat16, device=self.device)
+        out = torch.empty(
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
 
         lineoffset_dest = (dest_now.data_ptr() - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
@@ -1845,17 +2082,28 @@ class SymmAllocator:
         skip_warmup_barrier = call_n >= 2
 
         ubx_combine_bf16_bf16_lamport_push(
-            self.world_size, self.myrank,
-            local_ntokens, n_recv, blocks_per_token,
-            experts_per_rank, max_tokens_per_rank, topk_max,
-            inverse_map.data_ptr(), topk_idx.data_ptr(), gate_ptr,
-            lineoffset_dest, clear_ptr,
-            poisoned, skip_warmup_barrier,
+            self.world_size,
+            self.myrank,
+            local_ntokens,
+            n_recv,
+            blocks_per_token,
+            experts_per_rank,
+            max_tokens_per_rank,
+            topk_max,
+            inverse_map.data_ptr(),
+            topk_idx.data_ptr(),
+            gate_ptr,
+            lineoffset_dest,
+            clear_ptr,
+            poisoned,
+            skip_warmup_barrier,
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            expert_outputs.data_ptr(), out.data_ptr(),
-            self.default_sms, smlimit,
+            expert_outputs.data_ptr(),
+            out.data_ptr(),
+            self.default_sms,
+            smlimit,
         )
 
         self.combine_push_call_count[graph_mode] = call_n + 1
@@ -1895,8 +2143,10 @@ class SymmAllocator:
 
         if gate_weights is not None:
             assert gate_weights.dtype == torch.float32
-            assert gate_weights.shape == (local_ntokens,
-                                          self.world_size * experts_per_rank)
+            assert gate_weights.shape == (
+                local_ntokens,
+                self.world_size * experts_per_rank,
+            )
 
         graph_mode = torch.cuda.is_current_stream_capturing()
         bufs = self.combine_push_nl_double_buf[graph_mode]
@@ -1904,17 +2154,21 @@ class SymmAllocator:
         out_idx = call_n % 2
 
         expected_shape = (local_ntokens, topk_max, hidden)
-        if (bufs[out_idx] is not None
-                and tuple(bufs[out_idx].shape) != expected_shape):
+        if bufs[out_idx] is not None and tuple(bufs[out_idx].shape) != expected_shape:
             for i in range(2):
                 if bufs[i] is not None:
                     del bufs[i]
                     bufs[i] = None
             self.combine_push_nl_call_count[graph_mode] = 0
             return self.combine_bf16_bf16_push(
-                expert_outputs, inverse_map, topk_idx,
-                experts_per_rank, max_tokens_per_rank,
-                gate_weights, smlimit)
+                expert_outputs,
+                inverse_map,
+                topk_idx,
+                experts_per_rank,
+                max_tokens_per_rank,
+                gate_weights,
+                smlimit,
+            )
 
         for i in range(2):
             if bufs[i] is None:
@@ -1922,25 +2176,36 @@ class SymmAllocator:
                 if bufs[i] is None:
                     raise RuntimeError(
                         f"combine_bf16_bf16_push: failed to allocate "
-                        f"persistent dest buf {i} of shape {expected_shape}")
+                        f"persistent dest buf {i} of shape {expected_shape}"
+                    )
 
         dest_now = bufs[out_idx]
-        out = torch.empty((local_ntokens, hidden),
-                          dtype=torch.bfloat16, device=self.device)
+        out = torch.empty(
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
         lineoffset_dest = (dest_now.data_ptr() - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
 
         ubx_combine_bf16_bf16_push(
-            self.world_size, self.myrank,
-            local_ntokens, n_recv, blocks_per_token,
-            experts_per_rank, max_tokens_per_rank, topk_max,
-            inverse_map.data_ptr(), topk_idx.data_ptr(), gate_ptr,
+            self.world_size,
+            self.myrank,
+            local_ntokens,
+            n_recv,
+            blocks_per_token,
+            experts_per_rank,
+            max_tokens_per_rank,
+            topk_max,
+            inverse_map.data_ptr(),
+            topk_idx.data_ptr(),
+            gate_ptr,
             lineoffset_dest,
             self.dev_comm_handle,
             self.window_handle,
             self.pool_ptr,
-            expert_outputs.data_ptr(), out.data_ptr(),
-            self.default_sms, smlimit,
+            expert_outputs.data_ptr(),
+            out.data_ptr(),
+            self.default_sms,
+            smlimit,
         )
 
         self.combine_push_nl_call_count[graph_mode] = call_n + 1
@@ -1972,9 +2237,11 @@ class SymmAllocator:
         reduce_id is host-tracked (self._push3_call_counter).
         Output `out` is a fresh torch.empty in PyTorch's caching allocator.
         """
-        if (ubx_combine_push3_phase1_write is None
-                or ubx_combine_push3_phase2_signal is None
-                or ubx_combine_push3_phase3_sum is None):
+        if (
+            ubx_combine_push3_phase1_write is None
+            or ubx_combine_push3_phase2_signal is None
+            or ubx_combine_push3_phase3_sum is None
+        ):
             raise RuntimeError(
                 "combine_push3_bf16_bf16: push3 kernels missing in this "
                 "container — rebuild ub-x."
@@ -2008,8 +2275,7 @@ class SymmAllocator:
             self._push3_call_counter = {True: 0, False: 0}
         expected_shape = (local_ntokens, topk_max, hidden)
         bufs = self._push3_dest_bufs[graph_mode]
-        if (bufs[0] is not None
-                and tuple(bufs[0].shape) != expected_shape):
+        if bufs[0] is not None and tuple(bufs[0].shape) != expected_shape:
             # Shape changed — drop both refs (lets SymmTensor.__del__ return
             # slots to the pool) and reset counter. DON'T `del bufs[i]` —
             # that removes from the list rather than nullifying the slot.
@@ -2035,8 +2301,9 @@ class SymmAllocator:
         call_n = self._push3_call_counter[graph_mode]
         dest_buf = bufs[call_n % 2]
 
-        out = torch.empty((local_ntokens, hidden),
-                          dtype=torch.bfloat16, device=self.device)
+        out = torch.empty(
+            (local_ntokens, hidden), dtype=torch.bfloat16, device=self.device
+        )
         lineoffset_dest = (dest_buf.data_ptr() - self.pool_ptr) // 16
         gate_ptr = gate_weights.data_ptr() if gate_weights is not None else 0
 
@@ -2044,6 +2311,7 @@ class SymmAllocator:
         reduce_id = call_n + 1
 
         import os as _os
+
         if _os.environ.get("UBX_PUSH3_DBG", "0") != "0" and reduce_id <= 3:
             print(
                 f"[PUSH3-DBG r{self.myrank}] call={reduce_id} "
@@ -2060,16 +2328,25 @@ class SymmAllocator:
         _push3_phase_sync = _os.environ.get("UBX_PUSH3_PHASE_SYNC", "0") == "1"
         # Kernel 1: push expert outputs to peers.
         ubx_combine_push3_phase1_write(
-            self.world_size, n_recv, blocks_per_token, topk_max,
-            inverse_map.data_ptr(), max_tokens_per_rank, lineoffset_dest,
-            self.dev_comm_handle, self.window_handle,
+            self.world_size,
+            n_recv,
+            blocks_per_token,
+            topk_max,
+            inverse_map.data_ptr(),
+            max_tokens_per_rank,
+            lineoffset_dest,
+            self.dev_comm_handle,
+            self.window_handle,
             expert_outputs.data_ptr(),
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
         if _push3_phase_sync:
             torch.cuda.synchronize()
-            print(f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase1",
-                  flush=True)
+            print(
+                f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase1",
+                flush=True,
+            )
         # Kernel 2: signal + spin (only kernel that can hang; has timeout).
         # reduce_id is derived from device-resident UBX_FLAG_PUSH3_ID by the
         # kernel itself — required so that captured graphs replay correctly
@@ -2077,24 +2354,36 @@ class SymmAllocator:
         # BAR flag keeps advancing on each replay → instant pass → race).
         ubx_combine_push3_phase2_signal(
             self.world_size,
-            self.dev_comm_handle, self.window_handle, self.pool_ptr,
+            self.dev_comm_handle,
+            self.window_handle,
+            self.pool_ptr,
         )
         if _push3_phase_sync:
             torch.cuda.synchronize()
-            print(f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase2",
-                  flush=True)
+            print(
+                f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase2",
+                flush=True,
+            )
         # Kernel 3: purely local sum + write output.
         ubx_combine_push3_phase3_sum(
-            local_ntokens, blocks_per_token, topk_max, total_experts,
-            topk_idx.data_ptr(), gate_ptr,
-            lineoffset_dest, self.pool_ptr,
+            local_ntokens,
+            blocks_per_token,
+            topk_max,
+            total_experts,
+            topk_idx.data_ptr(),
+            gate_ptr,
+            lineoffset_dest,
+            self.pool_ptr,
             out.data_ptr(),
-            self.default_sms, smlimit,
+            self.default_sms,
+            smlimit,
         )
         if _push3_phase_sync:
             torch.cuda.synchronize()
-            print(f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase3",
-                  flush=True)
+            print(
+                f"[PUSH3-PHASE r{self.myrank}] call={reduce_id} after phase3",
+                flush=True,
+            )
         # UBX_PUSH3_FORCE_FREE=1: drop dest_buf refs after every call to
         # test whether holding them across MoE layers conflicts with TE's
         # captured cudagraph that touches the NCCL device-API window.
@@ -2122,35 +2411,44 @@ class SymmAllocator:
         if state is None:
             raise RuntimeError(
                 "combine_wait: no pending async combine. Call "
-                "combine_bf16_bf16/combine_mxfp8_bf16 with sync=False first.")
-        gate_ptr = (state["gate_weights"].data_ptr()
-                    if state["gate_weights"] is not None else 0)
+                "combine_bf16_bf16/combine_mxfp8_bf16 with sync=False first."
+            )
+        gate_ptr = (
+            state["gate_weights"].data_ptr() if state["gate_weights"] is not None else 0
+        )
 
         if state["wire"] == "bf16":
             ubx_combine_wait_bf16(
                 self.world_size,
-                state["local_ntokens"], state["blocks_per_token"],
+                state["local_ntokens"],
+                state["blocks_per_token"],
                 state["experts_per_rank"],
-                state["token_offsets"].data_ptr(), gate_ptr,
+                state["token_offsets"].data_ptr(),
+                gate_ptr,
                 state["lineoffset_temp"],
                 self.dev_comm_handle,
                 self.window_handle,
                 self.pool_ptr,
                 state["out"].data_ptr(),
-                self.default_sms, state["smlimit"],
+                self.default_sms,
+                state["smlimit"],
             )
         elif state["wire"] == "mxfp8":
             ubx_combine_wait_mxfp8(
                 self.world_size,
-                state["local_ntokens"], state["blocks_per_token"],
+                state["local_ntokens"],
+                state["blocks_per_token"],
                 state["experts_per_rank"],
-                state["token_offsets"].data_ptr(), gate_ptr,
-                state["lineoffset_temp"], state["lineoffset_scales"],
+                state["token_offsets"].data_ptr(),
+                gate_ptr,
+                state["lineoffset_temp"],
+                state["lineoffset_scales"],
                 self.dev_comm_handle,
                 self.window_handle,
                 self.pool_ptr,
                 state["out"].data_ptr(),
-                self.default_sms, state["smlimit"],
+                self.default_sms,
+                state["smlimit"],
             )
         else:
             raise RuntimeError(f"combine_wait: unknown wire {state['wire']!r}")

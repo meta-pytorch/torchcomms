@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
 class BenchResult:
     """Result for a single (size, backend) benchmark point."""
+
     size_bytes: int
     count: int
     dtype: str
@@ -20,8 +21,9 @@ class BenchResult:
     errors: int = 0
 
 
-def compute_bandwidth(size_bytes: int, time_us: float, nranks: int,
-                      collective: str) -> tuple[float, float]:
+def compute_bandwidth(
+    size_bytes: int, time_us: float, nranks: int, collective: str
+) -> tuple[float, float]:
     """Compute algorithm and bus bandwidth matching nccl-tests formulas.
 
     Returns:
@@ -65,7 +67,9 @@ def format_table(
     """
     lines = []
     lines.append("#")
-    lines.append(f"# ubx_bench {collective}  ({nranks} GPUs, backend={','.join(backends)})")
+    lines.append(
+        f"# ubx_bench {collective}  ({nranks} GPUs, backend={','.join(backends)})"
+    )
     lines.append("#")
 
     # Header
@@ -94,13 +98,17 @@ def format_table(
         row_parts = []
         # Get size info from first backend's result
         r = results[first_backend][i]
-        row_parts.append(f"{r.size_bytes:>12d} {r.count:>12d}    {r.dtype:>4s}     {r.redop:>3s}")
+        row_parts.append(
+            f"{r.size_bytes:>12d} {r.count:>12d}    {r.dtype:>4s}     {r.redop:>3s}"
+        )
 
         total_errors = 0
         for backend in backends:
             if backend in results and i < len(results[backend]):
                 br = results[backend][i]
-                row_parts.append(f"  {br.time_us:>7.2f} {br.algbw_gbs:>6.2f} {br.busbw_gbs:>7.2f}")
+                row_parts.append(
+                    f"  {br.time_us:>7.2f} {br.algbw_gbs:>6.2f} {br.busbw_gbs:>7.2f}"
+                )
                 total_errors += br.errors
             else:
                 row_parts.append(f"  {'N/A':>7s} {'N/A':>6s} {'N/A':>7s}")

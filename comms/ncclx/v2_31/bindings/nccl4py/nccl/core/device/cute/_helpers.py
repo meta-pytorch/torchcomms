@@ -7,9 +7,8 @@ Device bitcode discovery lives in :mod:`_bindings`, next to the
 """
 
 import cutlass
-from cutlass.cutlass_dsl import ir
 from cutlass._mlir.dialects import llvm
-from cutlass.cutlass_dsl import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op, ir
 
 from ._structs import ncclCoopAny
 
@@ -36,6 +35,7 @@ def _alloca_struct(struct_cls, *, alignment=None, loc=None, ip=None) -> ir.Value
 
 
 # === Coercion helpers ===
+
 
 @dsl_user_op
 def _to_ptr(x, *, loc=None, ip=None):

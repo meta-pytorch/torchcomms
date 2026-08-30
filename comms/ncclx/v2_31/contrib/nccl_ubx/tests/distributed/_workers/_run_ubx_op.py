@@ -11,6 +11,7 @@ Usage:
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -43,7 +44,9 @@ def get_rank_info():
         world_size = int(os.environ["SLURM_NTASKS"])
         local_rank = int(os.environ.get("SLURM_LOCALID", rank))
     else:
-        raise RuntimeError("Cannot determine rank — not launched via srun/mpirun/torchrun")
+        raise RuntimeError(
+            "Cannot determine rank — not launched via srun/mpirun/torchrun"
+        )
     return rank, world_size, local_rank
 
 
@@ -84,11 +87,13 @@ def run_allreduce_test(args):
 
     # UB-X allreduce
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     print(f"[rank{rank}] creating SymmAllocator", flush=True)
     allocator = SymmAllocator(
         size * tensor_input.element_size() * 6,
-        device, group,
+        device,
+        group,
     )
     print(f"[rank{rank}] SymmAllocator OK, mc_ptr={allocator.mc0_ptr}", flush=True)
     symm_tensor = allocator.create_tensor(tensor_input.shape, dtype)
@@ -110,7 +115,10 @@ def run_allreduce_test(args):
     try:
         torch.cuda.synchronize()
     except RuntimeError as e:
-        print(f"FAIL rank={rank} op={args.op} size={size}: CUDA error in synchronize: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} op={args.op} size={size}: CUDA error in synchronize: {e}",
+            flush=True,
+        )
         sys.exit(1)
     print(f"[rank{rank}] sync done", flush=True)
 
@@ -121,16 +129,28 @@ def run_allreduce_test(args):
     rtol = 0.02 if dtype == torch.bfloat16 else 0.001
     try:
         result_f32 = result.detach().float()
-        print(f"[rank{rank}] result[:4]={result_f32[:4].cpu().tolist()} ref[:4]={ref[:4].cpu().tolist()}", flush=True)
+        print(
+            f"[rank{rank}] result[:4]={result_f32[:4].cpu().tolist()} ref[:4]={ref[:4].cpu().tolist()}",
+            flush=True,
+        )
         max_err = (result_f32.cpu() - ref.cpu()).abs().max().item()
-        print(f"[rank{rank}] max_abs_err={max_err:.6f} atol={atol} rtol={rtol}", flush=True)
+        print(
+            f"[rank{rank}] max_abs_err={max_err:.6f} atol={atol} rtol={rtol}",
+            flush=True,
+        )
         torch.testing.assert_close(result_f32, ref, atol=atol, rtol=rtol)
         print(f"PASS rank={rank} op={args.op} size={size}")
     except AssertionError as e:
-        print(f"FAIL rank={rank} op={args.op} size={size}: numerical mismatch: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} op={args.op} size={size}: numerical mismatch: {e}",
+            flush=True,
+        )
         sys.exit(1)
     except Exception as e:
-        print(f"FAIL rank={rank} op={args.op} size={size}: unexpected error in comparison: {type(e).__name__}: {e}", flush=True)
+        print(
+            f"FAIL rank={rank} op={args.op} size={size}: unexpected error in comparison: {type(e).__name__}: {e}",
+            flush=True,
+        )
         sys.exit(1)
 
     dist.destroy_process_group()
@@ -154,6 +174,7 @@ def run_allgather_test(args):
 
     # UB-X allgather
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     pool_size = size * local_tensor.element_size() * world_size * 6
     allocator = SymmAllocator(pool_size, device, group)
@@ -190,12 +211,15 @@ def run_alltoall_test(args):
     # Manual reference via torch.distributed
     chunk_size = size // world_size
     send_chunks = list(tensor_input.split(chunk_size))
-    recv_chunks = [torch.empty(chunk_size, dtype=dtype, device=device) for _ in range(world_size)]
+    recv_chunks = [
+        torch.empty(chunk_size, dtype=dtype, device=device) for _ in range(world_size)
+    ]
     dist.all_to_all(recv_chunks, send_chunks)
     ref = torch.cat(recv_chunks, dim=0)
 
     # UB-X alltoall
     from ubx import SymmAllocator
+
     group = dist.group.WORLD
     pool_size = size * tensor_input.element_size() * 6
     allocator = SymmAllocator(pool_size, device, group)
@@ -220,10 +244,20 @@ def run_alltoall_test(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UB-X distributed test worker")
-    parser.add_argument("--op", required=True,
-                        choices=["allreduce_mc", "allreduce_lamport", "allreduce_uc",
-                                 "allreduce_auto", "allgather", "allgather_uc",
-                                 "alltoall", "alltoall_lamport"])
+    parser.add_argument(
+        "--op",
+        required=True,
+        choices=[
+            "allreduce_mc",
+            "allreduce_lamport",
+            "allreduce_uc",
+            "allreduce_auto",
+            "allgather",
+            "allgather_uc",
+            "alltoall",
+            "alltoall_lamport",
+        ],
+    )
     parser.add_argument("--size", type=int, default=1024, help="Number of elements")
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     parser.add_argument("--smlimit", type=int, default=0)

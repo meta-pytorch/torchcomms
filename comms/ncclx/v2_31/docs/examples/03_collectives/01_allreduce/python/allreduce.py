@@ -15,8 +15,8 @@ python allreduce.py
 
 import sys
 
-import nccl.core as nccl
 import cupy as cp
+import nccl.core as nccl
 import numpy as np
 
 EXAMPLE_NAME = "AllReduce"

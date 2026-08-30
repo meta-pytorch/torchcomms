@@ -11,6 +11,7 @@ Usage:
 import argparse
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
@@ -39,24 +40,36 @@ def nccl_alltoall(tensor_input, world_size, device):
     """Reference alltoall via NCCL (torch.distributed)."""
     chunk_size = tensor_input.numel() // world_size
     send_chunks = list(tensor_input.split(chunk_size))
-    recv_chunks = [torch.empty(chunk_size, dtype=tensor_input.dtype, device=device)
-                   for _ in range(world_size)]
+    recv_chunks = [
+        torch.empty(chunk_size, dtype=tensor_input.dtype, device=device)
+        for _ in range(world_size)
+    ]
     dist.all_to_all(recv_chunks, send_chunks)
     return torch.cat(recv_chunks, dim=0)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--size", type=int, default=1024, help="Total elements (divisible by world_size)")
-    parser.add_argument("--calls", type=int, default=1, help="Consecutive Lamport calls per seed")
-    parser.add_argument("--seeds", type=int, default=3, help="Number of random seeds to test")
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=1024,
+        help="Total elements (divisible by world_size)",
+    )
+    parser.add_argument(
+        "--calls", type=int, default=1, help="Consecutive Lamport calls per seed"
+    )
+    parser.add_argument(
+        "--seeds", type=int, default=3, help="Number of random seeds to test"
+    )
     parser.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
     args = parser.parse_args()
 
     rank, world_size, local_rank = get_rank_info()
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", init_method="env://",
-                            world_size=world_size, rank=rank)
+    dist.init_process_group(
+        backend="nccl", init_method="env://", world_size=world_size, rank=rank
+    )
     device = torch.device(f"cuda:{local_rank}")
 
     dtype_map = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
@@ -65,6 +78,7 @@ def main():
     rtol = 0.02 if dtype == torch.bfloat16 else 0.001
 
     from ubx import SymmAllocator
+
     # Lamport needs 3 extra triple buffers + input + output headroom
     pool_size = max(args.size * 2 * 16, 64 * 1024 * 1024)
     allocator = SymmAllocator(pool_size, device, dist.group.WORLD)
@@ -96,38 +110,61 @@ def main():
                     torch.testing.assert_close(result, ref, atol=atol, rtol=rtol)
                     total_pass += 1
                     if rank == 0:
-                        print(f"PASS seed={seed} call={call_i} size={args.size} "
-                              f"nccl_match", flush=True)
+                        print(
+                            f"PASS seed={seed} call={call_i} size={args.size} "
+                            f"nccl_match",
+                            flush=True,
+                        )
                 except AssertionError as e:
                     max_err = (result.float() - ref.float()).abs().max().item()
-                    print(f"FAIL rank={rank} seed={seed} call={call_i} size={args.size} "
-                          f"max_err={max_err:.6f}: {e}", flush=True)
+                    print(
+                        f"FAIL rank={rank} seed={seed} call={call_i} size={args.size} "
+                        f"max_err={max_err:.6f}: {e}",
+                        flush=True,
+                    )
                     sys.exit(1)
 
             # Cross-rank semantic validation: after alltoall, rank i's chunk j
             # should contain rank j's original chunk i.
             # Gather all ranks' inputs, then verify each chunk.
             chunk_size = args.size // world_size
-            all_inputs = [torch.empty(args.size, dtype=dtype, device=device)
-                          for _ in range(world_size)]
+            all_inputs = [
+                torch.empty(args.size, dtype=dtype, device=device)
+                for _ in range(world_size)
+            ]
             dist.all_gather(all_inputs, current_input)
             total_tests += 1
             semantic_ok = True
             for src_rank in range(world_size):
-                expected_chunk = all_inputs[src_rank][rank * chunk_size:(rank + 1) * chunk_size]
-                actual_chunk = result[src_rank * chunk_size:(src_rank + 1) * chunk_size]
-                if not torch.allclose(actual_chunk.float(), expected_chunk.float(),
-                                      atol=atol, rtol=rtol):
-                    max_err = (actual_chunk.float() - expected_chunk.float()).abs().max().item()
-                    print(f"FAIL rank={rank} seed={seed} call={call_i} size={args.size} "
-                          f"semantic: chunk from rank {src_rank} mismatch, "
-                          f"max_err={max_err:.6f}", flush=True)
+                expected_chunk = all_inputs[src_rank][
+                    rank * chunk_size : (rank + 1) * chunk_size
+                ]
+                actual_chunk = result[
+                    src_rank * chunk_size : (src_rank + 1) * chunk_size
+                ]
+                if not torch.allclose(
+                    actual_chunk.float(), expected_chunk.float(), atol=atol, rtol=rtol
+                ):
+                    max_err = (
+                        (actual_chunk.float() - expected_chunk.float())
+                        .abs()
+                        .max()
+                        .item()
+                    )
+                    print(
+                        f"FAIL rank={rank} seed={seed} call={call_i} size={args.size} "
+                        f"semantic: chunk from rank {src_rank} mismatch, "
+                        f"max_err={max_err:.6f}",
+                        flush=True,
+                    )
                     semantic_ok = False
             if semantic_ok:
                 total_pass += 1
                 if rank == 0:
-                    print(f"PASS seed={seed} call={call_i} size={args.size} "
-                          f"semantic_ok", flush=True)
+                    print(
+                        f"PASS seed={seed} call={call_i} size={args.size} semantic_ok",
+                        flush=True,
+                    )
             else:
                 sys.exit(1)
 
@@ -140,8 +177,11 @@ def main():
             current_input = result.clone()
 
     if rank == 0:
-        print(f"ALL PASS ({total_pass}/{total_tests} tests, {args.seeds} seeds, "
-              f"{args.calls} calls/seed, {world_size} GPUs)", flush=True)
+        print(
+            f"ALL PASS ({total_pass}/{total_tests} tests, {args.seeds} seeds, "
+            f"{args.calls} calls/seed, {world_size} GPUs)",
+            flush=True,
+        )
 
     dist.destroy_process_group()
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import torch
 from typing import Optional, TYPE_CHECKING
+
+import torch
 
 if TYPE_CHECKING:
     from .allocator import SymmAllocator
@@ -39,15 +40,17 @@ class SymmTensor(torch.Tensor):
         total_nbytes = nbytes
         if blocked_format == "mxfp8":
             if metadata_offset is None:
-                raise ValueError("metadata_offset is required when blocked_format='mxfp8'")
+                raise ValueError(
+                    "metadata_offset is required when blocked_format='mxfp8'"
+                )
             metadata_nbytes = (num_elements + 31) // 32  # 1 scale byte per 32 elements
             total_nbytes = metadata_offset + metadata_nbytes
 
         # Validate pool
         assert pool.dtype == torch.uint8, f"Expected uint8 pool, got {pool.dtype}"
-        assert (
-            pool.numel() >= offset + total_nbytes
-        ), f"Pool too small: {pool.numel()} bytes, need {offset + total_nbytes}"
+        assert pool.numel() >= offset + total_nbytes, (
+            f"Pool too small: {pool.numel()} bytes, need {offset + total_nbytes}"
+        )
 
         # Slice only the data bytes for the tensor view
         byte_slice = pool[offset : offset + nbytes]
@@ -117,7 +120,7 @@ class SymmTensor(torch.Tensor):
         Note: view is not supported on blocked-format tensors because reshaping
         would invalidate the fixed metadata_offset layout.
         """
-        if not hasattr(self, '_allocator'):
+        if not hasattr(self, "_allocator"):
             return self.as_subclass(torch.Tensor).view(*shape)
         if self._blocked_format is not None:
             raise RuntimeError(

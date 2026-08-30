@@ -1,8 +1,9 @@
 """Shared fixtures and skip markers for UB-X tests."""
 
+import os
+
 import pytest
 import torch
-import os
 
 
 def pytest_collection_modifyitems(config, items):

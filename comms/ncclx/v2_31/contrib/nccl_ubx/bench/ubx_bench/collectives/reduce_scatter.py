@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import time
+
 import torch
 import torch.distributed as dist
 
@@ -11,8 +12,13 @@ from ..report import BenchResult, compute_bandwidth
 
 
 def bench_reducescatter_nccl(
-    size_bytes: int, dtype: torch.dtype, device: torch.device,
-    iters: int, warmup: int, nranks: int, cudagraph: int = 10000,
+    size_bytes: int,
+    dtype: torch.dtype,
+    device: torch.device,
+    iters: int,
+    warmup: int,
+    nranks: int,
+    cudagraph: int = 10000,
 ) -> BenchResult:
     """Benchmark NCCL reduce_scatter."""
     element_size = torch.tensor(0, dtype=dtype).element_size()
@@ -69,7 +75,11 @@ def bench_reducescatter_nccl(
 
     dtype_str = {torch.bfloat16: "bf16", torch.float16: "fp16", torch.float32: "fp32"}
     return BenchResult(
-        size_bytes=size_bytes, count=total_count,
-        dtype=dtype_str.get(dtype, str(dtype)), redop="sum",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=total_count,
+        dtype=dtype_str.get(dtype, str(dtype)),
+        redop="sum",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

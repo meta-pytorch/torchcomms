@@ -43,7 +43,9 @@ def main() -> int:
         device.set_current()
         mem_info = device.to_system_device().memory_info
         print(f"  GPU {i}: {device.name} (CUDA Device {i})")
-        print(f"    Compute Capability: {device.compute_capability.major}.{device.compute_capability.minor}")
+        print(
+            f"    Compute Capability: {device.compute_capability.major}.{device.compute_capability.minor}"
+        )
         print(f"    Memory: {mem_info.total / (1024**3):.1f} GB")
 
     print()
@@ -70,7 +72,9 @@ def main() -> int:
         size = comm.nranks
         device_id = comm.device.device_id
 
-        print(f"  Communicator {i}: Rank {rank}/{size} on CUDA device {device_id}", end="")
+        print(
+            f"  Communicator {i}: Rank {rank}/{size} on CUDA device {device_id}", end=""
+        )
 
         if rank != i:
             print(f" [WARNING: Expected rank {i}]", end="")

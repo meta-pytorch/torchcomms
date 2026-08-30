@@ -15,19 +15,23 @@ import argparse
 import gc
 import os
 import sys
+
 import torch
 import torch.distributed as dist
 
 
 def get_rank_info():
     if "RANK" in os.environ:
-        rank = int(os.environ["RANK"]); world = int(os.environ["WORLD_SIZE"])
+        rank = int(os.environ["RANK"])
+        world = int(os.environ["WORLD_SIZE"])
         local = int(os.environ.get("LOCAL_RANK", rank))
     elif "OMPI_COMM_WORLD_RANK" in os.environ:
-        rank = int(os.environ["OMPI_COMM_WORLD_RANK"]); world = int(os.environ["OMPI_COMM_WORLD_SIZE"])
+        rank = int(os.environ["OMPI_COMM_WORLD_RANK"])
+        world = int(os.environ["OMPI_COMM_WORLD_SIZE"])
         local = int(os.environ.get("OMPI_COMM_WORLD_LOCAL_RANK", rank))
     elif "SLURM_PROCID" in os.environ:
-        rank = int(os.environ["SLURM_PROCID"]); world = int(os.environ["SLURM_NTASKS"])
+        rank = int(os.environ["SLURM_PROCID"])
+        world = int(os.environ["SLURM_NTASKS"])
         local = int(os.environ.get("SLURM_LOCALID", rank))
     else:
         raise RuntimeError("Cannot determine rank")
@@ -38,8 +42,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--pool-mib", type=int, default=64)
-    ap.add_argument("--leak-mb", type=int, default=100,
-                    help="Per-rank allowed memory delta after N iters (MB)")
+    ap.add_argument(
+        "--leak-mb",
+        type=int,
+        default=100,
+        help="Per-rank allowed memory delta after N iters (MB)",
+    )
     args = ap.parse_args()
 
     rank, world, local = get_rank_info()
@@ -48,11 +56,14 @@ def main():
 
     if not dist.is_initialized():
         dist.init_process_group(
-            backend="nccl", init_method="env://",
-            world_size=world, rank=rank,
+            backend="nccl",
+            init_method="env://",
+            world_size=world,
+            rank=rank,
         )
 
     from ubx import SymmAllocator
+
     pg = dist.group.WORLD
 
     pool_bytes = args.pool_mib * 1024 * 1024
@@ -94,18 +105,24 @@ def main():
         if leak > max_leak_seen:
             max_leak_seen = leak
         if rank == 0:
-            print(f"[rank0] iter {i}: free={free_now/(1<<30):.2f} GiB leak={leak/(1<<20):.1f} MiB",
-                  flush=True)
+            print(
+                f"[rank0] iter {i}: free={free_now / (1 << 30):.2f} GiB leak={leak / (1 << 20):.1f} MiB",
+                flush=True,
+            )
 
     leak_mib = max_leak_seen / (1 << 20)
     threshold_mib = args.leak_mb
     if rank == 0:
         if leak_mib < threshold_mib:
-            print(f"PASS leak={leak_mib:.1f} MiB < threshold={threshold_mib} MiB across {args.iters} iters",
-                  flush=True)
+            print(
+                f"PASS leak={leak_mib:.1f} MiB < threshold={threshold_mib} MiB across {args.iters} iters",
+                flush=True,
+            )
         else:
-            print(f"FAIL leak={leak_mib:.1f} MiB >= threshold={threshold_mib} MiB across {args.iters} iters",
-                  flush=True)
+            print(
+                f"FAIL leak={leak_mib:.1f} MiB >= threshold={threshold_mib} MiB across {args.iters} iters",
+                flush=True,
+            )
     sys.exit(0 if leak_mib < threshold_mib else 1)
 
 

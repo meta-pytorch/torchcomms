@@ -4,10 +4,11 @@ These tests verify the allocator's internal pool management (alloc, free, merge)
 without requiring distributed setup. We mock the distributed initialization.
 """
 
+import os
+from unittest.mock import MagicMock, patch
+
 import pytest
 import torch
-import os
-from unittest.mock import patch, MagicMock
 
 
 class MockSymmAllocator:
@@ -17,7 +18,9 @@ class MockSymmAllocator:
     This tests the pure Python allocation/free/merge logic.
     """
 
-    def __init__(self, pool_size: int, reg0_size: int = 1024, graph_pool_share: float = 0.9):
+    def __init__(
+        self, pool_size: int, reg0_size: int = 1024, graph_pool_share: float = 0.9
+    ):
         self.reg0_size = reg0_size
         self.pool_size = pool_size
         self.graph_pool_size = int(pool_size * graph_pool_share)
@@ -164,6 +167,7 @@ class TestAllocatorPool:
         pool_size_mb = os.environ.get("UBX_SYMM_POOL_SIZE")
         # Just verify the variable name is consistent with what ops.py uses
         from ubx.ops import get_sym_tensor
+
         # Should not crash even without distributed setup
         assert callable(get_sym_tensor)
 
@@ -192,6 +196,7 @@ class TestReg0Sizing:
     @pytest.mark.parametrize("world_size", _WORLD_SIZES)
     def test_reg0_fits_flag_region(self, world_size):
         from ubx.allocator import SymmAllocator
+
         reg0 = SymmAllocator._reg0_size_for(world_size)
         flag_region_end = world_size * 8 + SymmAllocator._MAX_FLAG_SLOTS * 4
         assert reg0 >= flag_region_end, (
@@ -206,6 +211,7 @@ class TestReg0Sizing:
         boundary even when extrapolating beyond the in-supported-range
         parametrize values."""
         from ubx.allocator import SymmAllocator
+
         # Boundary value derived from the old fixed constant, not a
         # cluster scale claim: the smallest world_size at which the old
         # value would overflow REG0.
@@ -217,4 +223,5 @@ class TestReg0Sizing:
     @pytest.mark.parametrize("world_size", _WORLD_SIZES)
     def test_reg0_is_4k_aligned(self, world_size):
         from ubx.allocator import SymmAllocator
+
         assert SymmAllocator._reg0_size_for(world_size) % 4096 == 0

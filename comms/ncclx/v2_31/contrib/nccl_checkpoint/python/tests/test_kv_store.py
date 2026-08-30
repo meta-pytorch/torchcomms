@@ -64,7 +64,9 @@ def _wait_for_port(host: str, port: int, timeout_s: float) -> bool:
 def _shared_tmpdir(prefix: str):
     rank = MPI_COMM.Get_rank()
     if rank == 0:
-        with tempfile.TemporaryDirectory(prefix=prefix, dir=os.path.realpath(os.getcwd())) as tmpdir:
+        with tempfile.TemporaryDirectory(
+            prefix=prefix, dir=os.path.realpath(os.getcwd())
+        ) as tmpdir:
             MPI_COMM.bcast(tmpdir, root=0)
             try:
                 yield Path(tmpdir)
@@ -114,11 +116,16 @@ def _redis_server():
                 ]
                 stdout_file = stdout_path.open("w", encoding="utf-8")
                 stderr_file = stderr_path.open("w", encoding="utf-8")
-                proc = subprocess.Popen(cmd, stdout=stdout_file, stderr=stderr_file, text=True)
+                proc = subprocess.Popen(
+                    cmd, stdout=stdout_file, stderr=stderr_file, text=True
+                )
                 stdout_file.close()
                 stderr_file.close()
                 if not _wait_for_port(host, port, timeout_s=5.0):
-                    fail_details = [f"Command: {' '.join(cmd)}", "redis-server failed to start"]
+                    fail_details = [
+                        f"Command: {' '.join(cmd)}",
+                        "redis-server failed to start",
+                    ]
                     stdout_text = _read_text(stdout_path).strip()
                     stderr_text = _read_text(stderr_path).strip()
                     if stdout_text:
@@ -157,7 +164,9 @@ def _redis_server():
                     proc.wait(timeout=5)
 
 
-def _run_kv_helper(mode: str, kvs_path: Path, timeout_s: str) -> subprocess.CompletedProcess[str]:
+def _run_kv_helper(
+    mode: str, kvs_path: Path, timeout_s: str
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["NCCL_CHECKPOINT_KVS_PATH"] = str(kvs_path)
     env["NCCL_CHECKPOINT_KVS_TIMEOUT"] = timeout_s
@@ -186,7 +195,8 @@ def test_kv_missing_key_timeout_is_quiet_until_timeout() -> None:
         result = _run_kv_helper("missing-key-timeout", kvs_path, timeout_s="0.05")
     assert result.returncode == 0, result.stdout + result.stderr
     timeout_lines = [
-        line for line in result.stderr.splitlines()
+        line
+        for line in result.stderr.splitlines()
         if "KVS [GET key=" in line and "timed out" in line
     ]
     assert len(timeout_lines) == 1, result.stdout + result.stderr
@@ -202,7 +212,8 @@ def test_kv_connect_timeout_is_reported_once() -> None:
         result = _run_kv_helper("set-get", kvs_path, timeout_s="0.05")
     assert result.returncode != 0, result.stdout + result.stderr
     timeout_lines = [
-        line for line in result.stderr.splitlines()
+        line
+        for line in result.stderr.splitlines()
         if line.startswith("KVS connect(") and "timed out" in line
     ]
     assert len(timeout_lines) == 1, result.stdout + result.stderr

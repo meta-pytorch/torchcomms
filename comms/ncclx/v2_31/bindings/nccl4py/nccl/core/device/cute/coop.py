@@ -56,6 +56,7 @@ class Coop:
 
 # === Module-level factories ===
 
+
 def cta() -> Coop:
     """Construct a :class:`Coop` spanning the whole CTA (block).
 
@@ -116,7 +117,8 @@ def warp_span(warp0: int, n_warps: int, id: int) -> Coop:
     """
     ptr = _alloca_struct(ncclCoopAny)
     _bindings.nccl_coop_any_init_warp_span(
-        ptr, cutlass.Int32(warp0), cutlass.Int32(n_warps), cutlass.Int32(id))
+        ptr, cutlass.Int32(warp0), cutlass.Int32(n_warps), cutlass.Int32(id)
+    )
     return Coop(ptr=ptr)
 
 

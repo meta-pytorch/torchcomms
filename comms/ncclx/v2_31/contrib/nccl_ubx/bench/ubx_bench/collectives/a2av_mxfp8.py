@@ -5,14 +5,20 @@ from __future__ import annotations
 import gc
 import os
 import time
+
 import torch
 import torch.distributed as dist
 
 from ..report import BenchResult, compute_bandwidth
 
 
-def _make_routing(ntokens: int, total_experts: int, topk: int,
-                  device: torch.device, alpha: float = 0.0) -> torch.Tensor:
+def _make_routing(
+    ntokens: int,
+    total_experts: int,
+    topk: int,
+    device: torch.device,
+    alpha: float = 0.0,
+) -> torch.Tensor:
     """Generate a deterministic top-k routing matrix.
 
     Each token is routed to exactly *topk* experts chosen round-robin so that
@@ -56,7 +62,10 @@ def bench_a2av_mxfp8_ubx(
     # Build routing matrix (same on all ranks)
     routing = _make_routing(ntokens, total_experts, topk, device, alpha=routing_alpha)
     token_offsets, max_tokens_per_rank, _, _ = compute_token_offsets(
-        routing, experts_per_rank, rank, nranks,
+        routing,
+        experts_per_rank,
+        rank,
+        nranks,
     )
 
     local_ntokens = ntokens // nranks
@@ -82,16 +91,24 @@ def bench_a2av_mxfp8_ubx(
     allocator = SymmAllocator(pool_size, device, group)
 
     # Input: bf16 tokens (not in symmetric memory — regular GPU tensor)
-    tokens_bf16 = torch.randn(local_ntokens, hidden, dtype=torch.bfloat16, device=device)
+    tokens_bf16 = torch.randn(
+        local_ntokens, hidden, dtype=torch.bfloat16, device=device
+    )
 
     # Output: mxfp8 blocked SymmTensor
     output = allocator.create_tensor(
-        [max_tokens_per_rank, hidden], torch.float8_e4m3fn, blocked="mxfp8",
+        [max_tokens_per_rank, hidden],
+        torch.float8_e4m3fn,
+        blocked="mxfp8",
     )
 
     def op_fn():
         allocator.a2av_token_bf16_mxfp8(
-            tokens_bf16, token_offsets, experts_per_rank, output, smlimit=smlimit,
+            tokens_bf16,
+            token_offsets,
+            experts_per_rank,
+            output,
+            smlimit=smlimit,
         )
 
     if cudagraph > 0:
@@ -149,7 +166,11 @@ def bench_a2av_mxfp8_ubx(
     algbw, busbw = compute_bandwidth(size_bytes, time_us, nranks, "a2av_mxfp8")
 
     return BenchResult(
-        size_bytes=size_bytes, count=local_ntokens * topk * hidden,
-        dtype="bf16→mxfp8", redop="none",
-        time_us=time_us, algbw_gbs=algbw, busbw_gbs=busbw,
+        size_bytes=size_bytes,
+        count=local_ntokens * topk * hidden,
+        dtype="bf16→mxfp8",
+        redop="none",
+        time_us=time_us,
+        algbw_gbs=algbw,
+        busbw_gbs=busbw,
     )

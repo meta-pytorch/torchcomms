@@ -41,7 +41,10 @@ except ImportError:
 try:
     import cupy as cp
 except ImportError:
-    print("ERROR: cupy required. Install with: pip install cupy-cuda13x (or cupy-cuda12x)", flush=True)
+    print(
+        "ERROR: cupy required. Install with: pip install cupy-cuda13x (or cupy-cuda12x)",
+        flush=True,
+    )
     sys.exit(1)
 
 import cutlass
@@ -95,8 +98,10 @@ def gin_ops_kernel(
     # The backend mask selects which transports may back this context; the
     # sharing mode says how widely its network resources are shared.
     gin = dev_comm.gin(
-        nccl_cute.GinBackendMask.ALL, 0,
-        resource_sharing_mode=nccl_cute.GinResourceSharingMode.GPU)
+        nccl_cute.GinBackendMask.ALL,
+        0,
+        resource_sharing_mode=nccl_cute.GinResourceSharingMode.GPU,
+    )
 
     payload = cute.make_layout(NUM_ELEMS - 1)
     scalar = cute.make_layout(1)
@@ -111,17 +116,23 @@ def gin_ops_kernel(
         # The release scopes say what the caller has released, and what the
         # transfer needs released before it reads the source.
         gin.put(
-            world, DST_RANK,
-            recv_win, recv,
-            send_win, send,
+            world,
+            DST_RANK,
+            recv_win,
+            recv,
+            send_win,
+            send,
             coop,
-            is_counter=True, counter_id=COUNTER_ID,
+            is_counter=True,
+            counter_id=COUNTER_ID,
             given_release=nccl_cute.ThreadScope.THREAD,
             required_release=nccl_cute.ThreadScope.DEVICE,
         )
         gin.wait_counter(coop, counter=COUNTER_ID, least=1)
         if 0 == tidx:
-            cute.printf(f"rank 0: put complete, counter={gin.read_counter(counter=COUNTER_ID)}")
+            cute.printf(
+                f"rank 0: put complete, counter={gin.read_counter(counter=COUNTER_ID)}"
+            )
 
         # No source window: the value travels inline, sized by the
         # destination tensor's element type.
@@ -129,8 +140,12 @@ def gin_ops_kernel(
 
         # A signal with no data transfer, ordered after the puts above.
         gin.signal(
-            world, DST_RANK,
-            True, SIGNAL_ID, SIGNAL_OP_INC, 1,
+            world,
+            DST_RANK,
+            True,
+            SIGNAL_ID,
+            SIGNAL_OP_INC,
+            1,
             coop,
         )
         # Drain this context before the kernel exits.
@@ -144,13 +159,15 @@ def gin_ops_kernel(
         if 0 == tidx:
             cute.printf(
                 f"rank 1: signal={gin.read_signal(signal=SIGNAL_ID)} "
-                f"recv[0]={recv[0]} tail={recv_tail[0]}")
+                f"recv[0]={recv[0]} tail={recv_tail[0]}"
+            )
 
             # A user-managed uint64 next to the signal — NCCL never writes
             # it, and reset_signal zeroes both. The natural place to record
             # how much of the signal this rank has consumed.
             shadow = cute.make_tensor(
-                gin.signal_shadow_pointer(signal=SIGNAL_ID), scalar)
+                gin.signal_shadow_pointer(signal=SIGNAL_ID), scalar
+            )
             shadow[0] = cutlass.Uint64(1)
             cute.printf(f"rank 1: shadow={shadow[0]}")
 
@@ -210,8 +227,11 @@ def main():
     if rank == root:
         print(f"\n===== {NAME} =====", flush=True)
         if not NCCL_HAS_GIN_GET:
-            print(f"WARNING: NCCL {NCCL_VERSION} exports "
-                  "ncclGinGet C++-mangled only; skipping Gin.get", flush=True)
+            print(
+                f"WARNING: NCCL {NCCL_VERSION} exports "
+                "ncclGinGet C++-mangled only; skipping Gin.get",
+                flush=True,
+            )
 
     if nranks != 2:
         if rank == root:
@@ -229,15 +249,18 @@ def main():
     # Requesting GIN resources with gin_type NONE fails devcomm creation.
     if not nccl_comm.device_api_support or nccl_comm.gin_type == nccl.NcclGinType.NONE:
         if rank == root:
-            print("WARNING: no GIN transport on this system "
-                  f"(gin_type={nccl_comm.gin_type.name}); nothing to run", flush=True)
+            print(
+                "WARNING: no GIN transport on this system "
+                f"(gin_type={nccl_comm.gin_type.name}); nothing to run",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 0
 
-    send_buf = nccl.cupy.empty(NUM_ELEMS, dtype='int64')
-    recv_buf = nccl.cupy.empty(NUM_ELEMS, dtype='int64')
-    get_buf = nccl.cupy.empty(NUM_ELEMS, dtype='int64')
-    send_buf[:] = cp.arange(NUM_ELEMS, dtype='int64') + (rank + 1)
+    send_buf = nccl.cupy.empty(NUM_ELEMS, dtype="int64")
+    recv_buf = nccl.cupy.empty(NUM_ELEMS, dtype="int64")
+    get_buf = nccl.cupy.empty(NUM_ELEMS, dtype="int64")
+    send_buf[:] = cp.arange(NUM_ELEMS, dtype="int64") + (rank + 1)
     recv_buf[:] = 0
     get_buf[:] = 0
     device.sync()
@@ -267,19 +290,30 @@ def main():
 
     failures = 0
     if rank == DST_RANK:
-        expected = cp.arange(NUM_ELEMS - 1, dtype='int64') + 1
-        put_mismatches = int(cp.count_nonzero(recv_buf[:NUM_ELEMS - 1] != expected).item())
+        expected = cp.arange(NUM_ELEMS - 1, dtype="int64") + 1
+        put_mismatches = int(
+            cp.count_nonzero(recv_buf[: NUM_ELEMS - 1] != expected).item()
+        )
         tail_matches = int(recv_buf[NUM_ELEMS - 1]) == SCALAR
-        get_mismatches = (int(cp.count_nonzero(get_buf[:NUM_ELEMS - 1] != expected).item())
-                          if NCCL_HAS_GIN_GET else 0)
+        get_mismatches = (
+            int(cp.count_nonzero(get_buf[: NUM_ELEMS - 1] != expected).item())
+            if NCCL_HAS_GIN_GET
+            else 0
+        )
         failures = put_mismatches + get_mismatches + (0 if tail_matches else 1)
-        checked = ("Gin.put, Gin.put_value and Gin.get" if NCCL_HAS_GIN_GET
-                   else "Gin.put and Gin.put_value")
+        checked = (
+            "Gin.put, Gin.put_value and Gin.get"
+            if NCCL_HAS_GIN_GET
+            else "Gin.put and Gin.put_value"
+        )
         if failures == 0:
             print(f"[rank {rank}] [SUCCESS] {checked} validated")
         else:
-            print(f"[rank {rank}] [ERROR] put mismatches={put_mismatches} "
-                  f"tail_matches={tail_matches} get mismatches={get_mismatches}", flush=True)
+            print(
+                f"[rank {rank}] [ERROR] put mismatches={put_mismatches} "
+                f"tail_matches={tail_matches} get mismatches={get_mismatches}",
+                flush=True,
+            )
 
     # Only the destination rank validates, so share the verdict for the exit
     # code.

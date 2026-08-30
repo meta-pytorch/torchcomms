@@ -8,18 +8,13 @@ FFI ABI requires a pointer or reference.
 """
 
 import cutlass
-from cutlass.cutlass_dsl import ir
 from cutlass._mlir.dialects import llvm
-from cutlass.cutlass_dsl import dsl_user_op
+from cutlass.cutlass_dsl import dsl_user_op, ir
 
 from ...resources import DevCommResource
 from . import _bindings
 from ._helpers import _alloca_struct, _to_value
-from ._structs import (
-    DevCommValue,
-    ncclGin_C,
-    ncclTeam as Team,
-)
+from ._structs import DevCommValue, ncclGin_C, ncclTeam as Team
 from .gin import Gin
 from .handles import GinBarrierHandle, LsaBarrierHandle, MultimemHandle
 from .types import GinBackendMask, GinResourceSharingMode
@@ -85,8 +80,7 @@ class DevComm:
     def __c_pointers__(self):
         if self._resource is None:
             raise cutlass.DSLRuntimeError(
-                "DevComm.__c_pointers__ is only available on a host-mode "
-                "DevComm"
+                "DevComm.__c_pointers__ is only available on a host-mode DevComm"
             )
         return [self._resource.dev_comm.ptr]
 
@@ -152,18 +146,15 @@ class DevComm:
 
     @property
     def hybrid_lsa_barrier(self) -> LsaBarrierHandle:
-        return LsaBarrierHandle.from_native_struct(
-            self.value.hybrid_lsa_barrier)
+        return LsaBarrierHandle.from_native_struct(self.value.hybrid_lsa_barrier)
 
     @property
     def hybrid_rail_gin_barrier(self) -> GinBarrierHandle:
-        return GinBarrierHandle.from_native_struct(
-            self.value.hybrid_rail_gin_barrier)
+        return GinBarrierHandle.from_native_struct(self.value.hybrid_rail_gin_barrier)
 
     @property
     def world_gin_barrier(self) -> GinBarrierHandle:
-        return GinBarrierHandle.from_native_struct(
-            self.value.world_gin_barrier)
+        return GinBarrierHandle.from_native_struct(self.value.world_gin_barrier)
 
     @property
     def lsa_multimem(self) -> MultimemHandle:
@@ -193,8 +184,11 @@ class DevComm:
         Returns:
             Corresponding rank in the world team.
         """
-        return cutlass.Int32(_bindings.nccl_team_rank_to_world(
-            self.ptr, _to_value(team), cutlass.Int32(rank)))
+        return cutlass.Int32(
+            _bindings.nccl_team_rank_to_world(
+                self.ptr, _to_value(team), cutlass.Int32(rank)
+            )
+        )
 
     def team_rank_to_lsa(self, team: Team, rank: int) -> cutlass.Int32:
         """Translate ``rank`` within ``team`` to its LSA rank.
@@ -210,8 +204,11 @@ class DevComm:
         Returns:
             Corresponding rank in the LSA team.
         """
-        return cutlass.Int32(_bindings.nccl_team_rank_to_lsa(
-            self.ptr, _to_value(team), cutlass.Int32(rank)))
+        return cutlass.Int32(
+            _bindings.nccl_team_rank_to_lsa(
+                self.ptr, _to_value(team), cutlass.Int32(rank)
+            )
+        )
 
     # === Resource buffer pointers ===
 
@@ -225,7 +222,8 @@ class DevComm:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_resource_buffer_local_pointer(
-            self.ptr, cutlass.Uint32(handle))
+            self.ptr, cutlass.Uint32(handle)
+        )
 
     def resource_buffer_lsa_pointer(self, handle: int, peer: int) -> ir.Value:
         """Translate a resource handle to ``peer``'s LSA buffer address.
@@ -238,7 +236,8 @@ class DevComm:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_resource_buffer_lsa_pointer(
-            self.ptr, cutlass.Uint32(handle), cutlass.Int32(peer))
+            self.ptr, cutlass.Uint32(handle), cutlass.Int32(peer)
+        )
 
     def resource_buffer_peer_pointer(
         self, handle: int, team: Team, peer: int
@@ -254,8 +253,8 @@ class DevComm:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_resource_buffer_peer_pointer(
-            self.ptr, cutlass.Uint32(handle), _to_value(team),
-            cutlass.Int32(peer))
+            self.ptr, cutlass.Uint32(handle), _to_value(team), cutlass.Int32(peer)
+        )
 
     def resource_buffer_multimem_pointer(
         self, handle: int, mm_handle: MultimemHandle
@@ -272,7 +271,8 @@ class DevComm:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_resource_buffer_multimem_pointer(
-            self.ptr, cutlass.Uint32(handle), _to_value(mm_handle))
+            self.ptr, cutlass.Uint32(handle), _to_value(mm_handle)
+        )
 
     def resource_buffer_lsa_multimem_pointer(self, handle: int) -> ir.Value:
         """Translate a resource handle to its LSA multimem buffer address.
@@ -284,7 +284,8 @@ class DevComm:
             ``!llvm.ptr`` MLIR value.
         """
         return _bindings.nccl_get_resource_buffer_lsa_multimem_pointer(
-            self.ptr, cutlass.Uint32(handle))
+            self.ptr, cutlass.Uint32(handle)
+        )
 
     # === Gin factory ===
 
@@ -310,8 +311,12 @@ class DevComm:
         """
         storage = _alloca_struct(ncclGin_C)
         _bindings.nccl_gin_c_init(
-            storage, cutlass.Int32(int(backend)), self.ptr,
-            cutlass.Int32(context_id), cutlass.Uint8(int(resource_sharing_mode)))
+            storage,
+            cutlass.Int32(int(backend)),
+            self.ptr,
+            cutlass.Int32(context_id),
+            cutlass.Uint8(int(resource_sharing_mode)),
+        )
         return Gin(ptr=storage)
 
 

@@ -18,10 +18,9 @@ from functools import cache
 from pathlib import Path
 
 import numpy as _np
-from packaging.version import Version
-
 from nccl.bindings import nccl as _nccl_bindings
 from nccl.core._version import __version__
+from packaging.version import Version
 
 __all__ = [
     "LibraryInfo",
@@ -104,7 +103,10 @@ def _extract_cuda_variant(path: Path | None) -> Version | None:
     if path is None:
         return None
     try:
-        with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+        with (
+            open(path, "rb") as f,
+            mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm,
+        ):
             match = _NCCL_BANNER.search(mm)
             if match is not None:
                 return Version(f"{int(match.group(1))}.{int(match.group(2))}")
@@ -215,9 +217,9 @@ class UniqueId:
     @property
     def as_ndarray(self) -> _np.ndarray:
         """NumPy array view of the unique ID data."""
-        return _np.ndarray((1,), dtype=_nccl_bindings.unique_id_dtype, buffer=self._internal).view(
-            _np.recarray
-        )
+        return _np.ndarray(
+            (1,), dtype=_nccl_bindings.unique_id_dtype, buffer=self._internal
+        ).view(_np.recarray)
 
     @property
     def as_bytes(self) -> bytes:

@@ -18,10 +18,10 @@ The generated file requires shim_core.h to provide:
     g_commHandles.remove(...)
 """
 
+import datetime
+import os
 import re
 import sys
-import os
-import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
@@ -33,25 +33,25 @@ from typing import Dict, List, Optional, Set
 # Input comm handles that are consumed (destroyed) by a successful call.
 DESTROY_PARAMS: Dict[str, Set[str]] = {
     "ncclCommDestroy": {"comm"},
-    "ncclCommAbort":   {"comm"},
+    "ncclCommAbort": {"comm"},
 }
 
 # Functions which this auto-generator will ignore.  Manually create shim in
 # shim.cc.
 MANUALLY_SHIMMED_FUNCS: Set[str] = {
     "ncclCommInitAll",
-    "ncclCommInitRank",          # records CommInitParams for restore
-    "ncclCommInitRankConfig",    # records CommInitParams for restore
+    "ncclCommInitRank",  # records CommInitParams for restore
+    "ncclCommInitRankConfig",  # records CommInitParams for restore
     "ncclCommInitRankScalable",  # records CommInitParams for restore
-    "ncclCommSplit",             # records split parent/color/key for restore
-    "ncclCommShrink",            # records shrink parent/excluded ranks/flags for restore
-    "ncclCommGrow",              # records CommInitParams for restore
-    "ncclCommAbort",             # deregister_comm (keep bimap; drop from snapshot)
-    "ncclCommDestroy",           # deregister_comm (keep bimap; drop from snapshot)
-    "ncclCommFinalize",          # deregister_comm on success; handles ncclInProgress
-    "ncclCommRegister",          # preserves synthetic registration handles
-    "ncclCommDeregister",        # translates synthetic registration handles
-    "ncclCommWindowRegister",    # preserves synthetic window handles
+    "ncclCommSplit",  # records split parent/color/key for restore
+    "ncclCommShrink",  # records shrink parent/excluded ranks/flags for restore
+    "ncclCommGrow",  # records CommInitParams for restore
+    "ncclCommAbort",  # deregister_comm (keep bimap; drop from snapshot)
+    "ncclCommDestroy",  # deregister_comm (keep bimap; drop from snapshot)
+    "ncclCommFinalize",  # deregister_comm on success; handles ncclInProgress
+    "ncclCommRegister",  # preserves synthetic registration handles
+    "ncclCommDeregister",  # translates synthetic registration handles
+    "ncclCommWindowRegister",  # preserves synthetic window handles
     "ncclCommWindowDeregister",  # translates synthetic window handles
 }
 
@@ -80,15 +80,16 @@ RESTORE_UNSAFE_WINDOW_FUNCS: Dict[str, str] = {
 # Data model
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Param:
-    raw: str           # original text, e.g. "const ncclComm_t comm"
-    type_: str         # normalised type,  e.g. "const ncclComm_t"
-    name: str          # parameter name,   e.g. "comm"
-    is_in_comm: bool   # ncclComm_t by value (input handle)
+    raw: str  # original text, e.g. "const ncclComm_t comm"
+    type_: str  # normalised type,  e.g. "const ncclComm_t"
+    name: str  # parameter name,   e.g. "comm"
+    is_in_comm: bool  # ncclComm_t by value (input handle)
     is_out_comm: bool  # ncclComm_t* (output handle — receives a new comm)
-    is_in_window: bool # ncclWindow_t by value (input handle)
-    is_reg_handle: bool # opaque void* registration handle input
+    is_in_window: bool  # ncclWindow_t by value (input handle)
+    is_reg_handle: bool  # opaque void* registration handle input
 
 
 @dataclass
@@ -119,27 +120,25 @@ class NcclFunction:
             p.is_in_comm or p.is_out_comm or p.is_in_window or p.is_reg_handle
             for p in self.params
         )
-        return (
-            (self.name in MANUALLY_SHIMMED_FUNCS)
-            or not has_translated_handle
-        )
+        return (self.name in MANUALLY_SHIMMED_FUNCS) or not has_translated_handle
 
 
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
 
+
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.DOTALL)
-    text = re.sub(r"//[^\n]*",  " ", text)
+    text = re.sub(r"//[^\n]*", " ", text)
     return text
 
 
 def normalize_type(raw: str) -> str:
     """Collapse whitespace and attach * directly to the left token."""
     t = raw.strip()
-    t = re.sub(r"\s+", " ", t)          # collapse interior spaces
-    t = re.sub(r"\s*\*\s*", "*", t)     # "type * " -> "type*"
+    t = re.sub(r"\s+", " ", t)  # collapse interior spaces
+    t = re.sub(r"\s*\*\s*", "*", t)  # "type * " -> "type*"
     return t
 
 
@@ -157,19 +156,25 @@ def parse_param(raw: str) -> Optional[Param]:
     if not m:
         return None
 
-    name      = m.group(1)
+    name = m.group(1)
     type_norm = normalize_type(s[: m.start()])
 
     # Input:  "ncclComm_t" or "const ncclComm_t"
     # Output: "ncclComm_t*" (pointer — caller receives a new comm handle)
-    is_in_comm  = type_norm in ("ncclComm_t", "const ncclComm_t")
+    is_in_comm = type_norm in ("ncclComm_t", "const ncclComm_t")
     is_out_comm = type_norm == "ncclComm_t*"
     is_in_window = type_norm in ("ncclWindow_t", "const ncclWindow_t")
     is_reg_handle = type_norm == "void*" and name == "handle"
 
-    return Param(raw=s, type_=type_norm, name=name,
-                 is_in_comm=is_in_comm, is_out_comm=is_out_comm,
-                 is_in_window=is_in_window, is_reg_handle=is_reg_handle)
+    return Param(
+        raw=s,
+        type_=type_norm,
+        name=name,
+        is_in_comm=is_in_comm,
+        is_out_comm=is_out_comm,
+        is_in_window=is_in_window,
+        is_reg_handle=is_reg_handle,
+    )
 
 
 def parse_header(path: str) -> List[NcclFunction]:
@@ -188,11 +193,11 @@ def parse_header(path: str) -> List[NcclFunction]:
 
     qualifier = r"(?:\b[A-Z_][A-Z0-9_]*\b|__\w+__)"
     pattern = re.compile(
-        rf"(?:{qualifier}\s+)*"       # optional macros before return type
+        rf"(?:{qualifier}\s+)*"  # optional macros before return type
         r"\bncclResult_t\b\s+"
-        rf"(?:{qualifier}\s+)*"       # optional macros after return type
-        r"(p?nccl\w+)"                # function name (nccl* or pnccl*)
-        r"\s*\(([^)]*)\)\s*;",        # parameter list (no nested parens needed)
+        rf"(?:{qualifier}\s+)*"  # optional macros after return type
+        r"(p?nccl\w+)"  # function name (nccl* or pnccl*)
+        r"\s*\(([^)]*)\)\s*;",  # parameter list (no nested parens needed)
         re.DOTALL,
     )
 
@@ -229,9 +234,11 @@ def parse_headers(paths: List[str]) -> List[NcclFunction]:
             fns.append(fn)
     return fns
 
+
 # ---------------------------------------------------------------------------
 # Code generation
 # ---------------------------------------------------------------------------
+
 
 def fn_ptr_type(fn: NcclFunction) -> str:
     """
@@ -249,7 +256,11 @@ def comm_label(fn: NcclFunction) -> str:
     parts = []
     for p in fn.params:
         if p.is_in_comm:
-            role = "DESTROY" if (fn.name in DESTROY_PARAMS and p.name in DESTROY_PARAMS[fn.name]) else "USE"
+            role = (
+                "DESTROY"
+                if (fn.name in DESTROY_PARAMS and p.name in DESTROY_PARAMS[fn.name])
+                else "USE"
+            )
             parts.append(f"{role}:{p.name}")
         elif p.is_out_comm:
             parts.append(f"CREATE:{p.name}")
@@ -264,10 +275,10 @@ def emit_function(fn: NcclFunction) -> str:
     """Return the C wrapper body for one function."""
     if fn.name in MANUALLY_SHIMMED_FUNCS:
         return ""
-    lines  = [f"// {comm_label(fn)}"]
+    lines = [f"// {comm_label(fn)}"]
 
     # -- Signature (identical to original) -------------------------------------
-    decl   = ", ".join(p.raw for p in fn.params) if fn.params else "void"
+    decl = ", ".join(p.raw for p in fn.params) if fn.params else "void"
     lines += [f"{fn.ret_type} {fn.name}({decl}) {{"]
 
     # -- dlsym lookup ----------------------------------------------------------
@@ -287,19 +298,19 @@ def emit_function(fn: NcclFunction) -> str:
     for p in fn.in_comms:
         lines += [
             f"  ncclComm_t real_{p.name} = {p.name};",
-            f'  ret = g_commHandles.toReal({p.name}, &real_{p.name});',
+            f"  ret = g_commHandles.toReal({p.name}, &real_{p.name});",
             "  if (ret != ncclSuccess) return ret;",
         ]
     for p in fn.in_windows:
         lines += [
             f"  ncclWindow_t real_{p.name} = {p.name};",
-            f'  ret = g_windowHandles.toReal({p.name}, &real_{p.name});',
+            f"  ret = g_windowHandles.toReal({p.name}, &real_{p.name});",
             "  if (ret != ncclSuccess) return ret;",
         ]
     for p in fn.reg_handles:
         lines += [
             f"  void* real_{p.name} = {p.name};",
-            f'  ret = g_regHandles.toReal({p.name}, &real_{p.name});',
+            f"  ret = g_regHandles.toReal({p.name}, &real_{p.name});",
             "  if (ret != ncclSuccess) return ret;",
         ]
 
@@ -343,7 +354,9 @@ def emit_function(fn: NcclFunction) -> str:
     if fn.name in RESTORE_UNSAFE_COMM_FUNCS:
         reason = RESTORE_UNSAFE_COMM_FUNCS[fn.name]
         if not fn.in_comms:
-            raise RuntimeError(f"{fn.name} is configured as comm-unsafe but has no comm parameter")
+            raise RuntimeError(
+                f"{fn.name} is configured as comm-unsafe but has no comm parameter"
+            )
         comm = fn.in_comms[0].name
         lines += [
             f"  markCommRestoreUnsafe({comm}, {reason});",
@@ -352,7 +365,9 @@ def emit_function(fn: NcclFunction) -> str:
     if fn.name in RESTORE_UNSAFE_WINDOW_FUNCS:
         reason = RESTORE_UNSAFE_WINDOW_FUNCS[fn.name]
         if not fn.in_windows:
-            raise RuntimeError(f"{fn.name} is configured as window-unsafe but has no window parameter")
+            raise RuntimeError(
+                f"{fn.name} is configured as window-unsafe but has no window parameter"
+            )
         window = fn.in_windows[0].name
         lines += [
             f"  markWindowCommRestoreUnsafe({window}, {reason});",
@@ -374,12 +389,12 @@ def emit_file(fns: List[NcclFunction], header_path: str) -> str:
     """Emit the complete generated .cpp file."""
 
     comm_fns = [f for f in fns if not f.skip]
-    skipped  = [f for f in fns if f.skip]
+    skipped = [f for f in fns if f.skip]
 
     out: List[str] = [
         "// AUTO-GENERATED by gen_shim.py — DO NOT EDIT",
         "",
-        '#include <nccl.h>',
+        "#include <nccl.h>",
         '#include "nccl_device/core.h"',
         '#include "shim_core.h"',
         "#include <dlfcn.h>",
@@ -410,9 +425,7 @@ def emit_file(fns: List[NcclFunction], header_path: str) -> str:
 
 def emit_export_map(fns: List[NcclFunction]) -> str:
     exported = {
-        fn.name
-        for fn in fns
-        if not fn.skip or fn.name in MANUALLY_SHIMMED_FUNCS
+        fn.name for fn in fns if not fn.skip or fn.name in MANUALLY_SHIMMED_FUNCS
     }
     exported.update(EXTRA_EXPORTED_FUNCS)
 
@@ -421,17 +434,21 @@ def emit_export_map(fns: List[NcclFunction]) -> str:
         "  global:",
     ]
     out.extend(f"    {name};" for name in sorted(exported))
-    out.extend([
-        "  local:",
-        "    *;",
-        "};",
-        "",
-    ])
+    out.extend(
+        [
+            "  local:",
+            "    *;",
+            "};",
+            "",
+        ]
+    )
     return "\n".join(out)
+
 
 # ---------------------------------------------------------------------------
 # --list mode
 # ---------------------------------------------------------------------------
+
 
 def cmd_list(fns: List[NcclFunction], show_skipped: bool) -> None:
     skipped = 0
@@ -445,9 +462,11 @@ def cmd_list(fns: List[NcclFunction], show_skipped: bool) -> None:
     if skipped and not show_skipped:
         print(f"\n{skipped} functions not shimmed")
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     argv = sys.argv[1:]
@@ -456,9 +475,9 @@ def main() -> None:
         print(__doc__)
         sys.exit(0 if argv else 1)
 
-    list_mode    = "--list"     in argv
-    show_skipped = "--skipped"  in argv
-    export_mode  = "--exports"  in argv
+    list_mode = "--list" in argv
+    show_skipped = "--skipped" in argv
+    export_mode = "--exports" in argv
     header_paths = [arg for arg in argv if not arg.startswith("--")]
     if not header_paths:
         print("error: at least one header path is required", file=sys.stderr)
@@ -472,14 +491,20 @@ def main() -> None:
     fns = parse_headers(header_paths)
 
     if not fns:
-        print(f"warning: no ncclResult_t functions found in {', '.join(header_paths)}", file=sys.stderr)
-        print("         Verify the header uses the expected declaration style.", file=sys.stderr)
+        print(
+            f"warning: no ncclResult_t functions found in {', '.join(header_paths)}",
+            file=sys.stderr,
+        )
+        print(
+            "         Verify the header uses the expected declaration style.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     comm_fns = [f for f in fns if not f.skip]
     print(
         f"// Parsed {len(fns)} functions: {len(comm_fns)} intercepted, "
-        f"{len(fns)-len(comm_fns)} skipped",
+        f"{len(fns) - len(comm_fns)} skipped",
         file=sys.stderr,
     )
 
@@ -489,7 +514,6 @@ def main() -> None:
         cmd_list(fns, show_skipped=show_skipped)
     else:
         sys.stdout.write(emit_file(fns, ", ".join(header_paths)))
-
 
 
 if __name__ == "__main__":

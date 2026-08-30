@@ -17,13 +17,14 @@ def parse_size(s: str) -> int:
 @dataclass
 class BenchConfig:
     """Benchmark configuration matching nccl-tests CLI interface."""
+
     collective: str = "all_reduce"
 
     # Size sweep
-    minbytes: int = 32 * 1024 * 1024   # 32M
-    maxbytes: int = 32 * 1024 * 1024   # 32M
-    stepbytes: int = 1024 * 1024        # 1M
-    stepfactor: Optional[int] = None    # multiplicative (overrides stepbytes)
+    minbytes: int = 32 * 1024 * 1024  # 32M
+    maxbytes: int = 32 * 1024 * 1024  # 32M
+    stepbytes: int = 1024 * 1024  # 1M
+    stepfactor: Optional[int] = None  # multiplicative (overrides stepbytes)
 
     # Timing
     iters: int = 20
@@ -38,12 +39,12 @@ class BenchConfig:
     op: str = "sum"
 
     # ubx-specific
-    backend: str = "all"                # ubx, nccl, all
-    kernel: str = "auto"                # mc, uc, lamport, rw, rr, auto
+    backend: str = "all"  # ubx, nccl, all
+    kernel: str = "auto"  # mc, uc, lamport, rw, rr, auto
     smlimit: int = 0
-    nthreads_per_block: int = 0         # 0 = launcher default. Currently used
-                                        # by the alltoall paths (uc / lamport /
-                                        # auto).
+    nthreads_per_block: int = 0  # 0 = launcher default. Currently used
+    # by the alltoall paths (uc / lamport /
+    # auto).
     cgasize: int = 0
     num_chunks: int = 1
     num_comm_sm: int = 16
@@ -61,7 +62,7 @@ class BenchConfig:
     routing_alpha: float = 2.0
 
     # Fused operations
-    fused: str = "none"                 # none, residual, residual+rmsnorm
+    fused: str = "none"  # none, residual, residual+rmsnorm
     hidden_size: int = 0
 
     # Graph/Correctness
@@ -96,8 +97,13 @@ class BenchConfig:
         """Parse the backend string into a list."""
         if self.collective == "a2av_dispatch":
             if self.backend == "all":
-                return ["ubx_bf16", "ubx_bf16_topk", "ubx_mxfp8",
-                        "nccl_ep_ll", "nccl_ep_ht"]
+                return [
+                    "ubx_bf16",
+                    "ubx_bf16_topk",
+                    "ubx_mxfp8",
+                    "nccl_ep_ll",
+                    "nccl_ep_ht",
+                ]
             return [b.strip() for b in self.backend.split(",")]
         if self.collective == "a2av_combine":
             if self.backend == "all":

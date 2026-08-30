@@ -44,7 +44,6 @@ import nccl.core.device.cute as nccl_cute
 NAME = os.path.basename(__file__)
 
 
-
 NUM_ELEMS = 1024
 THREADS = 128
 BARRIER_INDEX = 0
@@ -77,21 +76,34 @@ def multimem_kernel(
 
         # multimem_pointer takes an explicit handle, so it addresses non-LSA
         # teams too; lsa_multimem_pointer is the LSA shorthand.
-        via_handle = cute.make_ptr(cutlass.Int8, win.multimem_pointer(0, host_mm)).toint()
-        via_lsa = cute.make_ptr(cutlass.Int8, win.lsa_multimem_pointer(0, dev_comm)).toint()
+        via_handle = cute.make_ptr(
+            cutlass.Int8, win.multimem_pointer(0, host_mm)
+        ).toint()
+        via_lsa = cute.make_ptr(
+            cutlass.Int8, win.lsa_multimem_pointer(0, dev_comm)
+        ).toint()
         unicast = cute.make_ptr(cutlass.Int8, win.local_pointer(0)).toint()
-        cute.printf(f"window mm(handle)={via_handle} mm(lsa)={via_lsa} unicast={unicast}")
+        cute.printf(
+            f"window mm(handle)={via_handle} mm(lsa)={via_lsa} unicast={unicast}"
+        )
 
     # multimem=True publishes the barrier flag with one multicast store
     # instead of one per peer; mm_handle must cover the barrier's team.
     bar = nccl_cute.lsa_default(
-        coop, dev_comm, index=BARRIER_INDEX, multimem=True, mm_handle=embedded_mm)
+        coop, dev_comm, index=BARRIER_INDEX, multimem=True, mm_handle=embedded_mm
+    )
     bar.sync(coop, nccl_cute.MemoryOrder.ACQ_REL)
 
     # Same barrier, with team and handle named by the caller.
     explicit = nccl_cute.lsa_session(
-        coop, dev_comm, dev_comm.team_lsa, dev_comm.lsa_barrier,
-        index=BARRIER_INDEX, multimem=True, mm_handle=host_mm)
+        coop,
+        dev_comm,
+        dev_comm.team_lsa,
+        dev_comm.lsa_barrier,
+        index=BARRIER_INDEX,
+        multimem=True,
+        mm_handle=host_mm,
+    )
     explicit.sync(coop, nccl_cute.MemoryOrder.ACQ_REL)
 
     if 0 == tidx:
@@ -142,20 +154,26 @@ def main():
 
     if nccl_comm.team_lsa.n_ranks != nranks:
         if rank == root:
-            print(f"\n[{NAME}] ERROR: all {nranks} ranks must be LSA peers "
-                  f"(lsa team has {nccl_comm.team_lsa.n_ranks}); run on one node", flush=True)
+            print(
+                f"\n[{NAME}] ERROR: all {nranks} ranks must be LSA peers "
+                f"(lsa team has {nccl_comm.team_lsa.n_ranks}); run on one node",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 1
 
     # Requesting multimem without multimem_support fails devcomm creation.
     if not nccl_comm.device_api_support or not nccl_comm.multimem_support:
         if rank == root:
-            print("WARNING: no multicast support on this system, so no "
-                  "multimem mapping; nothing to run", flush=True)
+            print(
+                "WARNING: no multicast support on this system, so no "
+                "multimem mapping; nothing to run",
+                flush=True,
+            )
         nccl_comm.destroy()
         return 0
 
-    buf = nccl.cupy.empty(NUM_ELEMS, dtype='float32')
+    buf = nccl.cupy.empty(NUM_ELEMS, dtype="float32")
     buf[:] = float(rank + 1)
     device.sync()
     win_resource = nccl_comm.register_window(buf)
@@ -180,7 +198,6 @@ def main():
     device.sync()
 
     print(f"[rank {rank}] [SUCCESS] multimem addresses resolved and barriers completed")
-
 
     dev_comm_resource.close()
     win_resource.close()
