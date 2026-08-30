@@ -22,7 +22,7 @@
 
 namespace uniflow {
 
-constexpr uint8_t kRdmaVersion{2};
+constexpr uint8_t kRdmaVersion{3};
 
 // Forward declarations.
 class RdmaRegistrationHandle;
@@ -646,7 +646,8 @@ class RdmaTransportFactory : public TransportFactory {
       std::shared_ptr<IbvApi> ibvApi = nullptr,
       std::shared_ptr<CudaDriverApi> cudaDriverApi = nullptr,
       std::shared_ptr<CudaApi> cudaApi = nullptr,
-      std::optional<uint8_t> portNum = std::nullopt);
+      std::optional<uint8_t> portNum = std::nullopt,
+      std::shared_ptr<DeviceAdapter> deviceAdapter = nullptr);
 
   ~RdmaTransportFactory() override = default;
 
