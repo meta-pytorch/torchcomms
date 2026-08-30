@@ -252,6 +252,7 @@ torchcomms_use_torch_pybind11(torchcomms_comms)
 target_compile_features(torchcomms_comms PRIVATE cxx_std_20)
 target_link_directories(torchcomms_comms PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms PRIVATE
+    glog::glog_headers
     torchcomms
     fmt::fmt
     nlohmann_json::nlohmann_json

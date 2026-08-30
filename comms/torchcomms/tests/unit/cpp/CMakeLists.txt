@@ -77,8 +77,28 @@ target_link_options(TorchCommFactoryTest PRIVATE
     "LINKER:--allow-shlib-undefined"
 )
 
+# TorchCommHooksTest - hook registration and dispatch tests
+add_executable(TorchCommHooksTest
+    TorchCommHooksTest.cpp
+)
+target_include_directories(TorchCommHooksTest PRIVATE
+    ${ROOT}
+    ${CONDA_INCLUDE}
+)
+target_compile_features(TorchCommHooksTest PRIVATE cxx_std_20)
+target_link_libraries(TorchCommHooksTest PRIVATE
+    torchcomms
+    ${TORCH_LIBRARIES}
+    GTest::gtest_main
+    GTest::gmock
+)
+target_link_options(TorchCommHooksTest PRIVATE
+    "LINKER:--allow-shlib-undefined"
+)
+
 # Add dependency so fake backend is built before factory test runs
 add_dependencies(TorchCommFactoryTest fake_test_backend)
+add_dependencies(TorchCommHooksTest fake_test_backend)
 
 # TorchCommOptionsTest's BackendWrapper tag tests load the fake backend
 # dynamically via new_comm("fake_test"), so it also needs the fake backend
@@ -88,6 +108,10 @@ add_dependencies(TorchCommOptionsTest fake_test_backend)
 # Register tests with CTest
 include(GoogleTest)
 gtest_discover_tests(TorchCommOptionsTest
+    PROPERTIES
+    ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>"
+)
+gtest_discover_tests(TorchCommHooksTest
     PROPERTIES
     ENVIRONMENT "FAKE_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:fake_test_backend>"
 )

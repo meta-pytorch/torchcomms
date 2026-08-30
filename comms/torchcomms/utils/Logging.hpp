@@ -33,20 +33,24 @@ inline std::string getRankPrefix(torch::comms::TorchCommBackend* comm) {
       TC_LOG_WITH_PREFIX_BUILDER(__VA_ARGS__), \
       TC_LOG_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
-// Google glog's api does not have an external function that allows one to check
-// if glog is initialized or not. It does have an internal function - so we are
-// declaring it here. This is a hack but has been used by a bunch of others too
-// (e.g. Torch).
-// Copied from https://fburl.com/code/tu9hg6gf
+#if !defined(TORCHCOMMS_GLOG_HAS_PUBLIC_INIT_CHECK)
+// Older glog releases expose the initialization check only through this
+// internal symbol.
 namespace google::glog_internal_namespace_ {
 bool IsGoogleLoggingInitialized();
 } // namespace google::glog_internal_namespace_
+#endif
 
 namespace {
 
 [[maybe_unused]] void tryTorchCommLoggingInit(std::string_view name) {
-  // This trick can only be used on UNIX platforms
-  if (!::google::glog_internal_namespace_::IsGoogleLoggingInitialized()) {
+#if defined(TORCHCOMMS_GLOG_HAS_PUBLIC_INIT_CHECK)
+  const bool initialized = ::google::IsGoogleLoggingInitialized();
+#else
+  const bool initialized =
+      ::google::glog_internal_namespace_::IsGoogleLoggingInitialized();
+#endif
+  if (!initialized) {
     ::google::InitGoogleLogging(name.data());
     // This will trigger a kernel panic on GB200 NVIDIA driver
     // temporarily disable signal handler until NVIDIA releases the new driver

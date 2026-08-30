@@ -553,6 +553,7 @@ std::shared_ptr<TorchComm> TorchComm::split(
   preHook(op_id, SplitPreHookArgs(ranks, name));
   auto new_impl = impl_->split(ranks, name, options);
   if (new_impl == nullptr) {
+    postHook(op_id, SplitPostHookArgs(std::weak_ptr<TorchComm>{}));
     return nullptr;
   }
   // Map the local ranks to global ranks from this communicator

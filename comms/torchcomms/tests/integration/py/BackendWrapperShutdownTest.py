@@ -27,6 +27,7 @@ import unittest
 import torch
 import torch.distributed as dist
 from packaging.version import InvalidVersion, Version
+from torch.distributed import distributed_c10d as c10d
 from torchcomms.tests.helpers.py.test_helpers import skip_if_ncclx
 from torchcomms.tests.integration.helpers.TorchCommTestHelpers import (
     get_device,
@@ -47,6 +48,23 @@ def _torch_predates_pr_182057() -> bool:
         # Unparsable version string — assume newer to avoid silently
         # skipping on something we can't classify.
         return False
+
+
+def _torch_preserves_native_xccl_backend_type() -> bool:
+    get_default_backend_type = getattr(
+        c10d, "_get_default_backend_type_for_backend_config", None
+    )
+    xccl_backend_type = getattr(dist.ProcessGroup.BackendType, "XCCL", None)
+    if get_default_backend_type is None or xccl_backend_type is None:
+        return True
+
+    original_use_torchcomms = dist.config.use_torchcomms
+    try:
+        dist.config.use_torchcomms = True
+        backend_config = c10d.BackendConfig("cpu:gloo,xpu:xccl")
+        return get_default_backend_type(backend_config) == xccl_backend_type
+    finally:
+        dist.config.use_torchcomms = original_use_torchcomms
 
 
 def _local_rank() -> int:
@@ -132,6 +150,11 @@ class TestBackendWrapperShutdown(unittest.TestCase):
         dist.config.use_torchcomms = True
         store_name = "mixed_backend_destroy_idempotent"
         backend_str = os.environ["TEST_BACKEND"]
+        if backend_str == "xccl" and not _torch_preserves_native_xccl_backend_type():
+            self.skipTest(
+                f"torch {torch.__version__} misclassifies mixed Gloo/XCCL "
+                "TorchComms process groups as CUSTOM"
+            )
         device_str = "cuda" if backend_str == "nccl" else "xpu"
         local_device_str = f"{device_str}:{local_rank}"
         dist.init_process_group(

@@ -176,6 +176,8 @@ class TorchCommBackend {
   }
 
   // Communicator Management
+  // Ranks are parent-local. Backends define whether nonmembers pass the same
+  // membership list or an empty list, and return nullptr for nonmembers.
   virtual std::shared_ptr<TorchCommBackend> split(
       const std::vector<int>& ranks,
       const std::string& name,
