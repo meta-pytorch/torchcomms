@@ -76,6 +76,8 @@ class CommOptions {
   // Returns default_value if the key is not present.
   template <typename T>
   T getHint(std::string_view key, const T& default_value) const;
+
+  bool isHighPriorityStreamEnabled() const;
 };
 
 // Options classes for window operations
