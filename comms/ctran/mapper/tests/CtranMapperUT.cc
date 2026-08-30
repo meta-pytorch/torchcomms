@@ -18,7 +18,6 @@
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 class CtranMapperTest : public ::testing::Test {
  public:

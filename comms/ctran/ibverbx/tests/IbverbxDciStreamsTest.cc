@@ -5,7 +5,6 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include "comms/ctran/utils/CtranLogger.h"
 
@@ -13,10 +12,6 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/benchmarks/IbverbxDcBenchUtils.h"
 #include "comms/ctran/ibverbx/tests/dc_utils.h"
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 namespace ibverbx {
 
