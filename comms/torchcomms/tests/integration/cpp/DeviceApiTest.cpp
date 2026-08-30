@@ -906,7 +906,33 @@ TEST_F(DeviceApiTest, PutHalf) {
 // --- Address query tests ---
 
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 0)
-TEST_F(DeviceApiTest, GetMultimemAddress) {
+// Multimem (NVLS multicast) is gated on > 2 LSA ranks by the device backend
+// (NCCLDeviceBackend::create_device_window sets
+//   reqs.lsaMultimem = multimemSupport(...) && teamLsa(nccl_comm).nRanks > 2,
+// mirroring NCCL's internal gating). On <=2-rank configs the device-side
+// multimem pointer is null by design while the host side returns a valid NVLS
+// address, so the device-vs-host comparison is only meaningful with > 2 ranks.
+// The guard lives in this fixture's SetUp() — not inline in the test body — so
+// it cannot be silently dropped when the test bodies are refactored (the inline
+// GTEST_SKIP had been lost four times; see T277264786). Mirrors the Python
+// sibling test_e2e.py::test_get_multimem_address.
+class DeviceApiMultimemTest : public DeviceApiTest {
+ protected:
+  void SetUp() override {
+    DeviceApiTest::SetUp();
+    if (IsSkipped()) {
+      // Base SetUp already skipped (e.g. stress tests disabled); num_ranks_ is
+      // not populated, so don't evaluate the rank guard.
+      return;
+    }
+    if (num_ranks_ <= 2) {
+      GTEST_SKIP() << "get_multimem_address requires LSA team size > 2 "
+                      "(lsaMultimem is gated off for <=2-rank configs)";
+    }
+  }
+};
+
+TEST_F(DeviceApiMultimemTest, GetMultimemAddress) {
   testGetMultimemAddress();
 }
 #endif
