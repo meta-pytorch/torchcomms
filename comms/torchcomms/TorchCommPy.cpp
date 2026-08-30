@@ -233,6 +233,23 @@ Example usage:
           "Check if the work is completed",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "status",
+          &TorchWork::status,
+          R"(
+Return the current lifecycle status of this work.
+
+Unlike is_completed(), this distinguishes an operation that failed
+(ERROR / TIMEDOUT) from one that is merely still in flight (INPROGRESS).
+Fault-tolerance callers need that distinction before treating a work as
+failed, since is_completed() returns False for both.
+
+This accessor reports the last status the backend recorded; it does not
+itself advance it. How promptly a backend records a terminal status, and
+whether any call can force it to, are backend-specific -- see status() on
+the backend's own work type before relying on freshness.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "wait",
           &TorchWork::wait,
           R"(
