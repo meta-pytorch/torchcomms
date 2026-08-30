@@ -214,8 +214,6 @@ CommsMaybe<bool> CudaWaitPoint::waitEventFinish(
           commInternalError));
     }
   }
-  return folly::makeUnexpected(
-      CommsError("CudaWaitPoint: Reached unexpected code", commInternalError));
 }
 
 /* static */ CudaReferencePoint& CudaWaitPoint::getReferencePoint() {
