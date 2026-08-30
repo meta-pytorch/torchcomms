@@ -67,6 +67,10 @@ ClogHook::ClogHook(
 
 ClogHook::~ClogHook() = default;
 
+void ClogHook::flush() {
+  log_file_.flush();
+}
+
 // -- Registration --
 
 void ClogHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
@@ -152,6 +156,13 @@ void ClogHook::registerHooks(
         self->onGraphReplayEvent(
             comm_name, graph_id, replay_id, stream, collective_index, event);
       });
+
+  // Flush the log when the comm aborts (watchdog timeout, async error, or
+  // explicit abort): those paths run abort hooks and then call std::abort(),
+  // which bypasses the destructor's flush, so the buffered tail — including the
+  // stalled collective's enqueue — would otherwise never reach the on-disk log
+  // that hang-detection tooling reads.
+  auto abort_hook_handle = comm->registerAbortHook([self]() { self->flush(); });
 
   registrations_.push_back(CommRegistration{.comm = comm});
   active_comm_count_.fetch_add(1, std::memory_order_relaxed);
