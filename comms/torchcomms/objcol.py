@@ -561,9 +561,9 @@ def broadcast_object_list(
     # has only one element, we can skip the copy.
     if my_comm_rank == root:
         if len(tensor_list) == 1:  # type: ignore[possibly-undefined]
-            object_tensor = tensor_list[0]  # pyre-fixme[61]
+            object_tensor = tensor_list[0]
         else:
-            object_tensor = torch.cat(tensor_list)  # pyre-fixme[61]
+            object_tensor = torch.cat(tensor_list)
     else:
         object_tensor = torch.empty(  # type: ignore[call-overload]
             torch.sum(object_sizes_tensor).item(),  # type: ignore[arg-type]

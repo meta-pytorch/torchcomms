@@ -98,7 +98,6 @@ def get_pg_options(backend: str) -> object | None:
     doesn't have a supported options class.
     """
     if backend in ["nccl", "ncclx"]:
-        # pyre-ignore[16]: ProcessGroupNCCL not in Pyre stubs
         return dist.ProcessGroupNCCL.Options()
     elif backend in ["gloo"]:
         # pyre-ignore[16]: ProcessGroupGloo not in Pyre stubs

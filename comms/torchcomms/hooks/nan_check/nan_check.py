@@ -28,7 +28,6 @@ from torchcomms._comms import OpName
 # The op is registered when torch.distributed is imported (which happens
 # before any communicator is created), so we resolve on first use to
 # avoid a circular import at module load time.
-# pyre-ignore[5]: Global has no type annotation.
 _check_for_nan = None
 
 

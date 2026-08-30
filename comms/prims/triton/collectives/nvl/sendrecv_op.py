@@ -310,7 +310,6 @@ def _launch(
 
     grid = (2 * num_blocks,) if mode == _MODE_BIDIRECTIONAL else (num_blocks,)
 
-    # pyre-ignore[28]: triton's `kernel[grid](...)` launcher accepts JIT-special
     # kwargs (`num_warps`, `num_stages`) that pyre can't see in the kernel
     # function's own signature. Not a real type error.
     triton_nvl_sendrecv_kernel[grid](

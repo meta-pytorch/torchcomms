@@ -62,6 +62,7 @@ def fallback_split_group_new_group(
     if new_pg is None:
         raise AssertionError("Failed to create process group for this rank")
 
+    # pyrefly: ignore [bad-return]
     return new_pg
 
 
