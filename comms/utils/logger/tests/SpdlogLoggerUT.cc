@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -22,6 +23,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <spdlog/async.h>
+#include <spdlog/sinks/sink.h>
 
 #include "comms/utils/logger/CommsLogFormatter.h"
 #include "comms/utils/logger/CudaLog.h"
@@ -32,7 +35,31 @@ namespace meta::comms::logger::testing {
 bool holdAsyncThreadPoolLeaseForTesting(const std::function<void()>& callback);
 void waitForAsyncThreadPoolShutdownForTesting();
 bool asyncThreadPoolLeaseAvailableForTesting();
+void addSinkForTesting(
+    CommsSpdlogLogger& logger,
+    std::shared_ptr<spdlog::sinks::sink> sink);
+void initGlobalThreadPoolForTesting();
+bool globalThreadPoolAliveForTesting();
 } // namespace meta::comms::logger::testing
+
+// Runs a callback from inside sink delivery, which is the only point at which
+// the thread-pool lease scoping in logFormatted() is observable.
+class CallbackSink final : public spdlog::sinks::sink {
+ public:
+  explicit CallbackSink(std::function<void()> onLog)
+      : onLog_{std::move(onLog)} {}
+
+  void log(const spdlog::details::log_msg& /* message */) override {
+    onLog_();
+  }
+  void flush() override {}
+  void set_pattern(const std::string& /* pattern */) override {}
+  void set_formatter(
+      std::unique_ptr<spdlog::formatter> /* formatter */) override {}
+
+ private:
+  std::function<void()> onLog_;
+};
 
 /*
  * Each instance owns a private directory. Concurrent copies of this binary --
@@ -615,6 +642,86 @@ TEST(SpdlogLoggerTest, ThreadNameIsTruncatedToStorageCapacity) {
 
   meta::comms::logger::setSpdlogThreadName("main");
   EXPECT_EQ(meta::comms::logger::getLogThreadName(), "main");
+}
+
+/*
+ * The thread-pool lease exists to keep the async pool alive across a post.
+ * acquire() takes a shared lock on leaseMutex_ that stop() takes exclusively,
+ * so holding the lease across synchronous delivery too would make
+ * shutdownSpdlogForFatal() -- and the exit-time stopper -- wait for the lease
+ * behind the sink write. Synchronous delivery no longer holds a pool lease.
+ * Deliver synchronously, run shutdown from another thread while still inside
+ * the sink, and require it to finish.
+ */
+TEST(SpdlogLoggerTest, ShutdownIsNotBlockedBySynchronousDelivery) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        auto& logger = getSpdlogLogger();
+        logger.configure(
+            "TEST", []() { return 0; }, {}, /*asyncLogging=*/false);
+        logger.set_level(spdlog::level::info);
+
+        std::atomic<bool> shutdownDone{false};
+        meta::comms::logger::testing::addSinkForTesting(
+            logger, std::make_shared<CallbackSink>([&]() {
+              std::thread shutdown{[&]() {
+                meta::comms::logger::shutdownSpdlogForFatal();
+                shutdownDone.store(true);
+              }};
+              const auto deadline =
+                  std::chrono::steady_clock::now() + std::chrono::seconds{10};
+              while (!shutdownDone.load() &&
+                     std::chrono::steady_clock::now() < deadline) {
+                /* sleep override */
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+              }
+              if (!shutdownDone.load()) {
+                // Joining a blocked shutdown would hang rather than report.
+                shutdown.detach();
+                std::_Exit(2);
+              }
+              shutdown.join();
+            }));
+
+        COMMS_LOG(WARN, "synchronous delivery must not block shutdown");
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0),
+      "synchronous delivery must not block shutdown");
+}
+
+/*
+ * The fatal path must not reach spdlog's global registry. spdlog::shutdown()
+ * gets there via registry::instance(), a function-local static, so a
+ * COMMS_LOG_FATAL raised during static destruction could touch it after it has
+ * been destroyed. Leaving the registry pool running is the observable proof
+ * that this path answers only to the library-owned pool.
+ *
+ * The registry is probed through the library's own translation unit on
+ * purpose. Calling spdlog::thread_pool() from here instead fails under
+ * @mode/dev-asan, where the test binary holds a separate copy of the
+ * header-only registry -- the same duplication that made an earlier teardown
+ * test in this file vacuous.
+ */
+TEST(SpdlogLoggerTest, FatalShutdownLeavesGlobalRegistryPoolAlone) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        namespace logger_testing = meta::comms::logger::testing;
+        logger_testing::initGlobalThreadPoolForTesting();
+        if (!logger_testing::globalThreadPoolAliveForTesting()) {
+          std::_Exit(2);
+        }
+        meta::comms::logger::shutdownSpdlogForFatal();
+        if (!logger_testing::globalThreadPoolAliveForTesting()) {
+          std::_Exit(3);
+        }
+        COMMS_LOG(WARN, "global registry pool untouched");
+        std::exit(0);
+      },
+      ::testing::ExitedWithCode(0),
+      "global registry pool untouched");
 }
 
 TEST(SpdlogLoggerTest, AsyncLoggingFallsBackWhenThreadPoolIsGone) {
