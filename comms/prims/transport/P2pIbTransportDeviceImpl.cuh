@@ -217,7 +217,7 @@ __device__ __forceinline__ void assert_progress_slot_idle(
     const IbChannelProgress& slot,
     const char* opName);
 
-template <typename P, typename Transport>
+template <typename P, bool IsWarpProxy = false, typename Transport>
 [[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
@@ -1476,7 +1476,7 @@ __device__ __forceinline__ void send_impl(
           return prepare_send_slot<Proto>(
               transport, group, slot, pipelineCycle, abortDevice);
         } else {
-          return ibOps->prepare_send_slot(
+          return ibOps->template prepare_send_slot<Proto>(
               transport, group, slot, pipelineCycle, abortDevice);
         }
       }();
@@ -2469,7 +2469,7 @@ __device__ __forceinline__ void forward_impl(
     } else {
       const uint64_t recvToken = ibOps->wait_recv(
           transport, group, recvProtocolBytesThis, abortDevice);
-      if (ibOps->prepare_send_slot(
+      if (ibOps->template prepare_send_slot<Proto>(
               fwdTransport,
               group,
               static_cast<uint32_t>(fwdSlot),
@@ -2824,7 +2824,7 @@ __device__ __forceinline__ void assert_progress_slot_idle(
  * The verdict leaves through the `group.sync()` that already terminated this
  * function, now a broadcast, so making it group-uniform costs no extra barrier.
  */
-template <typename P, typename Transport>
+template <typename P, bool IsWarpProxy, typename Transport>
 [[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
@@ -2847,11 +2847,19 @@ template <typename P, typename Transport>
             .completionId = laneId,
             .value = slot.values[laneId],
         };
-        transport.wait_local_completion(group.group_id, ticket, abortDevice);
-        // Confirm rather than assume: the wait above cannot report that it gave
-        // up, and a lane earlier in this loop may already have latched the
-        // abort, so later lanes can fall straight through it.
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+        // A void wait may stop on abort, so confirm the completion afterward.
+        bool completed;
+        if constexpr (IsWarpProxy) {
+          transport.template wait_local_completion<true>(
+              group.group_id, ticket, abortDevice);
+          completed = transport.template is_local_completion_ready<true>(
+              group.group_id, ticket, abortDevice);
+        } else {
+          transport.wait_local_completion(group.group_id, ticket, abortDevice);
+          completed = transport.is_local_completion_ready(
+              group.group_id, ticket, abortDevice);
+        }
+        if (completed) {
           pending &= ~laneBit;
         }
       }

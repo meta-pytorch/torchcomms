@@ -505,6 +505,7 @@ class P2pIbgdaTransportDevice {
    *                   WQE through the companion QP.
    * @param counterVal Value added to *counterBuf.
    */
+  template <bool IsWarpProxy = false>
   __device__ IbLocalCompletionTicket
   put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -515,7 +516,7 @@ class P2pIbgdaTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
       bool signalPerLane = false) {
-    return put_impl(
+    return put_impl<IsWarpProxy>(
         group,
         localBuf,
         remoteBuf,
@@ -684,14 +685,17 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
+  template <bool IsWarpProxy = false>
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
       const AbortDevice& abortDevice = AbortDevice()) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
-    const int status = doca_gpu_dev_verbs_poll_one_cq_at<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+    constexpr auto kCqSharingMode = IsWarpProxy
+        ? DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA
+        : DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE;
+    const int status = doca_gpu_dev_verbs_poll_one_cq_at<kCqSharingMode>(
         doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
     if (status == 0) {
       return true;
@@ -735,13 +739,14 @@ class P2pIbgdaTransportDevice {
     return false;
   }
 
+  template <bool IsWarpProxy = false>
   __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
       const AbortDevice& abortDevice) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
-    wait_local_on_qp(lane.qp, ticket.value, abortDevice);
+    wait_local_on_qp<IsWarpProxy>(lane.qp, ticket.value, abortDevice);
   }
 
   __device__ __forceinline__ uint32_t send_completion_lane_count() const {
@@ -1100,19 +1105,22 @@ class P2pIbgdaTransportDevice {
     record_flush_wqe(lane, ticket);
   }
 
+  template <bool IsWarpProxy = false>
   __device__ void wait_local_on_qp(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_ticket_t ticket,
       AbortDevice abortDevice = AbortDevice()) {
+    constexpr auto kCqSharingMode = IsWarpProxy
+        ? DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA
+        : DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE;
     if (!abortDevice.isEnabled()) {
       doca_gpu_dev_verbs_wait<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+          kCqSharingMode,
           DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, ticket);
     } else {
       int status;
       do {
-        status = doca_gpu_dev_verbs_poll_one_cq_at<
-            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        status = doca_gpu_dev_verbs_poll_one_cq_at<kCqSharingMode>(
             doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
           FT_ABORT_BREAK(
@@ -1183,6 +1191,7 @@ class P2pIbgdaTransportDevice {
         group.group_id, direction, mask, state.lastFlushWqe, abortDevice);
   }
 
+  template <bool IsWarpProxy>
   __device__ IbLocalCompletionTicket put_impl(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -1235,7 +1244,7 @@ class P2pIbgdaTransportDevice {
         record_put_wqe(lane, tickets.put_wqe);
         record_signal_wqe(lane, tickets.signal_wqe);
       } else if (hasSignal) {
-        const auto tickets = put_signal_single_impl(
+        const auto tickets = put_signal_single_impl<IsWarpProxy>(
             lane, localBuf, remoteBuf, nbytes, effectiveSignalBuf, signalVal);
         dataTicket = tickets.put_wqe;
         record_put_wqe(lane, tickets.put_wqe);
@@ -1413,7 +1422,8 @@ class P2pIbgdaTransportDevice {
     uint64_t base_wqe_idx = 0;
     if (group.is_leader()) {
       base_wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, group.group_size);
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+          qp, group.group_size);
     }
     base_wqe_idx = group.broadcast<uint64_t>(base_wqe_idx);
 
@@ -1447,14 +1457,14 @@ class P2pIbgdaTransportDevice {
 
     // Leader marks ready and rings doorbell
     if (group.is_leader()) {
+      const uint64_t lastWqeIdx = base_wqe_idx + group.group_size - 1;
       doca_gpu_dev_verbs_mark_wqes_ready<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-          qp, base_wqe_idx, base_wqe_idx + group.group_size - 1);
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+          qp, base_wqe_idx, lastWqeIdx);
       doca_gpu_dev_verbs_submit<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
           DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-          qp, base_wqe_idx + group.group_size);
+          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, lastWqeIdx + 1);
     }
 
     group.sync();
@@ -1478,54 +1488,14 @@ class P2pIbgdaTransportDevice {
         .key = remoteBuf.rkey_per_device[lane.nic_id].value};
 
     doca_gpu_dev_verbs_put<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
         lane.qp, remoteAddr, localAddr, nbytes, &ticket);
     return ticket;
   }
 
-  // --- WQ slot lifecycle ---
-  //
-  // Every posting site funnels through these three, so the sharing mode and the
-  // fence rule are stated once instead of at each call.
-  //
-  // A QP has exactly one poster; see "QP posting ownership" in
-  // comms/prims/docs/Channels.md for why that is structural and what depends
-  // on it.
-
-  static constexpr auto kQpSharingMode =
-      DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE;
-
-  __device__ __forceinline__ uint64_t
-  reserve_wqes(doca_gpu_dev_verbs_qp* qp, uint32_t count) const {
-    return doca_gpu_dev_verbs_reserve_wq_slots<kQpSharingMode>(qp, count);
-  }
-
-  __device__ __forceinline__ void mark_wqes_ready_mode(
-      doca_gpu_dev_verbs_qp* qp,
-      uint64_t fromWqe,
-      uint64_t toWqe) const {
-    doca_gpu_dev_verbs_mark_wqes_ready<kQpSharingMode>(qp, fromWqe, toWqe);
-  }
-
-  /**
-   * Ring the doorbell for everything up to and including `toWqe`.
-   *
-   * The GPU sync scope is load-bearing, not a default: under EXCLUSIVE
-   * `mark_wqes_ready` is a bare store, so this is the only release ordering the
-   * WQE payload before the MMIO doorbell. THREAD here would let the NIC fetch a
-   * WQE it has not been shown.
-   */
-  __device__ __forceinline__ void submit_wqes(
-      doca_gpu_dev_verbs_qp* qp,
-      uint64_t toWqe) const {
-    doca_gpu_dev_verbs_submit<
-        kQpSharingMode,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, toWqe + 1);
-  }
-
+  template <bool IsWarpProxy = false>
   __device__ IbgdaPutSignalTickets put_signal_single_impl(
       const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
@@ -1564,7 +1534,22 @@ class P2pIbgdaTransportDevice {
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
     numChunks = numChunks > 1 ? numChunks : 1;
-    uint64_t baseWqeIdx = reserve_wqes(lane.qp, numChunks + 1);
+    uint64_t baseWqeIdx;
+    if constexpr (!IsWarpProxy) {
+      baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+          lane.qp, numChunks + 1);
+    } else {
+      // The service warp owns the SQ; service and worker warps share its CQ.
+      baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+          lane.qp,
+          numChunks + 1,
+          DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_SKIP_AVAILABILITY_CHECK);
+      doca_gpu_dev_verbs_wait_until_slot_available<
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(
+          lane.qp, baseWqeIdx + numChunks);
+    }
     uint64_t wqeIdx = baseWqeIdx;
     std::size_t remainingSize = nbytes;
 
@@ -1609,8 +1594,13 @@ class P2pIbgdaTransportDevice {
         sizeof(uint64_t),
         signalVal,
         0);
-    mark_wqes_ready_mode(lane.qp, baseWqeIdx, wqeIdx);
-    submit_wqes(lane.qp, wqeIdx);
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+        lane.qp, baseWqeIdx, wqeIdx);
+    doca_gpu_dev_verbs_submit<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(lane.qp, wqeIdx + 1);
     return IbgdaPutSignalTickets{lastPutWqeIdx, wqeIdx};
 #endif
   }
@@ -1666,7 +1656,7 @@ class P2pIbgdaTransportDevice {
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
     numChunks = numChunks > 1 ? numChunks : 1;
     uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, numChunks);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp, numChunks);
     uint64_t wqeIdx = baseWqeIdx;
     std::size_t remainingSize = nbytes;
 
@@ -1696,11 +1686,11 @@ class P2pIbgdaTransportDevice {
     const uint64_t lastPutWqeIdx = wqeIdx;
 
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
         qp, baseWqeIdx, lastPutWqeIdx);
 
     uint64_t companionBaseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(companionQp, 2);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(companionQp, 2);
     uint64_t companionWqeIdx = companionBaseWqeIdx;
     doca_gpu_dev_verbs_wqe* wqePtr =
         doca_gpu_dev_verbs_get_wqe_ptr(companionQp, companionWqeIdx);
@@ -1728,15 +1718,15 @@ class P2pIbgdaTransportDevice {
         counterVal,
         0);
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
         companionQp, companionBaseWqeIdx, companionWqeIdx);
 
     doca_gpu_dev_verbs_qp* qps[kNumQps] = {qp, companionQp};
     uint64_t prodIndices[kNumQps] = {lastPutWqeIdx + 1, companionWqeIdx + 1};
     doca_gpu_dev_verbs_submit_multi_qps<
         kNumQps,
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qps, prodIndices);
     return lastPutWqeIdx;
 #endif
@@ -1783,7 +1773,7 @@ class P2pIbgdaTransportDevice {
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
     numChunks = numChunks > 1 ? numChunks : 1;
     uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, numChunks + 1);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp, numChunks + 1);
     uint64_t wqeIdx = baseWqeIdx;
     std::size_t remainingSize = nbytes;
 
@@ -1829,11 +1819,11 @@ class P2pIbgdaTransportDevice {
         0);
     const uint64_t signalWqeIdx = wqeIdx;
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
         qp, baseWqeIdx, signalWqeIdx);
 
     uint64_t companionBaseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(companionQp, 2);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(companionQp, 2);
     uint64_t companionWqeIdx = companionBaseWqeIdx;
     wqePtr = doca_gpu_dev_verbs_get_wqe_ptr(companionQp, companionWqeIdx);
     doca_gpu_dev_verbs_wqe_prepare_wait(
@@ -1860,15 +1850,15 @@ class P2pIbgdaTransportDevice {
         counterVal,
         0);
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
         companionQp, companionBaseWqeIdx, companionWqeIdx);
 
     doca_gpu_dev_verbs_qp* qps[kNumQps] = {qp, companionQp};
     uint64_t prodIndices[kNumQps] = {signalWqeIdx + 1, companionWqeIdx + 1};
     doca_gpu_dev_verbs_submit_multi_qps<
         kNumQps,
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qps, prodIndices);
     return IbgdaPutSignalTickets{lastPutWqeIdx, signalWqeIdx};
 #endif
@@ -1913,7 +1903,7 @@ class P2pIbgdaTransportDevice {
         counterVal);
 #else
     uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(companionQp, 2);
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(companionQp, 2);
     uint64_t wqeIdx = baseWqeIdx;
     doca_gpu_dev_verbs_wqe* wqePtr =
         doca_gpu_dev_verbs_get_wqe_ptr(companionQp, wqeIdx);
@@ -1941,11 +1931,11 @@ class P2pIbgdaTransportDevice {
         counterVal,
         0);
     doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
         companionQp, baseWqeIdx, wqeIdx);
     doca_gpu_dev_verbs_submit<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(companionQp, wqeIdx + 1);
 #endif
   }
@@ -1963,7 +1953,8 @@ class P2pIbgdaTransportDevice {
         .key = signalBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
-    uint64_t wqe_idx = reserve_wqes(qp, 1);
+    uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(qp, 1);
 
     doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
@@ -1984,8 +1975,13 @@ class P2pIbgdaTransportDevice {
         signalVal,
         0);
 
-    mark_wqes_ready_mode(qp, wqe_idx, wqe_idx);
-    submit_wqes(qp, wqe_idx);
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE>(
+        qp, wqe_idx, wqe_idx);
+    doca_gpu_dev_verbs_submit<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, wqe_idx + 1);
     return wqe_idx;
   }
 
