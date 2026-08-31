@@ -349,7 +349,10 @@ struct P2pIbTransportDevice {
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -464,10 +467,16 @@ struct P2pIbTransportDevice {
 static_assert(std::is_standard_layout_v<P2pIbTransportDevice>);
 static_assert(std::is_trivially_copyable_v<P2pIbTransportDevice>);
 
-template <uint32_t WorkerThreads>
+// `Proto` is the wire format every op on this policy uses. It lives on the
+// policy rather than on each call so a collective picks the format once, at the
+// point it builds its ops object, and cannot end up with a mixed-protocol
+// sequence on one channel. The warp-proxy policy has no LL counterpart, so LL
+// is only reachable through this blocking one.
+template <uint32_t WorkerThreads, typename Proto = protocol::Simple>
 class BlockingIbOps {
  public:
   static constexpr uint32_t kWorkerThreads = WorkerThreads;
+  using WireProto = Proto;
 
   __device__ BlockingIbOps(ThreadGroup workers, const AbortDevice& abortDevice)
       : workers_(workers), timeout_(abortDevice) {}
@@ -489,7 +498,7 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    transport.template send<CopyOp>(
+    transport.template send<CopyOp, Proto>(
         workers_, src, nbytes, maxSignalBytes, timeout_, args...);
   }
 
@@ -500,7 +509,7 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    transport.template recv<CopyOp>(
+    transport.template recv<CopyOp, Proto>(
         workers_, dst, nbytes, maxSignalBytes, timeout_, args...);
   }
 
@@ -512,7 +521,7 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    prev.template forward<CopyOp>(
+    prev.template forward<CopyOp, Proto>(
         workers_, dst, next, nbytes, maxSignalBytes, timeout_, args...);
   }
 

@@ -571,7 +571,7 @@ __device__ __forceinline__ void P2pIbTransportDevice::recv(
   }
 }
 
-template <typename CopyOp, typename... Args>
+template <typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ void P2pIbTransportDevice::forward(
     ThreadGroup& group,
     void* __restrict__ dst,
@@ -581,12 +581,12 @@ __device__ __forceinline__ void P2pIbTransportDevice::forward(
     const AbortDevice& abortDevice,
     Args... args) {
   if (type == P2pIbBackendType::IBRC && fwd.type == P2pIbBackendType::IBRC) {
-    ibrc->forward<CopyOp>(
+    ibrc->forward<CopyOp, Proto>(
         group, dst, *fwd.ibrc, nbytes, max_signal_bytes, abortDevice, args...);
     return;
   }
   if (type == P2pIbBackendType::IBGDA && fwd.type == P2pIbBackendType::IBGDA) {
-    ibgda->forward<CopyOp>(
+    ibgda->forward<CopyOp, Proto>(
         group, dst, *fwd.ibgda, nbytes, max_signal_bytes, abortDevice, args...);
     return;
   }
