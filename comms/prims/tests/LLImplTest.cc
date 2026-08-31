@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "comms/prims/core/LlxPacket.cuh"
@@ -432,6 +433,213 @@ TEST_F(LLImplTest, RepackForwardOnlyNullDst) {
       << got.flagErrors << " forwarded packet(s) still carry the upstream "
       << "generation with dst == nullptr";
   EXPECT_EQ(got.packetOut, src) << "forward-only relay payload wrong";
+}
+
+namespace {
+
+// Relay-reduce `src` (arriving as packets) against `local`, returning the
+// decoded fwd staging. `errors` receives the count of forwarded packets that
+// did not carry the downstream generation.
+template <typename T, typename Launch>
+std::vector<T> runRepackReduce(
+    const std::vector<T>& src,
+    const std::vector<T>& local,
+    Launch launch,
+    uint32_t& errors,
+    std::vector<char>& padding) {
+  const std::size_t nelems = src.size();
+  const std::size_t nbytes = nelems * sizeof(T);
+  const std::size_t wire = LlxPacketGeometry::wire_bytes(nbytes);
+  // Full data half of every packet, so the tail packet's padding comes back
+  // too. packetBytes > nbytes exactly when the payload does not fill the last
+  // packet, which is the only case where padding exists to check.
+  const std::size_t packetBytes =
+      LlxPacketGeometry::packet_count(nbytes) * LlxPacketGeometry::kData;
+
+  DeviceBuffer srcBuf(nbytes);
+  DeviceBuffer localBuf(nbytes);
+  DeviceBuffer recvStaging(wire);
+  DeviceBuffer fwdStaging(wire);
+  DeviceBuffer dstBuf(packetBytes);
+  DeviceBuffer errBuf(sizeof(uint32_t));
+  auto* err_d = static_cast<uint32_t*>(errBuf.get());
+
+  CUDACHECK_TEST(
+      cudaMemcpy(srcBuf.get(), src.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(
+      cudaMemcpy(localBuf.get(), local.data(), nbytes, cudaMemcpyHostToDevice));
+  // Poison both rings: the fwd ring must be fully rewritten, and any packet the
+  // relay skips decodes to garbage rather than to a stale zero that happens to
+  // match.
+  CUDACHECK_TEST(cudaMemset(recvStaging.get(), 0xEE, wire));
+  CUDACHECK_TEST(cudaMemset(fwdStaging.get(), 0xEE, wire));
+  // Non-zero: the padding assertion below is "still zero", so a dst pre-filled
+  // with zeros would make it pass even if the relay never wrote those bytes.
+  CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0x5A, packetBytes));
+  CUDACHECK_TEST(cudaMemset(err_d, 0, sizeof(uint32_t)));
+
+  launch(
+      srcBuf.get(),
+      localBuf.get(),
+      static_cast<char*>(recvStaging.get()),
+      static_cast<char*>(fwdStaging.get()),
+      dstBuf.get(),
+      err_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(
+      cudaMemcpy(&errors, err_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  std::vector<char> decoded(packetBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      decoded.data(), dstBuf.get(), packetBytes, cudaMemcpyDeviceToHost));
+
+  padding.assign(
+      decoded.begin() + static_cast<std::ptrdiff_t>(nbytes), decoded.end());
+
+  std::vector<T> out(nelems);
+  std::memcpy(out.data(), decoded.data(), nbytes);
+  return out;
+}
+
+// The packer zero-fills the tail packet's data half past the last valid byte
+// (see LLImpl::pack). Those bytes ship on the wire, so repack_reduce must
+// forward them unchanged -- a reduce that ran past nElem would write
+// Combine(0, local[...]) into them and corrupt the next hop's payload without
+// touching any byte the element comparison looks at. Empty for the tilings
+// whose payload exactly fills the last packet.
+void expectPaddingUntouched(const std::vector<char>& padding) {
+  const std::vector<char> zeros(padding.size(), char(0));
+  EXPECT_EQ(padding, zeros)
+      << "relay corrupted the tail packet's zero padding (" << padding.size()
+      << " bytes); it goes out on the wire to the next hop";
+}
+
+} // namespace
+
+// sizeof(T) == kData: one element per packet, all three reduce ops.
+TEST_F(LLImplTest, RepackReduceOneElemPerPacket) {
+  constexpr std::size_t kElems = 133;
+  std::vector<float> src(kElems), local(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    src[i] = static_cast<float>(i % 17);
+    local[i] = static_cast<float>((i % 5) + 1);
+  }
+
+  const std::array<test::ReduceKind, 3> kinds{
+      test::ReduceKind::Sum, test::ReduceKind::Max, test::ReduceKind::Min};
+  for (const auto kind : kinds) {
+    std::vector<float> expected(kElems);
+    for (std::size_t i = 0; i < kElems; ++i) {
+      switch (kind) {
+        case test::ReduceKind::Sum:
+          expected[i] = src[i] + local[i];
+          break;
+        case test::ReduceKind::Max:
+          expected[i] = std::max(src[i], local[i]);
+          break;
+        case test::ReduceKind::Min:
+          expected[i] = std::min(src[i], local[i]);
+          break;
+      }
+    }
+
+    uint32_t errors = 0;
+    std::vector<char> padding;
+    const auto actual = runRepackReduce<float>(
+        src,
+        local,
+        [&](void* s, void* l, char* recv, char* fwd, void* d, uint32_t* err) {
+          test::test_ll_repack_reduce_f32(
+              static_cast<const float*>(s),
+              static_cast<const float*>(l),
+              recv,
+              fwd,
+              static_cast<float*>(d),
+              kElems,
+              kind,
+              err);
+        },
+        errors,
+        padding);
+    EXPECT_EQ(errors, 0u)
+        << "forwarded packets missing the downstream flag for kind "
+        << static_cast<int>(kind);
+    EXPECT_EQ(actual, expected)
+        << "float relay-reduce mismatch for kind " << static_cast<int>(kind);
+    expectPaddingUntouched(padding);
+  }
+}
+
+// sizeof(T) < kData: two elements per packet, odd count so the final packet
+// carries one valid element plus the packer's zero padding, which the relay
+// must forward untouched.
+TEST_F(LLImplTest, RepackReduceTwoElemsPerPacketPartialTail) {
+  constexpr std::size_t kElems = 101;
+  std::vector<__half> src(kElems), local(kElems);
+  std::vector<float> expected(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    const float s = static_cast<float>(i % 7);
+    const float l = static_cast<float>(i % 3);
+    src[i] = __float2half(s);
+    local[i] = __float2half(l);
+    expected[i] = s + l;
+  }
+
+  uint32_t errors = 0;
+  std::vector<char> padding;
+  const auto actual = runRepackReduce<__half>(
+      src,
+      local,
+      [&](void* s, void* l, char* recv, char* fwd, void* d, uint32_t* err) {
+        test::test_ll_repack_reduce_f16(s, l, recv, fwd, d, kElems, err);
+      },
+      errors,
+      padding);
+  EXPECT_EQ(errors, 0u) << "forwarded packets missing the downstream flag";
+
+  std::vector<float> actualF(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    actualF[i] = __half2float(actual[i]);
+  }
+  EXPECT_EQ(actualF, expected) << "fp16 two-elements-per-packet relay wrong";
+  // The only tiling here with a partial final packet: 101 halves = 202 B over
+  // 51 packets = 204 B, so 2 padding bytes must come back zero.
+  EXPECT_EQ(padding.size(), 2u) << "expected a partial final packet";
+  expectPaddingUntouched(padding);
+}
+
+// sizeof(T) > kData: one element spans two packets, so the relay has to
+// reassemble it, reduce once, and split it back out across both packets.
+TEST_F(LLImplTest, RepackReduceElementSpansPackets) {
+  constexpr std::size_t kElems = 97;
+  std::vector<int64_t> src(kElems), local(kElems), expected(kElems);
+  for (std::size_t i = 0; i < kElems; ++i) {
+    src[i] = static_cast<int64_t>((i + 1) * 0x0001'0000'0007ULL);
+    local[i] = static_cast<int64_t>(i);
+    expected[i] = src[i] + local[i];
+  }
+
+  uint32_t errors = 0;
+  std::vector<char> padding;
+  const auto actual = runRepackReduce<int64_t>(
+      src,
+      local,
+      [&](void* s, void* l, char* recv, char* fwd, void* d, uint32_t* err) {
+        test::test_ll_repack_reduce_i64(
+            static_cast<const int64_t*>(s),
+            static_cast<const int64_t*>(l),
+            recv,
+            fwd,
+            static_cast<int64_t*>(d),
+            kElems,
+            err);
+      },
+      errors,
+      padding);
+  EXPECT_EQ(errors, 0u) << "forwarded packets missing the downstream flag";
+  EXPECT_EQ(actual, expected) << "int64 spanning-packet relay-reduce wrong";
+  expectPaddingUntouched(padding);
 }
 
 TEST_F(LLImplTest, FlagRoundTrip) {
