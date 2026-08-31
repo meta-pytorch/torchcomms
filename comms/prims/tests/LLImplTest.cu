@@ -241,4 +241,78 @@ void test_ll_unpack_reduce_i64(
   launchByKind<int64_t>(src_d, staging_d, accum_d, nelems, ReduceKind::Sum);
 }
 
+// pack(src) under the upstream generation, relay it into a second staging
+// region under the downstream one, then check the two halves of the result
+// separately. See test_ll_repack() in the header for why the flag pass does
+// not go through unpack().
+template <typename P>
+__global__ void repack_kernel(
+    const char* src,
+    char* recvStaging,
+    char* fwdStaging,
+    char* dst,
+    char* packetOut,
+    std::size_t nbytes,
+    bool useDst,
+    uint32_t* flagErrors) {
+  ThreadGroup g{
+      threadIdx.x,
+      blockDim.x,
+      blockIdx.x,
+      blockIdx.x,
+      gridDim.x,
+      SyncScope::BLOCK};
+
+  const auto recvFlag = static_cast<typename P::FlagType>(7);
+  const auto fwdFlag = static_cast<typename P::FlagType>(9);
+
+  LLImpl<P>::pack(g, recvStaging, src, nbytes, recvFlag);
+  g.sync();
+  LLImpl<P>::repack(
+      g, useDst ? dst : nullptr, fwdStaging, recvStaging, nbytes, fwdFlag);
+  g.sync();
+
+  // (1) Flag pass. One read per packet, no spin.
+  const std::size_t nPackets = P::packet_count(nbytes);
+  for (std::size_t i = threadIdx.x; i < nPackets; i += blockDim.x) {
+    const char* pkt =
+        fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes);
+    if (!LLImpl<P>::is_flag_set(pkt, fwdFlag)) {
+      atomicAdd(flagErrors, 1u);
+    }
+  }
+  g.sync();
+
+  // (2) Payload pass. Force every flag to the downstream generation first so
+  // unpack() is guaranteed to terminate even when the relay mis-stamped -- the
+  // flag verdict is already recorded above, and this isolates the data half.
+  for (std::size_t i = threadIdx.x; i < nPackets; i += blockDim.x) {
+    LLImpl<P>::store_flag(
+        fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes), fwdFlag);
+  }
+  g.sync();
+  LLImpl<P>::unpack(g, packetOut, fwdStaging, nbytes, fwdFlag);
+}
+
+void test_ll_repack(
+    const char* src_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    char* dst_d,
+    char* packetOut_d,
+    std::size_t nbytes,
+    bool useDst,
+    uint32_t* flagErrors_d) {
+  repack_kernel<LlxPacketGeometry><<<1, 256>>>(
+      src_d,
+      recvStaging_d,
+      fwdStaging_d,
+      dst_d,
+      packetOut_d,
+      nbytes,
+      useDst,
+      flagErrors_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace comms::prims::test
