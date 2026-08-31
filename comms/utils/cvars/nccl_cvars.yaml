@@ -1872,7 +1872,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IB_VC_MODE
    type        : enum
-   default     : dqplb
+   default     : spray
    choices     : spray, dqplb
    description : |-
      Configure IBVCs to support either spray mode (uses extra QP for
