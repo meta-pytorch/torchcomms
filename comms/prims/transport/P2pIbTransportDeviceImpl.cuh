@@ -5,6 +5,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "comms/common/fault_tolerance/AbortMacros.cuh"
+#include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/trace/PipesTraceTypes.h"
@@ -124,7 +126,7 @@ struct Simple {
 // (8 B packet = 4 B data + 4 B flag), so wire == 2x payload; readiness is the
 // inline flag (no DATA_READY -- see consumeRecvBuf(LL)). LL reuses the same
 // channel/state as Simple (shared IbChannelLayout, staging, and progress
-// cursor); forward is not implemented for LL yet.
+// cursor).
 namespace protocol {
 struct LL {
   // Slot 1: LL owns its own per-channel resource slot. The two protocols must
@@ -791,6 +793,202 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   return SendSignal{};
 #endif
 }
+
+// LL forward: poll the upstream chunk's inline packet flags, then a single
+// fused CopyOp::forwardLL re-stamps recvStaging -> dst + fwdStaging with the
+// DOWNSTREAM ring's generation, and the relay put carries no DATA_READY. The
+// LL analog of consumeRecvBuf(LL) fused with prepareSendBuf(LL).
+//
+// Both this and consumeRecvBuf(LL) poll the whole chunk before decoding, but
+// only here is the poll load-bearing. On the recv side a codec that spins per
+// packet would also be correct, and the seam's poll is there so correctness
+// does not depend on which CopyOp turns up. The fused hook has no such
+// fallback: it writes fwdStaging as it reads recvStaging, so a spin partway
+// through would already have emitted packets built from not-yet-arrived data,
+// with nothing to roll back. Confirm the whole chunk first, then transform in
+// one non-spinning pass -- which is why CopyOp::forwardLL takes no AbortDevice.
+template <
+    typename CopyOp = Memcpy,
+    typename Transport,
+    typename FwdTransport,
+    typename... Args>
+__device__ __forceinline__ SendSignal prepareForwardBuf(
+    protocol::LL,
+    Transport& transport,
+    FwdTransport& fwdTransport,
+    ThreadGroup& group,
+    IbLocalChannel& recvLocalChannel,
+    const IbgdaLocalBuffer& recvDataReady,
+    char* dst,
+    char* fwdStaging,
+    const char* recvStaging,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t recvWaitCredit,
+    uint64_t recvFlagVal,
+    uint64_t fwdFlagVal,
+    const IbRemoteChannel& fwdRemoteChannel,
+    uint64_t fwdSignalVal,
+    uint32_t fwdSlot,
+    uint64_t fwdPipelineCycle,
+    const AbortDevice& abortDevice,
+    const PipesTraceAllReduceContext* recvTraceContext,
+    const PipesTraceAllReduceContext* sendTraceContext,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  static_assert(
+      has_forwardLL_v<CopyOp, P>,
+      "LL forward path requires a CopyOp with a packet-aware forwardLL<P>(); "
+      "Memcpy provides one. A reduce/convert CopyOp must supply its own -- "
+      "neither a contiguous copy nor a verbatim packet copy works, because the "
+      "relayed packets must carry the downstream ring's generation");
+#if PIPES_IS_DEVICE_COMPILE
+  // LL carries no DATA_READY and no slot-free credit on the recv side, so the
+  // signal-driven parameters Simple uses are inert here.
+  (void)recvDataReady;
+  (void)recvWaitCredit;
+  (void)fwdRemoteChannel;
+  (void)fwdSignalVal;
+  (void)recvTraceContext;
+
+  // Readiness first, for the same latency reason as the Simple overload: the
+  // upstream wait is the remote-dependent one, so by the time it clears the
+  // local NIC has usually already released this fwdStaging slot.
+  const auto recvFlag = static_cast<typename P::FlagType>(recvFlagVal);
+  while (
+      !LLImpl<P>::all_flags_set(group, recvStaging, payloadBytes, recvFlag)) {
+    // The loop condition itself is a group barrier (all_flags_set ends in
+    // group.all()), so the exit has to be group-uniform: a bare FT_ABORT_BREAK
+    // would let the threads that saw the abort leave while the rest block
+    // forever in that barrier. Check, then agree, then leave together.
+    const bool stop = FT_ABORT_CHECK(
+        abortDevice,
+        "forward(LL) waiting for packet flags flagVal=%llu, payloadBytes=%llu",
+        static_cast<unsigned long long>(recvFlagVal),
+        static_cast<unsigned long long>(payloadBytes));
+    if (group.all(stop)) {
+      break;
+    }
+  }
+  if (group.is_leader()) {
+    // LL carries no DATA_READY, but the upstream put still advanced the
+    // sender's IbQpState::cursor -- select_put_lane_ordinal() increments it on
+    // every put regardless of protocol, and it is channel-scoped, not
+    // slot-scoped. recvDataReadyLaneCursor mirrors it, so consuming an LL chunk
+    // here without the matching bump leaves the two one chunk apart per
+    // transfer and Simple's next receive on this channel waits on a lane the
+    // sender never wrote. Matches progress_recv_ready(LL) and
+    // consumeRecvBuf(LL).
+    ++recvLocalChannel.recvDataReadyLaneCursor;
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdFlagVal);
+  }
+  // LL owns kProtoSlot 1: the slot template argument must be this overload's
+  // tag, not Simple's.
+  if (prepare_send_slot<protocol::LL>(
+          fwdTransport, group, fwdSlot, fwdPipelineCycle, abortDevice)) {
+    // Slot not retired -- same memory hazard the Simple overload guards
+    // against: the NIC may still be reading this staging, so stop before
+    // CopyOp::forwardLL writes over it.
+    //
+    // KNOWN GAP, deferred to a follow-up: this abandonment is not reported
+    // precisely to the caller. Simple marks it with an empty SendSignal, but
+    // LL's success path returns an empty signal too (the inline flag IS the
+    // readiness mark), so forward_impl's `if constexpr (Simple)` test cannot
+    // cover us. That leaves only its `groupAborted()` break, which is amortized
+    // behind `nextPollCycles_` and so can answer false on the very iteration
+    // this guard fired -- exactly the staleness the Simple empty-signal test
+    // exists to close.
+    //
+    // The consequence is worse than a stall and is FAULT_TOLERANCE.md
+    // principle 4: continuing would ACK the predecessor for a chunk we never
+    // consumed and hand the successor a fused DATA_READY for data we never
+    // wrote, releasing two correctly-blocked peers and stopping them reaching
+    // their own deadlines -- one rank's abort silently suppressing fault
+    // detection on the rest.
+    //
+    // The guard still belongs here: dropping it would stage over live NIC
+    // reads, which is silent data corruption rather than a detection gap. The
+    // fix is a precise out-param (the `bool& abandoned` idiom LLImpl already
+    // uses in load_ready_payload) plus an LL arm in forward_impl's test.
+    return SendSignal{};
+  }
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdFlagVal);
+  }
+
+  // Clamp to the REAL payload before the codec, exactly as prepareSendBuf(LL)
+  // does: payloadBytes is rounded up to kData for the wire/credit stream, and
+  // both hops derive validBytes from values they already agree on, so
+  // packet_count() matches on each side.
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          validBytes);
+    }
+    CopyOp::template forwardLL<P>(
+        group,
+        dst,
+        fwdStaging,
+        recvStaging,
+        validBytes,
+        dataOff,
+        recvFlag,
+        static_cast<typename P::FlagType>(fwdFlagVal),
+        args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          validBytes);
+    }
+  }
+  group.sync();
+  // No DATA_READY: the inline flag the transform just stamped is the readiness
+  // mark. An empty IbgdaRemoteBuffer makes the put carry data only, exactly as
+  // prepareSendBuf(LL) / progress_send_signal(LL) do.
+  return SendSignal{IbgdaRemoteBuffer{}, /*val=*/0};
+#else
+  (void)transport;
+  (void)fwdTransport;
+  (void)group;
+  (void)recvLocalChannel;
+  (void)recvDataReady;
+  (void)dst;
+  (void)fwdStaging;
+  (void)recvStaging;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)recvWaitCredit;
+  (void)recvFlagVal;
+  (void)fwdFlagVal;
+  (void)fwdRemoteChannel;
+  (void)fwdSignalVal;
+  (void)fwdSlot;
+  (void)fwdPipelineCycle;
+  (void)abortDevice;
+  (void)recvTraceContext;
+  (void)sendTraceContext;
+  ((void)args, ...);
+  return SendSignal{};
+#endif
+}
+
 // LL encode: pack payload + trailing flag=flagVal into staging via
 // LLImpl::pack; the put carries NO DATA_READY (empty signal) -- the inline
 // flag is the readiness mark. Ignores the remote signal slot/value that
