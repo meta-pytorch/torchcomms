@@ -1,3 +1,4 @@
+#include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
@@ -50,5 +51,6 @@ TEST_F(NcclCommMemoryBench, MeasureCommMemory) {
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
