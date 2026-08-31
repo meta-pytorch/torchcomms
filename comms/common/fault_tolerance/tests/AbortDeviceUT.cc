@@ -408,6 +408,9 @@ TEST(AbortDeviceTest, deviceTimeoutProducerHostAndDeviceConsumer) {
   EXPECT_EQ(readDeviceValue(observedIsAborted), 1);
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{.reason = AbortReason::TIMED_OUT, .context = ""}));
 }
 
 TEST(AbortDeviceTest, hostAbortWinsOverDeviceTimeout) {

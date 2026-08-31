@@ -5,6 +5,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -143,6 +144,21 @@ TEST(AbortFactoryTest, disabledNoop) {
   abort->setAbort();
 
   EXPECT_FALSE(abort->isAborted());
+}
+
+TEST(AbortFactoryTest, DisabledSingletonDoesNotStoreAbortInfo) {
+  auto first = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
+  auto second = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
+
+  ASSERT_EQ(first.get(), second.get());
+
+  EXPECT_FALSE(
+      first->setAbort(AbortReason::NETWORK_ERROR, "ignored disabled abort"));
+
+  EXPECT_FALSE(first->isAborted());
+  EXPECT_EQ(first->getAbortInfo(), std::nullopt);
+  EXPECT_FALSE(second->isAborted());
+  EXPECT_EQ(second->getAbortInfo(), std::nullopt);
 }
 
 TEST(AbortTest, timeoutNotExpired) {
