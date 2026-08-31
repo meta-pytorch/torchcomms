@@ -100,6 +100,7 @@ import socket
 import sys
 import time
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 import torch
@@ -599,7 +600,7 @@ def _inject_overflow(rcclx, rank: int, is_active: bool) -> None:
     raise AssertionError(f"Rank {rank}: over-capacity plan was accepted")
 
 
-def _injectors() -> dict[str, object]:
+def _injectors() -> dict[str, Callable[[object, int, bool], None]]:
     """Explicit mapping rather than a registry decorator, which would need an
     import side effect to populate."""
     return {
