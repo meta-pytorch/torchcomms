@@ -2702,7 +2702,10 @@ class P2pIbgdaTransportDevice {
    * @param abortDevice         Optional abortDevice for wait operations.
    * @param args            Extra args forwarded to CopyOp::forward.
    */
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2711,11 +2714,14 @@ class P2pIbgdaTransportDevice {
       std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
-    forwardWithTrace<CopyOp>(
+    forwardWithTrace<CopyOp, Proto>(
         group, dst, fwd, nbytes, max_signal_bytes, abortDevice, {}, 0, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forwardWithTrace(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2738,7 +2744,7 @@ class P2pIbgdaTransportDevice {
           /*step=*/0,
           static_cast<uint16_t>(group.group_id));
     }
-    detail::forward<CopyOp>(
+    detail::forward<CopyOp, P2pIbgdaTransportDevice, Proto>(
         *this, group, dst, fwd, nbytes, max_signal_bytes, abortDevice, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
@@ -2751,7 +2757,10 @@ class P2pIbgdaTransportDevice {
 #endif
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forwardWithFineTrace(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -2762,7 +2771,7 @@ class P2pIbgdaTransportDevice {
       const PipesTraceAllReduceContext& recvTraceContext,
       const PipesTraceAllReduceContext& sendTraceContext,
       Args... args) {
-    detail::forward_with_fine_trace<CopyOp>(
+    detail::forward_with_fine_trace<CopyOp, P2pIbgdaTransportDevice, Proto>(
         *this,
         group,
         dst,
