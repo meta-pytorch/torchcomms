@@ -2116,6 +2116,88 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
   }
 }
 
+// CtranIb resolves the env-map against comm->statex_->commDesc(), so an
+// env-map entry only matches when it is keyed on that value's prefix.
+namespace {
+std::string trafficClassPgPrefix(const CtranComm* comm) {
+  const std::string commDesc = comm->statex_->commDesc();
+  return commDesc.substr(0, commDesc.find(':'));
+}
+} // namespace
+
+// Precedence: comm hint > NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map > NCCL_IB_TC.
+TEST_F(CtranIbTest, trafficClassHintOverridesEnvMap) {
+  // Env-map matches this comm and would set 200. The hint (192) must win.
+  std::vector<std::string> pgTrafficClass = {
+      trafficClassPgPrefix(this->comm) + ":200"};
+  EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = 192;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 192u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassFallsBackToNcclIbTc) {
+  EnvRAII env1(NCCL_IB_TC, int64_t{128});
+  // No PG env-map entry, no hint.
+  this->comm->config_.trafficClass = INT_MIN;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 128u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassOutOfRangeFallsBackToEnv) {
+  EnvRAII env1(NCCL_IB_TC, int64_t{64});
+  this->comm->config_.commDesc = "DP";
+  this->comm->config_.trafficClass = 1024; // > 255
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 64u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassEnvMapUsedWhenHintUnset) {
+  // No hint: the env-map entry matching this comm's PG prefix applies, and
+  // NCCL_IB_TC stays unused. The non-matching entry must be ignored.
+  EnvRAII env1(NCCL_IB_TC, int64_t{64});
+  std::vector<std::string> pgTrafficClass = {
+      "PP_P2P_0:200", trafficClassPgPrefix(this->comm) + ":208"};
+  EnvRAII env2(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = -1;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 208u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassMalformedEnvEntryRejectedRegardlessOfOrder) {
+  // The malformed entry sits after the one that matches this comm; it must
+  // still be reported instead of being skipped by an early match.
+  std::vector<std::string> pgTrafficClass = {
+      trafficClassPgPrefix(this->comm) + ":200", "PP_P2P_1:xyz"};
+  EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = -1;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    ADD_FAILURE() << "Expected CtranIb construction to reject the malformed "
+                     "NCCL_CTRAN_IB_PG_TRAFFIC_CLASS entry";
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  } catch (const ctran::utils::Exception&) {
+    SUCCEED();
+  }
+}
+
 TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
   const std::string eth = "eth0";
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);

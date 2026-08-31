@@ -88,6 +88,9 @@ inline int64_t ctranPrimsResolvedMaxBlocks(const ctranPrimsConfig& pc) {
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
+  // Per-comm traffic class hint sourced from ncclConfig_t.trafficClass.
+  // Negative means "hint not set"; consumers fall back to env/default.
+  int trafficClass{-1};
   std::vector<enum CommBackend> backends = {};
   ctranPrimsConfig primsConfig;
   // The creator supplies this; ctran does not read the sampling cvar
@@ -98,6 +101,7 @@ struct ctranConfig {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
         backends == other.backends && primsConfig == other.primsConfig &&
+        trafficClass == other.trafficClass &&
         enableProfiler == other.enableProfiler);
   }
 };
