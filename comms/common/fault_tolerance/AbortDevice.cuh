@@ -380,8 +380,15 @@ struct AbortDevice final {
     }
 
     int expected = static_cast<int>(AbortReason::NONE);
-    return detail::deviceCompareExchangeSystem(
+    const bool won = detail::deviceCompareExchangeSystem(
         &state_->abort, &expected, static_cast<int>(newReason));
+    if (won) {
+      // Device context is intentionally not persisted in mapped host state.
+      int expectedContextReady = 0;
+      (void)detail::deviceCompareExchangeSystem(
+          &state_->contextReady, &expectedContextReady, 1);
+    }
+    return won;
   }
 
  private:
@@ -450,6 +457,9 @@ struct AbortDevice final {
             &state_->abort,
             &expected,
             static_cast<int>(AbortReason::TIMED_OUT))) {
+      int expectedContextReady = 0;
+      (void)detail::deviceCompareExchangeSystem(
+          &state_->contextReady, &expectedContextReady, 1);
       return true;
     }
     return expected == static_cast<int>(AbortReason::TIMED_OUT);
