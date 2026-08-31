@@ -101,4 +101,49 @@ void test_ll_repack(
     bool useDst,
     uint32_t* flagErrors_d);
 
+/// pack(src) into `recvStaging_d` under the UPSTREAM generation, then
+/// repack_reduce it against `local_d` into `fwdStaging_d` under the DOWNSTREAM
+/// generation, then decode `fwdStaging_d` into `dst_d`.
+///
+/// The two flags are deliberately different: the relay must re-stamp every
+/// packet with the downstream generation, and carrying the upstream one through
+/// is the failure this pins. The decode counts flag mismatches into
+/// `errorCount_d` instead of spinning on them, so a wrong flag fails the test
+/// rather than hanging it.
+///
+/// `dst_d` receives the FULL data half of every forwarded packet, i.e.
+/// `packet_count(nbytes) * kData` bytes, not `nbytes`. The extra tail is the
+/// last packet's zero padding, which repack_reduce must relay untouched; a
+/// decode limited to valid_payload would never read it back and a reduce that
+/// ran past nElem would go unnoticed even though those bytes reach the wire.
+///
+/// Same three element/packet tilings as the unpack_reduce launchers above.
+void test_ll_repack_reduce_f32(
+    const float* src_d,
+    const float* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    float* dst_d,
+    std::size_t nelems,
+    ReduceKind kind,
+    uint32_t* errorCount_d);
+
+void test_ll_repack_reduce_f16(
+    const void* src_d,
+    const void* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    void* dst_d,
+    std::size_t nelems,
+    uint32_t* errorCount_d);
+
+void test_ll_repack_reduce_i64(
+    const int64_t* src_d,
+    const int64_t* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    int64_t* dst_d,
+    std::size_t nelems,
+    uint32_t* errorCount_d);
+
 } // namespace comms::prims::test
