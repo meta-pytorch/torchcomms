@@ -14,7 +14,11 @@
  * limitations under the License.
  */
 
+#include <array>
+#include <atomic>
 #include <cstdlib>
+#include <thread>
+#include <vector>
 
 #include <fmt/format.h>
 
@@ -32,8 +36,11 @@
 
 FOLLY_GNU_DISABLE_WARNING("-Wdeprecated-declarations")
 
-using namespace fmt::literals;
-using namespace folly;
+using folly::getOSThreadID;
+using folly::LoggerDB;
+using folly::LogLevel;
+using folly::LogMessage;
+using folly::StringPiece;
 
 namespace {
 /**
@@ -146,6 +153,100 @@ TEST(CommsLogFormatter, emptyLevelUsesPlaceholder) {
       meta::comms::logger::formatCommsLogMessage("", "message", metadata);
   EXPECT_EQ(formatted.front(), '?');
   EXPECT_NE(formatted.find(" NCCL  message\n"), std::string::npos);
+}
+
+TEST(LoggingFormat, ParseDebugSubsysMaskPreservesLegacyBehavior) {
+  using meta::comms::logger::ALL;
+  using meta::comms::logger::COLL;
+  using meta::comms::logger::INIT;
+  using meta::comms::logger::P2P;
+  using meta::comms::logger::parseDebugSubsysMask;
+
+  struct TestCase {
+    const char* input;
+    uint64_t expected;
+  };
+  constexpr std::array<TestCase, 14> kCases{{
+      {"", 0},
+      {",", 0},
+      {"^", ~0ULL},
+      {"INIT", INIT},
+      {"init", INIT},
+      {"iNiT,cOlL", INIT | COLL},
+      {"INIT,COLL,P2P", INIT | COLL | P2P},
+      {"^INIT,COLL", ~(static_cast<uint64_t>(INIT | COLL))},
+      {"ALL", static_cast<uint64_t>(ALL)},
+      {"^ALL", 0},
+      {"UNKNOWN,COLL", COLL},
+      {"^UNKNOWN", ~0ULL},
+      {"INIT,,COLL,", INIT | COLL},
+      {" INIT", 0},
+  }};
+
+  for (const auto& testCase : kCases) {
+    EXPECT_EQ(parseDebugSubsysMask(testCase.input), testCase.expected)
+        << "input: " << testCase.input;
+  }
+}
+
+TEST(LoggingFormat, ParseDebugSubsysMaskSupportsConcurrentCalls) {
+  using meta::comms::logger::ALL;
+  using meta::comms::logger::ALLOC;
+  using meta::comms::logger::BOOTSTRAP;
+  using meta::comms::logger::CALL;
+  using meta::comms::logger::COLL;
+  using meta::comms::logger::ENV;
+  using meta::comms::logger::GRAPH;
+  using meta::comms::logger::INIT;
+  using meta::comms::logger::NET;
+  using meta::comms::logger::NVLS;
+  using meta::comms::logger::P2P;
+  using meta::comms::logger::parseDebugSubsysMask;
+  using meta::comms::logger::PROFILE;
+  using meta::comms::logger::PROXY;
+  using meta::comms::logger::RAS;
+  using meta::comms::logger::REG;
+  using meta::comms::logger::SHM;
+  using meta::comms::logger::TUNING;
+
+  struct TestCase {
+    const char* input;
+    uint64_t expected;
+  };
+  constexpr std::array<TestCase, 4> kCases{{
+      {"INIT,COLL,P2P,SHM,NET,GRAPH,TUNING,ENV",
+       INIT | COLL | P2P | SHM | NET | GRAPH | TUNING | ENV},
+      {"ALLOC,CALL,PROXY,NVLS,BOOTSTRAP,REG,PROFILE,RAS",
+       ALLOC | CALL | PROXY | NVLS | BOOTSTRAP | REG | PROFILE | RAS},
+      {"^INIT,COLL,P2P,SHM,NET,GRAPH,TUNING,ENV",
+       ~(static_cast<uint64_t>(
+           INIT | COLL | P2P | SHM | NET | GRAPH | TUNING | ENV))},
+      {"ALL", static_cast<uint64_t>(ALL)},
+  }};
+  constexpr int kIterations = 10'000;
+
+  std::atomic<bool> start{false};
+  std::atomic<int> mismatches{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kCases.size());
+  for (const auto& testCase : kCases) {
+    threads.emplace_back([&start, &mismatches, testCase] {
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      for (int iteration = 0; iteration < kIterations; ++iteration) {
+        if (parseDebugSubsysMask(testCase.input) != testCase.expected) {
+          mismatches.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+
+  start.store(true, std::memory_order_release);
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(mismatches.load(std::memory_order_relaxed), 0);
 }
 
 TEST(GlogFormatter, logThreadName) {
