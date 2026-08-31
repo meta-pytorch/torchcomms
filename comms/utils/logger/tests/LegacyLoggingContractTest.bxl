@@ -1,0 +1,420 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+_SCOPES = (
+    "fbcode//comms/ctran/...",
+    "fbcode//comms/mccl/...",
+    "fbcode//comms/ncclx/...",
+    "fbcode//comms/prims/...",
+)
+
+_SOURCE_EXTENSIONS = (
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cu",
+    ".cuh",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inl",
+)
+
+_LEGACY_IDENTIFIERS = (
+    "CLOGF",
+    "CLOGF_ENABLED",
+    "CLOGF_EVERY_MS",
+    "CLOGF_FIRST_N",
+    "CLOGF_IF",
+    "CLOGF_SUBSYS",
+    "CLOGF_TRACE",
+    "XCHECK",
+    "XCHECK_EQ",
+    "XCHECK_GE",
+    "XCHECK_GT",
+    "XCHECK_LE",
+    "XCHECK_LT",
+    "XCHECK_NE",
+    "XCHECK_OP",
+    "XDCHECK",
+    "XDCHECK_EQ",
+    "XDCHECK_GE",
+    "XDCHECK_GT",
+    "XDCHECK_LE",
+    "XDCHECK_LT",
+    "XDCHECK_NE",
+    "XDCHECK_OP",
+    "XLOG",
+    "XLOG_ACTUAL_IMPL",
+    "XLOG_EVERY_MS",
+    "XLOG_EVERY_MS_IF",
+    "XLOG_EVERY_MS_OR",
+    "XLOG_EVERY_N",
+    "XLOG_EVERY_N_EXACT",
+    "XLOG_EVERY_N_IF",
+    "XLOG_EVERY_N_OR",
+    "XLOG_EVERY_N_THREAD",
+    "XLOG_FILENAME",
+    "XLOG_FIRST_N",
+    "XLOG_GET_CATEGORY",
+    "XLOG_GET_CATEGORY_NAME",
+    "XLOG_IF",
+    "XLOG_IF_IMPL",
+    "XLOG_IMPL",
+    "XLOG_IS_IN_HEADER_FILE",
+    "XLOG_IS_ON",
+    "XLOG_IS_ON_IMPL",
+    "XLOG_IS_ON_IMPL_HELPER",
+    "XLOG_N_PER_MS",
+    "XLOG_SET_CATEGORY_CHECK",
+    "XLOG_SET_CATEGORY_NAME",
+    "XLOGF",
+    "XLOGF_EVERY_MS",
+    "XLOGF_EVERY_MS_IF",
+    "XLOGF_EVERY_MS_OR",
+    "XLOGF_EVERY_N",
+    "XLOGF_EVERY_N_IF",
+    "XLOGF_EVERY_N_OR",
+    "XLOGF_FIRST_N",
+    "XLOGF_IF",
+)
+_LEGACY_IDENTIFIER = regex(
+    ".*(^|[^A-Za-z0-9_])({})([^A-Za-z0-9_]|$).*".format(
+        "|".join(_LEGACY_IDENTIFIERS),
+    ),
+)
+_FOLLY_LOGGING_SYMBOL = regex(
+    ".*(^|[^A-Za-z0-9_])folly::(Log[A-Za-z0-9_]*|logging)([^A-Za-z0-9_]|$).*",
+)
+_FOLLY_LOGGING_INCLUDE = regex(
+    '^[ \\t]*#[ \\t]*include[ \\t]*[<"]folly/logging/.*',
+)
+
+def _is_identifier_character(character: str) -> bool:
+    return character == "_" or character in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+def _is_digit_separator(line: str, index: int) -> bool:
+    if index == 0 or index + 1 >= len(line):
+        return False
+    digits = "0123456789abcdefABCDEF"
+    return line[index - 1] in digits and line[index + 1] in digits
+
+def _raw_string_open(line: str, index: int):
+    if index > 0 and _is_identifier_character(line[index - 1]):
+        return ("", index)
+
+    for prefix in ('u8R"', 'uR"', 'UR"', 'LR"', 'R"'):
+        if line[index : index + len(prefix)] != prefix:
+            continue
+        delimiter = ""
+        delimiter_start = index + len(prefix)
+        delimiter_limit = min(delimiter_start + 17, len(line))
+        for delimiter_end in range(delimiter_start, delimiter_limit):
+            character = line[delimiter_end]
+            if character == "(":
+                return ('){}"'.format(delimiter), delimiter_end + 1)
+            if character in " ()\\\t\r\v\f":
+                break
+            delimiter += character
+    return ("", index)
+
+def _strip_non_code_line(line: str, in_block_comment: bool = False, raw_terminator: str = "", literal_delimiter: str = "", escaped: bool = False):
+    without_comments = ""
+    code = ""
+    skip_until = 0
+    for index in range(len(line)):
+        if index < skip_until:
+            continue
+
+        character = line[index]
+        next_character = line[index + 1] if index + 1 < len(line) else ""
+        if in_block_comment:
+            if character == "*" and next_character == "/":
+                in_block_comment = False
+                without_comments += " "
+                code += " "
+                skip_until = index + 2
+            continue
+
+        if raw_terminator:
+            if line[index : index + len(raw_terminator)] == raw_terminator:
+                raw_terminator_length = len(raw_terminator)
+                without_comments += raw_terminator
+                code += " "
+                raw_terminator = ""
+                skip_until = index + raw_terminator_length
+            else:
+                without_comments += character
+                code += " "
+            continue
+
+        if literal_delimiter:
+            without_comments += character
+            code += " "
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == literal_delimiter:
+                literal_delimiter = ""
+            continue
+
+        next_raw_terminator, raw_open_end = _raw_string_open(line, index)
+        if next_raw_terminator:
+            raw_open = line[index:raw_open_end]
+            without_comments += raw_open
+            code += " "
+            raw_terminator = next_raw_terminator
+            skip_until = raw_open_end
+        elif character == "'" and _is_digit_separator(line, index):
+            without_comments += character
+            code += character
+        elif character == '"' or character == "'":
+            literal_delimiter = character
+            without_comments += character
+            code += " "
+        elif character == "/" and next_character == "/":
+            break
+        elif character == "/" and next_character == "*":
+            without_comments += " "
+            code += " "
+            in_block_comment = True
+            skip_until = index + 2
+        else:
+            without_comments += character
+            code += character
+    return (
+        without_comments,
+        code,
+        in_block_comment,
+        raw_terminator,
+        literal_delimiter,
+        escaped,
+    )
+
+def _is_folly_logging_dependency(label: str) -> bool:
+    return "//folly/logging:" in label
+
+def _contains_folly_logging_include(line: str, starts_in_literal: bool) -> bool:
+    return not starts_in_literal and _FOLLY_LOGGING_INCLUDE.match(line)
+
+def _is_scoped_source(path: str) -> bool:
+    has_source_extension = False
+    for extension in _SOURCE_EXTENSIONS:
+        if path.endswith(extension):
+            has_source_extension = True
+            break
+    if not has_source_extension:
+        return False
+    return "//comms/ctran/" in path or "//comms/mccl/" in path or "//comms/ncclx/" in path or "//comms/prims/" in path
+
+def _check_direct_dependencies(ctx: bxl.Context) -> None:
+    violations = {}
+    for scope in _SCOPES:
+        for dependency in ctx.uquery().deps(scope, 1):
+            dependency_label = str(dependency.label)
+            if _is_folly_logging_dependency(dependency_label):
+                violations[dependency_label] = True
+
+    if violations:
+        fail(
+            "Migrated comms targets must not depend directly on Folly logging:\n" + "\n".join(sorted(violations.keys())),
+        )
+
+def _check_source_content(ctx: bxl.Context) -> None:
+    source_by_path = {}
+    for scope in _SCOPES:
+        for source in ctx.uquery().inputs(scope):
+            path = str(source)
+            if _is_scoped_source(path):
+                source_by_path[path] = ctx.fs.source(source)
+
+    actions = ctx.bxl_actions().actions
+    result = actions.declare_output(
+        "legacy_logging_contract.txt",
+        has_content_based_path = False,
+    )
+
+    def check_sources(ctx, artifacts, outputs):
+        violations = []
+        for path in sorted(source_by_path.keys()):
+            source = source_by_path[path]
+            in_block_comment = False
+            raw_terminator = ""
+            literal_delimiter = ""
+            escaped = False
+            for line_number, line in enumerate(
+                artifacts[source].read_string().splitlines(),
+                1,
+            ):
+                line_starts_in_literal = bool(raw_terminator or literal_delimiter)
+                (
+                    line_without_comments,
+                    source_line,
+                    in_block_comment,
+                    raw_terminator,
+                    literal_delimiter,
+                    escaped,
+                ) = _strip_non_code_line(
+                    line,
+                    in_block_comment,
+                    raw_terminator,
+                    literal_delimiter,
+                    escaped,
+                )
+                if _LEGACY_IDENTIFIER.match(source_line):
+                    violations.append(
+                        "{}:{}: direct legacy logging identifier".format(
+                            path,
+                            line_number,
+                        ),
+                    )
+                if _FOLLY_LOGGING_SYMBOL.match(source_line):
+                    violations.append(
+                        "{}:{}: direct Folly logging symbol".format(
+                            path,
+                            line_number,
+                        ),
+                    )
+                if _contains_folly_logging_include(
+                    line_without_comments,
+                    line_starts_in_literal,
+                ):
+                    violations.append(
+                        "{}:{}: direct Folly logging include".format(
+                            path,
+                            line_number,
+                        ),
+                    )
+
+        if violations:
+            fail(
+                "Migrated comms sources must use their spdlog facades:\n" + "\n".join(violations),
+            )
+        ctx.bxl_actions().actions.write(
+            outputs[result],
+            "No legacy logging calls, includes, or direct dependencies found.\n",
+        )
+
+    actions.dynamic_output(
+        dynamic = source_by_path.values(),
+        inputs = [],
+        outputs = [result.as_output()],
+        f = check_sources,
+    )
+    ctx.output.ensure(result)
+
+def _validate_detector() -> None:
+    for source in (
+        "XLOG(ERR)",
+        'XLOGF_IF(INFO, enabled, "message")',
+        "XCHECK_EQ(left, right)",
+        'CLOGF_SUBSYS(INFO, COLL, "message")',
+        "#define PROJECT_LOG XLOG",
+        "XLOG/* preserve token boundary */CLOGF(INFO)",
+        'const char* text = R"(ignored XLOG)"; XCHECK(true)',
+        "constexpr auto count = 1'000; XLOG(ERR)",
+    ):
+        _, source_code, _, _, _, _ = _strip_non_code_line(source)
+        if not _LEGACY_IDENTIFIER.match(source_code):
+            fail("Legacy logging detector missed: {}".format(source))
+
+    for source in (
+        'MCCL_LOG(ERR, "message")',
+        "XLOGGER.start()",
+        "XCHECKSUM(value)",
+        "CLOGGED = true",
+        "CLOGIC(value)",
+        "// XLOG(ERR)",
+        'const char* example = "CLOGF(INFO)";',
+        "// folly::LoggerDB::get()",
+        'const char* example = "folly::LogMessage";',
+        'const char* example = R"tag(XLOG(ERR) "quoted")tag";',
+        'const char* example = u8R"(CLOGF(INFO))";',
+    ):
+        _, source_code, _, _, _, _ = _strip_non_code_line(source)
+        if _LEGACY_IDENTIFIER.match(source_code) or _FOLLY_LOGGING_SYMBOL.match(source_code):
+            fail("Legacy logging detector rejected valid source: {}".format(source))
+
+    _, block_comment, in_block_comment, raw_terminator, literal_delimiter, escaped = _strip_non_code_line(
+        "/* XLOG(ERR)",
+    )
+    _, block_comment_continuation, in_block_comment, _, _, _ = _strip_non_code_line(
+        'CLOGF(ERR) */ MCCL_LOG(ERR, "message")',
+        in_block_comment,
+        raw_terminator,
+        literal_delimiter,
+        escaped,
+    )
+    if in_block_comment or _LEGACY_IDENTIFIER.match(block_comment) or _LEGACY_IDENTIFIER.match(block_comment_continuation):
+        fail("Legacy logging detector rejected a block comment")
+
+    _, raw_start, in_block_comment, raw_terminator, literal_delimiter, escaped = _strip_non_code_line(
+        'const char* text = R"tag(XLOG(ERR)',
+    )
+    raw_include_starts_in_literal = bool(raw_terminator or literal_delimiter)
+    raw_include, _, in_block_comment, raw_terminator, literal_delimiter, escaped = _strip_non_code_line(
+        "#include <folly/logging/xlog.h>",
+        in_block_comment,
+        raw_terminator,
+        literal_delimiter,
+        escaped,
+    )
+    _, raw_end, in_block_comment, raw_terminator, _, _ = _strip_non_code_line(
+        'CLOGF(INFO))tag"; XCHECK(true)',
+        in_block_comment,
+        raw_terminator,
+        literal_delimiter,
+        escaped,
+    )
+    if (
+        raw_terminator
+        or _LEGACY_IDENTIFIER.match(raw_start)
+        or _contains_folly_logging_include(raw_include, raw_include_starts_in_literal)
+        or not _LEGACY_IDENTIFIER.match(raw_end)
+    ):
+        fail("Legacy logging detector mishandled a multiline raw string")
+
+    for source in (
+        "folly::LoggerDB::get()",
+        "folly::LogMessage message",
+        "folly::logging::configure()",
+    ):
+        if not _FOLLY_LOGGING_SYMBOL.match(source):
+            fail("Folly logging symbol detector missed: {}".format(source))
+
+    for include in (
+        "#include <folly/logging/xlog.h>",
+        '#include "folly/logging/LoggerDB.h"',
+    ):
+        include_without_comments, _, _, _, _, _ = _strip_non_code_line(include)
+        if not _contains_folly_logging_include(include_without_comments, False):
+            fail("Folly include detector missed: {}".format(include))
+
+    commented_include, _, _, _, _, _ = _strip_non_code_line(
+        "// #include <folly/logging/xlog.h>",
+    )
+    if _contains_folly_logging_include(commented_include, False):
+        fail("Folly include detector rejected a comment")
+
+    include_string, _, _, _, _, _ = _strip_non_code_line(
+        'const char* example = "#include <folly/logging/xlog.h>";',
+    )
+    if _contains_folly_logging_include(include_string, False):
+        fail("Folly include detector rejected a string literal")
+
+    if not _is_folly_logging_dependency("fbcode//folly/logging:logging"):
+        fail("Folly dependency detector missed its positive control")
+    if _is_folly_logging_dependency("fbcode//folly:format"):
+        fail("Folly dependency detector rejected a non-logging target")
+
+def _audit_legacy_logging(ctx: bxl.Context) -> None:
+    _validate_detector()
+    _check_direct_dependencies(ctx)
+    _check_source_content(ctx)
+
+test = bxl_main(
+    cli_args = {},
+    impl = _audit_legacy_logging,
+)
