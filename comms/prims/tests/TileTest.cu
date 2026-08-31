@@ -2,6 +2,12 @@
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+// CUDA only, matching Tile.cuh: there is no hipify mapping for fp8, and AMD's
+// MI300 formats are the FNUZ variants, which differ in exponent bias and in
+// NaN/infinity encoding.
+#if !defined(__HIP_PLATFORM_AMD__)
+#include <cuda_fp8.h>
+#endif
 #include <cuda_runtime.h>
 #include <cstddef>
 #include <cstdint>
@@ -172,6 +178,184 @@ void launch_tile_accumulate_dtype(
   }
 }
 
+namespace {
+
+/*
+ * One thread per (a, b) encoding pair. Compares the shipped fp16-accumulating
+ * reduce against an fp32-accumulating one, both narrowed back to fp8, and
+ * counts pairs whose RESULTS differ.
+ *
+ * Both paths take the same inputs and produce the same type, so any difference
+ * is attributable to accumulator width alone. NaN pairs are skipped: NaN != NaN
+ * under any comparison and would register as spurious witnesses.
+ */
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+template <typename Fp8T>
+__global__ void fp8_accumulator_witness_kernel(
+    unsigned int* witnesses,
+    std::uint8_t* firstA,
+    std::uint8_t* firstB) {
+  const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx >= 256u * 256u) {
+    return;
+  }
+  const std::uint8_t rawA = static_cast<std::uint8_t>(idx >> 8);
+  const std::uint8_t rawB = static_cast<std::uint8_t>(idx & 0xFFu);
+
+  Fp8T a{}, b{};
+  memcpy(&a, &rawA, 1);
+  memcpy(&b, &rawB, 1);
+
+  const float fa = float(a);
+  const float fb = float(b);
+  if (isnan(fa) || isnan(fb)) {
+    return;
+  }
+
+  // Shipped path: widen to __half, add, narrow.
+  const Fp8T viaHalf = Fp8T(__hadd(__half(a), __half(b)));
+  // Counterfactual: widen to float, add, narrow.
+  const Fp8T viaFloat = Fp8T(fa + fb);
+
+  std::uint8_t outHalf = 0, outFloat = 0;
+  memcpy(&outHalf, &viaHalf, 1);
+  memcpy(&outFloat, &viaFloat, 1);
+
+  if (outHalf != outFloat) {
+    // Record only the first, so a witness is reportable without a full list.
+    if (atomicAdd(witnesses, 1u) == 0u) {
+      *firstA = rawA;
+      *firstB = rawB;
+    }
+  }
+}
+#endif // __CUDA_FP8_TYPES_EXIST__
+
+} // namespace
+
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+void test_fp8_accumulator_witness(
+    bool e5m2,
+    std::uint32_t* witnesses,
+    std::uint8_t* firstA,
+    std::uint8_t* firstB) {
+  constexpr int kPairs = 256 * 256;
+  constexpr int kThreads = 256;
+  const int blocks = (kPairs + kThreads - 1) / kThreads;
+  auto* counter = reinterpret_cast<unsigned int*>(witnesses);
+  if (e5m2) {
+    fp8_accumulator_witness_kernel<__nv_fp8_e5m2>
+        <<<blocks, kThreads>>>(counter, firstA, firstB);
+  } else {
+    fp8_accumulator_witness_kernel<__nv_fp8_e4m3>
+        <<<blocks, kThreads>>>(counter, firstA, firstB);
+  }
+}
+#endif // __CUDA_FP8_TYPES_EXIST__
+
+namespace {
+
+/*
+ * Loads `base` into a tile, then accumulates `addend` over only the first
+ * `valid_elems` of it. A `valid_elems` that is not a whole number of vectors
+ * leaves a remainder, which is what routes through VecOps<T>::reduce_scalar.
+ */
+template <typename T, typename Op, int TileElems>
+__global__ void tile_partial_load_accumulate_dtype_kernel(
+    const T* base,
+    const T* addend,
+    T* output,
+    std::size_t valid_elems) {
+  auto group = make_block_group();
+  auto tile = tile_load<T, TileElems, kBS>(base, 0, group);
+  tile_load_accumulate<T, Op, TileElems, kBS>(
+      tile, addend, 0, group, valid_elems);
+  tile_store<T, TileElems, kBS>(output, 0, tile, group);
+}
+
+template <typename T>
+void launch_tile_partial_load_accumulate_dtype(
+    TileTestReduceOp op,
+    const void* base,
+    const void* addend,
+    void* output,
+    std::size_t valid_elems) {
+  const auto* base_t = static_cast<const T*>(base);
+  const auto* addend_t = static_cast<const T*>(addend);
+  auto* output_t = static_cast<T*>(output);
+  constexpr int kTileElems = sizeof(T) == 1 ? kByteTE : kTE;
+  switch (op) {
+    case TileTestReduceOp::kSum:
+      tile_partial_load_accumulate_dtype_kernel<T, SumOp, kTileElems>
+          <<<1, kBS>>>(base_t, addend_t, output_t, valid_elems);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+    case TileTestReduceOp::kMax:
+      tile_partial_load_accumulate_dtype_kernel<T, MaxOp, kTileElems>
+          <<<1, kBS>>>(base_t, addend_t, output_t, valid_elems);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+    case TileTestReduceOp::kMin:
+      tile_partial_load_accumulate_dtype_kernel<T, MinOp, kTileElems>
+          <<<1, kBS>>>(base_t, addend_t, output_t, valid_elems);
+      PIPES_KERNEL_LAUNCH_CHECK();
+      break;
+  }
+}
+
+} // namespace
+
+void test_tile_partial_load_accumulate_dtype(
+    TileTestDataType dtype,
+    TileTestReduceOp op,
+    const void* base,
+    const void* addend,
+    void* output,
+    std::size_t valid_elems) {
+  switch (dtype) {
+    case TileTestDataType::kInt8:
+      launch_tile_partial_load_accumulate_dtype<std::int8_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kUint8:
+      launch_tile_partial_load_accumulate_dtype<std::uint8_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kInt32:
+      launch_tile_partial_load_accumulate_dtype<std::int32_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kUint32:
+      launch_tile_partial_load_accumulate_dtype<std::uint32_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kInt64:
+      launch_tile_partial_load_accumulate_dtype<std::int64_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kUint64:
+      launch_tile_partial_load_accumulate_dtype<std::uint64_t>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kFloat64:
+      launch_tile_partial_load_accumulate_dtype<double>(
+          op, base, addend, output, valid_elems);
+      break;
+    case TileTestDataType::kFloat8E4M3:
+    case TileTestDataType::kFloat8E5M2:
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+      if (dtype == TileTestDataType::kFloat8E4M3) {
+        launch_tile_partial_load_accumulate_dtype<__nv_fp8_e4m3>(
+            op, base, addend, output, valid_elems);
+      } else {
+        launch_tile_partial_load_accumulate_dtype<__nv_fp8_e5m2>(
+            op, base, addend, output, valid_elems);
+      }
+#endif
+      break;
+  }
+}
+
 void test_tile_accumulate_dtype(
     TileTestDataType dtype,
     TileTestReduceOp op,
@@ -200,6 +384,18 @@ void test_tile_accumulate_dtype(
       break;
     case TileTestDataType::kFloat64:
       launch_tile_accumulate_dtype<double>(op, a, b, output, ntiles);
+      break;
+    case TileTestDataType::kFloat8E4M3:
+    case TileTestDataType::kFloat8E5M2:
+      // The enumerators stay declared on every platform so this switch remains
+      // exhaustive; only the fp8 launches are CUDA-only.
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+      if (dtype == TileTestDataType::kFloat8E4M3) {
+        launch_tile_accumulate_dtype<__nv_fp8_e4m3>(op, a, b, output, ntiles);
+      } else {
+        launch_tile_accumulate_dtype<__nv_fp8_e5m2>(op, a, b, output, ntiles);
+      }
+#endif
       break;
   }
 }
