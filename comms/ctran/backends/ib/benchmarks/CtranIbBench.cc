@@ -3,7 +3,6 @@
 #include <benchmark/benchmark.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <unistd.h>
 #include <chrono>
 #include <iostream>
@@ -11,20 +10,26 @@
 #include <string>
 #include <vector>
 
-#include <folly/init/Init.h>
-
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
 
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
-
 constexpr int kDummyRank = 0;
+
+template <typename Result>
+void checkSuccess(Result result, Result success, const char* operation) {
+  CTRAN_LOG_IF(
+      FATAL,
+      result != success,
+      "{} failed: actual status {}, expected {}",
+      operation,
+      static_cast<int>(result),
+      static_cast<int>(success));
+}
 
 //------------------------------------------------------------------------------
 // Configuration
@@ -118,14 +123,16 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
       senderIb->externalBootstrap()->getLocalVcId(kDummyRank);
   auto receiverVcIdentifier =
       receiverIb->externalBootstrap()->getLocalVcId(kDummyRank);
-  CHECK_EQ(
+  checkSuccess(
       senderIb->externalBootstrap()->connectVc(
           receiverVcIdentifier, kDummyRank),
-      commSuccess);
-  CHECK_EQ(
+      commSuccess,
+      "sender connectVc");
+  checkSuccess(
       receiverIb->externalBootstrap()->connectVc(
           senderVcIdentifier, kDummyRank),
-      commSuccess);
+      commSuccess,
+      "receiver connectVc");
 
   // Allocate RDMA-registerable device buffers with commCudaMalloc, the same
   // auto-selecting allocator CTRAN algos use: a GPUDirect-RDMA-capable CUDA VMM
@@ -135,15 +142,16 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   // on the VMM address range and is independent of the POSIX/FABRIC handle
   // type. Allocate/register the page-aligned regLen while still transferring
   // bufferSize bytes.
-  CHECK_EQ(cudaSetDevice(cudaDev0), cudaSuccess);
+  checkSuccess(cudaSetDevice(cudaDev0), cudaSuccess, "cudaSetDevice(sender)");
   void* sendBuffer = nullptr;
-  CHECK_EQ(
+  checkSuccess(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&sendBuffer),
           regLen,
           /*logMetaData=*/nullptr,
           "CtranIbBench"),
-      commSuccess);
+      commSuccess,
+      "commCudaMalloc(sender)");
   void* senderRegHdl = nullptr;
   if (CtranIb::regMem(sendBuffer, regLen, cudaDev0, &senderRegHdl) !=
       commSuccess) {
@@ -152,15 +160,16 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   }
 
   // Allocate memory on the receiver side (see sender note above).
-  CHECK_EQ(cudaSetDevice(cudaDev1), cudaSuccess);
+  checkSuccess(cudaSetDevice(cudaDev1), cudaSuccess, "cudaSetDevice(receiver)");
   void* recvBuffer = nullptr;
-  CHECK_EQ(
+  checkSuccess(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&recvBuffer),
           regLen,
           /*logMetaData=*/nullptr,
           "CtranIbBench"),
-      commSuccess);
+      commSuccess,
+      "commCudaMalloc(receiver)");
   void* receiverRegHdl = nullptr;
   if (CtranIb::regMem(recvBuffer, regLen, cudaDev1, &receiverRegHdl) !=
       commSuccess) {
@@ -194,19 +203,25 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
 
 static void cleanupBenchmarkContext(BenchmarkContext& ctx) {
   if (CtranIb::deregMem(ctx.senderRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for senderRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for senderRegHdl");
   }
 
   if (CtranIb::deregMem(ctx.receiverRegHdl) != commSuccess) {
-    XLOGF(ERR, "deregMem failed for receiverRegHdl");
+    CTRAN_LOG(ERR, "deregMem failed for receiverRegHdl");
   }
 
   // Free each buffer on the device it was allocated on (CUDA VMM unmap is
   // context-sensitive): sendBuffer on cudaDev0, recvBuffer on cudaDev1.
-  CHECK_EQ(cudaSetDevice(0), cudaSuccess);
-  CHECK_EQ(ctran::utils::commCudaFree(ctx.sendBuffer), commSuccess);
-  CHECK_EQ(cudaSetDevice(1), cudaSuccess);
-  CHECK_EQ(ctran::utils::commCudaFree(ctx.recvBuffer), commSuccess);
+  checkSuccess(cudaSetDevice(0), cudaSuccess, "cudaSetDevice(sender)");
+  checkSuccess(
+      ctran::utils::commCudaFree(ctx.sendBuffer),
+      commSuccess,
+      "commCudaFree(sender)");
+  checkSuccess(cudaSetDevice(1), cudaSuccess, "cudaSetDevice(receiver)");
+  checkSuccess(
+      ctran::utils::commCudaFree(ctx.recvBuffer),
+      commSuccess,
+      "commCudaFree(receiver)");
 }
 
 static void
@@ -349,7 +364,7 @@ static void benchmarkMultiPut(benchmark::State& state, int numPuts) {
   std::vector<double> sumDeltaUs(numPuts, 0.0);
 
   for (auto _ : state) {
-    CHECK_EQ(cudaSetDevice(0), cudaSuccess);
+    checkSuccess(cudaSetDevice(0), cudaSuccess, "cudaSetDevice(sender)");
     std::vector<CtranIbRequest> putReq(numPuts);
     const auto t0 = std::chrono::steady_clock::now();
 
@@ -583,10 +598,11 @@ int main(int argc, char** argv) {
   // Initialize and run benchmark
   ::benchmark::Initialize(&argc, argv);
   folly::init(&argc, &argv);
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::warn);
   ::benchmark::RunSpecifiedBenchmarks();
 
   // Cleanup
-  CHECK_EQ(cudaDeviceReset(), cudaSuccess);
+  checkSuccess(cudaDeviceReset(), cudaSuccess, "cudaDeviceReset");
 
   return 0;
 }

@@ -8,10 +8,12 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -73,6 +75,37 @@ class ScopedTestFile {
 
   std::filesystem::path directory_;
   std::filesystem::path path_;
+};
+
+class ScopedEnvironmentVariable {
+ public:
+  ScopedEnvironmentVariable(std::string name, const std::string& value)
+      : name_{std::move(name)} {
+    if (const char* previousValue = std::getenv(name_.c_str())) {
+      previousValue_ = previousValue;
+    }
+    if (::setenv(name_.c_str(), value.c_str(), 1) != 0) {
+      throw std::runtime_error{"failed to set test environment variable"};
+    }
+  }
+
+  ScopedEnvironmentVariable(const ScopedEnvironmentVariable&) = delete;
+  ScopedEnvironmentVariable& operator=(const ScopedEnvironmentVariable&) =
+      delete;
+  ScopedEnvironmentVariable(ScopedEnvironmentVariable&&) = delete;
+  ScopedEnvironmentVariable& operator=(ScopedEnvironmentVariable&&) = delete;
+
+  ~ScopedEnvironmentVariable() {
+    if (previousValue_.has_value()) {
+      ::setenv(name_.c_str(), previousValue_->c_str(), 1);
+    } else {
+      ::unsetenv(name_.c_str());
+    }
+  }
+
+ private:
+  std::string name_;
+  std::optional<std::string> previousValue_;
 };
 
 std::string readFile(const std::filesystem::path& path) {
@@ -226,6 +259,63 @@ TEST(SpdlogLoggerTest, AsyncInfoReachesFileViaPeriodicFlush) {
       scopedLogFile.path(), "asynchronous periodic flush"));
 }
 
+TEST(SpdlogLoggerTest, AbortWritesErrorBeforeTermination) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  constexpr char kLogPathEnvironmentVariable[] =
+      "COMMS_SPDLOG_ABORT_TEST_LOG_PATH";
+  const bool isDeathTestChild =
+      !GTEST_FLAG_GET(internal_run_death_test).empty();
+  std::optional<ScopedTestFile> scopedLogFile;
+  std::optional<ScopedEnvironmentVariable> scopedLogPathEnvironment;
+  if (!isDeathTestChild) {
+    scopedLogFile.emplace("comms_spdlog_abort.log");
+    scopedLogPathEnvironment.emplace(
+        kLogPathEnvironmentVariable, scopedLogFile->path().string());
+  }
+  const char* logPathEnvironmentValue =
+      std::getenv(kLogPathEnvironmentVariable);
+  ASSERT_NE(logPathEnvironmentValue, nullptr);
+  const std::string logPath{logPathEnvironmentValue};
+
+  EXPECT_EXIT(
+      {
+        meta::comms::logger::configureSpdlogLogger(
+            meta::comms::logger::kCommsLoggerName,
+            "TEST",
+            logPath,
+            []() { return 0; },
+            {},
+            true);
+        getSpdlogLogger().set_level(spdlog::level::info);
+        COMMS_ABORT("synchronous error before abort");
+      },
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+
+  EXPECT_NE(
+      readFile(logPath).find("synchronous error before abort"),
+      std::string::npos);
+}
+
+TEST(SpdlogLoggerTest, AbortDoesNotEvaluateDisabledArguments) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const ScopedTestFile evaluationMarker{"comms_spdlog_abort_evaluated"};
+  const auto markerPath = evaluationMarker.path().string();
+
+  EXPECT_EXIT(
+      {
+        getSpdlogLogger().set_level(spdlog::level::off);
+        COMMS_ABORT("filtered synchronous error: {}", [&]() {
+          std::ofstream{markerPath} << "evaluated";
+          return 1;
+        }());
+      },
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+
+  EXPECT_FALSE(std::filesystem::exists(evaluationMarker.path()));
+}
+
 TEST(SpdlogLoggerTest, SynchronousFileDeliveryMatchesLegacyRouting) {
   constexpr std::string_view kContext = "comms.synchronous_file_test";
   const ScopedTestFile scopedLogFile{"comms_spdlog_sync.log"};
@@ -263,6 +353,17 @@ TEST(SpdlogLoggerTest, MapsFollyLevelNames) {
     COMMS_LOG(ERR, "error message: {}", 4);
     COMMS_LOG(CRITICAL, std::string{"critical message"});
   });
+}
+
+TEST(SpdlogLoggerTest, MapsLegacyTraceAndAbortLevels) {
+  EXPECT_EQ(
+      meta::comms::logger::loggerLevelToSpdlogLevel(
+          meta::comms::logger::LogLevel::TRACE),
+      spdlog::level::trace);
+  EXPECT_EQ(
+      meta::comms::logger::loggerLevelToSpdlogLevel(
+          meta::comms::logger::LogLevel::ABORT),
+      spdlog::level::debug);
 }
 
 TEST(SpdlogLoggerTest, FatalTerminatesProcess) {

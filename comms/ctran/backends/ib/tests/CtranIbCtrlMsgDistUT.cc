@@ -5,7 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
@@ -37,9 +37,9 @@ class CtranIbCtrlMsgTest : public ctran::CtranDistTestFixture {
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
-    XLOG_IF(WARN, this->globalRank == 0)
+    CTRAN_LOG_STREAM_IF(WARN, this->globalRank == 0)
         << testName << " numRanks " << this->numRanks
-        << ". Description: " << testDesc << std::endl;
+        << ". Description: " << testDesc;
   }
 
  protected:

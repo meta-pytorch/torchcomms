@@ -6,16 +6,14 @@
 
 #include "paramUT.h"
 
-#include <cstdlib>
 #include <mutex>
 
 #include <folly/Singleton.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <folly/synchronization/HazptrThreadPoolExecutor.h>
 
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 
 std::once_flag initOnceFlag;
 
@@ -29,10 +27,6 @@ void initFolly() {
   // things now" phase.
   folly::SingletonVault::singleton()->registrationComplete();
 
-  auto const follyLoggingEnv = std::getenv(folly::kLoggingEnvVarName);
-  auto const follyLoggingEnvOr = follyLoggingEnv ? follyLoggingEnv : "";
-  folly::initLoggingOrDie(follyLoggingEnvOr);
-
   // Set the default hazard pointer domain to use a thread pool executor
   // for asynchronous reclamation
   folly::enable_hazptr_thread_pool_executor();
@@ -42,6 +36,6 @@ void initEnv() {
   std::call_once(initOnceFlag, [] {
     initFolly();
     ncclCvarInit();
-    NcclLogger::init();
+    meta::comms::logger::initCommLoggerRuntime();
   });
 }

@@ -9,7 +9,6 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ErrorStackUtil.h"
-#include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
 // These are Meta's logging implementations, kept out of the baseline debug.cc.
@@ -37,10 +36,8 @@ void ncclMetaDebugLogError(
   std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
   va_end(vargs);
 
-  // Emit the folly ERR log via the common path so glog still shows 'E' and
-  // honors level/subsys filtering. Delegating also preserves the
-  // ncclDebugNoWarn downgrade and the ncclLastError save consistently with
-  // every other logging macro.
+  // Delegate to the common path to preserve level/subsystem filtering,
+  // ncclDebugNoWarn downgrades, and ncclLastError updates.
   ncclMetaDebugLog(
       NCCL_LOG_ERROR, flags, file, func, line, "%s", buffer.data());
 

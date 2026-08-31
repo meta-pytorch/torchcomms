@@ -236,6 +236,8 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 
 #define COMMS_LOGGER_DEBUG(logger, ...) \
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
+#define COMMS_LOGGER_TRACE(logger, ...) \
+  SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
  * shutdownSpdlogForFatal() releases the library-owned async pool. It drains
@@ -324,6 +326,37 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 #define COMMS_LOG_NAMED_FATAL(logger_name, ...) \
   COMMS_LOG_FATAL_IMPL(                         \
       ::meta::comms::logger::getSpdlogLogger(logger_name), __VA_ARGS__)
+
+/*
+ * Logs an ERR synchronously and terminates with SIGABRT. Termination still
+ * occurs when ERR logging is disabled or the logging operation fails.
+ */
+#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_ERROR
+#define COMMS_ABORT_IMPL(logger_name, ...)                             \
+  do {                                                                 \
+    try {                                                              \
+      auto& _comms_logger =                                            \
+          ::meta::comms::logger::getSpdlogLogger(logger_name);         \
+      if (_comms_logger.should_log(::spdlog::level::err)) {            \
+        _comms_logger.logSynchronous(                                  \
+            ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
+            ::spdlog::level::err,                                      \
+            __VA_ARGS__);                                              \
+      }                                                                \
+    } catch (...) {                                                    \
+      ::meta::comms::logger::reportCommsLoggingFailureToStderr("ERR"); \
+    }                                                                  \
+    std::abort();                                                      \
+  } while (false)
+#else
+#define COMMS_ABORT_IMPL(logger_name, ...) \
+  do {                                     \
+    std::abort();                          \
+  } while (false)
+#endif
+
+#define COMMS_ABORT(...) \
+  COMMS_ABORT_IMPL(::meta::comms::logger::kCommsLoggerName, __VA_ARGS__)
 
 #define COMMS_LOG(level, ...) COMMS_LOG_##level(__VA_ARGS__)
 #define COMMS_LOG_NAMED(logger_name, level, ...) \

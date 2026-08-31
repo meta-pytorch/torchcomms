@@ -78,8 +78,7 @@ class AllToAllvLl128BenchmarkFixture
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
-        std::abort();
+        COMMS_ABORT("ncclGetUniqueId failed: {}", ncclGetErrorString(res));
       }
     }
     std::vector<ncclUniqueId> allIds(worldSize);
@@ -90,8 +89,7 @@ class AllToAllvLl128BenchmarkFixture
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
-      std::abort();
+      COMMS_ABORT("Bootstrap allGather for NCCL ID failed");
     }
     id = allIds[0];
     return id;

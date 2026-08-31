@@ -2,8 +2,6 @@
 
 #include "comms/ctran/window/WinCache.h"
 
-#include "comms/utils/logger/LogUtils.h"
-
 namespace ctran {
 
 commResult_t WinCache::insert(

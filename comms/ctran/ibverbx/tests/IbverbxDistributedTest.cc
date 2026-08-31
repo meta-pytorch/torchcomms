@@ -3,9 +3,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -14,10 +14,6 @@
 
 using namespace ibverbx;
 using namespace meta::comms;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 namespace {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
@@ -171,7 +167,7 @@ void pollOneWcFromCq(int rank, IbvCq& cq) {
   while (!stop) {
     auto maybeWcsVector = cq.pollCq(numEntries);
     if (maybeWcsVector.hasError()) {
-      XLOGF(
+      CTRAN_LOG(
           FATAL,
           "rank {}: cq poll failed with error {}",
           rank,
@@ -183,7 +179,7 @@ void pollOneWcFromCq(int rank, IbvCq& cq) {
     ASSERT_GE(numWc, 0);
     if (numWc == 0) {
       // CQ empty, sleep and retry
-      XLOGF(WARN, "rank {}: cq empty, retry in 500ms", rank);
+      CTRAN_LOG(WARN, "rank {}: cq empty, retry in 500ms", rank);
       /* sleep override */
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       continue;
@@ -193,8 +189,8 @@ void pollOneWcFromCq(int rank, IbvCq& cq) {
 
     // got a WC
     const auto wc = maybeWcsVector->at(0);
-    XLOGF(
-        DBG1,
+    CTRAN_LOG(
+        DBG5,
         "Rank {} got a wc: wr_id {}, status {}, opcode {}, byte_len {}",
         rank,
         wc.wr_id,
@@ -371,7 +367,7 @@ void IbverbxSingleQpTestFixtureWithParam::runSendRecvTest(int devBufSize) {
       MPI_COMM_WORLD));
   for (int i = 0; i < numRanks; ++i) {
     const auto& card = cards.at(i);
-    XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
+    CTRAN_LOG_STREAM(DBG5) << "rank " << globalRank << ": got card " << card;
   }
 
   const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
@@ -429,7 +425,7 @@ void IbverbxSingleQpTestFixtureWithParam::runSendRecvTest(int devBufSize) {
     ASSERT_TRUE(qp->postSend(&sendWr, &sendWrBad));
     pollOneWcFromCq(globalRank, *cq);
   }
-  XLOGF(DBG1, "rank {} send/recv OK", globalRank);
+  CTRAN_LOG(DBG5, "rank {} send/recv OK", globalRank);
 
   CUDA_CHECK(cudaFree(devBuf));
 }
@@ -516,7 +512,7 @@ void IbverbxSingleQpTestFixtureWithParam::runRdmaWriteTest(int devBufSize) {
       MPI_COMM_WORLD));
   for (int i = 0; i < numRanks; ++i) {
     const auto& card = cards.at(i);
-    XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
+    CTRAN_LOG_STREAM(DBG5) << "rank " << globalRank << ": got card " << card;
   }
 
   const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
@@ -580,7 +576,7 @@ void IbverbxSingleQpTestFixtureWithParam::runRdmaWriteTest(int devBufSize) {
     // the remote NIC/PCIe has completed memory transaction and sent an ACK to
     // us
   }
-  XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
+  CTRAN_LOG(DBG5, "rank {} RDMA-WRITE OK", globalRank);
 
   CUDA_CHECK(cudaFree(devBuf));
 }
@@ -625,7 +621,7 @@ TEST_F(IbverbxSingleQpTestFixture, IbvQpModifyQp) {
       MPI_COMM_WORLD));
   for (int i = 0; i < numRanks; ++i) {
     const auto& card = cards.at(i);
-    XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
+    CTRAN_LOG_STREAM(DBG5) << "rank " << globalRank << ": got card " << card;
   }
 
   const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
@@ -704,5 +700,6 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::warn);
   return RUN_ALL_TESTS();
 }

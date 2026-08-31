@@ -22,21 +22,16 @@
 #include <vector>
 
 #include <folly/init/Init.h>
-#include <folly/logging/Init.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
 using meta::comms::MpiBaseTestFixture;
 using meta::comms::MPIEnvironmentBase;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 //------------------------------------------------------------------------------
 // Real-time Priority Helper
@@ -474,7 +469,7 @@ static void pollCqUntilCompletion(IbvVirtualCq& cq) {
     if (maybeWcs && !maybeWcs->empty()) {
       const auto& wc = maybeWcs->at(0);
       if (wc.status != IBV_WC_SUCCESS) {
-        XLOGF(ERR, "WC failed with status {}", wc.status);
+        CTRAN_LOG(ERR, "WC failed with status {}", wc.status);
         throw std::runtime_error("Work completion failed");
       }
       break;
@@ -521,7 +516,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
     char* postBuf = ctx->sendBuf + ctx->msgSize - 1;
     volatile char* pollBuf = ctx->recvBuf + ctx->msgSize - 1;
 
-    XLOGF(INFO, "[Sender] Running ping-pong benchmark: {}", testName);
+    CTRAN_LOG(INFO, "[Sender] Running ping-pong benchmark: {}", testName);
 
     *postBuf = 0;
     *pollBuf = 0;
@@ -540,7 +535,8 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       }
     }
 
-    XLOG(INFO) << "[Sender] Warmup complete, starting measurement...";
+    CTRAN_LOG_STREAM(INFO)
+        << "[Sender] Warmup complete, starting measurement...";
 
     // Benchmark
     using Clock = std::chrono::high_resolution_clock;
@@ -590,7 +586,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
     char* postBuf = ctx->sendBuf + ctx->msgSize - 1;
     volatile char* pollBuf = ctx->recvBuf + ctx->msgSize - 1;
 
-    XLOGF(INFO, "[Receiver] Running ping-pong benchmark: {}", testName);
+    CTRAN_LOG(INFO, "[Receiver] Running ping-pong benchmark: {}", testName);
 
     *postBuf = 0;
     *pollBuf = 0;
@@ -610,7 +606,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
-    XLOGF(INFO, "[Receiver] Completed {} iterations", iterations);
+    CTRAN_LOG(INFO, "[Receiver] Completed {} iterations", iterations);
   }
 
   void printResultsTable(
@@ -739,7 +735,8 @@ TEST_F(
     CrossHostPingPongHalfRttLatency_RdmaWrite) {
   // Only test with 2 ranks (one per host)
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1145,7 +1142,8 @@ static BenchmarkResult runBandwidthBenchmark(
 
 TEST_F(IbverbxVirtualQpBenchmarkFixture, CrossHostFullRttLatency_RdmaWrite) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1201,7 +1199,8 @@ TEST_F(IbverbxVirtualQpBenchmarkFixture, CrossHostFullRttLatency_RdmaWrite) {
 
 TEST_F(IbverbxVirtualQpBenchmarkFixture, CrossHostFullRttLatency_RdmaRead) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1280,7 +1279,8 @@ TEST_F(
     IbverbxVirtualQpBenchmarkFixture,
     CrossHostFullRttLatency_RdmaWriteWithImm) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1336,7 +1336,8 @@ TEST_F(
 // TODO: Fix and re-enable bandwidth test
 TEST_F(IbverbxVirtualQpBenchmarkFixture, CrossHostBandwidth_RdmaWrite) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    CTRAN_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -1400,5 +1401,7 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+  ncclCvarInit();
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::warn);
   return RUN_ALL_TESTS();
 }

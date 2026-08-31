@@ -6,7 +6,7 @@
 // driver APIs since libcuda.so is not exposed in fbcode
 #include "comms/ctran/utils/CudaWrap.h"
 
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "meta/wrapper/MetaFactory.h"
 
@@ -50,7 +50,7 @@ void* CtranNcclTestHelpers::prepareBuf(
     NCCLCHECK_TEST(ncclMemAlloc(&buf, bufSize));
     segments.emplace_back(buf, bufSize);
 #else
-    XLOG(FATAL) << "kMemNcclMemAlloc is not supported on AMD/HIP";
+    CTRAN_LOG_STREAM(FATAL) << "kMemNcclMemAlloc is not supported on AMD/HIP";
 #endif
   } else {
 #if !defined(USE_ROCM)
@@ -58,7 +58,8 @@ void* CtranNcclTestHelpers::prepareBuf(
         numSegments, bufSize / numSegments);
     COMMCHECK_TEST(commMemAllocDisjoint(&buf, disjointSegmentSizes, segments));
 #else
-    XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
+    CTRAN_LOG_STREAM(FATAL)
+        << "kCuMemAllocDisjoint is not supported on AMD/HIP";
 #endif
   }
   return buf;
@@ -81,7 +82,7 @@ void CtranNcclTestHelpers::releaseBuf(
       ncclMemFree(buf);
     }
 #else
-    XLOG(FATAL) << "kMemNcclMemAlloc is not supported on AMD/HIP";
+    CTRAN_LOG_STREAM(FATAL) << "kMemNcclMemAlloc is not supported on AMD/HIP";
 #endif
   } else {
 #if !defined(USE_ROCM)
@@ -89,7 +90,8 @@ void CtranNcclTestHelpers::releaseBuf(
         numSegments, bufSize / numSegments);
     COMMCHECK_TEST(commMemFreeDisjoint(buf, disjointSegmentSizes));
 #else
-    XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
+    CTRAN_LOG_STREAM(FATAL)
+        << "kCuMemAllocDisjoint is not supported on AMD/HIP";
 #endif
   }
 }

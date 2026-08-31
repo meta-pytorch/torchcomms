@@ -11,6 +11,17 @@ namespace ctran::logging {
 
 inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 
+inline void configureStandaloneCtranLogging(
+    spdlog::level::level_enum logLevel) {
+  /*
+   * Standalone binaries do not call the production logging initializer. Keep
+   * their legacy synchronous delivery while preserving each binary's level.
+   */
+  auto& logger = meta::comms::logger::getSpdlogLogger(kCtranLoggerName);
+  logger.configure("CTRAN", []() { return 0; }, {}, false);
+  logger.set_level(logLevel);
+}
+
 } // namespace ctran::logging
 
 #define CTRAN_LOG_IMPL(spdlog_level, spdlog_macro, ...)                  \
@@ -24,6 +35,8 @@ inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 
 #define CTRAN_LOG_DBG(...) \
   CTRAN_LOG_IMPL(::spdlog::level::debug, COMMS_LOGGER_DEBUG, __VA_ARGS__)
+#define CTRAN_LOG_DBG5(...) \
+  CTRAN_LOG_IMPL(::spdlog::level::trace, COMMS_LOGGER_TRACE, __VA_ARGS__)
 #define CTRAN_LOG_INFO(...) \
   CTRAN_LOG_IMPL(::spdlog::level::info, SPDLOG_LOGGER_INFO, __VA_ARGS__)
 #define CTRAN_LOG_WARN(...) \
@@ -70,6 +83,8 @@ inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
   CTRAN_LOG_IF_IMPL(WARN, ::spdlog::level::warn, condition, __VA_ARGS__)
 #define CTRAN_LOG_IF_DBG(condition, ...) \
   CTRAN_LOG_IF_IMPL(DBG, ::spdlog::level::debug, condition, __VA_ARGS__)
+#define CTRAN_LOG_IF_DBG5(condition, ...) \
+  CTRAN_LOG_IF_IMPL(DBG5, ::spdlog::level::trace, condition, __VA_ARGS__)
 #define CTRAN_LOG_IF_INFO(condition, ...) \
   CTRAN_LOG_IF_IMPL(INFO, ::spdlog::level::info, condition, __VA_ARGS__)
 #define CTRAN_LOG_IF_ERR(condition, ...) \
