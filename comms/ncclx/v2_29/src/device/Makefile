@@ -34,6 +34,12 @@ NVCUFLAGS_SYM += -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrreg
 NVCUFLAGS_SYM += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 #NVCUFLAGS_SYM += --ptx
 
+ifeq ($(NCCL_FEEDSTOCK_BUILD),1)
+NVCUFLAGS += -DDOCA_VERBS_USE_META_THIRD_PARTY
+NVCUFLAGS_SYM += -DDOCA_VERBS_USE_META_THIRD_PARTY
+CXXFLAGS += -DDOCA_VERBS_USE_META_THIRD_PARTY
+endif
+
 ifneq ($(ENABLE_TCPDM),1)
 NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
 NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"

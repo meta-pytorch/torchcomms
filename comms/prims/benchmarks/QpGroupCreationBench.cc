@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
       comms::prims::GpuNicDiscovery::getCudaPciBusId(0);
   printf("GPU 0 PCIe %s\n", pciBusId.c_str());
 
-  doca_gpu* docaGpu = nullptr;
+  comms::prims::DocaGpu* docaGpu = nullptr;
   doca_error_t err = doca_gpu_create(pciBusId.c_str(), &docaGpu);
   if (err != DOCA_SUCCESS) {
     fprintf(
@@ -204,8 +204,19 @@ int main(int argc, char** argv) {
   }
   printf("IB device opened (%d available), PD allocated\n", numDevices);
 
+  doca_dev_t* netDev = nullptr;
+  err = doca_verbs_dev_open(reinterpret_cast<ibv_pd*>(pd), &netDev);
+  if (err != DOCA_SUCCESS || netDev == nullptr) {
+    fprintf(stderr, "doca_verbs_dev_open failed (err=%d)\n", err);
+    symbols.ibv_internal_dealloc_pd(pd);
+    symbols.ibv_internal_close_device(ctx);
+    doca_gpu_destroy(docaGpu);
+    return 7;
+  }
+
   doca_gpu_verbs_qp_init_attr_hl mainAttr{};
   mainAttr.gpu_dev = docaGpu;
+  mainAttr.net_dev = netDev;
   mainAttr.ibpd = reinterpret_cast<decltype(mainAttr.ibpd)>(pd);
   mainAttr.sq_nwqe = kQpDepth;
   mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
@@ -253,6 +264,7 @@ int main(int argc, char** argv) {
           cumulative,
           cumulative * 2);
     }
+    doca_verbs_dev_close(netDev);
     symbols.ibv_internal_dealloc_pd(pd);
     symbols.ibv_internal_close_device(ctx);
     doca_gpu_destroy(docaGpu);
@@ -279,6 +291,7 @@ int main(int argc, char** argv) {
     }
   }
 
+  doca_verbs_dev_close(netDev);
   symbols.ibv_internal_dealloc_pd(pd);
   symbols.ibv_internal_close_device(ctx);
   doca_gpu_destroy(docaGpu);

@@ -690,9 +690,7 @@ class P2pIbgdaTransportDevice {
       const AbortDevice& abortDevice = AbortDevice()) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
-    const int status = doca_gpu_dev_verbs_poll_one_cq_at<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-        doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
+    const int status = poll_one_cq_at(lane.qp, ticket.value);
     if (status == 0) {
       return true;
     }
@@ -1100,6 +1098,19 @@ class P2pIbgdaTransportDevice {
     record_flush_wqe(lane, ticket);
   }
 
+  __device__ __forceinline__ static int poll_one_cq_at(
+      doca_gpu_dev_verbs_qp* qp,
+      doca_gpu_dev_verbs_ticket_t ticket) {
+#if defined(DOCA_GPUNETIO_VERSION_MAJOR) && DOCA_GPUNETIO_VERSION_MAJOR < 4
+    return doca_gpu_dev_verbs_poll_one_cq_at<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
+#else
+    return doca_gpu_dev_verbs_poll_one_cq_at<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, ticket);
+#endif
+  }
+
   __device__ void wait_local_on_qp(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_ticket_t ticket,
@@ -1111,9 +1122,7 @@ class P2pIbgdaTransportDevice {
     } else {
       int status;
       do {
-        status = doca_gpu_dev_verbs_poll_one_cq_at<
-            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
+        status = poll_one_cq_at(qp, ticket);
         if (status == EBUSY) {
           FT_ABORT_BREAK(
               abortDevice,
