@@ -129,3 +129,42 @@ Public raw put/signal APIs default to the Send direction. Send/recv/forward
 internals use explicit directions: data puts and `DATA_READY` use Send, while
 recv-side `SLOT_FREE` uses Recv. Raw put/signal transports allocate only Send
 QPs; send/recv transports allocate Send and Recv QPs.
+
+### QP posting ownership
+
+**A QP has exactly one poster, and the transport relies on that.**
+
+The slot index is
+
+```text
+((channel_id * directions + direction) * qpsPerConnection) + qp_index
+```
+
+per NIC, with no modulo, so a QP belongs to exactly one
+`(channel_id, direction)`. Combined with the ownership unit above — concurrent
+duplicate use of a `(peer, channel_id, direction)` is caller error — and with
+every posting site being leader-only, at most one thread ever posts on a given
+QP.
+
+This is a structural property of the channel model, not a tuning option. The
+transport already depends on it outside the posting path:
+`select_put_lane_ordinal` advances `IbQpState::cursor` with a plain
+non-atomic increment, so a caller that drove one `(channel, direction)` from two
+groups would already be racing that counter.
+
+Consequences for IBGDA:
+
+- WQ-slot reservation and ready-index publication use
+  `DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE`. The shared-QP mode
+  spends device-scope atomics and `atomicCAS` spins arbitrating between posters
+  that cannot exist; under `EXCLUSIVE` those become plain loads and stores.
+- Because `EXCLUSIVE` makes `mark_wqes_ready` a bare store with no fence, the
+  release that orders WQE payload stores before the MMIO doorbell moves into the
+  submit step, at GPU scope. Something must provide that release or the NIC can
+  fetch a WQE it has not been shown.
+- On AMD the sharing mode is an inert placeholder in
+  `transport/amd/DocaCompat.h`, so this changes nothing there.
+
+Adding a second poster to a QP is therefore not a configuration change; it would
+require revisiting the slot geometry, the cursor increment, and the fence
+placement together.
