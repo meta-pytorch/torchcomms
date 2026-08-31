@@ -829,8 +829,16 @@ ib_recv_dev_list:
   }
   trafficClass = ncclIbGetTrafficClass(ctx);
   meta.addr = (uint64_t)comm->ctsFifo;
+  // Service level keeps upstream precedence: NCCL_IB_SL > per-comm hint > default.
   meta.sl = (ncclParamIbSl() != -1) ? ncclParamIbSl() : (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? trafficClass : NCCL_IB_SL_DEFAULT;
-  meta.tc = (ncclParamIbTc() != -1) ? ncclParamIbTc() : (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? trafficClass : NCCL_IB_TC_DEFAULT;
+  // Traffic class is hint-first: per-comm ncclConfig_t.trafficClass beats NCCL_IB_TC.
+  if (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) {
+    meta.tc = trafficClass;
+  } else if (ncclParamIbTc() != -1) {
+    meta.tc = static_cast<int>(ncclParamIbTc());
+  } else {
+    meta.tc = NCCL_IB_TC_DEFAULT;
+  }
   strncpy(meta.devName, mergedDev->devName, MAX_MERGED_DEV_NAME);
 
   stage->state = ncclIbCommStateSend;
