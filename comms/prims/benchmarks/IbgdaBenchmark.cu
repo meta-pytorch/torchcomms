@@ -110,6 +110,41 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
   }
 }
 
+__global__ void ibgdaPutSignalFlushBatchKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    // Write + signal on the same QP (no counter, hence no companion QP),
+    // completion observed via flush(). Pairs with ibgdaPutFlushBatchKernel,
+    // which is identical except that it issues no signal, so the latency
+    // delta isolates the marginal cost of the trailing ATOMIC_FA.
+    const auto resolvedSignalBuf =
+        remoteSignalBuf.subBuffer(signalId * sizeof(uint64_t));
+
+    for (int i = 0; i < 10; i++) {
+      transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
+      transport.flush();
+    }
+
+    const unsigned long long startCycle = BENCHMARK_CLOCK64();
+
+    for (int i = 0; i < numIters; i++) {
+      transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
+      transport.flush();
+    }
+
+    const unsigned long long endCycle = BENCHMARK_CLOCK64();
+    *totalCycles = endCycle - startCycle;
+  }
+}
+
 __global__ void ibgdaPutFlushBatchKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
@@ -419,6 +454,32 @@ void launchIbgdaPutWaitLocalBatch(
   ibgdaPutWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
       transport, localBuf, remoteBuf, nbytes, numIters, totalCycles);
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void launchIbgdaPutSignalFlushBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream) {
+  ibgdaPutSignalFlushBatchKernel<<<1, 32, 0, stream>>>(
+      transport,
+      localBuf,
+      remoteBuf,
+      remoteSignalBuf,
+      nbytes,
+      signalId,
+      numIters,
+      totalCycles);
+  const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
         std::string("Kernel launch failed: ") + cudaGetErrorString(err));

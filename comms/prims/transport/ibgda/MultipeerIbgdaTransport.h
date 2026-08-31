@@ -275,6 +275,20 @@ class MultipeerIbgdaTransport
   };
   std::vector<NicDocaResources> nicDoca_;
 
+  // What was asked for: config value, or MCCL_IBGDA_QP_ORDERING_SEMANTIC when
+  // that cvar is set to something other than its registered default. Taken in
+  // the ctor, before openIbDevice() consults the NICs.
+  IbQpOrderingPolicy qpOrderingPolicy_{IbQpOrderingPolicy::Auto};
+
+  // What we actually got: the policy above resolved against every NIC's
+  // capability in openIbDevice(), narrowed to the least capable one. This is
+  // the value written to the QPC and exchanged with peers.
+  //
+  // Stays Ibta on AMD, where the whole dp_ordering path is compiled out and
+  // openIbDevice() never resolves anything -- so AMD keeps sending the same
+  // zero it always did.
+  IbQpOrderingSemantic qpOrderingSemantic_{IbQpOrderingSemantic::Ibta};
+
   // Sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
   // return value. We don't need it, so we use a small "sink" buffer.

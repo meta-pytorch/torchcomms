@@ -33,6 +33,8 @@
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
+// MCCL_IBGDA_MAX_RD_ATOMIC / MCCL_IBGDA_QP_ORDERING_SEMANTIC. Generated header.
+#include "comms/utils/cvars/nccl_cvars.h" // @manual
 #endif
 #include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
@@ -148,6 +150,200 @@ bool nicSupportsReliableDoorbell(
   }
   return supported;
 }
+
+// ---------------------------------------------------------------------------
+// dp_ordering (QPC dp_ordering_0 / dp_ordering_1 / dp_ordering_force)
+// ---------------------------------------------------------------------------
+
+// MCCL_IBGDA_QP_ORDERING_SEMANTIC wins over
+// MultipeerIbTransportConfig::qpOrderingPolicy only when it holds something
+// other than its registered default. Comparing against the generated
+// _DEFAULTCVARVALUE rather than a literal also covers the case where
+// ncclCvarInit() was never called: prims is driven from benchmarks and unit
+// tests that do not run it, and both globals are then still zero-initialized
+// and therefore equal.
+//
+// This is why "auto" is the FIRST choice in the cvar's yaml, and so the one
+// that gets enum value 0. A binary that never calls ncclCvarInit() reads the
+// cvar as zero; with auto at 0 that lands on the same policy as the registered
+// default, by construction rather than by coincidence. Were the default any
+// other choice, every benchmark would silently run a different policy from
+// production -- which is exactly the failure this A/B hit once already.
+IbQpOrderingPolicy resolveQpOrderingPolicy(
+    const MultipeerIbgdaTransportConfig& config) {
+  if (MCCL_IBGDA_QP_ORDERING_SEMANTIC ==
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC_DEFAULTCVARVALUE) {
+    return config.qpOrderingPolicy;
+  }
+  using OrderingCvar = decltype(MCCL_IBGDA_QP_ORDERING_SEMANTIC);
+  switch (MCCL_IBGDA_QP_ORDERING_SEMANTIC) {
+    case OrderingCvar::ibta:
+      return IbQpOrderingPolicy::Ibta;
+    case OrderingCvar::ibta_forced:
+      return IbQpOrderingPolicy::IbtaForced;
+    case OrderingCvar::ooo_rw:
+      return IbQpOrderingPolicy::OooRw;
+    case OrderingCvar::ooo_all:
+      return IbQpOrderingPolicy::OooAll;
+    case OrderingCvar::auto_:
+      break;
+  }
+  return IbQpOrderingPolicy::Auto;
+}
+
+doca_verbs_qp_ordering_semantic toDocaOrderingSemantic(
+    IbQpOrderingSemantic mode) {
+  switch (ibQpOrderingTier(mode)) {
+    case 1:
+      return DOCA_VERBS_QP_ORDERING_SEMANTIC_OOO_RW;
+    case 2:
+      return DOCA_VERBS_QP_ORDERING_SEMANTIC_OOO_ALL;
+    default:
+      return DOCA_VERBS_QP_ORDERING_SEMANTIC_IBTA;
+  }
+}
+
+// What one NIC will let us do with dp_ordering.
+struct NicDpOrderingCap {
+  int capTier{0};
+  bool forceSupported{false};
+};
+
+// A DEVX QUERY_HCA_CAP round trip. Returns nullopt when the NIC cannot be
+// asked at all -- the query is mlx5-specific, so a non-mlx5 NIC fails here
+// rather than reporting "not capable". `failureReason` receives a
+// human-readable explanation in that case.
+std::optional<NicDpOrderingCap> queryNicDpOrderingCap(
+    ::ibv_context* ibvContext,
+    const std::string& deviceName,
+    std::string& failureReason) {
+  doca_verbs_device_attr* deviceAttr = nullptr;
+  const doca_error_t queryErr =
+      doca_verbs_query_device(ibvContext, &deviceAttr);
+  if (queryErr != DOCA_SUCCESS) {
+    failureReason = fmt::format(
+        "the DOCA capability query for NIC {} failed: {}",
+        deviceName,
+        docaErrorToString(queryErr));
+    return std::nullopt;
+  }
+  const NicDpOrderingCap cap{
+      static_cast<int>(
+          doca_verbs_device_attr_get_dp_ordering_cap_rc(deviceAttr)),
+      doca_verbs_device_attr_get_dp_ordering_force_supported(deviceAttr) != 0};
+  const doca_error_t freeErr = doca_verbs_device_attr_free(deviceAttr);
+  if (freeErr != DOCA_SUCCESS) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: failed to free DOCA device "
+                    "attributes for NIC "
+                 << deviceName << ": " << docaErrorToString(freeErr);
+  }
+  return cap;
+}
+
+// Resolve a requested policy against one NIC's capabilities.
+//
+// The two request kinds fail in opposite directions on purpose:
+//
+//   Auto     - never throws. It is the fleet default, so it must not be the
+//              reason a job refuses to start, and the capability query itself
+//              is mlx5-only. Anything it cannot get, it demotes to Ibta and
+//              logs why.
+//   explicit - fails closed, exactly as before. Somebody named a tier because
+//              they are measuring it; a silent downgrade would turn their A/B
+//              into a no-op that reads as "OOO does not help". NVIDIA's GDAKI
+//              refuses here for the same reason.
+IbQpOrderingSemantic resolveQpOrderingSemanticForNic(
+    IbQpOrderingPolicy policy,
+    ::ibv_context* ibvContext,
+    const std::string& deviceName) {
+  // Ibta writes nothing to the QPC, so there is nothing to check and no reason
+  // to spend a DEVX round trip finding that out.
+  if (policy == IbQpOrderingPolicy::Ibta) {
+    return IbQpOrderingSemantic::Ibta;
+  }
+
+  std::string queryFailure;
+  const std::optional<NicDpOrderingCap> cap =
+      queryNicDpOrderingCap(ibvContext, deviceName, queryFailure);
+
+  if (ibQpOrderingPolicyIsAuto(policy)) {
+    if (!cap.has_value()) {
+      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
+                   "back to ibta on NIC "
+                << deviceName << " because " << queryFailure;
+      return IbQpOrderingSemantic::Ibta;
+    }
+    if (!cap->forceSupported) {
+      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
+                   "back to ibta on NIC "
+                << deviceName
+                << ": the NIC does not report cmd_hca_cap_2.dp_ordering_force, "
+                   "without which the QPC tier is ignored";
+      return IbQpOrderingSemantic::Ibta;
+    }
+    // Ladder: take the strongest tier this NIC reports, ooo_all first.
+    //
+    //   ooo_all -> ooo_rw -> ibta
+    //
+    // ooo_all is the rung worth having: it is the only tier that lifts the
+    // ordering fence in front of an atomic, and every prims signal is an
+    // ATOMIC_FETCH_AND_ADD. ooo_rw relaxes Read/Write placement only and leaves
+    // that fence in place.
+    //
+    // ConnectX-8 rails report ooo_all; ConnectX-7 reports ooo_rw but not
+    // ooo_all (measured: cmd_hca_cap.dp_ordering_ooo_all_rc = 0), which is why
+    // the ladder exists rather than a flat "ask for ooo_all". Note the caller
+    // then narrows across a rank's NICs, so a rank holding both generations
+    // settles on ooo_rw for all of them rather than letting its own NICs
+    // disagree.
+    //
+    // A job spanning ranks with different NIC generations will resolve
+    // different tiers and be rejected at peer connect; those jobs must pin
+    // MCCL_IBGDA_QP_ORDERING_SEMANTIC=ooo_rw explicitly. That is deliberate --
+    // see the mismatch check in doMaterializePeer().
+    for (const auto candidate :
+         {IbQpOrderingSemantic::OooAll, IbQpOrderingSemantic::OooRw}) {
+      if (ibQpOrderingTier(candidate) <= cap->capTier) {
+        return candidate;
+      }
+    }
+    LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
+                 "back to ibta on NIC "
+              << deviceName
+              << ": the NIC reports no out-of-order placement tier "
+                 "(cmd_hca_cap.dp_ordering_ooo_{rw,all}_rc both clear)";
+    return IbQpOrderingSemantic::Ibta;
+  }
+
+  const IbQpOrderingSemantic mode = ibQpOrderingPolicyToSemantic(policy);
+  if (!cap.has_value()) {
+    throw std::runtime_error(
+        fmt::format(
+            "qp_ordering_semantic={} requested but {}",
+            ibQpOrderingSemanticName(mode),
+            queryFailure));
+  }
+  if (ibQpOrderingTier(mode) > cap->capTier) {
+    throw std::runtime_error(
+        fmt::format(
+            "qp_ordering_semantic={} needs dp_ordering tier {} but NIC {} "
+            "supports at most tier {} (cmd_hca_cap.dp_ordering_ooo_rw_rc / "
+            "dp_ordering_ooo_all_rc)",
+            ibQpOrderingSemanticName(mode),
+            ibQpOrderingTier(mode),
+            deviceName,
+            cap->capTier));
+  }
+  if (ibQpOrderingForce(mode) && !cap->forceSupported) {
+    throw std::runtime_error(
+        fmt::format(
+            "qp_ordering_semantic={} needs the QPC dp_ordering_force bit but "
+            "NIC {} does not report cmd_hca_cap_2.dp_ordering_force",
+            ibQpOrderingSemanticName(mode),
+            deviceName));
+  }
+  return mode;
+}
 #endif
 
 // Check DOCA error and throw on failure
@@ -214,6 +410,44 @@ void MultipeerIbgdaTransport::openIbDevice() {
               << reliableDoorbellModeName(config_.enableReliableDoorbell)
               << " send_dbr_mode="
               << (nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
+
+    // Resolve the dp_ordering tier against this NIC before any QP exists. An
+    // explicit policy throws here; auto demotes to Ibta and logs why.
+    //
+    // Narrow to the least capable NIC: a single qpOrderingSemantic_ drives
+    // every NIC on the rank and is what goes on the wire to peers, so under
+    // auto one NIC that cannot do OooRw demotes the whole rank rather than
+    // leaving the rank's NICs disagreeing with each other. Same in-loop clamp
+    // as maxRdAtomic_ above, and monotone for the same reason: auto only ever
+    // yields Ibta or OooRw, so taking the weaker of the two is well defined.
+    const IbQpOrderingSemantic nicOrdering = resolveQpOrderingSemanticForNic(
+        qpOrderingPolicy_,
+        reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx),
+        nics_[n].deviceName);
+    // The first NIC seeds; later NICs can only demote. Seeding rather than
+    // clamping from the member's initial value matters because that value is
+    // Ibta (tier 0), which nothing can clamp below.
+    if (n == 0 ||
+        ibQpOrderingTier(nicOrdering) < ibQpOrderingTier(qpOrderingSemantic_)) {
+      qpOrderingSemantic_ = nicOrdering;
+    }
+    // Say "written", not "effective". When we write nothing the firmware
+    // supplies its own tier -- on a ConnectX-8 rail with adaptive routing
+    // enabled that is OOO_RW, not IBTA. Logging "tier=0" as though it were the
+    // QP's state would be actively misleading: it reads as strict ordering when
+    // the QP is in fact relaxed for reads and writes.
+    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
+              << " qp_ordering_policy="
+              << ibQpOrderingPolicyName(qpOrderingPolicy_)
+              << " qp_ordering_semantic="
+              << ibQpOrderingSemanticName(qpOrderingSemantic_)
+              << " (dp_ordering written tier="
+              << ibQpOrderingTier(qpOrderingSemantic_)
+              << " force=" << ibQpOrderingForce(qpOrderingSemantic_)
+              << (ibQpOrderingIsWireNoOp(qpOrderingSemantic_)
+                      ? "; nothing written, QP keeps the firmware default"
+                      : "")
+              << ")";
 #endif
 
     doca_error_t err = doca_verbs_ah_attr_create(
@@ -579,6 +813,13 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     mainAttr.send_dbr_mode_ext = nicDoca_[nic].useReliableDoorbell
         ? DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW
         : DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+    // dp_ordering tier is carried on the init attr and applied to the QPC when
+    // DOCA moves the QP INIT->RTR. At the Ibta default both fields stay zero
+    // (the struct is value-initialized above) and DOCA executes no DEVX_SET
+    // for them, so the emitted command is unchanged.
+    mainAttr.ordering_semantic = toDocaOrderingSemantic(qpOrderingSemantic_);
+    mainAttr.ordering_semantic_force =
+        ibQpOrderingForce(qpOrderingSemantic_) ? 1 : 0;
 #endif
 
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
@@ -586,6 +827,13 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
 #ifndef __HIP_PLATFORM_AMD__
     loopbackAttr.send_dbr_mode_ext =
         DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+    // Host side of a pure loopback pair: never traverses the fabric, so it
+    // cannot see the reordering that OOO exists to absorb. Note the WAIT and
+    // counter ATOMIC_FA ride the *device-visible companion* built inside
+    // create_qp_group_hl(), not this QP; that companion is pinned to IBTA in
+    // DOCA. This is the responder half of the same pair, so it must match.
+    loopbackAttr.ordering_semantic = DOCA_VERBS_QP_ORDERING_SEMANTIC_IBTA;
+    loopbackAttr.ordering_semantic_force = 0;
 #endif
 
     auto& nicQps = nicDoca_[nic].blockQpGroups;
@@ -745,6 +993,13 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
 
     // Initialize DOCA GPU context
     initDocaGpu();
+
+#ifndef __HIP_PLATFORM_AMD__
+    // Take the requested dp_ordering policy (config value, optionally
+    // overridden by MCCL_IBGDA_QP_ORDERING_SEMANTIC). openIbDevice() resolves
+    // it against each NIC's capability into qpOrderingSemantic_.
+    qpOrderingPolicy_ = resolveQpOrderingPolicy(config_);
+#endif
 
     // Open IB device and create PD
     openIbDevice();
@@ -990,6 +1245,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   payload.numQpsPerPeerPerNic = mainQpsPerPeerPerNic;
   payload.maxGroups = config_.max_num_channels;
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
+  payload.qpOrderingSemantic = static_cast<int>(qpOrderingSemantic_);
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1092,6 +1348,39 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             remoteQp.qpsPerBlockPerNic,
             config_.max_num_channels,
             config_.qpsPerConnection));
+  }
+  // dp_ordering has to match on both ends of a connection: fail closed and name
+  // both sides rather than silently let one end reassemble in order while the
+  // other lets the fabric spray it.
+  //
+  // Measured on GB300 (ConnectX-8, mlx5_0, two hosts): a matched pair passes --
+  // tier1<->tier1 and tier2<->tier2 both verified clean over 2100 iterations of
+  // 64 KiB x 8 writes. BOTH mismatched orientations failed outright with
+  // "transport retry counter exceeded". That measurement used
+  // MLX5DV_QP_CREATE_OOO_DP, which also enables out-of-order receive-WR
+  // handling, so it is not proof that a QPC-bit-only mismatch fails -- but it
+  // is the only direct evidence, and it says mismatch is not safe.
+  //
+  // Hence: fail fast here even under the auto policy, where a mismatch is
+  // reachable without anyone misconfiguring anything (a rank whose NIC lacks
+  // the capability falls back to ibta while its peers resolve ooo_rw). If
+  // mismatch is in fact broken, this error beats an opaque RDMA retry failure
+  // later; if it is in fact safe, this is merely conservative and the operator
+  // has a documented way out. Both are better than an asymmetry we cannot
+  // vouch for.
+  if (remoteQp.qpOrderingSemantic != static_cast<int>(qpOrderingSemantic_)) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: peer {} qpOrderingSemantic={} ({}) vs local "
+            "qpOrderingSemantic={} ({}). Ranks resolved different dp_ordering "
+            "tiers, which happens when they do not all have the same NIC "
+            "capability. Set MCCL_IBGDA_QP_ORDERING_SEMANTIC=ibta on every "
+            "rank to pin them all to the firmware default.",
+            peerRank,
+            remoteQp.qpOrderingSemantic,
+            ibQpOrderingSemanticNameFromWire(remoteQp.qpOrderingSemantic),
+            static_cast<int>(qpOrderingSemantic_),
+            ibQpOrderingSemanticName(qpOrderingSemantic_)));
   }
 
   connectPeerMainQps(peerIndex, remoteQp);
