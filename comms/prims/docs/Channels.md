@@ -154,10 +154,13 @@ groups would already be racing that counter.
 
 Consequences for IBGDA:
 
-- WQ-slot reservation and ready-index publication use
+- SQ reservation, ready-index publication, and submission use
   `DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE`. The shared-QP mode
   spends device-scope atomics and `atomicCAS` spins arbitrating between posters
   that cannot exist; under `EXCLUSIVE` those become plain loads and stores.
+- CQ ownership is separate. The normal path's group leader owns the Send CQ, so
+  it uses `EXCLUSIVE`. The warp proxy's worker and service leaders share that CQ
+  within one CTA, so its completion waits and SQ-slot check use `CTA`.
 - Because `EXCLUSIVE` makes `mark_wqes_ready` a bare store with no fence, the
   release that orders WQE payload stores before the MMIO doorbell moves into the
   submit step, at GPU scope. Something must provide that release or the NIC can

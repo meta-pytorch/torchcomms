@@ -62,6 +62,7 @@ using doca_gpu_dev_verbs_wqe_ctrl_flags = uint8_t;
 // equivalents (same bit values).
 
 constexpr int DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU = 0;
+constexpr int DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA = 0;
 // Same inert placeholder as the GPU mode above: the `prims_amd_gda_*` overloads
 // ignore the sharing mode, so selecting EXCLUSIVE on the NVIDIA side leaves AMD
 // behaviour unchanged. It has to be spelled here regardless, because the

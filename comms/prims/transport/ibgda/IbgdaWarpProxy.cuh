@@ -233,6 +233,7 @@ class IbgdaWarpProxy {
     // Returns true when the slot could not be retired -- see
     // detail::prepare_send_slot. The caller must not stage or put on a slot the
     // NIC may still be reading.
+    template <typename Proto>
     [[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
         P2pIbgdaTransportDevice& transport,
         ThreadGroup& workers,
@@ -241,7 +242,7 @@ class IbgdaWarpProxy {
         const AbortDevice& abortDevice) {
       IbgdaWarpProxy::wait_prior_send_posted(
           storage_, workers, slot, abortDevice);
-      return detail::prepare_send_slot(
+      return detail::prepare_send_slot<Proto, true>(
           transport, workers, slot, generation, abortDevice);
     }
 
@@ -778,16 +779,17 @@ class IbgdaWarpProxy {
     const IbRemoteChannel remote = makeIbRemoteChannel(
         command.transport->channel_layout(), static_cast<int>(command.channel));
     ThreadGroup solo = make_solo_group(command.channel, fullBlock);
-    const IbLocalCompletionTicket ticket = command.transport->put(
-        solo,
-        command.source,
-        remote.recvStaging.subBuffer(command.remoteOffset),
-        command.bytes,
-        remote.dataReady,
-        command.protocolBytes,
-        /*counterBuf=*/{},
-        /*counterVal=*/0,
-        /*signalPerLane=*/true);
+    const IbLocalCompletionTicket ticket =
+        command.transport->template put<true>(
+            solo,
+            command.source,
+            remote.recvStaging.subBuffer(command.remoteOffset),
+            command.bytes,
+            remote.dataReady,
+            command.protocolBytes,
+            /*counterBuf=*/{},
+            /*counterVal=*/0,
+            /*signalPerLane=*/true);
     detail::record_send_completion(
         *command.transport,
         command.channel,
