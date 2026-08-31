@@ -173,6 +173,67 @@ __global__ void p2pTileSendRecvBidirCta(
     AbortDevice abortDevice = AbortDevice());
 
 /**
+ * p2pTileProgressSendRecv — Bidirectional exchange over the resumable progress
+ * API, the async counterpart of p2pTileSendRecv.
+ *
+ * Where the blocking kernel dedicates one block to each direction and blocks
+ * inside send()/recv(), this drives both directions from a single block: it
+ * initializes both, then polls each in turn until both report Done. A direction
+ * that cannot advance reports Waiting instead of stalling the block, so the
+ * other direction keeps moving.
+ *
+ * Launches with `numSendBlocks` total blocks -- half of what p2pTileSendRecv
+ * needs for the same channel count, since no role partition is required.
+ *
+ * @param p2p              Transport device (passed by value from host memory)
+ * @param sendTiles        Tiled view of the send buffer
+ * @param recvTiles        Tiled view of the recv buffer
+ * @param max_signal_bytes Hint for signal granularity. 0 = per-slot signal.
+ * @param timeout          Abort handle for the polling loop
+ */
+__global__ void p2pTileProgressSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes = 0,
+    AbortDevice timeout = AbortDevice());
+
+/**
+ * p2pTileProgressDrainSendRecv — serial alternation, but each direction
+ * advances until it would block before yielding to the other.
+ *
+ * Matched against p2pTileProgressSendRecv in every respect except the loop:
+ * same single 512-thread block group, same grid, same transport calls. It
+ * isolates "yield after one chunk" from "yield when blocked". It does not
+ * overlap the two directions -- only two concurrent groups do that -- so the
+ * gain should be bounded by how much work a direction can queue before
+ * blocking, i.e. by pipelineDepth.
+ */
+__global__ void p2pTileProgressDrainSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes = 0,
+    AbortDevice timeout = AbortDevice());
+
+/**
+ * p2pTileProgressSendRecvBidirCta — Progress API with the two directions in
+ * concurrent half-block groups instead of alternating in one group.
+ *
+ * The progress-API analogue of p2pTileSendRecvBidirCta. Separates the cost of
+ * the API from the cost of the alternating loop shape: identical transport
+ * calls to p2pTileProgressSendRecv, different group structure.
+ *
+ * Launches with `numSendBlocks` total blocks.
+ */
+__global__ void p2pTileProgressSendRecvBidirCta(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes = 0,
+    AbortDevice timeout = AbortDevice());
+
+/**
  * p2pTileSendRecvDynamic — Variant using transport-internal tile state
  * with support for dynamic block count changes.
  *
