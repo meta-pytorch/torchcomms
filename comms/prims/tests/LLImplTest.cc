@@ -24,6 +24,35 @@ namespace comms::prims {
 // dispatch report it as LL-capable.
 static_assert(has_sendLL_v<Memcpy, LlxPacketGeometry>);
 static_assert(has_recvLL_v<Memcpy, LlxPacketGeometry>);
+static_assert(has_forwardLL_v<Memcpy, LlxPacketGeometry>);
+
+namespace {
+// has_forwardLL_v probes a FIXED 8-argument list, so it silently reports false
+// for a hook whose signature drifts -- and the transport turns that false into
+// a static_assert in whichever .cu instantiated the LL forward, far from the
+// edit that caused it. Pin the negative verdicts here, next to the trait.
+//
+// Declarations only: these are never called, and the trait is an unevaluated
+// decltype.
+struct NoLlHooks {};
+
+// forwardLL present, but one argument short -- the shape a hook would have if
+// it relayed packets verbatim, with no downstream generation to re-stamp with.
+struct MissingFwdFlag {
+  template <typename P>
+  static void forwardLL(
+      ThreadGroup&,
+      char*,
+      char*,
+      const char*,
+      std::size_t,
+      std::size_t,
+      typename P::FlagType);
+};
+
+static_assert(!has_forwardLL_v<NoLlHooks, LlxPacketGeometry>);
+static_assert(!has_forwardLL_v<MissingFwdFlag, LlxPacketGeometry>);
+} // namespace
 
 namespace {
 
@@ -295,6 +324,114 @@ TEST_F(LLImplTest, AllFlagsSetFalseOnAnyMissingPacket) {
         << "packet " << p << " of " << nPackets
         << " had the wrong generation but the chunk reported ready";
   }
+}
+
+namespace {
+
+struct RepackResult {
+  uint32_t flagErrors;
+  std::vector<char> dst; // decoded by the relay itself (empty when useDst)
+  std::vector<char> packetOut; // decoded back out of the forwarded packets
+};
+
+// pack -> repack -> inspect. See test_ll_repack() for the two-pass split.
+RepackResult runRepack(const std::vector<char>& src, bool useDst) {
+  using P = LlxPacketGeometry;
+  const std::size_t nbytes = src.size();
+  const std::size_t wire = P::wire_bytes(nbytes);
+
+  DeviceBuffer srcBuf(nbytes);
+  DeviceBuffer recvStaging(wire);
+  DeviceBuffer fwdStaging(wire);
+  DeviceBuffer dstBuf(nbytes);
+  DeviceBuffer packetOut(nbytes);
+  DeviceBuffer errBuf(sizeof(uint32_t));
+
+  CUDACHECK_TEST(
+      cudaMemcpy(srcBuf.get(), src.data(), nbytes, cudaMemcpyHostToDevice));
+  // Poison both outputs: a relay that writes nothing must not look like a pass.
+  CUDACHECK_TEST(cudaMemset(dstBuf.get(), 0xA5, nbytes));
+  CUDACHECK_TEST(cudaMemset(packetOut.get(), 0xA5, nbytes));
+  // Poison the forward staging with the UPSTREAM generation, so a relay that
+  // copies packets verbatim cannot accidentally leave the right flag behind.
+  CUDACHECK_TEST(cudaMemset(fwdStaging.get(), 0x07, wire));
+  CUDACHECK_TEST(cudaMemset(errBuf.get(), 0, sizeof(uint32_t)));
+
+  test::test_ll_repack(
+      static_cast<const char*>(srcBuf.get()),
+      static_cast<char*>(recvStaging.get()),
+      static_cast<char*>(fwdStaging.get()),
+      static_cast<char*>(dstBuf.get()),
+      static_cast<char*>(packetOut.get()),
+      nbytes,
+      useDst,
+      static_cast<uint32_t*>(errBuf.get()));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  RepackResult out;
+  CUDACHECK_TEST(cudaMemcpy(
+      &out.flagErrors, errBuf.get(), sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  out.packetOut.resize(nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      out.packetOut.data(), packetOut.get(), nbytes, cudaMemcpyDeviceToHost));
+  if (useDst) {
+    out.dst.resize(nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        out.dst.data(), dstBuf.get(), nbytes, cudaMemcpyDeviceToHost));
+  }
+  return out;
+}
+
+std::vector<char> pattern(std::size_t nbytes) {
+  // Position-dependent, so a relay that shifts or duplicates a packet shows up.
+  std::vector<char> v(nbytes);
+  for (std::size_t i = 0; i < nbytes; ++i) {
+    v[i] = static_cast<char>(i * 131u + 7u);
+  }
+  return v;
+}
+
+} // namespace
+
+// kData = 4, so `nbytes % 4` decides how much of the final packet is the
+// packer's zero padding. Sweep every remainder, plus sizes on either side of a
+// single packet and a few large enough to give every thread several packets.
+TEST_F(LLImplTest, RepackReStampsAndPreservesPayload) {
+  for (std::size_t n :
+       {std::size_t(1),
+        std::size_t(2),
+        std::size_t(3),
+        std::size_t(4),
+        std::size_t(5),
+        std::size_t(7),
+        std::size_t(64),
+        std::size_t(533),
+        std::size_t(1000),
+        std::size_t(4096)}) {
+    const auto src = pattern(n);
+    const auto got = runRepack(src, /*useDst=*/true);
+
+    EXPECT_EQ(got.flagErrors, 0u)
+        << "nbytes=" << n << ": " << got.flagErrors
+        << " forwarded packet(s) still carry the upstream generation";
+    EXPECT_EQ(got.dst, src)
+        << "nbytes=" << n << ": relay decode into dst wrong";
+    EXPECT_EQ(got.packetOut, src)
+        << "nbytes=" << n << ": forwarded packet payload wrong";
+  }
+}
+
+// Forward-only relay: the chain's intermediate ranks pass dst == nullptr, and
+// the packets must still be re-stamped and carry the payload.
+TEST_F(LLImplTest, RepackForwardOnlyNullDst) {
+  constexpr std::size_t kBytes = 1000;
+  const auto src = pattern(kBytes);
+  const auto got = runRepack(src, /*useDst=*/false);
+
+  EXPECT_EQ(got.flagErrors, 0u)
+      << got.flagErrors << " forwarded packet(s) still carry the upstream "
+      << "generation with dst == nullptr";
+  EXPECT_EQ(got.packetOut, src) << "forward-only relay payload wrong";
 }
 
 TEST_F(LLImplTest, FlagRoundTrip) {
