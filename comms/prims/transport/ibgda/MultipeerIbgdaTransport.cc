@@ -44,6 +44,16 @@ namespace {
 
 constexpr int kHopLimit = 255;
 
+#if PRIMS_DOCA_HOST_V4
+using DocaQp = doca_verbs_qp_t;
+using DocaQpAttr = doca_verbs_qp_attr_t;
+constexpr int kDocaAtomicAttrMask = DOCA_VERBS_QP_ATTR_ATOMIC_MODE;
+#else
+using DocaQp = ibv_qp;
+using DocaQpAttr = doca_verbs_qp_attr;
+constexpr int kDocaAtomicAttrMask = 0;
+#endif
+
 // Host loopback QPs are only used to bring each exported companion QP to RTS.
 // The device-visible companion QP is created by create_qp_group_hl() with
 // mainAttr and therefore uses config_.qpDepth.
@@ -157,6 +167,16 @@ void checkDocaError(doca_error_t err, const char* msg) {
   }
 }
 
+uint32_t getDocaQpn(DocaQp* qp) {
+#if PRIMS_DOCA_HOST_V4
+  uint32_t qpn = 0;
+  checkDocaError(doca_verbs_qp_get_qpn(qp, &qpn), "Failed to get QP number");
+  return qpn;
+#else
+  return doca_verbs_qp_get_qpn(qp);
+#endif
+}
+
 } // namespace
 
 // Helper method implementations
@@ -200,6 +220,13 @@ void MultipeerIbgdaTransport::openIbDevice() {
              ? DOCA_VERBS_ADDR_TYPE_IPv4
              : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
+#if PRIMS_DOCA_HOST_V4
+    doca_dev_t* netDev = nullptr;
+    doca_error_t err = doca_verbs_dev_open(
+        reinterpret_cast<::ibv_pd*>(nics_[n].ibvPd), &netDev);
+    checkDocaError(err, "Failed to open DOCA network device");
+    nicDoca_[n].netDev.handle = netDev;
+#endif
 #ifndef __HIP_PLATFORM_AMD__
     const bool nicReliableDoorbellCapable =
         reliableDoorbellNeedsCapabilityQuery(config_)
@@ -216,8 +243,14 @@ void MultipeerIbgdaTransport::openIbDevice() {
               << (nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
 #endif
 
+#if PRIMS_DOCA_HOST_V4
+    err = doca_verbs_ah_attr_create(
+        static_cast<doca_dev_t*>(nicDoca_[n].netDev.handle),
+        &nicDoca_[n].ahAttr);
+#else
     doca_error_t err = doca_verbs_ah_attr_create(
         reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx), &nicDoca_[n].ahAttr);
+#endif
     checkDocaError(err, "Failed to create AH attributes");
     err = doca_verbs_ah_attr_set_addr_type(nicDoca_[n].ahAttr, addrType);
     checkDocaError(err, "Failed to set address type");
@@ -485,7 +518,7 @@ void MultipeerIbgdaTransport::connectQp(
   }
 
   // Create QP attributes for modification
-  doca_verbs_qp_attr* qpAttr = nullptr;
+  DocaQpAttr* qpAttr = nullptr;
   err = doca_verbs_qp_attr_create(&qpAttr);
   checkDocaError(err, "Failed to create QP attributes");
   if (qpAttr == nullptr) {
@@ -500,8 +533,13 @@ void MultipeerIbgdaTransport::connectQp(
     checkDocaError(err, "Failed to set allow remote write");
     err = doca_verbs_qp_attr_set_allow_remote_read(qpAttr, 1);
     checkDocaError(err, "Failed to set allow remote read");
+#if PRIMS_DOCA_HOST_V4
+    err = doca_verbs_qp_attr_set_atomic_mode(
+        qpAttr, DOCA_VERBS_QP_ATOMIC_MODE_IB_SPEC);
+#else
     err = doca_verbs_qp_attr_set_allow_remote_atomic(
         qpAttr, DOCA_VERBS_QP_ATOMIC_MODE_IB_SPEC);
+#endif
     checkDocaError(err, "Failed to set allow remote atomic");
     err = doca_verbs_qp_attr_set_port_num(qpAttr, 1);
     checkDocaError(err, "Failed to set port number");
@@ -511,7 +549,8 @@ void MultipeerIbgdaTransport::connectQp(
         qpAttr,
         DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
             DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ |
-            DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM);
+            DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM |
+            kDocaAtomicAttrMask);
     checkDocaError(err, "Failed to modify QP to INIT");
 
     // Transition to RTR state
@@ -571,6 +610,9 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
     mainAttr.gpu_dev = docaGpu_;
+#if PRIMS_DOCA_HOST_V4
+    mainAttr.net_dev = static_cast<doca_dev_t*>(nicDoca_[nic].netDev.handle);
+#endif
     mainAttr.ibpd = reinterpret_cast<::ibv_pd*>(nics_[nic].ibvPd);
     mainAttr.sq_nwqe = config_.qpDepth;
     mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
@@ -620,9 +662,9 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
     const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
     for (int slot = 0; slot < companionSlots; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicLoopback[slotIdx]->qp);
+      selfInfo.qpn = getDocaQpn(nicLoopback[slotIdx]->qp);
       connectQp(&nicQps[slotIdx]->qp_companion, selfInfo, nic);
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_companion.qp);
+      selfInfo.qpn = getDocaQpn(nicQps[slotIdx]->qp_companion.qp);
       connectQp(nicLoopback[slotIdx], selfInfo, nic);
     }
   }
@@ -874,6 +916,12 @@ void MultipeerIbgdaTransport::cleanup() {
       doca_verbs_ah_attr_destroy(nicDoca_[n].ahAttr);
       nicDoca_[n].ahAttr = nullptr;
     }
+#if PRIMS_DOCA_HOST_V4
+    if (nicDoca_[n].netDev.handle != nullptr) {
+      doca_verbs_dev_close(static_cast<doca_dev_t*>(nicDoca_[n].netDev.handle));
+      nicDoca_[n].netDev.handle = nullptr;
+    }
+#endif
   }
 
   // Destroy per-NIC PDs (bound on nics_, the vector indexed here)
@@ -1004,8 +1052,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     auto& nicQps = nicDoca_[n].blockQpGroups;
     for (int slot = 0; slot < companionSlots; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
-      payload.nicInfo[n].qpns[slot] =
-          doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_main.qp);
+      payload.nicInfo[n].qpns[slot] = getDocaQpn(nicQps[slotIdx]->qp_main.qp);
     }
   }
   return payload;

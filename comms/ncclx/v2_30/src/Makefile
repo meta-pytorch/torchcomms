@@ -26,6 +26,11 @@ CXXFLAGS += -DFMT_HEADER_ONLY=1
 CXXFLAGS += -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO -DSPDLOG_FMT_EXTERNAL
 NVCUFLAGS += -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO -DSPDLOG_FMT_EXTERNAL
 
+ifeq ($(NCCL_FEEDSTOCK_BUILD),1)
+CXXFLAGS += -DDOCA_VERBS_USE_META_THIRD_PARTY
+NVCUFLAGS += -DDOCA_VERBS_USE_META_THIRD_PARTY
+endif
+
 # Enable JSON parsing in the NCCLX built-in CSV/JSON tuner (meta/tuner) when
 # folly is available. The conda feedstock build sets NCCLX_TUNER_WITH_FOLLY_JSON=1
 # (folly is already linked there); a bare OSS `make` without folly leaves it off,
@@ -308,7 +313,7 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PRIMS),1)
+ifneq ($(filter 1,$(ENABLE_PRIMS) $(NCCL_FEEDSTOCK_BUILD)),)
 LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
 endif
 LDFLAGS    += -Wl,--version-script=version.script
@@ -327,15 +332,21 @@ $(GIT_VERSION_FILE): ALWAYS_REBUILD
 	@./misc/generate_git_version.py $@
 
 # DOCA GPUNetIO definitions
+ifeq ($(NCCL_FEEDSTOCK_BUILD),1)
+DOCA_HOME        := $(CONDA_PREFIX)
+else
 DOCA_HOME        ?= ${SRCDIR}/transport/net_ib/gdaki/doca-gpunetio
+endif
 DOCA_INC_INSTALL := $(INCDIR)/nccl_device/gin/gdaki/doca_gpunetio
 DOCA_OBJDIR      := $(OBJDIR)/transport/net_ib/gdaki/doca-gpunetio
-DOCA_INCLUDES    := $(DOCA_HOME)/include/doca_gpunetio_device.h $(wildcard $(DOCA_HOME)/include/common/*.h) $(wildcard $(DOCA_HOME)/include/device/*.cuh)
+DOCA_INCLUDES    := $(DOCA_HOME)/include/doca_gpunetio_device.h $(wildcard $(DOCA_HOME)/include/common/doca_gpunetio*.h) $(wildcard $(DOCA_HOME)/include/device/doca_gpunetio*.cuh)
 DOCA_INCTARGETS  := $(DOCA_INCLUDES:$(DOCA_HOME)/include/%=$(DOCA_INC_INSTALL)/%)
 INCTARGETS       += $(DOCA_INCTARGETS)
 DOCA_LIBSRC      := doca_verbs_qp.cpp doca_verbs_cq.cpp doca_verbs_device_attr.cpp doca_verbs_umem.cpp doca_verbs_srq.cpp doca_verbs_uar.cpp doca_gpunetio.cpp doca_gpunetio_log.cpp doca_gpunetio_high_level.cpp doca_verbs_cuda_wrapper.cpp doca_verbs_mlx5dv_wrapper.cpp doca_verbs_ibv_wrapper.cpp doca_gpunetio_gdrcopy.cpp
+ifneq ($(NCCL_FEEDSTOCK_BUILD),1)
 DOCA_LIBOBJ      := $(DOCA_LIBSRC:%.cpp=$(DOCA_OBJDIR)/%.o)
 LIBOBJ           += $(DOCA_LIBOBJ)
+endif
 
 ##### rules
 BUILD_NCCL_CLI ?= 1
