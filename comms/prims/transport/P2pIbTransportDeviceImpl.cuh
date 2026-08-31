@@ -643,6 +643,10 @@ __device__ __forceinline__ void consumeRecvBuf(
 // analog of consumeRecvBuf (recv-side readiness) fused with prepareSendBuf
 // (relay signal); LL later overrides it to poll inline flags, repack the fwd
 // staging, and return an empty signal.
+//
+// `recvFlagVal` / `fwdFlagVal` are the two ring generations, unused by Simple
+// (which has no inline flag) but part of the shared seam so forward_impl keeps
+// a single tag-dispatched call site.
 template <
     typename CopyOp = Memcpy,
     typename Transport,
@@ -662,6 +666,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     std::size_t nbytes,
     std::size_t dataOff,
     uint64_t recvWaitCredit,
+    uint64_t recvFlagVal,
+    uint64_t fwdFlagVal,
     const IbRemoteChannel& fwdRemoteChannel,
     uint64_t fwdSignalVal,
     uint32_t fwdSlot,
@@ -670,6 +676,8 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     const PipesTraceAllReduceContext* recvTraceContext,
     const PipesTraceAllReduceContext* sendTraceContext,
     Args... args) {
+  (void)recvFlagVal;
+  (void)fwdFlagVal;
 #if PIPES_IS_DEVICE_COMPILE
   // Both waits must clear before CopyOp::forward, which reads recvStaging and
   // writes fwdStaging; they are independent, so the order is a latency choice,
@@ -711,6 +719,9 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
         static_cast<uint8_t>(kPipesTraceQpLaneMask),
         fwdSignalVal);
   }
+  // Each protocol owns its own resource slot (Simple kProtoSlot 0, LL 1), so
+  // the slot template argument must be THIS overload's tag, not a fixed
+  // protocol -- an LL overload that copies this body must swap it for LL.
   if (prepare_send_slot<protocol::Simple>(
           fwdTransport, group, fwdSlot, fwdPipelineCycle, abortDevice)) {
     // Slot not retired: a lane's completion was never observed, so the NIC may
@@ -1974,6 +1985,12 @@ __device__ __forceinline__ void forward_impl(
   static_assert(
       std::is_void_v<IbOps> || std::is_same_v<Proto, protocol::Simple>,
       "IB operation policies support protocol::Simple only");
+  static_assert(
+      !detail::copyop_variable_size_v<CopyOp> ||
+          std::is_same_v<Proto, protocol::Simple>,
+      "variable-size CopyOps (e.g. AnsCompress) are supported on "
+      "protocol::Simple only; the compressed loop is not behind the "
+      "prepareForwardBuf seam.");
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
   static_assert(
@@ -2100,6 +2117,15 @@ __device__ __forceinline__ void forward_impl(
         ? fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire
         : 0;
     if constexpr (std::is_void_v<IbOps>) {
+      // Per-ring-pass packet generations, one per side. They are NOT the same
+      // value: the two cursors advance independently and the two channels can
+      // have different pipeline windows, so the relayed packets must be
+      // re-stamped from recvFlagVal to fwdFlagVal. Same expression the blocking
+      // send/recv paths and next_chunk() use. Ignored by Simple.
+      const uint64_t recvFlagVal =
+          recvStreamPayload / recvGeo.pipelineBytesPayload + 1;
+      const uint64_t fwdFlagVal = fwdPipelineCycle + 1;
+
       // (1) prepareForwardBuf: fwd slot-reuse backpressure + recv-side
       // readiness
       //     + fused transform recvStaging -> dst + fwdStaging, returning the
@@ -2118,6 +2144,8 @@ __device__ __forceinline__ void forward_impl(
           nbytes,
           dataOff,
           recvProtocolBytesThis,
+          recvFlagVal,
+          fwdFlagVal,
           fwdRemoteChannel,
           fwdProtocolBytesThis,
           static_cast<uint32_t>(fwdSlot),

@@ -739,7 +739,10 @@ class P2pIbrcTransportDevice {
         *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
@@ -748,7 +751,7 @@ class P2pIbrcTransportDevice {
       std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
-    detail::forward<CopyOp>(
+    detail::forward<CopyOp, P2pIbrcTransportDevice, Proto>(
         *this, group, dst, fwd, nbytes, max_signal_bytes, abortDevice, args...);
   }
 
