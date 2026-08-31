@@ -3,8 +3,9 @@
 #include "comms/utils/logger/LoggingFormat.h"
 
 #include <unistd.h>
-#include <cstring>
+#include <array>
 #include <sstream>
+#include <string_view>
 
 #include <fmt/format.h>
 #include <folly/String.h>
@@ -72,6 +73,54 @@ folly::Synchronized<LastErrorInfo>& getLastCommsErrorStorage() {
   static auto* storage = new folly::Synchronized<LastErrorInfo>{};
   return *storage;
 }
+
+constexpr char toAsciiUpper(char value) {
+  return value >= 'a' && value <= 'z' ? value - ('a' - 'A') : value;
+}
+
+bool asciiCaseInsensitiveEqual(std::string_view left, std::string_view right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (toAsciiUpper(left[index]) != toAsciiUpper(right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+uint64_t getSubSystemMaskForName(std::string_view name) {
+  struct NamedMask {
+    std::string_view name;
+    uint64_t mask;
+  };
+  static constexpr std::array<NamedMask, 17> kNamedMasks{{
+      {"INIT", meta::comms::logger::INIT},
+      {"COLL", meta::comms::logger::COLL},
+      {"P2P", meta::comms::logger::P2P},
+      {"SHM", meta::comms::logger::SHM},
+      {"NET", meta::comms::logger::NET},
+      {"GRAPH", meta::comms::logger::GRAPH},
+      {"TUNING", meta::comms::logger::TUNING},
+      {"ENV", meta::comms::logger::ENV},
+      {"ALLOC", meta::comms::logger::ALLOC},
+      {"CALL", meta::comms::logger::CALL},
+      {"PROXY", meta::comms::logger::PROXY},
+      {"NVLS", meta::comms::logger::NVLS},
+      {"BOOTSTRAP", meta::comms::logger::BOOTSTRAP},
+      {"REG", meta::comms::logger::REG},
+      {"PROFILE", meta::comms::logger::PROFILE},
+      {"RAS", meta::comms::logger::RAS},
+      {"ALL", static_cast<uint64_t>(meta::comms::logger::ALL)},
+  }};
+  for (const auto& namedMask : kNamedMasks) {
+    if (asciiCaseInsensitiveEqual(name, namedMask.name)) {
+      return namedMask.mask;
+    }
+  }
+  return 0;
+}
 } // Anonymous namespace
 
 namespace meta::comms::logger {
@@ -122,54 +171,16 @@ folly::StringPiece getCategoryNthParent(folly::StringPiece category, int n) {
  * or ^INIT,COLL etc
  */
 uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv) {
-  uint64_t maskResult{0};
-
-  int invert = 0;
-  if (ncclDebugSubsysEnv[0] == '^') {
-    invert = 1;
-    ncclDebugSubsysEnv++;
+  std::string_view input{ncclDebugSubsysEnv};
+  const bool invert = !input.empty() && input.front() == '^';
+  if (invert) {
+    input.remove_prefix(1);
   }
-  maskResult = invert ? ~0ULL : 0ULL;
-  char* ncclDebugSubsys = strdup(ncclDebugSubsysEnv);
-  // Fixme: this is not thread safe, rewrite with folly::split
-  char* subsys = strtok(ncclDebugSubsys, ",");
-  while (subsys != nullptr) {
-    uint64_t mask = 0;
-    if (strcasecmp(subsys, "INIT") == 0) {
-      mask = INIT;
-    } else if (strcasecmp(subsys, "COLL") == 0) {
-      mask = COLL;
-    } else if (strcasecmp(subsys, "P2P") == 0) {
-      mask = P2P;
-    } else if (strcasecmp(subsys, "SHM") == 0) {
-      mask = SHM;
-    } else if (strcasecmp(subsys, "NET") == 0) {
-      mask = NET;
-    } else if (strcasecmp(subsys, "GRAPH") == 0) {
-      mask = GRAPH;
-    } else if (strcasecmp(subsys, "TUNING") == 0) {
-      mask = TUNING;
-    } else if (strcasecmp(subsys, "ENV") == 0) {
-      mask = ENV;
-    } else if (strcasecmp(subsys, "ALLOC") == 0) {
-      mask = ALLOC;
-    } else if (strcasecmp(subsys, "CALL") == 0) {
-      mask = CALL;
-    } else if (strcasecmp(subsys, "PROXY") == 0) {
-      mask = PROXY;
-    } else if (strcasecmp(subsys, "NVLS") == 0) {
-      mask = NVLS;
-    } else if (strcasecmp(subsys, "BOOTSTRAP") == 0) {
-      mask = BOOTSTRAP;
-    } else if (strcasecmp(subsys, "REG") == 0) {
-      mask = REG;
-    } else if (strcasecmp(subsys, "PROFILE") == 0) {
-      mask = PROFILE;
-    } else if (strcasecmp(subsys, "RAS") == 0) {
-      mask = RAS;
-    } else if (strcasecmp(subsys, "ALL") == 0) {
-      mask = ALL;
-    }
+  uint64_t maskResult = invert ? ~0ULL : 0ULL;
+  while (!input.empty()) {
+    const auto delimiter = input.find(',');
+    const auto token = input.substr(0, delimiter);
+    const auto mask = getSubSystemMaskForName(token);
     if (mask) {
       if (invert) {
         maskResult &= ~mask;
@@ -177,9 +188,11 @@ uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv) {
         maskResult |= mask;
       }
     }
-    subsys = strtok(nullptr, ",");
+    if (delimiter == std::string_view::npos) {
+      break;
+    }
+    input.remove_prefix(delimiter + 1);
   }
-  free(ncclDebugSubsys);
   return maskResult;
 }
 
