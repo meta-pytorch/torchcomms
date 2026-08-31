@@ -1485,6 +1485,47 @@ class P2pIbgdaTransportDevice {
     return ticket;
   }
 
+  // --- WQ slot lifecycle ---
+  //
+  // Every posting site funnels through these three, so the sharing mode and the
+  // fence rule are stated once instead of at each call.
+  //
+  // A QP has exactly one poster; see "QP posting ownership" in
+  // comms/prims/docs/Channels.md for why that is structural and what depends
+  // on it.
+
+  static constexpr auto kQpSharingMode =
+      DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE;
+
+  __device__ __forceinline__ uint64_t
+  reserve_wqes(doca_gpu_dev_verbs_qp* qp, uint32_t count) const {
+    return doca_gpu_dev_verbs_reserve_wq_slots<kQpSharingMode>(qp, count);
+  }
+
+  __device__ __forceinline__ void mark_wqes_ready_mode(
+      doca_gpu_dev_verbs_qp* qp,
+      uint64_t fromWqe,
+      uint64_t toWqe) const {
+    doca_gpu_dev_verbs_mark_wqes_ready<kQpSharingMode>(qp, fromWqe, toWqe);
+  }
+
+  /**
+   * Ring the doorbell for everything up to and including `toWqe`.
+   *
+   * The GPU sync scope is load-bearing, not a default: under EXCLUSIVE
+   * `mark_wqes_ready` is a bare store, so this is the only release ordering the
+   * WQE payload before the MMIO doorbell. THREAD here would let the NIC fetch a
+   * WQE it has not been shown.
+   */
+  __device__ __forceinline__ void submit_wqes(
+      doca_gpu_dev_verbs_qp* qp,
+      uint64_t toWqe) const {
+    doca_gpu_dev_verbs_submit<
+        kQpSharingMode,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, toWqe + 1);
+  }
+
   __device__ IbgdaPutSignalTickets put_signal_single_impl(
       const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
@@ -1523,8 +1564,7 @@ class P2pIbgdaTransportDevice {
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
     numChunks = numChunks > 1 ? numChunks : 1;
-    uint64_t baseWqeIdx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(lane.qp, numChunks + 1);
+    uint64_t baseWqeIdx = reserve_wqes(lane.qp, numChunks + 1);
     uint64_t wqeIdx = baseWqeIdx;
     std::size_t remainingSize = nbytes;
 
@@ -1569,13 +1609,8 @@ class P2pIbgdaTransportDevice {
         sizeof(uint64_t),
         signalVal,
         0);
-    doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-        lane.qp, baseWqeIdx, wqeIdx);
-    doca_gpu_dev_verbs_submit<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(lane.qp, wqeIdx + 1);
+    mark_wqes_ready_mode(lane.qp, baseWqeIdx, wqeIdx);
+    submit_wqes(lane.qp, wqeIdx);
     return IbgdaPutSignalTickets{lastPutWqeIdx, wqeIdx};
 #endif
   }
@@ -1928,8 +1963,7 @@ class P2pIbgdaTransportDevice {
         .key = signalBuf.rkey_per_device[lane.nic_id].value};
     doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = nic.sink_lkey.value};
 
-    uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, 1);
+    uint64_t wqe_idx = reserve_wqes(qp, 1);
 
     doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
@@ -1950,13 +1984,8 @@ class P2pIbgdaTransportDevice {
         signalVal,
         0);
 
-    doca_gpu_dev_verbs_mark_wqes_ready<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp, wqe_idx, wqe_idx);
-
-    doca_gpu_dev_verbs_submit<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, wqe_idx + 1);
+    mark_wqes_ready_mode(qp, wqe_idx, wqe_idx);
+    submit_wqes(qp, wqe_idx);
     return wqe_idx;
   }
 
