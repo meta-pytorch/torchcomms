@@ -141,26 +141,22 @@ class CommsThreadPoolState final {
   std::shared_ptr<spdlog::details::thread_pool> threadPool_;
 };
 
-class CommsThreadPoolStopper final {
+class CommsLoggingStopper final {
  public:
-  explicit CommsThreadPoolStopper(CommsThreadPoolState& state)
-      : state_(state) {}
-  ~CommsThreadPoolStopper() {
-    state_.stop();
+  ~CommsLoggingStopper() {
+    shutdownCommsLogging();
   }
 
-  CommsThreadPoolStopper(const CommsThreadPoolStopper&) = delete;
-  CommsThreadPoolStopper& operator=(const CommsThreadPoolStopper&) = delete;
-  CommsThreadPoolStopper(CommsThreadPoolStopper&&) = delete;
-  CommsThreadPoolStopper& operator=(CommsThreadPoolStopper&&) = delete;
-
- private:
-  CommsThreadPoolState& state_;
+  CommsLoggingStopper() = default;
+  CommsLoggingStopper(const CommsLoggingStopper&) = delete;
+  CommsLoggingStopper& operator=(const CommsLoggingStopper&) = delete;
+  CommsLoggingStopper(CommsLoggingStopper&&) = delete;
+  CommsLoggingStopper& operator=(CommsLoggingStopper&&) = delete;
 };
 
 CommsThreadPoolState& getCommsThreadPoolState() {
   static auto* state = new CommsThreadPoolState{};
-  static const CommsThreadPoolStopper stopper{*state};
+  static const CommsLoggingStopper stopper;
   return *state;
 }
 
@@ -182,8 +178,13 @@ class PeriodicSinkFlusher final {
   // Joins the flush thread so it cannot touch sinks or stdio during exit. The
   // flusher itself survives, so registerSink() from a running thread stays
   // safe.
-  void stopFlushing() {
-    worker_.reset();
+  void stopFlushing() noexcept {
+    std::unique_ptr<spdlog::details::periodic_worker> worker;
+    {
+      std::lock_guard lock{workerMutex_};
+      worker = std::move(worker_);
+    }
+    worker.reset();
   }
 
   void registerSink(const std::shared_ptr<spdlog::sinks::sink>& sink) {
@@ -227,33 +228,18 @@ class PeriodicSinkFlusher final {
 
   std::mutex mutex_;
   std::vector<std::weak_ptr<spdlog::sinks::sink>> sinks_;
-  // Declared last so it is joined before the state its callback reads.
+  std::mutex workerMutex_;
   std::unique_ptr<spdlog::details::periodic_worker> worker_;
 };
 
-// Stops the flush thread at exit without destroying the flusher it points at.
-class PeriodicFlushStopper final {
- public:
-  explicit PeriodicFlushStopper(PeriodicSinkFlusher& flusher)
-      : flusher_(flusher) {}
-  ~PeriodicFlushStopper() {
-    flusher_.stopFlushing();
-  }
-
-  PeriodicFlushStopper(const PeriodicFlushStopper&) = delete;
-  PeriodicFlushStopper& operator=(const PeriodicFlushStopper&) = delete;
-  PeriodicFlushStopper(PeriodicFlushStopper&&) = delete;
-  PeriodicFlushStopper& operator=(PeriodicFlushStopper&&) = delete;
-
- private:
-  PeriodicSinkFlusher& flusher_;
-};
+std::atomic<PeriodicSinkFlusher*> periodicSinkFlusher{nullptr};
 
 PeriodicSinkFlusher& getPeriodicSinkFlusher() {
-  static auto* flusher = new PeriodicSinkFlusher{};
-  // Constructed after the logger and spdlog registry, so atexit's LIFO order
-  // joins the flush thread before spdlog's exit-time teardown begins.
-  static const PeriodicFlushStopper stopper{*flusher};
+  static auto* flusher = []() {
+    auto* initialized = new PeriodicSinkFlusher{};
+    periodicSinkFlusher.store(initialized, std::memory_order_release);
+    return initialized;
+  }();
   return *flusher;
 }
 
@@ -358,6 +344,29 @@ struct NamedLoggerRegistry {
       loggers;
 };
 
+std::atomic<NamedLoggerRegistry*> namedLoggerRegistry{nullptr};
+
+NamedLoggerRegistry& getNamedLoggerRegistry() {
+  static auto* registry = []() {
+    auto* initialized = new NamedLoggerRegistry{};
+    namedLoggerRegistry.store(initialized, std::memory_order_release);
+    return initialized;
+  }();
+  return *registry;
+}
+
+std::atomic<CommsSpdlogLogger*> defaultLogger{nullptr};
+
+std::mutex& getCommsLoggingShutdownMutex() {
+  /*
+   * Concurrent callers must not return while another caller is still joining
+   * the periodic worker. Leak the mutex because shutdown can run during static
+   * destruction.
+   */
+  static auto* mutex = new std::mutex{};
+  return *mutex;
+}
+
 std::shared_ptr<spdlog::logger> createLogger(std::string name) {
   auto threadPoolLease = getCommsThreadPoolState().acquire();
   auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
@@ -378,27 +387,49 @@ std::shared_ptr<spdlog::logger> createLogger(std::string name) {
 
 } // namespace
 
-/*
- * Stops the library-owned pool and nothing else. In particular it must not
- * reach spdlog's global registry.
- *
- * spdlog::shutdown() would drain the registry pool that comms/uniflow/logging
- * still rides, which is worth something -- but it gets there through
- * registry::instance(), a function-local static. COMMS_LOG_FATAL can fire
- * during static destruction, and once that singleton is gone the call is
- * undefined behavior on the one path that must stay predictable. A narrow
- * window, but the cost of losing it is an abort that misbehaves instead of
- * aborting.
- *
- * Keeping the registry off this path is also the invariant comms already
- * bought: comms loggers were moved off the registry onto their own pool and
- * their own name map precisely so teardown answers to this translation unit.
- * The price is that uniflow's queued messages do not survive the std::abort()
- * below; the fix for that belongs on uniflow's side, as a synchronous fallback
- * like the one this library has, not as a registry call from here.
- */
 void shutdownSpdlogForFatal() {
   getCommsThreadPoolState().stop();
+}
+
+void shutdownCommsLogging() noexcept {
+  const std::lock_guard shutdownLock{getCommsLoggingShutdownMutex()};
+  try {
+    getCommsThreadPoolState().stop();
+  } catch (...) {
+    reportCommsLoggingFailureToStderr("ERROR");
+  }
+
+  const auto flushLoggerNoexcept = [](CommsSpdlogLogger& logger) noexcept {
+    try {
+      logger.flush();
+    } catch (...) {
+      reportCommsLoggingFailureToStderr("ERROR");
+    }
+  };
+  if (auto* logger = defaultLogger.load(std::memory_order_acquire)) {
+    flushLoggerNoexcept(*logger);
+  }
+  if (auto* registry = namedLoggerRegistry.load(std::memory_order_acquire)) {
+    std::vector<CommsSpdlogLogger*> loggers;
+    try {
+      {
+        std::shared_lock lock{registry->mutex};
+        loggers.reserve(registry->loggers.size());
+        for (const auto& [name, logger] : registry->loggers) {
+          (void)name;
+          loggers.push_back(logger.get());
+        }
+      }
+    } catch (...) {
+      reportCommsLoggingFailureToStderr("ERROR");
+    }
+    for (auto* logger : loggers) {
+      flushLoggerNoexcept(*logger);
+    }
+  }
+  if (auto* flusher = periodicSinkFlusher.load(std::memory_order_acquire)) {
+    flusher->stopFlushing();
+  }
 }
 
 namespace testing {
@@ -413,7 +444,7 @@ void addSinkForTesting(
  * Both of these touch spdlog's global registry from the logger library's own
  * translation unit. A test cannot use spdlog::thread_pool() directly for this:
  * the registry is header-only and under @mode/dev-asan the test binary holds a
- * separate copy, so it would report on a registry shutdownSpdlogForFatal()
+ * separate copy, so it would report on a registry shutdownCommsLogging()
  * never touches.
  */
 void initGlobalThreadPoolForTesting() {
@@ -422,6 +453,10 @@ void initGlobalThreadPoolForTesting() {
 
 bool globalThreadPoolAliveForTesting() {
   return ::spdlog::thread_pool() != nullptr;
+}
+
+void shutdownAsyncThreadPoolForTesting() {
+  getCommsThreadPoolState().stop();
 }
 
 bool holdAsyncThreadPoolLeaseForTesting(const std::function<void()>& callback) {
@@ -605,7 +640,9 @@ void CommsSpdlogLogger::configure(
    */
   logger_->flush_on(asyncLogging ? spdlog::level::err : spdlog::level::off);
   if (asyncLogging) {
-    getPeriodicSinkFlusher().registerSink(outputSink_);
+    if (const auto threadPoolLease = getCommsThreadPoolState().acquire()) {
+      getPeriodicSinkFlusher().registerSink(outputSink_);
+    }
   }
 }
 
@@ -693,7 +730,7 @@ void CommsSpdlogLogger::logFormatted(
   /*
    * The lease only has to keep the pool alive across the async post, so it is
    * scoped to that branch. acquire() takes a shared lock on leaseMutex_ that
-   * stop() -- called by shutdownSpdlogForFatal() and the exit-time stopper --
+   * stop() -- called by shutdownCommsLogging() and the exit-time stopper --
    * takes exclusively, so holding the lease across synchronous delivery would
    * make shutdown wait for the lease behind the sink write. Synchronous
    * delivery no longer holds a pool lease, so that edge is gone.
@@ -710,7 +747,11 @@ void CommsSpdlogLogger::logFormatted(
 
 CommsSpdlogLogger& getSpdlogLogger() {
   // Leaked; see PeriodicSinkFlusher for why nothing here may have a destructor.
-  static auto* logger = new CommsSpdlogLogger{};
+  static auto* logger = []() {
+    auto* initialized = new CommsSpdlogLogger{};
+    defaultLogger.store(initialized, std::memory_order_release);
+    return initialized;
+  }();
   return *logger;
 }
 
@@ -720,23 +761,23 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName) {
   }
   // Leaked as a unit: destroying the map would destroy every named logger, and
   // destroying the mutex would strand any thread still looking one up.
-  static auto* registry = new NamedLoggerRegistry{};
+  auto& registry = getNamedLoggerRegistry();
   {
-    std::shared_lock lock{registry->mutex};
-    if (const auto it = registry->loggers.find(loggerName);
-        it != registry->loggers.end()) {
+    std::shared_lock lock{registry.mutex};
+    if (const auto it = registry.loggers.find(loggerName);
+        it != registry.loggers.end()) {
       return *it->second;
     }
   }
-  std::unique_lock lock{registry->mutex};
-  if (const auto it = registry->loggers.find(loggerName);
-      it != registry->loggers.end()) {
+  std::unique_lock lock{registry.mutex};
+  if (const auto it = registry.loggers.find(loggerName);
+      it != registry.loggers.end()) {
     return *it->second;
   }
   auto name = std::string{loggerName};
   auto logger = std::make_unique<CommsSpdlogLogger>(name);
   const auto it =
-      registry->loggers.emplace(std::move(name), std::move(logger)).first;
+      registry.loggers.emplace(std::move(name), std::move(logger)).first;
   return *it->second;
 }
 

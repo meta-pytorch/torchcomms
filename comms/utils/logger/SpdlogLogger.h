@@ -198,6 +198,12 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 void reportCommsLoggingFailureToStderr(const char* level) noexcept;
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept;
 void shutdownSpdlogForFatal();
+/*
+ * Terminal barrier for the comms logger state in this linkage image. It drains
+ * queued records, best-effort flushes every existing logger, and makes later
+ * delivery synchronous. The function is idempotent and does not call fsync().
+ */
+void shutdownCommsLogging() noexcept;
 CommsSpdlogLogger& getSpdlogLoggerForFatal(
     std::string_view loggerName) noexcept;
 
@@ -245,11 +251,12 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
- * shutdownSpdlogForFatal() releases only the library-owned async pool. It
- * drains once any in-flight async post releases its pool reference;
- * synchronous delivery holds no such reference. spdlog's global registry is
- * intentionally untouched. The synchronous logger and its output sinks remain
- * valid throughout.
+ * shutdownSpdlogForFatal() stops the library-owned async pool and nothing
+ * else. That pool drains once every in-flight async post releases its lease;
+ * synchronous delivery holds no lease. spdlog's global registry pool is left
+ * running on purpose: draining it means registry::instance(), which may
+ * already be gone when a FATAL fires during static destruction. The synchronous
+ * logger and its output sinks remain valid throughout.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \
   do {                                                               \
@@ -338,6 +345,7 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
  * Logs an ERR synchronously and terminates with SIGABRT. Termination still
  * occurs when ERR logging is disabled or the logging operation fails.
  */
+// @lint-ignore CLANGTIDY facebook-modularize-issue-check
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_ERROR
 #define COMMS_ABORT_IMPL(logger_name, ...)                             \
   do {                                                                 \
