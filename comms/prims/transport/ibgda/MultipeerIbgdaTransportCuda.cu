@@ -223,7 +223,9 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         DeviceSpan<IbLocalChannel>(
             d_allLocalChannels + i * params[i].maxChannels,
             params[i].maxChannels),
-        params[i].channelLayout);
+        params[i].channelLayout,
+        params[i].myRank,
+        params[i].peerRank);
   }
 
   // 4. Allocate and copy transport objects to GPU.
@@ -373,7 +375,9 @@ void writeDeviceTransportSlot(
       params.qpsPerConnection,
       params.qpDirectionCount,
       DeviceSpan<IbLocalChannel>(d_localChannels, params.maxChannels),
-      params.channelLayout);
+      params.channelLayout,
+      params.myRank,
+      params.peerRank);
 
   err = cudaMemcpy(
       deviceArray + peerIndex,
