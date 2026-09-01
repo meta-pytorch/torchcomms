@@ -481,19 +481,17 @@ __global__ void progressSendRecvKernel(
   abortDevice.start();
   uint64_t waits = 0;
   if (send) {
-    transport->init_send_progress(group, nbytes, maxSignalBytes);
+    transport->init_send_progress(group, buffer, nbytes, maxSignalBytes);
     IbgdaSendRecvProgressStatus status;
     do {
-      status = transport->progress_send_once(
-          group, buffer, nbytes, maxSignalBytes, abortDevice);
+      status = transport->progress_send_once(group, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   } else {
-    transport->init_recv_progress(group, nbytes, maxSignalBytes);
+    transport->init_recv_progress(group, buffer, nbytes, maxSignalBytes);
     IbgdaSendRecvProgressStatus status;
     do {
-      status = transport->progress_recv_once(
-          group, buffer, nbytes, maxSignalBytes, abortDevice);
+      status = transport->progress_recv_once(group, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   }
@@ -508,8 +506,10 @@ __global__ void progressReservationKernel(
     std::size_t sendBytes,
     std::size_t recvBytes) {
   auto group = make_block_group();
-  transport->init_send_progress(group, sendBytes);
-  transport->init_recv_progress(group, recvBytes);
+  // Reservation-only: this kernel inspects nextStep and never calls progress,
+  // so there is no buffer to capture.
+  transport->init_send_progress(group, /*src=*/nullptr, sendBytes);
+  transport->init_recv_progress(group, /*dst=*/nullptr, recvBytes);
 
   if (group.is_leader()) {
     const auto& protoSlot =
@@ -528,11 +528,11 @@ __device__ IbgdaRegisteredSendProgressStatus postRegisteredSend(
     std::size_t maxSignalBytes,
     const AbortDevice& abortDevice,
     RegisteredSendObservation* observation) {
-  transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
+  transport.init_registered_send_progress(
+      group, source, nbytes, maxSignalBytes);
   IbgdaRegisteredSendProgressStatus status;
   do {
-    status = transport.progress_registered_send_once(
-        group, source, nbytes, maxSignalBytes, abortDevice);
+    status = transport.progress_registered_send_once(group, abortDevice);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }
@@ -588,9 +588,10 @@ __global__ void registeredSendRecvKernel(
           abortDevice,
           observation);
       if (zeroByteAfterPosted) {
-        transport.init_registered_send_progress(group, 0, maxSignalBytes);
-        const auto zeroByteStatus = transport.progress_registered_send_once(
-            group, IbgdaLocalBuffer{}, 0, maxSignalBytes, abortDevice);
+        transport.init_registered_send_progress(
+            group, IbgdaLocalBuffer{}, 0, maxSignalBytes);
+        const auto zeroByteStatus =
+            transport.progress_registered_send_once(group, abortDevice);
         if (group.is_leader() && observation != nullptr) {
           observation->record(zeroByteStatus);
         }
@@ -1432,12 +1433,12 @@ __global__ void registeredSendDrainAbortKernel(
   }
   group.sync();
 
-  transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
+  transport.init_registered_send_progress(
+      group, source, nbytes, maxSignalBytes);
 
   IbgdaRegisteredSendProgressStatus status;
   do {
-    status = transport.progress_registered_send_once(
-        group, source, nbytes, maxSignalBytes, abort);
+    status = transport.progress_registered_send_once(group, abort);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }

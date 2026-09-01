@@ -35,17 +35,16 @@ __global__ void nvlProgressTrapKernel(
 
   switch (testCase) {
     case NvlProgressTrapCase::NullProgressStorage:
-      p2p.init_send_progress(group, kPayloadBytes, 0);
+      p2p.init_send_progress(group, src, kPayloadBytes, 0);
       break;
     case NvlProgressTrapCase::ReinitWhileActive:
-      p2p.init_send_progress(group, kPayloadBytes, 0);
-      p2p.init_send_progress(group, kPayloadBytes, 0);
+      p2p.init_send_progress(group, src, kPayloadBytes, 0);
+      p2p.init_send_progress(group, src, kPayloadBytes, 0);
       break;
     case NvlProgressTrapCase::AbortTrapBehavior:
-      p2p.init_send_progress(group, kPayloadBytes, 0);
+      p2p.init_send_progress(group, src, kPayloadBytes, 0);
       for (int i = 0; i < kMaxIterations; ++i) {
-        const auto status =
-            p2p.progress_send_once(group, src, kPayloadBytes, 0, abort);
+        const auto status = p2p.progress_send_once(group, abort);
         if (status == NvlSendRecvProgressStatus::Done ||
             status == NvlSendRecvProgressStatus::Aborted) {
           break;

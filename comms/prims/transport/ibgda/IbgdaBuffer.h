@@ -446,6 +446,19 @@ struct IbChannelProgress {
   std::size_t activeNextByte{0};
   std::size_t activeTailPadding{0};
   int64_t activeBaseStep{0};
+  // Geometry inputs captured at init so the progress calls no longer take
+  // them: activeUserBytes is the op's payload length, activeMaxSignalBytes
+  // caps chunkPayload.
+  std::size_t activeUserBytes{0};
+  std::size_t activeMaxSignalBytes{0};
+  // The buffer activeUserBytes describes: src on a send slot, dst on a recv
+  // slot, since the two directions have separate slot arrays. void* because
+  // the send side is const and only ever reads through it.
+  void* activeUserBuf{nullptr};
+  // Source of a registered send, which the NIC reads directly and so needs the
+  // lkey too. Shares the send slot with activeUserBuf; exactly one of the two
+  // is live, decided by which init started the operation.
+  IbgdaLocalBuffer activeRegisteredBuf{};
   detail::IbSendRecvProgressStage activeStage{
       detail::IbSendRecvProgressStage::Done};
   // CopyOp category of the most recent op driven on this channel (true =

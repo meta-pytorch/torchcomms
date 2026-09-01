@@ -757,11 +757,13 @@ class P2pNvlTransportDevice {
    * an operation is outstanding traps rather than silently overwriting it.
    *
    * @param group Thread group that will execute all later progress calls.
+   * @param src Source user buffer, valid until the operation reports Done.
    * @param nbytes User-buffer bytes to send for this group.
    * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
    */
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
 #if PIPES_IS_DEVICE_COMPILE
@@ -804,11 +806,14 @@ class P2pNvlTransportDevice {
       prog.activeTailPadding = protocolTailPadding;
       prog.activeUserBytes = nbytes;
       prog.activeMaxSignalBytes = max_signal_bytes;
+      // The send path only reads through this; see NvlChannelProgress.
+      prog.activeUserBuf = const_cast<void*>(src);
       prog.stage = NvlProgressStage::Active;
     }
     group.sync();
 #else
     (void)group;
+    (void)src;
     (void)nbytes;
     (void)max_signal_bytes;
     (void)send_progress_;
@@ -828,13 +833,11 @@ class P2pNvlTransportDevice {
    */
   __device__ __forceinline__ NvlSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& timeout = AbortDevice()) {
 #if PIPES_IS_DEVICE_COMPILE
-    const NvlChannelLayout layout =
-        make_channel_layout(group, max_signal_bytes, "progress_send_once");
+    // Before the send_progress_ index below, check this group has a channel
+    // to use.
+    validate_group_has_channel(group, "progress_send_once");
     if (send_progress_ == nullptr) {
       if (group.is_leader()) {
         printf("progress_send_once: progress storage not configured\n");
@@ -848,24 +851,14 @@ class P2pNvlTransportDevice {
     if (prog.stage == NvlProgressStage::Idle) {
       return NvlSendRecvProgressStatus::Done;
     }
-    // The geometry recorded at init is authoritative; these parameters only
-    // mirror it. Changing them mid-operation would silently corrupt the byte
-    // stream, so trap instead.
-    if (prog.activeUserBytes != nbytes ||
-        prog.activeMaxSignalBytes != max_signal_bytes) {
-      if (group.is_leader()) {
-        printf(
-            "progress_send_once: geometry changed mid-operation on channel %u\n",
-            channel);
-        PIPES_DEVICE_TRAP();
-      }
-      return NvlSendRecvProgressStatus::Done;
-    }
+    const NvlChannelLayout layout =
+        make_channel_layout_unchecked(group, prog.activeMaxSignalBytes);
 
     NvlChannelState& local_ch = local_channels_[channel];
     NvlChannelState& remote_ch = remote_channels_[channel];
 
-    const char* __restrict__ srcPtr = reinterpret_cast<const char*>(src);
+    const char* __restrict__ srcPtr =
+        reinterpret_cast<const char*>(prog.activeUserBuf);
     char* __restrict__ stagBuf = remoteState_.dataBuffer;
 
     const std::size_t dataOff = prog.activeNextByte;
@@ -947,9 +940,6 @@ class P2pNvlTransportDevice {
                         : NvlSendRecvProgressStatus::Progressed;
 #else
     (void)group;
-    (void)src;
-    (void)nbytes;
-    (void)max_signal_bytes;
     (void)timeout;
     return NvlSendRecvProgressStatus::Done;
 #endif
@@ -963,6 +953,7 @@ class P2pNvlTransportDevice {
    */
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
 #if PIPES_IS_DEVICE_COMPILE
@@ -1001,11 +992,13 @@ class P2pNvlTransportDevice {
       prog.activeTailPadding = protocolTailPadding;
       prog.activeUserBytes = nbytes;
       prog.activeMaxSignalBytes = max_signal_bytes;
+      prog.activeUserBuf = dst;
       prog.stage = NvlProgressStage::Active;
     }
     group.sync();
 #else
     (void)group;
+    (void)dst;
     (void)nbytes;
     (void)max_signal_bytes;
     (void)recv_progress_;
@@ -1025,14 +1018,12 @@ class P2pNvlTransportDevice {
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ NvlSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& timeout = AbortDevice(),
       Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
-    const NvlChannelLayout layout =
-        make_channel_layout(group, max_signal_bytes, "progress_recv_once");
+    // Before the recv_progress_ index below, check this group has a channel
+    // to use.
+    validate_group_has_channel(group, "progress_recv_once");
     if (recv_progress_ == nullptr) {
       if (group.is_leader()) {
         printf("progress_recv_once: progress storage not configured\n");
@@ -1046,21 +1037,13 @@ class P2pNvlTransportDevice {
     if (prog.stage == NvlProgressStage::Idle) {
       return NvlSendRecvProgressStatus::Done;
     }
-    if (prog.activeUserBytes != nbytes ||
-        prog.activeMaxSignalBytes != max_signal_bytes) {
-      if (group.is_leader()) {
-        printf(
-            "progress_recv_once: geometry changed mid-operation on channel %u\n",
-            channel);
-        PIPES_DEVICE_TRAP();
-      }
-      return NvlSendRecvProgressStatus::Done;
-    }
+    const NvlChannelLayout layout =
+        make_channel_layout_unchecked(group, prog.activeMaxSignalBytes);
 
     NvlChannelState& local_ch = local_channels_[channel];
     NvlChannelState& remote_ch = remote_channels_[channel];
 
-    char* __restrict__ dstPtr = reinterpret_cast<char*>(dst);
+    char* __restrict__ dstPtr = reinterpret_cast<char*>(prog.activeUserBuf);
     char* __restrict__ stagBuf = localState_.dataBuffer;
 
     const std::size_t dataOff = prog.activeNextByte;
@@ -1136,9 +1119,6 @@ class P2pNvlTransportDevice {
                         : NvlSendRecvProgressStatus::Progressed;
 #else
     (void)group;
-    (void)dst;
-    (void)nbytes;
-    (void)max_signal_bytes;
     (void)timeout;
     ((void)args, ...);
     return NvlSendRecvProgressStatus::Done;
@@ -1573,9 +1553,10 @@ class P2pNvlTransportDevice {
     }
   };
 
-  __device__ __forceinline__ NvlChannelLayout make_channel_layout(
+  // Checks that every running group owns a channel and that the channel buffer
+  // geometry is set.
+  __device__ __forceinline__ void validate_group_has_channel(
       const ThreadGroup& group,
-      std::size_t maxSignalBytes,
       const char* op) const {
     const int maxChannels = options_.max_num_channels;
     if (group.total_groups > static_cast<uint32_t>(maxChannels)) {
@@ -1600,7 +1581,16 @@ class P2pNvlTransportDevice {
           maxChannels);
       PIPES_DEVICE_TRAP();
     }
+  }
 
+  // Caller must already have run validate_group_has_channel() for this group.
+  // The progress calls do, because they validate before indexing progress
+  // storage and only reach here afterwards.
+  __device__ __forceinline__ NvlChannelLayout make_channel_layout_unchecked(
+      const ThreadGroup& group,
+      std::size_t maxSignalBytes) const {
+    const std::size_t perChannelBuffer = options_.per_channel_buffer;
+    const std::size_t perChannelSlot = options_.per_channel_slot;
     const std::size_t chunkSize =
         maxSignalBytes > 0 && maxSignalBytes < perChannelSlot
         ? (maxSignalBytes & ~15ULL)
@@ -1612,6 +1602,14 @@ class P2pNvlTransportDevice {
         perChannelBuffer,
         chunkSize > 0 ? chunkSize : perChannelSlot,
     };
+  }
+
+  __device__ __forceinline__ NvlChannelLayout make_channel_layout(
+      const ThreadGroup& group,
+      std::size_t maxSignalBytes,
+      const char* op) const {
+    validate_group_has_channel(group, op);
+    return make_channel_layout_unchecked(group, maxSignalBytes);
   }
 
   __device__ __forceinline__ static std::size_t align_tile_protocol_bytes(
