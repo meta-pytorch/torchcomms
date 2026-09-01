@@ -142,12 +142,10 @@ jobs:
 
       - name: Stop container before exit
         if: always()
-        env:
-          RUNNER_NAME: ${{ runner.name }}
         run: |
           # Workaround for multiple runners on same IDC node
           docker stop "${{ env.CONTAINER_NAME }}"
-          
+
       - name: Teardown XPU
         if: always()
         shell: bash
