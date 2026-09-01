@@ -50,6 +50,39 @@ namespace comms::fault_tolerance {
  */
 inline constexpr uint64_t kAbortPollsPerMs = 1;
 
+/**
+ * Linkage for the cold abort-context log.
+ *
+ * The abort *check* must stay inline -- it is the throttle gate, on every spin
+ * iteration of every wait. The *log* is the opposite: it runs at most once per
+ * communicator, and inlining it copies a `printf` and its argument marshalling
+ * into every one of the ~60 abort call sites in every consuming translation
+ * unit. Emitting it once per TU instead is 5.8% less SASS across the 50 fused
+ * AllReduce tree kernels.
+ *
+ * `inline` in both compilation passes, `noinline` only in the device pass, and
+ * all three parts are load-bearing:
+ *
+ * - `inline` in the host pass, where `__device__` is stripped and an
+ *   external-linkage definition would land in every including TU.
+ * - `inline` in the device pass too, because not every consumer is
+ *   whole-program: `comms/ctran` device-links its objects, so external device
+ *   linkage is `nvlink error : Multiple definition of ...`.
+ * - `noinline` only in the device pass, because gcc -- the nvcc host compiler
+ *   for the AllReduce targets -- rejects `inline` plus `noinline` under
+ *   `-Werror`, and there is nothing to gain from it in a pass where the
+ *   function is never called.
+ *
+ * `__attribute__((noinline))` rather than CUDA's `__noinline__`: the latter is
+ * only defined by `crt/host_defines.h` under `__CUDACC__`, and this header is
+ * also included by plain host translation units.
+ */
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#define COMMS_FT_ABORT_LOG_LINKAGE __device__ inline __attribute__((noinline))
+#else
+#define COMMS_FT_ABORT_LOG_LINKAGE __device__ inline
+#endif
+
 namespace detail {
 
 inline int hostCurrentDevice() {
@@ -100,6 +133,34 @@ inline uint64_t hostDeviceCyclesPerMs(int device) {
   }
   return cyclesPerMs;
 #endif
+}
+
+/**
+ * Device spelling of `abortReasonToString()`.
+ *
+ * The host version returns `std::string_view`, which is not usable as a printf
+ * argument from device code, so the names are duplicated here as literals.
+ * Keep the two in sync when `AbortReason` gains a value.
+ */
+__device__ __forceinline__ const char* deviceAbortReasonName(
+    AbortReason reason) {
+  switch (reason) {
+    case AbortReason::NONE:
+      return "none";
+    case AbortReason::ABORTED:
+      return "aborted";
+    case AbortReason::TIMED_OUT:
+      return "timed_out";
+    case AbortReason::BOOTSTRAP_POLL:
+      return "bootstrap_poll";
+    case AbortReason::NETWORK_ERROR:
+      return "network_error";
+    case AbortReason::INTERNAL_ERROR:
+      return "internal_error";
+    case AbortReason::IBRC_PROXY_TIMEOUT:
+      return "ibrc_proxy_timeout";
+  }
+  return "unknown";
 }
 
 __device__ __forceinline__ bool deviceIsValidTerminalReason(
@@ -175,14 +236,33 @@ __device__ __forceinline__ bool deviceTrySetAbort(
   if (won) {
     // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
     printf(
-        FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
-        static_cast<int>(newReason),
+        FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%s context=%s\n",
+        deviceAbortReasonName(newReason),
         context == nullptr ? "" : context);
   }
   return won;
 }
 
 } // namespace detail
+
+struct AbortDevice;
+
+/**
+ * Prints the identity and timing of an abort, once, from the writer that won
+ * the shared reason CAS.
+ *
+ * Split out from the caller's own message so that the fields every abort has --
+ * which operation, which deadline, how long it waited -- are formatted in one
+ * place with a fixed signature, instead of being marshalled into the varargs of
+ * each of the ~60 abort call sites. The caller's message stays as it was and
+ * carries what only that call site knows (ranks, tickets, signal values).
+ *
+ * Defined after `AbortDevice` because it reads the handle; declared here
+ * because `AbortDevice::setAbort()` calls it.
+ */
+COMMS_FT_ABORT_LOG_LINKAGE void deviceLogAbortContext(
+    const AbortDevice& abort,
+    AbortReason reason);
 
 /**
  * Non-owning CUDA device view of an `Abort` object's shared state.
@@ -261,11 +341,63 @@ struct AbortDevice final {
   }
 
   /**
+   * Stamps the collective operation number this handle belongs to.
+   *
+   * Diagnostic only: nothing branches on it. It exists so an abort log line can
+   * be joined against colltrace and against the other ranks' lines for the same
+   * operation, which is otherwise impossible -- a device wait can see a signal
+   * value but has no way to know which collective it belongs to.
+   *
+   * Same rule as `setOpTimeoutMs()`: set it on a per-operation COPY of the
+   * handle. Communicator-scoped handles are shared, so mutating one in place
+   * would misattribute later operations.
+   */
+  __host__ __device__ void setOpId(uint64_t opId) {
+    opId_ = opId;
+  }
+
+  __host__ __device__ uint64_t opId() const {
+    return opId_;
+  }
+
+  /**
+   * Device-clock value when `startTimeout()` last armed this handle, or zero if
+   * it was never armed. Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t startCycles() const {
+    return startCycles_;
+  }
+
+  /**
    * Device-clock value this handle's deadline expires at, or zero when no
    * device deadline is active. Cold-path diagnostics only.
    */
   __host__ __device__ uint64_t deadlineCycles() const {
     return deadlineCycles_;
+  }
+
+  /**
+   * Deadline the last `startTimeout()` resolved, in milliseconds, or negative
+   * if this handle was never armed.
+   *
+   * Stored rather than recovered as
+   * `(deadlineCycles_ - startCycles_) / cyclesPerMs_`. That is a 64-bit
+   * division, which on device is the software routine `__cuda_sm20_div_u64`;
+   * measured on the fused AllReduce tree kernels, the two divisions this log
+   * originally performed cost 7.2% of their SASS when inlined at every abort
+   * site. Keeping a value the host already knew costs 8 bytes and no
+   * instructions.
+   */
+  __host__ __device__ int64_t armedTimeoutMs() const {
+    return armedTimeoutMs_;
+  }
+
+  /**
+   * Device clock cycles per millisecond for the device this handle targets.
+   * Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t cyclesPerMs() const {
+    return cyclesPerMs_;
   }
 
   /**
@@ -277,8 +409,10 @@ struct AbortDevice final {
    * than silently creating an effectively infinite deadline.
    */
   __device__ void startTimeout() {
+    deadlineCycles_ = 0;
+    startCycles_ = 0;
+    armedTimeoutMs_ = -1;
     if (!isEnabled()) {
-      deadlineCycles_ = 0;
       return;
     }
     const auto now = detail::deviceClock();
@@ -286,9 +420,13 @@ struct AbortDevice final {
     // first `checkExpired()` on every armed handle unthrottled, which is one
     // uncached mapped-pinned read on the one call guaranteed to happen.
     nextPollCycles_ = now + pollIntervalCycles_;
+    // Stamped before the deadline is resolved, and stamped even when no
+    // deadline results. Diagnostics need "how long has this been waiting",
+    // which is a property of the arm site, not of whether a deadline was armed.
+    startCycles_ = now;
     const auto timeoutMs = resolveTimeoutMs();
+    armedTimeoutMs_ = timeoutMs;
     if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
-      deadlineCycles_ = 0;
       return;
     }
     const auto timeoutMsU = static_cast<uint64_t>(timeoutMs);
@@ -430,28 +568,6 @@ struct AbortDevice final {
   }
 
   /**
-   * Records the first shared abort reason from device code.
-   *
-   * Every non-`NONE` AbortReason is terminal. `AbortReason::NONE` and unknown
-   * enum values are invalid; debug/device assert builds catch them, and
-   * release-compatible builds return before touching shared state. The CAS
-   * only transitions the shared state from `NONE`, so later writers cannot
-   * overwrite the first terminal reason. `context` matches the host API but is
-   * never persisted in shared state; device-side diagnostics may consume it at
-   * the winning callsite without adding mapped-memory traffic.
-   *
-   * Returns whether this call performed the `NONE` to terminal transition.
-   */
-  __device__ bool setAbort(
-      AbortReason newReason = AbortReason::ABORTED,
-      const char* context = nullptr) const {
-    return detail::deviceTrySetAbort(state_, newReason, context);
-  }
-
- private:
-  friend class Abort;
-
-  /**
    * Deadline duration for this operation, in milliseconds.
    *
    * A per-operation override wins because it is the more specific request and
@@ -477,6 +593,35 @@ struct AbortDevice final {
     }
     return getTimeoutMs();
   }
+
+  /**
+   * Records the first shared abort reason from device code.
+   *
+   * Every non-`NONE` AbortReason is terminal. `AbortReason::NONE` and unknown
+   * enum values are invalid; debug/device assert builds catch them, and
+   * release-compatible builds return before touching shared state. The CAS
+   * only transitions the shared state from `NONE`, so later writers cannot
+   * overwrite the first terminal reason. `context` matches the host API but is
+   * never persisted in shared state; device-side diagnostics may consume it at
+   * the winning callsite without adding mapped-memory traffic.
+   *
+   * Returns whether this call performed the `NONE` to terminal transition.
+   */
+  __device__ bool setAbort(
+      AbortReason newReason = AbortReason::ABORTED,
+      const char* context = nullptr) const {
+    const bool won = detail::deviceTrySetAbort(state_, newReason, context);
+    if (won) {
+      // Only `AbortDevice` can emit this: the context line is derived from the
+      // per-operation identity and arm-site clock state that `AbortFlag`, by
+      // design, does not carry.
+      deviceLogAbortContext(*this, newReason);
+    }
+    return won;
+  }
+
+ private:
+  friend class Abort;
 
   /**
    * Creates a device handle for mapped pinned state owned by `Abort`.
@@ -554,6 +699,12 @@ struct AbortDevice final {
   int64_t opTimeoutMs_{-1};
 
   /**
+   * Collective operation number, for diagnostics only. Travels by value with
+   * the rest of the handle, so reading it costs no shared-state access.
+   */
+  uint64_t opId_{0};
+
+  /**
    * Minimum device-clock cycles between reads of the mapped shared state.
    *
    * Bounds abort-observation latency to one interval while keeping spin loops
@@ -584,7 +735,74 @@ struct AbortDevice final {
    * the copied handle and is not part of the host-owned shared state.
    */
   uint64_t deadlineCycles_{0};
+
+  /**
+   * Device clock value at the last `startTimeout()`, or zero if never armed.
+   *
+   * Purely diagnostic: it lets a log line report how long the operation had
+   * been running, and lets the armed timeout be recovered as
+   * `(deadlineCycles_ - startCycles_) / cyclesPerMs_`. Recomputing that from
+   * `resolveTimeoutMs()` at log time would be both a mapped-pinned read and a
+   * lie, since the host may have changed the shared timeout since arming.
+   */
+  uint64_t startCycles_{0};
+
+  /**
+   * Deadline resolved by the last `startTimeout()`, in milliseconds; negative
+   * when never armed. See `armedTimeoutMs()` for why this is stored rather
+   * than derived.
+   */
+  int64_t armedTimeoutMs_{-1};
 };
+
+// Copied by value into kernel argument structs and copied again per block, so
+// growth is not free. Three 8-byte diagnostic fields are the deliberate budget;
+// anything more should go through mapped state instead.
+static_assert(sizeof(AbortDevice) <= 88);
+
+COMMS_FT_ABORT_LOG_LINKAGE void deviceLogAbortContext(
+    const AbortDevice& abort,
+    AbortReason reason) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint64_t now = detail::deviceClock();
+  const uint64_t startCycles = abort.startCycles();
+  const uint64_t deadlineCycles = abort.deadlineCycles();
+  const uint64_t cyclesPerMs = abort.cyclesPerMs();
+  // An unarmed handle has no origin to measure from, so report -1 rather than
+  // an elapsed time counted from clock zero. `now >= startCycles` is part of
+  // the guard, not a redundant check: the subtraction is unsigned, and
+  // `deviceClock()` is per-SM, so a handle armed on one SM and logged from
+  // another can read backwards. Without this a few cycles of skew print as an
+  // elapsed_ms near 10^13.
+  const bool armed = startCycles != 0 && cyclesPerMs != 0 && now >= startCycles;
+  const uint64_t elapsedCycles = armed ? now - startCycles : 0;
+  // The only division on this path.
+  const int64_t elapsedMs =
+      armed ? static_cast<int64_t>(elapsedCycles / cyclesPerMs) : -1;
+  // Read live rather than cached at arm time. Caching it would cost 8 bytes in
+  // a handle that travels in kernel arguments, and the host is not expected to
+  // move the communicator timeout mid-operation.
+  const int64_t timeoutMs = abort.resolveTimeoutMs();
+  // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+  printf(
+      "COMMS FT ABORT CONTEXT: reason=%s op=%llu timeout_ms=%lld "
+      "elapsed_ms=%lld elapsed_cycles=%llu deadline_cycles=%llu "
+      "now_cycles=%llu cycles_per_ms=%llu block=%d thread=%d\n",
+      detail::deviceAbortReasonName(reason),
+      static_cast<unsigned long long>(abort.opId()),
+      static_cast<long long>(timeoutMs),
+      static_cast<long long>(elapsedMs),
+      static_cast<unsigned long long>(elapsedCycles),
+      static_cast<unsigned long long>(deadlineCycles),
+      static_cast<unsigned long long>(now),
+      static_cast<unsigned long long>(cyclesPerMs),
+      static_cast<int>(blockIdx.x),
+      static_cast<int>(threadIdx.x));
+#else
+  (void)abort;
+  (void)reason;
+#endif
+}
 
 /**
  * A poll-state-free view of the shared abort state, safe to store in device

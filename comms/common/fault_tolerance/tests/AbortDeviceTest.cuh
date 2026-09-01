@@ -89,6 +89,17 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     int maxIterations,
     cudaStream_t stream);
 
+// Arms the handle and reports the arm-site clock state that the abort context
+// log line is derived from, so the derivation can be checked against the
+// timeout the caller actually asked for.
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
+    cudaStream_t stream);
+
 // FT_ABORT_* macro coverage. Each kernel runs a bounded spin loop that can only
 // end through the macro under test, and reports how many iterations it took, so
 // a macro that fails to terminate shows up as the loop bound rather than a
