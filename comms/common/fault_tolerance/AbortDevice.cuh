@@ -261,6 +261,14 @@ struct AbortDevice final {
   }
 
   /**
+   * Device-clock value this handle's deadline expires at, or zero when no
+   * device deadline is active. Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t deadlineCycles() const {
+    return deadlineCycles_;
+  }
+
+  /**
    * Starts this handle's device-side timeout from the shared default duration.
    *
    * Non-positive or unset default timeouts leave the device deadline inactive.
