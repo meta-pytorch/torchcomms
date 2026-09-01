@@ -644,6 +644,16 @@ class TcpTransportFrameTest : public ::testing::Test {
     return TcpTransport::kMaxPutWaveChunks;
   }
 
+  static size_t getChunk(size_t len, size_t laneCount) {
+    return TcpTransport::adaptiveGetChunk(len, laneCount);
+  }
+  static constexpr size_t maxChunk() {
+    return TcpTransport::kMaxChunkSize;
+  }
+  static constexpr size_t minAdaptiveChunk() {
+    return TcpTransport::kMinAdaptiveChunkSize;
+  }
+
   /// How many slabs the pool will still hand out. Drains with tryAcquire rather
   /// than a bulk acquire so a test asserting "nothing was stranded" reports the
   /// shortfall instead of waiting for slabs that are never coming back.
@@ -2052,6 +2062,65 @@ TEST_F(TcpTransportFrameTest, AFailedWaveQueuesNothingAndDrainsWhatItLaunched) {
   EXPECT_EQ(freeSlabs(*pool), pool->slabCount())
       << "a failed wave must strand none of its slabs, and must leave none of "
          "them held by a frame it queued";
+}
+
+// A get no larger than one chunk is one frame, and a frame takes one lane, so
+// it leaves every other lane idle. These are the sizes where splitting pays,
+// and the ones where it does not.
+TEST_F(TcpTransportFrameTest, AdaptiveGetChunkSplitsOnlySingleFrameTransfers) {
+  constexpr size_t kLanes = 8;
+
+  // Above one chunk the transfer already spans lanes. Chunking it smaller
+  // measured worse, so it must be left alone.
+  EXPECT_EQ(getChunk(maxChunk() + 1, kLanes), maxChunk());
+  EXPECT_EQ(getChunk(64UL * 1024 * 1024, kLanes), maxChunk());
+
+  // One lane cannot benefit, and neither can a degenerate count.
+  EXPECT_EQ(getChunk(maxChunk(), 1), maxChunk());
+  EXPECT_EQ(getChunk(maxChunk(), 0), maxChunk());
+  EXPECT_EQ(getChunk(0, kLanes), maxChunk());
+
+  // The band that pays: split across the lanes, but never below the floor.
+  EXPECT_EQ(getChunk(maxChunk(), kLanes), maxChunk() / kLanes);
+  EXPECT_GE(getChunk(maxChunk(), kLanes), minAdaptiveChunk());
+  EXPECT_EQ(getChunk(2UL * 1024 * 1024, kLanes), minAdaptiveChunk());
+  EXPECT_EQ(getChunk(1UL * 1024 * 1024, kLanes), minAdaptiveChunk());
+
+  // Below the floor a split would cost more than the idle lane does, so the
+  // chunk stays at or above the whole transfer and it remains one frame.
+  for (size_t len : {size_t{1024}, size_t{64} * 1024, minAdaptiveChunk()}) {
+    EXPECT_GE(getChunk(len, kLanes), len) << "len=" << len;
+  }
+}
+
+// The frame count get() waits for is computed separately from the loop that
+// sends the requests. If those two ever derive a different chunk size the
+// operation waits for replies that will never come, so the arithmetic is pinned
+// here rather than left to review.
+TEST_F(TcpTransportFrameTest, AdaptiveGetChunkAgreesWithFrameCount) {
+  constexpr size_t kLanes = 8;
+  for (size_t len :
+       {size_t{1},
+        size_t{1024},
+        size_t{512} * 1024,
+        size_t{1024} * 1024,
+        size_t{2} * 1024 * 1024,
+        maxChunk(),
+        maxChunk() + 1,
+        size_t{100} * 1024 * 1024}) {
+    const size_t chunk = getChunk(len, kLanes);
+    ASSERT_GT(chunk, 0u) << "len=" << len;
+    const size_t counted = (len + chunk - 1) / chunk;
+
+    size_t sent = 0;
+    size_t off = 0;
+    do {
+      off += std::min(chunk, len - off);
+      ++sent;
+    } while (off < len);
+
+    EXPECT_EQ(counted, sent) << "len=" << len << " chunk=" << chunk;
+  }
 }
 
 // put() tells callers a failed put may have partially applied, and that what
