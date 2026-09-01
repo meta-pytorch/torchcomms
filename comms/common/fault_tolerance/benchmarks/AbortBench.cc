@@ -680,6 +680,75 @@ BENCHMARK_COUNTERS(AbortSignalHostDeviceRoundTrip, counters, iters) {
       folly::UserMetric(iters, folly::UserMetric::Type::METRIC);
 }
 
+// Attributes the per-launch cost of arming a device deadline, which is the
+// leading suspect for FT's fixed healthy-path overhead.
+//
+// `startTimeout()` resolves the communicator deadline through
+// `getTimeoutMs()`, an uncached read of mapped pinned host memory. Every block
+// does it at kernel entry, and they all hit the same cacheline. This launches
+// a kernel that does nothing else, so the enabled-minus-disabled difference is
+// the arm cost with launch overhead subtracted out.
+void runArmOnlyBenchmark(
+    folly::UserCounters& counters,
+    uint32_t iters,
+    bool enabled,
+    int blocks,
+    int threads) {
+  folly::BenchmarkSuspender suspender;
+  Abort abort{enabled};
+  if (enabled) {
+    abort.setDefaultTimeout(std::chrono::milliseconds{60000});
+  }
+  auto handle = abort.getDeviceHandle();
+  auto sink = makeDeviceValue<uint64_t>();
+  CHECK_NE(sink, nullptr);
+  // Warm the context so the first launch's lazy init is not attributed here.
+  CHECK_EQ(
+      launchAbortDeviceArmOnly(
+          handle, sink.get(), blocks, threads, /*stream=*/nullptr),
+      cudaSuccess);
+  CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  suspender.dismiss();
+
+  for (uint32_t i = 0; i < iters; ++i) {
+    CHECK_EQ(
+        launchAbortDeviceArmOnly(
+            handle, sink.get(), blocks, threads, /*stream=*/nullptr),
+        cudaSuccess);
+    CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  }
+  suspender.rehire();
+  counters["warps"] = folly::UserMetric(
+      static_cast<int64_t>(blocks) * ((threads + 31) / 32),
+      folly::UserMetric::Type::METRIC);
+}
+
+// 1x640 is the real AllReduce tree/ring launch shape (`kBlockSize = 640`).
+// The rest bracket it so the scaling is visible rather than asserted.
+BENCHMARK_COUNTERS(ArmOnlyDisabled1x1, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/false, 1, 1);
+}
+
+BENCHMARK_COUNTERS(ArmOnlyEnabled1x1, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/true, 1, 1);
+}
+
+BENCHMARK_COUNTERS(ArmOnlyDisabled1x640, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/false, 1, 640);
+}
+
+BENCHMARK_COUNTERS(ArmOnlyEnabled1x640, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/true, 1, 640);
+}
+
+BENCHMARK_COUNTERS(ArmOnlyDisabled8x640, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/false, 8, 640);
+}
+
+BENCHMARK_COUNTERS(ArmOnlyEnabled8x640, counters, iters) {
+  runArmOnlyBenchmark(counters, iters, /*enabled=*/true, 8, 640);
+}
+
 BENCHMARK_COUNTERS(AbortSignalDeviceDevicePingPong, counters, iters) {
   folly::BenchmarkSuspender suspender;
   const auto iterations = checkedIterationCount(iters);
