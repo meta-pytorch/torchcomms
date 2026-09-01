@@ -112,6 +112,9 @@ struct TcpTransportInfo {
 };
 
 class CudaApi;
+// Wire header, defined in TcpWireProtocol.h. Only referenced by private member
+// declarations here, so this header stays free of the wire format.
+struct TcpMsgHeader;
 
 /// Factory-shared registry mapping a locally-assigned segment id to the
 /// registered host buffer. registerSegment() (on the factory) populates it;
@@ -225,16 +228,20 @@ class TcpSegmentRegistry {
   /// acquires mu_ while holding another transport mutex.
   ///
   /// How long this can block is bounded by the slowest lease holder, and on the
-  /// VRAM path that is not bounded by the transport. The reader queues its Ack
-  /// and reply frames without blocking, but it holds its lease across the whole
-  /// host-staging copy, and that copy ends in a synchronize on the null stream
+  /// VRAM path that is not bounded by the transport. A read reply's lease is
+  /// held across its staging copy, and that copy runs on the null stream
   /// (handleFrame passes no stream), which waits on every blocking stream on
-  /// the device -- i.e. on unrelated application GPU work. So a caller here can
-  /// wait for an application step, and deadlocks outright if that GPU work is
-  /// itself gated on a later inbound frame, since the parked reader is the
-  /// thread that would deliver it. Giving the staging copies a dedicated
-  /// non-blocking stream removes both; until then a DRAM-only deployment is the
-  /// safe case, because there the copy under lease is a plain memcpy.
+  /// the device -- so a caller here can wait for unrelated application GPU
+  /// work. A read that arrived with the staging pool exhausted holds its lease
+  /// for longer still: its copy has not been issued yet and starts only once a
+  /// slab frees up.
+  ///
+  /// What this can no longer do is deadlock. The reader thread does not wait
+  /// for any of it -- staging is asynchronous and exhaustion defers rather than
+  /// blocks -- so it keeps delivering inbound frames, including whatever the
+  /// application's GPU work is itself waiting on. Giving the staging copies a
+  /// dedicated non-blocking stream would remove the remaining wait on unrelated
+  /// device work.
   void erase(uint64_t segId) {
     std::unique_lock<std::mutex> lk(mu_);
     auto it = segs_.find(segId);
@@ -307,25 +314,6 @@ struct PlannedChunk {
   TcpInflight entry;
 };
 
-/// A ReadReply whose payload is still being copied out of VRAM. The frame is
-/// already built, header and all; only the staging copy into its payload is
-/// outstanding.
-///
-/// The lease lives here rather than on the reader thread. It has to outlive the
-/// copy, because it is what stops the owner deregistering and freeing the
-/// source buffer underneath the GPU, but nothing requires the reader to be the
-/// thread holding it. Moving it here is what lets the reader return to the
-/// socket immediately while the segment stays protected.
-struct PendingReadReply {
-  std::vector<uint8_t> frame;
-  TcpSegmentRegistry::Lease lease;
-  /// cudaEvent_t, kept opaque so this header does not need the CUDA runtime.
-  void* event{nullptr};
-  uint64_t reqId{0};
-  /// Needed at teardown to wait on the right device's stream.
-  int deviceId{-1};
-};
-
 /// One outbound frame's storage: either a plain vector or a pinned staging
 /// slab. Move-only, because both kinds own the buffer the socket reads from and
 /// a slab additionally owns its place in the pool.
@@ -374,6 +362,42 @@ class TcpFrame {
 struct TcpOutItem {
   TcpFrame frame;
   std::shared_ptr<TcpOpState> onSent;
+};
+
+/// A ReadReply whose payload is still being copied out of VRAM. The frame is
+/// already built, header and all, in a pinned staging slab; only the copy into
+/// its payload is outstanding.
+///
+/// The lease lives here rather than on the reader thread. It has to outlive the
+/// copy, because it is what stops the owner deregistering and freeing the
+/// source buffer underneath the GPU, but nothing requires the reader to be the
+/// thread holding it. Moving it here is what lets the reader return to the
+/// socket while the segment stays protected.
+struct PendingReadReply {
+  TcpFrame frame;
+  TcpSegmentRegistry::Lease lease;
+  /// cudaEvent_t, kept opaque so this header does not need the CUDA runtime.
+  void* event{nullptr};
+  uint64_t reqId{0};
+  /// Needed at teardown to wait on the right device's stream.
+  int deviceId{-1};
+};
+
+/// A VRAM ReadReply that has not been started because no staging slab was free.
+/// Everything needed to build and launch it later is here, so the reader can
+/// record it and go straight back to the socket.
+///
+/// The lease is held even though no copy has been issued yet. It is what keeps
+/// the source buffer registered, and the point of deferring rather than
+/// dropping is that this read will still be answered out of that same buffer. A
+/// deregistration therefore waits for the deferred copy to run, not only for
+/// the ones already launched.
+struct DeferredReadReply {
+  TcpSegmentRegistry::Lease lease;
+  uint64_t reqId{0};
+  uint64_t segId{0};
+  uint64_t offset{0};
+  size_t len{0};
 };
 
 /// A posted recv() awaiting a matching inbound SEND frame.
@@ -526,31 +550,56 @@ class TcpTransport : public Transport {
   // that exception would escape put() itself, abandoning the promise while
   // whatever was already queued still lands on the peer.
   Status validateDeviceForStaging(int deviceId);
-  // Starts the D2H copy for a ReadReply and hands the frame to the staging
-  // queue, so the reader thread can go back to draining the socket instead of
-  // waiting on the device. Consumes the lease. Returns an error only if the
-  // copy could not be started, in which case nothing was queued.
-  Status stageReadReply(
-      std::vector<uint8_t> frame,
+  // Answers one VRAM ReadRequest. Acquires a staging slab without waiting; if
+  // none is free the request is deferred rather than staged, so the reader is
+  // never parked on the pool. Consumes the lease.
+  Status respondToVramRead(
+      const TcpMsgHeader& replyHeader,
+      TcpSegmentRegistry::Lease lease);
+  // Builds the reply in `slab` and starts its D2H copy, handing the frame to
+  // the staging queue so the reader can go back to draining the socket instead
+  // of waiting on the device. Consumes the lease and the slab. Returns an error
+  // only if the copy could not be started, in which case nothing was queued.
+  Status startReadReply(
+      const TcpMsgHeader& replyHeader,
       TcpSegmentRegistry::Lease lease,
-      const void* src,
-      size_t len,
-      int deviceId,
-      uint64_t reqId);
+      TcpPinnedSlab slab);
+  // Records a VRAM read to start once a slab frees up. Fails the request (the
+  // caller answers with an Error frame) if the deferred queue is full: dropping
+  // it silently would leave the peer waiting forever, and blocking here would
+  // stop the reader draining the socket.
+  Status deferReadReply(
+      const TcpMsgHeader& replyHeader,
+      TcpSegmentRegistry::Lease lease);
+  // Starts as many deferred reads as there are free slabs, oldest first. Runs
+  // on the EventBase, never inline at the point a slab is released: that point
+  // is the sender thread, and launching copies there would block the drain that
+  // frees the next slab.
+  void startDeferredReadReplies();
+  // Kicks startDeferredReadReplies() on the EventBase. Called wherever a
+  // staging slab goes back to the pool. Cheap and safe when nothing is
+  // deferred.
+  void scheduleDeferredReadReplies();
+  // The staging pool, created on first use. Building it in the constructor
+  // would charge every peer ~64 MiB of pinned host memory -- there is one
+  // transport per peer -- including the DRAM-only peers that never stage at
+  // all.
+  Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool();
   // Retires staged replies whose copy has finished, oldest first. Runs on the
   // EventBase, never on the reader thread: polling from the reader would put
   // the head-of-line block straight back.
   void pollPendingReadReplies();
   // Kicks the poll loop if it is not already running. Safe from any thread.
   void schedulePendingReplyPoll();
-  // Waits for outstanding staging copies and drops the frames. Called during
-  // teardown, because the GPU may still be writing into a pending frame's
-  // payload and that memory must not be freed underneath it.
   /// Waits for a staged D2H copy on `deviceId` whose completion is otherwise
   /// unknown, so the frame it targets can be released. Used on the paths where
   /// a copy was issued but the event never became a usable completion signal.
   void waitForStagedCopy(int deviceId) noexcept;
 
+  /// Waits for outstanding staging copies and drops the frames, then discards
+  /// whatever was still deferred. Called during teardown, because the GPU may
+  /// still be writing into a pending frame's payload and that memory must not
+  /// be freed underneath it.
   void drainPendingReadReplies();
 
   // Shared bodies for the zero-copy and copy-based send/recv overloads.
@@ -640,6 +689,21 @@ class TcpTransport : public Transport {
   // is what bounds it.
   static constexpr size_t kMaxOutQueueBytes = 64UL * 1024 * 1024;
   static constexpr size_t kMaxInflightRequests = 4096;
+  // put()'s chunk size, and the payload capacity of one staging slab. A
+  // same-version peer therefore never asks for a read larger than one slab.
+  //
+  // The controller frames each TcpConn message with a 4-byte length and caps it
+  // at 64 MiB; a chunk (header + payload) stays safely under that, so large
+  // put/get transfers are split across multiple frames.
+  static constexpr size_t kMaxChunkSize = 4UL * 1024 * 1024;
+  // ~64 MiB of pinned host memory, sized against kMaxOutQueueBytes: the pool
+  // and the out queue bound the same pipeline, so a full set of staged frames
+  // fits in the queue rather than being refused by its cap.
+  static constexpr size_t kStagingSlabCount = 16;
+  // Withheld from put(), so a saturated put cannot leave the get responder with
+  // nothing to stage into. The responder is the side the peer is already
+  // blocked on.
+  static constexpr size_t kStagingSlabsReservedForReader = 1;
   // Bytes currently queued in outQueue_. Guarded by outMu_.
   size_t outBytes_{0};
 
@@ -681,6 +745,17 @@ class TcpTransport : public Transport {
   // safe on the wire, this only costs latency -- and a transport serves one
   // peer, which in practice means one device.
   bool replyPollScheduled_{false};
+  // VRAM reads that arrived with the pool exhausted, oldest first. Bounded by
+  // kMaxInflightRequests for the same reason inflight_ is: it grows on
+  // peer-supplied frames, and the reader will not stop reading them.
+  std::deque<DeferredReadReply> deferredReplies_;
+
+  // Created on first VRAM staging need, then never replaced. Its own mutex
+  // rather than stagingMu_: acquiring a slab can wait (put(), from a caller
+  // thread), and the staging queue must stay available to the reader while it
+  // does.
+  std::mutex poolMu_;
+  std::shared_ptr<TcpPinnedSlabPool> slabPool_;
 
   // Outbound frame queue drained by the sender thread. Decoupling all sends
   // from the reader thread is what prevents a mutual-READ deadlock (two peers'

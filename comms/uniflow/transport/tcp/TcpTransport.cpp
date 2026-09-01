@@ -28,10 +28,6 @@ constexpr int kDefaultHandshakeTimeoutSeconds = 30;
 
 namespace {
 
-// The controller frames each TcpConn message with a 4-byte length and caps it
-// at 64 MiB; keep each chunk (header + payload) safely under that so large
-// put/get transfers are split across multiple frames.
-constexpr size_t kMaxChunkSize = 4u << 20; // 4 MiB
 std::vector<uint8_t> makeHeaderFrame(TcpOp op, uint64_t reqId) {
   TcpMsgHeader header;
   header.op = static_cast<uint8_t>(op);
@@ -528,16 +524,64 @@ std::future<Status> TcpTransport::get(
   return future;
 }
 
-Status TcpTransport::stageReadReply(
-    std::vector<uint8_t> frame,
-    TcpSegmentRegistry::Lease lease,
-    const void* src,
-    size_t len,
-    int deviceId,
-    uint64_t reqId) {
+Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool() {
+  std::lock_guard<std::mutex> lk(poolMu_);
+  if (slabPool_ != nullptr) {
+    return slabPool_;
+  }
   if (cudaApi_ == nullptr) {
     return Err(ErrCode::InvalidArgument, "tcp read: no CUDA API for VRAM");
   }
+  // Header and payload contiguous in one slab, so a staged frame is still a
+  // single buffer and the send path needs no scatter-gather.
+  auto pool = TcpPinnedSlabPool::create(
+      cudaApi_,
+      sizeof(TcpMsgHeader) + kMaxChunkSize,
+      kStagingSlabCount,
+      kStagingSlabsReservedForReader);
+  if (!pool) {
+    return std::move(pool).error();
+  }
+  slabPool_ = pool.value();
+  return slabPool_;
+}
+
+Status TcpTransport::respondToVramRead(
+    const TcpMsgHeader& replyHeader,
+    TcpSegmentRegistry::Lease lease) {
+  // A same-version peer chunks at kMaxChunkSize, so this only rejects a
+  // version-skewed peer built with a larger one. Per request, because the
+  // sender treats an oversized send as fatal and would take every unrelated
+  // transfer on the connection down with it.
+  if (replyHeader.len > kMaxChunkSize) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "tcp read: VRAM read of " + std::to_string(replyHeader.len) +
+            " bytes exceeds the staging slab payload (" +
+            std::to_string(kMaxChunkSize) + ")");
+  }
+  auto pool = stagingPool();
+  if (!pool) {
+    return std::move(pool).error();
+  }
+  // Non-blocking, and allowed the reserved slab: this is the thread the reserve
+  // is held for, and it must not wait on anything.
+  auto slab = pool.value()->tryAcquire(/*allowReserved=*/true);
+  if (!slab) {
+    return deferReadReply(replyHeader, std::move(lease));
+  }
+  return startReadReply(replyHeader, std::move(lease), std::move(slab));
+}
+
+Status TcpTransport::startReadReply(
+    const TcpMsgHeader& replyHeader,
+    TcpSegmentRegistry::Lease lease,
+    TcpPinnedSlab slab) {
+  const int deviceId = lease->deviceId;
+  const void* src =
+      static_cast<const uint8_t*>(lease->ptr) + replyHeader.offset;
+  TcpFrame frame(std::move(slab), sizeof(TcpMsgHeader) + replyHeader.len);
+  std::memcpy(frame.mutableData(), &replyHeader, sizeof(replyHeader));
   cudaEvent_t event{};
   // Once the copy is enqueued, every way out of this function has to wait for
   // it. Returning an error unwinds `frame` and `lease`, and the copy is
@@ -548,10 +592,14 @@ Status TcpTransport::stageReadReply(
   bool copyIssued = false;
   try {
     CudaDeviceGuard guard(*cudaApi_, deviceId);
+    // Into pinned memory, so this returns once the copy is enqueued. The same
+    // call into a pageable destination -- a plain vector -- is specified to
+    // complete synchronously, which parks whichever thread issued it for the
+    // length of the transfer. On this path that thread is the reader.
     if (auto st = cudaApi_->memcpyAsync(
-            frame.data() + sizeof(TcpMsgHeader),
+            frame.mutableData() + sizeof(TcpMsgHeader),
             src,
-            len,
+            replyHeader.len,
             cudaMemcpyDeviceToHost,
             /*stream=*/nullptr);
         !st) {
@@ -584,10 +632,117 @@ Status TcpTransport::stageReadReply(
     std::lock_guard<std::mutex> lk(stagingMu_);
     pendingReplies_.push_back(
         PendingReadReply{
-            std::move(frame), std::move(lease), event, reqId, deviceId});
+            std::move(frame),
+            std::move(lease),
+            event,
+            replyHeader.reqId,
+            deviceId});
   }
   schedulePendingReplyPoll();
   return Ok();
+}
+
+Status TcpTransport::deferReadReply(
+    const TcpMsgHeader& replyHeader,
+    TcpSegmentRegistry::Lease lease) {
+  // The fourth admission point, and it has to agree with the other three about
+  // connBroken_. failAllPending() clears this queue precisely so a lease is not
+  // held "for as long as the transport object lives"; a reader that reaches
+  // here after that sweep would put one straight back, and nothing drains it
+  // again until drainPendingReadReplies() at teardown -- which is exactly the
+  // outcome the sweep exists to prevent. Refusing instead releases the lease as
+  // this returns, and the caller's Error frame to the peer is harmlessly
+  // refused by the same connBroken_ check on the enqueue path.
+  if (connBroken_.load(std::memory_order_acquire)) {
+    return Err(
+        ErrCode::NotConnected,
+        "tcp read: connection broken while deferring a VRAM read");
+  }
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    if (deferredReplies_.size() >= kMaxInflightRequests) {
+      return Err(
+          ErrCode::ResourceExhausted,
+          "tcp read: too many deferred VRAM reads (" +
+              std::to_string(deferredReplies_.size()) + ")");
+    }
+    deferredReplies_.push_back(
+        DeferredReadReply{
+            std::move(lease),
+            replyHeader.reqId,
+            replyHeader.segId,
+            replyHeader.offset,
+            replyHeader.len});
+  }
+  // Kicked on enqueue, not only where a slab is released.
+  //
+  // The caller reaches here because tryAcquire() just failed, and that failure
+  // and this enqueue are not one atomic step. A release landing in between --
+  // the sender retiring a frame, or the error path dropping one -- runs its own
+  // scheduleDeferredReadReplies() against a queue that is still empty and
+  // dispatches nothing, while its slab is now free. Without this kick the entry
+  // would wait for the *next* release, and on a connection that has gone idle
+  // there is no next release: the read never starts and its lease keeps erase()
+  // blocked. Redundant kicks are harmless -- startDeferredReadReplies()
+  // re-tests both the pool and the queue under the lock.
+  scheduleDeferredReadReplies();
+  return Ok();
+}
+
+void TcpTransport::scheduleDeferredReadReplies() {
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    if (deferredReplies_.empty()) {
+      return;
+    }
+  }
+  evb_->dispatch([this]() noexcept { startDeferredReadReplies(); });
+}
+
+void TcpTransport::startDeferredReadReplies() {
+  auto pool = stagingPool();
+  if (!pool) {
+    return;
+  }
+  while (true) {
+    // The slab is taken before the entry, so an entry is never off the queue
+    // with nowhere to stage it. A slab that turns out not to be needed is
+    // released as this scope ends.
+    auto slab = pool.value()->tryAcquire(/*allowReserved=*/true);
+    if (!slab) {
+      return;
+    }
+    DeferredReadReply deferred;
+    {
+      std::lock_guard<std::mutex> lk(stagingMu_);
+      if (deferredReplies_.empty()) {
+        // Returning here releases the slab without using it, and deliberately
+        // does not reschedule. An entry queued between this test and that
+        // release is still covered, because deferReadReply() is the only
+        // producer and it kicks after every push, while this function runs only
+        // from evb_->dispatch() -- so that kick is serialized behind this
+        // invocation and sees the slab already back in the pool. A new producer
+        // that does not kick would reopen the window.
+        return;
+      }
+      deferred = std::move(deferredReplies_.front());
+      deferredReplies_.pop_front();
+    }
+    TcpMsgHeader replyHeader{};
+    replyHeader.op = static_cast<uint8_t>(TcpOp::ReadReply);
+    replyHeader.reqId = deferred.reqId;
+    replyHeader.segId = deferred.segId;
+    replyHeader.offset = deferred.offset;
+    replyHeader.len = deferred.len;
+    if (auto st = startReadReply(
+            replyHeader, std::move(deferred.lease), std::move(slab));
+        !st) {
+      UNIFLOW_LOG_ERROR(
+          "tcp read: deferred VRAM staging failed: {}", st.error().message());
+      (void)enqueueFrame(
+          makeHeaderFrame(TcpOp::Error, deferred.reqId), /*mayBlock=*/false);
+    }
+  }
 }
 
 void TcpTransport::schedulePendingReplyPoll() {
@@ -603,7 +758,7 @@ void TcpTransport::schedulePendingReplyPoll() {
 
 void TcpTransport::pollPendingReadReplies() {
   while (true) {
-    std::vector<uint8_t> ready;
+    TcpFrame ready;
     PendingReadReply failed;
     int failedDeviceId = -1;
     uint64_t failedReqId = 0;
@@ -661,11 +816,16 @@ void TcpTransport::pollPendingReadReplies() {
     } else if (haveFailure) {
       // Wait before `failed` goes out of scope, for the same reason
       // drainPendingReadReplies() waits: a copy that may still be running would
-      // otherwise be left writing into a freed buffer.
+      // otherwise be left writing into a slab the pool is about to hand to the
+      // next staging copy.
       waitForStagedCopy(failedDeviceId);
+      // Dropping it here releases the slab, so a deferred read may now be
+      // startable -- which is why this happens before the scheduling call
+      // below.
       failed = PendingReadReply{};
       (void)enqueueFrame(
           makeHeaderFrame(TcpOp::Error, failedReqId), /*mayBlock=*/false);
+      scheduleDeferredReadReplies();
     }
   }
 }
@@ -686,11 +846,15 @@ void TcpTransport::waitForStagedCopy(int deviceId) noexcept {
 
 void TcpTransport::drainPendingReadReplies() {
   std::deque<PendingReadReply> pending;
+  std::deque<DeferredReadReply> deferred;
   {
     std::lock_guard<std::mutex> lk(stagingMu_);
     pending.swap(pendingReplies_);
+    deferred.swap(deferredReplies_);
   }
   if (pending.empty()) {
+    // Deferred entries have no copy running, so dropping `deferred` here is all
+    // that is needed: their leases go with it and a waiting erase() proceeds.
     return;
   }
   // The device may still be writing into these frames. Freeing them now would
@@ -907,6 +1071,12 @@ void TcpTransport::senderLoop() noexcept {
     if (item.onSent) {
       item.onSent->completeOne();
     }
+    // Releases the frame's storage, and with it any staging slab, before the
+    // next wait. A deferred VRAM read may have been waiting on exactly this
+    // slab; dispatching the restart rather than running it here keeps device
+    // work off the thread whose only job is to keep the socket draining.
+    item = TcpOutItem{};
+    scheduleDeferredReadReplies();
   }
 }
 
@@ -1013,36 +1183,30 @@ void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
       } else if (
           entry && header.len <= entry->len &&
           header.offset <= entry->len - header.len) {
-        std::vector<uint8_t> reply(sizeof(TcpMsgHeader) + header.len);
         TcpMsgHeader replyHeader;
         replyHeader.op = static_cast<uint8_t>(TcpOp::ReadReply);
         replyHeader.reqId = header.reqId;
         replyHeader.segId = header.segId;
         replyHeader.offset = header.offset;
         replyHeader.len = header.len;
-        std::memcpy(reply.data(), &replyHeader, sizeof(replyHeader));
-        if (header.len > 0) {
-          const void* src =
-              static_cast<const uint8_t*>(entry->ptr) + header.offset;
-          if (entry->memType == MemoryType::VRAM) {
-            // Read before the lease is moved out.
-            const int deviceId = entry->deviceId;
-            // Staged rather than synchronous: the reply is queued once the copy
-            // signals. Waiting here would stop the reader draining the socket
-            // for the length of a device operation, and the lease it holds
-            // would stall any concurrent deregistration for just as long.
-            readStatus = stageReadReply(
-                std::move(reply),
-                std::move(entry),
-                src,
-                header.len,
-                deviceId,
-                header.reqId);
-          } else {
-            std::memcpy(reply.data() + sizeof(replyHeader), src, header.len);
-            (void)enqueueFrame(std::move(reply), /*mayBlock=*/false);
-          }
+        if (header.len > 0 && entry->memType == MemoryType::VRAM) {
+          // Staged into pinned memory rather than copied here: the reply is
+          // queued once the copy signals. Copying on this thread would stop the
+          // reader draining the socket for the length of a device operation,
+          // and the lease it holds would stall any concurrent deregistration
+          // for just as long.
+          readStatus = respondToVramRead(replyHeader, std::move(entry));
         } else {
+          // DRAM, or a zero-length read: a host memcpy cannot fail and cannot
+          // park the reader, so there is nothing to stage.
+          std::vector<uint8_t> reply(sizeof(TcpMsgHeader) + header.len);
+          std::memcpy(reply.data(), &replyHeader, sizeof(replyHeader));
+          if (header.len > 0) {
+            std::memcpy(
+                reply.data() + sizeof(replyHeader),
+                static_cast<const uint8_t*>(entry->ptr) + header.offset,
+                header.len);
+          }
           (void)enqueueFrame(std::move(reply), /*mayBlock=*/false);
         }
       } else {
@@ -1241,6 +1405,18 @@ void TcpTransport::failAllPending(const char* message) {
     outQueue_.clear();
     outBytes_ = 0;
   }
+  // Deferred reads will never be answered on a broken connection, and each one
+  // holds a lease. Dropped here rather than left for teardown so a
+  // deregistration is not blocked for as long as the transport object lives.
+  // pendingReplies_ is deliberately untouched: those have copies running, and
+  // freeing their frames now would hand the GPU memory the allocator has taken
+  // back. drainPendingReadReplies() waits for them.
+  std::deque<DeferredReadReply> deferred;
+  {
+    std::lock_guard<std::mutex> lk(stagingMu_);
+    deferred.swap(deferredReplies_);
+  }
+  deferred.clear();
   outCv_.notify_all(); // wake producers blocked for space so they see the break
   for (auto& state : toFail) {
     state->fail(Err(ErrCode::ConnectionFailed, message));
