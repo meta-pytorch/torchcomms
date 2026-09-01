@@ -315,6 +315,61 @@ TEST(TcpTransportConfigTest, AsyncGetH2dDefaultsOn) {
   EXPECT_TRUE(TcpTransportConfig{}.asyncGetH2d);
 }
 
+// Data sockets must leave SO_SNDBUF/SO_RCVBUF to the kernel no matter how the
+// config was built. Asserted through the converting constructor specifically,
+// because that is the path that defeated the previous attempt: the default on
+// socketConfig was bulkDataDefaults(), but any caller handing over a bare
+// TcpSocketConfig -- the benchmark, the cross-host tests, anything arriving via
+// MultiTransport -- replaced it wholesale and silently restored that type's own
+// 1 MiB. A test on the default alone passed throughout, which is why this one
+// sets a value and demands it be dropped.
+TEST(TcpTransportConfigTest, DataSocketsAlwaysLeaveSocketBuffersToTheKernel) {
+  controller::TcpSocketConfig explicitCfg;
+  explicitCfg.socketBufSize = 4 << 20;
+  const TcpTransportConfig config{explicitCfg};
+
+  ASSERT_EQ(config.socketConfig.socketBufSize, 4 << 20)
+      << "precondition: the caller's value reaches the config";
+  EXPECT_FALSE(config.dataSocketConfig(std::nullopt).socketBufSize.has_value())
+      << "an explicit SO_RCVBUF pins the window below a 200G link's BDP";
+}
+
+// Only the buffer size is overridden. This is not osDefaults(): a data socket
+// still wants the keepalive and timeout settings the caller asked for, so a
+// future field cleared here by accident should show up as a failure.
+TEST(TcpTransportConfigTest, DataSocketConfigKeepsEveryOtherField) {
+  const TcpTransportConfig config{};
+  const auto data = config.dataSocketConfig(std::nullopt);
+  const auto& given = config.socketConfig;
+
+  EXPECT_EQ(data.connTimeout, given.connTimeout);
+  EXPECT_EQ(data.tcpNoDelay, given.tcpNoDelay);
+  EXPECT_EQ(data.enableKeepalive, given.enableKeepalive);
+  EXPECT_EQ(data.keepaliveIdle, given.keepaliveIdle);
+  EXPECT_EQ(data.keepaliveInterval, given.keepaliveInterval);
+  EXPECT_EQ(data.keepaliveCount, given.keepaliveCount);
+  EXPECT_EQ(data.userTimeout, given.userTimeout);
+}
+
+// The egress device is per-connection rather than per-config, so a nullopt
+// device has to clear an inherited binding rather than leave it. Asserted with
+// a binding already on the config, because asserting it on the default proves
+// nothing -- the default has none, so such a test passes whether the clearing
+// happens or not. A leaked binding would pin every lane to one device while the
+// transport believed it was striping across several.
+TEST(TcpTransportConfigTest, DataSocketConfigOverridesTheInheritedDevice) {
+  controller::TcpSocketConfig staleCfg;
+  staleCfg.bindToDevice = "eth9";
+  const TcpTransportConfig config{staleCfg};
+
+  ASSERT_EQ(config.socketConfig.bindToDevice, "eth9")
+      << "precondition: the caller's binding reaches the config";
+  EXPECT_EQ(config.dataSocketConfig("eth2").bindToDevice, "eth2")
+      << "the transport's own device model must win";
+  EXPECT_FALSE(config.dataSocketConfig(std::nullopt).bindToDevice.has_value())
+      << "no device given must leave egress to the routing table";
+}
+
 // The NIC cap is a single field on the config, reachable by both MultiTransport
 // and the benchmark. It used to be two constants -- one here and one on
 // MultiTransportOptions -- which could drift apart while each looked right on

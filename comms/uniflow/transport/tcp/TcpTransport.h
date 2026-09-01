@@ -86,6 +86,22 @@ std::vector<std::string> enumerateFrontendDevices(
     size_t maxDevices);
 
 struct TcpTransportConfig {
+  /// Socket options for this transport's *data* connections, which is all the
+  /// connections it makes.
+  ///
+  /// Two of its fields are deliberately NOT honoured, because
+  /// dataSocketConfig() overrides them for every data connection:
+  ///
+  /// socketBufSize -- SO_SNDBUF/SO_RCVBUF are always left to the kernel.
+  /// Setting them explicitly disables Linux receive-window autotuning, which
+  /// pins a stream below the bandwidth-delay product of a 200G link, and there
+  /// is no measured case where a fixed size beat autotune. The field stays on
+  /// TcpSocketConfig because the control connection is a different workload and
+  /// does still use it.
+  ///
+  /// bindToDevice -- the egress device comes from bindToDevices below, which is
+  /// this transport's own per-lane device model. A binding set here instead
+  /// would apply to every lane at once and contradict that mapping.
   controller::TcpSocketConfig socketConfig{};
   bool asyncGetH2d{true};
   // Number of parallel data sockets ("lanes") per bound device, not per peer.
@@ -157,6 +173,27 @@ struct TcpTransportConfig {
   /// how
   /// --num-nics went unnoticed as a no-op on this path.
   size_t resolveMaxFrontendDevices(const std::string& prefix) const;
+
+  /// Socket options for one data connection: `socketConfig`, with egress pinned
+  /// to `device` and SO_SNDBUF/SO_RCVBUF always left to the kernel.
+  ///
+  /// Every data connection is built through here so neither decision can be
+  /// reopened by a caller. A default on `socketConfig` was not enough: the
+  /// implicit TcpTransportConfig(TcpSocketConfig) conversion below means any
+  /// caller handing over a bare TcpSocketConfig -- the benchmark, the
+  /// cross-host tests, anything reaching this through MultiTransport --
+  /// silently reinstated that type's own values. Clearing at the point of use
+  /// is the only version that holds for every construction path.
+  ///
+  /// The buffer size lands on the *accepted* socket, which is the one carrying
+  /// data: a listener consumes only bindToDevice, so the size reaches a socket
+  /// solely through configureAcceptedSocket() on the accept path and
+  /// configureClientSocket() on the dial path. Leaving it unset on the listener
+  /// matters in its own right too, since an accepted socket inherits the
+  /// listener's buffer sizes along with the autotuning lock that comes with
+  /// setting them.
+  controller::TcpSocketConfig dataSocketConfig(
+      const std::optional<std::string>& device) const;
 
   TcpTransportConfig() = default;
   /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
@@ -700,12 +737,12 @@ struct TcpPendingRecv {
 ///  - reader, one per lane: blocking recv + demultiplex; never blocks on a
 ///  send,
 ///    so it always drains inbound (avoids the mutual-READ deadlock).
-///  - sender, one per transport: drains an outbound frame queue and performs
-///  all
-///    socket sends (requests, ACKs, READ replies), serialized by construction.
-///    Sends every frame on lane 0 -- the extra lanes are established and
-///    drained but not yet used outbound, so throughput is unchanged until
-///    striping schedules across them.
+///  - sender, one per lane: drains that lane's own outbound queue and performs
+///    its socket sends, which is what keeps TcpConn's single-writer requirement
+///    satisfied. Frames are striped across lanes by pickLane(); every frame
+///    carries its own reqId/segId/offset, so the peer reassembles without
+///    needing arrival order. Only two-sided Send is order-sensitive, and it
+///    bypasses striping (see enqueueSendFrame).
 ///
 /// put() copies a local buffer into a peer segment (WRITE + ACK). get() is
 /// emulated as a pull: READ_REQUEST -> peer replies READ_REPLY with the data.
