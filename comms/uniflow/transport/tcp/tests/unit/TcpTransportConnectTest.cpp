@@ -214,6 +214,27 @@ class TcpTransportTopologyTest : public ::testing::Test {
   std::unique_ptr<TcpTransportFactory> factory_;
 };
 
+TEST(TcpTransportConfigTest, AsyncGetH2dDefaultsOn) {
+  EXPECT_TRUE(TcpTransportConfig{}.asyncGetH2d);
+}
+
+TEST_F(TcpTransportTopologyTest, FactoryPropagatesDisabledAsyncGetH2d) {
+  TcpTransportConfig config;
+  config.asyncGetH2d = false;
+  TcpTransportFactory factory(
+      /*deviceId=*/-1,
+      evbThread_->getEventBase(),
+      config,
+      /*host=*/"127.0.0.1");
+
+  auto result = factory.createTransport(factory.getTopology());
+
+  ASSERT_TRUE(result.hasValue()) << result.error().message();
+  auto* transport = dynamic_cast<TcpTransport*>(result.value().get());
+  ASSERT_NE(transport, nullptr);
+  EXPECT_FALSE(transport->asyncGetH2dEnabled());
+}
+
 TEST_F(TcpTransportTopologyTest, TopologyIsAVersionedCapabilityBlob) {
   const std::vector<uint8_t> topology = factory_->getTopology();
 
