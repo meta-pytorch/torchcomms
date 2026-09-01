@@ -48,6 +48,17 @@ cudaError_t launchDeviceToDevicePingPong(
     uint64_t maxWaitCycles,
     cudaStream_t stream);
 
+// One `startTimeout()` per block and nothing else, which is the shape of a
+// collective kernel's entry. Run it against an enabled and a disabled handle
+// and the difference is the whole arm-site cost, separated from launch
+// overhead.
+cudaError_t launchAbortDeviceArmOnly(
+    AbortDevice abort,
+    uint64_t* sink,
+    int blocks,
+    int threads,
+    cudaStream_t stream);
+
 cudaError_t launchAbortDeviceDefaultTimeoutLoadLoop(
     AbortDevice abort,
     int64_t* sink,
