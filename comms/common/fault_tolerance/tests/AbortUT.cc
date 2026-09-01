@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -644,6 +645,48 @@ TEST(AbortTest, concurrentWritersLeaveOneStableReason) {
   for (int i = 0; i < 1000; ++i) {
     ASSERT_EQ(abort.reason(), reason);
   }
+}
+
+// The greppable contract, spelled out rather than taken from the macro, so a
+// change to `FT_ABORT_FIRST_WRITER_` has to be a deliberate one. This is the
+// string oncall greps for, and the host side has to answer to it as well as the
+// device side.
+constexpr const char* kFirstWriterMarker = "COMMS FT ABORT FIRST WRITER: ";
+
+TEST(AbortTest, hostFirstWriterEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.setAbort(AbortReason::NETWORK_ERROR, "host callsite");
+  const std::string out = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(won);
+  // Both the numeric enum and the name: the number survives an enum rename and
+  // the name is what makes the line readable without a header lookup.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "host reason=" +
+          std::to_string(static_cast<int>(AbortReason::NETWORK_ERROR)) + "(" +
+          std::string{abortReasonToString(AbortReason::NETWORK_ERROR)} +
+          ") context=host callsite"))
+      << "captured: " << out;
+}
+
+TEST(AbortTest, hostFirstWriterLoserIsSilent) {
+  Abort abort{/*enabled=*/true};
+  ASSERT_TRUE(abort.setAbort(AbortReason::TIMED_OUT, "the winner"));
+
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.setAbort(AbortReason::NETWORK_ERROR, "the loser");
+  const std::string out = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_FALSE(won);
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr(kFirstWriterMarker)))
+      << "captured: " << out;
+  // And the losing context is not published either -- the line and the stored
+  // context have to agree about who won.
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr("the loser")));
 }
 
 TEST(AbortTest, abortReasonToString) {
