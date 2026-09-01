@@ -11,10 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -127,13 +130,110 @@ struct TransferResult {
 
 // Warmup then a pipelined timed loop keeping up to txDepth put/get calls in
 // flight over the single TCP connection.
+
+/*
+ * Filesystem barrier across the N rank-pairs of an aggregate run, keyed by
+ * (direction, size) so every size re-synchronises. Fails closed: a barrier
+ * that timed out silently would restore the defect it exists to remove.
+ */
+constexpr std::string_view kMarkerPrefix = "inst";
+
+bool measurementBarrier(
+    const BenchmarkConfig& config,
+    const std::string& tag,
+    int rank) {
+  if (config.barrierDir.empty() || config.barrierRanks <= 1) {
+    return true;
+  }
+  // The marker name is the only thing distinguishing instances. cudaDevice
+  // defaults to -1, so an aggregate run that forgot --cuda-device would have
+  // every instance write inst-1 and then wait out the full timeout.
+  if (rank < 0) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier needs a unique per-instance key; got {}. Pass "
+        "--cuda-device (one per instance) when --measurement-barrier-ranks > 1",
+        rank);
+    return false;
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path dir = fs::path(config.barrierDir) / tag;
+  fs::create_directories(dir, ec);
+  if (ec) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: cannot create {}: {}",
+        dir.string(),
+        ec.message());
+    return false;
+  }
+  // Keyed by GPU index, not bootstrap.rank: every initiator is rank 0 of its
+  // own pair, so ranks are not unique across instances.
+  // Nothing else writes this instance's marker, so finding it already there
+  // means the directory is being reused after an earlier run. Counting it
+  // would pre-satisfy the barrier and release early -- the same silent
+  // overstatement this change exists to remove -- so refuse instead.
+  const auto marker = dir / fmt::format("{}{}", kMarkerPrefix, rank);
+  if (fs::exists(marker, ec)) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: {} already exists; pass a fresh "
+        "--measurement-barrier-dir per run",
+        marker.string());
+    return false;
+  }
+  {
+    std::ofstream f(marker);
+    if (!f) {
+      UNIFLOW_LOG_ERROR(
+          "measurement barrier: cannot write marker in {}", dir.string());
+      return false;
+    }
+  }
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(120);
+  while (std::chrono::steady_clock::now() < deadline) {
+    size_t n = 0;
+    fs::directory_iterator it(dir, ec);
+    if (ec) {
+      // A filesystem error is not "peers have not arrived yet"; spinning to
+      // the timeout would report it as one.
+      UNIFLOW_LOG_ERROR(
+          "measurement barrier: cannot read {}: {}",
+          dir.string(),
+          ec.message());
+      return false;
+    }
+    for (; it != fs::directory_iterator(); ++it) {
+      // Only this run's markers count. Anything else in the directory -- a
+      // foreign file, an editor temp, an NFS .nfs* silly-rename left behind by
+      // an unlinked marker -- would otherwise inflate the count and release
+      // the barrier before every rank arrived, which is the same silent
+      // under-synchronisation this change exists to remove.
+      if (it->path().filename().string().rfind(kMarkerPrefix, 0) == 0) {
+        ++n;
+      }
+    }
+    if (n >= static_cast<size_t>(config.barrierRanks)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  UNIFLOW_LOG_ERROR(
+      "measurement barrier timed out at {} (rank {}, need {})",
+      tag,
+      rank,
+      config.barrierRanks);
+  return false;
+}
+
 TransferResult runTransfer(
     Transport& transport,
     RegisteredSegment& localReg,
     RemoteRegisteredSegment& remoteReg,
     size_t size,
     const std::string& dir,
-    const BenchmarkConfig& config) {
+    const BenchmarkConfig& config,
+    int rank) {
   using Clock = std::chrono::steady_clock;
   const int batchSize = std::max(1, config.batchSize);
   const int txDepth = std::max(1, config.txDepth);
@@ -191,6 +291,13 @@ TransferResult runTransfer(
     inflight.pop_front();
     return true;
   };
+
+  // All N ranks line up here, after their own warmup, so that every rank's
+  // timed window covers the same wall-clock interval and the per-rank
+  // bandwidths are summable. Barrier cost is outside the clock below.
+  if (!measurementBarrier(config, fmt::format("{}_{}", dir, size), rank)) {
+    return out;
+  }
 
   auto start = Clock::now();
   for (int b = 0; b < numBatches; ++b) {
@@ -654,7 +761,14 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       if (tcpTransport != nullptr) {
         tcpTransport->logAndResetPhaseStats("reset");
       }
-      auto r = runTransfer(*transport, localReg, remoteReg, size, dir, config);
+      auto r = runTransfer(
+          *transport,
+          localReg,
+          remoteReg,
+          size,
+          dir,
+          config,
+          config.cudaDevice);
       if (!r.ok) {
         // Latched rather than returned: every remaining size has a barrier the
         // peer is going to execute.

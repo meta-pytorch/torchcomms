@@ -78,6 +78,8 @@ struct CliOptions {
   // --tcp-bind-dev. Names are per-host, so the two hosts may need different
   // lists for the same pair of physical ports.
   std::string tcpBindDevs;
+  std::string barrierDir;
+  int barrierRanks{0};
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -213,6 +215,11 @@ void printUsage(const char* prog) {
       << "  --cuda-devices <list>  Comma-separated GPU indices for single-process multi-GPU (overrides --cuda-device)\n"
       << "  --gpu-nics <groups>    Per-GPU NIC map for multi-GPU: ';'-separated groups of comma-separated NICs, one per --cuda-devices entry\n"
       << "  --data-direct          Register GPU memory over the mlx5 Data Direct path (default: off)\n"
+      << "  --measurement-barrier-dir <path>  Shared dir used to line up the timed\n"
+      << "                         loops of N independent aggregate instances. Without\n"
+      << "                         it their windows stagger and summed bandwidth is\n"
+      << "                         overstated (measured overlap 1.0-2.1 of 8)\n"
+      << "  --measurement-barrier-ranks <n>   Number of instances to wait for\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -259,6 +266,8 @@ CliOptions parseArgs(int argc, char** argv) {
       {"tcp-sockets-per-nic", required_argument, nullptr, 270},
       {"tcp-bind-dev", no_argument, nullptr, 271},
       {"tcp-bind-devs", required_argument, nullptr, 272},
+      {"measurement-barrier-dir", required_argument, nullptr, 280},
+      {"measurement-barrier-ranks", required_argument, nullptr, 281},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -358,6 +367,24 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 272:
         opts.tcpBindDevs = optarg;
+        break;
+      case 280:
+        opts.barrierDir = optarg;
+        break;
+      case 281:
+        try {
+          int parsed = std::stoi(optarg);
+          if (parsed < 1) {
+            std::cerr
+                << "Invalid value for --measurement-barrier-ranks: must be >= 1\n";
+            std::exit(1);
+          }
+          opts.barrierRanks = parsed;
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --measurement-barrier-ranks: '"
+                    << optarg << "'\n";
+          std::exit(1);
+        }
         break;
       case 'd':
         opts.direction = optarg;
@@ -554,6 +581,8 @@ int main(int argc, char** argv) {
   config.bidirectional = opts.bidirectional;
   config.dataDirect = opts.dataDirect;
   config.verify = !opts.noVerify;
+  config.barrierDir = opts.barrierDir;
+  config.barrierRanks = opts.barrierRanks;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
   config.txDepth = opts.txDepth;
