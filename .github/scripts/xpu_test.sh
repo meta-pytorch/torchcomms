@@ -11,9 +11,10 @@ apt-get install -y gpg wget build-essential ninja-build cmake git
 
 # Add Intel GPG key
 wget -qO - https://repositories.intel.com/gpu/intel-graphics.key \
-| gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg
-echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble/${OMIX_REPO}/${OMIX_VERSION} unified' | \
-tee /etc/apt/sources.list.d/intel-gpu-noble.list
+  | gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble/${OMIX_REPO}/${OMIX_VERSION} unified" | \
+  tee /etc/apt/sources.list.d/intel-gpu-noble.list
 
 apt-get update
 
