@@ -1103,7 +1103,9 @@ class P2pIbgdaTransportDevice {
   __device__ void wait_local_on_qp(
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_ticket_t ticket,
-      AbortDevice abortDevice = AbortDevice()) {
+      // By reference: a copy resets the poll throttle, and `wait_lanes()` calls
+      // this once per QP lane.
+      const AbortDevice& abortDevice = AbortDevice()) {
     if (!abortDevice.isEnabled()) {
       doca_gpu_dev_verbs_wait<
           DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
