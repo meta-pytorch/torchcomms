@@ -1509,6 +1509,12 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
       h2dState_->copyNs.load(std::memory_order_relaxed);
   const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed) +
       h2dState_->copyCount.load(std::memory_order_relaxed);
+  const uint64_t slabAttempts =
+      receiveSlabAttempts_.load(std::memory_order_relaxed);
+  const uint64_t slabMisses =
+      receiveSlabMisses_.load(std::memory_order_relaxed);
+  const uint64_t vectorReceives =
+      vectorReceiveCount_.load(std::memory_order_relaxed);
 
   if (frames == 0) {
     UNIFLOW_LOG_INFO("tcp phases [{}]: no frames", label);
@@ -1528,7 +1534,8 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
     UNIFLOW_LOG_INFO(
         "tcp phases [{}]: frames={} bytes={} | first-byte {:.1f}us/frame "
         "({:.1f}%) | drain {:.1f}us/frame ({:.1f}%, {:.2f} GB/s) | dstcopy "
-        "{:.1f}us x{} ({:.1f}% of wire)",
+        "{:.1f}us x{} ({:.1f}% of wire) | receive_slabs attempts={} misses={} "
+        "vector_recvs={}",
         label,
         frames,
         bytes,
@@ -1539,13 +1546,19 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         drainGBps,
         copies > 0 ? static_cast<double>(copyNs) / copies / 1000.0 : 0.0,
         copies,
-        pct(copyNs));
+        pct(copyNs),
+        slabAttempts,
+        slabMisses,
+        vectorReceives);
   }
   rs.reset();
   dstCopyNs_.store(0, std::memory_order_relaxed);
   dstCopyCount_.store(0, std::memory_order_relaxed);
   h2dState_->copyNs.store(0, std::memory_order_relaxed);
   h2dState_->copyCount.store(0, std::memory_order_relaxed);
+  receiveSlabAttempts_.store(0, std::memory_order_relaxed);
+  receiveSlabMisses_.store(0, std::memory_order_relaxed);
+  vectorReceiveCount_.store(0, std::memory_order_relaxed);
 }
 
 void TcpTransport::readerLoop() noexcept {
@@ -1558,7 +1571,11 @@ void TcpTransport::readerLoop() noexcept {
     TcpPinnedSlab receiveSlab;
     if (config_.asyncGetH2d) {
       if (auto pool = receivePoolIfCreated()) {
+        receiveSlabAttempts_.fetch_add(1, std::memory_order_relaxed);
         receiveSlab = pool->tryAcquire(/*allowReserved=*/true);
+        if (!receiveSlab) {
+          receiveSlabMisses_.fetch_add(1, std::memory_order_relaxed);
+        }
       }
     }
     if (receiveSlab) {
@@ -1578,6 +1595,7 @@ void TcpTransport::readerLoop() noexcept {
       continue;
     }
 
+    vectorReceiveCount_.fetch_add(1, std::memory_order_relaxed);
     auto result = dataConn_->recv(msg).get();
     if (!result) {
       // Connection closed, errored, or idle-timed-out; stop reading.
@@ -2130,7 +2148,7 @@ std::future<Status> TcpTransport::recv(
 }
 
 void TcpTransport::shutdown() {
-  std::lock_guard<std::mutex> lk(lifecycleMu_);
+  std::lock_guard<std::mutex> lifecycleLock(lifecycleMu_);
   // One-shot, but checked under the mutex rather than before taking it:
   // shutdown() is called twice in the normal flow (MultiTransport::shutdown()
   // then ~TcpTransport), and the second caller must not return while the first
@@ -2141,7 +2159,7 @@ void TcpTransport::shutdown() {
   running_.store(false, std::memory_order_release);
 
   {
-    std::lock_guard<std::mutex> lk(outMu_);
+    std::lock_guard<std::mutex> outLock(outMu_);
     outClosed_ = true;
   }
   outCv_.notify_all();
