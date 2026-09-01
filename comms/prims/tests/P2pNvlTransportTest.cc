@@ -3334,8 +3334,42 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
 
 namespace {
 
-// Symmetric exchange: each rank fills its send buffer with a rank-derived
-// pattern and must observe the peer's pattern in its recv buffer.
+/*
+ * Position- and key-dependent payload byte.
+ *
+ * A constant fill cannot tell a correct chunk from one that was replayed,
+ * reordered, or written at the wrong offset, and a pattern with a short period
+ * cannot tell apart offsets one period apart. This is a splitmix64 finalizer
+ * over (rank, peer, index), so it has no period at any test-sized buffer and a
+ * chunk that arrived from the wrong peer mismatches even at the right offset.
+ *
+ * Channel is deliberately not a key. Channels partition the buffer into
+ * disjoint tiles, so a channel swap relocates bytes and the index term already
+ * catches it; keying on channel too would mean threading tile geometry through
+ * every caller for no added detection.
+ */
+unsigned char progressPayloadByte(int rank, int peer, size_t index) {
+  uint64_t h = (static_cast<uint64_t>(rank) << 56) ^
+      (static_cast<uint64_t>(peer) << 48) ^ static_cast<uint64_t>(index);
+  h ^= h >> 30;
+  h *= 0xbf58476d1ce4e5b9ULL;
+  h ^= h >> 27;
+  h *= 0x94d049bb133111ebULL;
+  h ^= h >> 31;
+  return static_cast<unsigned char>(h & 0xFFULL);
+}
+
+// Fills `host` with this rank's payload for `peer`, ready to upload.
+std::vector<char> makeProgressPayload(int rank, int peer, size_t nbytes) {
+  std::vector<char> host(nbytes);
+  for (size_t i = 0; i < nbytes; ++i) {
+    host[i] = static_cast<char>(progressPayloadByte(rank, peer, i));
+  }
+  return host;
+}
+
+// Symmetric exchange: each rank fills its send buffer with a rank/peer/position
+// keyed pattern and must observe the peer's pattern in its recv buffer.
 void runProgressExchange(
     int globalRank,
     int numRanks,
@@ -3355,9 +3389,10 @@ void runProgressExchange(
 
   DeviceBuffer sendBuf(nbytes);
   DeviceBuffer recvBuf(nbytes);
-  const int pattern = 0x40 + globalRank;
-  const int peerPattern = 0x40 + peerRank;
-  CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nbytes));
+  const std::vector<char> sendHost =
+      makeProgressPayload(globalRank, peerRank, nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), sendHost.data(), nbytes, cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
 
   DeviceBuffer counters(sizeof(comms::prims::test::ProgressCounters));
@@ -3384,7 +3419,7 @@ void runProgressExchange(
   for (size_t i = 0; i < nbytes; i++) {
     ASSERT_EQ(
         static_cast<unsigned char>(hostBuf[i]),
-        static_cast<unsigned char>(peerPattern))
+        progressPayloadByte(peerRank, globalRank, i))
         << "mismatch at byte " << i << " of " << nbytes;
   }
 
@@ -3602,6 +3637,87 @@ TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvMultipleChannels) {
       /*countersOut=*/nullptr));
 }
 
+TEST_F(P2pNvlTransportTestFixture, ProgressTwoPeersConcurrently) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "Skipping: requires >= 3 ranks to give the per-peer "
+                    "progress slice a nonzero offset, got "
+                 << numRanks;
+  }
+  // At two ranks the local peer index is always zero, so
+  // `progressDirectionStride_` and the per-peer slicing in
+  // MultiPeerNvlTransport are never exercised by any other case. Ring topology:
+  // every rank exchanges with both its predecessor and its successor
+  // concurrently, which keeps each rank's launch symmetric and guarantees both
+  // peers are reciprocating rather than waiting on a rank that never engages.
+  const int predRank = (globalRank + numRanks - 1) % numRanks;
+  const int succRank = (globalRank + 1) % numRanks;
+  const size_t nbytes = 256 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/1024 * 1024,
+      /*pipelineDepth=*/2,
+      /*maxNumChannels=*/1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pPred = transport.buildP2pTransportDevice(predRank);
+  auto p2pSucc = transport.buildP2pTransportDevice(succRank);
+
+  DeviceBuffer predSrc(nbytes);
+  DeviceBuffer predDst(nbytes);
+  DeviceBuffer succSrc(nbytes);
+  DeviceBuffer succDst(nbytes);
+
+  // Keyed on the destination peer, so a chunk delivered to or from the wrong
+  // peer mismatches even at the right offset -- which is exactly what a wrong
+  // per-peer slice offset would produce.
+  const std::vector<char> predHost =
+      makeProgressPayload(globalRank, predRank, nbytes);
+  const std::vector<char> succHost =
+      makeProgressPayload(globalRank, succRank, nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      predSrc.get(), predHost.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      succSrc.get(), succHost.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(predDst.get(), 0, nbytes));
+  CUDACHECK_TEST(cudaMemset(succDst.get(), 0, nbytes));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  comms::prims::test::testProgressTwoPeerSendRecv(
+      p2pPred,
+      p2pSucc,
+      predSrc.get(),
+      predDst.get(),
+      succSrc.get(),
+      succDst.get(),
+      nbytes,
+      /*maxSignalBytes=*/0,
+      AbortDevice(),
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // This rank is its predecessor's successor and vice versa, so each peer
+  // filled its payload keyed on this rank as the destination.
+  std::vector<char> hostBuf(nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), predDst.get(), nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        progressPayloadByte(predRank, globalRank, i))
+        << "predecessor payload mismatch at byte " << i;
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), succDst.get(), nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        progressPayloadByte(succRank, globalRank, i))
+        << "successor payload mismatch at byte " << i;
+  }
+}
+
 TEST_F(P2pNvlTransportTestFixture, ProgressZeroBytesIsNoOp) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
@@ -3642,15 +3758,14 @@ TEST_F(P2pNvlTransportTestFixture, ProgressTwoSequentialOpsOnSameChannel) {
 
   DeviceBuffer sendBuf(totalBytes);
   DeviceBuffer recvBuf(totalBytes);
-  // Distinct patterns per half, so a second operation that resumed from the
-  // wrong offset shows up as the wrong pattern rather than passing by accident.
-  const int firstPattern = 0x50 + globalRank;
-  const int secondPattern = 0x60 + globalRank;
-  CUDACHECK_TEST(cudaMemset(sendBuf.get(), firstPattern, firstBytes));
-  CUDACHECK_TEST(cudaMemset(
-      static_cast<char*>(sendBuf.get()) + firstBytes,
-      secondPattern,
-      secondBytes));
+  // Keyed per byte position across the whole buffer. A per-half pattern would
+  // only catch a second operation that resumed in the wrong half; this also
+  // catches one that resumed at the wrong offset within the right half, which
+  // is the failure the cursor reservation actually risks.
+  const std::vector<char> sendHost =
+      makeProgressPayload(globalRank, peerRank, totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), sendHost.data(), totalBytes, cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -3671,17 +3786,12 @@ TEST_F(P2pNvlTransportTestFixture, ProgressTwoSequentialOpsOnSameChannel) {
   std::vector<char> hostBuf(totalBytes);
   CUDACHECK_TEST(cudaMemcpy(
       hostBuf.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
-  for (size_t i = 0; i < firstBytes; i++) {
+  for (size_t i = 0; i < totalBytes; i++) {
     ASSERT_EQ(
         static_cast<unsigned char>(hostBuf[i]),
-        static_cast<unsigned char>(0x50 + peerRank))
-        << "first operation mismatch at byte " << i;
-  }
-  for (size_t i = firstBytes; i < totalBytes; i++) {
-    ASSERT_EQ(
-        static_cast<unsigned char>(hostBuf[i]),
-        static_cast<unsigned char>(0x60 + peerRank))
-        << "second operation mismatch at byte " << i;
+        progressPayloadByte(peerRank, globalRank, i))
+        << (i < firstBytes ? "first" : "second")
+        << " operation mismatch at byte " << i;
   }
 }
 

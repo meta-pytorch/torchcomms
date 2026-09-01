@@ -1095,6 +1095,85 @@ void testProgressSendRecv(
 }
 
 /*
+ * Two peers driven concurrently from one block.
+ *
+ * Group construction matters here. `make_block_group().partition(2)` does not
+ * work on a single-block launch: partition() splits *groups*, and one block
+ * group means total_groups == 1, so it rejects num_partitions == 2. Instead
+ * make two half-block multiwarp groups and interleave them, the same shape
+ * p2pTileSendRecvBidirCta uses. partition_interleaved(2) renumbers both
+ * subgroups to group_id 0, so each drives channel 0 of its own transport --
+ * and channel indices are per-transport, so that is not a collision.
+ *
+ * Each subgroup runs the same alternating send/recv loop as the single-peer
+ * case. The status is group-uniform within a subgroup, so every thread of a
+ * subgroup leaves the loop together.
+ */
+__global__ void testProgressTwoPeerSendRecvKernel(
+    P2pNvlTransportDevice p2pPred,
+    P2pNvlTransportDevice p2pSucc,
+    void* predSrc,
+    void* predDst,
+    void* succSrc,
+    void* succDst,
+    size_t nbytes,
+    size_t maxSignalBytes,
+    AbortDevice abort) {
+  abort.start();
+  auto group = make_multiwarp_group(blockDim.x / 2);
+  auto [role, sub] = group.partition_interleaved(2);
+
+  P2pNvlTransportDevice& p2p = (role == 0) ? p2pPred : p2pSucc;
+  char* src = static_cast<char*>((role == 0) ? predSrc : succSrc);
+  char* dst = static_cast<char*>((role == 0) ? predDst : succDst);
+
+  p2p.init_send_progress(sub, nbytes, maxSignalBytes);
+  p2p.init_recv_progress(sub, nbytes, maxSignalBytes);
+
+  bool sendDone = nbytes == 0;
+  bool recvDone = nbytes == 0;
+  while (!sendDone || !recvDone) {
+    if (!sendDone) {
+      const auto status =
+          p2p.progress_send_once(sub, src, nbytes, maxSignalBytes, abort);
+      sendDone = status == NvlSendRecvProgressStatus::Done ||
+          status == NvlSendRecvProgressStatus::Aborted;
+    }
+    if (!recvDone) {
+      const auto status =
+          p2p.progress_recv_once(sub, dst, nbytes, maxSignalBytes, abort);
+      recvDone = status == NvlSendRecvProgressStatus::Done ||
+          status == NvlSendRecvProgressStatus::Aborted;
+    }
+  }
+}
+
+void testProgressTwoPeerSendRecv(
+    P2pNvlTransportDevice p2pPred,
+    P2pNvlTransportDevice p2pSucc,
+    void* predSrc,
+    void* predDst,
+    void* succSrc,
+    void* succDst,
+    size_t nbytes,
+    size_t maxSignalBytes,
+    AbortDevice abort,
+    int blockSize,
+    cudaStream_t stream) {
+  testProgressTwoPeerSendRecvKernel<<<1, blockSize, 0, stream>>>(
+      p2pPred,
+      p2pSucc,
+      predSrc,
+      predDst,
+      succSrc,
+      succDst,
+      nbytes,
+      maxSignalBytes,
+      abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+/*
  * Sender with nobody draining the far end, so the pipeline necessarily fills
  * and stays full. Bounded iteration count: the point is to observe Waiting and
  * non-completion, not to finish. In a symmetric exchange whether Waiting is
