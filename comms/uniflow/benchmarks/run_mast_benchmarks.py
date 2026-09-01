@@ -1,6 +1,47 @@
 #!/usr/bin/env python3
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+"""Build the uniflow disagg-serving fbpkg, launch MAST jobs, poll, and gate.
+
+NVIDIA (default): host_type=grandteton_80g_roce (H100), package
+`uniflow_disagg_bench_mast`.
+
+AMD (MI350X / gfx950) -- DRAFT: use the ROCm fbpkg + an AMD MAST host/cluster:
+
+    run_mast_benchmarks.py \\
+        --target fbcode//comms/uniflow/benchmarks:uniflow_disagg_bench_mast_mi350 \\
+        --host-type t20_gtt_mi350x_8 \\
+        --hpc-cluster-uuid MastProdCluster \\
+        --rm-attribution ai_infra_training_rnd_amd \\
+        --hpc-identity networkai_comms_tools \\
+        --model-type-name infra_benchmarking_unibench \\
+        --hpc-job-oncall hpc_comms_lib \\
+        --locality-constraints "region;maz" \\
+        --layout cn --connector uniflow
+
+AMD notes:
+  * Values verified against a real MI350X MAST job (unibench run
+    uni_1785210828_...): cluster MastProdCluster; entitlement == rm_attribution
+    == ai_infra_training_rnd_amd (tenantPath
+    root/cfp/ai_rnd/ai_systems_rnd/ai_infra_training_rnd_tc/ai_infra_training_rnd_amd);
+    hpc_identity networkai_comms_tools; model_type_name infra_benchmarking_unibench;
+    oncall hpc_comms_lib; region maz. Set the extra fields via --rm-attribution /
+    --hpc-identity / --model-type-name / --hpc-job-oncall as needed.
+  * host_type is the torchx named resource t20_gtt_mi350x_8 (8-GPU MI350X RoCE
+    node) -- NOT the capacity SKU t20_gt_mi350x_roce (torchx rejects it) and NOT
+    the t16_gti_mi350x inference SKU (no RDMA backend NICs).
+  * --gpu-memory-utilization defaults to 0.5 on MI350X/MI300 host types (288GB
+    GPUs OOM at the NVIDIA 0.9 default); pass it explicitly to override.
+  * There is no torchx "entitlement" scheduler arg -- the AMD pool is selected
+    via --rm-attribution ai_infra_training_rnd_amd.
+  * Prefer --layout cn (cross-node): it rides the RDMA transport, which is
+    ROCm-ready. Single-node (sn) has no landed intra-node fast path on AMD
+    (NVLink is NVIDIA-only; XGMI P2P is unlanded), so it falls back to RDMA/TCP.
+  * The CUDA-centric env (PYTORCH_CUDA_ALLOC_CONF, TORCH_NCCL_*) maps to the
+    RCCL path under vLLM's ROCm runtime; adjust only if a run needs
+    RCCL-specific tuning.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -256,6 +297,7 @@ class Workload:
     mode: str
     timeout: int
     validate_performance_outputs: bool
+    perf_only: bool = False
 
     @property
     def measured_requests(self) -> int:
@@ -283,6 +325,8 @@ class MastConfig:
     job_timeout_sec: int
     progress_idle_timeout_sec: int
     progress_check_interval_sec: int
+    kv_transport: str = "rdma"
+    accuracy_max_token_divergence: int = 0
 
     @property
     def scheduler_args(self) -> str:
@@ -308,6 +352,29 @@ class MastConfig:
             "PROCESS_MEMORY_AUTO_MEASUREMENT": "1",
             "TORCH_NCCL_ASYNC_ERROR_HANDLING": "1",
         }
+        # Steer the uniflow connector onto a specific KV transport (rdma default;
+        # tcp is host-staged for VRAM). Read by uniflow_connector.py.
+        if self.kv_transport and self.kv_transport != "rdma":
+            values["UNIFLOW_KV_TRANSPORT"] = self.kv_transport
+        # MI350/MI300 (ROCm) vLLM enablement recipe: pin attention/GEMM to the
+        # known-good ROCm path. Default ROCm attention kernels can produce a
+        # degenerate ("!!!") forward pass on MI350 (see SEV S685789 class); these
+        # flags match the MI350 vLLM enablement doc. Dense-model only (no
+        # MoE/MLA/FP8 flags). NVIDIA hosts are left untouched.
+        host = (self.host_type or "").lower()
+        if "mi350" in host or "mi300" in host:
+            # Only the three flags below are recognized by the packaged vLLM build
+            # and are what actually stabilize the MI350 forward pass (eliminate the
+            # degenerate all-'!' output). VLLM_USE_TRITON_FLASH_ATTN /
+            # VLLM_FLASH_ATTN_VERSION are "Unknown vLLM env var" in this build, so
+            # they are intentionally omitted.
+            values.update(
+                {
+                    "FLASH_ATTENTION_TRITON_AMD_ENABLE": "TRUE",
+                    "VLLM_ROCM_USE_AITER": "0",
+                    "HIPBLASLT_ALLOW_TF32": "1",
+                }
+            )
         return ",".join(f"{key}={value}" for key, value in values.items())
 
 
@@ -1576,13 +1643,15 @@ class FbpkgBuilder:
 
     @staticmethod
     def _extract_package(lines: Sequence[str]) -> str:
-        pattern = re.compile(r"\b(uniflow_disagg_bench_mast:[0-9a-f]{32})\b")
+        # Match the NVIDIA package `uniflow_disagg_bench_mast` and arch-suffixed
+        # variants (e.g. `uniflow_disagg_bench_mast_mi350`).
+        pattern = re.compile(r"\b(uniflow_disagg_bench_mast[a-z0-9_]*:[0-9a-f]{32})\b")
         for line in reversed(lines):
             match = pattern.search(line)
             if match:
                 return match.group(1)
         raise RuntimeError(
-            "Unable to find `uniflow_disagg_bench_mast:<hash>` in fbpkg output"
+            "Unable to find `uniflow_disagg_bench_mast[<arch>]:<hash>` in fbpkg output"
         )
 
 
@@ -1834,6 +1903,15 @@ class MastBenchmarkRunner:
         ]
         if self.workload.validate_performance_outputs:
             cmd.append("--validate-performance-outputs")
+        if self.workload.perf_only:
+            cmd.append("--perf-only")
+        if self.config.accuracy_max_token_divergence > 0:
+            cmd.extend(
+                [
+                    "--accuracy-max-token-divergence",
+                    str(self.config.accuracy_max_token_divergence),
+                ]
+            )
         if spec.connector_key == "nixl":
             cmd.extend(
                 [
@@ -2222,7 +2300,7 @@ def parse_args() -> argparse.Namespace:
             "performance mode. Defaults to the selected profile value."
         ),
     )
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=None)
     parser.add_argument("--mode")
     parser.add_argument("--timeout", type=int)
     parser.add_argument(
@@ -2234,6 +2312,15 @@ def parse_args() -> argparse.Namespace:
             "for publishable correctness runs."
         ),
     )
+    parser.add_argument(
+        "--perf-only",
+        action="store_true",
+        help=(
+            "Accuracy mode: skip the correctness gate and only measure "
+            "performance (TTFT/TPOT/throughput). Perf is emitted regardless of "
+            "output correctness. Intended for perf sweeps."
+        ),
+    )
     parser.add_argument("--host-type", default="grandteton_80g_roce")
     parser.add_argument("--hpc-identity", default="networkai_mast_job_identity")
     parser.add_argument("--hpc-cluster-uuid", default="MastGenAICluster")
@@ -2242,6 +2329,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--locality-constraints", default="region;eag")
     parser.add_argument("--model-type-name", default="gen_ai_default")
     parser.add_argument("--opec-tag", default="DEDICATED_ONLY")
+    parser.add_argument(
+        "--kv-transport",
+        choices=["rdma", "tcp"],
+        default="rdma",
+        help=(
+            "KV-transfer transport for the uniflow connector (default: rdma). "
+            "tcp host-stages VRAM and is slower; used to validate the TCP path."
+        ),
+    )
+    parser.add_argument(
+        "--accuracy-max-token-divergence",
+        type=int,
+        default=0,
+        help=(
+            "Forwarded to disagg_entry: tolerate up to N differing whitespace "
+            "tokens between a disagg output and its standalone baseline before "
+            "counting a correctness mismatch (default 0 = strict exact match)."
+        ),
+    )
     parser.add_argument(
         "--presto-identity", default="svc:chronos_secgrp_networkai_mast_job_identity"
     )
@@ -2467,6 +2573,14 @@ def profile_value(args: argparse.Namespace, profile: BenchmarkProfile, name: str
     return value if value is not None else getattr(profile, name)
 
 
+def _resolve_gpu_mem_util(args: argparse.Namespace) -> float:
+    if args.gpu_memory_utilization is not None:
+        return args.gpu_memory_utilization
+    # 288GB MI350X/MI300 GPUs OOM at the NVIDIA 0.9 default; use a lower default.
+    host = args.host_type.lower()
+    return 0.5 if ("mi350" in host or "mi300" in host) else 0.9
+
+
 def make_workload(args: argparse.Namespace, profile: BenchmarkProfile) -> Workload:
     return Workload(
         model=args.model,
@@ -2477,10 +2591,11 @@ def make_workload(args: argparse.Namespace, profile: BenchmarkProfile) -> Worklo
         num_prompts=profile_value(args, profile, "num_prompts"),
         output_len=profile_value(args, profile, "output_len"),
         concurrency=profile_value(args, profile, "concurrency"),
-        gpu_memory_utilization=args.gpu_memory_utilization,
+        gpu_memory_utilization=_resolve_gpu_mem_util(args),
         mode=profile_value(args, profile, "mode"),
         timeout=profile_value(args, profile, "timeout"),
         validate_performance_outputs=args.validate_performance_outputs,
+        perf_only=args.perf_only,
     )
 
 
@@ -2523,6 +2638,8 @@ def main() -> int:
         model_type_name=args.model_type_name,
         opec_tag=args.opec_tag,
         host_type=args.host_type,
+        kv_transport=args.kv_transport,
+        accuracy_max_token_divergence=args.accuracy_max_token_divergence,
         presto_identity=args.presto_identity,
         poll_interval_sec=args.poll_interval_sec,
         job_timeout_sec=profile_value(args, profile, "job_timeout_sec"),

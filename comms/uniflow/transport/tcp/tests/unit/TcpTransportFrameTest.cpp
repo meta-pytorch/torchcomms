@@ -13,14 +13,39 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <numeric>
+#include <stdexcept>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
+#include "comms/uniflow/Segment.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
+#include "comms/uniflow/transport/tcp/TcpRegistrationHandle.h"
 #include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
+
+/// Builds RegisteredSegment / RemoteRegisteredSegment without a factory,
+/// through the `friend class SegmentTest` seam in Segment.h. The name has to be
+/// exactly this to match that declaration.
+class SegmentTest {
+ public:
+  static RegisteredSegment
+  makeRegistered(void* buf, size_t len, MemoryType memType, int deviceId) {
+    return RegisteredSegment(buf, len, memType, deviceId);
+  }
+
+  static RemoteRegisteredSegment makeRemote(
+      void* buf,
+      size_t len,
+      std::unique_ptr<RemoteRegistrationHandle> handle) {
+    RemoteRegisteredSegment remote(buf, len);
+    remote.handles_.push_back(std::move(handle));
+    return remote;
+  }
+};
 
 // handleFrame() acts on peer-supplied segId/offset/len before touching a
 // registered buffer, so its bounds checks are this transport's memory-safety
@@ -53,6 +78,32 @@ class FailingConn : public controller::Conn {
   }
   bool closed{false};
   int closeCount{0};
+};
+
+/// A connection that accepts every send and counts them, for the tests that
+/// need the sender to actually drain the queue.
+class CountingConn : public controller::Conn {
+ public:
+  std::future<Result<size_t>> send(std::span<const uint8_t> data) override {
+    sendCount_.fetch_add(1, std::memory_order_release);
+    return make_ready_future<Result<size_t>>(Result<size_t>(data.size()));
+  }
+  std::future<Result<size_t>> recv(std::vector<uint8_t>&) override {
+    return make_ready_future<Result<size_t>>(
+        Err(ErrCode::ConnectionFailed, "test: recv failed"));
+  }
+  std::future<Result<size_t>> recv(std::span<uint8_t>) override {
+    return make_ready_future<Result<size_t>>(
+        Err(ErrCode::ConnectionFailed, "test: recv failed"));
+  }
+  void close() override {}
+
+  int sendCount() const {
+    return sendCount_.load(std::memory_order_acquire);
+  }
+
+ private:
+  std::atomic<int> sendCount_{0};
 };
 
 /// A connection whose send() parks until the test lets it through, so the
@@ -115,10 +166,54 @@ class GatedConn : public controller::Conn {
   bool released_{false};
 };
 
+/// A VRAM put of `len` bytes, held together so the segments outlive the request
+/// that borrows them. The source is never read -- memcpyAsync is mocked -- but
+/// it has to be a real allocation of the full length, because put() chunks by
+/// size.
+class VramPut {
+ public:
+  explicit VramPut(size_t len, int deviceId = 0)
+      : src_(len),
+        local_(
+            SegmentTest::makeRegistered(
+                src_.data(),
+                len,
+                MemoryType::VRAM,
+                deviceId)),
+        remote_(
+            SegmentTest::makeRemote(
+                // The peer's address is never dereferenced here: TCP sends the
+                // segId and offset and lets the peer resolve them.
+                // NOLINTNEXTLINE(performance-no-int-to-ptr)
+                reinterpret_cast<void*>(0x100000),
+                len,
+                std::make_unique<TcpRemoteRegistrationHandle>(
+                    kRemoteSegId,
+                    len))),
+        request_(TransferRequest{local_.span(), remote_.span()}) {}
+
+  std::span<const TransferRequest> requests() const {
+    return {&request_, 1};
+  }
+
+  const TransferRequest& request() const {
+    return request_;
+  }
+
+ private:
+  static constexpr uint64_t kRemoteSegId = 7;
+  std::vector<uint8_t> src_;
+  RegisteredSegment local_;
+  RemoteRegisteredSegment remote_;
+  TransferRequest request_;
+};
+
 class TcpTransportFrameTest : public ::testing::Test {
  protected:
   static constexpr uint64_t kSegId = 42;
   static constexpr size_t kSegLen = 256;
+  /// Destination length for the reply-kind-mismatch tests.
+  static constexpr size_t kAckDstLen = 16;
 
   void SetUp() override {
     evbThread_ = std::make_unique<ScopedEventBaseThread>("tcp-frame-test");
@@ -129,9 +224,60 @@ class TcpTransportFrameTest : public ::testing::Test {
     ON_CALL(*cudaApi_, getDevice())
         .WillByDefault(::testing::Return(Result<int>(0)));
     ON_CALL(*cudaApi_, setDevice(::testing::_))
-        .WillByDefault(::testing::Return(Ok()));
+        .WillByDefault([this](int device) -> Status {
+          currentDevice_.store(device, std::memory_order_release);
+          return Ok();
+        });
     ON_CALL(*cudaApi_, streamSynchronize(::testing::_))
-        .WillByDefault(::testing::Return(Ok()));
+        .WillByDefault([this](auto stream) -> Status {
+          {
+            std::lock_guard<std::mutex> lk(syncMu_);
+            streamSyncStreams_.push_back(static_cast<const void*>(stream));
+          }
+          syncCount_.fetch_add(1, std::memory_order_release);
+          std::unique_lock<std::mutex> lk(syncMu_);
+          syncReleased_.wait(lk, [this]() { return !syncsGated_; });
+          return Ok();
+        });
+    // The put path waits per wave on its own event rather than on the stream,
+    // so this is the wait the success path actually takes. Gated by the same
+    // switch as streamSynchronize, so a test can hold every staging wait open
+    // regardless of which one the code under test picks.
+    ON_CALL(*cudaApi_, eventSynchronize(::testing::_))
+        .WillByDefault([this](auto) -> Status {
+          {
+            std::lock_guard<std::mutex> lk(syncMu_);
+            eventSyncDevices_.push_back(
+                currentDevice_.load(std::memory_order_acquire));
+          }
+          eventSyncCount_.fetch_add(1, std::memory_order_release);
+          std::unique_lock<std::mutex> lk(syncMu_);
+          syncReleased_.wait(lk, [this]() { return !syncsGated_; });
+          if (failEventSync_.load(std::memory_order_acquire)) {
+            return Err(ErrCode::DriverError, "test: event wait failed");
+          }
+          return Ok();
+        });
+    // Real host memory behind the staging pool: the pool hands out pointers the
+    // transport builds frames in and copies into, and the tests check that a
+    // copy landed inside this memory rather than in a vector.
+    ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
+        .WillByDefault([this](size_t size, unsigned int) -> Result<void*> {
+          // Default-initialised rather than zeroed: this is 64 MiB per pool.
+          auto buf = std::unique_ptr<uint8_t[]>(new uint8_t[size]);
+          void* ptr = buf.get();
+          std::lock_guard<std::mutex> lk(allocMu_);
+          hostAllocs_.emplace_back(std::move(buf), size);
+          return ptr;
+        });
+    ON_CALL(*cudaApi_, hostFree(::testing::_))
+        .WillByDefault([this](void* ptr) -> Status {
+          std::lock_guard<std::mutex> lk(allocMu_);
+          std::erase_if(hostAllocs_, [ptr](const auto& alloc) {
+            return alloc.first.get() == ptr;
+          });
+          return Ok();
+        });
 
     transport_ = std::make_unique<TcpTransport>(
         /*deviceId=*/-1,
@@ -140,6 +286,10 @@ class TcpTransportFrameTest : public ::testing::Test {
         controller::TcpSocketConfig{},
         /*host=*/"127.0.0.1",
         cudaApi_);
+
+    // These tests drive the outbound path without connecting a peer, so give
+    // the transport the single lane that path indexes.
+    lane0();
 
     // A registered DRAM segment filled with a known pattern, so any
     // out-of-contract write is detectable.
@@ -182,10 +332,18 @@ class TcpTransportFrameTest : public ::testing::Test {
     transport_->handleFrame(frame);
   }
 
+  void feed(std::span<const uint8_t> frame, TcpPinnedSlab slab) {
+    transport_->handleFrame(frame, std::move(slab));
+  }
+
+  std::shared_ptr<TcpPinnedSlabPool> receivePool() {
+    return transport_->ensureReceivePool();
+  }
+
   /// True if the transport queued at least one Error frame back to the peer.
-  bool queuedErrorFrame() const {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    for (const auto& item : transport_->outQueue_) {
+  bool queuedErrorFrame() {
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    for (const auto& item : lane0().queue) {
       auto header = deserializeTcpHeader(item.frame.bytes());
       if (header.hasValue() &&
           static_cast<TcpOp>(header.value().op) == TcpOp::Error) {
@@ -211,7 +369,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// multi-chunk get() does. Chunk reqId 1 targets `dst`; the rest stand in for
   /// siblings whose replies have not arrived yet. VRAM so the copy runs through
   /// the mocked CudaApi. Returns the caller's future.
-  std::future<Status> postReadChunks(void* dst, size_t len, size_t chunks) {
+  std::future<Status>
+  postReadChunks(void* dst, size_t len, size_t chunks, void* stream = nullptr) {
     auto state = std::make_shared<TcpOpState>();
     state->remaining = chunks;
     auto future = state->promise.get_future();
@@ -224,7 +383,7 @@ class TcpTransportFrameTest : public ::testing::Test {
           /*isRead=*/true,
           MemoryType::VRAM,
           /*deviceId=*/0,
-          /*stream=*/nullptr};
+          stream};
     }
     return future;
   }
@@ -285,8 +444,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   size_t outQueueBytes() {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    return transport_->outBytes_;
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    return lane0().bytes;
   }
 
   static constexpr size_t outQueueCap() {
@@ -300,12 +459,27 @@ class TcpTransportFrameTest : public ::testing::Test {
   // Far from the reqIds the tests pick by hand, so filler cannot collide.
   static constexpr uint64_t kFillReqIdBase = 1'000'000;
 
+  /// Lane 0, created on demand. These tests all run single-lane, so lane 0 is
+  /// the entire outbound queue and its cap equals kMaxOutQueueBytes.
+  TcpTransport::TcpLane& lane0() {
+    if (transport_->lanes_.empty()) {
+      transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
+    }
+    return *transport_->lanes_[0];
+  }
+
+  /// Installs `conn` as lane 0, creating the lane when the transport was never
+  /// connected.
+  void installLaneConn(std::unique_ptr<controller::Conn> conn) {
+    lane0().conn = std::move(conn);
+  }
+
   /// Installs a connection whose send() always fails, so senderLoop() can be
   /// driven down its error path without a peer.
   void installFailingConn() {
     auto conn = std::make_unique<FailingConn>();
     failingConn_ = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    installLaneConn(std::move(conn));
   }
 
   bool connClosed() const {
@@ -326,7 +500,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   void runSenderLoop() {
-    transport_->senderLoop();
+    transport_->senderLoop(0);
   }
 
   /// Installs a connection whose send() parks until released, so the sender
@@ -334,37 +508,235 @@ class TcpTransportFrameTest : public ::testing::Test {
   GatedConn* installGatedConn() {
     auto conn = std::make_unique<GatedConn>();
     auto* raw = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    installLaneConn(std::move(conn));
     return raw;
+  }
+
+  /// Installs a connection that accepts every send, for the tests that need the
+  /// queue actually drained.
+  CountingConn& installCountingConn() {
+    auto conn = std::make_unique<CountingConn>();
+    auto& ref = *conn;
+    installLaneConn(std::move(conn));
+    return ref;
+  }
+
+  static size_t deferredCap() {
+    return TcpTransport::kMaxInflightRequests;
+  }
+
+  static size_t slabPayloadCap() {
+    return TcpTransport::kMaxChunkSize;
+  }
+
+  /// Fills the deferred queue with entries holding no lease, so the overflow
+  /// boundary can be reached without the millions of requests a real peer would
+  /// have to send to get there.
+  void fillDeferredReplies(size_t n) {
+    std::lock_guard<std::mutex> lk(transport_->stagingMu_);
+    for (size_t i = 0; i < n; ++i) {
+      transport_->deferredReplies_.push_back(DeferredReadReply{});
+    }
   }
 
   /// Ends senderLoop() the way shutdown() does, without tearing the rest of the
   /// transport down.
   void closeOutQueue() {
     {
-      std::lock_guard<std::mutex> lk(transport_->outMu_);
-      transport_->outClosed_ = true;
+      std::lock_guard<std::mutex> lk(lane0().mu);
+      lane0().outClosed = true;
     }
-    transport_->outCv_.notify_all();
+    lane0().cv.notify_all();
   }
 
-  /// A pool backed by real host memory, since the pool hands out pointers the
-  /// frames are built in and the tests dereference them. MockCudaApi::hostAlloc
-  /// otherwise returns a default-constructed Result.
+  /// A standalone pool, for the frame-ownership tests. Backed by the fixture's
+  /// hostAlloc stub, so its slabs are real memory.
   std::shared_ptr<TcpPinnedSlabPool> makeSlabPool(
       size_t slabCount,
       size_t reserved) {
-    slabRegion_.assign(kTestSlabSize * slabCount, uint8_t{0});
-    ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
-        .WillByDefault(
-            ::testing::Return(
-                Result<void*>(static_cast<void*>(slabRegion_.data()))));
-    ON_CALL(*cudaApi_, hostFree(::testing::_))
-        .WillByDefault(::testing::Return(Ok()));
     auto pool =
         TcpPinnedSlabPool::create(cudaApi_, kTestSlabSize, slabCount, reserved);
     EXPECT_TRUE(pool.hasValue());
     return pool.hasValue() ? pool.value() : nullptr;
+  }
+
+  /// The transport's own staging pool, created on the first call exactly as a
+  /// VRAM read would create it.
+  std::shared_ptr<TcpPinnedSlabPool> transportStagingPool() {
+    auto pool = transport_->stagingPool();
+    EXPECT_TRUE(pool.hasValue());
+    return pool.hasValue() ? pool.value() : nullptr;
+  }
+
+  /// Installs the stubs a staged VRAM read needs, with the copy held unfinished
+  /// until `releaseStagingCopies()`. Every copy destination is recorded, which
+  /// is how a test tells staging into the pinned pool from staging into a
+  /// vector.
+  void stubStagingCopies() {
+    ON_CALL(
+        *cudaApi_,
+        memcpyAsync(
+            ::testing::_,
+            ::testing::_,
+            ::testing::_,
+            ::testing::_,
+            ::testing::_))
+        .WillByDefault(
+            [this](void* dst, const void*, size_t, auto, auto) -> Status {
+              std::lock_guard<std::mutex> lk(copyMu_);
+              copyDsts_.push_back(dst);
+              if (failCopyAt_ != 0 && copyDsts_.size() == failCopyAt_) {
+                return Err(ErrCode::DriverError, "test: staging copy failed");
+              }
+              return Ok();
+            });
+    ON_CALL(*cudaApi_, eventCreate(::testing::_))
+        .WillByDefault([this](auto* event) -> Status {
+          // Non-null on purpose: the put path reads a null event as "no event
+          // was recorded" and skips the per-wave wait, so a zeroed handle would
+          // quietly disable the path under test.
+          //
+          // Spelled with auto because this TU is not hipified: cudaEvent_t is
+          // ihipEvent_t* here, and naming it does not compile under ROCm.
+          *event =
+              reinterpret_cast<std::decay_t<decltype(*event)>>(&fakeEvent_);
+          return Ok();
+        });
+    ON_CALL(*cudaApi_, eventRecord(::testing::_, ::testing::_))
+        .WillByDefault(::testing::Return(Ok()));
+    ON_CALL(*cudaApi_, eventDestroy(::testing::_))
+        .WillByDefault(::testing::Return(Ok()));
+    ON_CALL(*cudaApi_, eventQuery(::testing::_))
+        .WillByDefault([this](auto) -> Result<bool> {
+          return Result<bool>(copyDone_.load(std::memory_order_acquire));
+        });
+  }
+
+  void releaseStagingCopies() {
+    copyDone_.store(true, std::memory_order_release);
+  }
+
+  /// Fails the copy issued after `succeeding` others, so a wave can fail with
+  /// copies already in flight -- the case where releasing slabs early would let
+  /// a later copy write into a buffer the GPU is still filling.
+  void failCopyAfter(size_t succeeding) {
+    std::lock_guard<std::mutex> lk(copyMu_);
+    failCopyAt_ = succeeding + 1;
+  }
+
+  /// Holds every staging wait open, so the window between "all copies issued"
+  /// and "all copies finished" can be inspected. Without it that window closes
+  /// too fast to assert anything about.
+  void gateStagingWaits() {
+    std::lock_guard<std::mutex> lk(syncMu_);
+    syncsGated_ = true;
+  }
+
+  void releaseStagingWaits() {
+    {
+      std::lock_guard<std::mutex> lk(syncMu_);
+      syncsGated_ = false;
+    }
+    syncReleased_.notify_all();
+  }
+
+  size_t stagedCopyCount() {
+    std::lock_guard<std::mutex> lk(copyMu_);
+    return copyDsts_.size();
+  }
+
+  /// True if every recorded copy destination lies inside memory the pool
+  /// allocated. A copy into a frame's vector storage fails this.
+  bool allCopiesLandedInPinnedMemory() {
+    std::lock_guard<std::mutex> lk(copyMu_);
+    std::lock_guard<std::mutex> allocLk(allocMu_);
+    for (const auto* dst : copyDsts_) {
+      const bool inside = std::any_of(
+          hostAllocs_.begin(), hostAllocs_.end(), [dst](const auto& alloc) {
+            const auto* base = alloc.first.get();
+            if (base == nullptr) {
+              return false;
+            }
+            return dst >= base && dst < base + alloc.second;
+          });
+      if (!inside) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  int syncCount() const {
+    return syncCount_.load(std::memory_order_acquire);
+  }
+
+  int eventSyncCount() const {
+    return eventSyncCount_.load(std::memory_order_acquire);
+  }
+
+  /// The device current at each per-wave event wait, in wait order. One entry
+  /// per wave retired, which is how a test tells a single wave spanning devices
+  /// from one wave per device.
+  std::vector<int> eventSyncDevices() {
+    std::lock_guard<std::mutex> lk(syncMu_);
+    return eventSyncDevices_;
+  }
+
+  std::vector<const void*> streamSyncStreams() {
+    std::lock_guard<std::mutex> lk(syncMu_);
+    return streamSyncStreams_;
+  }
+
+  /// Makes the per-wave event wait unusable, so the retire path has to fall
+  /// back to quiescing the stream.
+  void failEventSyncs() {
+    failEventSync_.store(true, std::memory_order_release);
+  }
+
+  size_t deferredReplyCount() {
+    std::lock_guard<std::mutex> lk(transport_->stagingMu_);
+    return transport_->deferredReplies_.size();
+  }
+
+  std::future<Status> put(std::span<const TransferRequest> requests) {
+    return transport_->put(requests, RequestOptions{});
+  }
+
+  std::future<Status> putOnStream(
+      std::span<const TransferRequest> requests,
+      void* stream) {
+    RequestOptions options;
+    options.stream = stream;
+    return transport_->put(requests, options);
+  }
+
+  static constexpr size_t waveCap() {
+    return TcpTransport::kMaxPutWaveChunks;
+  }
+
+  static constexpr size_t wavesInFlight() {
+    return TcpTransport::kMaxPutWavesInFlight;
+  }
+
+  static size_t getChunk(size_t len, size_t laneCount) {
+    return TcpTransport::adaptiveGetChunk(len, laneCount);
+  }
+  static constexpr size_t maxChunk() {
+    return TcpTransport::kMaxChunkSize;
+  }
+  static constexpr size_t minAdaptiveChunk() {
+    return TcpTransport::kMinAdaptiveChunkSize;
+  }
+
+  /// How many slabs the pool will still hand out. Drains with tryAcquire rather
+  /// than a bulk acquire so a test asserting "nothing was stranded" reports the
+  /// shortfall instead of waiting for slabs that are never coming back.
+  static size_t freeSlabs(TcpPinnedSlabPool& pool) {
+    std::vector<TcpPinnedSlab> held;
+    while (auto slab = pool.tryAcquire(/*allowReserved=*/true)) {
+      held.push_back(std::move(slab));
+    }
+    return held.size();
   }
 
   /// Builds a header-only frame in `slab`, so a queued frame can be traced back
@@ -393,8 +765,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// reqIds of the frames currently queued, in queue order.
   std::vector<uint64_t> queuedReqIds() {
     std::vector<uint64_t> ids;
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    for (const auto& item : transport_->outQueue_) {
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    for (const auto& item : lane0().queue) {
       auto header = deserializeTcpHeader(item.frame.bytes());
       ids.push_back(header.hasValue() ? header.value().reqId : 0);
     }
@@ -428,8 +800,66 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   size_t outQueueDepth() {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    return transport_->outQueue_.size();
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    return lane0().queue.size();
+  }
+
+  /// Replaces the lane vector with `count` empty lanes. The other helpers here
+  /// assume lane 0 is the whole queue, which is true single-lane; striping is
+  /// the one behaviour that cannot be observed that way.
+  void setLaneCount(size_t count) {
+    transport_->lanes_.clear();
+    for (size_t i = 0; i < count; ++i) {
+      transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
+    }
+  }
+
+  /// Queue depth of every lane, in lane order.
+  std::vector<size_t> perLaneDepth() {
+    std::vector<size_t> depths;
+    depths.reserve(transport_->lanes_.size());
+    for (auto& lane : transport_->lanes_) {
+      std::lock_guard<std::mutex> lk(lane->mu);
+      depths.push_back(lane->queue.size());
+    }
+    return depths;
+  }
+
+  /// The frame size at or above which a multi-frame group is striped. Exposed
+  /// as a function because TEST_F bodies are subclasses of this fixture rather
+  /// than the friend, so they cannot name TcpTransport's private constants.
+  static constexpr size_t stripeThreshold() {
+    return TcpTransport::kMinStripeFrameBytes;
+  }
+
+  /// Clears one lane, as shutdown() can.
+  void clearLane(size_t index) {
+    transport_->lanes_[index].reset();
+  }
+
+  /// Frames queued across every surviving lane.
+  size_t totalQueuedAcrossLanes() {
+    size_t queued = 0;
+    for (auto& lane : transport_->lanes_) {
+      if (lane == nullptr) {
+        continue;
+      }
+      std::lock_guard<std::mutex> lk(lane->mu);
+      queued += lane->queue.size();
+    }
+    return queued;
+  }
+
+  /// A frame of `bytes` total, carrying a real header so it can be identified,
+  /// padded to size. Striping keys off frame size, so the tests that exercise
+  /// it need frames above kMinStripeFrameBytes rather than bare headers.
+  static TcpFrame paddedFrame(uint64_t reqId, size_t bytes) {
+    TcpMsgHeader header;
+    header.op = static_cast<uint8_t>(TcpOp::Write);
+    header.reqId = reqId;
+    auto buf = serializeTcpHeader(header);
+    buf.resize(std::max(bytes, buf.size()));
+    return TcpFrame(std::move(buf));
   }
 
   /// send()/recv() are gated on the Connected state; these tests drive the
@@ -453,7 +883,24 @@ class TcpTransportFrameTest : public ::testing::Test {
   std::vector<std::byte> pristine_;
   FailingConn* failingConn_{nullptr};
   static constexpr size_t kTestSlabSize = 256;
-  std::vector<uint8_t> slabRegion_;
+  std::atomic<bool> copyDone_{false};
+  std::atomic<int> syncCount_{0};
+  std::atomic<int> eventSyncCount_{0};
+  std::atomic<int> currentDevice_{0};
+  std::atomic<bool> failEventSync_{false};
+  /// Storage a fake cudaEvent_t can point at, so the handle the stubs hand out
+  /// is non-null without inventing an address.
+  uint8_t fakeEvent_{0};
+  std::mutex copyMu_;
+  std::vector<const void*> copyDsts_;
+  std::mutex allocMu_;
+  std::vector<std::pair<std::unique_ptr<uint8_t[]>, size_t>> hostAllocs_;
+  std::mutex syncMu_;
+  std::condition_variable syncReleased_;
+  std::vector<int> eventSyncDevices_;
+  std::vector<const void*> streamSyncStreams_;
+  bool syncsGated_{false};
+  size_t failCopyAt_{0};
 };
 
 TEST_F(TcpTransportFrameTest, WriteToUnknownSegIdIsRejected) {
@@ -505,12 +952,158 @@ TEST_F(TcpTransportFrameTest, InBoundsWriteIsApplied) {
   EXPECT_FALSE(queuedErrorFrame());
 }
 
-// A READ_REPLY copies its payload into the caller's get() destination after
-// dropping inflightMu_. Resolving the op's future is what releases the caller
-// to free that destination, so the copy and the resolution must be one atomic
-// step. failAllPending() (send error, peer disconnect, shutdown) can resolve
-// the op mid-copy via a *sibling* chunk of the same multi-chunk get(), which
-// shares the op state -- a silent write-after-free.
+TEST(TcpOpStateTest, FailureWaitsForReservedWriteToRetire) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.fail(Err(ErrCode::ConnectionFailed, "test failure"));
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.endWrite(Ok());
+  ASSERT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ConnectionFailed);
+}
+
+TEST(TcpOpStateTest, SuccessfulReservedWritesCompleteTheOperation) {
+  TcpOpState state;
+  state.remaining = 2;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.endWrite(Ok());
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.endWrite(Ok());
+  EXPECT_FALSE(future.get().hasError());
+  EXPECT_FALSE(state.tryBeginWrite());
+}
+
+TEST(TcpOpStateTest, ReservedWriteFailureWinsAndResolvesExactlyOnce) {
+  TcpOpState state;
+  state.remaining = 2;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.endWrite(Err(ErrCode::DriverError, "copy failed"));
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.fail(Err(ErrCode::ConnectionFailed, "later failure"));
+  state.endWrite(Ok());
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
+TEST(TcpOpStateTest, WriteReservationIsRefusedAfterFailure) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  state.fail(Err(ErrCode::ConnectionFailed, "test failure"));
+  EXPECT_FALSE(state.tryBeginWrite());
+  EXPECT_TRUE(future.get().hasError());
+}
+
+TEST(TcpOpStateTest, ThrowingSynchronousWriteRetiresItsReservation) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  EXPECT_THROW(
+      state.writeAndComplete(
+          []() -> Status { throw std::runtime_error("test exception"); }),
+      std::runtime_error);
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::TransportError);
+  EXPECT_FALSE(state.tryBeginWrite());
+}
+
+TEST_F(TcpTransportFrameTest, AsyncReadReplyFailureWaitsForEventRetirement) {
+  constexpr size_t kLen = 64;
+  std::vector<uint8_t> dst(kLen, 0);
+  auto* const callerStream = reinterpret_cast<void*>(0xCA11);
+  // Chunk 2 remains in inflight_ so failAllPending() can latch an error while
+  // chunk 1's asynchronous destination write is still reserved.
+  auto future = postReadChunks(dst.data(), kLen, /*chunks=*/2, callerStream);
+
+  auto pool = receivePool();
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(slab);
+  auto frame = makeFrame(TcpOp::ReadReply, kSegId, /*offset=*/0, kLen, kLen);
+  ASSERT_LE(frame.size(), slab.capacity());
+  std::memcpy(slab.data(), frame.data(), frame.size());
+  const auto bytes = std::span<const uint8_t>{slab.data(), frame.size()};
+
+  std::atomic<bool> copyDone{false};
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          dst.data(),
+          ::testing::_,
+          kLen,
+          kMockMemcpyH2D,
+          static_cast<MockStream>(callerStream)))
+      .WillOnce([&](void* d, const void* s, size_t n, auto, auto) -> Status {
+        std::memcpy(d, s, n);
+        return Ok();
+      });
+  EXPECT_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillOnce([](auto* event) -> Status {
+        *event = {};
+        return Ok();
+      });
+  EXPECT_CALL(
+      *cudaApi_,
+      eventRecord(::testing::_, static_cast<MockStream>(callerStream)))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventQuery(::testing::_))
+      .WillRepeatedly([&](auto) -> Result<bool> {
+        return copyDone.load(std::memory_order_acquire);
+      });
+  EXPECT_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, streamSynchronize(::testing::_)).Times(0);
+
+  feed(bytes, std::move(slab));
+  auto onlyFreeSlab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(onlyFreeSlab);
+  failAllPending();
+
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(100)),
+      std::future_status::timeout)
+      << "the failure must remain latched until the async destination write "
+         "retires";
+  EXPECT_FALSE(pool->tryAcquire(/*allowReserved=*/true));
+
+  copyDone.store(true, std::memory_order_release);
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError());
+  EXPECT_EQ(dst, std::vector<uint8_t>(kLen, uint8_t{0xCD}));
+}
+
+// A vector-backed READ_REPLY still copies synchronously. Resolving the op's
+// future is what releases the caller to free its destination, so that fallback
+// copy and completion remain one atomic lifetime reservation.
 TEST_F(TcpTransportFrameTest, ReadReplyCopyKeepsTheGetUnresolvedWhileItRuns) {
   constexpr size_t kLen = 64;
   std::vector<uint8_t> dst(kLen, 0);
@@ -726,6 +1319,122 @@ TEST_F(TcpTransportFrameTest, AdmissionIsRefusedOnceTeardownHasSwept) {
       << "admitInflight must not resolve the promise itself";
 }
 
+// The three admission points must agree about connBroken_. admitInflight() and
+// recvImpl() re-test it under their container mutex; the enqueue paths listed
+// it only in the wait predicate, as a wake condition, and then checked
+// outClosed alone. failAllPending() does not set outClosed -- the only writer
+// is the dead sender -- so after a sweep that leaves the connection open
+// (handleFrame's exception containment does exactly that: it stops the reader
+// without closing) a frame admitted before the sweep still lands in the
+// just-cleared queue and the live sender transmits it.
+//
+// For put that means a Write applied to the peer's segment for an operation the
+// caller was already told had failed, which is the partial-write-nobody-knows
+// -about case put()'s pre-flight exists to prevent.
+TEST_F(TcpTransportFrameTest, EnqueueIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  EXPECT_FALSE(enqueueFrame(makeFrame(
+      TcpOp::Write, kSegId, /*offset=*/0, /*len=*/8, /*payloadBytes=*/8)))
+      << "a frame queued after the sweep is transmitted for a failed op";
+  EXPECT_EQ(outQueueDepth(), 0u) << "no frame may remain queued after a sweep";
+}
+
+TEST_F(TcpTransportFrameTest, EnqueueFramesIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  std::vector<TcpFrame> group;
+  group.emplace_back(makeFrame(
+      TcpOp::Write, kSegId, /*offset=*/0, /*len=*/8, /*payloadBytes=*/8));
+
+  EXPECT_FALSE(enqueueFrames(std::move(group), /*mayBlock=*/false))
+      << "a staged wave queued after the sweep is transmitted for a failed op";
+  EXPECT_EQ(outQueueDepth(), 0u);
+}
+
+// send() owns a promise, so refusal has to fail it rather than drop the frame.
+// Reporting success here says a send completed on a transport that has failed
+// everything else and stopped reading.
+TEST_F(TcpTransportFrameTest, SendFrameIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+
+  enqueueSendFrame(
+      makeFrame(TcpOp::Send, kSegId, /*offset=*/0, /*len=*/8, 8), state);
+
+  EXPECT_EQ(outQueueDepth(), 0u) << "the send frame must not be queued";
+  ASSERT_EQ(future.wait_for(std::chrono::seconds{5}), std::future_status::ready)
+      << "a refused send must fail its promise, not leave the caller waiting";
+  EXPECT_TRUE(future.get().hasError())
+      << "send must not report success on a failed connection";
+}
+
+// Ack answers a Write, ReadReply answers a ReadRequest, and reqIds are unique
+// per chunk, so a same-version peer never crosses them. The ReadReply direction
+// was already rejected; the Ack direction was not, and it failed silently
+// rather than loudly: the get chunk resolved Ok with its destination never
+// written, so the caller read back whatever the buffer held before. Every other
+// peer-supplied dimension on this path -- segId, offset, len, payload size --
+// is checked, and all of those fail with an error.
+//
+// Version-skew or a hostile peer only, which is the same bar as
+// OversizedReadRequestIsRefusedPerRequest.
+TEST_F(TcpTransportFrameTest, AckOnAReadRequestIsRejected) {
+  setConnected();
+
+  // A destination pre-filled with a known pattern, so "never written" is
+  // detectable rather than merely assumed.
+  std::vector<uint8_t> dst(kAckDstLen, uint8_t{0x11});
+  const std::vector<uint8_t> pristineDst = dst;
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+  ASSERT_FALSE(admitInflight(
+                   /*reqId=*/1,
+                   TcpInflight{state, dst.data(), kAckDstLen, /*isRead=*/true})
+                   .hasError());
+
+  feed(makeFrame(
+      TcpOp::Ack, kSegId, /*offset=*/0, /*len=*/0, /*payloadBytes=*/0));
+
+  ASSERT_EQ(future.wait_for(std::chrono::seconds{5}), std::future_status::ready)
+      << "the op must be resolved rather than left outstanding";
+  EXPECT_TRUE(future.get().hasError())
+      << "an Ack cannot complete a get: the destination was never written";
+  EXPECT_EQ(dst, pristineDst) << "the destination buffer must be untouched";
+  EXPECT_EQ(inflightCount(), 0u)
+      << "a rejected reply must not leave its admission slot held";
+}
+
+// The mirror direction, already guarded before this change. Kept as a pair so a
+// future edit cannot close one direction and reopen the other.
+TEST_F(TcpTransportFrameTest, ReadReplyOnAWriteIsRejected) {
+  setConnected();
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+  ASSERT_FALSE(admitInflight(
+                   /*reqId=*/1,
+                   TcpInflight{state, nullptr, kAckDstLen, /*isRead=*/false})
+                   .hasError());
+
+  feed(makeFrame(
+      TcpOp::ReadReply, kSegId, /*offset=*/0, kAckDstLen, kAckDstLen));
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "a ReadReply cannot complete a put";
+  EXPECT_EQ(inflightCount(), 0u);
+}
+
 TEST_F(TcpTransportFrameTest, AdmissionSucceedsOnAHealthyTransport) {
   setConnected();
 
@@ -839,11 +1548,16 @@ TEST_F(TcpTransportFrameTest, OversizedReadRequestIsRefusedPerRequest) {
 // reader thread, so the reader stopped draining the socket for the length of an
 // application GPU step. That re-arms the mutual-READ deadlock the reader/sender
 // split exists to prevent, and the registry lease held across the copy stalled
-// any concurrent erase() for just as long. The copy is staged instead: the
-// reader posts it and returns to the socket, and the EventBase queues the reply
-// once the copy signals.
+// any concurrent erase() for just as long.
+//
+// The copy is staged instead: issued into a pinned slab and left to run, with
+// the reply queued by the EventBase once it signals. Pinned matters -- the same
+// copy into a frame's vector storage is pageable, which CUDA specifies as
+// completing synchronously, so the reader would still be parked for the whole
+// transfer while looking asynchronous.
 TEST_F(TcpTransportFrameTest, AStagedVramReadReplyDoesNotBlockTheReader) {
   setConnected();
+  stubStagingCopies();
 
   constexpr uint64_t kVramSegId = kSegId + 200;
   constexpr size_t kLen = 64;
@@ -851,35 +1565,20 @@ TEST_F(TcpTransportFrameTest, AStagedVramReadReplyDoesNotBlockTheReader) {
   registry_->add(
       kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
 
-  std::atomic<bool> copyDone{false};
-  ON_CALL(
-      *cudaApi_,
-      memcpyAsync(
-          ::testing::_, ::testing::_, ::testing::_, ::testing::_, ::testing::_))
-      .WillByDefault(::testing::Return(Ok()));
-  ON_CALL(*cudaApi_, eventCreate(::testing::_))
-      .WillByDefault([](auto* event) -> Status {
-        // Spelled with auto because this TU is not hipified: cudaEvent_t is
-        // ihipEvent_t* here, and naming it does not compile under ROCm.
-        *event = {};
-        return Ok();
-      });
-  ON_CALL(*cudaApi_, eventRecord(::testing::_, ::testing::_))
-      .WillByDefault(::testing::Return(Ok()));
-  ON_CALL(*cudaApi_, eventDestroy(::testing::_))
-      .WillByDefault(::testing::Return(Ok()));
-  // The copy stays unfinished until the test releases it.
-  ON_CALL(*cudaApi_, eventQuery(::testing::_))
-      .WillByDefault([&](auto) -> Result<bool> {
-        return Result<bool>(copyDone.load(std::memory_order_acquire));
-      });
-
   feed(makeFrame(
       TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
 
   EXPECT_EQ(outQueueDepth(), 0u)
       << "a reply whose payload is still being copied must not be queued; the "
          "peer would receive an unfilled buffer";
+  EXPECT_EQ(stagedCopyCount(), 1u);
+  EXPECT_TRUE(allCopiesLandedInPinnedMemory())
+      << "the copy went somewhere other than a pinned slab; a device-to-host "
+         "copy into pageable memory blocks the thread that issues it, so the "
+         "reader is parked for the whole transfer";
+  EXPECT_EQ(syncCount(), 0)
+      << "the reader must not synchronize: waiting on the device is exactly "
+         "what staging exists to avoid";
 
   // The reader is not parked, so a request arriving behind the staged one is
   // answered while that copy is still running.
@@ -889,15 +1588,303 @@ TEST_F(TcpTransportFrameTest, AStagedVramReadReplyDoesNotBlockTheReader) {
       << "the reader is blocked behind the VRAM copy: a request queued after it "
          "was not answered until the device finished";
 
-  copyDone.store(true, std::memory_order_release);
+  releaseStagingCopies();
 
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (outQueueDepth() < 2u && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::yield();
-  }
-  EXPECT_EQ(outQueueDepth(), 2u)
+  EXPECT_TRUE(waitFor([this]() { return outQueueDepth() >= 2u; }))
       << "the staged reply must be queued once its copy signals";
+  EXPECT_EQ(outQueueDepth(), 2u);
+}
+
+// The pool is finite, so a read can arrive with nothing to stage into. It is
+// recorded and answered later rather than waited on: waiting is the
+// head-of-line block the whole staging path exists to remove, and it would be
+// worse here because the thread that frees the next slab is the sender, which
+// the reader would be holding up.
+TEST_F(TcpTransportFrameTest, AVramReadWithNoFreeSlabIsDeferredNotBlocked) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 210;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x33});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  // Every slab, the reserved one included: nothing is left for the responder.
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+    ASSERT_TRUE(static_cast<bool>(held.back()));
+  }
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  EXPECT_EQ(deferredReplyCount(), 1u)
+      << "the read must be recorded for later, not dropped: the peer is "
+         "blocked waiting for this reply";
+  EXPECT_EQ(stagedCopyCount(), 0u)
+      << "no slab was free, so no copy may have been issued -- a fallback into "
+         "pageable memory would block the reader, which is the bug this path "
+         "exists to avoid";
+  EXPECT_EQ(syncCount(), 0)
+      << "the reader must not wait on the device to make room";
+
+  // And the reader is still serving: a DRAM read behind the deferred one is
+  // answered immediately.
+  feed(makeFrame(
+      TcpOp::ReadRequest, kSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+  EXPECT_EQ(outQueueDepth(), 1u)
+      << "a deferred VRAM read must not hold up unrelated requests";
+}
+
+// A deferral must be refused once the connection is swept. failAllPending()
+// empties the deferred queue exactly so a lease is not pinned for the lifetime
+// of the transport; a read that lands afterwards and is deferred anyway puts
+// one straight back, and nothing drains it again until teardown. Written with
+// the pool exhausted so the read has no choice but the deferral path, which is
+// the only way to reach the check.
+TEST_F(TcpTransportFrameTest, ADeferralIsRefusedOnceTheConnectionIsSwept) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 230;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x44});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+    ASSERT_TRUE(static_cast<bool>(held.back()));
+  }
+
+  failAllPending();
+  ASSERT_EQ(deferredReplyCount(), 0u)
+      << "precondition: the sweep left the deferred queue empty";
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  EXPECT_EQ(deferredReplyCount(), 0u)
+      << "a deferral after the sweep pins its segment lease until the transport "
+         "is destroyed, which is what the sweep clears the queue to avoid";
+  EXPECT_EQ(stagedCopyCount(), 0u)
+      << "nothing may be staged for a read on a broken connection";
+}
+
+// The other half of deferral: a slab coming back has to actually restart the
+// deferred read. The release that matters is the sender's, after the frame it
+// was transmitting is gone, so this drives it through senderLoop rather than
+// releasing a slab by hand.
+TEST_F(TcpTransportFrameTest, AReleasedSlabStartsTheDeferredRead) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 220;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x55});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  // All but one slab held, so the first read takes the last one and the second
+  // has nowhere to go.
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i + 1 < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+    ASSERT_TRUE(static_cast<bool>(held.back()));
+  }
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+  ASSERT_EQ(stagedCopyCount(), 1u);
+  ASSERT_EQ(deferredReplyCount(), 1u);
+
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  // The first copy signals, its reply is queued and sent, and only then is its
+  // slab free for the deferred read.
+  releaseStagingCopies();
+  EXPECT_TRUE(waitFor([&]() { return conn.sendCount() >= 2; }))
+      << "the deferred read was never started, so its reply never went out: a "
+         "slab returning to the pool must wake it";
+  EXPECT_EQ(deferredReplyCount(), 0u);
+  EXPECT_EQ(stagedCopyCount(), 2u);
+  EXPECT_TRUE(allCopiesLandedInPinnedMemory());
+
+  closeOutQueue();
+  sender.join();
+}
+
+// A deferred read holds its lease with no copy yet issued, and that lease has
+// to keep blocking deregistration: the copy will read that buffer, just later.
+// Releasing the lease at deferral time and re-finding the segment later would
+// mean answering a read out of memory the owner had already freed.
+TEST_F(TcpTransportFrameTest, ADeferredReadStillBlocksDeregistration) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 230;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x66});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+  }
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+  ASSERT_EQ(deferredReplyCount(), 1u);
+
+  std::atomic<bool> erased{false};
+  std::thread eraser([&]() {
+    registry_->erase(kVramSegId);
+    erased.store(true, std::memory_order_release);
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  EXPECT_FALSE(erased.load(std::memory_order_acquire))
+      << "erase() returned while a deferred read still held a lease: the owner "
+         "is now free to free a buffer this transport will still copy out of";
+
+  // Teardown discards what is deferred, which releases the lease.
+  transport_->shutdown();
+  eraser.join();
+  EXPECT_TRUE(erased.load(std::memory_order_acquire));
+  EXPECT_EQ(stagedCopyCount(), 0u)
+      << "a discarded deferred read must not have started a copy into memory "
+         "that is being torn down";
+}
+
+// A thread parked in the staging pool's blocking acquire() must be released by
+// shutdown(). acquire() waits on `freed_` with no deadline and `closed_` as its
+// only escape, and it runs on the application's own put() thread -- which
+// shutdown() never joins and nothing else wakes. Before shutdown() closed this
+// pool, a put() in flight across teardown parked forever, because the sender
+// that would have returned a staging slab was joined away first.
+//
+// Written against the pool directly rather than through put(): reaching the
+// blocking acquire() through put() needs a live peer and a full wave, and the
+// property under test belongs to shutdown()'s ordering, not to the put path.
+TEST_F(TcpTransportFrameTest, ShutdownReleasesAThreadParkedInStagingAcquire) {
+  setConnected();
+  stubStagingCopies();
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+
+  // Hold every slab so the acquire below cannot be satisfied.
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+    ASSERT_TRUE(static_cast<bool>(held.back()));
+  }
+
+  std::atomic<bool> returned{false};
+  std::thread parked([&]() {
+    // Blocks: nothing is free, and this test never releases `held`.
+    auto leases = pool->acquire(1);
+    // Either outcome is fine; the point is that it *returns*.
+    (void)leases;
+    returned.store(true, std::memory_order_release);
+  });
+
+  // Give it time to reach the wait rather than racing the assertion below.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_FALSE(returned.load(std::memory_order_acquire))
+      << "precondition: the acquire must actually be parked";
+
+  transport_->shutdown();
+  parked.join();
+  EXPECT_TRUE(returned.load(std::memory_order_acquire))
+      << "shutdown() must close the staging pool; otherwise a put() in flight "
+         "across teardown never comes back";
+}
+
+// A read the pool cannot serve and the deferred queue cannot hold is answered
+// with an Error rather than dropped or blocked on. Dropping it leaves the peer
+// waiting forever; blocking stops the reader; failing the connection punishes
+// every unrelated transfer on it.
+TEST_F(TcpTransportFrameTest, DeferredQueueOverflowFailsOnlyThatRequest) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 240;
+  constexpr size_t kLen = 64;
+  std::vector<std::byte> vram(kLen, std::byte{0x11});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+  }
+  fillDeferredReplies(deferredCap());
+
+  feed(makeFrame(
+      TcpOp::ReadRequest, kVramSegId, /*offset=*/0, kLen, /*payloadBytes=*/0));
+
+  EXPECT_FALSE(connClosed())
+      << "one unservable read must not take the connection down";
+  EXPECT_TRUE(queuedErrorFrame())
+      << "the peer must be told this read failed; silence leaves it waiting for "
+         "a reply that will never come";
+  EXPECT_EQ(deferredReplyCount(), deferredCap())
+      << "the refused read must not have been queued anyway";
+}
+
+// A VRAM read larger than a staging slab cannot be served at all: our own get()
+// chunks at kMaxChunkSize, so this is the version-skew case, and it has to be a
+// per-request error rather than a fatal one for the same reason the wire-frame
+// cap is.
+TEST_F(TcpTransportFrameTest, AVramReadLargerThanASlabIsRefusedPerRequest) {
+  setConnected();
+  stubStagingCopies();
+
+  constexpr uint64_t kVramSegId = kSegId + 250;
+  const size_t oversized = slabPayloadCap() + 1;
+  // Registered, but never read from: the request is refused before any copy.
+  std::vector<std::byte> vram(1, std::byte{0x99});
+  registry_->add(
+      kVramSegId, vram.data(), oversized, MemoryType::VRAM, /*deviceId=*/0);
+
+  feed(makeFrame(
+      TcpOp::ReadRequest,
+      kVramSegId,
+      /*offset=*/0,
+      oversized,
+      /*payloadBytes=*/0));
+
+  EXPECT_FALSE(connClosed())
+      << "an oversized read must not be fatal to the connection";
+  EXPECT_TRUE(queuedErrorFrame()) << "the peer must be told this read failed";
+  EXPECT_EQ(stagedCopyCount(), 0u)
+      << "nothing may be copied for a read that cannot fit a slab";
+  EXPECT_EQ(deferredReplyCount(), 0u)
+      << "an unservable read must be refused, not deferred forever";
 }
 
 // The copy is issued before the event exists, so any failure after that point
@@ -1239,6 +2226,79 @@ TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesTheWholeGroupInOrder) {
       << "every frame in the group must be accounted against the queue cap";
 }
 
+// A wave large enough to be worth parallelising is spread across lanes instead
+// of piling onto one. Without this, one sender pushes the whole ~28 MiB wave
+// through a single socket while the other lanes have nothing to do, and the
+// group's completion is bounded by one socket's rate.
+TEST_F(TcpTransportFrameTest, ALargeGroupIsStripedAcrossLanes) {
+  setConnected();
+  setLaneCount(4);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 51; reqId <= 54; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_THAT(perLaneDepth(), ::testing::ElementsAre(1u, 1u, 1u, 1u))
+      << "four frames over four lanes must be one each, not four on one lane";
+}
+
+// Small frames keep the old behaviour. Waking a second sender costs more than a
+// parallel socket returns when there is little to send, which is why striping
+// is gated on frame size rather than applied to every group.
+TEST_F(TcpTransportFrameTest, ASmallGroupStaysOnOneLane) {
+  setConnected();
+  setLaneCount(4);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 61; reqId <= 64; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold() / 4));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  const auto depths = perLaneDepth();
+  const size_t used = std::count_if(
+      depths.begin(), depths.end(), [](size_t d) { return d > 0; });
+  EXPECT_EQ(used, 1u) << "a group below the stripe threshold must not be split";
+  EXPECT_EQ(std::accumulate(depths.begin(), depths.end(), size_t{0}), 4u)
+      << "and all four frames must still be queued";
+}
+
+// Striping must survive a lane vector with holes: shutdown() can clear entries,
+// and indexing one would be undefined. The unstriped path only avoids this by
+// taking whatever pickLane() returns.
+TEST_F(TcpTransportFrameTest, StripingSkipsClearedLanes) {
+  setConnected();
+  setLaneCount(4);
+  clearLane(1);
+  clearLane(3);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 71; reqId <= 74; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_EQ(totalQueuedAcrossLanes(), 4u)
+      << "every frame must land on one of the surviving lanes";
+}
+
+// Single-lane transports have nowhere to stripe to, and must not regress into
+// splitting a group they cannot spread.
+TEST_F(TcpTransportFrameTest, ASingleLaneTakesTheWholeGroupInOrder) {
+  setConnected();
+  setLaneCount(1);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 81; reqId <= 83; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_THAT(queuedReqIds(), ::testing::ElementsAre(81u, 82u, 83u));
+}
+
 // A closed queue must take none of the group. Half a wave queued and half
 // refused is the partial write the batch enqueue exists to prevent.
 TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesNothingWhenTheQueueIsClosed) {
@@ -1261,6 +2321,349 @@ TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesNothingWhenTheQueueIsClosed) {
   auto reclaimed = pool->acquire(2);
   EXPECT_TRUE(reclaimed.hasValue())
       << "a refused group must not strand the slabs it was built in";
+}
+
+// A put stages every chunk of a wave and only then queues them, so a staging
+// failure partway through leaves the peer untouched instead of holding the
+// chunks that happened to copy first. Before this the commit loop queued each
+// chunk as its own copy finished, and the sender could already have flushed
+// them: the caller was told the put failed while some of it had landed, at
+// offsets nobody could name.
+//
+// This is the whole-wave case, which is what nearly every put is.
+TEST_F(TcpTransportFrameTest, AFullWaveReachesTheQueueOnlyOnceEveryCopyIsDone) {
+  setConnected();
+  stubStagingCopies();
+  gateStagingWaits();
+
+  const size_t chunks = waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  std::thread putter([&]() { (void)put(transfer.requests()); });
+
+  // Every copy in the wave is in flight...
+  EXPECT_TRUE(waitFor([&]() { return stagedCopyCount() == chunks; }))
+      << "the wave must issue all of its copies before waiting on any of them; "
+         "waiting per chunk is what serialised staging against itself";
+  // ...and nothing is queued, because none of them has finished.
+  EXPECT_EQ(outQueueDepth(), 0u)
+      << "a Write reached the queue before its wave had finished staging; the "
+         "sender may already have put a partial transfer on the wire";
+  EXPECT_TRUE(allCopiesLandedInPinnedMemory());
+
+  releaseStagingWaits();
+
+  EXPECT_TRUE(waitFor([&]() { return outQueueDepth() == chunks; }))
+      << "the whole wave must be queued once its copies are done";
+  auto ids = queuedReqIds();
+  ASSERT_EQ(ids.size(), chunks);
+  EXPECT_TRUE(std::is_sorted(ids.begin(), ids.end()))
+      << "the wave must keep the caller's chunk order";
+  putter.join();
+}
+
+// A staging failure inside a wave must queue nothing at all, and must not hand
+// a slab back while the GPU is still writing into it. Copies already launched
+// keep running after a later one fails; a slab released underneath one of them
+// goes straight to the next staging copy, and the two then race over the same
+// bytes.
+TEST_F(TcpTransportFrameTest, AFailedWaveQueuesNothingAndDrainsWhatItLaunched) {
+  setConnected();
+  stubStagingCopies();
+  failCopyAfter(2);
+
+  const size_t chunks = waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  auto future = put(transfer.requests());
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "the caller must be told it failed";
+  EXPECT_EQ(outQueueDepth(), 0u)
+      << "a wave that failed to stage must queue nothing; anything queued is a "
+         "partial write the peer will apply and nobody will hear about";
+  EXPECT_GE(syncCount(), 1)
+      << "the copies that were launched must be waited for before their slabs "
+         "go back to the pool, or the next staging copy writes into a buffer "
+         "the GPU is still filling";
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  EXPECT_EQ(freeSlabs(*pool), pool->slabCount())
+      << "a failed wave must strand none of its slabs, and must leave none of "
+         "them held by a frame it queued";
+}
+
+// A put spanning three or more waves must complete. The window put() keeps is
+// two waves deep, and each wave holds half the usable staging pool, so wave
+// three's all-or-nothing acquire cannot be satisfied while two waves are still
+// held. Draining after launching parks the caller in acquire() waiting for
+// slabs only it can release -- the frames holding them are sitting unqueued in
+// its own deque -- so any put of three waves hangs forever. Draining before
+// launching leaves at most one wave held, and the sender frees the rest.
+TEST_F(TcpTransportFrameTest, APutOfThreeWavesCompletes) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  const size_t chunks = 3 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  // The future stays open -- nothing Acks these writes -- so the frames
+  // reaching the connection are what says the put got all the way through.
+  auto future = put(transfer.requests());
+
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<size_t>(conn.sendCount()) == chunks;
+  })) << "a put deeper than the in-flight window must still finish; holding "
+         "every launched wave while acquiring the next one deadlocks here";
+
+  closeOutQueue();
+  sender.join();
+}
+
+// One event per wave is only correct while a wave stays on one device, so the
+// wave-forming scan has to break at a device boundary. Without that break a put
+// carrying chunks on two devices records its single event on the first chunk's
+// device, leaves the other device's copies unwaited, and returns their slabs to
+// the pool with a DMA still writing into them.
+TEST_F(TcpTransportFrameTest, AWaveNeverSpansDevices) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+
+  // One chunk each, so a wave that ignored the device boundary would hold both.
+  VramPut onDevice0(slabPayloadCap(), /*deviceId=*/0);
+  VramPut onDevice1(slabPayloadCap(), /*deviceId=*/1);
+  const std::vector<TransferRequest> requests{
+      onDevice0.request(), onDevice1.request()};
+
+  auto future = put(requests);
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::timeout)
+      << "the put is queued but unacked, so it must not resolve yet";
+
+  EXPECT_EQ(outQueueDepth(), 2u) << "both chunks must be queued";
+  const std::vector<int> expected{0, 1};
+  EXPECT_EQ(eventSyncDevices(), expected)
+      << "the two devices' copies must be waited for as two waves, each under "
+         "its own device; one wave here means one device's copies were never "
+         "waited for and its slab went back to the pool under a live DMA";
+}
+
+// The property the split exists for. Wave N+1's copies must already be issued
+// while wave N is still being waited for -- that is the overlap, and it is what
+// keeps the copy engine busy through the gap where a wave is queued and sent.
+// A throughput number alone cannot say whether this happened.
+TEST_F(
+    TcpTransportFrameTest,
+    TheNextWavesCopiesAreIssuedBeforeThisWaveIsWaited) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  // Hold the first wave's wait open, so the state at that instant is
+  // observable. Without this the window closes too fast to assert anything.
+  gateStagingWaits();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  const size_t chunks = 3 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  std::thread putter([&]() { (void)put(transfer.requests()); });
+
+  ASSERT_TRUE(waitFor([&]() { return eventSyncCount() >= 1; }))
+      << "the first wave must be waited for once the window is full";
+  EXPECT_GE(stagedCopyCount(), wavesInFlight() * waveCap())
+      << "only the first wave's copies were issued before it was waited for, "
+         "so the copy engine sits idle for the whole queue-and-transmit gap -- "
+         "which is the serialised behaviour this change replaces";
+
+  releaseStagingWaits();
+  EXPECT_TRUE(waitFor(
+      [&]() { return static_cast<size_t>(conn.sendCount()) == chunks; }));
+
+  putter.join();
+  closeOutQueue();
+  sender.join();
+}
+
+// Waiting on the stream would wait for every wave queued on it, including the
+// ones deliberately launched to run in the background, which is exactly the
+// overlap this change creates. The success path must therefore wait on the
+// wave's own event and nothing else.
+TEST_F(TcpTransportFrameTest, ASuccessfulPutNeverSynchronizesTheStream) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  EXPECT_CALL(*cudaApi_, streamSynchronize(::testing::_)).Times(0);
+
+  const size_t chunks = 2 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  auto future = put(transfer.requests());
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::timeout)
+      << "the put is queued but unacked, so it must not resolve yet";
+
+  EXPECT_EQ(outQueueDepth(), chunks) << "every chunk must be queued";
+  EXPECT_GE(eventSyncCount(), 2) << "each wave must be waited for on its event";
+}
+
+// When the per-wave event wait fails there is nothing left that covers the
+// copies, so the retire path falls back to quiescing the stream. It has to be
+// the stream the copies were launched on: the null stream does not cover a
+// caller-supplied one, so falling back to it would release slabs with the DMA
+// still running -- the very case the fallback exists to prevent.
+TEST_F(TcpTransportFrameTest, AnUnusableEventFallsBackToTheCallersStream) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  failEventSyncs();
+
+  // Never dereferenced: memcpyAsync and the waits are all stubbed, and the only
+  // thing under test is which handle the fallback wait is given.
+  // NOLINTNEXTLINE(performance-no-int-to-ptr)
+  void* callerStream = reinterpret_cast<void*>(0xF00D);
+  VramPut transfer(slabPayloadCap());
+  auto future = putOnStream(transfer.requests(), callerStream);
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError())
+      << "a wave whose copies could not be waited for must fail the put";
+  const std::vector<const void*> expected{callerStream};
+  EXPECT_EQ(streamSyncStreams(), expected)
+      << "the fallback must quiesce the caller's stream; synchronizing the "
+         "null stream leaves the caller's copies running over slabs that are "
+         "on their way back to the pool";
+}
+
+// A get no larger than one chunk is one frame, and a frame takes one lane, so
+// it leaves every other lane idle. These are the sizes where splitting pays,
+// and the ones where it does not.
+TEST_F(TcpTransportFrameTest, AdaptiveGetChunkSplitsOnlySingleFrameTransfers) {
+  constexpr size_t kLanes = 8;
+
+  // Above one chunk the transfer already spans lanes. Chunking it smaller
+  // measured worse, so it must be left alone.
+  EXPECT_EQ(getChunk(maxChunk() + 1, kLanes), maxChunk());
+  EXPECT_EQ(getChunk(64UL * 1024 * 1024, kLanes), maxChunk());
+
+  // One lane cannot benefit, and neither can a degenerate count.
+  EXPECT_EQ(getChunk(maxChunk(), 1), maxChunk());
+  EXPECT_EQ(getChunk(maxChunk(), 0), maxChunk());
+  EXPECT_EQ(getChunk(0, kLanes), maxChunk());
+
+  // The band that pays: split across the lanes, but never below the floor.
+  EXPECT_EQ(getChunk(maxChunk(), kLanes), maxChunk() / kLanes);
+  EXPECT_GE(getChunk(maxChunk(), kLanes), minAdaptiveChunk());
+  EXPECT_EQ(getChunk(2UL * 1024 * 1024, kLanes), minAdaptiveChunk());
+  EXPECT_EQ(getChunk(1UL * 1024 * 1024, kLanes), minAdaptiveChunk());
+
+  // Below the floor a split would cost more than the idle lane does, so the
+  // chunk stays at or above the whole transfer and it remains one frame.
+  for (size_t len : {size_t{1024}, size_t{64} * 1024, minAdaptiveChunk()}) {
+    EXPECT_GE(getChunk(len, kLanes), len) << "len=" << len;
+  }
+}
+
+// The frame count get() waits for is computed separately from the loop that
+// sends the requests. If those two ever derive a different chunk size the
+// operation waits for replies that will never come, so the arithmetic is pinned
+// here rather than left to review.
+TEST_F(TcpTransportFrameTest, AdaptiveGetChunkAgreesWithFrameCount) {
+  constexpr size_t kLanes = 8;
+  for (size_t len :
+       {size_t{1},
+        size_t{1024},
+        size_t{512} * 1024,
+        size_t{1024} * 1024,
+        size_t{2} * 1024 * 1024,
+        maxChunk(),
+        maxChunk() + 1,
+        size_t{100} * 1024 * 1024}) {
+    const size_t chunk = getChunk(len, kLanes);
+    ASSERT_GT(chunk, 0u) << "len=" << len;
+    const size_t counted = (len + chunk - 1) / chunk;
+
+    size_t sent = 0;
+    size_t off = 0;
+    do {
+      off += std::min(chunk, len - off);
+      ++sent;
+    } while (off < len);
+
+    EXPECT_EQ(counted, sent) << "len=" << len << " chunk=" << chunk;
+  }
+}
+
+// put() tells callers a failed put may have partially applied, and that what
+// applied is not a prefix. This is the test that makes that true rather than
+// merely written down: earlier waves reach the queue, a later one fails, and
+// the caller is told it failed while a peer that will apply those frames is
+// never told anything.
+//
+// The failure has to be in the third wave, not the second. put() keeps two
+// waves in flight, so wave N is only queued when wave N+2 is launched: failing
+// the second wave's first copy would find the first wave still unqueued and
+// drop it, and the put would not be partial at all.
+//
+// Deliberately not asserted: that the put parks. It used to, because a wave
+// sized to the whole pool left the next wave nothing to stage into, and a test
+// resting on that would go red purely from resizing the wave.
+TEST_F(
+    TcpTransportFrameTest,
+    AFailedPutAboveTheWaveWindowLeavesEarlierWavesQueued) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  // Succeed through the window, then fail the first copy of the wave after it.
+  failCopyAfter(wavesInFlight() * waveCap());
+
+  const size_t chunks = wavesInFlight() * waveCap() + 1;
+  VramPut transfer(chunks * slabPayloadCap());
+  auto future = put(transfer.requests());
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "the caller must be told it failed";
+  EXPECT_EQ(outQueueDepth(), waveCap())
+      << "the wave that had already been retired must still be queued: a "
+         "failed put is documented as possibly partial, and this is the case "
+         "that makes it so";
+  EXPECT_EQ(stagedCopyCount(), wavesInFlight() * waveCap() + 1)
+      << "the failure must be the copy after the window, not something earlier";
+}
+
+// A put long enough that both limits bind several times over: the pool refills
+// only as the sender drains, and the payload is well past the queue's byte cap.
+// Each can block a put and they depend on each other -- the wave waits for
+// slabs, the slabs wait for the sender, and the sender needs the queue mutex
+// the wave must therefore not be holding.
+//
+// The chunk count carries this test. Two waves used to strain a 64 MiB queue
+// because one wave was 60 MiB of it; a wave is now half the pool, so two waves
+// fit easily and the interlock would go untested while the test still passed.
+// Enough waves to recycle the pool is what keeps it honest.
+TEST_F(TcpTransportFrameTest, BackToBackWavesDrainWithoutDeadlock) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  const size_t chunks = 4 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  // The future stays open -- nothing Acks these writes -- so the frames
+  // reaching the connection are what says both waves got through.
+  auto future = put(transfer.requests());
+
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<size_t>(conn.sendCount()) == chunks;
+  })) << "both waves must make it out; a wave holding slabs while it waits for "
+         "queue room, or holding outMu_ while it waits for slabs, deadlocks here";
+
+  closeOutQueue();
+  sender.join();
 }
 
 // The registry's mutex protects the map, not the lifetime of the application

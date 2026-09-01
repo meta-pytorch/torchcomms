@@ -4,6 +4,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "comms/uniflow/benchmarks/Reporter.h"
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
 #include "comms/uniflow/logging/Logger.h"
 
 // ConnectionSetup/NVLink/NcclSendRecv benchmarks are NVIDIA-only (they depend
@@ -53,12 +55,31 @@ struct CliOptions {
   std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
   bool dataDirect{false};
+  bool noVerify{false};
+  bool tcpAsyncH2d{true};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
   int pipelineDepth{2};
   size_t slabSize{0};
   int slabNum{0};
   std::vector<std::string> rdmaDevices;
+  // Selects which local IPv6 address the TCP transport binds and advertises,
+  // and nothing else. Which NIC actually carries the bytes is a separate axis
+  // -- see --tcp-bind-dev below.
+  std::string tcpIface{"eth2"};
+  // Parallel TCP data sockets per bound device. Tracks the TcpTransportConfig
+  // default; the total is this times the device count, and 1 with no bound
+  // devices keeps the pre-lane wire format.
+  size_t tcpSocketsPerNic{4};
+  // Pin TCP egress to --tcp-iface via SO_BINDTODEVICE. Opt-in: without it
+  // --tcp-iface only selects a source address and routing chooses the NIC.
+  bool tcpBindDev{false};
+  // Devices to stripe TCP lanes across, e.g. "eth1,eth2". Overrides
+  // --tcp-bind-dev. Names are per-host, so the two hosts may need different
+  // lists for the same pair of physical ports.
+  std::string tcpBindDevs;
+  std::string barrierDir;
+  int barrierRanks{0};
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -74,6 +95,32 @@ std::vector<int> parseIntList(const std::string& s) {
     }
   }
   return result;
+}
+
+// --tcp-bind-devs wins over --tcp-bind-dev, which is just the single-device
+// shorthand for whatever --tcp-iface names. Empty means no device binding.
+//
+// --tcp-iface keeps selecting the source address either way, so when striping
+// it wants to name one of the bound devices: pointing it at an unbound NIC
+// advertises an address on a device carrying no lanes.
+std::vector<std::string> tcpBindDevList(const CliOptions& opts) {
+  std::vector<std::string> devices;
+  if (!opts.tcpBindDevs.empty()) {
+    std::istringstream iss(opts.tcpBindDevs);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+      if (!token.empty()) {
+        devices.push_back(token);
+      }
+    }
+    if (devices.empty()) {
+      std::cerr << "Invalid --tcp-bind-devs: '" << opts.tcpBindDevs << "'\n";
+      std::exit(1);
+    }
+  } else if (opts.tcpBindDev) {
+    devices.push_back(opts.tcpIface);
+  }
+  return devices;
 }
 
 std::vector<std::string> parseStringList(const std::string& s) {
@@ -122,21 +169,43 @@ void printUsage(const char* prog) {
       << "\n"
       << "Options:\n"
       << "  --benchmark <name>     Benchmark to run (default: all)\n"
-      << "  --transport <type>     Transport backend: nvlink|rdma (default: nvlink)\n"
+      << "  --transport <type>     Transport backend: nvlink|rdma|tcp (default: nvlink)\n"
       << "  --min-size <bytes>     Minimum message size (default: 1)\n"
       << "  --max-size <bytes>     Maximum message size (default: 1073741824)\n"
       << "  --iterations <n>       Iterations per size (default: 100)\n"
       << "  --warmup <n>           Warmup iterations (default: 10)\n"
       << "  --loop-count <n>       Transport calls per timed iteration (default: 1)\n"
       << "  --bidirectional        Both ranks transfer simultaneously (default: unidirectional)\n"
+      << "  --no-verify            Skip the pre-timing correctness sweep (tcp_bandwidth)\n"
       << "  --direction <dir>      put|get|both (default: both)\n"
       << "  --num-streams <list>   Comma-separated stream counts (default: 1,2,4,8)\n"
       << "  --output <path>        CSV output file path\n"
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
+      << "  --tcp-iface <name>     Interface whose address the TCP transport binds and\n"
+      << "                         advertises (default: eth2). Selects the source address\n"
+      << "                         only -- see --tcp-bind-dev to pin the egress NIC\n"
+      << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
+      << "  --tcp-sockets-per-nic <n>  Parallel TCP data sockets per bound device\n"
+      << "                         (default: 4). Total lanes is this times the device\n"
+      << "                         count, so 4 with two --tcp-bind-devs is 8 lanes. Both\n"
+      << "                         peers must agree; 1 with no bound devices keeps the\n"
+      << "                         pre-lane wire format\n"
+      << "  --tcp-bind-dev         Pin TCP egress to --tcp-iface via SO_BINDTODEVICE\n"
+      << "                         (default: off, so routing picks the egress NIC and\n"
+      << "                         --tcp-iface only selects the source address)\n"
+      << "  --tcp-bind-devs <l>    Comma-separated devices to stripe lanes across, e.g.\n"
+      << "                         \"eth1,eth2\". Lane i goes to device i%count, one\n"
+      << "                         listener per device. Overrides --tcp-bind-dev; both\n"
+      << "                         peers must name the same number of devices; lanes\n"
+      << "                         are per device, so each gets --tcp-sockets-per-nic\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
-      << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
+      << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all\n"
+      << "                         for RDMA, the transport's own default for TCP,\n"
+      << "                         which is 2). On TCP a request above the number\n"
+      << "                         of usable ports the host has is clamped to it,\n"
+      << "                         with a warning; there is no fixed upper limit.\n"
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
@@ -146,6 +215,11 @@ void printUsage(const char* prog) {
       << "  --cuda-devices <list>  Comma-separated GPU indices for single-process multi-GPU (overrides --cuda-device)\n"
       << "  --gpu-nics <groups>    Per-GPU NIC map for multi-GPU: ';'-separated groups of comma-separated NICs, one per --cuda-devices entry\n"
       << "  --data-direct          Register GPU memory over the mlx5 Data Direct path (default: off)\n"
+      << "  --measurement-barrier-dir <path>  Shared dir used to line up the timed\n"
+      << "                         loops of N independent aggregate instances. Without\n"
+      << "                         it their windows stagger and summed bandwidth is\n"
+      << "                         overstated (measured overlap 1.0-2.1 of 8)\n"
+      << "  --measurement-barrier-ranks <n>   Number of instances to wait for\n"
       << "  --list                 List available benchmarks\n"
       << "  --help                 Show this help message\n"
       << "\n"
@@ -187,6 +261,14 @@ CliOptions parseArgs(int argc, char** argv) {
       {"data-direct", no_argument, nullptr, 263},
       {"cuda-devices", required_argument, nullptr, 264},
       {"gpu-nics", required_argument, nullptr, 265},
+      {"tcp-iface", required_argument, nullptr, 266},
+      {"no-tcp-async-h2d", no_argument, nullptr, 269},
+      {"tcp-sockets-per-nic", required_argument, nullptr, 270},
+      {"tcp-bind-dev", no_argument, nullptr, 271},
+      {"tcp-bind-devs", required_argument, nullptr, 272},
+      {"measurement-barrier-dir", required_argument, nullptr, 280},
+      {"measurement-barrier-ranks", required_argument, nullptr, 281},
+      {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -250,11 +332,59 @@ CliOptions parseArgs(int argc, char** argv) {
       case 263:
         opts.dataDirect = true;
         break;
+      case 267:
+        opts.noVerify = true;
+        break;
       case 264:
         opts.cudaDevices = parseIntList(optarg);
         break;
       case 265:
         opts.gpuNicGroups = parseNicGroups(optarg);
+        break;
+      case 266:
+        opts.tcpIface = optarg;
+        break;
+      case 269:
+        opts.tcpAsyncH2d = false;
+        break;
+      case 270:
+        try {
+          const int parsed = std::stoi(optarg);
+          if (parsed < 1) {
+            std::cerr
+                << "Invalid value for --tcp-sockets-per-nic: must be >= 1\n";
+            std::exit(1);
+          }
+          opts.tcpSocketsPerNic = static_cast<size_t>(parsed);
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --tcp-sockets-per-nic: '" << optarg
+                    << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 271:
+        opts.tcpBindDev = true;
+        break;
+      case 272:
+        opts.tcpBindDevs = optarg;
+        break;
+      case 280:
+        opts.barrierDir = optarg;
+        break;
+      case 281:
+        try {
+          int parsed = std::stoi(optarg);
+          if (parsed < 1) {
+            std::cerr
+                << "Invalid value for --measurement-barrier-ranks: must be >= 1\n";
+            std::exit(1);
+          }
+          opts.barrierRanks = parsed;
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --measurement-barrier-ranks: '"
+                    << optarg << "'\n";
+          std::exit(1);
+        }
         break;
       case 'd':
         opts.direction = optarg;
@@ -405,6 +535,12 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
+          opts.tcpIface,
+          opts.tcpAsyncH2d,
+          opts.tcpSocketsPerNic,
+          tcpBindDevList(opts)));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
@@ -444,6 +580,9 @@ int main(int argc, char** argv) {
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
   config.dataDirect = opts.dataDirect;
+  config.verify = !opts.noVerify;
+  config.barrierDir = opts.barrierDir;
+  config.barrierRanks = opts.barrierRanks;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
   config.txDepth = opts.txDepth;

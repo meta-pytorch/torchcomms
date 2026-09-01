@@ -106,4 +106,66 @@ struct __attribute__((packed)) TcpTopologyInfo {
   }
 };
 
+constexpr uint32_t kTcpLaneMagic{0x554C414E}; // "ULAN"
+
+/// Identifies one data socket within a multi-lane connection. The dialer sends
+/// this on each socket immediately after it is established; the listener reads
+/// it before using the socket, and places it at `laneIndex`. Accept order is
+/// deliberately not used as identity: the sockets are dialed concurrently with
+/// no ordering guarantee, so pairing lane N to lane N on both sides needs the
+/// index carried explicitly.
+///
+/// Only exchanged when more than one lane is configured. A single-lane
+/// transport therefore stays byte-identical on the wire to one built before
+/// lanes existed, which is what lets kTcpWireVersion stay at its current value:
+/// bumping it would make every new peer incompatible with every old one, and a
+/// rollout of that kind should not be spent on a field only multi-lane peers
+/// read.
+///
+/// sessionId is echoed by every lane of one connection, so a stray dialer
+/// reaching this listener is rejected rather than silently occupying a lane.
+struct __attribute__((packed)) TcpLaneHello {
+  uint32_t magic{kTcpLaneMagic};
+  uint8_t version{kTcpWireVersion};
+  // 16-bit, so these bound the lane count rather than the reverse: a uint8_t
+  // capped a connection at 255 lanes, and lanes are now counted per device, so
+  // the ceiling is reached by device count as much as by configuration. The
+  // spare byte this replaces was not enough on its own.
+  uint16_t laneIndex{0};
+  uint16_t laneCount{1};
+  uint64_t sessionId{0};
+
+  std::vector<uint8_t> serialize() const {
+    std::vector<uint8_t> data(sizeof(TcpLaneHello));
+    std::memcpy(data.data(), this, sizeof(TcpLaneHello));
+    return data;
+  }
+
+  static Result<TcpLaneHello> deserialize(std::span<const uint8_t> data) {
+    if (data.size() != sizeof(TcpLaneHello)) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp lane hello size mismatch: expected " +
+              std::to_string(sizeof(TcpLaneHello)) + " bytes, got " +
+              std::to_string(data.size()));
+    }
+    TcpLaneHello hello;
+    std::memcpy(&hello, data.data(), sizeof(TcpLaneHello));
+    if (hello.magic != kTcpLaneMagic) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp lane hello bad magic " + std::to_string(hello.magic));
+    }
+    if (hello.version != kTcpWireVersion) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "unsupported tcp wire version " + std::to_string(hello.version) +
+              " in lane hello");
+    }
+    return hello;
+  }
+};
+
+static_assert(sizeof(TcpLaneHello) == 17);
+
 } // namespace uniflow

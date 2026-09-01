@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
 
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -79,6 +80,19 @@ Result<std::shared_ptr<TcpPinnedSlabPool>> TcpPinnedSlabPool::create(
     return Err(
         ErrCode::InvalidArgument,
         "TcpPinnedSlabPool: reservedForReader must leave at least one slab");
+  }
+  // create() is the geometry's validation boundary, and the product below is
+  // the one input to it that can wrap. A wrapped product allocates a short
+  // region and the pool then hands out slabs pointing past its end -- and the
+  // pointer-bounds assertions in SlabsAreDistinctWindowsOntoTheRegion would
+  // still pass for the slabs that happen to land inside it. Unreachable while
+  // every caller passes compile-time constants; checked here because the
+  // geometry is heading toward caller-configurable.
+  if (slabCount > std::numeric_limits<size_t>::max() / slabSize) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "TcpPinnedSlabPool: slabCount " + std::to_string(slabCount) +
+            " times slabSize " + std::to_string(slabSize) + " overflows");
   }
   // cudaHostAllocPortable so the region is pinned with respect to every device
   // context, not just whichever was current here: one transport stages for

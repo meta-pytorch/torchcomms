@@ -120,6 +120,31 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   EXPECT_TRUE(recv3.empty());
 }
 
+TEST_P(TcpConnTest, SpanRecvRecordsPhaseStats) {
+  auto [clientConn, serverConn] = connectPair();
+  ASSERT_NE(clientConn, nullptr);
+  ASSERT_NE(serverConn, nullptr);
+
+  std::vector<uint8_t> sent(4096, 0xA5);
+  std::vector<uint8_t> received(sent.size());
+  ASSERT_TRUE(clientConn->send(sent).get().hasValue());
+
+  auto recvResult = serverConn->recv(std::span<uint8_t>(received)).get();
+  ASSERT_TRUE(recvResult.hasValue()) << recvResult.error().toString();
+  EXPECT_EQ(recvResult.value(), sent.size());
+  EXPECT_EQ(received, sent);
+
+  auto& stats = serverConn->recvPhaseStats();
+  EXPECT_EQ(stats.frames.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), sent.size());
+
+  stats.reset();
+  EXPECT_EQ(stats.headerWaitNs.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.payloadDrainNs.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.frames.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), 0);
+}
+
 TEST_P(TcpConnTest, SendRecvLargeData) {
   auto [clientConn, serverConn] = connectPair();
   ASSERT_NE(clientConn, nullptr);
