@@ -425,9 +425,9 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    handles outlive individual operations and are shared across blocks. Copy the
    handle per block and call `startTimeout()` on the copy.
 6. **Returning a status is welcome, not required.** Several waits return `bool`
-   and the IB progress path returns `Aborted`; that lets callers stop sooner and
-   more precisely. Callers are not *obliged* to consume it, so never rely on
-   propagation for liveness.
+   and the IB and NVL progress paths return `Aborted`; that lets callers stop
+   sooner and more precisely. Callers are not *obliged* to consume it, so never
+   rely on propagation for liveness.
 7. **Leave the channel state releasable.** A wait that unwinds must not strand
    the resource it was waiting on. In the IB progress path this is
    `abandon_progress_state()` (`P2pIbTransportProgressImpl.cuh`): every abort
@@ -441,6 +441,18 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    channel is fit to reuse. If a new wait acquires state of its own, releasing
    it on abort is part of adding the wait — pushing that onto the collective
    violates the containment principle.
+
+   The NVL progress path holds the same guarantee by the same shape:
+   `abandon_progress_state()` in `P2pNvlTransportDevice.cuh` drives the slot to
+   `Idle` — NVL's terminal stage — so the aborting call returns `Aborted` and a
+   later progress call short-circuits to `Done`, and the next
+   `init_*_progress()` passes `assert_progress_slot_idle()`. The channel cursor
+   stays advanced there too, because the peer may still write into the reserved
+   range over NVLink. `NvlSendRecvProgressStatus::Aborted` mirrors the IB enum,
+   so a transport-agnostic driver loop keeps one abort branch across both
+   transports: treat `Done` and `Aborted` alike as "stop polling this
+   operation", and take `Aborted` as the signal to consult the host `Abort` for
+   the reason rather than to record a completed transfer.
 
 ### Collective Enablement — onboarding a collective
 

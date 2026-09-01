@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -3320,6 +3321,641 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
 
   COMMS_LOG(
       INFO, "Rank {}: LlBufferWiring_Disabled test completed", globalRank);
+}
+
+/*
+ * Resumable progress API (init_*_progress + progress_*_once).
+ *
+ * These drive the same loop shape the batched MCCL send/recv kernel uses: hold
+ * both directions in flight and cycle between them until each reports Done. A
+ * progress operation must deliver exactly what the blocking path would, so the
+ * oracle throughout is the peer's byte pattern.
+ */
+
+namespace {
+
+// Symmetric exchange: each rank fills its send buffer with a rank-derived
+// pattern and must observe the peer's pattern in its recv buffer.
+void runProgressExchange(
+    int globalRank,
+    int numRanks,
+    size_t nbytes,
+    int numBlocks,
+    std::size_t pipelineDepth,
+    std::size_t dataBufferSize,
+    std::size_t maxSignalBytes,
+    comms::prims::test::ProgressCounters* countersOut) {
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  auto config = makeNvlConfig(dataBufferSize, pipelineDepth, numBlocks);
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(nbytes);
+  DeviceBuffer recvBuf(nbytes);
+  const int pattern = 0x40 + globalRank;
+  const int peerPattern = 0x40 + peerRank;
+  CUDACHECK_TEST(cudaMemset(sendBuf.get(), pattern, nbytes));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
+
+  DeviceBuffer counters(sizeof(comms::prims::test::ProgressCounters));
+  CUDACHECK_TEST(cudaMemset(
+      counters.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  comms::prims::test::testProgressSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      nbytes,
+      maxSignalBytes,
+      AbortDevice(),
+      static_cast<comms::prims::test::ProgressCounters*>(counters.get()),
+      numBlocks,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  std::vector<char> hostBuf(nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(peerPattern))
+        << "mismatch at byte " << i << " of " << nbytes;
+  }
+
+  if (countersOut != nullptr) {
+    CUDACHECK_TEST(cudaMemcpy(
+        countersOut,
+        counters.get(),
+        sizeof(comms::prims::test::ProgressCounters),
+        cudaMemcpyDeviceToHost));
+  }
+}
+
+} // namespace
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvDeliversBytes) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Fits inside one pipeline window, so the transfer completes without ever
+  // hitting backpressure -- the simplest path through the state machine.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/64 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvNonAlignedSize) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Not a multiple of 16, so align_tile_protocol_bytes pads and the final chunk
+  // carries tail padding that must be credited but not copied.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/(64 * 1024) + 13,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvWrapsPipelineAndWaits) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Payload many times the pipeline window, so the transfer can only complete
+  // by wrapping and reusing slots repeatedly. Whether Waiting is observed
+  // depends on how fast the peer drains, so it is not asserted here;
+  // ProgressSendBlocksWhenPeerDoesNotDrain covers backpressure
+  // deterministically.
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/4 * 1024 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/4,
+      /*dataBufferSize=*/256 * 1024,
+      /*maxSignalBytes=*/0,
+      &counters));
+
+  EXPECT_GT(counters.sendProgressed, 1)
+      << "expected the payload to take several chunks";
+  EXPECT_GT(counters.recvProgressed, 1)
+      << "expected the payload to take several chunks";
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendBlocksWhenPeerDoesNotDrain) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Rank 0 sends a payload far larger than the pipeline window while rank 1
+  // never posts a matching recv. With no credit returned the sender must fill
+  // the window and then report Waiting indefinitely rather than completing or
+  // overwriting unacknowledged slots. Bounded iterations, so a broken
+  // implementation that ignores SLOT_FREE fails the assertions instead of
+  // hanging the suite.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  comms::prims::test::ProgressCounters counters{};
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x7A, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    comms::prims::test::testProgressSendBackpressure(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        AbortDevice(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "sender completed without the receiver ever returning credit";
+    EXPECT_EQ(counters.sendAborted, 0)
+        << "sender reported Aborted with no abort recorded";
+    EXPECT_GT(counters.sendProgressed, 0)
+        << "sender should fill the pipeline window before blocking";
+    EXPECT_GT(counters.sendWaiting, 0)
+        << "sender should report Waiting once the window is full";
+  }
+
+  // Rank 1 must outlive rank 0's kernel: the sender writes into rank 1's
+  // staging buffer, which the transport owns.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendUnwindsOnAbortWithSkipBehavior) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // The same one-sided stall as ProgressSendBlocksWhenPeerDoesNotDrain, but
+  // with an abort already recorded. Completion is impossible here -- no credit
+  // is ever returned -- so a terminal status can only mean the poll observed
+  // the abort and unwound, which is what the fault-tolerance contract requires
+  // of a wait. Reporting it as Aborted rather than Done is what keeps that
+  // distinguishable from a real completion. Without abort the same kernel
+  // reports neither, so the two tests bracket the behavior.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x7B, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    // SKIP behavior: the poll should unwind rather than trap. Recording the
+    // timeout on the host makes the first device-side check observe it, so the
+    // test does not race a deadline.
+    comms::fault_tolerance::Abort abort{
+        /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP};
+    abort.startTimeout(std::chrono::milliseconds{0});
+    ASSERT_TRUE(abort.isAborted());
+
+    comms::prims::test::ProgressCounters counters{};
+    comms::prims::test::testProgressSendBackpressure(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        abort.getDeviceHandle(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendAborted, 1)
+        << "aborted send should report Aborted rather than spinning on credit "
+           "that will never arrive";
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never moved";
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvMultipleChannels) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // One channel per block, each with its own progress slot: a shared array
+  // would have blocks trampling each other's cursors. Covers channel indexing
+  // only -- a two-rank run has a single remote peer, so the per-peer slice
+  // offset is always zero and is not exercised here.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/1024 * 1024,
+      /*numBlocks=*/4,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/2 * 1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressZeroBytesIsNoOp) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // init_*_progress returns without reserving, so both directions start Done
+  // and the loop exits immediately. Nothing to verify beyond not hanging.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/0,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressTwoSequentialOpsOnSameChannel) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Covers cursor reservation and the Active -> Idle reset: the second
+  // operation must resume from where the first left the channel cursor. If the
+  // reset were missing the second init would trap; if the reservation were
+  // wrong the second payload would land at the wrong stream offset and the
+  // second half of the buffer would not verify.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t firstBytes = 32 * 1024;
+  const size_t secondBytes = 48 * 1024;
+  const size_t totalBytes = firstBytes + secondBytes;
+  const int numBlocks = 1;
+
+  auto config = makeNvlConfig(1024 * 1024, 2, numBlocks);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  // Distinct patterns per half, so a second operation that resumed from the
+  // wrong offset shows up as the wrong pattern rather than passing by accident.
+  const int firstPattern = 0x50 + globalRank;
+  const int secondPattern = 0x60 + globalRank;
+  CUDACHECK_TEST(cudaMemset(sendBuf.get(), firstPattern, firstBytes));
+  CUDACHECK_TEST(cudaMemset(
+      static_cast<char*>(sendBuf.get()) + firstBytes,
+      secondPattern,
+      secondBytes));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  comms::prims::test::testProgressTwoCallSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      firstBytes,
+      secondBytes,
+      /*firstMaxSignalBytes=*/0,
+      /*secondMaxSignalBytes=*/0,
+      AbortDevice(),
+      numBlocks,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  std::vector<char> hostBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < firstBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x50 + peerRank))
+        << "first operation mismatch at byte " << i;
+  }
+  for (size_t i = firstBytes; i < totalBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x60 + peerRank))
+        << "second operation mismatch at byte " << i;
+  }
+}
+
+/*
+ * Signal granularity. makeNvlConfig(dataBufferSize, depth, channels) gives a
+ * per-channel slot of dataBufferSize/channels/depth; with 1 MiB / 1 / 2 that is
+ * 512 KiB. A max_signal_bytes below the slot makes the transport signal
+ * per sub-chunk instead of per slot, which changes chunk sizing, pipeline
+ * position and tail padding -- and it is stored at init and validated on every
+ * progress call.
+ */
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvPartialSignalGranularity) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/1024 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/128 * 1024,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvUnalignedSignalGranularity) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Neither 16-byte aligned nor a divisor of the slot: the transport rounds it
+  // down with `& ~15`, so the last sub-chunk of each slot is short and the
+  // payload itself is not a multiple of the granularity.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/(768 * 1024) + 37,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/3000,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    ProgressSequentialOpsChangingSignalGranularity) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // Two operations on one channel with different legal granularities. The
+  // cursor is in protocol bytes and tail padding is computed from the base
+  // byte, so a granularity change between operations must still land the second
+  // payload at the offset the receiver expects.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t firstBytes = 96 * 1024;
+  const size_t secondBytes = 160 * 1024;
+  const size_t totalBytes = firstBytes + secondBytes;
+
+  auto config = makeNvlConfig(1024 * 1024, 2, 1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  const int firstPattern = 0x70 + globalRank;
+  const int secondPattern = 0x80 + globalRank;
+  CUDACHECK_TEST(cudaMemset(sendBuf.get(), firstPattern, firstBytes));
+  CUDACHECK_TEST(cudaMemset(
+      static_cast<char*>(sendBuf.get()) + firstBytes,
+      secondPattern,
+      secondBytes));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  comms::prims::test::testProgressTwoCallSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      firstBytes,
+      secondBytes,
+      /*firstMaxSignalBytes=*/64 * 1024,
+      /*secondMaxSignalBytes=*/16 * 1024,
+      AbortDevice(),
+      /*numBlocks=*/1,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  std::vector<char> hostBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < firstBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x70 + peerRank))
+        << "first operation mismatch at byte " << i;
+  }
+  for (size_t i = firstBytes; i < totalBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x80 + peerRank))
+        << "second operation mismatch at byte " << i;
+  }
+}
+
+/*
+ * Receiver-side backpressure and abort, the mirror of the two send-side cases.
+ * Rank 0 posts a recv that no one will satisfy; rank 1 only holds its transport
+ * open and then checks that rank 0 never credited a chunk it did not receive.
+ */
+void runRecvStallCase(
+    int globalRank,
+    int numRanks,
+    bool abortMidFlight,
+    comms::prims::test::ProgressCounters* countersOut) {
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 1024 * 1024;
+
+  auto config = makeNvlConfig(256 * 1024, 4, 1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer recvBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    AbortDevice handle;
+    std::unique_ptr<comms::fault_tolerance::Abort> abort;
+    if (abortMidFlight) {
+      abort = std::make_unique<comms::fault_tolerance::Abort>(
+          /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP);
+      abort->startTimeout(std::chrono::milliseconds{0});
+      ASSERT_TRUE(abort->isAborted());
+      handle = abort->getDeviceHandle();
+    }
+
+    comms::prims::test::testProgressRecvBackpressure(
+        p2pHost,
+        recvBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        handle,
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        countersOut,
+        countersBuf.get(),
+        sizeof(comms::prims::test::ProgressCounters),
+        cudaMemcpyDeviceToHost));
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Rank 0's recv writes SLOT_FREE into rank 1's channel state, so rank 1 is
+  // where a wrongly-issued credit would show up.
+  if (globalRank == 1) {
+    DeviceBuffer slotFree(sizeof(unsigned long long));
+    CUDACHECK_TEST(
+        cudaMemset(slotFree.get(), 0xFF, sizeof(unsigned long long)));
+    comms::prims::test::testReadSlotFreeCounter(
+        p2pHost,
+        /*channel=*/0,
+        static_cast<unsigned long long*>(slotFree.get()));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    unsigned long long observed = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &observed, slotFree.get(), sizeof(observed), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(observed, 0ULL)
+        << "receiver credited SLOT_FREE for a chunk that was never sent";
+  }
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressAbortThenReinitSameKernel) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  // The abort path clears `stage` so the channel can be reused. No other case
+  // exercises abort and re-init together in one kernel, which is
+  // exactly the ordering that cleanup exists to make safe: the trap target
+  // covers re-init while *active*, and the sequential-ops test covers re-init
+  // after normal completion. Neither would catch an unpublished abort cleanup.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x5C, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    comms::fault_tolerance::Abort abort{
+        /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP};
+    abort.startTimeout(std::chrono::milliseconds{0});
+    ASSERT_TRUE(abort.isAborted());
+
+    comms::prims::test::ProgressCounters counters{};
+    comms::prims::test::testProgressAbortThenReinit(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxIterations=*/4096,
+        abort.getDeviceHandle(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendAborted, 1)
+        << "abort should have concluded the stalled send";
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never moved";
+  }
+
+  // Rank 1 holds its transport open for rank 0's staging writes.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressRecvBlocksWhenPeerDoesNotSend) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runRecvStallCase(
+      globalRank, numRanks, /*abortMidFlight=*/false, &counters));
+  if (globalRank == 0) {
+    EXPECT_EQ(counters.recvCompleted, 0) << "recv completed with no sender";
+    EXPECT_EQ(counters.recvAborted, 0)
+        << "recv reported Aborted with no abort recorded";
+    EXPECT_EQ(counters.recvProgressed, 0)
+        << "recv consumed a chunk that was never sent";
+    EXPECT_GT(counters.recvWaiting, 0) << "recv should report Waiting";
+  }
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressRecvUnwindsOnAbortWithSkipBehavior) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
+  }
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runRecvStallCase(
+      globalRank, numRanks, /*abortMidFlight=*/true, &counters));
+  if (globalRank == 0) {
+    EXPECT_EQ(counters.recvAborted, 1)
+        << "aborted recv should report Aborted rather than spinning";
+    EXPECT_EQ(counters.recvCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never "
+           "arrived";
+  }
 }
 
 } // namespace comms::prims::tests

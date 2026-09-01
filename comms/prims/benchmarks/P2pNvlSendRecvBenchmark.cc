@@ -288,8 +288,12 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
 
     int numSendBlocks = config.numBlocks;
     // BidirCta packs send + recv into ONE block via half-block multiwarp
-    // groups, so the grid is half the size of the 2-role partition() kernel.
-    int totalBlocks = config.useBidirCta ? numSendBlocks : numSendBlocks * 2;
+    // groups, and the progress kernel drives both directions from one block by
+    // polling, so both use half the grid of the 2-role partition() kernel.
+    int totalBlocks = (config.useBidirCta || config.useProgress ||
+                       config.useProgressBidirCta || config.useProgressDrain)
+        ? numSendBlocks
+        : numSendBlocks * 2;
     dim3 gridDim(totalBlocks);
     dim3 blockDim(config.numThreads);
 
@@ -307,9 +311,19 @@ class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
               config.nBytes / config.numBlocks / config.chunksPerSlot) &
             ~15ULL
         : 0;
-    void* kernelFunc = config.useBidirCta
-        ? (void*)comms::prims::benchmark::p2pTileSendRecvBidirCta
-        : (void*)comms::prims::benchmark::p2pTileSendRecv;
+    void* kernelFunc = nullptr;
+    if (config.useProgressDrain) {
+      kernelFunc = (void*)comms::prims::benchmark::p2pTileProgressDrainSendRecv;
+    } else if (config.useProgressBidirCta) {
+      kernelFunc =
+          (void*)comms::prims::benchmark::p2pTileProgressSendRecvBidirCta;
+    } else if (config.useProgress) {
+      kernelFunc = (void*)comms::prims::benchmark::p2pTileProgressSendRecv;
+    } else if (config.useBidirCta) {
+      kernelFunc = (void*)comms::prims::benchmark::p2pTileSendRecvBidirCta;
+    } else {
+      kernelFunc = (void*)comms::prims::benchmark::p2pTileSendRecv;
+    }
     void* args[] = {
         p2pDevicePtr, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
@@ -834,6 +848,89 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
         .useTiled = true,
         .useBidirCta = true,
         .name = "BidirCta_" + nm,
+    });
+  }
+
+  // === PROGRESS (ASYNC) TILE CONFIGS — one block drives both directions
+  //     through init_*_progress / progress_*_once instead of blocking in
+  //     send()/recv(). Geometry is identical to the Tile_ configs above so the
+  //     two rows are directly comparable; like BidirCta the grid is halved,
+  //     since no role partition is needed.
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .useProgress = true,
+        .name = "Progress_" + nm,
+    });
+  }
+
+  // === BIDIR-CTA, CLUSTER OFF — the matched blocking counterpart to ProgCta_.
+  //     Same kernel as BidirCta_ but without spread-cluster launch, so it
+  //     differs from ProgCta_ in exactly one variable: blocking send()/recv()
+  //     versus the progress API. This is the only pair that isolates API cost.
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .useBidirCta = true,
+        .name = "BidirCtaNC_" + nm,
+    });
+  }
+
+  // === PROGRESS DRAIN CONFIGS — matched against Progress_ in every respect
+  //     except the loop: same single 512-thread block group, same grid, same
+  //     cluster setting. Isolates "yield after one chunk" from "yield when
+  //     blocked".
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .useProgress = true,
+        .useProgressDrain = true,
+        .name = "ProgDrain_" + nm,
+    });
+  }
+
+  // === PROGRESS BIDIR-CTA CONFIGS — progress API, but the two directions run
+  //     in concurrent half-block groups instead of alternating in one group.
+  //     Isolates the API cost from the loop-shape cost: identical transport
+  //     calls to Progress_, identical grid to BidirCta_.
+  for (const auto& [sz, nm] : tileSizes) {
+    constexpr std::size_t kSlot = 8 * 1024 * 1024;
+    configs.push_back({
+        .nBytes = sz,
+        .stagedBufferSize = kSlot,
+        .numBlocks = 16,
+        .numThreads = 512,
+        .pipelineDepth = 2,
+        .chunkSize = kSlot,
+        .groupScope = SyncScope::BLOCK,
+        .useTiled = true,
+        .useProgress = true,
+        .useProgressBidirCta = true,
+        .name = "ProgCta_" + nm,
     });
   }
 
