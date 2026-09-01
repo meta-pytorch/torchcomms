@@ -93,6 +93,12 @@ void Bootstrap::shutdown() {
     return;
   }
   if (listenSocket_) {
+    // Stop the accept loop before closing the fd, so shutdown()'s write to the
+    // fd cannot race acceptLoop()'s read of it. Sockets whose accept returns
+    // only once the fd is closed report false and need close-then-join.
+    if (listenSocket_->requestStop() && listenThread_.joinable()) {
+      listenThread_.join();
+    }
     listenSocket_->shutdown();
   }
   if (listenThread_.joinable()) {
@@ -321,8 +327,12 @@ void Bootstrap::acceptLoop(Bootstrap* self) {
     // it'll go out of scope (part of its destructor).
     auto maybeSocket = self->listenSocket_->acceptSocket();
     if (maybeSocket.hasError()) {
-      if (self->listenSocket_->hasShutDown()) {
-        break; // listen socket is closed or the CtranIb instance was aborted
+      if (self->listenSocket_->hasShutDown() ||
+          self->listenSocket_->stopRequested()) {
+        // listen socket is closed or stopping, or the CtranIb instance was
+        // aborted. A requested stop is benign, so it must not reach
+        // HANDLE_SOCKET_ERROR, which would abort the communicator.
+        break;
       }
       HANDLE_SOCKET_ERROR(maybeSocket.error(), self);
     }
