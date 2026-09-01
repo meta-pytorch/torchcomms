@@ -282,6 +282,41 @@ Two things that are easy to get wrong here:
   `inline` plus `noinline` under `-Werror`. See the comment on
   `COMMS_FT_ABORT_LOG_LINKAGE`.
 
+## Device diagnostics latency: printf is a post-mortem, not a signal
+
+The abort log is a `printf` from device code. The intuition that invites -- that
+the line shows up when it is printed -- is wrong in exactly the case the log
+exists for.
+
+CUDA device `printf` does not write to stdout. It appends to a fixed-size
+per-context FIFO in device memory, sized by `cudaLimitPrintFFifoSize` (1 MiB by
+default), and the runtime drains that FIFO on **kernel completion,
+synchronization, or context destruction** -- never mid-kernel. A hang under
+`AbortBehavior::SKIP` is precisely the state where the kernel has not completed,
+so the line arrives when the kernel finally exits and not before. If the kernel
+hangs for ten minutes, the log appears in ten minutes.
+
+What follows for the abort log as it stands:
+
+- It is a **post-mortem record**, useful once the kernel has unwound -- which,
+  under SKIP, it eventually does, because that is what the abort contract
+  guarantees. That is the common case and the log is fine for it.
+- It is **not a liveness signal**. It cannot tell you a rank is stuck while it is
+  stuck. Do not build a watchdog, an alert, or an oncall runbook step on the
+  appearance of these lines.
+- Under TRAP it is worse rather than better: `__trap()` faults the context, and
+  FIFO contents at that point are not reliably delivered.
+
+A mapped-pinned store, by contrast, is visible to a polling host thread while
+the kernel is still running -- `AbortSignalHostDeviceRoundTrip` in `Perf.md`
+measures that path at 2.12us one way on H100. So real-time device diagnostics
+are achievable, but they need a different mechanism: a record ring in the mapped
+allocation `Abort` already owns, plus a host poller. That is a new subsystem on
+the abort path, whose whole value is being simple enough to be correct, and it
+is **not in scope here**. One constraint worth recording for whoever does build
+it: records cannot carry the `const char*` `context` used today, because that is
+a device address into constant memory and the host cannot dereference it.
+
 ## MPT And Prims Integration
 
 `MultiPeerTransport` is the device-handle propagation point for Prims
