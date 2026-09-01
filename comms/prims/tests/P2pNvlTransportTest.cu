@@ -1025,8 +1025,10 @@ __global__ void testProgressSendRecvKernel(
   TiledBuffer<char> sendTiles(static_cast<char*>(src_d), nbytes, group);
   TiledBuffer<char> recvTiles(static_cast<char*>(dst_d), nbytes, group);
 
-  p2p.init_send_progress(group, sendTiles.bytes(), maxSignalBytes);
-  p2p.init_recv_progress(group, recvTiles.bytes(), maxSignalBytes);
+  p2p.init_send_progress(
+      group, sendTiles.data(), sendTiles.bytes(), maxSignalBytes);
+  p2p.init_recv_progress(
+      group, recvTiles.data(), recvTiles.bytes(), maxSignalBytes);
 
   bool sendDone = sendTiles.bytes() == 0;
   bool recvDone = recvTiles.bytes() == 0;
@@ -1039,8 +1041,7 @@ __global__ void testProgressSendRecvKernel(
 
   while (!sendDone || !recvDone) {
     if (!sendDone) {
-      const auto status = p2p.progress_send_once(
-          group, sendTiles.data(), sendTiles.bytes(), maxSignalBytes, abort);
+      const auto status = p2p.progress_send_once(group, abort);
       if (status == NvlSendRecvProgressStatus::Done) {
         sendDone = true;
       } else if (status == NvlSendRecvProgressStatus::Aborted) {
@@ -1053,8 +1054,7 @@ __global__ void testProgressSendRecvKernel(
       }
     }
     if (!recvDone) {
-      const auto status = p2p.progress_recv_once(
-          group, recvTiles.data(), recvTiles.bytes(), maxSignalBytes, abort);
+      const auto status = p2p.progress_recv_once(group, abort);
       if (status == NvlSendRecvProgressStatus::Done) {
         recvDone = true;
       } else if (status == NvlSendRecvProgressStatus::Aborted) {
@@ -1127,21 +1127,19 @@ __global__ void testProgressTwoPeerSendRecvKernel(
   char* src = static_cast<char*>((role == 0) ? predSrc : succSrc);
   char* dst = static_cast<char*>((role == 0) ? predDst : succDst);
 
-  p2p.init_send_progress(sub, nbytes, maxSignalBytes);
-  p2p.init_recv_progress(sub, nbytes, maxSignalBytes);
+  p2p.init_send_progress(sub, src, nbytes, maxSignalBytes);
+  p2p.init_recv_progress(sub, dst, nbytes, maxSignalBytes);
 
   bool sendDone = nbytes == 0;
   bool recvDone = nbytes == 0;
   while (!sendDone || !recvDone) {
     if (!sendDone) {
-      const auto status =
-          p2p.progress_send_once(sub, src, nbytes, maxSignalBytes, abort);
+      const auto status = p2p.progress_send_once(sub, abort);
       sendDone = status == NvlSendRecvProgressStatus::Done ||
           status == NvlSendRecvProgressStatus::Aborted;
     }
     if (!recvDone) {
-      const auto status =
-          p2p.progress_recv_once(sub, dst, nbytes, maxSignalBytes, abort);
+      const auto status = p2p.progress_recv_once(sub, abort);
       recvDone = status == NvlSendRecvProgressStatus::Done ||
           status == NvlSendRecvProgressStatus::Aborted;
     }
@@ -1192,7 +1190,8 @@ __global__ void testProgressSendBackpressureKernel(
   auto group = make_block_group();
 
   TiledBuffer<char> sendTiles(static_cast<char*>(src_d), nbytes, group);
-  p2p.init_send_progress(group, sendTiles.bytes(), maxSignalBytes);
+  p2p.init_send_progress(
+      group, sendTiles.data(), sendTiles.bytes(), maxSignalBytes);
 
   bool done = false;
   bool aborted = false;
@@ -1200,8 +1199,7 @@ __global__ void testProgressSendBackpressureKernel(
   int progressed = 0;
 
   for (int i = 0; i < maxIterations && !done && !aborted; ++i) {
-    const auto status = p2p.progress_send_once(
-        group, sendTiles.data(), sendTiles.bytes(), maxSignalBytes, abort);
+    const auto status = p2p.progress_send_once(group, abort);
     if (status == NvlSendRecvProgressStatus::Done) {
       done = true;
     } else if (status == NvlSendRecvProgressStatus::Aborted) {
@@ -1248,21 +1246,19 @@ __device__ inline void drainProgressPair(
     size_t bytes,
     size_t maxSignalBytes,
     const AbortDevice& abort) {
-  p2p.init_send_progress(group, bytes, maxSignalBytes);
-  p2p.init_recv_progress(group, bytes, maxSignalBytes);
+  p2p.init_send_progress(group, src, bytes, maxSignalBytes);
+  p2p.init_recv_progress(group, dst, bytes, maxSignalBytes);
 
   bool sendDone = bytes == 0;
   bool recvDone = bytes == 0;
   while (!sendDone || !recvDone) {
     if (!sendDone) {
-      const auto status =
-          p2p.progress_send_once(group, src, bytes, maxSignalBytes, abort);
+      const auto status = p2p.progress_send_once(group, abort);
       sendDone = status == NvlSendRecvProgressStatus::Done ||
           status == NvlSendRecvProgressStatus::Aborted;
     }
     if (!recvDone) {
-      const auto status =
-          p2p.progress_recv_once(group, dst, bytes, maxSignalBytes, abort);
+      const auto status = p2p.progress_recv_once(group, abort);
       recvDone = status == NvlSendRecvProgressStatus::Done ||
           status == NvlSendRecvProgressStatus::Aborted;
     }
@@ -1347,12 +1343,11 @@ __global__ void testProgressAbortThenReinitKernel(
   // Phase 1: stall with no receiver, until the abort concludes the operation.
   // Completion is impossible here, so Aborted is the only terminal status the
   // loop can reach; `done` is tracked separately to keep that assertable.
-  p2p.init_send_progress(group, sendTiles.bytes(), 0);
+  p2p.init_send_progress(group, sendTiles.data(), sendTiles.bytes(), 0);
   bool done = false;
   bool aborted = false;
   for (int i = 0; i < maxIterations && !done && !aborted; ++i) {
-    const auto status = p2p.progress_send_once(
-        group, sendTiles.data(), sendTiles.bytes(), 0, abort);
+    const auto status = p2p.progress_send_once(group, abort);
     done = status == NvlSendRecvProgressStatus::Done;
     aborted = status == NvlSendRecvProgressStatus::Aborted;
   }
@@ -1365,7 +1360,7 @@ __global__ void testProgressAbortThenReinitKernel(
   // Phase 2: re-init the same channel with no kernel boundary. If the abort
   // cleanup were not published to every thread, this traps ("already has an
   // in-flight send") or strands part of the group at a barrier.
-  p2p.init_send_progress(group, sendTiles.bytes(), 0);
+  p2p.init_send_progress(group, sendTiles.data(), sendTiles.bytes(), 0);
   group.sync();
 }
 
@@ -1400,7 +1395,8 @@ __global__ void testProgressRecvBackpressureKernel(
   auto group = make_block_group();
 
   TiledBuffer<char> recvTiles(static_cast<char*>(dst_d), nbytes, group);
-  p2p.init_recv_progress(group, recvTiles.bytes(), maxSignalBytes);
+  p2p.init_recv_progress(
+      group, recvTiles.data(), recvTiles.bytes(), maxSignalBytes);
 
   bool done = false;
   bool aborted = false;
@@ -1408,8 +1404,7 @@ __global__ void testProgressRecvBackpressureKernel(
   int progressed = 0;
 
   for (int i = 0; i < maxIterations && !done && !aborted; ++i) {
-    const auto status = p2p.progress_recv_once(
-        group, recvTiles.data(), recvTiles.bytes(), maxSignalBytes, abort);
+    const auto status = p2p.progress_recv_once(group, abort);
     if (status == NvlSendRecvProgressStatus::Done) {
       done = true;
     } else if (status == NvlSendRecvProgressStatus::Aborted) {

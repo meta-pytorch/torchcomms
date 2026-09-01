@@ -72,20 +72,18 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecv(
   char* dst = recvTiles.tile_data(blockId);
   const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
 
-  p2p.init_send_progress(group, sendBytes, max_signal_bytes);
-  p2p.init_recv_progress(group, recvBytes, max_signal_bytes);
+  p2p.init_send_progress(group, src, sendBytes, max_signal_bytes);
+  p2p.init_recv_progress(group, dst, recvBytes, max_signal_bytes);
 
   bool sendDone = sendBytes == 0;
   bool recvDone = recvBytes == 0;
 
   while (!sendDone || !recvDone) {
     if (!sendDone) {
-      sendDone = progressFinished(p2p.progress_send_once(
-          group, src, sendBytes, max_signal_bytes, timeout));
+      sendDone = progressFinished(p2p.progress_send_once(group, timeout));
     }
     if (!recvDone) {
-      recvDone = progressFinished(p2p.progress_recv_once(
-          group, dst, recvBytes, max_signal_bytes, timeout));
+      recvDone = progressFinished(p2p.progress_recv_once(group, timeout));
     }
   }
 }
@@ -269,8 +267,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressDrainSendRecv(
   char* dst = recvTiles.tile_data(blockId);
   const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
 
-  p2p.init_send_progress(group, sendBytes, max_signal_bytes);
-  p2p.init_recv_progress(group, recvBytes, max_signal_bytes);
+  p2p.init_send_progress(group, src, sendBytes, max_signal_bytes);
+  p2p.init_recv_progress(group, dst, recvBytes, max_signal_bytes);
 
   bool sendDone = sendBytes == 0;
   bool recvDone = recvBytes == 0;
@@ -280,16 +278,14 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressDrainSendRecv(
     // block after a single chunk. The status is group-uniform, so every thread
     // leaves the inner loop together.
     while (!sendDone) {
-      const auto status = p2p.progress_send_once(
-          group, src, sendBytes, max_signal_bytes, timeout);
+      const auto status = p2p.progress_send_once(group, timeout);
       sendDone = progressFinished(status);
       if (status != NvlSendRecvProgressStatus::Progressed) {
         break;
       }
     }
     while (!recvDone) {
-      const auto status = p2p.progress_recv_once(
-          group, dst, recvBytes, max_signal_bytes, timeout);
+      const auto status = p2p.progress_recv_once(group, timeout);
       recvDone = progressFinished(status);
       if (status != NvlSendRecvProgressStatus::Progressed) {
         break;
@@ -320,20 +316,18 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecvBidirCta(
   if (role == 0) {
     char* src = sendTiles.tile_data(blockId);
     const std::size_t sendBytes = sendTiles.tile_bytes(blockId);
-    p2p.init_send_progress(sub, sendBytes, max_signal_bytes);
+    p2p.init_send_progress(sub, src, sendBytes, max_signal_bytes);
     bool done = sendBytes == 0;
     while (!done) {
-      done = progressFinished(p2p.progress_send_once(
-          sub, src, sendBytes, max_signal_bytes, timeout));
+      done = progressFinished(p2p.progress_send_once(sub, timeout));
     }
   } else {
     char* dst = recvTiles.tile_data(blockId);
     const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
-    p2p.init_recv_progress(sub, recvBytes, max_signal_bytes);
+    p2p.init_recv_progress(sub, dst, recvBytes, max_signal_bytes);
     bool done = recvBytes == 0;
     while (!done) {
-      done = progressFinished(p2p.progress_recv_once(
-          sub, dst, recvBytes, max_signal_bytes, timeout));
+      done = progressFinished(p2p.progress_recv_once(sub, timeout));
     }
   }
 }

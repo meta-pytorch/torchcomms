@@ -237,6 +237,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -244,6 +245,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -255,9 +257,6 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args);
 
@@ -269,9 +268,6 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args);
 
@@ -280,9 +276,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
