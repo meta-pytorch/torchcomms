@@ -451,20 +451,25 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   if (bindDevMode.empty()) {
     bindDevMode = "off";
   }
+  const size_t totalLanes =
+      socketsPerNic_ * std::max<size_t>(bindDevs_.size(), 1);
   std::cerr << "TcpBandwidthBenchmark: rank=" << bootstrap.rank
             << " iface=" << iface_ << " async_get_h2d=" << asyncGetH2dMode
             << " tcp_sockbuf=" << sockBufMode << " bind_dev=" << bindDevMode
-            << " sockets=" << numSockets_ << '\n';
+            << " sockets_per_nic=" << socketsPerNic_
+            << " total_lanes=" << totalLanes << '\n';
   UNIFLOW_LOG_WARN(
       "TcpBandwidthBenchmark: rank {} using {} address {} "
-      "async_get_h2d={} tcp_sockbuf={} bind_dev={} sockets={}",
+      "async_get_h2d={} tcp_sockbuf={} bind_dev={} sockets_per_nic={} "
+      "total_lanes={}",
       bootstrap.rank,
       addrDevice,
       host,
       asyncGetH2dMode,
       sockBufMode,
       bindDevMode,
-      numSockets_);
+      socketsPerNic_,
+      totalLanes);
 
   const int dev = config.cudaDevice;
   BufferPair bufs;
@@ -477,7 +482,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   transportConfig.socketConfig.socketBufSize = sockBufSize_;
   transportConfig.bindToDevices = bindDevs_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
-  transportConfig.numSockets = numSockets_;
+  transportConfig.numSocketsPerDevice = socketsPerNic_;
   auto factory = std::make_unique<TcpTransportFactory>(
       dev, evbThread.getEventBase(), transportConfig, host);
 

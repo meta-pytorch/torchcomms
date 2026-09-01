@@ -127,9 +127,12 @@ constexpr uint32_t kTcpLaneMagic{0x554C414E}; // "ULAN"
 struct __attribute__((packed)) TcpLaneHello {
   uint32_t magic{kTcpLaneMagic};
   uint8_t version{kTcpWireVersion};
-  uint8_t laneIndex{0};
-  uint8_t laneCount{1};
-  uint8_t rsvd{0};
+  // 16-bit, so these bound the lane count rather than the reverse: a uint8_t
+  // capped a connection at 255 lanes, and lanes are now counted per device, so
+  // the ceiling is reached by device count as much as by configuration. The
+  // spare byte this replaces was not enough on its own.
+  uint16_t laneIndex{0};
+  uint16_t laneCount{1};
   uint64_t sessionId{0};
 
   std::vector<uint8_t> serialize() const {
@@ -163,6 +166,6 @@ struct __attribute__((packed)) TcpLaneHello {
   }
 };
 
-static_assert(sizeof(TcpLaneHello) == 16);
+static_assert(sizeof(TcpLaneHello) == 17);
 
 } // namespace uniflow

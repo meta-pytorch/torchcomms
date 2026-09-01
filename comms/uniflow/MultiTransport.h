@@ -51,7 +51,8 @@ struct MultiTransportFactoryOptions {
   bool enableTcp{false};
   std::string tcpBindHost{};
   // Overrides for the TCP data transport: socket options, lane count
-  // (numSockets), and the devices lanes bind to. Null keeps the
+  // (numSocketsPerDevice, applied per device), and the devices lanes bind to.
+  // Null keeps the
   // TcpTransportConfig defaults, so this is an override seam rather than
   // required config, and it is the only way to reach lane striping from outside
   // the transport.
