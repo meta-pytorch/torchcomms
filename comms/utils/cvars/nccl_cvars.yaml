@@ -119,10 +119,13 @@ cvars:
 
  - name        : NCCL_SLOW_RANK_LOGGING
    type        : string
-   default     : "scuba:nccl_profiler_slow_rank"
+   default     : ""
    description : |-
-      File location for logging communicator profiler events. By default,
-      all data is logged to scuba table nccl_profiler_slow_rank.
+      File location for logging communicator profiler events, written to the
+      nccl_profiler_slow_rank table. Disabled by default (empty): a non-empty
+      value constructs a DataTable, which costs a thread on every rank, and the
+      only producer (NetworkPerfMonitor) is itself inactive unless
+      NCCL_NETWORK_PERF_MONITOR_ENABLE is set. Opt in alongside that cvar.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_LOGGING
@@ -295,20 +298,6 @@ cvars:
      Enable memory tracing for all NCCLX memory allocations, frees, and
      registrations. When enabled, memory events are logged to Scuba and
      tracked per-communicator for commDump reporting.
-
- - name        : NCCL_SLOW_COLL_LOGGING
-   type        : string
-   default     : "pipe:nccl_slow_coll"
-   description : |-
-      File location for logging slow collectives.
-      (the same format with NCCL_COMM_EVENT_LOGGING)
-
- - name        : NCCL_COLL_STATS_LOGGING
-   type        : string
-   default     : "pipe:nccl_collective_stats"
-   description : |-
-      File location for logging collective stats.
-      (the same format with NCCL_COMM_EVENT_LOGGING)
 
  - name        : NCCL_MEM_ENABLE_MC_ALIGNMENT
    type        : bool
@@ -3023,7 +3012,11 @@ cvars:
    type        : bool
    default     : False
    description : |-
-     Enable network perf monitor to report info to scuba.
+     Enable network perf monitor to report info to scuba. Also set
+     NCCL_SLOW_RANK_LOGGING to a destination (e.g.
+     "scuba:nccl_profiler_slow_rank"): it is empty by default, and without it
+     the nccl_profiler_slow_rank table is never constructed, so the samples
+     are dropped.
 
  - name        : NCCL_COMM_REGISTER_LOG_ENABLE
    type        : bool
