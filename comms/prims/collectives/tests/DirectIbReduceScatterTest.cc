@@ -20,6 +20,7 @@ struct DirectIbReduceScatterTestParams {
   std::size_t chunk_elements;
   bool quantized;
   bool use_tma{true};
+  bool in_place{false};
   std::string name;
 };
 
@@ -72,6 +73,9 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
       cudaMemset(outputBuf.get(), 0, params.chunk_elements * sizeof(float)));
 
   fill_input(static_cast<float*>(inputBuf.get()), total_elements);
+  auto* outputPtr = params.in_place ? static_cast<float*>(inputBuf.get()) +
+          static_cast<std::size_t>(globalRank) * params.chunk_elements
+                                    : static_cast<float*>(outputBuf.get());
   const std::uint64_t seed = 0x123456789abcdef0ULL;
   CUDACHECK_TEST(
       cudaMemcpy(seedBuf.get(), &seed, sizeof(seed), cudaMemcpyHostToDevice));
@@ -82,8 +86,9 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
   launchParams.chunk_elements = params.chunk_elements;
   launchParams.signaling_data_size = 0;
   launchParams.input = static_cast<const float*>(inputBuf.get());
-  launchParams.output = static_cast<float*>(outputBuf.get());
+  launchParams.output = outputPtr;
   launchParams.quantized = params.quantized;
+  launchParams.in_place = params.in_place;
   launchParams.seed_ptr = params.quantized
       ? static_cast<const std::uint64_t*>(seedBuf.get())
       : nullptr;
@@ -125,9 +130,7 @@ TEST_P(DirectIbReduceScatterTest, Correctness) {
   }
 
   verify_reduce_scatter(
-      static_cast<const float*>(outputBuf.get()),
-      params.chunk_elements,
-      params.quantized ? 5e-2f : 1e-2f);
+      outputPtr, params.chunk_elements, params.quantized ? 5e-2f : 1e-2f);
 }
 
 std::vector<DirectIbReduceScatterTestParams> all_test_params() {
@@ -174,6 +177,11 @@ std::vector<DirectIbReduceScatterTestParams> all_test_params() {
       {.chunk_elements = 16384 * 8 + 4096,
        .quantized = true,
        .name = "RaggedTileQuantized"});
+  out.push_back(
+      {.chunk_elements = 8UL * 1024 * 1024 / sizeof(float) / kExpectedRanks,
+       .quantized = false,
+       .in_place = true,
+       .name = "8MBFp32InPlace"});
   return out;
 }
 

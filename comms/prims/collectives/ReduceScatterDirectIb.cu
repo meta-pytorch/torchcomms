@@ -3,6 +3,8 @@
 #include <atomic>
 
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbPhase.cuh"
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
@@ -31,31 +33,44 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
 #ifdef __CUDA_ARCH__
   abortDevice.start();
 
-  static_assert(kSendThreads % comms::device::kWarpSize == 0);
-  static_assert(kRecvThreads % comms::device::kWarpSize == 0);
-  static_assert(kSendThreads + kRecvThreads == kBlockSize);
+  if constexpr (!kQuantized) {
+    direct_ib_reduce_scatter_phase<
+        T,
+        ReduceOp,
+        kSendThreads,
+        kRecvThreads,
+        kBlockSize,
+        kStaggerChannels>(
+        args.my_rank,
+        args.num_ranks,
+        DirectIbPackedInputView<T>{
+            .data = args.input,
+            .chunk_elements = args.chunk_elements,
+            .chunk_stride_elements = args.chunk_elements,
+        },
+        DirectIbFinalOutputView<T>{
+            .data = args.output,
+            .seed = args.in_place ? DirectIbOutputSeed::OUTPUT_ALREADY_SEEDED
+                                  : DirectIbOutputSeed::PACKED_INPUT,
+        },
+        args.signaling_data_size,
+        args.peers,
+        make_block_group(),
+        abortDevice);
+    return;
+  }
 
   using QuantOp = QuantizedReduceScatterCopyOpT<kTmaRecv>;
 
   const ThreadGroup block = make_block_group();
-  const bool is_recv = block.thread_id_in_group < kRecvThreads;
-  ThreadGroup group = is_recv
-      ? ThreadGroup{
-            .thread_id_in_group = block.thread_id_in_group,
-            .group_size = kRecvThreads,
-            .group_id = block.group_id,
-            .block_id = block.block_id,
-            .total_groups = block.total_groups,
-            .scope = SyncScope::MULTIWARP,
-            .barrier_id = kQuantized ? 1 : ThreadGroup::kAutoBarrierId}
-      : ThreadGroup{
-            .thread_id_in_group = block.thread_id_in_group - kRecvThreads,
-            .group_size = kSendThreads,
-            .group_id = block.group_id,
-            .block_id = block.block_id,
-            .total_groups = block.total_groups,
-            .scope = SyncScope::MULTIWARP,
-            .barrier_id = kQuantized ? 2 : ThreadGroup::kAutoBarrierId};
+  auto role_group = make_direct_ib_reduce_scatter_role_group<
+      kSendThreads,
+      kRecvThreads,
+      kBlockSize,
+      kQuantized ? 1 : ThreadGroup::kAutoBarrierId,
+      kQuantized ? 2 : ThreadGroup::kAutoBarrierId>(block);
+  ThreadGroup& group = role_group.group;
+  const bool is_recv = role_group.role == DirectIbReduceScatterRole::RECEIVE;
 
   const int channels = static_cast<int>(group.total_groups);
   const int channel = static_cast<int>(group.group_id);
@@ -91,9 +106,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + 1 + peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::RECEIVE,
+          kStaggerChannels);
       const char* local_input = !args.in_place && step == 0
           ? reinterpret_cast<const char*>(own_src)
           : output_bytes;
@@ -121,9 +140,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + W - 1 - peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::SEND,
+          kStaggerChannels);
       TiledBuffer<const T> send_tile(
           input_base + static_cast<std::size_t>(peer) * args.chunk_elements,
           args.chunk_elements,
