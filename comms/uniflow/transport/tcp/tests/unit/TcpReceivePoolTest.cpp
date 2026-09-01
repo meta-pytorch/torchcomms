@@ -144,6 +144,10 @@ class TcpReceivePoolTest : public ::testing::Test {
         config,
         /*host=*/"127.0.0.1",
         cudaApi_);
+
+    // These tests drive the outbound path without connecting a peer, so give
+    // the transport the single lane that path indexes.
+    transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
   }
 
   std::future<Status> issueGet(size_t len, MemoryType memType) {
@@ -190,9 +194,9 @@ class TcpReceivePoolTest : public ::testing::Test {
 
   void runReader(std::unique_ptr<ScriptedRecvConn> conn) {
     scriptedConn_ = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    transport_->lanes_[0]->conn = std::move(conn);
     transport_->running_.store(true, std::memory_order_release);
-    transport_->readerLoop();
+    transport_->readerLoop(0);
   }
 
   std::future<Status>

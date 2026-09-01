@@ -190,7 +190,7 @@ TransportInfo TcpTransport::bind() {
 
 Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
   // Held across the handshake wait below, so a concurrent shutdown() cannot
-  // interleave with the installation of dataConn_/reader_/sender_ at the end of
+  // interleave with the installation of lanes_ at the end of
   // this function. The flag check is what stops a connect() queued behind a
   // completed shutdown() from bringing the transport back to life.
   std::lock_guard<std::mutex> lk(lifecycleMu_);
@@ -227,7 +227,6 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
   }
   const bool listener = localKey < peerKey;
 
-  std::unique_ptr<controller::Conn> conn;
   // Both handshake waits are bounded. AsyncAccept::accept() queues a promise
   // that is resolved only by an inbound connection or by teardown, so an
   // unbounded get() here wedges this thread forever if the dialing peer dies
@@ -242,62 +241,205 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
   const auto handshakeTimeout = config_.socketConfig.connTimeout.value_or(
       std::chrono::seconds{kDefaultHandshakeTimeoutSeconds});
 
-  if (listener) {
-    if (!server_) {
-      state_ = TransportState::Error;
-      return Err(ErrCode::ConnectionFailed, "tcp connect: no server bound");
-    }
-    auto future = server_->accept();
-    if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
-      // shutdown() resolves the queued promise with nullptr (via teardown), so
-      // the get() below returns immediately instead of blocking. Safe from this
-      // thread: AsyncAccept::shutdown marshals teardown onto the EventBase
-      // thread and waits when called from outside the loop.
-      UNIFLOW_LOG_ERROR(
-          "TcpTransport::connect: no peer dialed in within {}s; tearing down "
-          "listener {}:{}",
-          handshakeTimeout.count(),
-          host_,
-          port_);
-      server_->shutdown();
-    }
-    conn = future.get();
-  } else {
-    controller::AsyncTcpClient client(config_.socketConfig, *evb_);
-    auto future = client.connect(peer.host + ":" + std::to_string(peer.port));
-    if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
-      UNIFLOW_LOG_ERROR(
-          "TcpTransport::connect: dial to {}:{} did not complete within {}s",
-          peer.host,
-          peer.port,
-          handshakeTimeout.count());
-      // No teardown hook on the client side; abandon the attempt. The future
-      // owns its own state, so letting it go out of scope is safe.
-      state_ = TransportState::Error;
-      return Err(ErrCode::ConnectionFailed, "tcp connect: dial timed out");
-    }
-    conn = future.get();
-  }
-
-  if (!conn) {
+  // The lane hello addresses lanes with a uint8_t.
+  constexpr size_t kMaxLanes = 255;
+  const size_t laneCount = std::max<size_t>(config_.numSockets, 1);
+  if (laneCount > kMaxLanes) {
     state_ = TransportState::Error;
     return Err(
-        ErrCode::ConnectionFailed, "tcp connect: data connection failed");
+        ErrCode::InvalidArgument,
+        "tcp connect: numSockets " + std::to_string(laneCount) +
+            " exceeds the " + std::to_string(kMaxLanes) +
+            " lanes the hello can address");
   }
 
-  dataConn_ = std::move(conn);
+  if (auto status = establishLanes(listener, peer, laneCount, handshakeTimeout);
+      !status) {
+    state_ = TransportState::Error;
+    return status;
+  }
+
   running_.store(true, std::memory_order_release);
-  reader_ = std::thread([this]() { readerLoop(); });
-  sender_ = std::thread([this]() { senderLoop(); });
+  // Started only once every lane is installed, so a reader can never index a
+  // lane connect() has not filled in yet.
+  for (size_t i = 0; i < lanes_.size(); ++i) {
+    lanes_[i]->reader = std::thread([this, i]() { readerLoop(i); });
+    lanes_[i]->sender = std::thread([this, i]() { senderLoop(i); });
+  }
   state_ = TransportState::Connected;
   UNIFLOW_LOG_INFO(
-      "TcpTransport: connected (listener={}) {}:{} <-> {}:{}",
+      "TcpTransport: connected (listener={} lanes={}) {}:{} <-> {}:{}",
       listener,
+      lanes_.size(),
       host_,
       port_,
       peer.host,
       peer.port);
   return Ok();
+}
+
+// Fills lanes_ so that lane i on one peer is lane i on the other. With one lane
+// this is exactly the pre-lane path: no hello is exchanged, so the wire stays
+// byte-identical and a peer built before lanes existed still interoperates.
+Status TcpTransport::establishLanes(
+    bool listener,
+    const TcpTransportInfo& peer,
+    size_t laneCount,
+    std::chrono::seconds handshakeTimeout) {
+  lanes_.clear();
+  lanes_.reserve(laneCount);
+  for (size_t i = 0; i < laneCount; ++i) {
+    lanes_.push_back(std::make_unique<TcpLane>());
+  }
+  const bool exchangeHello = laneCount > 1;
+
+  if (listener) {
+    if (!server_) {
+      return Err(ErrCode::ConnectionFailed, "tcp connect: no server bound");
+    }
+    uint64_t sessionId = 0;
+    std::vector<bool> filled(laneCount, false);
+    for (size_t accepted = 0; accepted < laneCount; ++accepted) {
+      auto future = server_->accept();
+      if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
+        // shutdown() resolves the queued promise with nullptr (via teardown),
+        // so the get() below returns immediately instead of blocking. Safe from
+        // this thread: AsyncAccept::shutdown marshals teardown onto the
+        // EventBase thread and waits when called from outside the loop.
+        UNIFLOW_LOG_ERROR(
+            "TcpTransport::connect: only {} of {} lanes dialed in within {}s; "
+            "tearing down listener {}:{}",
+            accepted,
+            laneCount,
+            handshakeTimeout.count(),
+            host_,
+            port_);
+        server_->shutdown();
+      }
+      auto conn = future.get();
+      if (!conn) {
+        return Err(
+            ErrCode::ConnectionFailed, "tcp connect: data connection failed");
+      }
+
+      // Accept order is not lane identity: the peer dials the lanes without
+      // any ordering guarantee, so the index has to come off the wire.
+      size_t laneIdx = accepted;
+      if (exchangeHello) {
+        std::vector<uint8_t> msg;
+        auto received = conn->recv(msg).get();
+        if (!received) {
+          return Err(
+              ErrCode::ConnectionFailed,
+              "tcp connect: lane hello not received: " +
+                  received.error().message());
+        }
+        auto helloResult = TcpLaneHello::deserialize(
+            std::span<const uint8_t>{msg.data(), received.value()});
+        if (!helloResult) {
+          return std::move(helloResult).error();
+        }
+        const auto hello = helloResult.value();
+        if (hello.laneCount != laneCount) {
+          return Err(
+              ErrCode::InvalidArgument,
+              "tcp connect: peer configured " +
+                  std::to_string(hello.laneCount) + " lanes, local is " +
+                  std::to_string(laneCount) + "; both peers must agree");
+        }
+        if (hello.laneIndex >= laneCount) {
+          return Err(
+              ErrCode::InvalidArgument,
+              "tcp connect: lane index " + std::to_string(hello.laneIndex) +
+                  " out of range for " + std::to_string(laneCount) + " lanes");
+        }
+        if (accepted == 0) {
+          sessionId = hello.sessionId;
+        } else if (hello.sessionId != sessionId) {
+          // A second dialer reaching this listener would otherwise take a lane
+          // and leave the real peer one short, hanging both.
+          return Err(
+              ErrCode::ConnectionFailed,
+              "tcp connect: lane session mismatch; another peer is dialing "
+              "this listener");
+        }
+        laneIdx = hello.laneIndex;
+        if (filled[laneIdx]) {
+          return Err(
+              ErrCode::ConnectionFailed,
+              "tcp connect: duplicate lane index " + std::to_string(laneIdx));
+        }
+      }
+      filled[laneIdx] = true;
+      lanes_[laneIdx]->conn = std::move(conn);
+    }
+  } else {
+    // Only has to distinguish this dialer from another one racing for the same
+    // listener, so the local port plus a clock reading is enough and avoids
+    // pulling in a random-number dependency.
+    const uint64_t sessionId =
+        (static_cast<uint64_t>(port_) << 48) ^
+        static_cast<uint64_t>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+    for (size_t i = 0; i < laneCount; ++i) {
+      controller::AsyncTcpClient client(config_.socketConfig, *evb_);
+      auto future = client.connect(peer.host + ":" + std::to_string(peer.port));
+      if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
+        UNIFLOW_LOG_ERROR(
+            "TcpTransport::connect: lane {} dial to {}:{} did not complete "
+            "within {}s",
+            i,
+            peer.host,
+            peer.port,
+            handshakeTimeout.count());
+        // No teardown hook on the client side; abandon the attempt. The future
+        // owns its own state, so letting it go out of scope is safe.
+        return Err(ErrCode::ConnectionFailed, "tcp connect: dial timed out");
+      }
+      auto conn = future.get();
+      if (!conn) {
+        return Err(
+            ErrCode::ConnectionFailed, "tcp connect: data connection failed");
+      }
+      if (exchangeHello) {
+        TcpLaneHello hello;
+        hello.laneIndex = static_cast<uint8_t>(i);
+        hello.laneCount = static_cast<uint8_t>(laneCount);
+        hello.sessionId = sessionId;
+        // Named, so the buffer outlives the send rather than depending on
+        // temporary lifetime across the future.
+        const auto bytes = hello.serialize();
+        auto sent = conn->send(bytes).get();
+        if (!sent) {
+          return Err(
+              ErrCode::ConnectionFailed,
+              "tcp connect: lane hello send failed: " + sent.error().message());
+        }
+      }
+      lanes_[i]->conn = std::move(conn);
+    }
+  }
+  return Ok();
+}
+
+size_t TcpTransport::laneCapBytes() const {
+  const size_t lanes = lanes_.empty() ? 1 : lanes_.size();
+  return kMaxOutQueueBytes / lanes;
+}
+
+size_t TcpTransport::pickLane() {
+  if (lanes_.size() <= 1) {
+    return 0;
+  }
+  return static_cast<size_t>(
+      nextLane_.fetch_add(1, std::memory_order_relaxed) % lanes_.size());
+}
+
+controller::Conn* TcpTransport::primaryConn() const {
+  if (lanes_.empty() || lanes_[0] == nullptr) {
+    return nullptr;
+  }
+  return lanes_[0]->conn.get();
 }
 
 Result<const TcpRemoteRegistrationHandle*> TcpTransport::findRemoteHandle(
@@ -1219,8 +1361,8 @@ void TcpTransport::pollPendingReadReplies() {
       evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
       return;
     }
-    // Queued outside the lock: enqueueFrame takes outMu_, and holding two of
-    // the transport's mutexes at once is how lock cycles start.
+    // Queued outside the lock: enqueueFrame takes a lane mutex, and holding two
+    // of the transport's mutexes at once is how lock cycles start.
     if (haveReady) {
       (void)enqueueFrame(std::move(ready), /*mayBlock=*/false);
     } else if (haveFailure) {
@@ -1341,18 +1483,30 @@ Status TcpTransport::admitInflight(uint64_t reqId, TcpInflight entry) {
 }
 
 bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
+  // No lanes means connect() never ran (or teardown already cleared them).
+  // Indexing here would be undefined; refusing matches the documented contract
+  // that a frame may simply not be queued.
+  if (lanes_.empty()) {
+    return false;
+  }
   const size_t bytes = frame.size();
+  // Every frame this queues -- Write, ReadRequest, ReadReply, Ack, Error --
+  // carries its own reqId/segId/offset, so the peer places it without needing
+  // arrival order and any lane is equivalent. Only Send is order-sensitive, and
+  // it does not come through here (see enqueueSendFrame).
+  auto& lane = *lanes_[pickLane()];
+  const size_t cap = laneCapBytes();
   {
-    std::unique_lock<std::mutex> lk(outMu_);
+    std::unique_lock<std::mutex> lk(lane.mu);
     if (mayBlock) {
       // Caller threads absorb backpressure by waiting, which is real
       // backpressure: an application issuing put/get faster than the link
       // drains slows down instead of growing the queue. An empty queue always
       // admits, however large the frame, or a payload bigger than the cap could
       // never drain and would wedge here forever.
-      outCv_.wait(lk, [this, bytes]() {
-        return outClosed_ || connBroken_.load(std::memory_order_acquire) ||
-            outQueue_.empty() || outBytes_ + bytes <= kMaxOutQueueBytes;
+      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
+        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
+            lane.queue.empty() || lane.bytes + bytes <= cap;
       });
     }
     // The reader thread deliberately gets no cap. It is producing replies the
@@ -1363,13 +1517,13 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
     // the connection. It cannot wait either: that stops it draining the socket
     // and reintroduces the mutual-READ deadlock the reader/sender split exists
     // to avoid. What bounds this queue is the drain rate, not a byte cap.
-    if (outClosed_) {
+    if (lane.outClosed) {
       return false;
     }
-    outQueue_.push_back(TcpOutItem{std::move(frame), nullptr});
-    outBytes_ += bytes;
+    lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
+    lane.bytes += bytes;
   }
-  outCv_.notify_all();
+  lane.cv.notify_all();
   return true;
 }
 
@@ -1377,55 +1531,82 @@ bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
   if (frames.empty()) {
     return true;
   }
+  // No lanes means connect() never ran (or teardown already cleared them).
+  // Indexing here would be undefined; refusing matches the documented contract
+  // that a frame may simply not be queued.
+  if (lanes_.empty()) {
+    return false;
+  }
   size_t bytes = 0;
   for (const auto& frame : frames) {
     bytes += frame.size();
   }
+  // One lane for the whole group, so a single mutex makes the insert atomic and
+  // no sender can transmit a partial group. Judged against the group total, as
+  // before.
+  auto& lane = *lanes_[pickLane()];
+  const size_t cap = laneCapBytes();
   {
-    std::unique_lock<std::mutex> lk(outMu_);
+    std::unique_lock<std::mutex> lk(lane.mu);
     if (mayBlock) {
-      outCv_.wait(lk, [this, bytes]() {
-        return outClosed_ || connBroken_.load(std::memory_order_acquire) ||
-            outQueue_.empty() || outBytes_ + bytes <= kMaxOutQueueBytes;
+      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
+        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
+            lane.queue.empty() || lane.bytes + bytes <= cap;
       });
     }
-    if (outClosed_) {
+    if (lane.outClosed) {
       return false;
     }
     for (auto& frame : frames) {
       const size_t frameBytes = frame.size();
-      outQueue_.push_back(TcpOutItem{std::move(frame), nullptr});
-      outBytes_ += frameBytes;
+      lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
+      lane.bytes += frameBytes;
     }
   }
-  outCv_.notify_all();
+  lane.cv.notify_all();
   return true;
 }
 
 void TcpTransport::enqueueSendFrame(
     TcpFrame frame,
     std::shared_ptr<TcpOpState> onSent) {
+  if (lanes_.empty()) {
+    // Same reasoning as enqueueFrame's guard, but this path owns a promise, so
+    // it must be failed rather than dropped or the caller waits forever.
+    if (onSent) {
+      onSent->fail(
+          Err(ErrCode::NotConnected, "tcp send: transport not connected"));
+    }
+    return;
+  }
   bool closed = false;
   std::shared_ptr<TcpOpState> toFail;
   const size_t bytes = frame.size();
+  // Pinned to lane 0, never striped. send()/recv() are a two-sided rendezvous
+  // matched in FIFO order through pendingRecvs_/unmatchedSends_, so the Nth
+  // SEND must be the Nth the peer's reader sees. Spreading these across lanes
+  // would let them arrive out of order and pair a SEND with the wrong recv --
+  // silent data corruption rather than an error.
+  auto& lane = *lanes_[0];
+  const size_t cap = laneCapBytes();
   {
-    std::unique_lock<std::mutex> lk(outMu_);
+    std::unique_lock<std::mutex> lk(lane.mu);
     // send() runs on a caller thread, so it can wait for room.
-    outCv_.wait(lk, [this, bytes]() {
-      return outClosed_ || connBroken_.load(std::memory_order_acquire) ||
-          outQueue_.empty() || outBytes_ + bytes <= kMaxOutQueueBytes;
+    lane.cv.wait(lk, [this, &lane, bytes, cap]() {
+      return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
+          lane.queue.empty() || lane.bytes + bytes <= cap;
     });
-    if (outClosed_) {
+    if (lane.outClosed) {
       closed = true;
       // Taken over here so each path has exactly one owner: the queue takes it
       // when the frame is enqueued, this does when it cannot be.
       toFail = std::move(onSent);
     } else {
-      outQueue_.push_back(TcpOutItem{std::move(frame), std::move(onSent)});
-      outBytes_ += bytes;
+      lane.queue.push_back(TcpOutItem{std::move(frame), std::move(onSent)});
+      lane.bytes += bytes;
     }
   }
-  // Settled outside outMu_ so TcpOpState::mu stays a leaf lock: a caller woken
+  // Settled outside the lane mutex so TcpOpState::mu stays a leaf lock: a woken
   // by this promise may re-enter the transport from its error path, and it must
   // not find a container mutex still held by the thread that woke it.
   if (closed) {
@@ -1434,44 +1615,50 @@ void TcpTransport::enqueueSendFrame(
     }
     return;
   }
-  outCv_.notify_all();
+  lane.cv.notify_all();
 }
 
-void TcpTransport::senderLoop() noexcept {
+void TcpTransport::senderLoop(size_t laneIdx) noexcept {
+  // The only writer on this lane's socket, which is what keeps TcpConn's
+  // single-writer requirement satisfied while N lanes run at once. Captured
+  // once, because connect() installs every lane before this thread starts and
+  // never replaces them.
+  auto& lane = *lanes_[laneIdx];
+  auto* conn = lane.conn.get();
+  if (conn == nullptr) {
+    return;
+  }
   for (;;) {
     TcpOutItem item;
     {
-      std::unique_lock<std::mutex> lk(outMu_);
-      outCv_.wait(lk, [this]() { return outClosed_ || !outQueue_.empty(); });
-      if (outClosed_) {
+      std::unique_lock<std::mutex> lk(lane.mu);
+      lane.cv.wait(
+          lk, [&lane]() { return lane.outClosed || !lane.queue.empty(); });
+      if (lane.outClosed) {
         return;
       }
-      item = std::move(outQueue_.front());
-      outQueue_.pop_front();
-      outBytes_ -= std::min(outBytes_, item.frame.size());
+      item = std::move(lane.queue.front());
+      lane.queue.pop_front();
+      lane.bytes -= std::min(lane.bytes, item.frame.size());
     }
-    outCv_.notify_all(); // room freed; wake any producer waiting for space
+    lane.cv.notify_all(); // room freed; wake any producer waiting for space
 
     // `item` -- and so the frame's storage, which for a staged frame is a
     // pinned slab still on loan from the pool -- stays alive for the whole
     // send: Conn::send only borrows the span. The slab goes back when `item` is
     // destroyed at the end of this iteration, never at pop time.
-    auto result = dataConn_->send(item.frame.bytes()).get();
+    auto result = conn->send(item.frame.bytes()).get();
     if (!result) {
       UNIFLOW_LOG_ERROR(
           "tcp sender: send failed: {}", result.error().message());
-      // Close the out queue before unwinding. Nothing drains outQueue_ once
-      // this thread returns, and enqueueFrame() gates only on outClosed_, so
-      // the still-running reader thread would keep appending
+      // Close EVERY lane's queue before unwinding, not just this one. Nothing
+      // drains a queue once its sender returns, and enqueueFrame() gates only
+      // on outClosed, so the still-running readers would keep appending
       // Ack/Error/ReadReply frames -- the last up to kMaxChunkSize each -- to a
-      // queue with no consumer. failAllPending() clears it exactly once, so
-      // without this the growth is unbounded and driven by whatever the peer
-      // keeps requesting.
-      {
-        std::lock_guard<std::mutex> lk(outMu_);
-        outClosed_ = true;
-      }
-      outCv_.notify_all();
+      // queue with no consumer. A failed lane also takes the whole transport
+      // down, so leaving the other lanes admitting work would queue frames for
+      // a connection that is already gone.
+      closeAllLaneQueues();
       if (item.onSent) {
         item.onSent->fail(Err(ErrCode::ConnectionFailed, "tcp: send failed"));
       }
@@ -1497,10 +1684,11 @@ void TcpTransport::senderLoop() noexcept {
 // caller's destination. Anything unaccounted for is reader-thread work between
 // those points.
 void TcpTransport::logAndResetPhaseStats(std::string_view label) {
-  if (dataConn_ == nullptr) {
+  auto* conn = primaryConn();
+  if (conn == nullptr) {
     return;
   }
-  auto& rs = dataConn_->recvPhaseStats();
+  auto& rs = conn->recvPhaseStats();
   const uint64_t frames = rs.frames.load(std::memory_order_relaxed);
   const uint64_t hdrNs = rs.headerWaitNs.load(std::memory_order_relaxed);
   const uint64_t drainNs = rs.payloadDrainNs.load(std::memory_order_relaxed);
@@ -1561,7 +1749,13 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
   vectorReceiveCount_.store(0, std::memory_order_relaxed);
 }
 
-void TcpTransport::readerLoop() noexcept {
+void TcpTransport::readerLoop(size_t laneIdx) noexcept {
+  // One socket per reader: TcpConn is not safe for concurrent operations, and
+  // the single-reader-per-socket invariant is what keeps it so.
+  auto* conn = lanes_[laneIdx]->conn.get();
+  if (conn == nullptr) {
+    return;
+  }
   // Reused for every frame that cannot use a receive slab: async H2D disabled,
   // no VRAM get has created the pool yet, allocation failed, or both slabs are
   // busy. The reader never waits for a slab, because draining the socket is
@@ -1579,8 +1773,7 @@ void TcpTransport::readerLoop() noexcept {
       }
     }
     if (receiveSlab) {
-      auto result = dataConn_
-                        ->recv(
+      auto result = conn->recv(
                             std::span<uint8_t>{
                                 receiveSlab.data(), receiveSlab.capacity()})
                         .get();
@@ -1596,7 +1789,7 @@ void TcpTransport::readerLoop() noexcept {
     }
 
     vectorReceiveCount_.fetch_add(1, std::memory_order_relaxed);
-    auto result = dataConn_->recv(msg).get();
+    auto result = conn->recv(msg).get();
     if (!result) {
       // Connection closed, errored, or idle-timed-out; stop reading.
       break;
@@ -1777,7 +1970,7 @@ void TcpTransport::handleFrameImpl(
             "tcp recv: unmatched inbound sends exceed {} bytes; closing the "
             "connection",
             kMaxUnmatchedSendBytes);
-        closeDataConnOnce();
+        closeLanesOnce();
         break;
       }
       if (matched && state) {
@@ -1902,18 +2095,36 @@ void TcpTransport::handleFrameImpl(
   }
 }
 
-void TcpTransport::closeDataConnOnce() {
+void TcpTransport::closeAllLaneQueues() {
+  // Marks every lane's queue closed and wakes everyone waiting on it: senders
+  // so they exit, and producers blocked for room so they observe the close
+  // instead of waiting for space that will never be freed.
+  for (auto& lane : lanes_) {
+    if (lane == nullptr) {
+      continue;
+    }
+    {
+      std::lock_guard<std::mutex> lk(lane->mu);
+      lane->outClosed = true;
+    }
+    lane->cv.notify_all();
+  }
+}
+
+void TcpTransport::closeLanesOnce() {
   // Conn::close() tests the fd, closes it, then clears it, with no
-  // synchronisation. The reader refuses the connection on unmatched-send
-  // overflow while an application thread can be in shutdown() doing the same,
-  // and neither holds lifecycleMu_ (the reader must not, since shutdown() holds
-  // it across reader_.join()). Both callers can therefore observe the fd open
+  // synchronisation. A reader refuses the connection on unmatched-send overflow
+  // while an application thread can be in shutdown() doing the same, and
+  // neither holds lifecycleMu_ (a reader must not, since shutdown() holds it
+  // across the reader joins). Both callers can therefore observe the fd open
   // and both ::close() it, and the second reaps a descriptor that another
-  // thread in the process may already have been handed by open/socket/accept.
-  // Winning this exchange is what earns the right to close.
-  if (dataConn_ != nullptr &&
-      !dataConnClosed_.exchange(true, std::memory_order_acq_rel)) {
-    dataConn_->close();
+  // thread in the process may already have been handed. Winning the exchange
+  // for a lane is what earns the right to close it.
+  for (auto& lane : lanes_) {
+    if (lane != nullptr && lane->conn != nullptr &&
+        !lane->closed.exchange(true, std::memory_order_acq_rel)) {
+      lane->conn->close();
+    }
   }
 }
 
@@ -1956,15 +2167,18 @@ void TcpTransport::failAllPending(const char* message) {
     unmatchedSends_.clear();
     unmatchedBytes_ = 0;
   }
-  {
-    std::lock_guard<std::mutex> lk(outMu_);
-    for (auto& item : outQueue_) {
+  for (auto& lane : lanes_) {
+    if (lane == nullptr) {
+      continue;
+    }
+    std::lock_guard<std::mutex> lk(lane->mu);
+    for (auto& item : lane->queue) {
       if (item.onSent) {
         toFail.push_back(std::move(item.onSent));
       }
     }
-    outQueue_.clear();
-    outBytes_ = 0;
+    lane->queue.clear();
+    lane->bytes = 0;
   }
   // Deferred reads will never be answered on a broken connection, and each one
   // holds a lease. Dropped here rather than left for teardown so a
@@ -1978,7 +2192,12 @@ void TcpTransport::failAllPending(const char* message) {
     deferred.swap(deferredReplies_);
   }
   deferred.clear();
-  outCv_.notify_all(); // wake producers blocked for space so they see the break
+  // Wake producers blocked for space on every lane so they see the break.
+  for (auto& lane : lanes_) {
+    if (lane != nullptr) {
+      lane->cv.notify_all();
+    }
+  }
   for (auto& state : toFail) {
     state->fail(Err(ErrCode::ConnectionFailed, message));
   }
@@ -2158,16 +2377,12 @@ void TcpTransport::shutdown() {
   }
   running_.store(false, std::memory_order_release);
 
-  {
-    std::lock_guard<std::mutex> outLock(outMu_);
-    outClosed_ = true;
-  }
-  outCv_.notify_all();
+  closeAllLaneQueues();
 
-  // Closing the data connection unblocks the reader's blocking recv and any
-  // in-progress send on the sender thread. A no-op if the reader already
-  // refused the connection, in which case it is on its way out anyway.
-  closeDataConnOnce();
+  // Closing the data connections unblocks the readers' blocking recv and any
+  // in-progress send on the sender thread. A no-op for a lane a reader already
+  // refused, in which case it is on its way out anyway.
+  closeLanesOnce();
 
   // Closed before the joins: this is the one pool with a *blocking* acquire,
   // and the thread parked in it is not one we own. acquire() waits on `freed_`
@@ -2189,11 +2404,16 @@ void TcpTransport::shutdown() {
     staging->close();
   }
 
-  if (reader_.joinable()) {
-    reader_.join();
-  }
-  if (sender_.joinable()) {
-    sender_.join();
+  for (auto& lane : lanes_) {
+    if (lane == nullptr) {
+      continue;
+    }
+    if (lane->reader.joinable()) {
+      lane->reader.join();
+    }
+    if (lane->sender.joinable()) {
+      lane->sender.join();
+    }
   }
 
   if (auto pool = std::atomic_load_explicit(
