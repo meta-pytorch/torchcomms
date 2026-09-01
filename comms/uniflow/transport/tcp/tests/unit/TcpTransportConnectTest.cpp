@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -312,6 +313,99 @@ class TcpTransportTopologyTest : public ::testing::Test {
 
 TEST(TcpTransportConfigTest, AsyncGetH2dDefaultsOn) {
   EXPECT_TRUE(TcpTransportConfig{}.asyncGetH2d);
+}
+
+// The NIC cap is a single field on the config, reachable by both MultiTransport
+// and the benchmark. It used to be two constants -- one here and one on
+// MultiTransportOptions -- which could drift apart while each looked right on
+// its own, so the default is asserted rather than assumed.
+TEST(TcpTransportConfigTest, FrontendDeviceCapDefaultsToTwo) {
+  EXPECT_EQ(kDefaultMaxFrontendDevices, 2UL);
+  EXPECT_EQ(TcpTransportConfig{}.maxFrontendDevices, 2UL);
+}
+
+// Zero means "no opinion", not "no devices": a caller threading an unset flag
+// through would otherwise ask discovery for nothing and get a transport bound
+// to no NIC at all.
+TEST(TcpTransportConfigTest, FrontendDeviceCapOfZeroMeansDefault) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = 0;
+  EXPECT_EQ(
+      config.resolveMaxFrontendDevices(prefix),
+      std::min(kDefaultMaxFrontendDevices, capacity));
+}
+
+// The ceiling is what the host has, not a number in the source. A request above
+// it is clamped rather than honoured, so a caller cannot end up with lanes
+// bound to ports that do not exist.
+TEST(TcpTransportConfigTest, FrontendDeviceCapIsClampedToTheHostsPortCount) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = capacity + 100;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(prefix), capacity);
+}
+
+// Anything at or below capacity is the caller's to choose -- that is the point
+// of making it configurable.
+TEST(TcpTransportConfigTest, FrontendDeviceCapIsRaisableUpToCapacity) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = capacity;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(prefix), capacity);
+}
+
+// Capacity is a property of the host, so it must agree with what discovery
+// returns when asked for everything. Comparing the two rather than asserting a
+// number keeps this a test of the accessor and not of the machine.
+TEST(TcpTransportConfigTest, CapacityMatchesUnboundedDiscovery) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  EXPECT_EQ(
+      frontendDeviceCapacity(prefix),
+      enumerateFrontendDevices(prefix, std::numeric_limits<size_t>::max())
+          .size());
+}
+
+// An unknown prefix has no ports, and capacity 0 must not be mistaken for "cap
+// of none": resolve leaves the request alone so the caller's own no-device
+// handling reports the real problem.
+TEST(TcpTransportConfigTest, UnknownPrefixHasNoCapacityAndDoesNotClampToZero) {
+  const std::string absent = "nosuchdev";
+  ASSERT_EQ(frontendDeviceCapacity(absent), 0UL);
+  TcpTransportConfig config;
+  config.maxFrontendDevices = 4;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(absent), 4UL);
+}
+
+// Discovery has to honour a raised cap for the config field to mean anything.
+// Bounded by what the host actually has: asserting a count would make this test
+// a statement about the test machine rather than about the cap.
+TEST(TcpTransportConfigTest, DiscoveryHonoursARaisedCap) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const auto atTwo = enumerateFrontendDevices(prefix, 2);
+  const auto atCapacity =
+      enumerateFrontendDevices(prefix, frontendDeviceCapacity(prefix));
+  EXPECT_LE(atTwo.size(), 2UL);
+  EXPECT_GE(atCapacity.size(), atTwo.size())
+      << "a larger cap must not return fewer devices";
+  if (atCapacity.size() > atTwo.size()) {
+    // The lower cap must be a prefix of the higher one, or lane i would map to
+    // a different physical port depending only on the cap.
+    EXPECT_TRUE(std::equal(atTwo.begin(), atTwo.end(), atCapacity.begin()))
+        << "device order must not depend on the cap";
+  }
 }
 
 TEST_F(TcpTransportTopologyTest, FactoryPropagatesDisabledAsyncGetH2d) {

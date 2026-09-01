@@ -14,8 +14,10 @@
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -128,6 +130,46 @@ std::vector<std::string> enumerateFrontendDevices(
     }
   }
   return devices;
+}
+
+size_t frontendDeviceCapacity(const std::string& prefix) {
+  // Cached per prefix: the answer is a property of the host's hardware, and
+  // re-walking /sys/class/net on every transport that asks would be wasted
+  // work. Ports do not appear and disappear under a running job; if that ever
+  // changes, this is the thing to revisit.
+  static std::mutex mu;
+  static std::map<std::string, size_t> cache;
+  std::lock_guard<std::mutex> lk(mu);
+  auto it = cache.find(prefix);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  const size_t count =
+      enumerateFrontendDevices(prefix, std::numeric_limits<size_t>::max())
+          .size();
+  cache.emplace(prefix, count);
+  return count;
+}
+
+size_t TcpTransportConfig::resolveMaxFrontendDevices(
+    const std::string& prefix) const {
+  const size_t requested =
+      maxFrontendDevices == 0 ? kDefaultMaxFrontendDevices : maxFrontendDevices;
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  // Capacity 0 means nothing usable was found. Return the request untouched so
+  // the caller's own "no devices" handling reports that, rather than having
+  // this silently hand back 0 and look like a cap of none.
+  if (capacity == 0 || requested <= capacity) {
+    return requested;
+  }
+  UNIFLOW_LOG_WARN(
+      "tcp: asked to stripe across {} '{}' devices but this host has {}; "
+      "using {}",
+      requested,
+      prefix,
+      capacity,
+      capacity);
+  return capacity;
 }
 
 namespace {
