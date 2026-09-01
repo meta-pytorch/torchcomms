@@ -5,6 +5,7 @@
 #include <fmt/format.h>
 #include <folly/Singleton.h>
 #include <cstdint>
+#include <exception>
 
 #include "comms/ctran/memory/Utils.h"
 #include "comms/ctran/utils/Alloc.h"
@@ -110,7 +111,30 @@ commResult_t memCacheAllocator::reset() {
 
 memCacheAllocator::~memCacheAllocator() {
   CTRAN_LOG_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
-  FB_COMMCHECKTHROW_EX_NOCOMM(reset());
+  try {
+    const auto result = reset();
+    if (result != commSuccess) {
+      CTRAN_ERR(
+          result,
+          "Failed to reset NCCLX memory cache allocator during shutdown: {} ({})",
+          result,
+          ::meta::comms::commCodeToString(result));
+    }
+  } catch (const ctran::utils::Exception& e) {
+    CTRAN_ERR(
+        e.result(),
+        "Failed to reset NCCLX memory cache allocator during shutdown: {}",
+        e.what());
+  } catch (const std::exception& e) {
+    CTRAN_ERR(
+        commInternalError,
+        "Failed to reset NCCLX memory cache allocator during shutdown: {}",
+        e.what());
+  } catch (...) {
+    CTRAN_ERR(
+        commInternalError,
+        "Failed to reset NCCLX memory cache allocator during shutdown: unknown exception");
+  }
 }
 
 std::shared_ptr<memRegion> memCacheAllocator::getFreeMemReg(
