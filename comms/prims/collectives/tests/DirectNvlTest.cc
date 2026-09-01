@@ -142,6 +142,9 @@ TEST_P(DirectReduceScatterNvlTest, Correctness) {
   CUDACHECK_TEST(cudaMemset(outputBuf.get(), 0, params.bytes));
 
   fill_input(static_cast<float*>(inputBuf.get()), total_elements);
+  auto* output = params.in_place ? static_cast<float*>(inputBuf.get()) +
+          static_cast<std::size_t>(globalRank) * chunk_elements
+                                 : static_cast<float*>(outputBuf.get());
 
   DirectReduceScatterNvlLaunchParams launchParams{};
   launchParams.my_rank = globalRank;
@@ -149,7 +152,7 @@ TEST_P(DirectReduceScatterNvlTest, Correctness) {
   launchParams.chunk_elements = chunk_elements;
   launchParams.signaling_data_size = 0;
   launchParams.input = static_cast<const float*>(inputBuf.get());
-  launchParams.output = static_cast<float*>(outputBuf.get());
+  launchParams.output = output;
   launchParams.num_blocks = params.num_blocks;
 
   for (int peer = 0; peer < worldSize; ++peer) {
@@ -165,8 +168,7 @@ TEST_P(DirectReduceScatterNvlTest, Correctness) {
   CUDACHECK_TEST(cudaDeviceSynchronize());
   bootstrap->barrierAll();
 
-  verify_reduce_scatter(
-      static_cast<const float*>(outputBuf.get()), chunk_elements);
+  verify_reduce_scatter(output, chunk_elements);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -199,7 +201,12 @@ INSTANTIATE_TEST_SUITE_P(
         DirectNvlTestParams{
             .bytes = 1024 * 1024,
             .num_blocks = 8,
-            .name = "1MB_8B"}),
+            .name = "1MB_8B"},
+        DirectNvlTestParams{
+            .bytes = 64 * 1024 + sizeof(float),
+            .num_blocks = 4,
+            .in_place = true,
+            .name = "64KBPlusOneFloat_4B_InPlace"}),
     param_name);
 
 } // namespace
