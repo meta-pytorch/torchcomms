@@ -192,6 +192,10 @@ class P2pIbgdaTransportDevice {
    *                              slot-index counter API.
    * @param channelLayout         Optional pipelined send/recv channel layout.
    *                              When empty, send()/recv() are unavailable.
+   * @param myRank                Diagnostic only: this rank, so an aborting
+   *                              wait can name itself. `-1` when unknown.
+   * @param peerRank              Diagnostic only: the rank on the other end of
+   *                              this transport. `-1` when unknown.
    */
   __host__ __device__ P2pIbgdaTransportDevice(
       DeviceSpan<NicDeviceIbgdaResources> nicDevices,
@@ -204,7 +208,9 @@ class P2pIbgdaTransportDevice {
       int qpsPerConnection = 1,
       int qpDirectionCount = kIbDirections,
       DeviceSpan<IbLocalChannel> localChannels = {},
-      IbChannelLayout channelLayout = {})
+      IbChannelLayout channelLayout = {},
+      int myRank = -1,
+      int peerRank = -1)
       : nicDevices_(nicDevices),
         ownedRemoteSignalBuf_(ownedRemoteSignalBuf),
         ownedLocalSignalBuf_(ownedLocalSignalBuf),
@@ -215,7 +221,9 @@ class P2pIbgdaTransportDevice {
         qpsPerConnection_(qpsPerConnection),
         qpDirectionCount_(qpDirectionCount),
         localChannels_(localChannels),
-        channelLayout_(channelLayout) {}
+        channelLayout_(channelLayout),
+        myRank_(myRank),
+        peerRank_(peerRank) {}
 
   // IBGDA round-robins each send/recv chunk's RDMA_WRITE + DATA_READY atomic-FA
   // across per-lane single-writer DATA_READY slots (one per QP lane; see
@@ -700,8 +708,10 @@ class P2pIbgdaTransportDevice {
       return false;
     }
     printf(
-        "P2pIbgdaTransportDevice: local completion failed lane=%u "
-        "ticket=%llu status=%d\n",
+        "P2pIbgdaTransportDevice: local completion failed rank=%d peer=%d "
+        "lane=%u ticket=%llu status=%d\n",
+        myRank_,
+        peerRank_,
         ticket.completionId,
         static_cast<unsigned long long>(ticket.value),
         status);
@@ -1119,7 +1129,9 @@ class P2pIbgdaTransportDevice {
         if (status == EBUSY) {
           FT_ABORT_BREAK(
               abortDevice,
-              "wait_local_on_qp timed out (ticket=%llu)",
+              "wait_local_on_qp timed out: rank=%d peer=%d ticket=%llu",
+              myRank_,
+              peerRank_,
               static_cast<unsigned long long>(ticket));
         } else if (status != 0) {
           // Previously this fell straight out of the loop: the `while` only
@@ -1149,7 +1161,9 @@ class P2pIbgdaTransportDevice {
                   comms::fault_tolerance::AbortReason::NETWORK_ERROR)) {
             printf(
                 "P2pIbgdaTransportDevice: wait_local_on_qp completion failed "
-                "(ticket=%llu status=%d)\n",
+                "rank=%d peer=%d ticket=%llu status=%d\n",
+                myRank_,
+                peerRank_,
                 static_cast<unsigned long long>(ticket),
                 status);
           }
@@ -1324,7 +1338,11 @@ class P2pIbgdaTransportDevice {
       while (current < expected) {
         FT_ABORT_BREAK(
             abortDevice,
-            "wait_signal: expected>=%llu, current=%llu",
+            "wait_signal: rank=%d peer=%d channel=%u expected>=%llu "
+            "current=%llu",
+            myRank_,
+            peerRank_,
+            group.group_id,
             static_cast<unsigned long long>(expected),
             static_cast<unsigned long long>(current));
         current = load_acquire_system_u64(signalBuf.ptr);
@@ -1345,7 +1363,11 @@ class P2pIbgdaTransportDevice {
       while (current < expected) {
         FT_ABORT_BREAK(
             abortDevice,
-            "wait_counter: expected>=%llu, current=%llu",
+            "wait_counter: rank=%d peer=%d channel=%u expected>=%llu "
+            "current=%llu",
+            myRank_,
+            peerRank_,
+            group.group_id,
             static_cast<unsigned long long>(expected),
             static_cast<unsigned long long>(current));
         current = load_acquire_system_u64(counterBuf.ptr);
@@ -2900,6 +2922,12 @@ class P2pIbgdaTransportDevice {
   DeviceSpan<IbLocalChannel> localChannels_{};
 
   IbChannelLayout channelLayout_{};
+
+  // Diagnostic identity, read only from abort/error log paths. A stalled wait
+  // otherwise reports a signal value with nothing to attribute it to, and the
+  // rank is not recoverable from anything else the device transport holds.
+  int myRank_{-1};
+  int peerRank_{-1};
 };
 
 } // namespace comms::prims

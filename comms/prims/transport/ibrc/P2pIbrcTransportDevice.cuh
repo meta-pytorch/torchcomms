@@ -89,7 +89,9 @@ class P2pIbrcTransportDevice {
       int numSignalSlots = 0,
       int numCounterSlots = 0,
       IbChannelLayout channelLayout = {},
-      AbortDevice abort = {})
+      AbortDevice abort = {},
+      int myRank = -1,
+      int peerRank = -1)
       : cmdQueues(queues),
         numNics(nics),
         maxChannels_(maxChannels),
@@ -102,7 +104,9 @@ class P2pIbrcTransportDevice {
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
         channelLayout_(channelLayout),
-        abort_(abort) {}
+        abort_(abort),
+        myRank_(myRank),
+        peerRank_(peerRank) {}
 
   // IBRC round-robins each send/recv chunk's RDMA_WRITE + DATA_READY fetch-add
   // across per-lane command queues / QPs when numLanes > 1 (select_put_queue_id
@@ -397,7 +401,11 @@ class P2pIbrcTransportDevice {
         check_status(queue);
         FT_ABORT_BREAK(
             abortDevice,
-            "P2pIbrcTransportDevice: wait_local lane=%u expected=%llu",
+            "P2pIbrcTransportDevice: wait_local rank=%d peer=%d channel=%u "
+            "lane=%u expected=%llu",
+            myRank_,
+            peerRank_,
+            group.group_id,
             ticket.completionId,
             static_cast<unsigned long long>(ticket.value));
       }
@@ -432,7 +440,11 @@ class P2pIbrcTransportDevice {
       check_status(queue);
       FT_ABORT_BREAK(
           abortDevice,
-          "P2pIbrcTransportDevice: local completion lane=%u expected=%llu",
+          "P2pIbrcTransportDevice: local completion rank=%d peer=%d "
+          "channel=%u lane=%u expected=%llu",
+          myRank_,
+          peerRank_,
+          channelId,
           ticket.completionId,
           static_cast<unsigned long long>(ticket.value));
     }
@@ -1062,13 +1074,24 @@ class P2pIbrcTransportDevice {
     }
     if (group.is_leader()) {
       validate_group_scope(group);
-      while (load_acquire_system_u64(ptr) < expected) {
+      // Carry the polled value in a register rather than reloading it for the
+      // message: the abort args are evaluated on every spin iteration, so an
+      // acquire load in the arg list would put a system-scope read back on the
+      // hot path that the throttled abort check exists to keep off it.
+      uint64_t current = load_acquire_system_u64(ptr);
+      while (current < expected) {
         check_channel_status(group.group_id);
         FT_ABORT_BREAK(
             abortDevice,
-            "P2pIbrcTransportDevice: wait_%s expected=%llu",
+            "P2pIbrcTransportDevice: wait_%s rank=%d peer=%d channel=%u "
+            "expected=%llu current=%llu",
             kind,
-            static_cast<unsigned long long>(expected));
+            myRank_,
+            peerRank_,
+            group.group_id,
+            static_cast<unsigned long long>(expected),
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(ptr);
       }
     }
     group.sync();
@@ -1227,6 +1250,12 @@ class P2pIbrcTransportDevice {
   // FT is on, and *write* a terminal reason via a system-scope CAS. The waits
   // bound themselves on the device clock instead of on shared reads.
   AbortFlag abort_{};
+
+  // Diagnostic identity, read only from abort/error log paths. A stalled wait
+  // otherwise reports a ticket or signal value with nothing to attribute it to,
+  // and the rank is not recoverable from anything else this slot holds.
+  int myRank_{-1};
+  int peerRank_{-1};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);

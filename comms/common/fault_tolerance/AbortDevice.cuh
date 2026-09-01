@@ -143,6 +143,45 @@ deviceCompareExchangeSystem(int* value, int* expected, int desired) {
 #endif
 }
 
+/**
+ * Records a terminal reason from device code, first-writer-wins, and emits the
+ * common first-writer marker if this call is the winner.
+ *
+ * Shared by both device writers of `AbortState::abort` -- `AbortDevice` and
+ * `AbortFlag`. They differ in what else they carry (a poll throttle, a
+ * per-operation identity), but the transition itself and the line that reports
+ * it are the same event, and a writer that transitions without logging leaves
+ * an abort with no greppable origin.
+ *
+ * Takes the raw `AbortState*` rather than either handle type so it can be
+ * defined once, before both, without a forward declaration dance.
+ */
+__device__ __forceinline__ bool deviceTrySetAbort(
+    AbortState* state,
+    AbortReason newReason,
+    const char* context) {
+  if (state == nullptr) {
+    return false;
+  }
+  const bool validReason = deviceIsValidTerminalReason(newReason);
+  assert(validReason);
+  if (!validReason) {
+    return false;
+  }
+
+  int expected = static_cast<int>(AbortReason::NONE);
+  const bool won = deviceCompareExchangeSystem(
+      &state->abort, &expected, static_cast<int>(newReason));
+  if (won) {
+    // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+    printf(
+        FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
+        static_cast<int>(newReason),
+        context == nullptr ? "" : context);
+  }
+  return won;
+}
+
 } // namespace detail
 
 /**
@@ -219,6 +258,14 @@ struct AbortDevice final {
    */
   __host__ __device__ int64_t opTimeoutMs() const {
     return opTimeoutMs_;
+  }
+
+  /**
+   * Device-clock value this handle's deadline expires at, or zero when no
+   * device deadline is active. Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t deadlineCycles() const {
+    return deadlineCycles_;
   }
 
   /**
@@ -398,26 +445,7 @@ struct AbortDevice final {
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
       const char* context = nullptr) const {
-    if (!isEnabled()) {
-      return false;
-    }
-    const bool validReason = detail::deviceIsValidTerminalReason(newReason);
-    assert(validReason);
-    if (!validReason) {
-      return false;
-    }
-
-    int expected = static_cast<int>(AbortReason::NONE);
-    const bool won = detail::deviceCompareExchangeSystem(
-        &state_->abort, &expected, static_cast<int>(newReason));
-    if (won) {
-      // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
-      printf(
-          FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
-          static_cast<int>(newReason),
-          context == nullptr ? "" : context);
-    }
-    return won;
+    return detail::deviceTrySetAbort(state_, newReason, context);
   }
 
  private:
@@ -596,22 +624,19 @@ struct AbortFlag final {
    * Writing shared state is safe to do from a shared handle -- it is a
    * system-scope CAS, which is exactly what the shared state is for. Only
    * *polling* needs per-thread throttle state, and this type has none.
+   *
+   * The winner emits the same first-writer marker `AbortDevice` does, through
+   * the same helper. That costs this type nothing it was built to avoid: the
+   * `printf` is gated on the CAS win, so it happens at most once per
+   * communicator, and it adds no mutable state and no poll. Without it the IBRC
+   * proxy watchdogs -- which reach the shared reason only through this type --
+   * can leave a communicator aborted with no greppable origin at all, and the
+   * `context` they pass describing which watchdog fired is discarded.
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
       const char* context = nullptr) const {
-    if (!isEnabled()) {
-      return false;
-    }
-    (void)context;
-    const bool validReason = detail::deviceIsValidTerminalReason(newReason);
-    assert(validReason);
-    if (!validReason) {
-      return false;
-    }
-    int expected = static_cast<int>(AbortReason::NONE);
-    return detail::deviceCompareExchangeSystem(
-        &state_->abort, &expected, static_cast<int>(newReason));
+    return detail::deviceTrySetAbort(state_, newReason, context);
   }
 
   /**
