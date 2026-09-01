@@ -68,6 +68,10 @@ struct P2pIbgdaTransportBuildParams {
   IbgdaLocalBuffer localSignalBuf{};
   IbgdaLocalBuffer counterBuf{};
   IbgdaRemoteBuffer discardSignalSlot{};
+  // Diagnostic identity only. A device wait that aborts has no other way to
+  // name which pair of ranks stalled; nothing on the data path reads these.
+  int myRank{-1};
+  int peerRank{-1};
   int numSignalSlots{0};
   int numCounterSlots{0};
   int maxChannels{0};
