@@ -27,6 +27,7 @@ rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 source /home/jenkins/miniforge3/etc/profile.d/conda.sh
 #Create Conda Env and install dependencies
+conda remove -n xpu_torchcomms_ci-${RUNNER_NAME} --all -y || true
 conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.12.0
 conda activate xpu_torchcomms_ci-${RUNNER_NAME}
 conda install conda-forge::glog=0.4.0 conda-forge::gflags=2.2.2 conda-forge::fmt=12.2.0 -y
@@ -42,8 +43,6 @@ ulimit -n 65535 # Increase the open file descriptor limit to avoid oneCCL/Level 
 
 python3 -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
-#Source DLE 
-source /opt/intel/oneapi/setvars.sh
 #Build and run XCCL C++ unit tests (mock-based, no XPU hardware required)
 cd torchcomms
 cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_GLOO=ON -DUSE_TRANSPORT=OFF
