@@ -5,7 +5,7 @@ set -ex
 export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
-#Source Intel OMIX
+#Install Intel OMIX
 apt-get update -y
 apt-get install -y gpg wget build-essential ninja-build cmake git
 
