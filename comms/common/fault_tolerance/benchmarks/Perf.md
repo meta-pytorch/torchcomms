@@ -191,3 +191,30 @@ polls include the backoff noted above.
 |---|---:|---:|---|
 | Host/device signal RTT | `AbortSignalHostDeviceRoundTrip`: 4.24us (2.12us one way) | `AbortSignalHostDeviceRoundTrip`: 3.08us (1.54us one way) | CPU requester to persistent GPU responder and back over mapped pinned atomics. |
 | Device/device signal ping-pong | `AbortSignalDeviceDevicePingPong`: 6.34us (3.17us one way) | `AbortSignalDeviceDevicePingPong`: 4.61us (2.31us one way) | Two CUDA blocks exchanging request/response over mapped pinned atomics. |
+
+## Arming a device deadline
+
+Collected 2026-08-28 on `devgpu012.mwg1` (`NVIDIA H100`) with the `ArmOnly*`
+rows. Each launches a kernel that calls `startTimeout()` and nothing else, so
+enabled-minus-disabled is the arm cost with launch overhead subtracted out.
+Arming is **not** leader-gated in the collectives -- `abortDevice.start()` runs
+on every thread, because the poll throttle state it initializes must be
+per-poller -- so the relevant axis is warps, not blocks.
+
+| Launch shape | Warps | Disabled | Enabled | Arm cost |
+|---|---:|---:|---:|---:|
+| 1 x 1 | 1 | 7.9us | 9.42us | +1.35us |
+| 1 x 640 | 20 | 7.9us | 28.77us | **+20.8us** |
+| 8 x 640 | 160 | 8.1us | 174.67us | +166.5us |
+
+`startTimeout()` reads `state_->timeoutMs` from mapped pinned memory. That is an
+uncached PCIe read, and reads of one cacheline from different warps serialize,
+so the cost is linear at **1.04us per warp** -- identical per-warp slope at 20
+warps and at 160. 1 x 640 is the real AllReduce tree/ring launch shape
+(`kBlockSize = 640`).
+
+Read this as an upper bound on what the arm site can cost, not as a collective
+regression. These reads overlap with real kernel work, so removing them moves an
+end-to-end collective by zero; the poll rate, not the arm, is what made fault
+tolerance expensive. Do not resolve the timeout on the host to "fix" this table:
+`AbortState` is mapped precisely so a replayed CUDA graph reads a live deadline.
