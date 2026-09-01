@@ -315,7 +315,7 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
       firstOut,
       ::testing::HasSubstr(
           std::string{kFirstWriterMarker} + "device reason=" +
-          std::to_string(static_cast<int>(AbortReason::NETWORK_ERROR)) +
+          std::string{abortReasonToString(AbortReason::NETWORK_ERROR)} +
           " context=AbortDeviceTest callsite"))
       << "captured: " << firstOut;
 
@@ -356,7 +356,7 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
       out,
       ::testing::HasSubstr(
           std::string{kFirstWriterMarker} + "device reason=" +
-          std::to_string(static_cast<int>(AbortReason::INTERNAL_ERROR)) +
+          std::string{abortReasonToString(AbortReason::INTERNAL_ERROR)} +
           " context=\n"))
       << "captured: " << out;
 }
@@ -388,7 +388,7 @@ TEST(AbortDeviceTest, flagSetAbortEmitsFirstWriterMarker) {
       out,
       ::testing::HasSubstr(
           std::string{kFirstWriterMarker} + "device reason=" +
-          std::to_string(static_cast<int>(AbortReason::IBRC_PROXY_TIMEOUT)) +
+          std::string{abortReasonToString(AbortReason::IBRC_PROXY_TIMEOUT)} +
           " context=AbortFlagTest callsite"))
       << "captured: " << out;
 }
@@ -821,6 +821,73 @@ TEST(AbortDeviceTest, perOpTimeoutOverridesCommunicatorDefault) {
       elapsedMs,
       static_cast<float>(kDeviceTimeoutExpectedMs) + kDeviceTimeoutAccuracyMs)
       << "per-op override did not take precedence over the 60s comm default";
+}
+
+// The abort context log reports `timeout_ms` and `elapsed_ms` as arithmetic
+// over the arm-site clock state rather than as stored values. This checks that
+// derivation against the timeout the caller actually asked for -- a log line
+// that silently reports the wrong deadline is worse than one that reports none.
+TEST(AbortDeviceTest, armedClockStateRecoversTheRequestedTimeout) {
+  constexpr int64_t kRequestedTimeoutMs = 2500;
+  constexpr uint64_t kOpId = 987654321;
+
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{kRequestedTimeoutMs});
+
+  auto handle = abort.getDeviceHandle();
+  handle.setOpId(kOpId);
+
+  auto startCycles = makeDeviceValue<unsigned long long>();
+  auto deadlineCycles = makeDeviceValue<unsigned long long>();
+  auto cyclesPerMs = makeDeviceValue<unsigned long long>();
+  auto opId = makeDeviceValue<unsigned long long>();
+  ASSERT_NE(startCycles, nullptr);
+  ASSERT_NE(deadlineCycles, nullptr);
+  ASSERT_NE(cyclesPerMs, nullptr);
+  ASSERT_NE(opId, nullptr);
+
+  EXPECT_EQ(
+      launchDeviceReadArmedClockState(
+          handle,
+          startCycles.get(),
+          deadlineCycles.get(),
+          cyclesPerMs.get(),
+          opId.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  const auto observedStart = readDeviceValue(startCycles);
+  const auto observedDeadline = readDeviceValue(deadlineCycles);
+  const auto observedCyclesPerMs = readDeviceValue(cyclesPerMs);
+
+  EXPECT_EQ(readDeviceValue(opId), kOpId) << "op number must survive the copy";
+  EXPECT_GT(observedCyclesPerMs, 0U);
+  EXPECT_GT(observedStart, 0U) << "arming must stamp an origin to measure from";
+  EXPECT_GT(observedDeadline, observedStart);
+  EXPECT_EQ(
+      static_cast<int64_t>(
+          (observedDeadline - observedStart) / observedCyclesPerMs),
+      kRequestedTimeoutMs);
+}
+
+// An unarmed handle has no origin, so the log must be able to tell "never
+// armed" from "armed at clock zero" and report -1 rather than an elapsed time
+// counted from the start of the device's uptime.
+TEST(AbortDeviceTest, unarmedHandleReportsNoArmSite) {
+  Abort abort{/*enabled=*/true};
+  const auto handle = abort.getDeviceHandle();
+
+  // `startCycles == 0` is the field that actually encodes "never armed", and it
+  // is what makes the log's `armed` predicate false and its `elapsed_ms` -1.
+  // Asserting only `opId`/`cyclesPerMs` would leave this test passing through a
+  // regression in the arm-site origin, which is the thing it exists to protect.
+  EXPECT_EQ(handle.startCycles(), 0U)
+      << "an unarmed handle must have no origin to measure from";
+  EXPECT_EQ(handle.deadlineCycles(), 0U);
+  EXPECT_EQ(handle.opId(), 0U);
+  EXPECT_GT(handle.cyclesPerMs(), 0U)
+      << "the clock conversion is captured at handle creation, not at arm time";
 }
 
 TEST(AbortDeviceTest, perOpTimeoutUnsetFallsBackToCommunicatorDefault) {

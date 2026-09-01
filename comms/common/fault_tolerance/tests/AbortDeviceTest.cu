@@ -154,6 +154,23 @@ __global__ void deviceWaitForTimeoutStartAliasKernel(
   *observedCheckExpired = 0;
 }
 
+__global__ void deviceReadArmedClockStateKernel(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+  *observedStartCycles = abort.startCycles();
+  *observedDeadlineCycles = abort.deadlineCycles();
+  *observedCyclesPerMs = abort.cyclesPerMs();
+  *observedOpId = abort.opId();
+}
+
 __global__ void deviceCancelAndRestartTimeoutKernel(
     AbortDevice abort,
     int* observedAfterCancel,
@@ -306,6 +323,22 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     cudaStream_t stream) {
   deviceCancelAndRestartTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedAfterCancel, observedMode, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
+    cudaStream_t stream) {
+  deviceReadArmedClockStateKernel<<<1, 1, 0, stream>>>(
+      abort,
+      observedStartCycles,
+      observedDeadlineCycles,
+      observedCyclesPerMs,
+      observedOpId);
   return cudaGetLastError();
 }
 

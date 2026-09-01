@@ -253,6 +253,35 @@ Two consequences worth internalizing:
   It trades abort-detection latency against a fixed percentage of every
   collective's runtime, and the cost is linear in the value.
 
+## What the abort log costs, and where it lives
+
+The section above is about the *check*. The *log* has the opposite constraint
+and is the other easy way to make abort handling expensive.
+
+The check must stay inlined -- it is the throttle gate, on every spin iteration
+of every wait. The log runs at most once per communicator, after something has
+already gone wrong, so its runtime cost is irrelevant. Its **static** cost is
+not: with RDC off, an inlined log body is copied into every abort call site in
+every kernel that includes `AbortDevice.cuh` -- about 60 call sites, multiplied
+across every consuming translation unit.
+
+So `deviceLogAbortContext()` is `noinline`, emitting one copy per translation
+unit. Counted on `//comms/mccl/collectives/allreduce:allreduce_fused_tree_device`
+(50 kernels across sm_80 and sm_90a): **6,930,608 instructions against 7,163,792
+inlined, 5.8% less**.
+
+Two things that are easy to get wrong here:
+
+- **64-bit division is expensive, not the `printf`.** Deriving a millisecond
+  value from cycle counts calls `__cuda_sm20_div_u64`, a device software
+  routine. The log does exactly one of them, for `elapsed_ms`; `timeout_ms` is
+  read rather than divided out of the deadline.
+- **The linkage needs `inline` in both compilation passes** and `noinline` in
+  only the device pass. `comms/ctran` device-links its objects, so external
+  device linkage there is `nvlink error : Multiple definition`; and gcc rejects
+  `inline` plus `noinline` under `-Werror`. See the comment on
+  `COMMS_FT_ABORT_LOG_LINKAGE`.
+
 ## MPT And Prims Integration
 
 `MultiPeerTransport` is the device-handle propagation point for Prims
