@@ -2,6 +2,8 @@
 
 #include "comms/prims/collectives/ReduceScatterDirectIbV2.cuh"
 
+#include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
+
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
@@ -277,7 +279,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
       if (group.is_leader()) {
         for (int i = 0; i < count; ++i) {
           const int step = base + i;
-          rpeer_of[i] = (my_rank + 1 + (step + channel) % (W - 1)) % W;
+          rpeer_of[i] = direct_ib_reduce_scatter_peer_for_step(
+              my_rank, W, channel, step, DirectIbReduceScatterRole::RECEIVE);
           for (int sl = 0; sl < kSlots; ++sl) {
             rviews[sl][i] = detail::RecvChunkAcquisition{};
           }
@@ -431,7 +434,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
       bool posted[kMaxPeersInFlight];
       for (int i = 0; i < count; ++i) {
         const int step = base + i;
-        peer_of[i] = (my_rank + W - 1 - (step + channel) % (W - 1)) % W;
+        peer_of[i] = direct_ib_reduce_scatter_peer_for_step(
+            my_rank, W, channel, step, DirectIbReduceScatterRole::SEND);
         posted[i] = false;
         auto transport = args.peers[peer_of[i]];
         transport.init_registered_send_progress(solo, wire_bytes, max_sig);
