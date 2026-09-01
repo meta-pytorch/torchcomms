@@ -2038,10 +2038,11 @@ cvars:
    type        : bool
    default     : false
    description : |-
-     Within an all-IB communicator, also use the batched path for the two-rank
-     case that normally takes the pair path. Has no effect when the
-     communicator has any NVLink peer. Must be set identically on every rank.
-     For benchmarking only.
+     Force the batched send/recv path regardless of topology, including the
+     two-rank case that normally takes the pair path and communicators with
+     NVLink peers. Must be set identically on every rank, or the two ends of a
+     transfer can pick different paths and disagree on geometry.
+     For benchmarking and testing only.
 
  - name        : MCCL_NVL_FABRIC_ENABLE
    type        : bool

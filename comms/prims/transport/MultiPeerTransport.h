@@ -270,6 +270,15 @@ class MultiPeerTransport {
   std::optional<int> ib_max_num_channels() const;
 
   /*
+   * Channel capacity of the NVL transport. Empty when this rank has no NVL
+   * peers, mirroring ib_max_num_channels(). Rank-local: IB cross-validates
+   * maxChannels across ranks at connect, NVL has no equivalent exchange, so
+   * using this for per-edge geometry assumes it is uniform across the job, the
+   * same assumption MCCL_MAX_NBLOCKS already relies on.
+   */
+  std::optional<int> nvl_max_num_channels() const;
+
+  /*
    * Every requested edge must be requested by both endpoint ranks in the same
    * connect round. Peer-vector order may differ between ranks.
    */
