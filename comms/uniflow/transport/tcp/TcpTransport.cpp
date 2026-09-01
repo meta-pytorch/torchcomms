@@ -2066,29 +2066,109 @@ bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
   for (const auto& frame : frames) {
     bytes += frame.size();
   }
-  // One lane for the whole group, so a single mutex makes the insert atomic and
-  // no sender can transmit a partial group. Judged against the group total, as
-  // before.
-  auto& lane = *lanes_[pickLane()];
-  const size_t cap = laneCapBytes();
-  {
-    std::unique_lock<std::mutex> lk(lane.mu);
-    if (mayBlock) {
-      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
-        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
-            lane.queue.empty() || lane.bytes + bytes <= cap;
-      });
+
+  // Striping decision. A wave is up to kMaxPutWaveChunks frames of
+  // kMaxChunkSize, so on one lane it is one sender pushing ~28 MiB through one
+  // socket while the other lanes may have nothing to do -- the whole group's
+  // completion is bounded by a single socket's rate. Spreading the frames
+  // across lanes divides that.
+  //
+  // Safe because a Write frame is self-describing: the receiver places it at
+  // header.offset within header.segId (see the TcpOp::Write case), matches its
+  // Ack by header.reqId, and put() completes on a count of Acks rather than on
+  // their order. Two-sided send() *is* order-sensitive and does not come
+  // through here -- it pins to lanes_[0] via enqueueSendFrame.
+  //
+  // Only for groups whose frames are individually large enough to be worth a
+  // second sender's wakeup; below that the handoff costs more than the
+  // parallelism wins.
+  const size_t laneCount = lanes_.size();
+  const bool stripe = laneCount > 1 && frames.size() > 1 &&
+      bytes / frames.size() >= kMinStripeFrameBytes;
+
+  if (!stripe) {
+    // One lane for the whole group, so a single mutex makes the insert atomic
+    // and no sender can transmit a partial group. Judged against the group
+    // total.
+    auto& lane = *lanes_[pickLane()];
+    const size_t cap = laneCapBytes();
+    {
+      std::unique_lock<std::mutex> lk(lane.mu);
+      if (mayBlock) {
+        lane.cv.wait(lk, [this, &lane, bytes, cap]() {
+          return lane.outClosed ||
+              connBroken_.load(std::memory_order_acquire) ||
+              lane.queue.empty() || lane.bytes + bytes <= cap;
+        });
+      }
+      if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+        return false;
+      }
+      for (auto& frame : frames) {
+        const size_t frameBytes = frame.size();
+        lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
+        lane.bytes += frameBytes;
+      }
     }
-    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
-      return false;
-    }
-    for (auto& frame : frames) {
-      const size_t frameBytes = frame.size();
-      lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
-      lane.bytes += frameBytes;
+    lane.cv.notify_all();
+    return true;
+  }
+
+  // Striped: consecutive frames onto consecutive lanes, from a rotating base so
+  // successive groups do not all start on the same one. Nulls are skipped
+  // rather than indexed -- shutdown() can clear entries, and the unstriped path
+  // above only gets away with not checking because it takes whatever pickLane()
+  // hands it.
+  std::vector<TcpLane*> targets;
+  targets.reserve(laneCount);
+  const size_t base = pickLane();
+  for (size_t i = 0; i < laneCount; ++i) {
+    if (auto* lane = lanes_[(base + i) % laneCount].get()) {
+      targets.push_back(lane);
     }
   }
-  lane.cv.notify_all();
+  if (targets.empty()) {
+    return false;
+  }
+
+  // Admission is per frame against its own lane, so unlike the group path this
+  // can enqueue some frames and then refuse. That widens an existing window
+  // rather than opening a new one: even the atomic group insert only guarantees
+  // the *queue* is all-or-nothing, and a connection lost mid-transmission
+  // already leaves some frames sent and some not, so a failed put has never
+  // implied an untouched remote segment.
+  //
+  // What it costs is that EnqueueFramesQueuesNothingWhenTheQueueIsClosed's
+  // stated intent -- "half a wave queued and half refused is the partial write
+  // the batch enqueue exists to prevent" -- now holds only for the unstriped
+  // path. A striped group refused partway leaves the earlier frames queued.
+  // The consequences are contained: the caller fails the operation and abandons
+  // its inflight entries, closeAllLaneQueues() drops whatever is still queued,
+  // and an Ack arriving for an abandoned reqId finds no entry and is ignored.
+  // Making it truly atomic would mean holding every target lane's mutex at once
+  // (deadlock against the senders) or a two-phase reservation, neither of which
+  // is worth it for a window that only opens while the connection is closing.
+  const size_t cap = laneCapBytes();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto& lane = *targets[i % targets.size()];
+    const size_t frameBytes = frames[i].size();
+    {
+      std::unique_lock<std::mutex> lk(lane.mu);
+      if (mayBlock) {
+        lane.cv.wait(lk, [this, &lane, frameBytes, cap]() {
+          return lane.outClosed ||
+              connBroken_.load(std::memory_order_acquire) ||
+              lane.queue.empty() || lane.bytes + frameBytes <= cap;
+        });
+      }
+      if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+        return false;
+      }
+      lane.queue.push_back(TcpOutItem{std::move(frames[i]), nullptr});
+      lane.bytes += frameBytes;
+    }
+    lane.cv.notify_all();
+  }
   return true;
 }
 

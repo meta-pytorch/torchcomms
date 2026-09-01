@@ -1207,6 +1207,15 @@ class TcpTransport : public Transport {
   // 128 KiB was worse than not splitting at all.
   static constexpr size_t kMinAdaptiveChunkSize = 512UL * 1024;
 
+  /// Frames smaller than this are not worth striping across lanes: the extra
+  /// sender's wakeup costs more than the parallel socket buys. Only consulted
+  /// for multi-frame groups, where it is applied to the mean frame size.
+  ///
+  /// 256 KiB is well above the cost of a condvar wake and a socket write, and
+  /// well below kMaxChunkSize, so a full-size chunk always qualifies while an
+  /// Ack or a small control frame never does.
+  static constexpr size_t kMinStripeFrameBytes = 256UL * 1024;
+
   // Chunk size for one get request. A transfer no larger than kMaxChunkSize is
   // a single frame, and a frame goes to a single lane, so it uses one lane
   // however many are configured. Splitting it across lanes is worth up to 1.44x
