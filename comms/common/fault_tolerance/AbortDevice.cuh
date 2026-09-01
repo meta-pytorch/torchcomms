@@ -22,11 +22,33 @@ namespace comms::fault_tolerance {
 /**
  * Shared-abort-state polls per millisecond of device time.
  *
- * 100 polls/ms bounds abort-observation latency at ~10us - orders of magnitude
- * finer than any timeout that matters - while removing the mapped-host read
- * from the steady-state spin path.
+ * Each poll is a read of mapped pinned host memory, which is an uncached PCIe
+ * round trip measured at ~1.1us on H100 (`CudaAtomicDeviceLoadLoop` in
+ * `benchmarks/Perf.md`). So this constant is not a free knob: it sets a
+ * *fraction of kernel runtime* spent polling, and that fraction is
+ * `kAbortPollsPerMs * 1.1us / 1000us`.
+ *
+ * At the previous value of 100 that is **11% of every collective**, and it was
+ * measured as exactly that. A 4-rank IB_ONLY AllReduce on GB300 runs ~170us, so
+ * it paid ~17 polls; neutralizing the poll while leaving every barrier and
+ * branch in place took the fault-tolerance overhead from +11.4us to +1.1us
+ * (tree) and +10.8us to +3.0us (ring). Polling was the overhead.
+ *
+ * 1 poll/ms bounds abort-observation latency at ~1ms instead of ~10us, for
+ * ~0.1% of runtime. That is still four orders of magnitude finer than the
+ * deadlines this exists to serve -- `MCCL_ABORT_TIMEOUT_MS` defaults to 30
+ * seconds -- and the thing being delayed is only how fast an *already failed*
+ * collective unwinds. Nobody can measure a millisecond added to that.
+ *
+ * Deadline expiry is deliberately not affected: `checkExpired()` tests
+ * `deadlineDue` ahead of the throttle, so a timeout still fires on time no
+ * matter what this is set to. This governs only how quickly one rank notices
+ * *another* rank's abort.
+ *
+ * If you raise this, re-run `abort_bench` and the GB300 sweep and update both
+ * this comment and `FAULT_TOLERANCE.md`. The cost is linear in the value.
  */
-inline constexpr uint64_t kAbortPollsPerMs = 100;
+inline constexpr uint64_t kAbortPollsPerMs = 1;
 
 namespace detail {
 
@@ -212,12 +234,16 @@ struct AbortDevice final {
       deadlineCycles_ = 0;
       return;
     }
+    const auto now = detail::deviceClock();
+    // Seeded here rather than left at zero: `nextPollCycles_{0}` makes the
+    // first `checkExpired()` on every armed handle unthrottled, which is one
+    // uncached mapped-pinned read on the one call guaranteed to happen.
+    nextPollCycles_ = now + pollIntervalCycles_;
     const auto timeoutMs = resolveTimeoutMs();
     if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
       deadlineCycles_ = 0;
       return;
     }
-    const auto now = detail::deviceClock();
     const auto timeoutMsU = static_cast<uint64_t>(timeoutMs);
     if (timeoutMsU > (UINT64_MAX - now) / cyclesPerMs_) {
       deadlineCycles_ = now;
@@ -409,6 +435,13 @@ struct AbortDevice final {
    * Deliberately NOT cached in the handle. Transports keep one handle for the
    * communicator's lifetime, so caching here would silently ignore every later
    * `Abort::setDefaultTimeout()`.
+   *
+   * That also makes it load-bearing for **CUDA graphs**: a captured graph
+   * replays with no host code in between, so anything the host stamped into the
+   * handle at capture time would be frozen for every replay and the deadline
+   * would never lapse. `AbortState` lives in mapped memory precisely so
+   * graph-mode device code reads the live value;
+   * `DroppedRankTimeoutLapsesDuringGraphReplay` is the test that says so.
    */
   __device__ int64_t resolveTimeoutMs() const {
     if (opTimeoutMs_ >= 0) {
