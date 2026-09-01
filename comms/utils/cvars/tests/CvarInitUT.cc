@@ -41,6 +41,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("__NCCL_UNIT_TEST_INT_CVAR__");
     unsetenv("__NCCL_UNIT_TEST_INT64_T_CVAR__");
     unsetenv("NCCL_DEBUG_SUBSYS");
+    unsetenv("MCCL_IBGDA_MAX_RD_ATOMIC");
     unsetenv("NCCL_CVARS_LOG_INFO");
     unsetenv("NCCL_CVARS_SETTINGS");
     unsetenv("NCCL_DUMMY_TEST_VAR");
@@ -142,6 +143,21 @@ TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveCanBeEnabled) {
 
   EXPECT_TRUE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED);
   EXPECT_FALSE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED_DEFAULT_LITERAL);
+}
+
+// 16 is the ConnectX-8 device maximum and what NVIDIA's GDAKI defaults to for
+// its own GPU-initiated transport. The transport clamps down on a NIC that
+// reports less, so this is a request rather than a promise.
+TEST_F(CvarInitTest, McclIbgdaMaxRdAtomicDefaultsToSixteen) {
+  MCCL_IBGDA_MAX_RD_ATOMIC = 64;
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_IBGDA_MAX_RD_ATOMIC, 16);
+}
+
+TEST_F(CvarInitTest, McclIbgdaMaxRdAtomicReadsUserValue) {
+  setenv("MCCL_IBGDA_MAX_RD_ATOMIC", "16", 1);
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_IBGDA_MAX_RD_ATOMIC, 16);
 }
 
 TEST_F(CvarInitTest, InitWithStringCvar) {

@@ -167,6 +167,46 @@ TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
       config, /*nicReliableDoorbellCapable=*/false));
 }
 
+// -----------------------------------------------------------------------------
+// max_rd_atomic (MCCL_IBGDA_MAX_RD_ATOMIC / config.maxRdAtomic)
+// -----------------------------------------------------------------------------
+
+// 16 matches the device maximum on ConnectX-8 and what NVIDIA's own GDAKI uses
+// for its GPU-initiated transport. It must still satisfy the power-of-two rule,
+// since the NIC stores log2 of it.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicDefaultsToSixteen) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_EQ(config.maxRdAtomic, 16);
+  EXPECT_TRUE(isIbMaxRdAtomicValid(config.maxRdAtomic));
+}
+
+// The wire default stays 1, deliberately: the depth resolution is compiled out
+// on AMD, so an AMD rank never overwrites the member initializer and reports
+// whatever this default says. It must keep describing what AMD actually
+// programs, which is nothing -- i.e. depth 1.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicWireDefaultIsOne) {
+  const PeerQpPayload payload;
+  EXPECT_EQ(payload.maxRdAtomic, 1);
+}
+
+// The NIC stores log2 of the value, so a non-power-of-two is silently rounded
+// down (DOCA's own setter would accept 15 and program 8). Reject it up front.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicAcceptsOnlyPowersOfTwo) {
+  const std::vector<unsigned> valid = {1, 2, 4, 8, 16, 32, 64, 128};
+  const std::vector<unsigned> invalid = {0, 3, 15, 100, 129, 256};
+  for (const unsigned value : valid) {
+    EXPECT_TRUE(isIbMaxRdAtomicValid(value)) << value;
+  }
+  for (const unsigned value : invalid) {
+    EXPECT_FALSE(isIbMaxRdAtomicValid(value)) << value;
+  }
+}
+
+// The payload's own default is never what a NVIDIA rank sends -- the depth is
+// always assigned from the resolved value before exchange. It only describes
+// the unresolved case, which is AMD, and that is covered by
+// MaxRdAtomicWireDefaultIsOne above.
+
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   const MultipeerIbTransportConfig config;
   EXPECT_TRUE(config.ibLazyConnect);
