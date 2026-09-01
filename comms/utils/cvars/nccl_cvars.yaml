@@ -3461,6 +3461,44 @@ cvars:
    description : |-
      Enable the dedicated IBGDA warp-proxy send, receive, and forward path for
      fused Ring AllReduce. Disabled by default while the path is evaluated.
+ - name        : MCCL_IBGDA_QP_ORDERING_SEMANTIC
+   type        : enum
+   default     : auto
+   choices     : auto, ibta, ibta_forced, ooo_rw, ooo_all
+   description : |-
+     Select the NIC data-placement ordering (mlx5 dp_ordering, a.k.a. DDP or
+     out-of-order placement) for the Prims IBGDA transport. Out-of-order
+     placement is what lets adaptive routing spray a QP's packets across fabric
+     paths without stalling reassembly.
+     auto is the default: take the strongest tier the NIC reports, walking
+     ooo_all -> ooo_rw -> ibta, falling all the way to ibta on a NIC whose
+     capability query fails outright. On a ConnectX-8 rail that resolves to
+     ooo_all, which is the tier that actually pays -- it is the only one that
+     lifts the ordering fence in front of an atomic, and every prims signal is
+     an ATOMIC_FETCH_AND_ADD. ConnectX-7 reports ooo_rw but not ooo_all, so it
+     resolves one rung lower. Set ibta to get the pre-change behaviour back.
+     Because ranks resolve independently, a job spanning both NIC generations
+     will resolve different tiers and be rejected at peer connect; pin every
+     rank to ooo_rw in that case.
+     ibta leaves the QPC dp_ordering bits untouched, so it is a wire-level
+     no-op and the QP keeps whatever the NIC's mlxreg admin default gives it.
+     Note this does NOT mean the QP runs strict IBTA: on a ConnectX-8 rail with
+     adaptive routing on, the firmware supplies OOO_RW on its own.
+     ibta_forced pins the QP to strict IBTA ordering even when that admin
+     default enables adaptive routing. ooo_rw allows out-of-order placement for
+     RDMA Read and Write only. ooo_all also covers atomics, which is what
+     removes the ordering fence in front of a put+signal.
+     ibta_forced requires only cmd_hca_cap_2.dp_ordering_force; ooo_rw and
+     ooo_all additionally require the matching
+     cmd_hca_cap.dp_ordering_ooo_{rw,all}_rc capability. An explicitly named
+     tier fails transport initialization when the NIC lacks it; there is no
+     silent downgrade, because that would turn an A/B into a no-op. Only auto
+     falls back.
+     All ranks must end up on the same tier or peer connection fails. Under
+     auto that is reachable without anyone misconfiguring anything, if the job
+     spans NICs of differing capability; pin every rank to ibta in that case.
+     Host-only loopback QPs always use ibta.
+     This policy is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t

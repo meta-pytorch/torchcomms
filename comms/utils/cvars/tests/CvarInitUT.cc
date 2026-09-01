@@ -51,6 +51,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_MIN_CTAS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
+    unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
   }
 };
 
@@ -81,6 +82,49 @@ TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeParsesAllModes) {
     setenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE", value, 1);
     ncclCvarInit();
     EXPECT_EQ(MCCL_IBGDA_RELIABLE_DOORBELL_MODE, expected);
+  }
+}
+
+// auto is the dp_ordering default: request ooo_rw, fall back to ibta on a NIC
+// that cannot do it.
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticDefaultsToAuto) {
+  MCCL_IBGDA_QP_ORDERING_SEMANTIC = MCCL_IBGDA_QP_ORDERING_SEMANTIC::ooo_all;
+  ncclCvarInit();
+  EXPECT_EQ(
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC, MCCL_IBGDA_QP_ORDERING_SEMANTIC::auto_);
+}
+
+// The transport reads "cvar == _DEFAULTCVARVALUE" as "nobody set this" and
+// falls through to the config field. Binaries that skip ncclCvarInit() -- the
+// benchmarks, most unit tests -- see a zero-initialized cvar instead. Those two
+// agree only if the default choice is also the zero-valued one, which is why
+// auto is listed first in the yaml. A failure here means someone reordered
+// `choices` and every benchmark is now silently on a different policy from
+// production.
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticDefaultIsTheZeroValue) {
+  ncclCvarInit();
+  EXPECT_EQ(
+      static_cast<int>(MCCL_IBGDA_QP_ORDERING_SEMANTIC_DEFAULTCVARVALUE), 0);
+  EXPECT_EQ(
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC_DEFAULTCVARVALUE,
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC::auto_);
+}
+
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticParsesAllModes) {
+  using Mode = decltype(MCCL_IBGDA_QP_ORDERING_SEMANTIC);
+  const std::vector<std::pair<const char*, Mode>> modes{
+      {"auto", Mode::auto_},
+      {"ibta", Mode::ibta},
+      {"ibta_forced", Mode::ibta_forced},
+      {"ooo_rw", Mode::ooo_rw},
+      {"ooo_all", Mode::ooo_all},
+  };
+  for (const auto& [value, expected] : modes) {
+    MCCL_IBGDA_QP_ORDERING_SEMANTIC =
+        expected == Mode::ibta ? Mode::ooo_all : Mode::ibta;
+    setenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_IBGDA_QP_ORDERING_SEMANTIC, expected);
   }
 }
 

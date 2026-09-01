@@ -82,6 +82,27 @@ void launchIbgdaPutFlushBatch(
     cudaStream_t stream);
 
 /**
+ * Launch batched kernel: Multiple put + signal + flush iterations
+ *
+ * Identical to launchIbgdaPutFlushBatch except that each put carries a
+ * trailing ATOMIC_FA signal on the same QP. No counter is used, so the
+ * companion QP stays out of the measurement. Differencing the two isolates
+ * the marginal cost of the signal.
+ *
+ * @param totalCycles Output: total GPU cycles for numIters operations
+ */
+void launchIbgdaPutSignalFlushBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream);
+
+/**
  * Launch batched kernel: one thread per block uses the thread-scope put +
  * flush API on a block-private buffer slice.
  *
