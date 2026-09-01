@@ -3509,6 +3509,32 @@ cvars:
      puts, it must be >= the largest ThreadGroup size (e.g., 256 for
      block-scope). Higher values allow more pipelining but use more memory.
 
+ - name        : MCCL_IBGDA_MAX_RD_ATOMIC
+   type        : int
+   default     : 16
+   description : |-
+     Depth of the RDMA-Read/Atomic pipeline on one Prims IBGDA QP, applied to
+     both directions: max_dest_rd_atomic (responder, QPC log_rra_max) and
+     max_rd_atomic (initiator, QPC log_sra_max). Must be a power of two in
+     [1, 128] because the NIC stores log2 of it; anything else fails transport
+     initialization. Clamped down to the NIC's max_qp_rd_atom and
+     max_qp_init_rd_atom, which is 16 on ConnectX-8.
+     Every prims signal is an ATOMIC_FA, and depth bounds how many may be in
+     flight per QP per direction. 1 was the historical value and not a chosen
+     one -- the DOCA modify masks simply never carried the fields, so both QPC
+     entries kept the zero they were allocated with. 16 matches NVIDIA's own
+     GDAKI, which defaults this to the device maximum for its GPU-initiated
+     transport, and prims' AMD sibling, which hardcodes 15/16.
+     Raising it does not relax any ordering. Per mlx5dv_create_qp(3), on an
+     out-of-order-placement QP "RDMA Read and RDMA Atomic operations are
+     executed on the responder side in order ... after all previous messages
+     are done executing", so a deeper pipeline changes only how many signals
+     are on the wire, not the order they take effect or their position relative
+     to the data they announce.
+     Set 1 to restore the previous behaviour. All ranks must select the same
+     value or peer connection fails, so a mixed-version job needs this pinned.
+     This setting is NVIDIA-only and ignored on AMD.
+
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t
    default     : 4194304

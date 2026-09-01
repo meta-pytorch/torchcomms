@@ -255,6 +255,11 @@ class MultipeerIbgdaTransport
   // DOCA GPU context (shared across NICs).
   doca_gpu* docaGpu_{nullptr};
 
+  // Resolved RDMA-Read/Atomic depth: config value (or MCCL_IBGDA_MAX_RD_ATOMIC)
+  // taken in the ctor, then clamped to NIC capability in openIbDevice(). The
+  // default of 1 reproduces the pre-existing wire behaviour exactly.
+  uint8_t maxRdAtomic_{1};
+
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
 

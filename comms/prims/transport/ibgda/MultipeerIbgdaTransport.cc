@@ -125,6 +125,105 @@ const char* reliableDoorbellModeName(const std::optional<bool>& enabled) {
   return *enabled ? "enable" : "disable";
 }
 
+// ---------------------------------------------------------------------------
+// RDMA-Read/Atomic depth (QPC log_sra_max / log_rra_max)
+// ---------------------------------------------------------------------------
+
+// MCCL_IBGDA_MAX_RD_ATOMIC wins over MultipeerIbTransportConfig::maxRdAtomic
+// only when it holds something other than its registered default. Comparing
+// against the generated _DEFAULTCVARVALUE rather than a literal also covers the
+// case where ncclCvarInit() was never called: prims is driven from benchmarks
+// and unit tests that do not run it, and both globals are then still
+// zero-initialized and therefore equal.
+uint8_t resolveMaxRdAtomic(const MultipeerIbgdaTransportConfig& config) {
+  unsigned value = config.maxRdAtomic;
+  const int cvarValue = MCCL_IBGDA_MAX_RD_ATOMIC;
+  if (cvarValue != MCCL_IBGDA_MAX_RD_ATOMIC_DEFAULTCVARVALUE) {
+    if (cvarValue < 0 ||
+        !isIbMaxRdAtomicValid(static_cast<unsigned>(cvarValue))) {
+      throw std::invalid_argument(
+          fmt::format(
+              "MCCL_IBGDA_MAX_RD_ATOMIC={} is not a power of two in [1, 128]",
+              cvarValue));
+    }
+    value = static_cast<unsigned>(cvarValue);
+  }
+  if (!isIbMaxRdAtomicValid(value)) {
+    throw std::invalid_argument(
+        fmt::format("maxRdAtomic={} is not a power of two in [1, 128]", value));
+  }
+  return static_cast<uint8_t>(value);
+}
+
+// Largest power of two <= limit, or 0 when limit is 0.
+uint8_t floorPowerOfTwo(uint8_t limit) {
+  uint8_t value = 0;
+  for (unsigned candidate = 1; candidate <= limit && candidate <= 128;
+       candidate *= 2) {
+    value = static_cast<uint8_t>(candidate);
+  }
+  return value;
+}
+
+// Clamp the requested RDMA-Read/Atomic depth to what the NIC advertises.
+// max_qp_rd_atom and max_qp_init_rd_atom bound the two directions, and sources
+// disagree on which bounds which (DOCA's own getter docs are the reverse of the
+// usual ibv_device_attr reading), so take the min of both: the single value
+// here feeds both max_rd_atomic and max_dest_rd_atomic, and the min is correct
+// under either mapping. Asking for more than the NIC supports would make the
+// INIT2RTR/RTR2RTS DEVX command fail with an opaque syndrome.
+//
+// The capability query is a DEVX QUERY_HCA_CAP round trip, so it is only issued
+// for a non-default depth; at the default of 1 this returns without touching
+// the NIC.
+uint8_t clampMaxRdAtomicToNic(
+    uint8_t requested,
+    ::ibv_context* ibvContext,
+    const std::string& deviceName) {
+  if (requested <= 1) {
+    return requested;
+  }
+
+  doca_verbs_device_attr* deviceAttr = nullptr;
+  const doca_error_t queryErr =
+      doca_verbs_query_device(ibvContext, &deviceAttr);
+  if (queryErr != DOCA_SUCCESS) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: read/atomic depth capability "
+                    "query failed for NIC "
+                 << deviceName << ": " << docaErrorToString(queryErr)
+                 << "; leaving max_rd_atomic=" << (unsigned)requested
+                 << " unclamped";
+    return requested;
+  }
+  const uint8_t maxQpRdAtom =
+      doca_verbs_device_attr_get_max_qp_rd_atom(deviceAttr);
+  const uint8_t maxQpInitRdAtom =
+      doca_verbs_device_attr_get_max_qp_init_rd_atom(deviceAttr);
+  const doca_error_t freeErr = doca_verbs_device_attr_free(deviceAttr);
+  if (freeErr != DOCA_SUCCESS) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: failed to free DOCA device "
+                    "attributes for NIC "
+                 << deviceName << ": " << docaErrorToString(freeErr);
+  }
+
+  const uint8_t allowed =
+      floorPowerOfTwo(std::min(maxQpRdAtom, maxQpInitRdAtom));
+  if (allowed == 0) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << deviceName
+                 << " reports max_qp_rd_atom=" << (unsigned)maxQpRdAtom
+                 << " max_qp_init_rd_atom=" << (unsigned)maxQpInitRdAtom
+                 << "; keeping max_rd_atomic=1";
+    return 1;
+  }
+  if (allowed < requested) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << deviceName
+                 << " caps max_rd_atomic at " << (unsigned)allowed
+                 << " (requested " << (unsigned)requested << ")";
+    return allowed;
+  }
+  return requested;
+}
+
 bool nicSupportsReliableDoorbell(
     ::ibv_context* ibvContext,
     const std::string& deviceName) {
@@ -397,6 +496,16 @@ void MultipeerIbgdaTransport::openIbDevice() {
              : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
 #ifndef __HIP_PLATFORM_AMD__
+    // Narrow the read/atomic depth to the most restrictive NIC before any QP
+    // exists. At the default depth of 1 this returns immediately and issues no
+    // capability query.
+    maxRdAtomic_ = clampMaxRdAtomicToNic(
+        maxRdAtomic_,
+        reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx),
+        nics_[n].deviceName);
+    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
+              << " max_rd_atomic=" << static_cast<unsigned>(maxRdAtomic_);
+
     const bool nicReliableDoorbellCapable =
         reliableDoorbellNeedsCapabilityQuery(config_)
         ? nicSupportsReliableDoorbell(
@@ -763,13 +872,26 @@ void MultipeerIbgdaTransport::connectQp(
     checkDocaError(err, "Failed to set AH attributes");
     err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, config_.minRnrTimer);
     checkDocaError(err, "Failed to set min RNR timer");
+#ifndef __HIP_PLATFORM_AMD__
+    // Responder depth (QPC log_rra_max). Without MAX_DEST_RD_ATOMIC in the mask
+    // DOCA never writes the field and it stays 0 == one outstanding inbound
+    // read/atomic. The default is now 16, so this writes log2(16) == 4; a
+    // NIC reporting a smaller max_qp_rd_atom has already clamped maxRdAtomic_
+    // down in openIbDevice().
+    err = doca_verbs_qp_attr_set_max_dest_rd_atomic(qpAttr, maxRdAtomic_);
+    checkDocaError(err, "Failed to set max_dest_rd_atomic");
+#endif
 
     err = doca_verbs_qp_modify(
         qpHl->qp,
         qpAttr,
         DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
             DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
-            DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
+            DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER
+#ifndef __HIP_PLATFORM_AMD__
+            | DOCA_VERBS_QP_ATTR_MAX_DEST_RD_ATOMIC
+#endif
+    );
     checkDocaError(err, "Failed to modify QP to RTR");
 
     // Transition to RTS state
@@ -783,13 +905,23 @@ void MultipeerIbgdaTransport::connectQp(
     checkDocaError(err, "Failed to set retry count");
     err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, config_.rnrRetry);
     checkDocaError(err, "Failed to set RNR retry");
+#ifndef __HIP_PLATFORM_AMD__
+    // Initiator depth (QPC log_sra_max). This is the one that bounds how many
+    // ATOMIC_FA signals prims can have in flight on a QP at once.
+    err = doca_verbs_qp_attr_set_max_rd_atomic(qpAttr, maxRdAtomic_);
+    checkDocaError(err, "Failed to set max_rd_atomic");
+#endif
 
     err = doca_verbs_qp_modify(
         qpHl->qp,
         qpAttr,
         DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
             DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
-            DOCA_VERBS_QP_ATTR_RNR_RETRY);
+            DOCA_VERBS_QP_ATTR_RNR_RETRY
+#ifndef __HIP_PLATFORM_AMD__
+            | DOCA_VERBS_QP_ATTR_MAX_QP_RD_ATOMIC
+#endif
+    );
     checkDocaError(err, "Failed to modify QP to RTS");
   } catch (const std::runtime_error&) {
     doca_verbs_qp_attr_destroy(qpAttr);
@@ -984,6 +1116,11 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   }
   try {
 #ifndef __HIP_PLATFORM_AMD__
+    // Resolve the read/atomic depth (config value, optionally overridden by
+    // MCCL_IBGDA_MAX_RD_ATOMIC) before any NIC or QP exists, so a bad value
+    // fails immediately.
+    maxRdAtomic_ = resolveMaxRdAtomic(config_);
+
     // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
     // use the CUDA driver API for GPU memory allocation).
     if (cuda_driver_lazy_init() != 0) {
@@ -1246,6 +1383,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   payload.maxGroups = config_.max_num_channels;
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
   payload.qpOrderingSemantic = static_cast<int>(qpOrderingSemantic_);
+  payload.maxRdAtomic = static_cast<int>(maxRdAtomic_);
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1336,6 +1474,17 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             peerRank,
             remoteQp.numNics,
             numNics_));
+  }
+  // The read/atomic depth is a per-QP-pair property: one end's responder
+  // window (log_rra_max) has to cover the other end's initiator window
+  // (log_sra_max), so the two ends must have resolved the same value.
+  if (remoteQp.maxRdAtomic != static_cast<int>(maxRdAtomic_)) {
+    throw std::runtime_error(
+        fmt::format(
+            "materializePeer: peer {} maxRdAtomic={} vs local maxRdAtomic={}",
+            peerRank,
+            remoteQp.maxRdAtomic,
+            static_cast<int>(maxRdAtomic_)));
   }
   if (remoteQp.maxGroups != config_.max_num_channels ||
       remoteQp.qpsPerBlockPerNic != config_.qpsPerConnection) {

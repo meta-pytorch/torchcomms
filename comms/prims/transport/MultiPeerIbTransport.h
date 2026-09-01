@@ -463,17 +463,34 @@ struct MultipeerIbTransportConfig {
   // RTR->RTS). Must be a power of two in [1, 128] because the NIC stores
   // log2 of it.
   //
-  // 1 is the historical IBGDA behaviour, NOT a considered default: the DOCA
+  // 1 was the historical IBGDA behaviour and NOT a considered default: the DOCA
   // modify masks never carried MAX_QP_RD_ATOMIC / MAX_DEST_RD_ATOMIC, so both
   // QPC fields stayed at their zeroed value (log2(1) == 0), i.e. exactly one
   // outstanding read/atomic per QP per direction. Every prims signal is an
-  // ATOMIC_FA, so this serializes signalling on an RTT. Keeping 1 as the
-  // default makes wiring the masks up a provable no-op; raise it (16 matches
-  // the AMD sibling's kMaxRdAtomic in
-  // comms/prims/transport/amd/pipes_gda/PipesGdaHost.cc) to pipeline.
+  // ATOMIC_FA, so a depth of 1 lets only one signal be in flight per QP.
+  //
+  // 16 matches what the rest of the world does for a GPU-initiated transport:
+  // NVIDIA's own GDAKI defaults to the device maximum
+  // (third-party/nccl/.../net_ib/gdaki/gin_host_gdaki.cc:391-394, which is 16
+  // on ConnectX-8), and prims' AMD sibling hardcodes 15/16
+  // (comms/prims/transport/amd/prims_amd_gda/PrimsAmdGdaHost.cc:1188). Note
+  // NCCL's *CPU-driven* RC transport uses 1 (net_ib/connect.cc:408,465) -- the
+  // split is deliberate, and prims is the GPU-initiated case.
+  //
+  // Raising it is safe: depth bounds how many read/atomic ops may be in flight,
+  // not the order they take effect. Per mlx5dv_create_qp(3), on an
+  // out-of-order-placement QP "RDMA Read and RDMA Atomic operations are
+  // executed on the responder side in order ... after all previous messages are
+  // done executing", so signals still land after their data and in sequence
+  // among themselves.
+  //
+  // Measured benefit on the current channel design: none. See the diff's test
+  // plan -- a fixed ~28 us per-chunk cost keeps the per-QP signal interval
+  // above the RTT, so one credit is always sufficient. The value is aligned
+  // with the vendor default rather than tuned.
   //
   // Clamped down to the NIC's max_qp_rd_atom / max_qp_init_rd_atom.
-  uint8_t maxRdAtomic{1};
+  uint8_t maxRdAtomic{16};
 
   // Deprecated compatibility setting. Per-peer state is always materialized
   // on demand; false no longer enables eager all-peer allocation.
@@ -723,6 +740,11 @@ struct PeerQpPayload {
   // connect on an ordering_semantic mismatch for the same reason.
   // static_cast<int>(IbQpOrderingSemantic); 0 == Ibta == opted out.
   int qpOrderingSemantic{0};
+  // Responder/initiator RDMA-Read/Atomic depth (config maxRdAtomic after the
+  // NIC-capability clamp). Exchanged for the same reason: the two ends must
+  // agree or one side's log_rra_max will not cover the other's log_sra_max.
+  // Defaults to the same 1 the transport resolves when nobody raises the depth.
+  int maxRdAtomic{1};
 };
 
 struct PeerBufferPayload {
