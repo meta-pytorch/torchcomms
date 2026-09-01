@@ -19,6 +19,7 @@
 #include "comms/uniflow/controller/TcpController.h"
 #include "comms/uniflow/executor/EventBase.h"
 #include "comms/uniflow/transport/Transport.h"
+#include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
 
 namespace uniflow {
 
@@ -325,10 +326,53 @@ struct PendingReadReply {
   int deviceId{-1};
 };
 
+/// One outbound frame's storage: either a plain vector or a pinned staging
+/// slab. Move-only, because both kinds own the buffer the socket reads from and
+/// a slab additionally owns its place in the pool.
+///
+/// The vector constructor is deliberately implicit: most frames are small
+/// header-only messages built by serializeTcpHeader(), and they should stay
+/// written that way.
+class TcpFrame {
+ public:
+  TcpFrame() = default;
+  /* implicit */ TcpFrame(std::vector<uint8_t> bytes)
+      : vec_(std::move(bytes)), len_(vec_.size()) {}
+  /// `len` is the transmitted length, which may be shorter than the slab.
+  TcpFrame(TcpPinnedSlab slab, size_t len)
+      : slab_(std::move(slab)), len_(len) {}
+
+  ~TcpFrame() = default;
+  TcpFrame(TcpFrame&&) = default;
+  TcpFrame& operator=(TcpFrame&&) = default;
+  TcpFrame(const TcpFrame&) = delete;
+  TcpFrame& operator=(const TcpFrame&) = delete;
+
+  /// Writable view over the whole frame, for filling in the header and staging
+  /// a payload into it.
+  uint8_t* mutableData() {
+    return slab_ ? slab_.data() : vec_.data();
+  }
+  const uint8_t* data() const {
+    return slab_ ? slab_.data() : vec_.data();
+  }
+  size_t size() const {
+    return len_;
+  }
+  std::span<const uint8_t> bytes() const {
+    return {data(), len_};
+  }
+
+ private:
+  std::vector<uint8_t> vec_;
+  TcpPinnedSlab slab_;
+  size_t len_{0};
+};
+
 /// One queued outbound frame. `onSent`, when set, is completed by the sender
 /// thread once the frame is flushed to the socket (two-sided send()).
 struct TcpOutItem {
-  std::vector<uint8_t> bytes;
+  TcpFrame frame;
   std::shared_ptr<TcpOpState> onSent;
 };
 
@@ -444,12 +488,20 @@ class TcpTransport : public Transport {
   // `mayBlock` must be true only for caller threads. Returns false if the frame
   // was not queued (transport closing, or the reader hit the cap and refused
   // the connection).
-  [[nodiscard]] bool enqueueFrame(std::vector<uint8_t> frame, bool mayBlock);
+  [[nodiscard]] bool enqueueFrame(TcpFrame frame, bool mayBlock);
+  // Queues a run of frames as one indivisible step: either every frame is in
+  // outQueue_ or none is. Enqueuing them one at a time would let the sender
+  // thread start transmitting a partially built group, which for a multi-chunk
+  // put means the peer applies a prefix of a transfer this side may still fail
+  // to finish staging.
+  //
+  // `mayBlock` behaves as in enqueueFrame, and is judged against the group's
+  // total size, so a group larger than the queue cap still drains rather than
+  // waiting forever on room that will never appear.
+  [[nodiscard]] bool enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock);
   // Queues a framed message whose completion is reported via `onSent` once the
   // frame is flushed (two-sided send()).
-  void enqueueSendFrame(
-      std::vector<uint8_t> frame,
-      std::shared_ptr<TcpOpState> onSent);
+  void enqueueSendFrame(TcpFrame frame, std::shared_ptr<TcpOpState> onSent);
   // Registers an in-flight request, but only if teardown has not already swept
   // the map. Returns false if the transport broke first, in which case the
   // caller must fail the op: nothing else will ever resolve it.
