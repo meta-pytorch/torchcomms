@@ -75,6 +75,26 @@ class IServerSocket {
    */
   virtual int shutdown() = 0;
 
+  /**
+   * Ask acceptSocket() to return promptly without closing the socket, so an
+   * accept thread can be joined before shutdown() runs.
+   *
+   * @return true if acceptSocket() is guaranteed to return promptly, allowing
+   * the caller to join before calling shutdown(). false if accept returns only
+   * once the socket is closed, requiring the shutdown()-then-join order.
+   */
+  virtual bool requestStop() {
+    return false;
+  }
+
+  /**
+   * @return true once requestStop() has been called. Lets an accept loop tell
+   * a requested stop from a genuine socket error.
+   */
+  virtual bool stopRequested() const {
+    return false;
+  }
+
   virtual int getFd() const = 0;
 
   virtual folly::Expected<folly::SocketAddress, int> getListenAddress() = 0;
