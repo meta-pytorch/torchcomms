@@ -4,6 +4,7 @@
 
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
 #include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbPhase.cuh"
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
@@ -31,6 +32,33 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
   abortDevice.start();
+
+  if constexpr (!kQuantized) {
+    direct_ib_reduce_scatter_phase<
+        T,
+        ReduceOp,
+        kSendThreads,
+        kRecvThreads,
+        kBlockSize,
+        kStaggerChannels>(
+        args.my_rank,
+        args.num_ranks,
+        DirectIbPackedInputView<T>{
+            .data = args.input,
+            .chunk_elements = args.chunk_elements,
+            .chunk_stride_elements = args.chunk_elements,
+        },
+        DirectIbFinalOutputView<T>{
+            .data = args.output,
+            .seed = args.in_place ? DirectIbOutputSeed::OUTPUT_ALREADY_SEEDED
+                                  : DirectIbOutputSeed::PACKED_INPUT,
+        },
+        args.signaling_data_size,
+        args.peers,
+        make_block_group(),
+        abortDevice);
+    return;
+  }
 
   using QuantOp = QuantizedReduceScatterCopyOpT<kTmaRecv>;
 
