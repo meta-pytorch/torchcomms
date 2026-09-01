@@ -4,6 +4,7 @@
 #include <nccl.h>
 
 #include "comms/ctran/memory/Utils.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -100,6 +101,36 @@ TEST_F(memoryUtilsTest, cudaCallocAsyncSlab) {
   CUDACHECK_TEST(cudaMemGetInfo(&after, &total));
   EXPECT_EQ(before, after);
 }
+
+TEST_F(memoryUtilsTest, memCacheAllocatorDestructorHandlesResetFailure) {
+  EnvRAII<size_t> poolSizeGuard(NCCL_MEM_POOL_SIZE, 0);
+  size_t before, after, total;
+  CUDACHECK_TEST(cudaMemGetInfo(&before, &total));
+
+  auto allocator = std::make_unique<ncclx::memory::memCacheAllocator>();
+  ASSERT_EQ(allocator->init(), commSuccess);
+
+  void* ptr = nullptr;
+  constexpr size_t kSize = 1 << 21;
+  ASSERT_EQ(
+      allocator->getCachedCuMemById(
+          __func__,
+          &ptr,
+          /*cuHandle=*/nullptr,
+          kSize,
+          &dummyLogData,
+          __func__),
+      commSuccess);
+  ASSERT_NE(ptr, nullptr);
+
+  // Keep the region reserved so reset() reports an error during destruction.
+  allocator.reset();
+  EXPECT_EQ(allocator, nullptr);
+
+  CUDACHECK_TEST(cudaMemGetInfo(&after, &total));
+  EXPECT_EQ(before, after);
+}
+
 TEST_F(memoryUtilsTest, allocateShareableBuffer) {
   EnvRAII<size_t> poolSizeGuard(NCCL_MEM_POOL_SIZE, 0);
   auto allocator = ncclx::memory::memCacheAllocator::getInstance();
