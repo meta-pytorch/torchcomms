@@ -18,9 +18,9 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://
 
 apt-get update
 
-# Install OMIX (includes GPU driver + oneAPI DLE components)
+# Install OMIX (includes GPU driver + oneAPI DLE components) and source OneAPI components
 apt-get install -y intel-omix-dev
-
+source /opt/intel/oneapi/setvars.sh
 # Cleanup
 apt-get autoclean && apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -42,6 +42,8 @@ ulimit -n 65535 # Increase the open file descriptor limit to avoid oneCCL/Level 
 
 python3 -m pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 
+#Source DLE 
+source /opt/intel/oneapi/setvars.sh
 #Build and run XCCL C++ unit tests (mock-based, no XPU hardware required)
 cd torchcomms
 cmake -B build -G Ninja -DBUILD_TESTS=ON -DUSE_XCCL=ON -DUSE_NCCL=OFF -DUSE_NCCLX=OFF -DUSE_GLOO=ON -DUSE_TRANSPORT=OFF
