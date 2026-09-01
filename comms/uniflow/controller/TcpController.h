@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <concepts>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -262,6 +263,15 @@ struct SyncAccept {
 struct AsyncAccept {
   explicit AsyncAccept(EventBase& evb) : evb_(evb) {}
 
+  /// Marks the alive guard dead, so any callback still queued on the loop
+  /// becomes a no-op, and settles promises no longer anyone's job to settle.
+  ~AsyncAccept();
+
+  AsyncAccept(const AsyncAccept&) = delete;
+  AsyncAccept& operator=(const AsyncAccept&) = delete;
+  AsyncAccept(AsyncAccept&&) = delete;
+  AsyncAccept& operator=(AsyncAccept&&) = delete;
+
   std::future<std::unique_ptr<Conn>> accept(
       std::atomic<int>& listenSock,
       const TcpSocketConfig& config,
@@ -270,11 +280,57 @@ struct AsyncAccept {
   void shutdown(std::atomic<int>& listenSock, const std::string& id);
 
  private:
-  // All private methods run on the loop thread only.
+  // All private methods run on the loop thread only, except
+  // runOnLoopBounded() which is the seam onto it.
   void acceptPendingConnections(
       std::atomic<int>& listenSock,
       const TcpSocketConfig& config);
   void teardown(int fd);
+  /// Runs `work` on the loop and waits up to `timeout`. Returns false if the
+  /// loop did not run it in time, which covers both a loop that has stopped
+  /// (dispatch() then enqueues work nobody drains) and one wedged in another
+  /// callback. Exists because EventBase::dispatchAndWait() cannot time out, and
+  /// teardown must not be able to block forever on the loop.
+  [[nodiscard]] bool runOnLoopBounded(
+      std::function<void()> work,
+      std::chrono::milliseconds timeout);
+
+  /// How long listener teardown will wait for the event loop before giving up
+  /// and closing the fd regardless. Generous: a healthy loop runs a queued
+  /// callback in microseconds, so reaching this at all means the loop is
+  /// stopped or wedged, and the only question is whether teardown reports that
+  /// or hangs on it.
+  static constexpr std::chrono::milliseconds kLoopTeardownTimeout{5000};
+
+  /// Tells a callback running on the loop whether the object that dispatched it
+  /// still exists.
+  ///
+  /// Needed because giving up on a bounded wait does not recall the callback:
+  /// dispatch() has no cancellation (see EventBase.h -- work enqueued after
+  /// stop() is simply never run), so a callback abandoned by runOnLoopBounded()
+  /// stays queued and executes whenever the loop next drains, which can be
+  /// after this object is gone. Both dispatch sites here capture the enclosing
+  /// object, and accept()'s also captures a reference to the owning server's
+  /// listenSock_, so a late callback can touch freed memory that this class
+  /// does not even own -- which is why callbacks bail out wholesale on a dead
+  /// guard rather than trying to salvage part of their work.
+  ///
+  /// Held through a shared_ptr so the guard itself outlives the object, and
+  /// carries its own mutex: a callback holds it for its entire body and the
+  /// destructor takes it before clearing the flag, so the flag cannot go false
+  /// midway through a callback that already passed the check.
+  ///
+  /// Consequence: ~AsyncAccept() blocks until any in-flight callback finishes.
+  /// And because the mutex is not recursive, destroying an AsyncAccept from the
+  /// loop thread while one of its own guarded callbacks is on the stack -- for
+  /// instance from a continuation of a promise that callback settles -- would
+  /// deadlock the destructor against a lock the same thread already holds.
+  /// Destroy it from the owning thread, never from the loop.
+  struct Alive {
+    std::mutex mu;
+    bool alive{true};
+  };
+  std::shared_ptr<Alive> alive_{std::make_shared<Alive>()};
 
   EventBase& evb_;
   bool accepting_{false}; // loop-thread-only
