@@ -22,6 +22,17 @@ cudaError_t launchDeviceSetAbortWithContext(
     int* observedWinner,
     cudaStream_t stream);
 
+// Records a terminal reason through `AbortFlag`, the poll-state-free handle the
+// IBRC transport stores in device memory, rather than through `AbortDevice`.
+// The two are separate writers of the same shared reason and must produce the
+// same first-writer line.
+cudaError_t launchFlagSetAbortWithContext(
+    AbortDevice abort,
+    AbortReason reason,
+    bool useContext,
+    int* observedWinner,
+    cudaStream_t stream);
+
 cudaError_t launchDeviceReadAbort(
     AbortDevice abort,
     int* observed,
