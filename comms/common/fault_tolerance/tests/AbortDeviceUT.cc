@@ -6,8 +6,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <thread>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "comms/common/fault_tolerance/Abort.h"
@@ -58,6 +60,41 @@ void destroyEvent(cudaEvent_t event) {
   if (event != nullptr) {
     EXPECT_EQ(cudaEventDestroy(event), cudaSuccess);
   }
+}
+
+// The greppable contract, spelled out rather than taken from the macro. A test
+// that builds its expectation from `FT_ABORT_FIRST_WRITER_` would follow the
+// macro anywhere it went, including somewhere no existing log search would find
+// it. This is the string oncall greps for.
+constexpr const char* kFirstWriterMarker = "COMMS FT ABORT FIRST WRITER: ";
+
+// Runs `launch`, drains the device printf FIFO, and returns everything the
+// process wrote to stdout meanwhile.
+//
+// The synchronize has to happen *inside* the capture window. Device `printf`
+// appends to a per-context FIFO that the runtime drains only on kernel
+// completion, synchronization, or context destruction, so reading the capture
+// before syncing returns an empty string and the test silently proves nothing.
+template <typename Launch>
+std::string captureDeviceStdout(Launch&& launch) {
+  ::testing::internal::CaptureStdout();
+  const cudaError_t launched = launch();
+  const cudaError_t synced = cudaDeviceSynchronize();
+  std::string captured = ::testing::internal::GetCapturedStdout();
+  // Asserted after the capture closes: a failure message emitted inside the
+  // window would be swallowed by the capture instead of reported.
+  EXPECT_EQ(launched, cudaSuccess);
+  EXPECT_EQ(synced, cudaSuccess);
+  return captured;
+}
+
+size_t countSubstr(const std::string& haystack, const std::string& needle) {
+  size_t count = 0;
+  for (size_t pos = haystack.find(needle); pos != std::string::npos;
+       pos = haystack.find(needle, pos + needle.size())) {
+    ++count;
+  }
+  return count;
 }
 
 } // namespace
@@ -244,25 +281,23 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
   ASSERT_NE(firstWon, nullptr);
   ASSERT_NE(secondWon, nullptr);
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::NETWORK_ERROR,
-          /*useContext=*/true,
-          firstWon.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const std::string firstOut = captureDeviceStdout([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        firstWon.get(),
+        /*stream=*/nullptr);
+  });
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::INTERNAL_ERROR,
-          /*useContext=*/true,
-          secondWon.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const std::string secondOut = captureDeviceStdout([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::INTERNAL_ERROR,
+        /*useContext=*/true,
+        secondWon.get(),
+        /*stream=*/nullptr);
+  });
 
   EXPECT_EQ(readDeviceValue(firstWon), 1);
   EXPECT_EQ(readDeviceValue(secondWon), 0);
@@ -272,6 +307,23 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
           .reason = AbortReason::NETWORK_ERROR,
           .context = "",
       }));
+
+  // The winner's line, in full. Asserting the rendered text rather than only
+  // the CAS result is the point: the boolean is unchanged if the printf is
+  // deleted or its arguments are wrong.
+  EXPECT_THAT(
+      firstOut,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "device reason=" +
+          std::to_string(static_cast<int>(AbortReason::NETWORK_ERROR)) +
+          " context=AbortDeviceTest callsite"))
+      << "captured: " << firstOut;
+
+  // The loser is silent, and silence is the property that keeps one aborted
+  // communicator from producing one line per observing thread.
+  EXPECT_EQ(countSubstr(secondOut, kFirstWriterMarker), 0U)
+      << "captured: " << secondOut;
+  EXPECT_EQ(countSubstr(firstOut + secondOut, kFirstWriterMarker), 1U);
 }
 
 TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
@@ -279,15 +331,14 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
   auto won = makeDeviceValue<int>();
   ASSERT_NE(won, nullptr);
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::INTERNAL_ERROR,
-          /*useContext=*/false,
-          won.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const std::string out = captureDeviceStdout([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::INTERNAL_ERROR,
+        /*useContext=*/false,
+        won.get(),
+        /*stream=*/nullptr);
+  });
 
   EXPECT_EQ(readDeviceValue(won), 1);
   EXPECT_EQ(
@@ -296,6 +347,72 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
           .reason = AbortReason::INTERNAL_ERROR,
           .context = "",
       }));
+
+  // The log belongs to the CAS win, not to whether a diagnostic string was
+  // supplied. This is the regression guard for the `context != nullptr` guard
+  // that used to sit on the printf: with it restored, the line disappears
+  // entirely and this fails.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "device reason=" +
+          std::to_string(static_cast<int>(AbortReason::INTERNAL_ERROR)) +
+          " context=\n"))
+      << "captured: " << out;
+}
+
+// `AbortFlag` is the other device writer of the shared reason -- the
+// poll-state-free handle the IBRC transport keeps in device memory, and the one
+// its proxy watchdogs abort through. It must produce the same first-writer line
+// as `AbortDevice`, or a watchdog abort leaves no greppable origin at all.
+TEST(AbortDeviceTest, flagSetAbortEmitsFirstWriterMarker) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+
+  const std::string out = captureDeviceStdout([&] {
+    return launchFlagSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::IBRC_PROXY_TIMEOUT,
+        /*useContext=*/true,
+        won.get(),
+        /*stream=*/nullptr);
+  });
+
+  EXPECT_EQ(readDeviceValue(won), 1);
+  EXPECT_EQ(abort.reason(), AbortReason::IBRC_PROXY_TIMEOUT);
+
+  // Including the context. The IBRC watchdogs already pass one naming which
+  // watchdog fired; before this it was accepted and dropped.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "device reason=" +
+          std::to_string(static_cast<int>(AbortReason::IBRC_PROXY_TIMEOUT)) +
+          " context=AbortFlagTest callsite"))
+      << "captured: " << out;
+}
+
+TEST(AbortDeviceTest, flagSetAbortLoserIsSilent) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+
+  // The host takes the reason first, so the flag's CAS loses.
+  EXPECT_TRUE(abort.setAbort(AbortReason::ABORTED, "host got there first"));
+
+  const std::string out = captureDeviceStdout([&] {
+    return launchFlagSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        won.get(),
+        /*stream=*/nullptr);
+  });
+
+  EXPECT_EQ(readDeviceValue(won), 0);
+  EXPECT_EQ(abort.reason(), AbortReason::ABORTED);
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 0U) << "captured: " << out;
 }
 
 TEST(AbortDeviceTest, deviceWinnerDoesNotExposeLosingHostContext) {
@@ -1043,6 +1160,44 @@ TEST(AbortMacrosTest, TimeoutTerminatesTheLoop) {
   EXPECT_LT(observed, kMacroTimeoutLoopBound);
   EXPECT_GT(observed, kMacroTimeoutMinIterations);
   EXPECT_TRUE(abort.isTimedOut());
+}
+
+// The third way a device abort is declared: not `setAbort()` from either
+// handle, but a deadline lapsing inside `FT_ABORT_CHECK`. The thread that wins
+// the timeout CAS logs through the same marker, and it carries the caller's own
+// message and source location so the line says which wait gave up.
+//
+// Deliberately on the SKIP path. Under TRAP the marker is unassertable:
+// `__trap()` faults the context and the printf FIFO is not reliably drained.
+TEST(AbortMacrosTest, TimeoutFirstWriterEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(kMacroTimeoutMs);
+  ASSERT_EQ(abort.getDeviceHandle().behavior(), AbortBehavior::SKIP);
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+
+  const std::string out = captureDeviceStdout([&] {
+    return launchMacroTimeoutLoop(
+        abort.getDeviceHandle(),
+        iterations.get(),
+        kMacroTimeoutLoopBound,
+        /*stream=*/nullptr);
+  });
+
+  ASSERT_TRUE(abort.isTimedOut());
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} +
+          "device macroTimeoutLoop iteration"))
+      << "captured: " << out;
+  // The source location the macro concatenates at compile time, which is what
+  // makes the line attributable to a wait rather than only to a communicator.
+  EXPECT_THAT(out, ::testing::HasSubstr("AbortDeviceTest.cu:"))
+      << "captured: " << out;
+  // Exactly one: every later observer of the same terminal reason stays silent.
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
 }
 
 } // namespace comms::fault_tolerance::testing
