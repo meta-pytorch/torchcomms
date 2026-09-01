@@ -13,6 +13,24 @@
 
 #include "comms/common/fault_tolerance/AbortTypes.h"
 
+/*
+ * Marker prefixing every first-writer abort log line, on either side.
+ *
+ * The winner of the reason CAS logs once and every later observer stays silent,
+ * so exactly one of these lines exists per communicator and it names whatever
+ * declared the abort. Defined here rather than spelled out at the three
+ * emitting sites (`Abort::trySetAbort`, `AbortDevice::setAbort`,
+ * `FT_ABORT_CHECK`) so host and device cannot drift apart and stop answering to
+ * the same grep.
+ *
+ * Host and device print different fields after the tag -- the host has the
+ * reason name and a `std::string` context, the device has neither -- so this
+ * shares the marker, not the whole line.
+ */
+#define FT_ABORT_FIRST_WRITER_ "COMMS FT ABORT FIRST WRITER: "
+#define FT_ABORT_FIRST_WRITER_HOST_ FT_ABORT_FIRST_WRITER_ "host "
+#define FT_ABORT_FIRST_WRITER_DEVICE_ FT_ABORT_FIRST_WRITER_ "device "
+
 namespace comms::fault_tolerance {
 
 enum class AbortCheckResult : int {
