@@ -43,6 +43,20 @@ struct BenchmarkConfig {
   int pipelineDepth{2}; // send/recv staging pipeline depth
   size_t slabSize{0}; // 0 = use chunk-size
   int slabNum{0}; // 0 = use pipeline-depth
+  /*
+   * Run a correctness sweep before the timed loop. A bandwidth number proves
+   * nothing about the bytes: a transport that moved garbage, or nothing, still
+   * reports excellent throughput.
+   */
+  bool verify{true};
+  /*
+   * Cross-rank measurement barrier. A multi-GPU run launches N independent
+   * rank-pairs; nothing lines their timed loops up, so summing their
+   * bandwidths sums windows that do not coincide. When barrierDir is set all N
+   * rendezvous after warmup, immediately before the clock starts.
+   */
+  std::string barrierDir;
+  int barrierRanks{0};
 };
 
 class Benchmark {

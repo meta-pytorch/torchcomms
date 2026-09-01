@@ -7,12 +7,14 @@
 #include <atomic>
 #include <chrono>
 #include <concepts>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "comms/uniflow/controller/Controller.h"
@@ -23,9 +25,21 @@ class EventBase;
 
 namespace uniflow::controller {
 
+/// First live global IPv6 address on `device`, or an error if it has none.
+///
+/// Deprecated addresses (IFA_F_DEPRECATED) are skipped: they bind successfully
+/// and so are indistinguishable from a live address at the socket layer, but a
+/// peer is not supposed to reply to them.
+Result<std::string> deviceGlobalIpv6(const std::string& device);
+
 /// Socket configuration for TcpServer and TcpClient.
 /// Optional fields: valued → setsockopt, nullopt → OS kernel default.
 /// Default-constructed with production-tuned values.
+///
+/// Applied identically to accepted and client-side connections by
+/// applySocketConfig. connTimeout is the one field that does not fall through
+/// to the OS on nullopt: it backs SO_SNDTIMEO/SO_RCVTIMEO, which default to 30s
+/// so that an unresponsive peer cannot wedge a blocking recv forever.
 struct TcpSocketConfig {
   std::optional<std::chrono::seconds> connTimeout{std::chrono::seconds{30}};
   std::optional<int> socketBufSize{1 << 20}; // 1MB
@@ -37,6 +51,14 @@ struct TcpSocketConfig {
   std::optional<int> keepaliveCount{3};
   std::optional<std::chrono::milliseconds> userTimeout{
       std::chrono::milliseconds{60000}};
+
+  /// Network device (e.g. "eth2") to pin egress to via SO_BINDTODEVICE.
+  /// Unset by default: without it the kernel routing table picks the egress
+  /// device, so binding a source address on the listener still leaves no
+  /// control over which NIC traffic actually leaves through. Opt-in because
+  /// forcing egress onto one device breaks connectivity wherever routing was
+  /// selecting a different, working NIC.
+  std::optional<std::string> bindToDevice;
 
   int acceptRetryCnt{5};
   size_t connectRetries{10};
@@ -128,6 +150,18 @@ class TcpConn : public Conn {
   std::future<Result<size_t>> send(std::span<const uint8_t> data) override;
   std::future<Result<size_t>> recv(std::vector<uint8_t>& data) override;
   std::future<Result<size_t>> recv(std::span<uint8_t> buf) override;
+  /// Closes the socket. Safe from any thread for SyncIO, which is what every
+  /// caller holds today: a SyncIO fd is never registered with an EventBase, so
+  /// there is no deferred unregisterFd to drain first and no loop thread
+  /// reading sock_.
+  ///
+  /// NOT safe off the loop thread for AsyncIO. That fd is registered with
+  /// epoll, and the loop thread reads sock_ in trySend(), onRecvReady() and
+  /// updateFdRegistration(); closing from elsewhere both races those reads and
+  /// closes a still-registered fd, which EventBase::unregisterFd forbids. See
+  /// ~TcpConn for the sequence such a close would have to follow --
+  /// dispatchAndWait(failAllOps), then a second dispatchAndWait to drain the
+  /// deferred unregister.
   void close() override;
 
   int getFd() const {
@@ -140,7 +174,7 @@ class TcpConn : public Conn {
   bool sendAll(const void* buf, size_t len);
   /// Vectored sendAll: one syscall for the length prefix plus payload. Mutates
   /// @p iov to track partial writes, so it must not be reused by the caller.
-  bool sendAllVec(iovec* iov, int iovCnt);
+  bool sendAllVec(std::span<iovec> iov);
   bool recvAll(void* buf, size_t len);
   bool exchangeMagic();
   Result<size_t> syncSend(std::span<const uint8_t> data);
@@ -216,12 +250,27 @@ struct SyncAccept {
 /// connections arrive. All async state is accessed exclusively on the
 /// loop thread via dispatch() — no atomics needed.
 ///
+/// "Async" describes the accept, not the connection. The Conn handed back is a
+/// TcpConn<SyncIO>: blocking send/recv on the caller's thread, fd never
+/// registered with the EventBase, which has no further part in the data path
+/// once the handshake completes. Callers wanting async I/O must build a
+/// TcpConn<AsyncIO> themselves; nothing does today.
+///
 /// Lifetime: The EventBase must outlive all calls to shutdown(). The
 /// BasicTcpServer destructor calls shutdown(), so either:
 ///   (a) the EventBase outlives the BasicTcpServer, OR
 ///   (b) the caller calls shutdown() before the EventBase is destroyed.
 struct AsyncAccept {
   explicit AsyncAccept(EventBase& evb) : evb_(evb) {}
+
+  /// Marks the alive guard dead, so any callback still queued on the loop
+  /// becomes a no-op, and settles promises no longer anyone's job to settle.
+  ~AsyncAccept();
+
+  AsyncAccept(const AsyncAccept&) = delete;
+  AsyncAccept& operator=(const AsyncAccept&) = delete;
+  AsyncAccept(AsyncAccept&&) = delete;
+  AsyncAccept& operator=(AsyncAccept&&) = delete;
 
   std::future<std::unique_ptr<Conn>> accept(
       std::atomic<int>& listenSock,
@@ -231,15 +280,60 @@ struct AsyncAccept {
   void shutdown(std::atomic<int>& listenSock, const std::string& id);
 
  private:
-  // All private methods run on the loop thread only.
-  void acceptPendingConnections(std::atomic<int>& listenSock);
+  // All private methods run on the loop thread only, except
+  // runOnLoopBounded() which is the seam onto it.
+  void acceptPendingConnections(
+      std::atomic<int>& listenSock,
+      const TcpSocketConfig& config);
   void teardown(int fd);
+  /// Runs `work` on the loop and waits up to `timeout`. Returns false if the
+  /// loop did not run it in time, which covers both a loop that has stopped
+  /// (dispatch() then enqueues work nobody drains) and one wedged in another
+  /// callback. Exists because EventBase::dispatchAndWait() cannot time out, and
+  /// teardown must not be able to block forever on the loop.
+  [[nodiscard]] bool runOnLoopBounded(
+      std::function<void()> work,
+      std::chrono::milliseconds timeout);
+
+  /// How long listener teardown will wait for the event loop before giving up
+  /// and closing the fd regardless. Generous: a healthy loop runs a queued
+  /// callback in microseconds, so reaching this at all means the loop is
+  /// stopped or wedged, and the only question is whether teardown reports that
+  /// or hangs on it.
+  static constexpr std::chrono::milliseconds kLoopTeardownTimeout{5000};
+
+  /// Tells a callback running on the loop whether the object that dispatched it
+  /// still exists.
+  ///
+  /// Needed because giving up on a bounded wait does not recall the callback:
+  /// dispatch() has no cancellation (see EventBase.h -- work enqueued after
+  /// stop() is simply never run), so a callback abandoned by runOnLoopBounded()
+  /// stays queued and executes whenever the loop next drains, which can be
+  /// after this object is gone. Both dispatch sites here capture the enclosing
+  /// object, and accept()'s also captures a reference to the owning server's
+  /// listenSock_, so a late callback can touch freed memory that this class
+  /// does not even own -- which is why callbacks bail out wholesale on a dead
+  /// guard rather than trying to salvage part of their work.
+  ///
+  /// Held through a shared_ptr so the guard itself outlives the object, and
+  /// carries its own mutex: a callback holds it for its entire body and the
+  /// destructor takes it before clearing the flag, so the flag cannot go false
+  /// midway through a callback that already passed the check.
+  ///
+  /// Consequence: ~AsyncAccept() blocks until any in-flight callback finishes.
+  /// And because the mutex is not recursive, destroying an AsyncAccept from the
+  /// loop thread while one of its own guarded callbacks is on the stack -- for
+  /// instance from a continuation of a promise that callback settles -- would
+  /// deadlock the destructor against a lock the same thread already holds.
+  /// Destroy it from the owning thread, never from the loop.
+  struct Alive {
+    std::mutex mu;
+    bool alive{true};
+  };
+  std::shared_ptr<Alive> alive_{std::make_shared<Alive>()};
 
   EventBase& evb_;
   bool accepting_{false}; // loop-thread-only
-  // Buffer sizing for sockets accepted on the loop thread. Copied rather than
-  // referenced because accept() returns before acceptPendingConnections runs.
-  std::optional<int> socketBufSize_; // loop-thread-only
   std::queue<std::unique_ptr<Conn>> readyConns_;
   std::queue<std::promise<std::unique_ptr<Conn>>> pendingPromises_;
 };
