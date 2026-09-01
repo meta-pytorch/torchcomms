@@ -108,6 +108,11 @@ class CommsSpdlogLogger {
       bool asyncLogging = true);
   void configureOutput(std::string_view logFilePath);
 
+  // Test-only: appends to the dist sink so a test can observe delivery from
+  // inside the sink call, which is the only point where the lease scoping in
+  // logFormatted() is visible.
+  void addSinkForTesting(std::shared_ptr<spdlog::sinks::sink> sink);
+
  private:
   struct Configuration {
     std::string prefix{"COMMS"};
@@ -240,8 +245,11 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
- * shutdownSpdlogForFatal() releases the library-owned async pool. It drains
- * once any in-flight log calls release their pool references; the synchronous
+ * shutdownSpdlogForFatal() stops the library-owned async pool and nothing
+ * else. That pool drains once every in-flight async post releases its lease;
+ * synchronous delivery holds no lease. spdlog's global registry pool is left
+ * running on purpose: draining it means registry::instance(), which may
+ * already be gone when a FATAL fires during static destruction. The synchronous
  * logger and its output sinks remain valid throughout.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \

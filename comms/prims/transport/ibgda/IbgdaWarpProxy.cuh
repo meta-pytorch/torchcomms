@@ -135,6 +135,10 @@ class IbgdaWarpProxy {
   class Ops {
    public:
     static constexpr uint32_t kWorkerThreads = WorkerThreads;
+    // Every ops policy names its wire format so callers can size transfers by
+    // it (see BlockingIbOps). The proxy stages through its own queues and has
+    // no LL counterpart, so this one is fixed.
+    using WireProto = protocol::Simple;
 
     __device__ __forceinline__ ThreadGroup& group() {
       return workers_;

@@ -1872,7 +1872,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IB_VC_MODE
    type        : enum
-   default     : dqplb
+   default     : spray
    choices     : spray, dqplb
    description : |-
      Configure IBVCs to support either spray mode (uses extra QP for
@@ -2320,12 +2320,12 @@ cvars:
 
  - name        : NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Perf A/B knob for the per-step intra-node NVL broadcast barrier in the
      AllGatherP pipeline / streamed-recursive-doubling algorithms, scoped to the
-     CE-multicast path only. When false (default) the per-step barrier is
-     emitted; when true it is skipped, but only where the multicast write is
+     CE-multicast path only. When false the per-step barrier is emitted;
+     when true (default) it is skipped, but only where the multicast write is
      engaged (pArgs.mcWrite). The barrier exists to pace the N-1 per-peer unicast
      writes so they do not all-to-one incast a single peer, so it is always kept
      on the unicast path regardless of this setting — including on ctwin runs
@@ -3421,8 +3421,8 @@ cvars:
    default     : 1
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
-     in MCCL fused AllReduce. Ring supports 1, 2, 4, and 10; Tree supports 1
-     and 2. The default preserves the existing full-block protocol.
+     in MCCL fused AllReduce. Ring and Tree support 1, 2, 4, and 10. The
+     default preserves the existing full-block protocol.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
