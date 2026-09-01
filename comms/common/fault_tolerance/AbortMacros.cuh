@@ -58,9 +58,14 @@ __device__ __forceinline__ bool abortCheckAndLog(
     return false;
   }
   if (flippedHere) {
-    // The transition from NONE happens exactly once per communicator. Print
-    // regardless of behavior so the production SKIP path retains the winning
-    // device callsite. NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+    // The transition from NONE happens exactly once per communicator, so the
+    // context line is emitted once per rank and cannot interleave with itself.
+    // Print regardless of behavior so the production SKIP path retains the
+    // winning device callsite.
+    // `flippedHere` is set only by the timeout CAS, so the reason is known
+    // without re-reading mapped state.
+    deviceLogAbortContext(abort, AbortReason::TIMED_OUT);
+    // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
     printf(firstWriterFmt, args...);
   } else if (result == AbortCheckResult::TRAP) {
     // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
