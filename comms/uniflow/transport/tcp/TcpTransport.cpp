@@ -328,6 +328,18 @@ TransportInfo TcpTransport::bind() {
     UNIFLOW_LOG_ERROR("TcpTransport::bind: transport is already shut down");
     return TransportInfo{};
   }
+  // Refuse a re-bind rather than re-arming Initialized, which is the only state
+  // connect() admits. Re-arming lets a second connect() reach
+  // establishLanes(), whose first act is to clear lanes_ -- destroying the live
+  // lanes' joinable reader/sender threads, and ~std::thread on a joinable
+  // thread calls std::terminate. The servers_.clear() below would already have
+  // dropped the listener out from under the current connection. Error is
+  // terminal here too: nothing retries a failed bind, and a transport that
+  // never came up should not be revived.
+  if (state_ != TransportState::Disconnected) {
+    UNIFLOW_LOG_ERROR("TcpTransport::bind: transport is already bound");
+    return TransportInfo{};
+  }
   // One listener per device when striping, otherwise a single listener on host_
   // with egress left to the routing table. Each device's listener binds that
   // device's own address *and* sets SO_BINDTODEVICE, because accepted sockets
