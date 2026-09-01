@@ -523,6 +523,6 @@ int main(int argc, char* argv[]) {
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }
