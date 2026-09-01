@@ -46,6 +46,8 @@ void writeIbrcDeviceSlot(
     int numSignalSlots,
     int numCounterSlots,
     IbChannelLayout channelLayout,
-    comms::fault_tolerance::AbortDevice abort);
+    comms::fault_tolerance::AbortDevice abort,
+    int myRank,
+    int peerRank);
 
 } // namespace comms::prims

@@ -1016,7 +1016,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       config_.numSignalSlots,
       config_.numCounterSlots,
       channelLayoutForPeer(peerIndex),
-      abortDevice_);
+      abortDevice_,
+      myRank_,
+      peerIndexToRank(peerIndex));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
