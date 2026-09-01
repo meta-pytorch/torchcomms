@@ -9,6 +9,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -217,6 +218,14 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
   // The reason CAS gives this call exclusive ownership of context_. Publishing
   // happens afterwards on purpose: a racing reader may return the reason with
   // empty context, but it never reads context_ while this swap is in progress.
+  const auto reasonString = abortReasonToString(newReason);
+  std::fprintf(
+      stderr,
+      FT_ABORT_FIRST_WRITER_HOST_ "reason=%d(%.*s) context=%s\n",
+      static_cast<int>(newReason),
+      static_cast<int>(reasonString.size()),
+      reasonString.data(),
+      context.c_str());
   context_.swap(context);
   contextReady_.store(true, std::memory_order_release);
   return true;
