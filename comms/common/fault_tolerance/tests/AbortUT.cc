@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -607,6 +608,42 @@ TEST(AbortTest, firstTerminalReasonWins) {
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
   EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
+}
+
+// `firstTerminalReasonWins` covers the sequential case. This is the contended
+// one: many threads recording different reasons at once must still leave
+// exactly one terminal reason behind, and it must not move afterwards. A reason
+// that could be overwritten would make the first-writer log name a fault that
+// is no longer the one being reported.
+TEST(AbortTest, concurrentWritersLeaveOneStableReason) {
+  constexpr int kThreadsPerReason = 16;
+  Abort abort{/*enabled=*/true};
+
+  std::atomic<bool> go{false};
+  std::vector<std::thread> writers;
+  writers.reserve(kThreadsPerReason * 2);
+  for (int i = 0; i < kThreadsPerReason * 2; ++i) {
+    const auto reason =
+        (i % 2 == 0) ? AbortReason::ABORTED : AbortReason::TIMED_OUT;
+    writers.emplace_back([&abort, &go, reason] {
+      while (!go.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      abort.setAbort(reason);
+    });
+  }
+  go.store(true, std::memory_order_release);
+  for (auto& t : writers) {
+    t.join();
+  }
+
+  const auto reason = abort.reason();
+  EXPECT_TRUE(
+      reason == AbortReason::ABORTED || reason == AbortReason::TIMED_OUT);
+  EXPECT_TRUE(abort.isAborted());
+  for (int i = 0; i < 1000; ++i) {
+    ASSERT_EQ(abort.reason(), reason);
+  }
 }
 
 TEST(AbortTest, abortReasonToString) {
