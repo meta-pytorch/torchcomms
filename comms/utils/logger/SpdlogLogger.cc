@@ -378,11 +378,51 @@ std::shared_ptr<spdlog::logger> createLogger(std::string name) {
 
 } // namespace
 
+/*
+ * Stops the library-owned pool and nothing else. In particular it must not
+ * reach spdlog's global registry.
+ *
+ * spdlog::shutdown() would drain the registry pool that comms/uniflow/logging
+ * still rides, which is worth something -- but it gets there through
+ * registry::instance(), a function-local static. COMMS_LOG_FATAL can fire
+ * during static destruction, and once that singleton is gone the call is
+ * undefined behavior on the one path that must stay predictable. A narrow
+ * window, but the cost of losing it is an abort that misbehaves instead of
+ * aborting.
+ *
+ * Keeping the registry off this path is also the invariant comms already
+ * bought: comms loggers were moved off the registry onto their own pool and
+ * their own name map precisely so teardown answers to this translation unit.
+ * The price is that uniflow's queued messages do not survive the std::abort()
+ * below; the fix for that belongs on uniflow's side, as a synchronous fallback
+ * like the one this library has, not as a registry call from here.
+ */
 void shutdownSpdlogForFatal() {
   getCommsThreadPoolState().stop();
 }
 
 namespace testing {
+
+void addSinkForTesting(
+    CommsSpdlogLogger& logger,
+    std::shared_ptr<spdlog::sinks::sink> sink) {
+  logger.addSinkForTesting(std::move(sink));
+}
+
+/*
+ * Both of these touch spdlog's global registry from the logger library's own
+ * translation unit. A test cannot use spdlog::thread_pool() directly for this:
+ * the registry is header-only and under @mode/dev-asan the test binary holds a
+ * separate copy, so it would report on a registry shutdownSpdlogForFatal()
+ * never touches.
+ */
+void initGlobalThreadPoolForTesting() {
+  ::spdlog::init_thread_pool(kAsyncQueueSize, kAsyncThreadCount);
+}
+
+bool globalThreadPoolAliveForTesting() {
+  return ::spdlog::thread_pool() != nullptr;
+}
 
 bool holdAsyncThreadPoolLeaseForTesting(const std::function<void()>& callback) {
   auto lease = getCommsThreadPoolState().acquire();
@@ -505,11 +545,14 @@ bool CommsSpdlogLogger::usesAsyncLogging() const {
 void CommsSpdlogLogger::flush() {
   // Once the async pool is gone, spdlog reports the failed post through its
   // error handler and drops the flush, so use the synchronous path instead.
-  const auto threadPoolLease = getCommsThreadPoolState().acquire();
-  if (threadPoolLease) {
+  // The lease is released before that fallback for the reason logFormatted()
+  // documents: synchronous delivery must not hold a pool lease.
+  bool asyncFlushed = false;
+  if (const auto threadPoolLease = getCommsThreadPoolState().acquire()) {
     logger_->flush();
+    asyncFlushed = true;
   }
-  if (!usesAsyncLogging() || !threadPoolLease) {
+  if (!usesAsyncLogging() || !asyncFlushed) {
     synchronousLogger_->flush();
   }
 }
@@ -610,6 +653,12 @@ void CommsSpdlogLogger::configureOutput(std::string_view logFilePath) {
   outputSink_->set_sinks(std::move(sinks));
 }
 
+void CommsSpdlogLogger::addSinkForTesting(
+    std::shared_ptr<spdlog::sinks::sink> sink) {
+  sink->set_formatter(makeFormatter());
+  outputSink_->add_sink(std::move(sink));
+}
+
 void CommsSpdlogLogger::logFormatted(
     spdlog::source_loc location,
     spdlog::level::level_enum level,
@@ -641,13 +690,22 @@ void CommsSpdlogLogger::logFormatted(
        configuration->threadContextFn(),
        getLogThreadName(),
        configuration->prefix});
-  const auto threadPoolLease = getCommsThreadPoolState().acquire();
-  if (bypassLevelGate || !configuration->asyncLogging || !threadPoolLease) {
-    synchronousLogger_->log(location, level, formatted);
-    synchronousLogger_->flush();
-  } else {
-    logger_->log(location, level, formatted);
+  /*
+   * The lease only has to keep the pool alive across the async post, so it is
+   * scoped to that branch. acquire() takes a shared lock on leaseMutex_ that
+   * stop() -- called by shutdownSpdlogForFatal() and the exit-time stopper --
+   * takes exclusively, so holding the lease across synchronous delivery would
+   * make shutdown wait for the lease behind the sink write. Synchronous
+   * delivery no longer holds a pool lease, so that edge is gone.
+   */
+  if (!bypassLevelGate && configuration->asyncLogging) {
+    if (const auto threadPoolLease = getCommsThreadPoolState().acquire()) {
+      logger_->log(location, level, formatted);
+      return;
+    }
   }
+  synchronousLogger_->log(location, level, formatted);
+  synchronousLogger_->flush();
 }
 
 CommsSpdlogLogger& getSpdlogLogger() {
