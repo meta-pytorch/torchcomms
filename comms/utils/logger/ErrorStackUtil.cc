@@ -3,13 +3,10 @@
 #include "comms/utils/logger/ErrorStackUtil.h"
 
 #include <array>
-#include <sstream>
 #include <string_view>
 
-#if __has_include(<dwarf.h>)
-#include <folly/debugging/symbolizer/Symbolizer.h>
-#endif
 #include <folly/String.h>
+#include <folly/debugging/symbolizer/Symbolizer.h>
 
 namespace {
 // Leading native-stack frames that belong to the logging / Scuba plumbing
@@ -55,25 +52,33 @@ void skipInternalFrames(std::vector<std::string>& frames) {
 
 namespace meta::comms::logger {
 
-std::vector<std::string> captureNativeErrorStack() {
-  std::vector<std::string> stackTraceDemangled;
+namespace detail {
 
-  // Get stack trace (requires elfutils/libdwarf for folly Symbolizer)
-#if __has_include(<dwarf.h>)
-  std::stringstream ss;
-  ss << folly::symbolizer::getStackTraceStr();
+std::vector<std::string> normalizeStackTrace(const std::string& trace) {
+  // folly returns "" both from the no-symbolizer stub and, per Symbolizer.h,
+  // from the real implementation when no trace is available. Splitting "" would
+  // yield one empty element -- a bogus frame where there should be none.
+  if (trace.empty()) {
+    return {};
+  }
+
+  std::vector<std::string> frames;
   // @lint-ignore CLANGTIDY
-  folly::split('\n', ss.str(), stackTraceDemangled);
-  for (auto& line : stackTraceDemangled) {
+  folly::split('\n', trace, frames, /* ignoreEmpty */ true);
+  for (auto& line : frames) {
     auto demangledLine = folly::demangle(line.c_str()).toStdString();
     line.swap(demangledLine);
   }
   // Drop the leading logging / Scuba plumbing frames so the recorded stack
   // starts near the real error site.
-  skipInternalFrames(stackTraceDemangled);
-#endif
+  skipInternalFrames(frames);
+  return frames;
+}
 
-  return stackTraceDemangled;
+} // namespace detail
+
+std::vector<std::string> captureNativeErrorStack() {
+  return detail::normalizeStackTrace(folly::symbolizer::getStackTraceStr());
 }
 
 } // namespace meta::comms::logger
