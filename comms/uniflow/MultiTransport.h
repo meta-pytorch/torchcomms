@@ -12,6 +12,10 @@
 
 namespace uniflow {
 
+// Defined in transport/tcp/TcpTransport.h, which this header cannot include:
+// TCP is AMD-only, so the type is not available on every platform.
+struct TcpTransportConfig;
+
 enum class CpuNicSelectionPolicy {
   kAll,
   kNumaLocalBounded,
@@ -46,6 +50,18 @@ struct MultiTransportFactoryOptions {
   // loopback (e.g. same-host testing).
   bool enableTcp{false};
   std::string tcpBindHost{};
+  // Overrides for the TCP data transport: socket options, lane count
+  // (numSockets), and the devices lanes bind to. Null keeps the
+  // TcpTransportConfig defaults, so this is an override seam rather than
+  // required config, and it is the only way to reach lane striping from outside
+  // the transport.
+  //
+  // Held by pointer, and the type only forward-declared, because TCP is
+  // AMD-only (see the ovr_config//gpu:amd deps in BUCK): a by-value member
+  // would drag TcpTransport.h into every consumer of this header and fail to
+  // compile where the transport is not built. The struct layout stays
+  // platform-independent this way, so callers need no #ifdef to leave it unset.
+  std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
 };
 
 class MultiTransport {
