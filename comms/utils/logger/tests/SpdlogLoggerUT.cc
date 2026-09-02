@@ -23,7 +23,6 @@
 #include <vector>
 
 #include <gtest/gtest.h>
-#include <spdlog/async.h>
 #include <spdlog/sinks/sink.h>
 
 #include "comms/utils/logger/CommsLogFormatter.h"
@@ -236,6 +235,18 @@ TEST_F(LogLevelRestoringTest, ConfiguresOnlyNamedLoggerWhenRequested) {
   EXPECT_EQ(namedErrors, (std::vector<std::string>{"named error"}));
 }
 
+TEST(SpdlogLoggerTest, NamedConfigurationPreservesExistingLevel) {
+  constexpr std::string_view kContext{"comms.preserve_level_test"};
+  auto& logger = getSpdlogLogger(kContext);
+  logger.set_level(spdlog::level::err);
+
+  meta::comms::logger::configureSpdlogLogger(
+      kContext, "TEST", "", []() { return 0; }, {}, false);
+
+  EXPECT_FALSE(logger.should_log(spdlog::level::info));
+  EXPECT_TRUE(logger.should_log(spdlog::level::err));
+}
+
 TEST(SpdlogLoggerTest, MatchesLegacyStderrRouting) {
   EXPECT_TRUE(meta::comms::logger::shouldWriteCommsLogToStderr("WARN message"));
   EXPECT_TRUE(
@@ -285,6 +296,86 @@ TEST(SpdlogLoggerTest, AsyncInfoReachesFileViaPeriodicFlush) {
 
   EXPECT_TRUE(waitForFileToContain(
       scopedLogFile.path(), "asynchronous periodic flush"));
+}
+
+TEST(SpdlogLoggerTest, AsyncReconfigurationPreservesQueuedDestination) {
+  struct BlockingSinkState {
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool workerBlocked{false};
+    bool releaseWorker{false};
+  };
+
+  constexpr std::string_view kBlockingContext{
+      "comms.reconfiguration_blocker_test"};
+  constexpr std::string_view kTargetContext{
+      "comms.reconfiguration_target_test"};
+  const ScopedTestFile oldLogFile{"comms_spdlog_reconfiguration_old.log"};
+  const ScopedTestFile newLogFile{"comms_spdlog_reconfiguration_new.log"};
+
+  auto& blockingLogger = getSpdlogLogger(kBlockingContext);
+  blockingLogger.configure("BLOCKER", []() { return 0; }, {}, true);
+  blockingLogger.set_level(spdlog::level::info);
+
+  const auto blockingSinkState = std::make_shared<BlockingSinkState>();
+  meta::comms::logger::testing::addSinkForTesting(
+      blockingLogger, std::make_shared<CallbackSink>([blockingSinkState]() {
+        std::unique_lock lock{blockingSinkState->mutex};
+        blockingSinkState->workerBlocked = true;
+        blockingSinkState->condition.notify_all();
+        blockingSinkState->condition.wait(
+            lock, [&]() { return blockingSinkState->releaseWorker; });
+      }));
+  COMMS_LOG_NAMED(kBlockingContext, INFO, "block async worker");
+
+  {
+    std::unique_lock lock{blockingSinkState->mutex};
+    if (!blockingSinkState->condition.wait_for(
+            lock, std::chrono::seconds{5}, [&]() {
+              return blockingSinkState->workerBlocked;
+            })) {
+      blockingSinkState->releaseWorker = true;
+      blockingSinkState->condition.notify_all();
+      FAIL() << "async worker did not enter the blocking sink";
+    }
+  }
+
+  meta::comms::logger::configureSpdlogLogger(
+      kTargetContext,
+      "OLD",
+      oldLogFile.path().string(),
+      []() { return 0; },
+      {},
+      true);
+  auto& targetLogger = getSpdlogLogger(kTargetContext);
+  targetLogger.set_level(spdlog::level::info);
+  COMMS_LOG_NAMED(kTargetContext, ERR, "record accepted before reset");
+
+  meta::comms::logger::configureSpdlogLogger(
+      kTargetContext,
+      "NEW",
+      newLogFile.path().string(),
+      []() { return 0; },
+      {},
+      true);
+  COMMS_LOG_NAMED(kTargetContext, ERR, "record accepted after reset");
+
+  {
+    std::lock_guard lock{blockingSinkState->mutex};
+    blockingSinkState->releaseWorker = true;
+  }
+  blockingSinkState->condition.notify_all();
+
+  ASSERT_TRUE(
+      waitForFileToContain(oldLogFile.path(), "record accepted before reset"));
+  ASSERT_TRUE(
+      waitForFileToContain(newLogFile.path(), "record accepted after reset"));
+  EXPECT_EQ(
+      readFile(oldLogFile.path()).find("record accepted after reset"),
+      std::string::npos);
+  EXPECT_EQ(
+      readFile(newLogFile.path()).find("record accepted before reset"),
+      std::string::npos);
 }
 
 TEST(SpdlogLoggerTest, AbortWritesErrorBeforeTermination) {
