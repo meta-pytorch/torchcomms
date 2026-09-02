@@ -70,9 +70,10 @@ struct CliOptions {
   // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
   // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
   int tcpSockBuf{0};
-  // Parallel TCP data sockets per peer. Tracks the TcpTransportConfig default;
-  // 1 keeps the pre-lane wire format.
-  size_t tcpNumSockets{4};
+  // Parallel TCP data sockets per bound device. Tracks the TcpTransportConfig
+  // default; the total is this times the device count, and 1 with no bound
+  // devices keeps the pre-lane wire format.
+  size_t tcpSocketsPerNic{4};
   // Pin TCP egress to --tcp-iface via SO_BINDTODEVICE. Opt-in: without it
   // --tcp-iface only selects a source address and routing chooses the NIC.
   bool tcpBindDev{false};
@@ -189,17 +190,19 @@ void printUsage(const char* prog) {
       << "                         which leaves it unset so the kernel autotunes the\n"
       << "                         window; setting it explicitly disables autotuning)\n"
       << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
-      << "  --tcp-num-sockets <n>  Parallel TCP data sockets per peer (default: 4). Both\n"
-      << "                         peers must agree; a single socket keeps the pre-lane\n"
-      << "                         wire format\n"
+      << "  --tcp-sockets-per-nic <n>  Parallel TCP data sockets per bound device\n"
+      << "                         (default: 4). Total lanes is this times the device\n"
+      << "                         count, so 4 with two --tcp-bind-devs is 8 lanes. Both\n"
+      << "                         peers must agree; 1 with no bound devices keeps the\n"
+      << "                         pre-lane wire format\n"
       << "  --tcp-bind-dev         Pin TCP egress to --tcp-iface via SO_BINDTODEVICE\n"
       << "                         (default: off, so routing picks the egress NIC and\n"
       << "                         --tcp-iface only selects the source address)\n"
       << "  --tcp-bind-devs <l>    Comma-separated devices to stripe lanes across, e.g.\n"
       << "                         \"eth1,eth2\". Lane i goes to device i%count, one\n"
       << "                         listener per device. Overrides --tcp-bind-dev; both\n"
-      << "                         peers must name the same number of devices, and\n"
-      << "                         --tcp-num-sockets must be at least that count\n"
+      << "                         peers must name the same number of devices; lanes\n"
+      << "                         are per device, so each gets --tcp-sockets-per-nic\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
@@ -256,7 +259,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"tcp-iface", required_argument, nullptr, 266},
       {"tcp-sockbuf", required_argument, nullptr, 268},
       {"no-tcp-async-h2d", no_argument, nullptr, 269},
-      {"tcp-num-sockets", required_argument, nullptr, 270},
+      {"tcp-sockets-per-nic", required_argument, nullptr, 270},
       {"tcp-bind-dev", no_argument, nullptr, 271},
       {"tcp-bind-devs", required_argument, nullptr, 272},
       {"no-verify", no_argument, nullptr, 267},
@@ -354,12 +357,13 @@ CliOptions parseArgs(int argc, char** argv) {
         try {
           const int parsed = std::stoi(optarg);
           if (parsed < 1) {
-            std::cerr << "Invalid value for --tcp-num-sockets: must be >= 1\n";
+            std::cerr
+                << "Invalid value for --tcp-sockets-per-nic: must be >= 1\n";
             std::exit(1);
           }
-          opts.tcpNumSockets = static_cast<size_t>(parsed);
+          opts.tcpSocketsPerNic = static_cast<size_t>(parsed);
         } catch (const std::exception&) {
-          std::cerr << "Invalid value for --tcp-num-sockets: '" << optarg
+          std::cerr << "Invalid value for --tcp-sockets-per-nic: '" << optarg
                     << "'\n";
           std::exit(1);
         }
@@ -525,7 +529,7 @@ int main(int argc, char** argv) {
           opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
                               : std::nullopt,
           opts.tcpAsyncH2d,
-          opts.tcpNumSockets,
+          opts.tcpSocketsPerNic,
           tcpBindDevList(opts)));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
