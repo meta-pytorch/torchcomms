@@ -33,6 +33,10 @@ struct NvlChannelProgress {
   std::size_t activeTailPadding{0};
   std::size_t activeUserBytes{0};
   std::size_t activeMaxSignalBytes{0};
+  // The buffer activeUserBytes describes: src on a send slot, dst on a recv
+  // slot, since the two directions have separate slot arrays. void* because
+  // the send side is const and only ever reads through it.
+  void* activeUserBuf{nullptr};
   NvlProgressStage stage{NvlProgressStage::Idle};
 };
 

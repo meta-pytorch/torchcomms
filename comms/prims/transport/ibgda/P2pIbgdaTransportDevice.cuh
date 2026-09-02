@@ -2120,26 +2120,26 @@ class P2pIbgdaTransportDevice {
    * reuse protocol bytes while an async operation is in flight.
    *
    * Usage starts by initializing the transport-owned mutable state for one
-   * logical transfer, then calling the matching progress method with the same
-   * static geometry until it returns `Done`:
+   * logical transfer, which fixes its geometry, then calling the matching
+   * progress method until it returns `Done`:
    *
-   *   transport->init_send_progress(group, nbytes, max_signal_bytes);
-   *   while (transport->progress_send_once(
-   *              group, src, nbytes, max_signal_bytes, abortDevice)
+   *   transport->init_send_progress(group, src, nbytes, max_signal_bytes);
+   *   while (transport->progress_send_once(group, abortDevice)
    *          != IbgdaSendRecvProgressStatus::Done) {
    *     // Try another independent lane or return to the scheduler.
    *   }
    *
    * Receivers use the symmetric `init_recv_progress()` and
-   * `progress_recv_once()` pair with the same `nbytes` and compatible
-   * `max_signal_bytes`. Zero-byte operations initialize directly to `Done`, so
-   * callers can use the same loop shape for empty and non-empty transfers.
+   * `progress_recv_once()` pair, initialized with the same `nbytes` and a
+   * compatible `max_signal_bytes`. Zero-byte operations initialize directly to
+   * `Done`, so callers can use the same loop shape for empty and non-empty
+   * transfers.
    *
    * The transport-owned state slot stores the shared persistent protocol byte
-   * cursor and only the active async stage, `activeNextByte`, and reserved
-   * stream base. Immutable geometry such as `nbytes` and chunk sizing is
-   * intentionally kept out of HBM-backed state and recomputed by each progress
-   * call from its arguments and the fixed channel layout.
+   * cursor, the active async stage, `activeNextByte`, the reserved stream base,
+   * and the `nbytes`/`max_signal_bytes` captured at init. Everything else,
+   * chunk sizing included, stays out of HBM-backed state and is recomputed by
+   * each progress call from those two values and the fixed channel layout.
    *
    * The progress state is a property of this transport, indexed by
    * `group.group_id` and direction. A caller may have one send and one recv in
@@ -2175,10 +2175,11 @@ class P2pIbgdaTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_send_progress<P2pIbgdaTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, src, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2188,10 +2189,11 @@ class P2pIbgdaTransportDevice {
   template <typename = void>
   __device__ __forceinline__ void init_registered_send_progress(
       ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_registered_send_progress(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, src, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2223,10 +2225,11 @@ class P2pIbgdaTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_recv_progress<P2pIbgdaTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, dst, nbytes, max_signal_bytes);
   }
 
   /**
@@ -2254,10 +2257,6 @@ class P2pIbgdaTransportDevice {
    * conversion context.
    *
    * @param group Thread group matching the one used during initialization.
-   * @param src Source user buffer. The range `[src, src + nbytes)` must remain
-   *            valid until `Done`.
-   * @param nbytes Number of user-buffer bytes from the matching init call.
-   * @param max_signal_bytes Maximum signaled sub-chunk size from init.
    * @param abortDevice Optional device abortDevice checked while dependencies
    * wait.
    * @param args Additional arguments forwarded to `CopyOp::send`.
@@ -2268,13 +2267,10 @@ class P2pIbgdaTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, abortDevice, args...);
   }
 
   /**
@@ -2285,12 +2281,8 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_once(
       ThreadGroup& group,
-      const IbgdaLocalBuffer& src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice()) {
-    return detail::progress_registered_send_once(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice);
+    return detail::progress_registered_send_once(*this, group, abortDevice);
   }
 
   /**
@@ -2310,24 +2302,13 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_send_once_with_trace(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
       Args... args) {
     return detail::
         progress_send_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
-            *this,
-            group,
-            src,
-            nbytes,
-            max_signal_bytes,
-            abortDevice,
-            traceContext,
-            traceState,
-            args...);
+            *this, group, abortDevice, traceContext, traceState, args...);
   }
 
   /**
@@ -2352,10 +2333,6 @@ class P2pIbgdaTransportDevice {
    * conversion context.
    *
    * @param group Thread group matching the one used during initialization.
-   * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
-   *            remain valid until `Done`.
-   * @param nbytes Number of user-buffer bytes from the matching init call.
-   * @param max_signal_bytes Maximum signaled sub-chunk size from init.
    * @param abortDevice Optional device abortDevice checked while dependencies
    * wait.
    * @param args Additional arguments forwarded to `CopyOp::recv`.
@@ -2366,37 +2343,23 @@ class P2pIbgdaTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
-        *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, abortDevice, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_once_with_trace(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
       Args... args) {
     return detail::
         progress_recv_once_with_trace<P2pIbgdaTransportDevice, CopyOp>(
-            *this,
-            group,
-            dst,
-            nbytes,
-            max_signal_bytes,
-            abortDevice,
-            traceContext,
-            traceState,
-            args...);
+            *this, group, abortDevice, traceContext, traceState, args...);
   }
 
   // Templated for the same reason P2pIbTransportDevice templates its
@@ -2410,13 +2373,11 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_acquire_once(
       ThreadGroup& group,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out) {
     return detail::
         progress_recv_acquire_once<P2pIbgdaTransportDevice, protocol::Simple>(
-            *this, group, nbytes, max_signal_bytes, abortDevice, out);
+            *this, group, abortDevice, out);
   }
 
   template <typename = void>
