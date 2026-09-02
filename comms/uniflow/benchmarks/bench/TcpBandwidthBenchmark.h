@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,8 +15,11 @@ namespace uniflow::benchmark {
 /// buffers, or VRAM staged through host memory inside the transport.
 class TcpBandwidthBenchmark : public Benchmark {
  public:
-  explicit TcpBandwidthBenchmark(std::string iface)
-      : iface_(std::move(iface)) {}
+  /// @p sockBufSize is the SO_SNDBUF/SO_RCVBUF value for the data connection;
+  /// nullopt leaves the kernel's own sizing in place, which is what lets
+  /// receive autotuning grow the window past the bandwidth-delay product.
+  TcpBandwidthBenchmark(std::string iface, std::optional<int> sockBufSize)
+      : iface_(std::move(iface)), sockBufSize_(sockBufSize) {}
 
   std::string name() const override {
     return "tcp_bandwidth";
@@ -28,6 +32,7 @@ class TcpBandwidthBenchmark : public Benchmark {
 
  private:
   std::string iface_;
+  std::optional<int> sockBufSize_;
 };
 
 } // namespace uniflow::benchmark
