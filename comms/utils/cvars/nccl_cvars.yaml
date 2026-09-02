@@ -193,7 +193,7 @@ cvars:
 
  - name        : NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM
    type        : bool
-   default     : true
+   default     : false
    description : |-
      Record each captured GPE HOST node on a per-comm, per-graph side capture
      stream instead of inline on the user's stream, mirroring how NCCL records
@@ -219,15 +219,19 @@ cvars:
      relative win on small messages (+52% busbw at 8 MiB / 16 ranks) and
      negligible on large ones (+0.8% at 4 GiB).
 
-     On by default. It changes recorded graph topology (adds one join edge per
+     OFF by default: the spine has an unresolved correctness bug under CUDA
+     graph capture/replay. See
+     https://www.internalfb.com/collab-files/view/10EbU5GgVtvXzEGd4ndMf_4g3S9b3fQCl
+
+     When on, it changes recorded graph topology (adds one join edge per
      collective; the graph gains edges, it does not lose them). Only the
      mixing=0 in-capture path is affected: the mixing=1 side-stream fence and
      every eager path are unchanged.
 
      CAVEAT -- this reintroduces cross-collective serialization of the GPE host
-     callbacks, which is part of what mixing=0 removes for overlap. It is only
-     safe at mixing=0 because mixing=0 already declines to order a graph replay
-     ahead of a following eager CTRAN submission (see
+     callbacks, which is part of what mixing=0 removes for overlap. It is
+     restricted to mixing=0 because mixing=0 already declines to order a graph
+     replay ahead of a following eager CTRAN submission (see
      NCCL_CTRAN_GRAPH_MIXING_SUPPORT), so callers must already host-synchronize
      between replay and eager work. NCCL_CTRAN_GPE_DEVICE_RING removes the HOST
      nodes entirely instead of serializing them (~6% dispatch-latency cost);
