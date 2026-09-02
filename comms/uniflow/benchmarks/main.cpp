@@ -4,6 +4,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -62,6 +63,9 @@ struct CliOptions {
   int slabNum{0};
   std::vector<std::string> rdmaDevices;
   std::string tcpIface{"eth2"};
+  // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
+  // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
+  int tcpSockBuf{1 << 20};
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -139,6 +143,8 @@ void printUsage(const char* prog) {
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
       << "  --tcp-iface <name>     Front-end interface for the TCP transport (default: eth2)\n"
+      << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 1048576,\n"
+      << "                         0 = leave unset so the kernel autotunes the window)\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
@@ -193,6 +199,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"cuda-devices", required_argument, nullptr, 264},
       {"gpu-nics", required_argument, nullptr, 265},
       {"tcp-iface", required_argument, nullptr, 266},
+      {"tcp-sockbuf", required_argument, nullptr, 268},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -268,6 +275,18 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 266:
         opts.tcpIface = optarg;
+        break;
+      case 268:
+        try {
+          opts.tcpSockBuf = std::stoi(optarg);
+          if (opts.tcpSockBuf < 0) {
+            std::cerr << "Invalid value for --tcp-sockbuf: must be >= 0\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --tcp-sockbuf: '" << optarg << "'\n";
+          std::exit(1);
+        }
         break;
       case 'd':
         opts.direction = optarg;
@@ -420,7 +439,9 @@ int main(int argc, char** argv) {
           opts.rdmaDevices));
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
-          opts.tcpIface));
+          opts.tcpIface,
+          opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
+                              : std::nullopt));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
