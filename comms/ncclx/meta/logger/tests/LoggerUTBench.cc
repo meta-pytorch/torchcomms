@@ -11,6 +11,7 @@
 #include "debug.h" // @manual
 
 #include "comms/testinfra/TestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgr.h"
@@ -186,6 +187,7 @@ TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
   folly::test::TemporaryFile tmpFile;
   setLogType(LogType::FILE);
   EnvRAII env(NCCL_DEBUG_FILE, getTmpLogFile());
+  SysEnvRAII sysEnv{"NCCL_DEBUG_FILE", getTmpLogFile()};
   // Reset ncclDebugLevel to force debug sub-system to be re-initialized
   ncclDebugLevel = -1;
   initNcclLogger();

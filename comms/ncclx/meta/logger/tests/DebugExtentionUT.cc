@@ -6,6 +6,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "meta/NcclxLogger.h"
@@ -52,6 +53,8 @@ TEST_F(DebugExtTest, TestWarnLogToLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;
@@ -79,6 +82,8 @@ TEST_F(DebugExtTest, TestWarnLogBelowLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 20;
   constexpr int iterCount = 10;
@@ -100,6 +105,8 @@ TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;

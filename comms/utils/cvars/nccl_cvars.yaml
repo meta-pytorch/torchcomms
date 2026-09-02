@@ -3023,7 +3023,7 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Controls if the folly logging should be async or not.
+     Controls whether comms logging uses asynchronous delivery.
 
  - name        : NCCL_NETWORK_PERF_MONITOR_SCUBA_LOGGING_ENABLE
    type        : bool
