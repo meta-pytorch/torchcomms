@@ -24,8 +24,15 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <optional>
+#include <set>
 
 namespace uniflow {
 
@@ -110,6 +117,98 @@ std::string resolveTcpBindHost(const std::string& netdevPrefix) {
       host,
       netdevPrefix);
   return host;
+}
+
+// Frontend data NICs to stripe TCP lanes across, one port per card where
+// possible.
+//
+// Candidates are found by name prefix because nothing else separates them:
+// every eth port here is a 200G link that is up, so speed carries no signal,
+// and the backend fabric (beth*) is addressed exactly like the frontend.
+//
+// Selection then spreads across PCI cards rather than taking the first two
+// names, because a name sort always lands on a single card: the two ports of
+// one card are adjacent in the numbering, being functions .0 and .1 of one PCI
+// device.
+//
+// Both ports of a card share its upstream bandwidth, and that shows up as a
+// ceiling rather than as a fixed cost. Across 10 runs each, no single-card pair
+// exceeded 35.4 GB/s while half the two-card pairs did, reaching 40.3; medians
+// differ by only ~6% (34.1 against 36.3) and overlap, so spreading removes a
+// cap rather than reliably buying a fixed gain.
+//
+// When only one card is present its second port is used: a second port on the
+// same card is worth far more than no second port at all (~34 against ~21).
+//
+// Order is deterministic -- cards by PCI address, ports by name -- because lane
+// i maps to device i on both peers, so an unstable order would pair a different
+// physical port from one run to the next.
+//
+// Usability is delegated to deviceGlobalIpv6 rather than re-derived: it already
+// applies the address-flag rules, and it is what bind() will call for the
+// address, so discovery cannot disagree with what actually gets bound.
+std::vector<std::string> enumerateFrontendDevices(
+    const std::string& prefix,
+    size_t maxDevices) {
+  std::map<std::string, std::set<std::string>> byCard;
+  std::error_code ec;
+  std::filesystem::directory_iterator it("/sys/class/net", ec);
+  if (ec) {
+    return {};
+  }
+  for (const auto& entry : it) {
+    const std::string dev = entry.path().filename().string();
+    if (dev.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    std::ifstream st("/sys/class/net/" + dev + "/operstate");
+    std::string state;
+    if (!st.is_open() || !(st >> state) || state != "up") {
+      continue;
+    }
+    if (!controller::deviceGlobalIpv6(dev)) {
+      continue;
+    }
+    // The PCI function identifies the port, so drop it: the remaining
+    // domain:bus:device is the card whose bandwidth the ports share.
+    std::string card;
+    const auto link =
+        std::filesystem::read_symlink("/sys/class/net/" + dev + "/device", ec);
+    if (!ec) {
+      card = link.filename().string();
+      const auto dot = card.rfind('.');
+      if (dot != std::string::npos) {
+        card.resize(dot);
+      }
+    }
+    if (card.empty()) {
+      // Topology unreadable; treating it as its own card spreads rather than
+      // stacks, which is the safer guess.
+      card = dev;
+    }
+    byCard[card].insert(dev);
+  }
+
+  std::vector<std::string> devices;
+  for (size_t round = 0; devices.size() < maxDevices; ++round) {
+    bool tookAny = false;
+    for (const auto& [card, ports] : byCard) {
+      if (ports.size() <= round) {
+        continue;
+      }
+      auto port = ports.begin();
+      std::advance(port, round);
+      devices.push_back(*port);
+      tookAny = true;
+      if (devices.size() == maxDevices) {
+        break;
+      }
+    }
+    if (!tookAny) {
+      break;
+    }
+  }
+  return devices;
 }
 
 // True if @p host is empty or loopback. Advertising a loopback bind address in
@@ -315,12 +414,52 @@ MultiTransportFactory::MultiTransportFactory(
   if (tcpHost.empty()) {
     tcpHost = resolveTcpBindHost(options_.netdevPrefix);
   }
-  if (!isLoopbackHost(tcpHost) || options_.enableTcp) {
+  bool tcpDevicesOk = true;
+  TcpTransportConfig tcpConfig = options_.tcpTransportConfig
+      ? *options_.tcpTransportConfig
+      : TcpTransportConfig{};
+  {
+    // Discovery fills bindToDevices when the caller left it empty. A caller
+    // that named devices keeps them, but only if discovery would have accepted
+    // them: a name that is missing, down, or carries no usable global address
+    // would otherwise bind a lane to a NIC that cannot serve it. Rejecting
+    // rather than substituting is deliberate -- quietly swapping in a different
+    // NIC would hide that the requested one went away.
+    const auto usable = enumerateFrontendDevices(
+        options_.tcpDevicePrefix, std::numeric_limits<size_t>::max());
+    if (tcpConfig.bindToDevices.empty()) {
+      tcpConfig.bindToDevices = usable;
+      if (tcpConfig.bindToDevices.size() > options_.tcpMaxDevices) {
+        tcpConfig.bindToDevices.resize(options_.tcpMaxDevices);
+      }
+    } else {
+      for (const auto& dev : tcpConfig.bindToDevices) {
+        if (std::find(usable.begin(), usable.end(), dev) == usable.end()) {
+          UNIFLOW_LOG_ERROR(
+              "MultiTransport: not registering tcp: configured bind device '{}' "
+              "is not a usable '{}' device (needs operstate up and a "
+              "non-deprecated global address)",
+              dev,
+              options_.tcpDevicePrefix);
+          tcpDevicesOk = false;
+          break;
+        }
+      }
+    }
+  }
+  if (tcpDevicesOk && (!isLoopbackHost(tcpHost) || options_.enableTcp)) {
+    std::string devList;
+    for (const auto& d : tcpConfig.bindToDevices) {
+      devList += (devList.empty() ? "" : ",") + d;
+    }
+    UNIFLOW_LOG_INFO(
+        "MultiTransport: tcp striping across {} device(s) [{}]",
+        tcpConfig.bindToDevices.size(),
+        devList);
     auto tcp = std::make_shared<TcpTransportFactory>(
         deviceId,
         eventBaseThread_->getEventBase(),
-        options_.tcpTransportConfig ? *options_.tcpTransportConfig
-                                    : TcpTransportConfig{},
+        std::move(tcpConfig),
         tcpHost);
     factories_.emplace_back(std::move(tcp));
   } else {
