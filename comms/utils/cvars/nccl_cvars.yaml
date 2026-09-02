@@ -2023,14 +2023,16 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
- - name        : MCCL_SENDRECV_ASYNC
+ - name        : MCCL_SENDRECV_BLOCKING
    type        : bool
    default     : false
    description : |-
-     Force the batched send/recv path regardless of topology, including the
-     two-rank case that normally takes the pair path and communicators with
-     NVLink peers. Must be set identically on every rank, or the two ends of a
-     transfer can pick different paths and disagree on geometry.
+     Route send/recv through the legacy pair path, which drives the blocking
+     transport API instead of the progress API used by the default batched
+     path. Supports only a pair of ranks: the op list is restricted to at most
+     one send and one recv, so a multi-peer batch is rejected with
+     commInvalidUsage. Must be set identically on every rank, or the two ends
+     of a transfer can pick different paths and disagree on geometry.
      For benchmarking and testing only.
 
  - name        : MCCL_NVL_FABRIC_ENABLE
