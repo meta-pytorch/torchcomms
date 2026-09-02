@@ -253,6 +253,10 @@ class TcpTransportFrameTest : public ::testing::Test {
         /*host=*/"127.0.0.1",
         cudaApi_);
 
+    // These tests drive the outbound path without connecting a peer, so give
+    // the transport the single lane that path indexes.
+    lane0();
+
     // A registered DRAM segment filled with a known pattern, so any
     // out-of-contract write is detectable.
     segment_.assign(kSegLen, std::byte{0xAB});
@@ -303,9 +307,9 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   /// True if the transport queued at least one Error frame back to the peer.
-  bool queuedErrorFrame() const {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    for (const auto& item : transport_->outQueue_) {
+  bool queuedErrorFrame() {
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    for (const auto& item : lane0().queue) {
       auto header = deserializeTcpHeader(item.frame.bytes());
       if (header.hasValue() &&
           static_cast<TcpOp>(header.value().op) == TcpOp::Error) {
@@ -406,8 +410,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   size_t outQueueBytes() {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    return transport_->outBytes_;
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    return lane0().bytes;
   }
 
   static constexpr size_t outQueueCap() {
@@ -421,12 +425,27 @@ class TcpTransportFrameTest : public ::testing::Test {
   // Far from the reqIds the tests pick by hand, so filler cannot collide.
   static constexpr uint64_t kFillReqIdBase = 1'000'000;
 
+  /// Lane 0, created on demand. These tests all run single-lane, so lane 0 is
+  /// the entire outbound queue and its cap equals kMaxOutQueueBytes.
+  TcpTransport::TcpLane& lane0() {
+    if (transport_->lanes_.empty()) {
+      transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
+    }
+    return *transport_->lanes_[0];
+  }
+
+  /// Installs `conn` as lane 0, creating the lane when the transport was never
+  /// connected.
+  void installLaneConn(std::unique_ptr<controller::Conn> conn) {
+    lane0().conn = std::move(conn);
+  }
+
   /// Installs a connection whose send() always fails, so senderLoop() can be
   /// driven down its error path without a peer.
   void installFailingConn() {
     auto conn = std::make_unique<FailingConn>();
     failingConn_ = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    installLaneConn(std::move(conn));
   }
 
   bool connClosed() const {
@@ -447,7 +466,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   void runSenderLoop() {
-    transport_->senderLoop();
+    transport_->senderLoop(0);
   }
 
   /// Installs a connection whose send() parks until released, so the sender
@@ -455,7 +474,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   GatedConn* installGatedConn() {
     auto conn = std::make_unique<GatedConn>();
     auto* raw = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    installLaneConn(std::move(conn));
     return raw;
   }
 
@@ -464,7 +483,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   CountingConn& installCountingConn() {
     auto conn = std::make_unique<CountingConn>();
     auto& ref = *conn;
-    transport_->dataConn_ = std::move(conn);
+    installLaneConn(std::move(conn));
     return ref;
   }
 
@@ -490,10 +509,10 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// transport down.
   void closeOutQueue() {
     {
-      std::lock_guard<std::mutex> lk(transport_->outMu_);
-      transport_->outClosed_ = true;
+      std::lock_guard<std::mutex> lk(lane0().mu);
+      lane0().outClosed = true;
     }
-    transport_->outCv_.notify_all();
+    lane0().cv.notify_all();
   }
 
   /// A standalone pool, for the frame-ownership tests. Backed by the fixture's
@@ -662,8 +681,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// reqIds of the frames currently queued, in queue order.
   std::vector<uint64_t> queuedReqIds() {
     std::vector<uint64_t> ids;
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    for (const auto& item : transport_->outQueue_) {
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    for (const auto& item : lane0().queue) {
       auto header = deserializeTcpHeader(item.frame.bytes());
       ids.push_back(header.hasValue() ? header.value().reqId : 0);
     }
@@ -697,8 +716,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   }
 
   size_t outQueueDepth() {
-    std::lock_guard<std::mutex> lk(transport_->outMu_);
-    return transport_->outQueue_.size();
+    std::lock_guard<std::mutex> lk(lane0().mu);
+    return lane0().queue.size();
   }
 
   /// send()/recv() are gated on the Connected state; these tests drive the
