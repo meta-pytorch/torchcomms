@@ -263,6 +263,30 @@ void testProgressSendRecv(
     cudaStream_t stream = nullptr);
 
 /*
+ * Drives two peers concurrently from one block: subgroup 0 owns the
+ * predecessor transport, subgroup 1 the successor, each cycling send and recv
+ * on its own transport's channel 0.
+ *
+ * This is the only shape that gives the per-peer progress slice a nonzero
+ * offset. At two ranks the local peer index is always zero, so
+ * `progressDirectionStride_` and the per-peer slicing in
+ * `MultiPeerNvlTransport` are never exercised by the other cases. Channel
+ * indices are per-transport, so both subgroups using channel 0 cannot collide.
+ */
+void testProgressTwoPeerSendRecv(
+    P2pNvlTransportDevice p2pPred,
+    P2pNvlTransportDevice p2pSucc,
+    void* predSrc,
+    void* predDst,
+    void* succSrc,
+    void* succDst,
+    size_t nbytes,
+    size_t maxSignalBytes,
+    AbortDevice abort,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+/*
  * One-sided send with no peer draining, so the pipeline fills and the sender is
  * forced into Waiting. Runs at most `maxIterations` progress calls and is
  * expected NOT to complete; `counters` reports what was observed.
