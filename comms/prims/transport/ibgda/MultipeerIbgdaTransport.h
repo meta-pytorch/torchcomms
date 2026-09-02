@@ -255,6 +255,11 @@ class MultipeerIbgdaTransport
   // DOCA GPU context (shared across NICs).
   doca_gpu* docaGpu_{nullptr};
 
+  // Resolved RDMA-Read/Atomic depth: config value (or MCCL_IBGDA_MAX_RD_ATOMIC)
+  // taken in the ctor, then clamped to NIC capability in openIbDevice(). The
+  // default of 1 reproduces the pre-existing wire behaviour exactly.
+  uint8_t maxRdAtomic_{1};
+
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
 
@@ -274,6 +279,20 @@ class MultipeerIbgdaTransport
     std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
   };
   std::vector<NicDocaResources> nicDoca_;
+
+  // What was asked for: config value, or MCCL_IBGDA_QP_ORDERING_SEMANTIC when
+  // that cvar is set to something other than its registered default. Taken in
+  // the ctor, before openIbDevice() consults the NICs.
+  IbQpOrderingPolicy qpOrderingPolicy_{IbQpOrderingPolicy::Auto};
+
+  // What we actually got: the policy above resolved against every NIC's
+  // capability in openIbDevice(), narrowed to the least capable one. This is
+  // the value written to the QPC and exchanged with peers.
+  //
+  // Stays Ibta on AMD, where the whole dp_ordering path is compiled out and
+  // openIbDevice() never resolves anything -- so AMD keeps sending the same
+  // zero it always did.
+  IbQpOrderingSemantic qpOrderingSemantic_{IbQpOrderingSemantic::Ibta};
 
   // Sink buffer for RDMA atomic return values (discarded).
   // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add

@@ -237,6 +237,13 @@ std::optional<int> MultiPeerTransport::ib_max_num_channels() const {
   return std::nullopt;
 }
 
+std::optional<int> MultiPeerTransport::nvl_max_num_channels() const {
+  if (nvlTransport_) {
+    return nvlTransport_->maxNumChannels();
+  }
+  return std::nullopt;
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {

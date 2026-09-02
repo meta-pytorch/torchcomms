@@ -183,9 +183,31 @@ nextPollCycles_ = now + pollIntervalCycles_;
 ```
 
 `pollIntervalCycles_` is `cyclesPerMs_ / kAbortPollsPerMs` with
-`kAbortPollsPerMs = 100`, i.e. **100 shared reads per millisecond per handle**,
+`kAbortPollsPerMs = 1`, i.e. **one shared read per millisecond per handle**,
 independent of how fast the loop spins. Once a terminal reason has been seen,
 `sawTerminalReason_` answers from a register forever.
+
+That constant used to be 100, and gating the read was only half the job: the
+gate makes the cost independent of loop speed, but the *rate* still sets a
+fixed fraction of kernel runtime, namely `kAbortPollsPerMs x 1.1us / 1000us`.
+At 100 that is 11% of every collective, and it measured as exactly that: 4-rank
+IB_ONLY on GB300, `MCCL_ABORT_MODE=skip` against a same-session `none`, went
+from **+11.4us to +3.1us on tree and +10.8us to +5.6us on ring** when this
+constant moved to 1. Amortizing a 1.1us read to "only" once per 10us is not
+amortizing it.
+
+What that costs: abort-*observation* latency goes from ~10us to ~1ms. Deadline
+expiry is unaffected — `checkExpired()` tests `deadlineDue` ahead of the
+throttle, so a timeout still fires on time. This governs only how quickly one
+rank notices *another* rank's abort, and the only thing delayed is how fast an
+already-failed collective unwinds.
+
+`startTimeout()` seeds `nextPollCycles_` rather than leaving it at zero, so the
+first `checkExpired()` on an armed handle is throttled like every other. The
+cost is that an abort raised before the kernel started is observed up to one
+poll interval later, which is inside the bound this constant already advertises
+and is unreachable in practice because the host checks `Abort::isAborted()`
+before it launches.
 
 ### What it is worth
 
@@ -224,9 +246,10 @@ Two consequences worth internalizing:
 - Prefer one poller per group over one per thread when the loop is per-thread.
   The gate is per-handle-copy, so N thread-local copies mean N times the shared
   reads.
-- If you change `kAbortPollsPerMs`, re-run `abort_bench` and update both this
-  section and `Perf.md`. It trades abort-detection latency against shared-read
-  volume, and both numbers above move with it.
+- If you change `kAbortPollsPerMs`, re-run `abort_bench`, re-run the GB300
+  sweep, and update this section, `Perf.md`, and the constant's own comment.
+  It trades abort-detection latency against a fixed percentage of every
+  collective's runtime, and the cost is linear in the value.
 
 ## MPT And Prims Integration
 
@@ -425,9 +448,9 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    handles outlive individual operations and are shared across blocks. Copy the
    handle per block and call `startTimeout()` on the copy.
 6. **Returning a status is welcome, not required.** Several waits return `bool`
-   and the IB progress path returns `Aborted`; that lets callers stop sooner and
-   more precisely. Callers are not *obliged* to consume it, so never rely on
-   propagation for liveness.
+   and the IB and NVL progress paths return `Aborted`; that lets callers stop
+   sooner and more precisely. Callers are not *obliged* to consume it, so never
+   rely on propagation for liveness.
 7. **Leave the channel state releasable.** A wait that unwinds must not strand
    the resource it was waiting on. In the IB progress path this is
    `abandon_progress_state()` (`P2pIbTransportProgressImpl.cuh`): every abort
@@ -441,6 +464,18 @@ unlikely case of a `commSuccess`, the comm result data should still be ignored."
    channel is fit to reuse. If a new wait acquires state of its own, releasing
    it on abort is part of adding the wait — pushing that onto the collective
    violates the containment principle.
+
+   The NVL progress path holds the same guarantee by the same shape:
+   `abandon_progress_state()` in `P2pNvlTransportDevice.cuh` drives the slot to
+   `Idle` — NVL's terminal stage — so the aborting call returns `Aborted` and a
+   later progress call short-circuits to `Done`, and the next
+   `init_*_progress()` passes `assert_progress_slot_idle()`. The channel cursor
+   stays advanced there too, because the peer may still write into the reserved
+   range over NVLink. `NvlSendRecvProgressStatus::Aborted` mirrors the IB enum,
+   so a transport-agnostic driver loop keeps one abort branch across both
+   transports: treat `Done` and `Aborted` alike as "stop polling this
+   operation", and take `Aborted` as the signal to consult the host `Abort` for
+   the reason rather than to record a completed transfer.
 
 ### Collective Enablement — onboarding a collective
 

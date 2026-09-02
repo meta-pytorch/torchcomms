@@ -41,6 +41,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("__NCCL_UNIT_TEST_INT_CVAR__");
     unsetenv("__NCCL_UNIT_TEST_INT64_T_CVAR__");
     unsetenv("NCCL_DEBUG_SUBSYS");
+    unsetenv("MCCL_IBGDA_MAX_RD_ATOMIC");
     unsetenv("NCCL_CVARS_LOG_INFO");
     unsetenv("NCCL_CVARS_SETTINGS");
     unsetenv("NCCL_DUMMY_TEST_VAR");
@@ -51,6 +52,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_MIN_CTAS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
+    unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
   }
 };
 
@@ -84,6 +86,49 @@ TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeParsesAllModes) {
   }
 }
 
+// auto is the dp_ordering default: request ooo_rw, fall back to ibta on a NIC
+// that cannot do it.
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticDefaultsToAuto) {
+  MCCL_IBGDA_QP_ORDERING_SEMANTIC = MCCL_IBGDA_QP_ORDERING_SEMANTIC::ooo_all;
+  ncclCvarInit();
+  EXPECT_EQ(
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC, MCCL_IBGDA_QP_ORDERING_SEMANTIC::auto_);
+}
+
+// The transport reads "cvar == _DEFAULTCVARVALUE" as "nobody set this" and
+// falls through to the config field. Binaries that skip ncclCvarInit() -- the
+// benchmarks, most unit tests -- see a zero-initialized cvar instead. Those two
+// agree only if the default choice is also the zero-valued one, which is why
+// auto is listed first in the yaml. A failure here means someone reordered
+// `choices` and every benchmark is now silently on a different policy from
+// production.
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticDefaultIsTheZeroValue) {
+  ncclCvarInit();
+  EXPECT_EQ(
+      static_cast<int>(MCCL_IBGDA_QP_ORDERING_SEMANTIC_DEFAULTCVARVALUE), 0);
+  EXPECT_EQ(
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC_DEFAULTCVARVALUE,
+      MCCL_IBGDA_QP_ORDERING_SEMANTIC::auto_);
+}
+
+TEST_F(CvarInitTest, McclIbgdaQpOrderingSemanticParsesAllModes) {
+  using Mode = decltype(MCCL_IBGDA_QP_ORDERING_SEMANTIC);
+  const std::vector<std::pair<const char*, Mode>> modes{
+      {"auto", Mode::auto_},
+      {"ibta", Mode::ibta},
+      {"ibta_forced", Mode::ibta_forced},
+      {"ooo_rw", Mode::ooo_rw},
+      {"ooo_all", Mode::ooo_all},
+  };
+  for (const auto& [value, expected] : modes) {
+    MCCL_IBGDA_QP_ORDERING_SEMANTIC =
+        expected == Mode::ibta ? Mode::ooo_all : Mode::ibta;
+    setenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_IBGDA_QP_ORDERING_SEMANTIC, expected);
+  }
+}
+
 TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveDisabledByDefault) {
   EXPECT_NO_THROW(ncclCvarInit());
 
@@ -98,6 +143,21 @@ TEST_F(CvarInitTest, McclBootstrapTcpKeepaliveCanBeEnabled) {
 
   EXPECT_TRUE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED);
   EXPECT_FALSE(MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED_DEFAULT_LITERAL);
+}
+
+// 16 is the ConnectX-8 device maximum and what NVIDIA's GDAKI defaults to for
+// its own GPU-initiated transport. The transport clamps down on a NIC that
+// reports less, so this is a request rather than a promise.
+TEST_F(CvarInitTest, McclIbgdaMaxRdAtomicDefaultsToSixteen) {
+  MCCL_IBGDA_MAX_RD_ATOMIC = 64;
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_IBGDA_MAX_RD_ATOMIC, 16);
+}
+
+TEST_F(CvarInitTest, McclIbgdaMaxRdAtomicReadsUserValue) {
+  setenv("MCCL_IBGDA_MAX_RD_ATOMIC", "16", 1);
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_IBGDA_MAX_RD_ATOMIC, 16);
 }
 
 TEST_F(CvarInitTest, InitWithStringCvar) {

@@ -56,6 +56,52 @@ inline std::string benchIbHca() {
   return hca ? std::string(hca) : std::string();
 }
 
+// enableDataDirect is never read from the environment by the transport -- the
+// caller is expected to tunnel NCCL_IB_DATA_DIRECT into it, and NCCL does, but
+// the benchmarks never did. On a host that advertises Data-Direct but cannot
+// register a DMA-BUF MR, the transport activates DD and then fails at
+// registration with ENOTSUPP, so every IBGDA test SKIPs. Observed on GB300
+// burn-in hosts at every allocation size. NCCL_IB_DATA_DIRECT=0 works around
+// it; unset preserves the previous default of Only.
+inline DataDirectMode benchDataDirect() {
+  const char* dd = std::getenv("NCCL_IB_DATA_DIRECT");
+  if (dd == nullptr) {
+    return DataDirectMode::Only;
+  }
+  switch (std::atoi(dd)) {
+    case 0:
+      return DataDirectMode::Disabled;
+    case 2:
+      return DataDirectMode::Both;
+    default:
+      return DataDirectMode::Only;
+  }
+}
+
+// dp_ordering policy for the benchmark's QPs. Production resolves
+// MCCL_IBGDA_QP_ORDERING_SEMANTIC as a cvar, but that needs ncclCvarInit(),
+// which benchmarks never call -- so the cvar sits at its default and the
+// transport falls back to the config field. Reading the same spelling here is
+// what makes a command-line A/B possible.
+//
+// Unset must map to Auto, i.e. the same default production runs. Returning
+// anything else would put every benchmark on a different policy from the code
+// it is meant to measure. Unparseable values throw rather than defaulting: an
+// A/B that silently runs the control twice is worse than one that fails.
+inline IbQpOrderingPolicy benchQpOrderingPolicy() {
+  const char* v = std::getenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
+  if (v == nullptr || *v == '\0') {
+    return IbQpOrderingPolicy::Auto;
+  }
+  const auto parsed = parseIbQpOrderingPolicy(std::string(v));
+  if (!parsed.has_value()) {
+    throw std::invalid_argument(
+        std::string("MCCL_IBGDA_QP_ORDERING_SEMANTIC=") + v +
+        " is not one of auto|ibta|ibta_forced|ooo_rw|ooo_all");
+  }
+  return *parsed;
+}
+
 enum class BenchIbBackend {
   IBGDA,
   IBRC,
@@ -437,6 +483,8 @@ TEST_P(IbgdaBenchmarkFixture, PutFlush) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -518,6 +566,124 @@ TEST_P(IbgdaBenchmarkFixture, PutFlush) {
   printResultsTable(backendTitle("Put+Flush (RDMA Write)"), results);
 }
 
+TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
+  // Measures RDMA Write plus a trailing atomic signal, completed as
+  // put + signal + flush. Identical to PutFlush other than the signal, so the
+  // per-size delta between the two is the marginal cost of the signal. No
+  // counter is used, keeping the companion QP out of the measurement.
+  if (numRanks != 2) {
+    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr int kSignalId = 0;
+  auto configs = getFullConfigs();
+
+  std::size_t maxBufferSize = 0;
+  for (const auto& config : configs) {
+    maxBufferSize = std::max(maxBufferSize, config.nBytes);
+  }
+
+  std::vector<IbgdaBenchmarkResult> results;
+
+  try {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+    };
+    transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
+    transport.exchange();
+
+    DeviceBuffer dataBuffer(maxBufferSize);
+    auto localDataBuf =
+        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
+
+    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    if (peerIndex < 0 ||
+        static_cast<std::size_t>(peerIndex) >= remoteDataBufs.size()) {
+      throw std::runtime_error(
+          "Peer index out of range for exchanged remote buffers");
+    }
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
+    P2pIbTransportDevice deviceTransport =
+        transport.getP2pTransportDevice(peerRank);
+
+    unsigned long long* d_totalCycles;
+    CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
+
+    XLOGF(
+        INFO,
+        "Rank {}: GPU clock rate = {:.2f} GHz",
+        globalRank,
+        clockRateGHz_);
+
+    for (const auto& config : configs) {
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      if (globalRank == 0) {
+        launchIbgdaPutSignalFlushBatch(
+            deviceTransport,
+            localDataBuf,
+            remoteDataBuf,
+            remoteSignalBuf,
+            config.nBytes,
+            kSignalId,
+            kIbgdaBatchIters,
+            d_totalCycles,
+            stream_);
+        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+
+        unsigned long long totalCycles;
+        CUDA_CHECK_VOID(cudaMemcpy(
+            &totalCycles,
+            d_totalCycles,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost));
+
+        IbgdaBenchmarkResult result;
+        result.testName = config.name;
+        result.messageSize = config.nBytes;
+        result.latency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+        result.bandwidth = (config.nBytes / 1e9f) / (result.latency / 1e6f);
+
+        results.push_back(result);
+
+        XLOGF(
+            INFO,
+            "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
+            globalRank,
+            config.name,
+            result.latency,
+            result.bandwidth);
+      }
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    CUDA_CHECK_VOID(cudaFree(d_totalCycles));
+
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IB transport not available: " << e.what();
+  }
+
+  printResultsTable(backendTitle("Put+Signal+Flush (RDMA Write)"), results);
+}
+
 TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   // One thread per block uses the no-ThreadGroup put()+flush() API on a
   // block-private slice. This checks that thread-scope wrappers inherit the
@@ -550,6 +716,8 @@ TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
         .maxGroups = kNumBlocks,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
@@ -671,6 +839,8 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -815,6 +985,8 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -918,6 +1090,8 @@ TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -1032,6 +1206,8 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -1162,6 +1338,8 @@ TEST_P(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
         .cudaDevice = localRank,
     };
     transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     BenchIbTransport transport(
@@ -1359,6 +1537,6 @@ int main(int argc, char* argv[]) {
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }

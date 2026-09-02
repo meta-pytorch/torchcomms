@@ -12,6 +12,7 @@
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/NvlChannelProgress.cuh"
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 #ifdef __HIP_PLATFORM_AMD__
@@ -166,6 +167,27 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
         bootstrap_, myRank_, nRanks_, totalChannelStateSize, memSharingMode_);
     auto* channelStatePtr = channelStateHandler_->getLocalDeviceMemPtr();
     CUDA_CHECK(cudaMemset(channelStatePtr, 0, totalChannelStateSize));
+
+    // Same per-peer shape as the channel state above, but local rather than
+    // IPC-shared. One allocation holds both directions back to back, send
+    // first; progressDirectionStride_ is the offset to the recv half. Zeroed so
+    // every channel starts NvlProgressStage::Idle.
+    perPeerChannelProgressSize_ =
+        config_.maxNumChannels * sizeof(NvlChannelProgress);
+    progressDirectionStride_ = perPeerChannelProgressSize_ * (nRanks_ - 1);
+    // A single-rank transport has no peers and so no progress slices. Skip the
+    // allocation rather than calling cudaMalloc with size 0, which succeeds
+    // while leaving the pointer null. buildP2pTransportDevice leaves the device
+    // progress pointers null, and the progress entry points trap on them.
+    if (progressDirectionStride_ > 0) {
+      void* progressPtr = nullptr;
+      CUDA_CHECK(cudaMalloc(&progressPtr, progressDirectionStride_ * 2));
+      if (progressPtr == nullptr) {
+        throw std::runtime_error("failed to allocate NVL progress state");
+      }
+      progressBase_.reset(progressPtr);
+      CUDA_CHECK(cudaMemset(progressPtr, 0, progressDirectionStride_ * 2));
+    }
   }
 
   // Conditionally allocate barrier buffer
@@ -370,6 +392,19 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         remoteChBase + remotePeerIndex * perPeerChannelStateSize_);
   }
 
+  // Both directions slice by localPeerIndex; unlike the channel state there is
+  // no remote endpoint, since this storage is local. The recv half sits one
+  // direction stride into the same allocation.
+  NvlChannelProgress* sendProgress = nullptr;
+  NvlChannelProgress* recvProgress = nullptr;
+  if (progressBase_) {
+    auto* progressPtr = static_cast<char*>(progressBase_.get()) +
+        localPeerIndex * perPeerChannelProgressSize_;
+    sendProgress = reinterpret_cast<NvlChannelProgress*>(progressPtr);
+    recvProgress = reinterpret_cast<NvlChannelProgress*>(
+        progressPtr + progressDirectionStride_);
+  }
+
   auto* localSignalPtr =
       static_cast<char*>(signalBufferHandler_->getLocalDeviceMemPtr());
   auto* remoteSignalPtr =
@@ -477,7 +512,9 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       localState,
       remoteState,
       localChannels,
-      remoteChannels);
+      remoteChannels,
+      sendProgress,
+      recvProgress);
 }
 
 DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {

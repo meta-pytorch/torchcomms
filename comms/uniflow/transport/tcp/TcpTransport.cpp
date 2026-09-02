@@ -766,7 +766,7 @@ Status TcpTransport::admitInflight(uint64_t reqId, TcpInflight entry) {
   return Ok();
 }
 
-bool TcpTransport::enqueueFrame(std::vector<uint8_t> frame, bool mayBlock) {
+bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
   const size_t bytes = frame.size();
   {
     std::unique_lock<std::mutex> lk(outMu_);
@@ -799,8 +799,37 @@ bool TcpTransport::enqueueFrame(std::vector<uint8_t> frame, bool mayBlock) {
   return true;
 }
 
+bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
+  if (frames.empty()) {
+    return true;
+  }
+  size_t bytes = 0;
+  for (const auto& frame : frames) {
+    bytes += frame.size();
+  }
+  {
+    std::unique_lock<std::mutex> lk(outMu_);
+    if (mayBlock) {
+      outCv_.wait(lk, [this, bytes]() {
+        return outClosed_ || connBroken_.load(std::memory_order_acquire) ||
+            outQueue_.empty() || outBytes_ + bytes <= kMaxOutQueueBytes;
+      });
+    }
+    if (outClosed_) {
+      return false;
+    }
+    for (auto& frame : frames) {
+      const size_t frameBytes = frame.size();
+      outQueue_.push_back(TcpOutItem{std::move(frame), nullptr});
+      outBytes_ += frameBytes;
+    }
+  }
+  outCv_.notify_all();
+  return true;
+}
+
 void TcpTransport::enqueueSendFrame(
-    std::vector<uint8_t> frame,
+    TcpFrame frame,
     std::shared_ptr<TcpOpState> onSent) {
   bool closed = false;
   std::shared_ptr<TcpOpState> toFail;
@@ -845,11 +874,15 @@ void TcpTransport::senderLoop() noexcept {
       }
       item = std::move(outQueue_.front());
       outQueue_.pop_front();
-      outBytes_ -= std::min(outBytes_, item.bytes.size());
+      outBytes_ -= std::min(outBytes_, item.frame.size());
     }
     outCv_.notify_all(); // room freed; wake any producer waiting for space
 
-    auto result = dataConn_->send(item.bytes).get();
+    // `item` -- and so the frame's storage, which for a staged frame is a
+    // pinned slab still on loan from the pool -- stays alive for the whole
+    // send: Conn::send only borrows the span. The slab goes back when `item` is
+    // destroyed at the end of this iteration, never at pop time.
+    auto result = dataConn_->send(item.frame.bytes()).get();
     if (!result) {
       UNIFLOW_LOG_ERROR(
           "tcp sender: send failed: {}", result.error().message());

@@ -119,10 +119,13 @@ cvars:
 
  - name        : NCCL_SLOW_RANK_LOGGING
    type        : string
-   default     : "scuba:nccl_profiler_slow_rank"
+   default     : ""
    description : |-
-      File location for logging communicator profiler events. By default,
-      all data is logged to scuba table nccl_profiler_slow_rank.
+      File location for logging communicator profiler events, written to the
+      nccl_profiler_slow_rank table. Disabled by default (empty): a non-empty
+      value constructs a DataTable, which costs a thread on every rank, and the
+      only producer (NetworkPerfMonitor) is itself inactive unless
+      NCCL_NETWORK_PERF_MONITOR_ENABLE is set. Opt in alongside that cvar.
       (the same format with NCCL_COMM_EVENT_LOGGING)
 
  - name        : NCCL_CTRAN_ALGO_PROFILING_LOGGING
@@ -190,7 +193,7 @@ cvars:
 
  - name        : NCCL_CTRAN_GPE_HOST_NODE_SIDE_STREAM
    type        : bool
-   default     : true
+   default     : false
    description : |-
      Record each captured GPE HOST node on a per-comm, per-graph side capture
      stream instead of inline on the user's stream, mirroring how NCCL records
@@ -216,15 +219,19 @@ cvars:
      relative win on small messages (+52% busbw at 8 MiB / 16 ranks) and
      negligible on large ones (+0.8% at 4 GiB).
 
-     On by default. It changes recorded graph topology (adds one join edge per
+     OFF by default: the spine has an unresolved correctness bug under CUDA
+     graph capture/replay. See
+     https://www.internalfb.com/collab-files/view/10EbU5GgVtvXzEGd4ndMf_4g3S9b3fQCl
+
+     When on, it changes recorded graph topology (adds one join edge per
      collective; the graph gains edges, it does not lose them). Only the
      mixing=0 in-capture path is affected: the mixing=1 side-stream fence and
      every eager path are unchanged.
 
      CAVEAT -- this reintroduces cross-collective serialization of the GPE host
-     callbacks, which is part of what mixing=0 removes for overlap. It is only
-     safe at mixing=0 because mixing=0 already declines to order a graph replay
-     ahead of a following eager CTRAN submission (see
+     callbacks, which is part of what mixing=0 removes for overlap. It is
+     restricted to mixing=0 because mixing=0 already declines to order a graph
+     replay ahead of a following eager CTRAN submission (see
      NCCL_CTRAN_GRAPH_MIXING_SUPPORT), so callers must already host-synchronize
      between replay and eager work. NCCL_CTRAN_GPE_DEVICE_RING removes the HOST
      nodes entirely instead of serializing them (~6% dispatch-latency cost);
@@ -295,20 +302,6 @@ cvars:
      Enable memory tracing for all NCCLX memory allocations, frees, and
      registrations. When enabled, memory events are logged to Scuba and
      tracked per-communicator for commDump reporting.
-
- - name        : NCCL_SLOW_COLL_LOGGING
-   type        : string
-   default     : "pipe:nccl_slow_coll"
-   description : |-
-      File location for logging slow collectives.
-      (the same format with NCCL_COMM_EVENT_LOGGING)
-
- - name        : NCCL_COLL_STATS_LOGGING
-   type        : string
-   default     : "pipe:nccl_collective_stats"
-   description : |-
-      File location for logging collective stats.
-      (the same format with NCCL_COMM_EVENT_LOGGING)
 
  - name        : NCCL_MEM_ENABLE_MC_ALIGNMENT
    type        : bool
@@ -2034,14 +2027,17 @@ cvars:
      NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
      to the legacy transport policy.
 
- - name        : MCCL_SENDRECV_ASYNC
+ - name        : MCCL_SENDRECV_BLOCKING
    type        : bool
    default     : false
    description : |-
-     Within an all-IB communicator, also use the batched path for the two-rank
-     case that normally takes the pair path. Has no effect when the
-     communicator has any NVLink peer. Must be set identically on every rank.
-     For benchmarking only.
+     Route send/recv through the legacy pair path, which drives the blocking
+     transport API instead of the progress API used by the default batched
+     path. Supports only a pair of ranks: the op list is restricted to at most
+     one send and one recv, so a multi-peer batch is rejected with
+     commInvalidUsage. Must be set identically on every rank, or the two ends
+     of a transfer can pick different paths and disagree on geometry.
+     For benchmarking and testing only.
 
  - name        : MCCL_NVL_FABRIC_ENABLE
    type        : bool
@@ -3023,7 +3019,11 @@ cvars:
    type        : bool
    default     : False
    description : |-
-     Enable network perf monitor to report info to scuba.
+     Enable network perf monitor to report info to scuba. Also set
+     NCCL_SLOW_RANK_LOGGING to a destination (e.g.
+     "scuba:nccl_profiler_slow_rank"): it is empty by default, and without it
+     the nccl_profiler_slow_rank table is never constructed, so the samples
+     are dropped.
 
  - name        : NCCL_COMM_REGISTER_LOG_ENABLE
    type        : bool
@@ -3421,8 +3421,8 @@ cvars:
    default     : 1
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
-     in MCCL fused AllReduce. Ring and Tree support 1, 2, 4, and 10. The
-     default preserves the existing full-block protocol.
+     in MCCL fused AllReduce. Ring supports 1, 2, 4, and 10; Tree supports 1
+     and 2. The default preserves the existing full-block protocol.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
@@ -3461,6 +3461,44 @@ cvars:
    description : |-
      Enable the dedicated IBGDA warp-proxy send, receive, and forward path for
      fused Ring AllReduce. Disabled by default while the path is evaluated.
+ - name        : MCCL_IBGDA_QP_ORDERING_SEMANTIC
+   type        : enum
+   default     : auto
+   choices     : auto, ibta, ibta_forced, ooo_rw, ooo_all
+   description : |-
+     Select the NIC data-placement ordering (mlx5 dp_ordering, a.k.a. DDP or
+     out-of-order placement) for the Prims IBGDA transport. Out-of-order
+     placement is what lets adaptive routing spray a QP's packets across fabric
+     paths without stalling reassembly.
+     auto is the default: take the strongest tier the NIC reports, walking
+     ooo_all -> ooo_rw -> ibta, falling all the way to ibta on a NIC whose
+     capability query fails outright. On a ConnectX-8 rail that resolves to
+     ooo_all, which is the tier that actually pays -- it is the only one that
+     lifts the ordering fence in front of an atomic, and every prims signal is
+     an ATOMIC_FETCH_AND_ADD. ConnectX-7 reports ooo_rw but not ooo_all, so it
+     resolves one rung lower. Set ibta to get the pre-change behaviour back.
+     Because ranks resolve independently, a job spanning both NIC generations
+     will resolve different tiers and be rejected at peer connect; pin every
+     rank to ooo_rw in that case.
+     ibta leaves the QPC dp_ordering bits untouched, so it is a wire-level
+     no-op and the QP keeps whatever the NIC's mlxreg admin default gives it.
+     Note this does NOT mean the QP runs strict IBTA: on a ConnectX-8 rail with
+     adaptive routing on, the firmware supplies OOO_RW on its own.
+     ibta_forced pins the QP to strict IBTA ordering even when that admin
+     default enables adaptive routing. ooo_rw allows out-of-order placement for
+     RDMA Read and Write only. ooo_all also covers atomics, which is what
+     removes the ordering fence in front of a put+signal.
+     ibta_forced requires only cmd_hca_cap_2.dp_ordering_force; ooo_rw and
+     ooo_all additionally require the matching
+     cmd_hca_cap.dp_ordering_ooo_{rw,all}_rc capability. An explicitly named
+     tier fails transport initialization when the NIC lacks it; there is no
+     silent downgrade, because that would turn an A/B into a no-op. Only auto
+     falls back.
+     All ranks must end up on the same tier or peer connection fails. Under
+     auto that is reachable without anyone misconfiguring anything, if the job
+     spans NICs of differing capability; pin every rank to ibta in that case.
+     Host-only loopback QPs always use ibta.
+     This policy is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_IB_QP_DEPTH
    type        : uint64_t
@@ -3470,6 +3508,32 @@ cvars:
      transports, shared by the IBGDA and IBRC backends. For IBGDA group-scope
      puts, it must be >= the largest ThreadGroup size (e.g., 256 for
      block-scope). Higher values allow more pipelining but use more memory.
+
+ - name        : MCCL_IBGDA_MAX_RD_ATOMIC
+   type        : int
+   default     : 16
+   description : |-
+     Depth of the RDMA-Read/Atomic pipeline on one Prims IBGDA QP, applied to
+     both directions: max_dest_rd_atomic (responder, QPC log_rra_max) and
+     max_rd_atomic (initiator, QPC log_sra_max). Must be a power of two in
+     [1, 128] because the NIC stores log2 of it; anything else fails transport
+     initialization. Clamped down to the NIC's max_qp_rd_atom and
+     max_qp_init_rd_atom, which is 16 on ConnectX-8.
+     Every prims signal is an ATOMIC_FA, and depth bounds how many may be in
+     flight per QP per direction. 1 was the historical value and not a chosen
+     one -- the DOCA modify masks simply never carried the fields, so both QPC
+     entries kept the zero they were allocated with. 16 matches NVIDIA's own
+     GDAKI, which defaults this to the device maximum for its GPU-initiated
+     transport, and prims' AMD sibling, which hardcodes 15/16.
+     Raising it does not relax any ordering. Per mlx5dv_create_qp(3), on an
+     out-of-order-placement QP "RDMA Read and RDMA Atomic operations are
+     executed on the responder side in order ... after all previous messages
+     are done executing", so a deeper pipeline changes only how many signals
+     are on the wire, not the order they take effect or their position relative
+     to the data they announce.
+     Set 1 to restore the previous behaviour. All ranks must select the same
+     value or peer connection fails, so a mixed-version job needs this pinned.
+     This setting is NVIDIA-only and ignored on AMD.
 
  - name        : MCCL_CHANNEL_BUFFER_SIZE
    type        : uint64_t

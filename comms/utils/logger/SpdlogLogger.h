@@ -198,6 +198,12 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 void reportCommsLoggingFailureToStderr(const char* level) noexcept;
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept;
 void shutdownSpdlogForFatal();
+/*
+ * Terminal barrier for the comms logger state in this linkage image. It drains
+ * queued records, best-effort flushes every existing logger, and makes later
+ * delivery synchronous. The function is idempotent and does not call fsync().
+ */
+void shutdownCommsLogging() noexcept;
 CommsSpdlogLogger& getSpdlogLoggerForFatal(
     std::string_view loggerName) noexcept;
 
@@ -339,6 +345,7 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
  * Logs an ERR synchronously and terminates with SIGABRT. Termination still
  * occurs when ERR logging is disabled or the logging operation fails.
  */
+// @lint-ignore CLANGTIDY facebook-modularize-issue-check
 #if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_ERROR
 #define COMMS_ABORT_IMPL(logger_name, ...)                             \
   do {                                                                 \

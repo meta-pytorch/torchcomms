@@ -5,11 +5,14 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -50,6 +53,66 @@ class FailingConn : public controller::Conn {
   }
   bool closed{false};
   int closeCount{0};
+};
+
+/// A connection whose send() parks until the test lets it through, so the
+/// window in which the sender thread is mid-send -- and must still own the
+/// frame's storage -- can be inspected.
+class GatedConn : public controller::Conn {
+ public:
+  std::future<Result<size_t>> send(std::span<const uint8_t> data) override {
+    std::unique_lock<std::mutex> lk(mu_);
+    sentPointer_ = data.data();
+    sentSize_ = data.size();
+    ++sendCount_;
+    entered_.notify_all();
+    // Parked inside send() rather than by returning an unfulfilled future: the
+    // sender thread calls .get() on the result either way, so this is the same
+    // wait a real socket write imposes.
+    gate_.wait(lk, [this]() { return released_; });
+    return make_ready_future<Result<size_t>>(Result<size_t>(sentSize_));
+  }
+  std::future<Result<size_t>> recv(std::vector<uint8_t>&) override {
+    return make_ready_future<Result<size_t>>(
+        Err(ErrCode::ConnectionFailed, "test: recv failed"));
+  }
+  std::future<Result<size_t>> recv(std::span<uint8_t>) override {
+    return make_ready_future<Result<size_t>>(
+        Err(ErrCode::ConnectionFailed, "test: recv failed"));
+  }
+  void close() override {}
+
+  void waitForSend() {
+    std::unique_lock<std::mutex> lk(mu_);
+    entered_.wait(lk, [this]() { return sendCount_ > 0; });
+  }
+
+  void releaseSend() {
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      released_ = true;
+    }
+    gate_.notify_all();
+  }
+
+  const uint8_t* sentPointer() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sentPointer_;
+  }
+
+  size_t sentSize() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return sentSize_;
+  }
+
+ private:
+  std::mutex mu_;
+  std::condition_variable entered_;
+  std::condition_variable gate_;
+  const uint8_t* sentPointer_{nullptr};
+  size_t sentSize_{0};
+  int sendCount_{0};
+  bool released_{false};
 };
 
 class TcpTransportFrameTest : public ::testing::Test {
@@ -123,7 +186,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   bool queuedErrorFrame() const {
     std::lock_guard<std::mutex> lk(transport_->outMu_);
     for (const auto& item : transport_->outQueue_) {
-      auto header = deserializeTcpHeader(item.bytes);
+      auto header = deserializeTcpHeader(item.frame.bytes());
       if (header.hasValue() &&
           static_cast<TcpOp>(header.value().op) == TcpOp::Error) {
         return true;
@@ -266,6 +329,94 @@ class TcpTransportFrameTest : public ::testing::Test {
     transport_->senderLoop();
   }
 
+  /// Installs a connection whose send() parks until released, so the sender
+  /// thread can be caught mid-send.
+  GatedConn* installGatedConn() {
+    auto conn = std::make_unique<GatedConn>();
+    auto* raw = conn.get();
+    transport_->dataConn_ = std::move(conn);
+    return raw;
+  }
+
+  /// Ends senderLoop() the way shutdown() does, without tearing the rest of the
+  /// transport down.
+  void closeOutQueue() {
+    {
+      std::lock_guard<std::mutex> lk(transport_->outMu_);
+      transport_->outClosed_ = true;
+    }
+    transport_->outCv_.notify_all();
+  }
+
+  /// A pool backed by real host memory, since the pool hands out pointers the
+  /// frames are built in and the tests dereference them. MockCudaApi::hostAlloc
+  /// otherwise returns a default-constructed Result.
+  std::shared_ptr<TcpPinnedSlabPool> makeSlabPool(
+      size_t slabCount,
+      size_t reserved) {
+    slabRegion_.assign(kTestSlabSize * slabCount, uint8_t{0});
+    ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
+        .WillByDefault(
+            ::testing::Return(
+                Result<void*>(static_cast<void*>(slabRegion_.data()))));
+    ON_CALL(*cudaApi_, hostFree(::testing::_))
+        .WillByDefault(::testing::Return(Ok()));
+    auto pool =
+        TcpPinnedSlabPool::create(cudaApi_, kTestSlabSize, slabCount, reserved);
+    EXPECT_TRUE(pool.hasValue());
+    return pool.hasValue() ? pool.value() : nullptr;
+  }
+
+  /// Builds a header-only frame in `slab`, so a queued frame can be traced back
+  /// to the slab it was staged in.
+  static TcpFrame slabFrame(TcpPinnedSlab slab, TcpOp op, uint64_t reqId) {
+    TcpMsgHeader header;
+    header.op = static_cast<uint8_t>(op);
+    header.reqId = reqId;
+    auto bytes = serializeTcpHeader(header);
+    uint8_t* dst = slab.data();
+    if (dst == nullptr) {
+      return TcpFrame{};
+    }
+    std::copy(bytes.begin(), bytes.end(), dst);
+    return TcpFrame{std::move(slab), bytes.size()};
+  }
+
+  bool enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
+    return transport_->enqueueFrames(std::move(frames), mayBlock);
+  }
+
+  bool enqueueStagedFrame(TcpFrame frame) {
+    return transport_->enqueueFrame(std::move(frame), /*mayBlock=*/false);
+  }
+
+  /// reqIds of the frames currently queued, in queue order.
+  std::vector<uint64_t> queuedReqIds() {
+    std::vector<uint64_t> ids;
+    std::lock_guard<std::mutex> lk(transport_->outMu_);
+    for (const auto& item : transport_->outQueue_) {
+      auto header = deserializeTcpHeader(item.frame.bytes());
+      ids.push_back(header.hasValue() ? header.value().reqId : 0);
+    }
+    return ids;
+  }
+
+  /// Spins until `predicate` holds or the deadline passes. Used where the state
+  /// under test is changed by the sender thread and there is nothing to signal
+  /// on -- a slab returning to its pool has no observer hook.
+  template <typename Fn>
+  static bool waitFor(Fn predicate) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (predicate()) {
+        return true;
+      }
+      std::this_thread::yield();
+    }
+    return predicate();
+  }
+
   bool enqueueFrame(std::vector<uint8_t> frame) {
     return transport_->enqueueFrame(std::move(frame), /*mayBlock=*/false);
   }
@@ -301,6 +452,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   std::vector<std::byte> segment_;
   std::vector<std::byte> pristine_;
   FailingConn* failingConn_{nullptr};
+  static constexpr size_t kTestSlabSize = 256;
+  std::vector<uint8_t> slabRegion_;
 };
 
 TEST_F(TcpTransportFrameTest, WriteToUnknownSegIdIsRejected) {
@@ -982,6 +1135,132 @@ TEST_F(TcpTransportFrameTest, VramStagingThrowDoesNotAbortTheReader) {
       << "a throw inside handleFrame must fail the connection";
   EXPECT_FALSE(readerRunning())
       << "the reader must stop rather than keep serving frames";
+}
+
+// A frame staged in a pinned slab is transmitted straight out of that slab, and
+// the slab is on loan for the whole send. Returning it when the item is popped
+// would let the next staging copy start writing into bytes the socket has not
+// read yet -- silent corruption, and only under load.
+TEST_F(TcpTransportFrameTest, ASlabFrameIsSentInPlaceAndHeldUntilTheSendEnds) {
+  setConnected();
+  auto pool = makeSlabPool(/*slabCount=*/1, /*reserved=*/0);
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/false);
+  ASSERT_TRUE(static_cast<bool>(slab));
+  const uint8_t* slabData = slab.data();
+
+  ASSERT_TRUE(enqueueStagedFrame(
+      slabFrame(std::move(slab), TcpOp::ReadReply, /*reqId=*/11)));
+
+  auto* conn = installGatedConn();
+  std::thread sender([this]() { runSenderLoop(); });
+  conn->waitForSend();
+
+  EXPECT_EQ(conn->sentPointer(), slabData)
+      << "the span handed to the socket must point into the slab; a copy on the "
+         "way out would defeat staging there at all";
+  EXPECT_EQ(conn->sentSize(), sizeof(TcpMsgHeader));
+  EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)))
+      << "the slab must still be on loan while the send is outstanding";
+
+  conn->releaseSend();
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true));
+  })) << "the slab must go back once the send resolves, or the pool leaks a "
+         "slab per staged reply";
+
+  closeOutQueue();
+  sender.join();
+}
+
+// The slab has to come back on the error path too. A send failure tears the
+// connection down but not the transport, so a slab stranded here is one the
+// pool never sees again.
+TEST_F(TcpTransportFrameTest, ASlabFrameIsReleasedAfterAFailedSend) {
+  setConnected();
+  installFailingConn();
+  auto pool = makeSlabPool(/*slabCount=*/1, /*reserved=*/0);
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/false);
+  ASSERT_TRUE(static_cast<bool>(slab));
+
+  ASSERT_TRUE(enqueueStagedFrame(
+      slabFrame(std::move(slab), TcpOp::ReadReply, /*reqId=*/12)));
+
+  runSenderLoop(); // returns once send() fails
+
+  EXPECT_TRUE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)))
+      << "a failed send must still return the slab";
+}
+
+// Clearing the queue is the other way a frame dies. failAllPending() drops
+// every queued item, and each one owning its slab is what keeps that from
+// leaking the pool dry on a connection failure.
+TEST_F(TcpTransportFrameTest, ClearingTheOutQueueReleasesSlabFrames) {
+  setConnected();
+  auto pool = makeSlabPool(/*slabCount=*/2, /*reserved=*/0);
+  ASSERT_NE(pool, nullptr);
+  auto slabs = pool->acquire(2);
+  ASSERT_TRUE(slabs.hasValue());
+  std::vector<TcpFrame> frames;
+  frames.push_back(
+      slabFrame(std::move(slabs.value()[0]), TcpOp::ReadReply, /*reqId=*/21));
+  frames.push_back(
+      slabFrame(std::move(slabs.value()[1]), TcpOp::ReadReply, /*reqId=*/22));
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+  ASSERT_EQ(outQueueDepth(), 2u);
+
+  failAllPending();
+
+  EXPECT_EQ(outQueueDepth(), 0u);
+  auto reclaimed = pool->acquire(2);
+  EXPECT_TRUE(reclaimed.hasValue())
+      << "both slabs must be back in the pool after the queue is cleared";
+}
+
+// enqueueFrames exists so a put wave lands in the queue as one step. Enqueuing
+// chunk by chunk lets the sender start transmitting a group this side may still
+// fail to finish staging, which is a partial remote write the caller is told
+// nothing about.
+TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesTheWholeGroupInOrder) {
+  setConnected();
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 31; reqId <= 33; ++reqId) {
+    TcpMsgHeader header;
+    header.op = static_cast<uint8_t>(TcpOp::Write);
+    header.reqId = reqId;
+    frames.emplace_back(serializeTcpHeader(header));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_THAT(queuedReqIds(), ::testing::ElementsAre(31u, 32u, 33u))
+      << "the group must be queued whole and in order";
+  EXPECT_EQ(outQueueBytes(), 3 * sizeof(TcpMsgHeader))
+      << "every frame in the group must be accounted against the queue cap";
+}
+
+// A closed queue must take none of the group. Half a wave queued and half
+// refused is the partial write the batch enqueue exists to prevent.
+TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesNothingWhenTheQueueIsClosed) {
+  setConnected();
+  closeOutQueue();
+
+  auto pool = makeSlabPool(/*slabCount=*/2, /*reserved=*/0);
+  ASSERT_NE(pool, nullptr);
+  auto slabs = pool->acquire(2);
+  ASSERT_TRUE(slabs.hasValue());
+  std::vector<TcpFrame> frames;
+  frames.push_back(
+      slabFrame(std::move(slabs.value()[0]), TcpOp::Write, /*reqId=*/41));
+  frames.push_back(
+      slabFrame(std::move(slabs.value()[1]), TcpOp::Write, /*reqId=*/42));
+
+  EXPECT_FALSE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+  EXPECT_EQ(outQueueDepth(), 0u);
+  EXPECT_EQ(outQueueBytes(), 0u);
+  auto reclaimed = pool->acquire(2);
+  EXPECT_TRUE(reclaimed.hasValue())
+      << "a refused group must not strand the slabs it was built in";
 }
 
 // The registry's mutex protects the map, not the lifetime of the application

@@ -7,35 +7,69 @@
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/benchmarks/TileSendRecv.cuh"
 #include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
+#include "comms/prims/tests/NvlProgressPayload.h"
 #include "comms/prims/tests/P2pNvlTransportTest.cuh"
 #include "comms/prims/tests/Utils.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
+#include "comms/testinfra/DistEnvironmentBase.h"
+#include "comms/testinfra/DistTestBase.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
-#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 using namespace meta::comms;
 
 namespace comms::prims::tests {
 
-class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
+namespace {
+
+// Reset per test by the fixture. Rank-symmetric: every rank runs the same test
+// and therefore executes the same sequence of makeTestBootstrap() calls.
+int g_bootstrapSeq = 0;
+
+/*
+ * Per-test out-of-band bootstrap.
+ *
+ * The prefix must be identical on every rank or they rendezvous on different
+ * stores and hang, and distinct between bootstraps or a later one picks up an
+ * earlier one's keys. Deriving it from the running test name gives both: every
+ * rank runs the same test, and the sequence counter disambiguates tests that
+ * build more than one bootstrap.
+ *
+ * Free rather than a fixture member so the helper functions below, which build
+ * their own transports, can use it too.
+ */
+std::shared_ptr<meta::comms::IBootstrap> makeTestBootstrap() {
+  const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+  const std::string prefix = std::string(info->test_suite_name()) + "." +
+      info->name() + "#" + std::to_string(g_bootstrapSeq++);
+  return std::shared_ptr<meta::comms::IBootstrap>(
+      meta::comms::createBootstrap(prefix));
+}
+
+} // namespace
+
+class P2pNvlTransportTestFixture : public ::testing::Test,
+                                   public meta::comms::DistBaseTest {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    distSetUp();
+    g_bootstrapSeq = 0;
     CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
   void TearDown() override {
-    MpiBaseTestFixture::TearDown();
+    distTearDown();
   }
 };
 
@@ -70,9 +104,11 @@ static void expectTwoCallPattern(
     const std::string& label);
 
 TEST_F(P2pNvlTransportTestFixture, PipelineGeometry) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   constexpr std::size_t perChannelBufferSize = 64 * 1024;
   constexpr std::size_t pipelineDepth = 4;
@@ -86,7 +122,7 @@ TEST_F(P2pNvlTransportTestFixture, PipelineGeometry) {
       .perChannelSize = perChannelBufferSize,
   };
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2p = transport.buildP2pTransportDevice(peerRank);
@@ -98,18 +134,18 @@ TEST_F(P2pNvlTransportTestFixture, PipelineGeometry) {
 
 TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   // Only test with 2 ranks
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const size_t numElements = 256;
   auto config = makeNvlConfig(sizeof(int) * numElements, 4);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   COMMS_LOG(INFO, "Rank {} created transport and exchanged IPC", globalRank);
@@ -137,7 +173,7 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
       INFO, "Rank {} filled local buffer with {}", globalRank, writeValue);
 
   // Barrier to ensure both ranks have written their data
-  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
   COMMS_LOG(INFO, "Rank {} passed barrier", globalRank);
 
   // Now each rank reads from peer buffer and verifies
@@ -184,7 +220,7 @@ class TransportTestHelper {
       : globalRank_(globalRank),
         numRanks_(numRanks),
         peerRank_((globalRank == 0) ? 1 : 0),
-        bootstrap_(std::make_shared<meta::comms::MpiBootstrap>()),
+        bootstrap_(makeTestBootstrap()),
         transport_(
             std::make_unique<MultiPeerNvlTransport>(
                 globalRank,
@@ -232,7 +268,7 @@ class TransportTestHelper {
   int globalRank_;
   int numRanks_;
   int peerRank_;
-  std::shared_ptr<meta::comms::MpiBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   std::unique_ptr<MultiPeerNvlTransport> transport_;
   std::unique_ptr<P2pNvlTransportDevice> p2pHost_;
   std::unique_ptr<DeviceBuffer> p2pDevice_;
@@ -243,10 +279,11 @@ class TransportTestHelper {
 // =============================================================================
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
-  if (numRanks != 2) {
-    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   const size_t nBytes = 8 * 1024 * 1024; // 8MB
@@ -255,7 +292,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
 
   auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -283,7 +320,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
     void* args[] = {
         &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileSendRecv,
         grid,
@@ -292,7 +329,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
         0,
         nullptr));
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     // Verify received data
     std::vector<char> hostBuf(nBytes);
@@ -315,9 +352,11 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCall) {
 TEST_F(
     P2pNvlTransportTestFixture,
     TileTwoCallSendThenRecvPaddingCreditNoDeadlock) {
-  if (numRanks != 2) {
-    GTEST_SKIP() << "Skipping: requires 2 ranks, got " << numRanks;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const int numBlocks = 1;
@@ -327,7 +366,7 @@ TEST_F(
   const size_t maxSignalBytes = 0;
 
   auto config = makeNvlConfig(perChannelSize, pipelineDepth, numBlocks);
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -354,7 +393,7 @@ TEST_F(
   abort.setDefaultTimeout(std::chrono::milliseconds{5000});
   AbortDevice abortDevice = abort.getDeviceHandle();
 
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
   test::testTileTwoCallSendThenRecv(
       p2pHost,
       sendTiles,
@@ -366,7 +405,7 @@ TEST_F(
       threadCount,
       abortDevice);
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
   std::vector<char> hostRecv(totalBytes);
   CUDACHECK_TEST(cudaMemcpy(
@@ -381,10 +420,11 @@ TEST_F(
 }
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
-  if (numRanks != 2) {
-    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const size_t nBytes = 2 * 1024 * 1024;
@@ -393,7 +433,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
 
   auto config = makeNvlConfig(128 * 1024, 2, numSendBlocks);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -433,10 +473,10 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
     CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nBytes));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     std::vector<char> hostBuf(nBytes);
     CUDACHECK_TEST(cudaMemcpy(
@@ -466,7 +506,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvCudaGraphReplay) {
 static void runTileTest(
     int globalRank,
     int numRanks,
-    std::shared_ptr<meta::comms::MpiBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     size_t nBytes,
     size_t perChannelSize,
     size_t chunkSize,
@@ -505,7 +545,7 @@ static void runTileTest(
     void* args[] = {
         &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileSendRecv,
         grid,
@@ -514,7 +554,7 @@ static void runTileTest(
         0,
         nullptr));
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     std::vector<char> hostBuf(nBytes);
     CUDACHECK_TEST(cudaMemcpy(
@@ -785,10 +825,12 @@ class LocalTileHarness {
 
 // Test various message sizes with default config
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMessageSizes) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   // Small sizes
   runTileTest(
@@ -869,10 +911,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMessageSizes) {
 
 // Test signal granularity (chunkSize < slotSize)
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvSignalGranularity) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 32 * 1024 * 1024; // 32MB
 
   // Per-slot signaling (chunkSize == slotSize)
@@ -902,10 +946,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvSignalGranularity) {
 
 // Test different block counts
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvBlockCounts) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 16 * 1024 * 1024; // 16MB
 
   runTileTest(
@@ -972,10 +1018,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvBlockCounts) {
 
 // Test pipeline depth variations
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvPipelineDepth) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 32 * 1024 * 1024;
 
   runTileTest(
@@ -986,10 +1034,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvPipelineDepth) {
 
 // Test multi-call with persistent step state
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallPersistentStep) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   // 5 iterations with same size — tests step counter persistence
   runTileTest(
@@ -1503,10 +1553,11 @@ TEST_F(
 TEST_F(
     P2pNvlTransportTestFixture,
     TileSendRecvChangingLaunchedBlocksWithSameActiveBlocks) {
-  if (numRanks != 2) {
-    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const int activeBlocks = 4;
@@ -1521,7 +1572,7 @@ TEST_F(
       .perChannelSize = perBlockSlotSize,
   };
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -1547,7 +1598,7 @@ TEST_F(
     void* args[] = {
         &p2pHost, &sendTiles, &recvTiles, &maxSignalBytesArg, &abortDevice};
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileSendRecv,
         dim3(numSendBlocks * 2),
@@ -1556,7 +1607,7 @@ TEST_F(
         0,
         nullptr));
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     std::vector<char> hostRecv(nBytes);
     CUDACHECK_TEST(cudaMemcpy(
@@ -1814,15 +1865,17 @@ TEST_F(P2pNvlTransportTestFixture, TileSendAndForwardWaitForWrappedSubstepAck) {
 
 // Test multi-call with different message sizes per call
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
-  if (numRanks != 2) {
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const int numSendBlocks = 4;
   auto config = makeNvlConfig(2 * 1024 * 1024, 2, numSendBlocks);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -1857,7 +1910,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
     void* args[] = {
         &p2pHost, &sendTiles, &recvTiles, &maxSignalBytes, &abortDevice};
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileSendRecv,
         grid,
@@ -1866,7 +1919,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
         0,
         nullptr));
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     std::vector<char> hostBuf(nBytes);
     CUDACHECK_TEST(cudaMemcpy(
@@ -1888,10 +1941,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvMultiCallDifferentSizes) {
 
 // Test partial tiles (nbytes not evenly divisible by numBlocks)
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvPartialTiles) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   // nBytes not divisible by numBlocks — last block gets fewer bytes
   runTileTest(
@@ -1930,10 +1985,12 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvPartialTiles) {
 
 // Test with different staging buffer sizes
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvStagingSizes) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 16 * 1024 * 1024;
 
   // 4MB staging
@@ -1982,6 +2039,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvStagingSizes) {
 // Helper to run a write() test with verification
 void runPutTest(
     int globalRank,
+    const std::function<void()>& barrier,
     P2pNvlTransportDevice* p2p,
     char* localSrc,
     char* remoteDst,
@@ -1997,7 +2055,7 @@ void runPutTest(
     CUDACHECK_TEST(cudaMemset(localSrc, testValue, nbytes));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    barrier();
 
     // Write data to peer's buffer
     test::testPutWithSignal(
@@ -2008,7 +2066,7 @@ void runPutTest(
     // Rank 1: Clear destination buffer and verify after write()
     CUDACHECK_TEST(cudaMemset(localSrc, 0, nbytes));
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    barrier();
 
     test::testWait(p2p, CmpOp::CMP_GE, signal_id, nbytes, numBlocks, blockSize);
 
@@ -2042,11 +2100,11 @@ void runPutTest(
 
 // Basic write() test with aligned pointers
 TEST_F(P2pNvlTransportTestFixture, PutBasic) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const size_t nbytes = 1024 * 1024; // 1MB
   auto config = makeNvlConfig(nbytes, 1);
@@ -2059,7 +2117,16 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   char* localSrc = p2pHost.getLocalState().dataBuffer;
   char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
-  runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
+  runPutTest(
+      globalRank,
+      [this] { oobBarrier(); },
+      p2p,
+      localSrc,
+      remoteDst,
+      nbytes,
+      4,
+      128,
+      "PutBasic");
 
   COMMS_LOG(INFO, "Rank {}: PutBasic test completed", globalRank);
 }
@@ -2071,21 +2138,26 @@ struct PutTransferSizeParams {
 };
 
 class PutTransferSizeTestFixture
-    : public MpiBaseTestFixture,
+    : public ::testing::Test,
+      public meta::comms::DistBaseTest,
       public ::testing::WithParamInterface<PutTransferSizeParams> {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    distSetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+
+  void TearDown() override {
+    distTearDown();
   }
 };
 
 TEST_P(PutTransferSizeTestFixture, Put) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const auto& params = GetParam();
   COMMS_LOG(
@@ -2104,7 +2176,15 @@ TEST_P(PutTransferSizeTestFixture, Put) {
   char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
   runPutTest(
-      globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
+      globalRank,
+      [this] { oobBarrier(); },
+      p2p,
+      localSrc,
+      remoteDst,
+      params.nbytes,
+      4,
+      128,
+      params.name);
 
   COMMS_LOG(
       INFO,
@@ -2154,21 +2234,26 @@ struct PutUnalignedParams {
 };
 
 class PutUnalignedTestFixture
-    : public MpiBaseTestFixture,
+    : public ::testing::Test,
+      public meta::comms::DistBaseTest,
       public ::testing::WithParamInterface<PutUnalignedParams> {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    distSetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+
+  void TearDown() override {
+    distTearDown();
   }
 };
 
 TEST_P(PutUnalignedTestFixture, Put) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const auto& params = GetParam();
   COMMS_LOG(
@@ -2200,7 +2285,15 @@ TEST_P(PutUnalignedTestFixture, Put) {
   }
 
   runPutTest(
-      globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
+      globalRank,
+      [this] { oobBarrier(); },
+      p2p,
+      localSrc,
+      remoteDst,
+      params.nbytes,
+      4,
+      128,
+      params.name);
 
   COMMS_LOG(
       INFO,
@@ -2294,11 +2387,11 @@ INSTANTIATE_TEST_SUITE_P(
 // The bug caused chunkBytes to accumulate across iterations, leading to
 // buffer overflows and data corruption.
 TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   // Parameters chosen to trigger multi-chunk per group:
   // numBlocks=4, blockSize=128 -> total_groups=16
@@ -2328,7 +2421,7 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
         localSrc, pattern.data(), paddedSize, cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    oobBarrier();
 
     test::testPutWithSignal(
         p2p, remoteDst, localSrc, signal_id, nbytes, 4, 128);
@@ -2337,7 +2430,7 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
     // Fill destination with sentinel to detect any writes
     CUDACHECK_TEST(cudaMemset(localSrc, sentinelValue, paddedSize));
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    oobBarrier();
 
     test::testWait(p2p, CmpOp::CMP_GE, signal_id, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -2372,18 +2465,18 @@ TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
 // =============================================================================
 
 TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   auto config = makeNvlConfig(4096, 2);
   config.ll128BufferSize = ll128_buffer_size(4096);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
@@ -2404,17 +2497,17 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Enabled) {
 }
 
 TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   auto config = makeNvlConfig(4096, 2);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
@@ -2444,10 +2537,11 @@ TEST_F(P2pNvlTransportTestFixture, Ll128BufferWiring_Disabled) {
 // correctly with the maxBlocks layout and host-side barrier.
 
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
-  if (numRanks != 2) {
-    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int maxBlocks = 32;
@@ -2459,7 +2553,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
       .perChannelSize = 256 * 1024,
   };
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -2505,7 +2599,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
     void* args[] = {
         &p2pHost, &sendTiles, &recvTiles, &needsBarrier, &abortDevice};
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)comms::prims::benchmark::p2pTileSendRecvDynamic,
         dim3(totalBlocks),
@@ -2514,7 +2608,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
         0,
         nullptr));
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     // Verify received data
     std::vector<char> hostBuf(nBytes);
@@ -2565,7 +2659,7 @@ TEST_F(P2pNvlTransportTestFixture, TileSendRecvDynamicBlockCount) {
 static void runTileForwardTest(
     int globalRank,
     int numRanks,
-    const std::shared_ptr<meta::comms::MpiBootstrap>& bootstrap,
+    const std::shared_ptr<meta::comms::IBootstrap>& bootstrap,
     size_t nBytes,
     size_t perChannelSize,
     size_t chunkSize,
@@ -2574,9 +2668,11 @@ static void runTileForwardTest(
     int nIters = 1,
     int threadCount = 256,
     size_t dstOffset = 0) {
-  if (numRanks != 2) {
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -2603,7 +2699,7 @@ static void runTileForwardTest(
       CUDACHECK_TEST(cudaMemset(fwdR1Buf.get(), 0, nBytes + dstOffset));
     }
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     if (globalRank == 0) {
       // Rank 0: tile send src + tile recv into recvR0 (single kernel,
@@ -2642,7 +2738,7 @@ static void runTileForwardTest(
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 
     // Verify rank 0's recv data matches the original send pattern.
     if (globalRank == 0) {
@@ -2700,11 +2796,12 @@ static void runTileForwardTest(
 
 // Basic single-call test
 TEST_F(P2pNvlTransportTestFixture, TileForwardBasic) {
-  if (numRanks != 2) {
-    COMMS_LOG(WARN, "Skipping: requires 2 ranks, got {}", numRanks);
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   // 8MB transfer, 8MB slot (single-step), 4 blocks
   runTileForwardTest(
@@ -2721,10 +2818,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardBasic) {
 
 // Various message sizes
 TEST_F(P2pNvlTransportTestFixture, TileForwardMessageSizes) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   // Small
   runTileForwardTest(
@@ -2773,10 +2872,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardMessageSizes) {
 
 // Signal granularity (chunkSize < slotSize → multiple sub-step signals)
 TEST_F(P2pNvlTransportTestFixture, TileForwardSignalGranularity) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 32 * 1024 * 1024;
 
   // Per-slot signaling
@@ -2799,10 +2900,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardSignalGranularity) {
 
 // Different block counts
 TEST_F(P2pNvlTransportTestFixture, TileForwardBlockCounts) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 16 * 1024 * 1024;
 
   for (int blocks : {1, 2, 4, 8, 16, 32}) {
@@ -2821,10 +2924,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardBlockCounts) {
 
 // Pipeline depth variations
 TEST_F(P2pNvlTransportTestFixture, TileForwardPipelineDepth) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
   const size_t nBytes = 32 * 1024 * 1024;
 
   runTileForwardTest(
@@ -2835,10 +2940,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardPipelineDepth) {
 
 // Multi-call: persistent step state across iterations
 TEST_F(P2pNvlTransportTestFixture, TileForwardMultiCallPersistentStep) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   runTileForwardTest(
       globalRank,
@@ -2864,9 +2971,11 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardMultiCallPersistentStep) {
 }
 
 TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
-  if (numRanks != 2) {
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   constexpr int kNumBlocks = 4;
   constexpr size_t kDataBufferSize = 1024 * 1024;
@@ -2878,9 +2987,12 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
   constexpr unsigned char kAdvancePattern = 0x33;
   constexpr unsigned char kForwardPattern = 0x7a;
 
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bs = makeTestBootstrap();
   const int peerRank = globalRank == 0 ? 1 : 0;
-  auto config = makeNvlConfig(kPerBlockSlotSize, 2, kNumBlocks);
+  // makeNvlConfig's first argument is the total staging size across channels,
+  // not the per-channel slot: passing kPerBlockSlotSize divided it by
+  // kNumBlocks a second time and left every offset below out of range.
+  auto config = makeNvlConfig(kDataBufferSize, 2, kNumBlocks);
   MultiPeerNvlTransport transport(globalRank, numRanks, bs, config);
   transport.exchange();
   auto p2pHost = transport.buildP2pTransportDevice(peerRank);
@@ -2908,7 +3020,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
 
   // Advance only the rank1->rank0 tile send/recv state by 5 sub-steps. The
   // following forward call then has recvStep == 0 and sendStep == 5 on rank 1.
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  oobBarrier();
   if (globalRank == 1) {
     test::testTileSend(
         p2pHost,
@@ -2929,7 +3041,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         kThreadCount);
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  oobBarrier();
 
   if (globalRank == 0) {
     std::vector<char> hostBuf(kAdvanceBytes);
@@ -2955,7 +3067,7 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
     CUDACHECK_TEST(cudaMemset(fwdR1Buf.get(), 0, kForwardBytes));
   }
 
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  oobBarrier();
   if (globalRank == 0) {
     test::testTileSend(
         p2pHost,
@@ -2981,14 +3093,16 @@ TEST_F(P2pNvlTransportTestFixture, TileForwardDesynchronizedStepState) {
         nullptr));
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  oobBarrier();
 
   if (globalRank == 0) {
+    // Channel-major staging is a single region of maxNumChannels *
+    // perChannelSize starting at dataBuffer; the second directional region this
+    // offset used to skip past no longer exists.
     std::vector<char> stagingSlot(kDataBufferSize);
     CUDACHECK_TEST(cudaMemcpy(
         stagingSlot.data(),
-        static_cast<char*>(p2pHost.getLocalState().dataBuffer) +
-            kDataBufferSize,
+        static_cast<char*>(p2pHost.getLocalState().dataBuffer),
         kDataBufferSize,
         cudaMemcpyDeviceToHost));
     for (int block = 0; block < kNumBlocks; ++block) {
@@ -3125,10 +3239,12 @@ TEST_F(
 
 // Partial tiles (nbytes not evenly divisible by numBlocks)
 TEST_F(P2pNvlTransportTestFixture, TileForwardPartialTiles) {
-  if (numRanks != 2) {
-    return;
-  }
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  auto bs = makeTestBootstrap();
 
   runTileForwardTest(
       globalRank,
@@ -3178,21 +3294,26 @@ std::string forwardUnalignedParamName(
 
 // Tile forward unaligned: reuse runTileForwardTest's dstOffset parameter.
 class TileForwardUnalignedTestFixture
-    : public MpiBaseTestFixture,
+    : public ::testing::Test,
+      public meta::comms::DistBaseTest,
       public ::testing::WithParamInterface<ForwardUnalignedParams> {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    distSetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+
+  void TearDown() override {
+    distTearDown();
   }
 };
 
 TEST_P(TileForwardUnalignedTestFixture, TileForward) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   const auto& params = GetParam();
   COMMS_LOG(
@@ -3202,7 +3323,7 @@ TEST_P(TileForwardUnalignedTestFixture, TileForward) {
       params.nbytes,
       params.dstOffset);
 
-  auto bs = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bs = makeTestBootstrap();
   // Use a multi-step config so the
   // unaligned dst is exercised across many steps and chunks.
   runTileForwardTest(
@@ -3264,18 +3385,18 @@ INSTANTIATE_TEST_SUITE_P(
 // =============================================================================
 
 TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   auto config = makeNvlConfig(4096, 2);
   config.llBufferSize = ll_buffer_size(4096);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
@@ -3295,17 +3416,17 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Enabled) {
 }
 
 TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
-  if (numRanks != 2) {
-    COMMS_LOG(
-        WARN, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   auto config = makeNvlConfig(4096, 2);
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  auto bootstrap = makeTestBootstrap();
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
@@ -3322,12 +3443,673 @@ TEST_F(P2pNvlTransportTestFixture, LlBufferWiring_Disabled) {
       INFO, "Rank {}: LlBufferWiring_Disabled test completed", globalRank);
 }
 
+/*
+ * Resumable progress API (init_*_progress + progress_*_once).
+ *
+ * These drive the same loop shape the batched MCCL send/recv kernel uses: hold
+ * both directions in flight and cycle between them until each reports Done. A
+ * progress operation must deliver exactly what the blocking path would, so the
+ * oracle throughout is the peer's byte pattern.
+ */
+
+namespace {
+
+// Symmetric exchange: each rank fills its send buffer with a rank/peer/position
+// keyed pattern and must observe the peer's pattern in its recv buffer.
+void runProgressExchange(
+    int globalRank,
+    int numRanks,
+    size_t nbytes,
+    int numBlocks,
+    std::size_t pipelineDepth,
+    std::size_t dataBufferSize,
+    std::size_t maxSignalBytes,
+    comms::prims::test::ProgressCounters* countersOut) {
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  auto config = makeNvlConfig(dataBufferSize, pipelineDepth, numBlocks);
+
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(nbytes);
+  DeviceBuffer recvBuf(nbytes);
+  const std::vector<char> sendHost =
+      test::makeProgressPayload(globalRank, peerRank, nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), sendHost.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
+
+  DeviceBuffer counters(sizeof(comms::prims::test::ProgressCounters));
+  CUDACHECK_TEST(cudaMemset(
+      counters.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  comms::prims::test::testProgressSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      nbytes,
+      maxSignalBytes,
+      AbortDevice(),
+      static_cast<comms::prims::test::ProgressCounters*>(counters.get()),
+      numBlocks,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  std::vector<char> hostBuf(nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        test::progressPayloadByte(peerRank, globalRank, i))
+        << "mismatch at byte " << i << " of " << nbytes;
+  }
+
+  if (countersOut != nullptr) {
+    CUDACHECK_TEST(cudaMemcpy(
+        countersOut,
+        counters.get(),
+        sizeof(comms::prims::test::ProgressCounters),
+        cudaMemcpyDeviceToHost));
+  }
+}
+
+} // namespace
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvDeliversBytes) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Fits inside one pipeline window, so the transfer completes without ever
+  // hitting backpressure -- the simplest path through the state machine.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/64 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvNonAlignedSize) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Not a multiple of 16, so align_tile_protocol_bytes pads and the final chunk
+  // carries tail padding that must be credited but not copied.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/(64 * 1024) + 13,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvWrapsPipelineAndWaits) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Payload many times the pipeline window, so the transfer can only complete
+  // by wrapping and reusing slots repeatedly. Whether Waiting is observed
+  // depends on how fast the peer drains, so it is not asserted here;
+  // ProgressSendBlocksWhenPeerDoesNotDrain covers backpressure
+  // deterministically.
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/4 * 1024 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/4,
+      /*dataBufferSize=*/256 * 1024,
+      /*maxSignalBytes=*/0,
+      &counters));
+
+  EXPECT_GT(counters.sendProgressed, 1)
+      << "expected the payload to take several chunks";
+  EXPECT_GT(counters.recvProgressed, 1)
+      << "expected the payload to take several chunks";
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendBlocksWhenPeerDoesNotDrain) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Rank 0 sends a payload far larger than the pipeline window while rank 1
+  // never posts a matching recv. With no credit returned the sender must fill
+  // the window and then report Waiting indefinitely rather than completing or
+  // overwriting unacknowledged slots. Bounded iterations, so a broken
+  // implementation that ignores SLOT_FREE fails the assertions instead of
+  // hanging the suite.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  comms::prims::test::ProgressCounters counters{};
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x7A, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    comms::prims::test::testProgressSendBackpressure(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        AbortDevice(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "sender completed without the receiver ever returning credit";
+    EXPECT_EQ(counters.sendAborted, 0)
+        << "sender reported Aborted with no abort recorded";
+    EXPECT_GT(counters.sendProgressed, 0)
+        << "sender should fill the pipeline window before blocking";
+    EXPECT_GT(counters.sendWaiting, 0)
+        << "sender should report Waiting once the window is full";
+  }
+
+  // Rank 1 must outlive rank 0's kernel: the sender writes into rank 1's
+  // staging buffer, which the transport owns.
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendUnwindsOnAbortWithSkipBehavior) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // The same one-sided stall as ProgressSendBlocksWhenPeerDoesNotDrain, but
+  // with an abort already recorded. Completion is impossible here -- no credit
+  // is ever returned -- so a terminal status can only mean the poll observed
+  // the abort and unwound, which is what the fault-tolerance contract requires
+  // of a wait. Reporting it as Aborted rather than Done is what keeps that
+  // distinguishable from a real completion. Without abort the same kernel
+  // reports neither, so the two tests bracket the behavior.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x7B, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    // SKIP behavior: the poll should unwind rather than trap. Recording the
+    // timeout on the host makes the first device-side check observe it, so the
+    // test does not race a deadline.
+    comms::fault_tolerance::Abort abort{
+        /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP};
+    abort.startTimeout(std::chrono::milliseconds{0});
+    ASSERT_TRUE(abort.isAborted());
+
+    comms::prims::test::ProgressCounters counters{};
+    comms::prims::test::testProgressSendBackpressure(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        abort.getDeviceHandle(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendAborted, 1)
+        << "aborted send should report Aborted rather than spinning on credit "
+           "that will never arrive";
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never moved";
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvMultipleChannels) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // One channel per block, each with its own progress slot: a shared array
+  // would have blocks trampling each other's cursors. Covers channel indexing
+  // only -- a two-rank run has a single remote peer, so the per-peer slice
+  // offset is always zero and is not exercised here.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/1024 * 1024,
+      /*numBlocks=*/4,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/2 * 1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressZeroBytesIsNoOp) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // init_*_progress returns without reserving, so both directions start Done
+  // and the loop exits immediately. Nothing to verify beyond not hanging.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/0,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/0,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressTwoSequentialOpsOnSameChannel) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Covers cursor reservation and the Active -> Idle reset: the second
+  // operation must resume from where the first left the channel cursor. If the
+  // reset were missing the second init would trap; if the reservation were
+  // wrong the second payload would land at the wrong stream offset and the
+  // second half of the buffer would not verify.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t firstBytes = 32 * 1024;
+  const size_t secondBytes = 48 * 1024;
+  const size_t totalBytes = firstBytes + secondBytes;
+  const int numBlocks = 1;
+
+  auto config = makeNvlConfig(1024 * 1024, 2, numBlocks);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  // Keyed per byte position across the whole buffer. A per-half pattern would
+  // only catch a second operation that resumed in the wrong half; this also
+  // catches one that resumed at the wrong offset within the right half, which
+  // is the failure the cursor reservation actually risks.
+  const std::vector<char> sendHost =
+      test::makeProgressPayload(globalRank, peerRank, totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      sendBuf.get(), sendHost.data(), totalBytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  comms::prims::test::testProgressTwoCallSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      firstBytes,
+      secondBytes,
+      /*firstMaxSignalBytes=*/0,
+      /*secondMaxSignalBytes=*/0,
+      AbortDevice(),
+      numBlocks,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  std::vector<char> hostBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < totalBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        test::progressPayloadByte(peerRank, globalRank, i))
+        << (i < firstBytes ? "first" : "second")
+        << " operation mismatch at byte " << i;
+  }
+}
+
+/*
+ * Signal granularity. makeNvlConfig(dataBufferSize, depth, channels) gives a
+ * per-channel slot of dataBufferSize/channels/depth; with 1 MiB / 1 / 2 that is
+ * 512 KiB. A max_signal_bytes below the slot makes the transport signal
+ * per sub-chunk instead of per slot, which changes chunk sizing, pipeline
+ * position and tail padding -- and it is stored at init and validated on every
+ * progress call.
+ */
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvPartialSignalGranularity) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/1024 * 1024,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/128 * 1024,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressSendRecvUnalignedSignalGranularity) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Neither 16-byte aligned nor a divisor of the slot: the transport rounds it
+  // down with `& ~15`, so the last sub-chunk of each slot is short and the
+  // payload itself is not a multiple of the granularity.
+  ASSERT_NO_FATAL_FAILURE(runProgressExchange(
+      globalRank,
+      numRanks,
+      /*nbytes=*/(768 * 1024) + 37,
+      /*numBlocks=*/1,
+      /*pipelineDepth=*/2,
+      /*dataBufferSize=*/1024 * 1024,
+      /*maxSignalBytes=*/3000,
+      /*countersOut=*/nullptr));
+}
+
+TEST_F(
+    P2pNvlTransportTestFixture,
+    ProgressSequentialOpsChangingSignalGranularity) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // Two operations on one channel with different legal granularities. The
+  // cursor is in protocol bytes and tail padding is computed from the base
+  // byte, so a granularity change between operations must still land the second
+  // payload at the offset the receiver expects.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t firstBytes = 96 * 1024;
+  const size_t secondBytes = 160 * 1024;
+  const size_t totalBytes = firstBytes + secondBytes;
+
+  auto config = makeNvlConfig(1024 * 1024, 2, 1);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  DeviceBuffer sendBuf(totalBytes);
+  DeviceBuffer recvBuf(totalBytes);
+  const int firstPattern = 0x70 + globalRank;
+  const int secondPattern = 0x80 + globalRank;
+  CUDACHECK_TEST(cudaMemset(sendBuf.get(), firstPattern, firstBytes));
+  CUDACHECK_TEST(cudaMemset(
+      static_cast<char*>(sendBuf.get()) + firstBytes,
+      secondPattern,
+      secondBytes));
+  CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, totalBytes));
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+  comms::prims::test::testProgressTwoCallSendRecv(
+      p2pHost,
+      sendBuf.get(),
+      recvBuf.get(),
+      firstBytes,
+      secondBytes,
+      /*firstMaxSignalBytes=*/64 * 1024,
+      /*secondMaxSignalBytes=*/16 * 1024,
+      AbortDevice(),
+      /*numBlocks=*/1,
+      /*blockSize=*/256);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  std::vector<char> hostBuf(totalBytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), recvBuf.get(), totalBytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < firstBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x70 + peerRank))
+        << "first operation mismatch at byte " << i;
+  }
+  for (size_t i = firstBytes; i < totalBytes; i++) {
+    ASSERT_EQ(
+        static_cast<unsigned char>(hostBuf[i]),
+        static_cast<unsigned char>(0x80 + peerRank))
+        << "second operation mismatch at byte " << i;
+  }
+}
+
+/*
+ * Receiver-side backpressure and abort, the mirror of the two send-side cases.
+ * Rank 0 posts a recv that no one will satisfy; rank 1 only holds its transport
+ * open and then checks that rank 0 never credited a chunk it did not receive.
+ */
+void runRecvStallCase(
+    int globalRank,
+    int numRanks,
+    bool abortMidFlight,
+    comms::prims::test::ProgressCounters* countersOut) {
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 1024 * 1024;
+
+  auto config = makeNvlConfig(256 * 1024, 4, 1);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer recvBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    AbortDevice handle;
+    std::unique_ptr<comms::fault_tolerance::Abort> abort;
+    if (abortMidFlight) {
+      abort = std::make_unique<comms::fault_tolerance::Abort>(
+          /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP);
+      abort->startTimeout(std::chrono::milliseconds{0});
+      ASSERT_TRUE(abort->isAborted());
+      handle = abort->getDeviceHandle();
+    }
+
+    comms::prims::test::testProgressRecvBackpressure(
+        p2pHost,
+        recvBuf.get(),
+        nbytes,
+        /*maxSignalBytes=*/0,
+        /*maxIterations=*/4096,
+        handle,
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        countersOut,
+        countersBuf.get(),
+        sizeof(comms::prims::test::ProgressCounters),
+        cudaMemcpyDeviceToHost));
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  // Rank 0's recv writes SLOT_FREE into rank 1's channel state, so rank 1 is
+  // where a wrongly-issued credit would show up.
+  if (globalRank == 1) {
+    DeviceBuffer slotFree(sizeof(unsigned long long));
+    CUDACHECK_TEST(
+        cudaMemset(slotFree.get(), 0xFF, sizeof(unsigned long long)));
+    comms::prims::test::testReadSlotFreeCounter(
+        p2pHost,
+        /*channel=*/0,
+        static_cast<unsigned long long*>(slotFree.get()));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    unsigned long long observed = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &observed, slotFree.get(), sizeof(observed), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(observed, 0ULL)
+        << "receiver credited SLOT_FREE for a chunk that was never sent";
+  }
+
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressAbortThenReinitSameKernel) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  // The abort path clears `stage` so the channel can be reused. No other case
+  // exercises abort and re-init together in one kernel, which is
+  // exactly the ordering that cleanup exists to make safe: the trap target
+  // covers re-init while *active*, and the sequential-ops test covers re-init
+  // after normal completion. Neither would catch an unpublished abort cleanup.
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const size_t nbytes = 4 * 1024 * 1024;
+
+  auto config = makeNvlConfig(
+      /*dataBufferSize=*/256 * 1024, /*pipelineDepth=*/4, /*maxNumChannels=*/1);
+  auto bootstrap = makeTestBootstrap();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+  auto p2pHost = transport.buildP2pTransportDevice(peerRank);
+
+  if (globalRank == 0) {
+    DeviceBuffer sendBuf(nbytes);
+    CUDACHECK_TEST(cudaMemset(sendBuf.get(), 0x5C, nbytes));
+    DeviceBuffer countersBuf(sizeof(comms::prims::test::ProgressCounters));
+    CUDACHECK_TEST(cudaMemset(
+        countersBuf.get(), 0, sizeof(comms::prims::test::ProgressCounters)));
+
+    comms::fault_tolerance::Abort abort{
+        /*enabled=*/true, comms::fault_tolerance::AbortBehavior::SKIP};
+    abort.startTimeout(std::chrono::milliseconds{0});
+    ASSERT_TRUE(abort.isAborted());
+
+    comms::prims::test::ProgressCounters counters{};
+    comms::prims::test::testProgressAbortThenReinit(
+        p2pHost,
+        sendBuf.get(),
+        nbytes,
+        /*maxIterations=*/4096,
+        abort.getDeviceHandle(),
+        static_cast<comms::prims::test::ProgressCounters*>(countersBuf.get()),
+        /*numBlocks=*/1,
+        /*blockSize=*/256);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaMemcpy(
+        &counters,
+        countersBuf.get(),
+        sizeof(counters),
+        cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(counters.sendAborted, 1)
+        << "abort should have concluded the stalled send";
+    EXPECT_EQ(counters.sendCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never moved";
+  }
+
+  // Rank 1 holds its transport open for rank 0's staging writes.
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressRecvBlocksWhenPeerDoesNotSend) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runRecvStallCase(
+      globalRank, numRanks, /*abortMidFlight=*/false, &counters));
+  if (globalRank == 0) {
+    EXPECT_EQ(counters.recvCompleted, 0) << "recv completed with no sender";
+    EXPECT_EQ(counters.recvAborted, 0)
+        << "recv reported Aborted with no abort recorded";
+    EXPECT_EQ(counters.recvProgressed, 0)
+        << "recv consumed a chunk that was never sent";
+    EXPECT_GT(counters.recvWaiting, 0) << "recv should report Waiting";
+  }
+}
+
+TEST_F(P2pNvlTransportTestFixture, ProgressRecvUnwindsOnAbortWithSkipBehavior) {
+  // This target is configured for exactly 2 ranks. Anything else means the
+  // launcher misconfigured the job, which must fail rather than skip: a skip
+  // here is what let the whole suite report green while executing nothing.
+  ASSERT_EQ(numRanks, 2) << "target is configured for 2 ranks, got "
+                         << numRanks;
+  comms::prims::test::ProgressCounters counters{};
+  ASSERT_NO_FATAL_FAILURE(runRecvStallCase(
+      globalRank, numRanks, /*abortMidFlight=*/true, &counters));
+  if (globalRank == 0) {
+    EXPECT_EQ(counters.recvAborted, 1)
+        << "aborted recv should report Aborted rather than spinning";
+    EXPECT_EQ(counters.recvCompleted, 0)
+        << "abort must not be reported as completion -- the bytes never "
+           "arrived";
+  }
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char* argv[]) {
+  // InitGoogleTest first: it strips the --gtest_* flags from argv. gflags,
+  // which folly::Init sets up, hard-errors on flags it does not recognise, so
+  // the reverse order breaks every filtered invocation, including running this
+  // suite under compute-sanitizer with a --gtest_filter.
   ::testing::InitGoogleTest(&argc, argv);
-  auto mpi_env = std::make_unique<MPIEnvironmentBase>();
-  ::testing::AddGlobalTestEnvironment(mpi_env.get());
   folly::Init init(&argc, &argv);
+  ::testing::AddGlobalTestEnvironment(new meta::comms::DistEnvironmentBase());
   return RUN_ALL_TESTS();
 }

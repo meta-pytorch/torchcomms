@@ -640,19 +640,21 @@ class P2pIbrcTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_send_progress<P2pIbrcTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, src, nbytes, max_signal_bytes);
   }
 
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_recv_progress<P2pIbrcTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, dst, nbytes, max_signal_bytes);
   }
 
   template <
@@ -661,13 +663,10 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp, Proto>(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, abortDevice, args...);
   }
 
   template <
@@ -676,13 +675,10 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp, Proto>(
-        *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, abortDevice, args...);
   }
 
   // Templated for the same reason P2pIbTransportDevice templates its
@@ -696,13 +692,11 @@ class P2pIbrcTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_acquire_once(
       ThreadGroup& group,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out) {
     return detail::
         progress_recv_acquire_once<P2pIbrcTransportDevice, protocol::Simple>(
-            *this, group, nbytes, max_signal_bytes, abortDevice, out);
+            *this, group, abortDevice, out);
   }
 
   template <typename = void>

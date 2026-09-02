@@ -316,6 +316,14 @@ class MultiPeerNvlTransport {
   }
 
   /**
+   * @return Logical NVL channels per peer; device code requires
+   * group_id < this.
+   */
+  int maxNumChannels() const {
+    return config_.maxNumChannels;
+  }
+
+  /**
    * buildP2pTransportDevice - Build host-side P2pNvlTransportDevice
    *
    * Constructs a P2pNvlTransportDevice on the host for the specified peer.
@@ -470,6 +478,22 @@ class MultiPeerNvlTransport {
   // Allocated when maxNumChannels > 0.
   std::unique_ptr<GpuMemHandler> channelStateHandler_;
   std::size_t perPeerChannelStateSize_{0};
+
+  // Per-peer NvlChannelProgress arrays (length = maxNumChannels per peer,
+  // sliced by localPeerIndex). One allocation holds both directions, send
+  // first, recv at progressDirectionStride_. Plain device memory rather than a
+  // GpuMemHandler because, unlike the channel state, this is never
+  // IPC-exchanged.
+  struct CudaFreeDeleter {
+    void operator()(void* ptr) const noexcept {
+      if (ptr != nullptr) {
+        static_cast<void>(cudaFree(ptr));
+      }
+    }
+  };
+  std::unique_ptr<void, CudaFreeDeleter> progressBase_;
+  std::size_t perPeerChannelProgressSize_{0};
+  std::size_t progressDirectionStride_{0};
   std::size_t perPeerLlBufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized

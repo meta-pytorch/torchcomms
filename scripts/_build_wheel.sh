@@ -36,6 +36,9 @@ export CLEAN_BUILD=1
 export CXXSTD="-std=c++20"
 export NCCL_PATCH_FMT_NVCC_CXX20=1
 # NCCLX device compilation can exhaust memory at full host parallelism.
-export NCCL_BUILD_JOBS=16
+# Lower to 8 to avoid OOM on g5.12xlarge self-hosted runners for old CUDA
+# builders (cu126/cu130) that have been hitting "lost communication" during
+# device kernel compilation.
+export NCCL_BUILD_JOBS=8
 
 python setup.py bdist_wheel

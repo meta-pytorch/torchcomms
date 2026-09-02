@@ -167,6 +167,46 @@ TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
       config, /*nicReliableDoorbellCapable=*/false));
 }
 
+// -----------------------------------------------------------------------------
+// max_rd_atomic (MCCL_IBGDA_MAX_RD_ATOMIC / config.maxRdAtomic)
+// -----------------------------------------------------------------------------
+
+// 16 matches the device maximum on ConnectX-8 and what NVIDIA's own GDAKI uses
+// for its GPU-initiated transport. It must still satisfy the power-of-two rule,
+// since the NIC stores log2 of it.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicDefaultsToSixteen) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_EQ(config.maxRdAtomic, 16);
+  EXPECT_TRUE(isIbMaxRdAtomicValid(config.maxRdAtomic));
+}
+
+// The wire default stays 1, deliberately: the depth resolution is compiled out
+// on AMD, so an AMD rank never overwrites the member initializer and reports
+// whatever this default says. It must keep describing what AMD actually
+// programs, which is nothing -- i.e. depth 1.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicWireDefaultIsOne) {
+  const PeerQpPayload payload;
+  EXPECT_EQ(payload.maxRdAtomic, 1);
+}
+
+// The NIC stores log2 of the value, so a non-power-of-two is silently rounded
+// down (DOCA's own setter would accept 15 and program 8). Reject it up front.
+TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicAcceptsOnlyPowersOfTwo) {
+  const std::vector<unsigned> valid = {1, 2, 4, 8, 16, 32, 64, 128};
+  const std::vector<unsigned> invalid = {0, 3, 15, 100, 129, 256};
+  for (const unsigned value : valid) {
+    EXPECT_TRUE(isIbMaxRdAtomicValid(value)) << value;
+  }
+  for (const unsigned value : invalid) {
+    EXPECT_FALSE(isIbMaxRdAtomicValid(value)) << value;
+  }
+}
+
+// The payload's own default is never what a NVIDIA rank sends -- the depth is
+// always assigned from the resolved value before exchange. It only describes
+// the unresolved case, which is AMD, and that is covered by
+// MaxRdAtomicWireDefaultIsOne above.
+
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   const MultipeerIbTransportConfig config;
   EXPECT_TRUE(config.ibLazyConnect);
@@ -340,6 +380,186 @@ TEST(MultiPeerIbTransportConfigTest, SymmetricRequestGraphsNeverStall) {
         0)
         << "random seed=" << seed;
   }
+}
+
+// -----------------------------------------------------------------------------
+// dp_ordering (MCCL_IBGDA_QP_ORDERING_SEMANTIC / config.qpOrderingPolicy)
+// -----------------------------------------------------------------------------
+
+// The default is a policy, not a tier: it walks ooo_all -> ooo_rw -> ibta and
+// settles on whatever the NIC reports. Which rung it lands on is decided in the
+// transport, against real capabilities.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingDefaultPolicyIsAuto) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_EQ(config.qpOrderingPolicy, IbQpOrderingPolicy::Auto);
+  EXPECT_TRUE(ibQpOrderingPolicyIsAuto(config.qpOrderingPolicy));
+}
+
+// The auto ladder is ordered strongest-first, and the tiers it walks are
+// strictly decreasing. resolveQpOrderingSemanticForNic() picks the first rung
+// whose tier fits under the NIC's reported cap, so if this ordering were ever
+// reversed a capable NIC would silently settle for the weaker tier.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingAutoLadderIsStrongestFirst) {
+  const std::vector<int> ladderTiers = {
+      ibQpOrderingTier(IbQpOrderingSemantic::OooAll),
+      ibQpOrderingTier(IbQpOrderingSemantic::OooRw),
+      ibQpOrderingTier(IbQpOrderingSemantic::Ibta),
+  };
+  const std::vector<int> expected = {2, 1, 0};
+  EXPECT_EQ(ladderTiers, expected);
+}
+
+// Every rung above ibta needs the QPC dp_ordering_force bit, so a NIC without
+// cmd_hca_cap_2.dp_ordering_force drops straight to ibta regardless of which
+// tier it advertises -- the tier bits are ignored without force.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingLadderRungsAboveIbtaNeedForce) {
+  EXPECT_TRUE(ibQpOrderingForce(IbQpOrderingSemantic::OooAll));
+  EXPECT_TRUE(ibQpOrderingForce(IbQpOrderingSemantic::OooRw));
+  EXPECT_FALSE(ibQpOrderingForce(IbQpOrderingSemantic::Ibta));
+}
+
+// Only auto is allowed to fall back. Every other policy names a tier and must
+// fail closed instead, or an A/B silently measures the control twice.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingOnlyAutoIsAFallbackPolicy) {
+  const std::vector<IbQpOrderingPolicy> explicitPolicies = {
+      IbQpOrderingPolicy::Ibta,
+      IbQpOrderingPolicy::IbtaForced,
+      IbQpOrderingPolicy::OooRw,
+      IbQpOrderingPolicy::OooAll,
+  };
+  for (const auto policy : explicitPolicies) {
+    EXPECT_FALSE(ibQpOrderingPolicyIsAuto(policy))
+        << ibQpOrderingPolicyName(policy);
+  }
+}
+
+// Each explicit policy names exactly one resolved tier. Auto has no fixed
+// answer, so it maps to the safe end rather than silently claiming a tier.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingExplicitPolicyMapsToSemantic) {
+  const std::vector<IbQpOrderingSemantic> expected = {
+      IbQpOrderingSemantic::Ibta, // Auto: undecided until a NIC is consulted
+      IbQpOrderingSemantic::Ibta,
+      IbQpOrderingSemantic::IbtaForced,
+      IbQpOrderingSemantic::OooRw,
+      IbQpOrderingSemantic::OooAll,
+  };
+  const std::vector<IbQpOrderingPolicy> policies = {
+      IbQpOrderingPolicy::Auto,
+      IbQpOrderingPolicy::Ibta,
+      IbQpOrderingPolicy::IbtaForced,
+      IbQpOrderingPolicy::OooRw,
+      IbQpOrderingPolicy::OooAll,
+  };
+  std::vector<IbQpOrderingSemantic> actual;
+  actual.reserve(policies.size());
+  for (const auto policy : policies) {
+    actual.push_back(ibQpOrderingPolicyToSemantic(policy));
+  }
+  EXPECT_EQ(actual, expected);
+}
+
+// resolveQpOrderingPolicy() treats a cvar equal to _DEFAULTCVARVALUE as "not
+// set" and falls through to the config field. That only reproduces production
+// if a zero-initialized cvar -- what every binary that skips ncclCvarInit()
+// sees -- also lands on auto, which requires auto to be choice 0 in the yaml.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingAutoIsTheZeroValuedPolicy) {
+  EXPECT_EQ(static_cast<int>(IbQpOrderingPolicy::Auto), 0);
+}
+
+// The (tier, force) pair each mode expands to is what actually lands in the
+// QPC dp_ordering_0 / dp_ordering_1 / dp_ordering_force bits.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingModesMapToTierAndForce) {
+  const std::vector<std::pair<int, bool>> expected = {
+      {0, false}, // Ibta
+      {0, true}, // IbtaForced: strict ordering, but override the NIC default
+      {1, true}, // OooRw
+      {2, true}, // OooAll
+  };
+  const std::vector<IbQpOrderingSemantic> modes = {
+      IbQpOrderingSemantic::Ibta,
+      IbQpOrderingSemantic::IbtaForced,
+      IbQpOrderingSemantic::OooRw,
+      IbQpOrderingSemantic::OooAll,
+  };
+  std::vector<std::pair<int, bool>> actual;
+  actual.reserve(modes.size());
+  for (const auto mode : modes) {
+    actual.emplace_back(ibQpOrderingTier(mode), ibQpOrderingForce(mode));
+  }
+  EXPECT_EQ(actual, expected);
+}
+
+// The MCCL_IBGDA_QP_ORDERING_SEMANTIC spelling is the experiment's only
+// interface; a typo must not fall back to the default arm.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingParsesTheFourSpellings) {
+  EXPECT_EQ(parseIbQpOrderingSemantic("ibta"), IbQpOrderingSemantic::Ibta);
+  EXPECT_EQ(
+      parseIbQpOrderingSemantic("ibta_forced"),
+      IbQpOrderingSemantic::IbtaForced);
+  EXPECT_EQ(parseIbQpOrderingSemantic("ooo_rw"), IbQpOrderingSemantic::OooRw);
+  EXPECT_EQ(parseIbQpOrderingSemantic("ooo_all"), IbQpOrderingSemantic::OooAll);
+  EXPECT_FALSE(parseIbQpOrderingSemantic("OOO_ALL").has_value());
+  EXPECT_FALSE(parseIbQpOrderingSemantic("ooo").has_value());
+  EXPECT_FALSE(parseIbQpOrderingSemantic("").has_value());
+}
+
+// Same for the policy spelling, which is what the cvar and the benchmark env
+// tunnel actually parse. "auto" is the extra one, and it is the default, so a
+// typo landing on it silently would be the worst outcome of the three.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingPolicyParsesTheFiveSpellings) {
+  EXPECT_EQ(parseIbQpOrderingPolicy("auto"), IbQpOrderingPolicy::Auto);
+  EXPECT_EQ(parseIbQpOrderingPolicy("ibta"), IbQpOrderingPolicy::Ibta);
+  EXPECT_EQ(
+      parseIbQpOrderingPolicy("ibta_forced"), IbQpOrderingPolicy::IbtaForced);
+  EXPECT_EQ(parseIbQpOrderingPolicy("ooo_rw"), IbQpOrderingPolicy::OooRw);
+  EXPECT_EQ(parseIbQpOrderingPolicy("ooo_all"), IbQpOrderingPolicy::OooAll);
+  EXPECT_FALSE(parseIbQpOrderingPolicy("AUTO").has_value());
+  EXPECT_FALSE(parseIbQpOrderingPolicy("default").has_value());
+  EXPECT_FALSE(parseIbQpOrderingPolicy("").has_value());
+}
+
+// Names round-trip so log lines and the cvar value are the same vocabulary.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingNamesRoundTrip) {
+  for (const auto mode :
+       {IbQpOrderingSemantic::Ibta,
+        IbQpOrderingSemantic::IbtaForced,
+        IbQpOrderingSemantic::OooRw,
+        IbQpOrderingSemantic::OooAll}) {
+    EXPECT_EQ(parseIbQpOrderingSemantic(ibQpOrderingSemanticName(mode)), mode);
+  }
+  for (const auto policy :
+       {IbQpOrderingPolicy::Auto,
+        IbQpOrderingPolicy::Ibta,
+        IbQpOrderingPolicy::IbtaForced,
+        IbQpOrderingPolicy::OooRw,
+        IbQpOrderingPolicy::OooAll}) {
+    EXPECT_EQ(parseIbQpOrderingPolicy(ibQpOrderingPolicyName(policy)), policy);
+  }
+}
+
+// The mismatch error names the peer's value, which arrives over the wire from
+// a binary that may not share this enum. An unknown code must report itself as
+// unknown rather than be aliased onto a real mode.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingNamesWireValuesDefensively) {
+  EXPECT_STREQ(
+      ibQpOrderingSemanticNameFromWire(
+          static_cast<int>(IbQpOrderingSemantic::OooAll)),
+      "ooo_all");
+  EXPECT_STREQ(ibQpOrderingSemanticNameFromWire(-1), "unknown");
+  EXPECT_STREQ(ibQpOrderingSemanticNameFromWire(99), "unknown");
+}
+
+// doMaterializePeer() rejects a peer whose tier differs from ours by comparing
+// the exchanged int against static_cast<int>(the local enum), so the wire
+// encoding of the opted-out state has to agree with the enum.
+//
+// This is also what AMD sends. The dp_ordering path is compiled out there, so
+// qpOrderingSemantic_ keeps its Ibta member initializer and never resolves --
+// the payload default and the AMD value have to stay the same number.
+TEST(MultiPeerIbTransportConfigTest, QpOrderingWireDefaultMatchesIbta) {
+  const PeerQpPayload payload;
+  EXPECT_EQ(
+      payload.qpOrderingSemantic, static_cast<int>(IbQpOrderingSemantic::Ibta));
 }
 
 } // namespace
