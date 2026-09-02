@@ -63,6 +63,9 @@ struct CliOptions {
   size_t slabSize{0};
   int slabNum{0};
   std::vector<std::string> rdmaDevices;
+  // Selects which local IPv6 address the TCP transport binds and advertises,
+  // and nothing else. Which NIC actually carries the bytes is a separate axis
+  // -- see --tcp-bind-dev below.
   std::string tcpIface{"eth2"};
   // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
   // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
@@ -96,6 +99,10 @@ std::vector<int> parseIntList(const std::string& s) {
 
 // --tcp-bind-devs wins over --tcp-bind-dev, which is just the single-device
 // shorthand for whatever --tcp-iface names. Empty means no device binding.
+//
+// --tcp-iface keeps selecting the source address either way, so when striping
+// it wants to name one of the bound devices: pointing it at an unbound NIC
+// advertises an address on a device carrying no lanes.
 std::vector<std::string> tcpBindDevList(const CliOptions& opts) {
   std::vector<std::string> devices;
   if (!opts.tcpBindDevs.empty()) {
@@ -175,7 +182,9 @@ void printUsage(const char* prog) {
       << "  --output <path>        CSV output file path\n"
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
-      << "  --tcp-iface <name>     Front-end interface for the TCP transport (default: eth2)\n"
+      << "  --tcp-iface <name>     Interface whose address the TCP transport binds and\n"
+      << "                         advertises (default: eth2). Selects the source address\n"
+      << "                         only -- see --tcp-bind-dev to pin the egress NIC\n"
       << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 0,\n"
       << "                         which leaves it unset so the kernel autotunes the\n"
       << "                         window; setting it explicitly disables autotuning)\n"
