@@ -18,8 +18,13 @@ class TcpBandwidthBenchmark : public Benchmark {
   /// @p sockBufSize is the SO_SNDBUF/SO_RCVBUF value for the data connection;
   /// nullopt leaves the kernel's own sizing in place, which is what lets
   /// receive autotuning grow the window past the bandwidth-delay product.
-  TcpBandwidthBenchmark(std::string iface, std::optional<int> sockBufSize)
-      : iface_(std::move(iface)), sockBufSize_(sockBufSize) {}
+  TcpBandwidthBenchmark(
+      std::string iface,
+      std::optional<int> sockBufSize,
+      bool asyncGetH2d = true)
+      : iface_(std::move(iface)),
+        sockBufSize_(sockBufSize),
+        asyncGetH2d_(asyncGetH2d) {}
 
   std::string name() const override {
     return "tcp_bandwidth";
@@ -33,6 +38,7 @@ class TcpBandwidthBenchmark : public Benchmark {
  private:
   std::string iface_;
   std::optional<int> sockBufSize_;
+  bool asyncGetH2d_{true};
 };
 
 } // namespace uniflow::benchmark

@@ -13,6 +13,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -293,6 +294,14 @@ class TcpTransportFrameTest : public ::testing::Test {
     transport_->handleFrame(frame);
   }
 
+  void feed(std::span<const uint8_t> frame, TcpPinnedSlab slab) {
+    transport_->handleFrame(frame, std::move(slab));
+  }
+
+  std::shared_ptr<TcpPinnedSlabPool> receivePool() {
+    return transport_->ensureReceivePool();
+  }
+
   /// True if the transport queued at least one Error frame back to the peer.
   bool queuedErrorFrame() const {
     std::lock_guard<std::mutex> lk(transport_->outMu_);
@@ -322,7 +331,8 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// multi-chunk get() does. Chunk reqId 1 targets `dst`; the rest stand in for
   /// siblings whose replies have not arrived yet. VRAM so the copy runs through
   /// the mocked CudaApi. Returns the caller's future.
-  std::future<Status> postReadChunks(void* dst, size_t len, size_t chunks) {
+  std::future<Status>
+  postReadChunks(void* dst, size_t len, size_t chunks, void* stream = nullptr) {
     auto state = std::make_shared<TcpOpState>();
     state->remaining = chunks;
     auto future = state->promise.get_future();
@@ -335,7 +345,7 @@ class TcpTransportFrameTest : public ::testing::Test {
           /*isRead=*/true,
           MemoryType::VRAM,
           /*deviceId=*/0,
-          /*stream=*/nullptr};
+          stream};
     }
     return future;
   }
@@ -773,12 +783,158 @@ TEST_F(TcpTransportFrameTest, InBoundsWriteIsApplied) {
   EXPECT_FALSE(queuedErrorFrame());
 }
 
-// A READ_REPLY copies its payload into the caller's get() destination after
-// dropping inflightMu_. Resolving the op's future is what releases the caller
-// to free that destination, so the copy and the resolution must be one atomic
-// step. failAllPending() (send error, peer disconnect, shutdown) can resolve
-// the op mid-copy via a *sibling* chunk of the same multi-chunk get(), which
-// shares the op state -- a silent write-after-free.
+TEST(TcpOpStateTest, FailureWaitsForReservedWriteToRetire) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.fail(Err(ErrCode::ConnectionFailed, "test failure"));
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.endWrite(Ok());
+  ASSERT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::ConnectionFailed);
+}
+
+TEST(TcpOpStateTest, SuccessfulReservedWritesCompleteTheOperation) {
+  TcpOpState state;
+  state.remaining = 2;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.endWrite(Ok());
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.endWrite(Ok());
+  EXPECT_FALSE(future.get().hasError());
+  EXPECT_FALSE(state.tryBeginWrite());
+}
+
+TEST(TcpOpStateTest, ReservedWriteFailureWinsAndResolvesExactlyOnce) {
+  TcpOpState state;
+  state.remaining = 2;
+  auto future = state.promise.get_future();
+
+  ASSERT_TRUE(state.tryBeginWrite());
+  ASSERT_TRUE(state.tryBeginWrite());
+  state.endWrite(Err(ErrCode::DriverError, "copy failed"));
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)),
+      std::future_status::timeout);
+
+  state.fail(Err(ErrCode::ConnectionFailed, "later failure"));
+  state.endWrite(Ok());
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::DriverError);
+}
+
+TEST(TcpOpStateTest, WriteReservationIsRefusedAfterFailure) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  state.fail(Err(ErrCode::ConnectionFailed, "test failure"));
+  EXPECT_FALSE(state.tryBeginWrite());
+  EXPECT_TRUE(future.get().hasError());
+}
+
+TEST(TcpOpStateTest, ThrowingSynchronousWriteRetiresItsReservation) {
+  TcpOpState state;
+  state.remaining = 1;
+  auto future = state.promise.get_future();
+
+  EXPECT_THROW(
+      state.writeAndComplete(
+          []() -> Status { throw std::runtime_error("test exception"); }),
+      std::runtime_error);
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::milliseconds(0)), std::future_status::ready);
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::TransportError);
+  EXPECT_FALSE(state.tryBeginWrite());
+}
+
+TEST_F(TcpTransportFrameTest, AsyncReadReplyFailureWaitsForEventRetirement) {
+  constexpr size_t kLen = 64;
+  std::vector<uint8_t> dst(kLen, 0);
+  auto* const callerStream = reinterpret_cast<void*>(0xCA11);
+  // Chunk 2 remains in inflight_ so failAllPending() can latch an error while
+  // chunk 1's asynchronous destination write is still reserved.
+  auto future = postReadChunks(dst.data(), kLen, /*chunks=*/2, callerStream);
+
+  auto pool = receivePool();
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(slab);
+  auto frame = makeFrame(TcpOp::ReadReply, kSegId, /*offset=*/0, kLen, kLen);
+  ASSERT_LE(frame.size(), slab.capacity());
+  std::memcpy(slab.data(), frame.data(), frame.size());
+  const auto bytes = std::span<const uint8_t>{slab.data(), frame.size()};
+
+  std::atomic<bool> copyDone{false};
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          dst.data(),
+          ::testing::_,
+          kLen,
+          kMockMemcpyH2D,
+          static_cast<MockStream>(callerStream)))
+      .WillOnce([&](void* d, const void* s, size_t n, auto, auto) -> Status {
+        std::memcpy(d, s, n);
+        return Ok();
+      });
+  EXPECT_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillOnce([](auto* event) -> Status {
+        *event = {};
+        return Ok();
+      });
+  EXPECT_CALL(
+      *cudaApi_,
+      eventRecord(::testing::_, static_cast<MockStream>(callerStream)))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventQuery(::testing::_))
+      .WillRepeatedly([&](auto) -> Result<bool> {
+        return copyDone.load(std::memory_order_acquire);
+      });
+  EXPECT_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, streamSynchronize(::testing::_)).Times(0);
+
+  feed(bytes, std::move(slab));
+  auto onlyFreeSlab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(onlyFreeSlab);
+  failAllPending();
+
+  EXPECT_EQ(
+      future.wait_for(std::chrono::milliseconds(100)),
+      std::future_status::timeout)
+      << "the failure must remain latched until the async destination write "
+         "retires";
+  EXPECT_FALSE(pool->tryAcquire(/*allowReserved=*/true));
+
+  copyDone.store(true, std::memory_order_release);
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError());
+  EXPECT_EQ(dst, std::vector<uint8_t>(kLen, uint8_t{0xCD}));
+}
+
+// A vector-backed READ_REPLY still copies synchronously. Resolving the op's
+// future is what releases the caller to free its destination, so that fallback
+// copy and completion remain one atomic lifetime reservation.
 TEST_F(TcpTransportFrameTest, ReadReplyCopyKeepsTheGetUnresolvedWhileItRuns) {
   constexpr size_t kLen = 64;
   std::vector<uint8_t> dst(kLen, 0);
@@ -1332,6 +1488,52 @@ TEST_F(TcpTransportFrameTest, ADeferredReadStillBlocksDeregistration) {
   EXPECT_EQ(stagedCopyCount(), 0u)
       << "a discarded deferred read must not have started a copy into memory "
          "that is being torn down";
+}
+
+// A thread parked in the staging pool's blocking acquire() must be released by
+// shutdown(). acquire() waits on `freed_` with no deadline and `closed_` as its
+// only escape, and it runs on the application's own put() thread -- which
+// shutdown() never joins and nothing else wakes. Before shutdown() closed this
+// pool, a put() in flight across teardown parked forever, because the sender
+// that would have returned a staging slab was joined away first.
+//
+// Written against the pool directly rather than through put(): reaching the
+// blocking acquire() through put() needs a live peer and a full wave, and the
+// property under test belongs to shutdown()'s ordering, not to the put path.
+TEST_F(TcpTransportFrameTest, ShutdownReleasesAThreadParkedInStagingAcquire) {
+  setConnected();
+  stubStagingCopies();
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+
+  // Hold every slab so the acquire below cannot be satisfied.
+  std::vector<TcpPinnedSlab> held;
+  held.reserve(pool->slabCount());
+  for (size_t i = 0; i < pool->slabCount(); ++i) {
+    held.push_back(pool->tryAcquire(/*allowReserved=*/true));
+    ASSERT_TRUE(static_cast<bool>(held.back()));
+  }
+
+  std::atomic<bool> returned{false};
+  std::thread parked([&]() {
+    // Blocks: nothing is free, and this test never releases `held`.
+    auto leases = pool->acquire(1);
+    // Either outcome is fine; the point is that it *returns*.
+    (void)leases;
+    returned.store(true, std::memory_order_release);
+  });
+
+  // Give it time to reach the wait rather than racing the assertion below.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  ASSERT_FALSE(returned.load(std::memory_order_acquire))
+      << "precondition: the acquire must actually be parked";
+
+  transport_->shutdown();
+  parked.join();
+  EXPECT_TRUE(returned.load(std::memory_order_acquire))
+      << "shutdown() must close the staging pool; otherwise a put() in flight "
+         "across teardown never comes back";
 }
 
 // A read the pool cannot serve and the deferred queue cannot hold is answered
