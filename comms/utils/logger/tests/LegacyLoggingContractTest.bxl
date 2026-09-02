@@ -1,11 +1,23 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-_SCOPES = (
-    "fbcode//comms/ctran/...",
-    "fbcode//comms/mccl/...",
-    "fbcode//comms/ncclx/...",
-    "fbcode//comms/prims/...",
+_SCOPE_CONFIGS = (
+    ("fbcode//comms/ctran/...", "//comms/ctran/"),
+    ("fbcode//comms/mccl/...", "//comms/mccl/"),
+    ("fbcode//comms/ncclx/...", "//comms/ncclx/"),
+    ("fbcode//comms/prims/...", "//comms/prims/"),
+    ("fbcode//comms/torchcomms/ncclx/...", "//comms/torchcomms/ncclx/"),
 )
+_SCOPE_LABEL_PREFIX = "fbcode//"
+_SCOPE_LABEL_SUFFIX = "/..."
+
+def _scope_source_fragment(scope: str) -> str:
+    if not scope.startswith(_SCOPE_LABEL_PREFIX) or not scope.endswith(_SCOPE_LABEL_SUFFIX):
+        fail("Invalid migrated logging scope: {}".format(scope))
+    relative_path = scope[len(_SCOPE_LABEL_PREFIX) : -len(_SCOPE_LABEL_SUFFIX)]
+    return "//{}/".format(relative_path)
+
+_SCOPES = [scope for scope, _ in _SCOPE_CONFIGS]
+_SCOPE_SOURCE_FRAGMENTS = [fragment for _, fragment in _SCOPE_CONFIGS]
 
 _SOURCE_EXTENSIONS = (
     ".c",
@@ -207,7 +219,10 @@ def _is_scoped_source(path: str) -> bool:
             break
     if not has_source_extension:
         return False
-    return "//comms/ctran/" in path or "//comms/mccl/" in path or "//comms/ncclx/" in path or "//comms/prims/" in path
+    for source_fragment in _SCOPE_SOURCE_FRAGMENTS:
+        if source_fragment in path:
+            return True
+    return False
 
 def _check_direct_dependencies(ctx: bxl.Context) -> None:
     violations = {}
@@ -306,6 +321,27 @@ def _check_source_content(ctx: bxl.Context) -> None:
     ctx.output.ensure(result)
 
 def _validate_detector() -> None:
+    for scope, expected_fragment in _SCOPE_CONFIGS:
+        actual_fragment = _scope_source_fragment(scope)
+        if actual_fragment != expected_fragment:
+            fail(
+                "Migrated scope {} produced {}, expected {}".format(
+                    scope,
+                    actual_fragment,
+                    expected_fragment,
+                ),
+            )
+        source_path = "{}source.cc".format(expected_fragment)
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
+    for source_path in (
+        "//comms/utils/logger/Source.cc",
+        "//comms/ctran/README.md",
+        "//comms/torchcomms/source.cc",
+    ):
+        if _is_scoped_source(source_path):
+            fail("Migrated scope detector accepted: {}".format(source_path))
+
     for source in (
         "XLOG(ERR)",
         'XLOGF_IF(INFO, enabled, "message")',
