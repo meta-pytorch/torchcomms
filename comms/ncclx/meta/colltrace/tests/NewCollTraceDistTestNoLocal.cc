@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
+#include <optional>
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -21,6 +22,7 @@
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/testinfra/TestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -113,6 +115,8 @@ class CollTraceTest : public NcclxBaseTestFixture {
         NCCL_DEBUG_SUBSYS.empty() ? "INIT,BOOTSTRAP,ENV" : NCCL_DEBUG_SUBSYS;
     NCCL_DEBUG = "INFO";
     NCCL_DEBUG_SUBSYS = "INIT,COLL";
+    debugEnvGuard.emplace("NCCL_DEBUG", "INFO");
+    debugSubsysEnvGuard.emplace("NCCL_DEBUG_SUBSYS", "INIT,COLL");
     reconfigureLogging();
   }
 
@@ -121,6 +125,8 @@ class CollTraceTest : public NcclxBaseTestFixture {
     flushLogging();
     NCCL_DEBUG = prevDebug;
     NCCL_DEBUG_SUBSYS = prevDebugSubsys;
+    debugSubsysEnvGuard.reset();
+    debugEnvGuard.reset();
     reconfigureLogging();
   }
 
@@ -148,6 +154,8 @@ class CollTraceTest : public NcclxBaseTestFixture {
   cudaStream_t stream;
   std::string prevDebug;
   std::string prevDebugSubsys;
+  std::optional<SysEnvRAII> debugEnvGuard;
+  std::optional<SysEnvRAII> debugSubsysEnvGuard;
 };
 
 TEST_F(CollTraceTest, NewCollTraceAllReduce) {

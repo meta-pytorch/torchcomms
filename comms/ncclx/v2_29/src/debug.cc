@@ -69,7 +69,9 @@ static ncclResult_t getHostNameForLog(char* hostname, int maxlen, const char del
 }
 
 // This function must be called with ncclDebugLock locked!
-static void ncclDebugInit() {
+static void ncclDebugInit(
+    bool configureCommsSubSystemMask = true,
+    std::string_view preserveLogFilePath = {}) {
   // FIXME[max7255]: upstream has decent code there
   bool envPluginInitialized = ncclEnvPluginInitialized();
   const char* nccl_debug;
@@ -316,7 +318,7 @@ static void ncclDebugInit() {
     }
     *dfn = '\0';
     if (debugFn[0] != '\0') {
-      FILE *file = fopen(debugFn, "w");
+      FILE *file = fopen(debugFn, preserveLogFilePath == debugFn ? "a" : "w");
       if (file != nullptr) {
         setlinebuf(file); // disable block buffering
         ncclDebugFile = file;
@@ -325,10 +327,13 @@ static void ncclDebugInit() {
   }
 
   ncclEpoch = std::chrono::steady_clock::now();
-  ncclDebugMask = tempNcclDebugMask;
+  COMPILER_ATOMIC_STORE(
+      &ncclDebugMask, tempNcclDebugMask, std::memory_order_relaxed);
 
   // NCCLX -> Enable CTRAN subsystems logging as per NCCL_DEBUG_SUBSYS
-  meta::comms::logger::setSubSystemMask(ncclDebugMask);
+  if (configureCommsSubSystemMask) {
+    meta::comms::logger::setSubSystemMask(tempNcclDebugMask);
+  }
 
   COMPILER_ATOMIC_STORE(&ncclDebugLevel, tempNcclDebugLevel, std::memory_order_release);
 }
@@ -351,7 +356,8 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
     va_end(vargs);
   }
 
-  if (gotLevel >= 0 && (gotLevel < level || (flags & ncclDebugMask) == 0)) {
+  if (gotLevel >= 0 &&
+      (gotLevel < level || (flags & ncclDebugMaskLoad()) == 0)) {
     return;
   }
 
@@ -360,7 +366,7 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
     if (ncclDebugLevel < 0) {
       ncclDebugInit();
     }
-    if (ncclDebugLevel < level || ((flags & ncclDebugMask) == 0)) {
+    if (ncclDebugLevel < level || ((flags & ncclDebugMaskLoad()) == 0)) {
       return;
     }
   }
@@ -383,15 +389,38 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
   ncclx::logging::writeNcclLog(level, filefunc, "", line, logStr);
 }
 
+static void reconfigureDebugInit(std::string_view preserveLogFilePath) {
+  std::lock_guard<std::mutex> lock(ncclDebugMutex);
+  COMPILER_ATOMIC_STORE(&ncclDebugLevel, NCCL_DEBUG_RESET_TRIGGERED, std::memory_order_release);
+  if (ncclEnvPluginInitialized() || ncclLoggerInitialized()) {
+    ncclDebugInit(false, preserveLogFilePath);
+    initNcclLogger(false);
+  }
+}
+
+void ncclRefreshDebugInitInternal() noexcept {
+  /*
+   * Plugin discovery can log before publishing the plugin. Reopen in append
+   * mode only when refreshing the active destination; a newly selected file
+   * retains native NCCL's overwrite behavior.
+   */
+  try {
+    reconfigureDebugInit(
+        meta::comms::logger::getSpdlogLogger(
+            ncclx::logging::kNcclxLoggerName)
+            .outputPath());
+  } catch (...) {
+    meta::comms::logger::reportCommsLoggingFailureToStderr("ERROR");
+  }
+}
+
 // Non-deprecated version for internal use.
 extern "C"
 __attribute__ ((visibility("default")))
 void ncclResetDebugInitInternal() {
   // Cleans up from a previous ncclDebugInit() and reruns.
   // Use this after changing NCCL_DEBUG and related parameters in the environment.
-  std::lock_guard<std::mutex> lock(ncclDebugMutex);
-  // Let ncclDebugInit() know to complete the reset.
-  COMPILER_ATOMIC_STORE(&ncclDebugLevel, NCCL_DEBUG_RESET_TRIGGERED, std::memory_order_release);
+  reconfigureDebugInit({});
 }
 
 // In place of: NCCL_API(void, ncclResetDebugInit);
@@ -474,7 +503,8 @@ void ncclMetaDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *
     va_end(vargs);
   }
 
-  if (gotLevel >= 0 && (gotLevel < level || (flags & ncclDebugMask) == 0)) {
+  if (gotLevel >= 0 &&
+      (gotLevel < level || (flags & ncclDebugMaskLoad()) == 0)) {
     return;
   }
 
@@ -483,7 +513,7 @@ void ncclMetaDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *
     if (ncclDebugLevel < 0) {
       ncclDebugInit();
     }
-    if (ncclDebugLevel < level || ((flags & ncclDebugMask) == 0)) {
+    if (ncclDebugLevel < level || ((flags & ncclDebugMaskLoad()) == 0)) {
       return;
     }
   }
