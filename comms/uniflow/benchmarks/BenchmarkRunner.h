@@ -43,6 +43,12 @@ struct BenchmarkConfig {
   int pipelineDepth{2}; // send/recv staging pipeline depth
   size_t slabSize{0}; // 0 = use chunk-size
   int slabNum{0}; // 0 = use pipeline-depth
+  /*
+   * Run a correctness sweep before the timed loop. A bandwidth number proves
+   * nothing about the bytes: a transport that moved garbage, or nothing, still
+   * reports excellent throughput.
+   */
+  bool verify{true};
 };
 
 class Benchmark {

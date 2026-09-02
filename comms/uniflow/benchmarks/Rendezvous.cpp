@@ -121,7 +121,13 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
 
 /// Retry recv on EAGAIN — the peer may be slow to reach the barrier during
 /// long benchmark runs, causing SO_RCVTIMEO to fire.
-/// With a 1-second SO_RCVTIMEO, 300 retries ≈ 5 minutes before giving up.
+///
+/// The bound is 300 retries x the connection's SO_RCVTIMEO. The rendezvous is
+/// built with a default TcpSocketConfig, whose connTimeout is 30s, so that is
+/// ~2.5 hours -- not the ~5 minutes an earlier version of this comment claimed
+/// from a 1-second timeout. Worth knowing before reading a stalled two-host run
+/// as a deadlock: a rank stranded at a barrier its peer will never reach sits
+/// here for hours rather than failing fast.
 static Result<size_t> recvRetryEagain(
     controller::Conn& conn,
     std::vector<uint8_t>& buf) {
