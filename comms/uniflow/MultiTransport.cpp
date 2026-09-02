@@ -319,7 +319,8 @@ MultiTransportFactory::MultiTransportFactory(
     auto tcp = std::make_shared<TcpTransportFactory>(
         deviceId,
         eventBaseThread_->getEventBase(),
-        controller::TcpSocketConfig{},
+        options_.tcpTransportConfig ? *options_.tcpTransportConfig
+                                    : TcpTransportConfig{},
         tcpHost);
     factories_.emplace_back(std::move(tcp));
   } else {
