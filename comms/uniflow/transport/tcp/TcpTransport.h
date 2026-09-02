@@ -314,6 +314,18 @@ struct PlannedChunk {
   TcpInflight entry;
 };
 
+/// The same chunk resolved down to the addresses a Write frame needs. Built in
+/// put()'s pre-flight pass, so the commit pass has no decisions left to make.
+struct PlannedPutFrame {
+  uint64_t reqId{0};
+  uint64_t segId{0};
+  uint64_t offset{0};
+  const uint8_t* src{nullptr};
+  size_t len{0};
+  bool vram{false};
+  int deviceId{-1};
+};
+
 /// One outbound frame's storage: either a plain vector or a pinned staging
 /// slab. Move-only, because both kinds own the buffer the socket reads from and
 /// a slab additionally owns its place in the pool.
@@ -462,6 +474,23 @@ class TcpTransport : public Transport {
   TransportInfo bind() override;
   Status connect(std::span<const uint8_t> remoteInfo) override;
 
+  /// Writes the local spans into the peer's registered segments.
+  ///
+  /// What a failed put() promises about the peer's memory, and what it does
+  /// not:
+  ///
+  /// - A put of at most kMaxPutWaveChunks chunks -- 60 MiB of payload at the
+  ///   4 MiB chunk size, which covers the great majority of calls -- either
+  ///   queues every one of its frames or none of them. A host-staging failure
+  ///   queues nothing, so the peer's segment is untouched.
+  /// - A larger put is split into waves of that size, and the guarantee holds
+  /// per
+  ///   wave. A failure in wave N+1 can leave wave N applied on the peer, with
+  ///   nothing telling the peer which offsets those were.
+  /// - At every size this is staging-and-queue atomicity, not a remote
+  ///   transaction. Frames that reach the queue are frames the peer will apply;
+  ///   a connection that breaks mid-wave still leaves a partial write. Aborting
+  ///   at the wire level needs a protocol change, tracked in T285791201.
   std::future<Status> put(
       std::span<const TransferRequest> requests,
       const RequestOptions& options = {}) override;
@@ -564,6 +593,21 @@ class TcpTransport : public Transport {
       const TcpMsgHeader& replyHeader,
       TcpSegmentRegistry::Lease lease,
       TcpPinnedSlab slab);
+  // Stages one wave of VRAM Write frames: takes a slab per chunk, issues every
+  // copy, then waits for all of them. Returns the frames only if every copy
+  // succeeded, so the caller can queue the wave as one step and a failure
+  // queues nothing.
+  //
+  // Blocks until the pool can hand out the whole wave, so it must not be called
+  // holding outMu_ -- the thread that frees those slabs is the sender, and it
+  // needs that mutex to make progress.
+  //
+  // The wait covers every copy that was launched even when a later one fails. A
+  // slab handed back while the GPU is still writing into it goes straight to
+  // the next staging copy, and the two then race over the same bytes.
+  Result<std::vector<TcpFrame>> stagePutWave(
+      std::span<const PlannedPutFrame> wave,
+      void* stream);
   // Records a VRAM read to start once a slab frees up. Fails the request (the
   // caller answers with an Error frame) if the deferred queue is full: dropping
   // it silently would leave the peer waiting forever, and blocking here would
@@ -704,6 +748,11 @@ class TcpTransport : public Transport {
   // nothing to stage into. The responder is the side the peer is already
   // blocked on.
   static constexpr size_t kStagingSlabsReservedForReader = 1;
+  // Chunks staged, and so queued, as one indivisible wave. Everything put()
+  // promises about partial writes is bounded by this: a put of at most this
+  // many chunks either reaches the queue whole or not at all.
+  static constexpr size_t kMaxPutWaveChunks =
+      kStagingSlabCount - kStagingSlabsReservedForReader;
   // Bytes currently queued in outQueue_. Guarded by outMu_.
   size_t outBytes_{0};
 

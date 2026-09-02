@@ -329,16 +329,7 @@ std::future<Status> TcpTransport::put(
   // flush it and a Write the peer has applied cannot be recalled. A bail from
   // the middle of the send loop therefore reports failure to the caller while a
   // partial write has landed remotely, with nothing telling the peer about it.
-  struct PlannedRequest {
-    uint64_t segId{0};
-    uint64_t baseOffset{0};
-    const uint8_t* src{nullptr};
-    size_t len{0};
-    bool vram{false};
-    int deviceId{-1};
-  };
-  std::vector<PlannedRequest> planned;
-  planned.reserve(requests.size());
+  std::vector<PlannedPutFrame> planned;
   std::vector<PlannedChunk> chunks;
 
   for (const auto& req : requests) {
@@ -365,23 +356,26 @@ std::future<Status> TcpTransport::put(
         return future;
       }
     }
-    planned.push_back(
-        PlannedRequest{
-            remoteHandle.value()->segId(),
-            static_cast<uint64_t>(req.remote.remoteOffset_),
-            static_cast<const uint8_t*>(req.local.data()),
-            len,
-            vram,
-            deviceId});
+    const auto segId = remoteHandle.value()->segId();
+    const auto baseOffset = static_cast<uint64_t>(req.remote.remoteOffset_);
+    const auto* src = static_cast<const uint8_t*>(req.local.data());
 
     size_t off = 0;
     do {
       const size_t chunk = std::min(kMaxChunkSize, len - off);
+      const uint64_t reqId = nextReqId_.fetch_add(1, std::memory_order_relaxed);
       chunks.push_back(
           PlannedChunk{
-              nextReqId_.fetch_add(1, std::memory_order_relaxed),
+              reqId, chunk, TcpInflight{state, nullptr, chunk, false}});
+      planned.push_back(
+          PlannedPutFrame{
+              reqId,
+              segId,
+              baseOffset + off,
+              src + off,
               chunk,
-              TcpInflight{state, nullptr, chunk, false}});
+              vram,
+              deviceId});
       off += chunk;
     } while (off < len);
   }
@@ -395,53 +389,146 @@ std::future<Status> TcpTransport::put(
 
   // Commit. Only a genuine staging error or transport teardown remains
   // reachable, and both abandon the reservations for frames never queued.
-  size_t chunkIdx = 0;
-  for (const auto& req : planned) {
-    size_t off = 0;
-    do {
-      const uint64_t reqId = chunks[chunkIdx].reqId;
-      const size_t chunk = chunks[chunkIdx].len;
-      ++chunkIdx;
-      std::vector<uint8_t> frame(sizeof(TcpMsgHeader) + chunk);
+  //
+  // VRAM chunks are staged and queued in waves rather than one at a time. A
+  // per-chunk commit puts each Write in the queue as soon as its own copy
+  // finishes, so a copy that fails partway through a transfer leaves the peer
+  // holding the chunks that went before it -- a partial write at offsets the
+  // caller is never told about, and one the peer has no way to notice. A wave
+  // is queued only once every copy in it has succeeded.
+  void* stream = options.stream.has_value()
+      ? static_cast<void*>(options.stream.value())
+      : nullptr;
+  size_t idx = 0;
+  while (idx < planned.size()) {
+    const auto& first = planned[idx];
+    if (!first.vram || first.len == 0) {
+      // A host memcpy cannot fail and cannot park this thread, so there is
+      // nothing to stage and nothing a wave would protect.
+      std::vector<uint8_t> frame(sizeof(TcpMsgHeader) + first.len);
       TcpMsgHeader header;
       header.op = static_cast<uint8_t>(TcpOp::Write);
-      header.reqId = reqId;
-      header.segId = req.segId;
-      header.offset = req.baseOffset + off;
-      header.len = static_cast<uint64_t>(chunk);
+      header.reqId = first.reqId;
+      header.segId = first.segId;
+      header.offset = first.offset;
+      header.len = static_cast<uint64_t>(first.len);
       std::memcpy(frame.data(), &header, sizeof(header));
-      if (chunk > 0) {
-        Status st = Ok();
-        if (req.vram) {
-          st = hostFromDevice(
-              frame.data() + sizeof(header),
-              req.src + off,
-              chunk,
-              req.deviceId,
-              options.stream.has_value()
-                  ? static_cast<void*>(options.stream.value())
-                  : nullptr);
-        } else {
-          std::memcpy(frame.data() + sizeof(header), req.src + off, chunk);
-        }
-        if (!st) {
-          abandonInflight(chunks, chunkIdx - 1);
-          state->fail(std::move(st));
-          return future;
-        }
+      if (first.len > 0) {
+        std::memcpy(frame.data() + sizeof(header), first.src, first.len);
       }
       if (!enqueueFrame(std::move(frame), /*mayBlock=*/true)) {
-        abandonInflight(chunks, chunkIdx - 1);
+        abandonInflight(chunks, idx);
         state->fail(
             Err(ErrCode::NotConnected,
                 "tcp put: transport closed before the write was queued"));
         return future;
       }
-      off += chunk;
-    } while (off < req.len);
+      ++idx;
+      continue;
+    }
+
+    size_t waveEnd = idx;
+    while (waveEnd < planned.size() && planned[waveEnd].vram &&
+           planned[waveEnd].len > 0 && waveEnd - idx < kMaxPutWaveChunks) {
+      ++waveEnd;
+    }
+    auto staged = stagePutWave(
+        std::span<const PlannedPutFrame>(planned).subspan(idx, waveEnd - idx),
+        stream);
+    if (!staged) {
+      abandonInflight(chunks, idx);
+      state->fail(std::move(staged).error());
+      return future;
+    }
+    if (!enqueueFrames(std::move(staged).value(), /*mayBlock=*/true)) {
+      abandonInflight(chunks, idx);
+      state->fail(
+          Err(ErrCode::NotConnected,
+              "tcp put: transport closed before the write was queued"));
+      return future;
+    }
+    idx = waveEnd;
   }
 
   return future;
+}
+
+Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
+    std::span<const PlannedPutFrame> wave,
+    void* stream) {
+  auto pool = stagingPool();
+  if (!pool) {
+    return std::move(pool).error();
+  }
+  // All-or-nothing, and this thread holds no slab while it waits: a caller that
+  // took what was free and waited for the rest would deadlock against another
+  // doing the same.
+  auto leases = pool.value()->acquire(wave.size());
+  if (!leases) {
+    return std::move(leases).error();
+  }
+
+  auto s = static_cast<cudaStream_t>(stream);
+  std::vector<TcpFrame> frames;
+  frames.reserve(wave.size());
+  // Devices whose copies were launched, so the wait below covers each of them
+  // once. A bare synchronize would only cover whichever device happened to be
+  // current, leaving copies on any other still running.
+  std::vector<int> launchedDevices;
+  Status staging = Ok();
+  for (size_t i = 0; i < wave.size(); ++i) {
+    const auto& chunk = wave[i];
+    TcpMsgHeader header;
+    header.op = static_cast<uint8_t>(TcpOp::Write);
+    header.reqId = chunk.reqId;
+    header.segId = chunk.segId;
+    header.offset = chunk.offset;
+    header.len = static_cast<uint64_t>(chunk.len);
+    // The frame owns the slab from here on, so every path out of this function
+    // returns it exactly once.
+    frames.emplace_back(
+        std::move(leases.value()[i]), sizeof(TcpMsgHeader) + chunk.len);
+    std::memcpy(frames.back().mutableData(), &header, sizeof(header));
+    try {
+      CudaDeviceGuard guard(*cudaApi_, chunk.deviceId);
+      staging = cudaApi_->memcpyAsync(
+          frames.back().mutableData() + sizeof(TcpMsgHeader),
+          chunk.src,
+          chunk.len,
+          cudaMemcpyDeviceToHost,
+          s);
+    } catch (const std::exception& e) {
+      staging =
+          Err(ErrCode::InvalidArgument,
+              "tcp put: VRAM staging needs a selectable deviceId, got " +
+                  std::to_string(chunk.deviceId) + ": " + e.what());
+    }
+    if (!staging) {
+      break;
+    }
+    if (std::find(
+            launchedDevices.begin(), launchedDevices.end(), chunk.deviceId) ==
+        launchedDevices.end()) {
+      launchedDevices.push_back(chunk.deviceId);
+    }
+  }
+  // One wait per wave rather than one per chunk: the copies are already in
+  // flight together, and waiting on each in turn is what serialised staging
+  // against itself.
+  for (auto deviceId : launchedDevices) {
+    try {
+      CudaDeviceGuard guard(*cudaApi_, deviceId);
+      if (auto st = cudaApi_->streamSynchronize(s); !st && staging) {
+        staging = std::move(st);
+      }
+    } catch (const std::exception&) {
+      // The device is already unusable; there is nothing left to wait for.
+    }
+  }
+  if (!staging) {
+    return std::move(staging).error();
+  }
+  return frames;
 }
 
 std::future<Status> TcpTransport::get(

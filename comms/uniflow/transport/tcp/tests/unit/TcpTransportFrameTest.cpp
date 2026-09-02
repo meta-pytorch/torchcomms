@@ -16,11 +16,33 @@
 #include <thread>
 #include <vector>
 
+#include "comms/uniflow/Segment.h"
 #include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
+#include "comms/uniflow/transport/tcp/TcpRegistrationHandle.h"
 #include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
+
+/// Builds RegisteredSegment / RemoteRegisteredSegment without a factory,
+/// through the `friend class SegmentTest` seam in Segment.h. The name has to be
+/// exactly this to match that declaration.
+class SegmentTest {
+ public:
+  static RegisteredSegment
+  makeRegistered(void* buf, size_t len, MemoryType memType, int deviceId) {
+    return RegisteredSegment(buf, len, memType, deviceId);
+  }
+
+  static RemoteRegisteredSegment makeRemote(
+      void* buf,
+      size_t len,
+      std::unique_ptr<RemoteRegistrationHandle> handle) {
+    RemoteRegisteredSegment remote(buf, len);
+    remote.handles_.push_back(std::move(handle));
+    return remote;
+  }
+};
 
 // handleFrame() acts on peer-supplied segId/offset/len before touching a
 // registered buffer, so its bounds checks are this transport's memory-safety
@@ -141,6 +163,44 @@ class GatedConn : public controller::Conn {
   bool released_{false};
 };
 
+/// A VRAM put of `len` bytes, held together so the segments outlive the request
+/// that borrows them. The source is never read -- memcpyAsync is mocked -- but
+/// it has to be a real allocation of the full length, because put() chunks by
+/// size.
+class VramPut {
+ public:
+  explicit VramPut(size_t len)
+      : src_(len),
+        local_(
+            SegmentTest::makeRegistered(
+                src_.data(),
+                len,
+                MemoryType::VRAM,
+                /*deviceId=*/0)),
+        remote_(
+            SegmentTest::makeRemote(
+                // The peer's address is never dereferenced here: TCP sends the
+                // segId and offset and lets the peer resolve them.
+                // NOLINTNEXTLINE(performance-no-int-to-ptr)
+                reinterpret_cast<void*>(0x100000),
+                len,
+                std::make_unique<TcpRemoteRegistrationHandle>(
+                    kRemoteSegId,
+                    len))),
+        request_(TransferRequest{local_.span(), remote_.span()}) {}
+
+  std::span<const TransferRequest> requests() const {
+    return {&request_, 1};
+  }
+
+ private:
+  static constexpr uint64_t kRemoteSegId = 7;
+  std::vector<uint8_t> src_;
+  RegisteredSegment local_;
+  RemoteRegisteredSegment remote_;
+  TransferRequest request_;
+};
+
 class TcpTransportFrameTest : public ::testing::Test {
  protected:
   static constexpr uint64_t kSegId = 42;
@@ -159,6 +219,8 @@ class TcpTransportFrameTest : public ::testing::Test {
     ON_CALL(*cudaApi_, streamSynchronize(::testing::_))
         .WillByDefault([this](auto) -> Status {
           syncCount_.fetch_add(1, std::memory_order_release);
+          std::unique_lock<std::mutex> lk(syncMu_);
+          syncReleased_.wait(lk, [this]() { return !syncsGated_; });
           return Ok();
         });
     // Real host memory behind the staging pool: the pool hands out pointers the
@@ -460,6 +522,9 @@ class TcpTransportFrameTest : public ::testing::Test {
             [this](void* dst, const void*, size_t, auto, auto) -> Status {
               std::lock_guard<std::mutex> lk(copyMu_);
               copyDsts_.push_back(dst);
+              if (failCopyAt_ != 0 && copyDsts_.size() == failCopyAt_) {
+                return Err(ErrCode::DriverError, "test: staging copy failed");
+              }
               return Ok();
             });
     ON_CALL(*cudaApi_, eventCreate(::testing::_))
@@ -481,6 +546,30 @@ class TcpTransportFrameTest : public ::testing::Test {
 
   void releaseStagingCopies() {
     copyDone_.store(true, std::memory_order_release);
+  }
+
+  /// Fails the copy issued after `succeeding` others, so a wave can fail with
+  /// copies already in flight -- the case where releasing slabs early would let
+  /// a later copy write into a buffer the GPU is still filling.
+  void failCopyAfter(size_t succeeding) {
+    std::lock_guard<std::mutex> lk(copyMu_);
+    failCopyAt_ = succeeding + 1;
+  }
+
+  /// Holds every staging wait open, so the window between "all copies issued"
+  /// and "all copies finished" can be inspected. Without it that window closes
+  /// too fast to assert anything about.
+  void gateStagingWaits() {
+    std::lock_guard<std::mutex> lk(syncMu_);
+    syncsGated_ = true;
+  }
+
+  void releaseStagingWaits() {
+    {
+      std::lock_guard<std::mutex> lk(syncMu_);
+      syncsGated_ = false;
+    }
+    syncReleased_.notify_all();
   }
 
   size_t stagedCopyCount() {
@@ -516,6 +605,25 @@ class TcpTransportFrameTest : public ::testing::Test {
   size_t deferredReplyCount() {
     std::lock_guard<std::mutex> lk(transport_->stagingMu_);
     return transport_->deferredReplies_.size();
+  }
+
+  std::future<Status> put(std::span<const TransferRequest> requests) {
+    return transport_->put(requests, RequestOptions{});
+  }
+
+  static constexpr size_t waveCap() {
+    return TcpTransport::kMaxPutWaveChunks;
+  }
+
+  /// How many slabs the pool will still hand out. Drains with tryAcquire rather
+  /// than a bulk acquire so a test asserting "nothing was stranded" reports the
+  /// shortfall instead of waiting for slabs that are never coming back.
+  static size_t freeSlabs(TcpPinnedSlabPool& pool) {
+    std::vector<TcpPinnedSlab> held;
+    while (auto slab = pool.tryAcquire(/*allowReserved=*/true)) {
+      held.push_back(std::move(slab));
+    }
+    return held.size();
   }
 
   /// Builds a header-only frame in `slab`, so a queued frame can be traced back
@@ -610,6 +718,10 @@ class TcpTransportFrameTest : public ::testing::Test {
   std::vector<const void*> copyDsts_;
   std::mutex allocMu_;
   std::vector<std::pair<std::unique_ptr<uint8_t[]>, size_t>> hostAllocs_;
+  std::mutex syncMu_;
+  std::condition_variable syncReleased_;
+  bool syncsGated_{false};
+  size_t failCopyAt_{0};
 };
 
 TEST_F(TcpTransportFrameTest, WriteToUnknownSegIdIsRejected) {
@@ -1649,6 +1761,138 @@ TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesNothingWhenTheQueueIsClosed) {
   auto reclaimed = pool->acquire(2);
   EXPECT_TRUE(reclaimed.hasValue())
       << "a refused group must not strand the slabs it was built in";
+}
+
+// A put stages every chunk of a wave and only then queues them, so a staging
+// failure partway through leaves the peer untouched instead of holding the
+// chunks that happened to copy first. Before this the commit loop queued each
+// chunk as its own copy finished, and the sender could already have flushed
+// them: the caller was told the put failed while some of it had landed, at
+// offsets nobody could name.
+//
+// This is the whole-wave case, which is what nearly every put is.
+TEST_F(TcpTransportFrameTest, AFullWaveReachesTheQueueOnlyOnceEveryCopyIsDone) {
+  setConnected();
+  stubStagingCopies();
+  gateStagingWaits();
+
+  const size_t chunks = waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  std::thread putter([&]() { (void)put(transfer.requests()); });
+
+  // Every copy in the wave is in flight...
+  EXPECT_TRUE(waitFor([&]() { return stagedCopyCount() == chunks; }))
+      << "the wave must issue all of its copies before waiting on any of them; "
+         "waiting per chunk is what serialised staging against itself";
+  // ...and nothing is queued, because none of them has finished.
+  EXPECT_EQ(outQueueDepth(), 0u)
+      << "a Write reached the queue before its wave had finished staging; the "
+         "sender may already have put a partial transfer on the wire";
+  EXPECT_TRUE(allCopiesLandedInPinnedMemory());
+
+  releaseStagingWaits();
+
+  EXPECT_TRUE(waitFor([&]() { return outQueueDepth() == chunks; }))
+      << "the whole wave must be queued once its copies are done";
+  auto ids = queuedReqIds();
+  ASSERT_EQ(ids.size(), chunks);
+  EXPECT_TRUE(std::is_sorted(ids.begin(), ids.end()))
+      << "the wave must keep the caller's chunk order";
+  putter.join();
+}
+
+// A staging failure inside a wave must queue nothing at all, and must not hand
+// a slab back while the GPU is still writing into it. Copies already launched
+// keep running after a later one fails; a slab released underneath one of them
+// goes straight to the next staging copy, and the two then race over the same
+// bytes.
+TEST_F(TcpTransportFrameTest, AFailedWaveQueuesNothingAndDrainsWhatItLaunched) {
+  setConnected();
+  stubStagingCopies();
+  failCopyAfter(2);
+
+  const size_t chunks = waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  auto future = put(transfer.requests());
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "the caller must be told it failed";
+  EXPECT_EQ(outQueueDepth(), 0u)
+      << "a wave that failed to stage must queue nothing; anything queued is a "
+         "partial write the peer will apply and nobody will hear about";
+  EXPECT_GE(syncCount(), 1)
+      << "the copies that were launched must be waited for before their slabs "
+         "go back to the pool, or the next staging copy writes into a buffer "
+         "the GPU is still filling";
+
+  auto pool = transportStagingPool();
+  ASSERT_NE(pool, nullptr);
+  EXPECT_EQ(freeSlabs(*pool), pool->slabCount())
+      << "a failed wave must strand none of its slabs, and must leave none of "
+         "them held by a frame it queued";
+}
+
+// Above one wave the guarantee is per wave, not per put, and that boundary is
+// documented on put(). This pins it: with 16 chunks the first 15 are queued --
+// and so may reach the peer -- while the 16th has not been staged at all.
+// Whatever this test asserts is what callers are promised, so it is worth being
+// explicit that the promise stops here.
+TEST_F(TcpTransportFrameTest, APutLargerThanOneWaveIsAtomicOnlyPerWave) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+
+  const size_t chunks = waveCap() + 1;
+  VramPut transfer(chunks * slabPayloadCap());
+  // On its own thread because it is expected to park: nothing drains the queue,
+  // so the first wave's slabs stay on loan and the second wave has nothing to
+  // stage into.
+  auto putResult = std::async(
+      std::launch::async, [&]() { return put(transfer.requests()).get(); });
+
+  EXPECT_TRUE(waitFor([&]() { return outQueueDepth() == waveCap(); }));
+  EXPECT_EQ(outQueueDepth(), waveCap())
+      << "the documented boundary moved: a put above one wave is expected to "
+         "queue its first wave before the rest has been staged";
+  EXPECT_EQ(stagedCopyCount(), waveCap())
+      << "the second wave must not be staged until slabs come back";
+
+  // And teardown must not strand the parked put. It is released by the queue
+  // being dropped, which is what hands its slabs back; a caller thread is not
+  // one shutdown() can join its way out of, so nothing else would.
+  transport_->shutdown();
+  ASSERT_EQ(
+      putResult.wait_for(std::chrono::seconds(5)), std::future_status::ready)
+      << "teardown left a put parked waiting for staging slabs";
+  EXPECT_TRUE(putResult.get().hasError());
+}
+
+// Two waves, a queue whose cap (64 MiB) is only just above one wave (60 MiB),
+// and a pool that only refills as the sender drains. Every one of those can
+// block a put, and they depend on each other: the wave waits for slabs, the
+// slabs wait for the sender, and the sender needs the queue mutex the wave must
+// therefore not be holding.
+TEST_F(TcpTransportFrameTest, BackToBackWavesDrainWithoutDeadlock) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  const size_t chunks = 2 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  // The future stays open -- nothing Acks these writes -- so the frames
+  // reaching the connection are what says both waves got through.
+  auto future = put(transfer.requests());
+
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<size_t>(conn.sendCount()) == chunks;
+  })) << "both waves must make it out; a wave holding slabs while it waits for "
+         "queue room, or holding outMu_ while it waits for slabs, deadlocks here";
+
+  closeOutQueue();
+  sender.join();
 }
 
 // The registry's mutex protects the map, not the lifetime of the application
