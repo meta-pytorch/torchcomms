@@ -103,22 +103,20 @@ endif()
 set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
 if(USE_SYSTEM_LIBS)
     # CudaRAII.cc calls into CommsSpdlogLogger, whose out-of-line definitions
-    # live in these three. libnccl.so cannot supply them: it is built
+    # live in these two. libnccl.so cannot supply them: it is built
     # -fvisibility=hidden behind version.script, which exports only the nccl*
     # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
     # importing the extension fails. The static path gets the definitions from
     # the libnccl_static.a archive instead.
     #
-    # These three are the whole closure and no more: SpdlogLogger.cc needs
-    # formatCommsLogMessage() from CommsLogFormatter.cc and the subsystem-mask
-    # accessors from LogTypes.cc, and neither of those includes any further
-    # comms header. RateLimit.h, the other SpdlogLogger.h dependency, is
-    # header-only.
+    # These two are the whole out-of-line closure: SpdlogLogger.cc needs
+    # formatCommsLogMessage() from CommsLogFormatter.cc. LogTypes.h contributes
+    # only types on this path; none of its out-of-line accessors are referenced.
+    # RateLimit.h, the other SpdlogLogger.h dependency, is header-only.
     find_package(spdlog CONFIG REQUIRED)
     list(APPEND TORCHCOMMS_NCCLX_LOGGER_SOURCES
         comms/utils/logger/SpdlogLogger.cc
         comms/utils/logger/CommsLogFormatter.cc
-        comms/utils/logger/LogTypes.cc
     )
 endif()
 
