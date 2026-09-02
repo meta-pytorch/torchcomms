@@ -287,7 +287,7 @@ class BasicTcpServer : public Server {
   }
 
   // Thread-safe: can be called from a different thread than accept().
-  void shutdown() {
+  void shutdown() noexcept override {
     policy_.shutdown(listenSock_, id_);
   }
 
