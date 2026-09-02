@@ -1185,6 +1185,60 @@ void TcpTransport::senderLoop() noexcept {
   }
 }
 
+// Logs the get-path phase split and zeroes it, so a caller can bracket one
+// measurement. Reports the reader's own view: time blocked waiting for a frame
+// to start (first-byte latency -- network plus whatever the peer did before
+// replying), time draining a frame once started, and time in the copy to the
+// caller's destination. Anything unaccounted for is reader-thread work between
+// those points.
+void TcpTransport::logAndResetPhaseStats(std::string_view label) {
+  if (dataConn_ == nullptr) {
+    return;
+  }
+  auto& rs = dataConn_->recvPhaseStats();
+  const uint64_t frames = rs.frames.load(std::memory_order_relaxed);
+  const uint64_t hdrNs = rs.headerWaitNs.load(std::memory_order_relaxed);
+  const uint64_t drainNs = rs.payloadDrainNs.load(std::memory_order_relaxed);
+  const uint64_t bytes = rs.payloadBytes.load(std::memory_order_relaxed);
+  const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed);
+  const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed);
+
+  if (frames == 0) {
+    UNIFLOW_LOG_INFO("tcp phases [{}]: no frames", label);
+  } else {
+    const double totalNs =
+        static_cast<double>(hdrNs) + static_cast<double>(drainNs);
+    const auto pct = [totalNs](uint64_t v) {
+      return totalNs > 0.0 ? 100.0 * static_cast<double>(v) / totalNs : 0.0;
+    };
+    // Drain throughput is bytes/drainNs: what the socket managed while a frame
+    // was actually in flight, with the inter-frame stall excluded. Comparing it
+    // to end-to-end bandwidth says whether the gap is on the wire or between
+    // frames.
+    const double drainGBps = drainNs > 0
+        ? static_cast<double>(bytes) / static_cast<double>(drainNs)
+        : 0.0;
+    UNIFLOW_LOG_INFO(
+        "tcp phases [{}]: frames={} bytes={} | first-byte {:.1f}us/frame "
+        "({:.1f}%) | drain {:.1f}us/frame ({:.1f}%, {:.2f} GB/s) | dstcopy "
+        "{:.1f}us x{} ({:.1f}% of wire)",
+        label,
+        frames,
+        bytes,
+        static_cast<double>(hdrNs) / frames / 1000.0,
+        pct(hdrNs),
+        static_cast<double>(drainNs) / frames / 1000.0,
+        pct(drainNs),
+        drainGBps,
+        copies > 0 ? static_cast<double>(copyNs) / copies / 1000.0 : 0.0,
+        copies,
+        pct(copyNs));
+  }
+  rs.reset();
+  dstCopyNs_.store(0, std::memory_order_relaxed);
+  dstCopyCount_.store(0, std::memory_order_relaxed);
+}
+
 void TcpTransport::readerLoop() noexcept {
   // Hoisted so a steady stream of same-size frames stops reallocating: recv()
   // resize()s this to the frame length, and resizing to the size it already has
@@ -1441,16 +1495,25 @@ void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
           if (header.len == 0 || entry.dst == nullptr) {
             return Ok();
           }
+          const auto tCopyStart = std::chrono::steady_clock::now();
+          Status st = Ok();
           if (entry.memType == MemoryType::VRAM) {
-            return deviceFromHost(
+            st = deviceFromHost(
                 entry.dst,
                 payload.data(),
                 header.len,
                 entry.deviceId,
                 entry.stream);
+          } else {
+            std::memcpy(entry.dst, payload.data(), header.len);
           }
-          std::memcpy(entry.dst, payload.data(), header.len);
-          return Ok();
+          dstCopyNs_.fetch_add(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - tCopyStart)
+                  .count(),
+              std::memory_order_relaxed);
+          dstCopyCount_.fetch_add(1, std::memory_order_relaxed);
+          return st;
         });
       } else { // Ack
         entry.state->completeOne();

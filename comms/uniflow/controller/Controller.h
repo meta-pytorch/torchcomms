@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <span>
@@ -47,6 +49,38 @@ class Conn {
   /// Called by Connection::shutdown() to release whatever thread is parked in
   /// recv(); that thread belongs to the caller, not to Connection.
   virtual void close() {}
+
+  /// Splits recv() time into "waiting for the next frame to start" and
+  /// "draining a frame that has started". For a length-prefixed stream those
+  /// are the block on the length prefix and the block on the payload, which is
+  /// the only place the two can be told apart -- above this layer a recv() is
+  /// one opaque wait.
+  ///
+  /// headerWaitNs is a first-byte latency: for a get it covers the network
+  /// round trip plus everything the peer did before it started replying, so it
+  /// separates "the remote is slow" from "our drain is slow". Relaxed atomics,
+  /// written only by the reader thread; a torn read across a reset costs a
+  /// misattributed sample, never correctness.
+  struct RecvPhaseStats {
+    std::atomic<uint64_t> headerWaitNs{0};
+    std::atomic<uint64_t> payloadDrainNs{0};
+    std::atomic<uint64_t> frames{0};
+    std::atomic<uint64_t> payloadBytes{0};
+
+    void reset() {
+      headerWaitNs.store(0, std::memory_order_relaxed);
+      payloadDrainNs.store(0, std::memory_order_relaxed);
+      frames.store(0, std::memory_order_relaxed);
+      payloadBytes.store(0, std::memory_order_relaxed);
+    }
+  };
+
+  RecvPhaseStats& recvPhaseStats() {
+    return recvPhaseStats_;
+  }
+
+ private:
+  RecvPhaseStats recvPhaseStats_;
 };
 
 class Server {
