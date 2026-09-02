@@ -11,6 +11,7 @@
 #include <mutex>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -528,6 +529,13 @@ class TcpTransport : public Transport {
 
   // Reader thread: blocking recv + demultiplex until the connection closes.
   void readerLoop() noexcept;
+
+ public:
+  /// Logs the get-path phase split (first-byte / drain / destination copy) and
+  /// zeroes it so callers can bracket a single measurement.
+  void logAndResetPhaseStats(std::string_view label);
+
+ private:
   // Sender thread: drains outQueue_ and performs all socket sends.
   void senderLoop() noexcept;
   // Handles one fully-received inbound frame (reader thread).
@@ -701,6 +709,12 @@ class TcpTransport : public Transport {
 
   std::unique_ptr<controller::AsyncTcpServer> server_;
   std::unique_ptr<controller::Conn> dataConn_;
+
+  // get-path copy accounting, paired with Conn::RecvPhaseStats. Reader thread
+  // only; relaxed because a torn read across a reset misattributes a sample and
+  // nothing more.
+  std::atomic<uint64_t> dstCopyNs_{0};
+  std::atomic<uint64_t> dstCopyCount_{0};
 
   // Serialises bind()/connect()/shutdown(), which together own server_,
   // dataConn_, reader_ and sender_. Without it a shutdown() concurrent with an
