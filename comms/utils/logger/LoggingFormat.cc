@@ -95,7 +95,7 @@ uint64_t getSubSystemMaskForName(std::string_view name) {
     std::string_view name;
     uint64_t mask;
   };
-  static constexpr std::array<NamedMask, 17> kNamedMasks{{
+  static constexpr std::array<NamedMask, 18> kNamedMasks{{
       {"INIT", meta::comms::logger::INIT},
       {"COLL", meta::comms::logger::COLL},
       {"P2P", meta::comms::logger::P2P},
@@ -112,6 +112,7 @@ uint64_t getSubSystemMaskForName(std::string_view name) {
       {"REG", meta::comms::logger::REG},
       {"PROFILE", meta::comms::logger::PROFILE},
       {"RAS", meta::comms::logger::RAS},
+      {"DESTROY", meta::comms::logger::DESTROY},
       {"ALL", static_cast<uint64_t>(meta::comms::logger::ALL)},
   }};
   for (const auto& namedMask : kNamedMasks) {
@@ -171,6 +172,9 @@ folly::StringPiece getCategoryNthParent(folly::StringPiece category, int n) {
  * or ^INIT,COLL etc
  */
 uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv) {
+  if (ncclDebugSubsysEnv == nullptr) {
+    return INIT | BOOTSTRAP | ENV;
+  }
   std::string_view input{ncclDebugSubsysEnv};
   const bool invert = !input.empty() && input.front() == '^';
   if (invert) {
@@ -197,6 +201,9 @@ uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv) {
 }
 
 std::string parseDebugFile(const char* ncclDebugFileEnv) {
+  if (ncclDebugFileEnv == nullptr) {
+    return {};
+  }
   initProcMetaData();
 
   int c = 0;
@@ -262,6 +269,45 @@ LogLevel getLoggerDebugLevel(std::string_view level) {
   }
   // TODO: Add a warning here
   return LogLevel::NONE;
+}
+
+LogLevel getNcclLoggerDebugLevel(std::string_view level) {
+  if (asciiCaseInsensitiveEqual(level, "VERSION")) {
+    return LogLevel::VERSION;
+  } else if (asciiCaseInsensitiveEqual(level, "ERROR")) {
+    return LogLevel::ERROR;
+  } else if (asciiCaseInsensitiveEqual(level, "WARN")) {
+    return LogLevel::WARN;
+  } else if (asciiCaseInsensitiveEqual(level, "INFO")) {
+    return LogLevel::INFO;
+  } else if (asciiCaseInsensitiveEqual(level, "ABORT")) {
+    return LogLevel::ABORT;
+  } else if (asciiCaseInsensitiveEqual(level, "TRACE")) {
+    return LogLevel::TRACE;
+  }
+  return LogLevel::NONE;
+}
+
+bool parseDebugLoggingAsync(const char* value, bool valueWhenUnset) {
+  if (value == nullptr) {
+    return valueWhenUnset;
+  }
+  const std::string_view input{value};
+  if (asciiCaseInsensitiveEqual(input, "1") ||
+      asciiCaseInsensitiveEqual(input, "Y") ||
+      asciiCaseInsensitiveEqual(input, "YES") ||
+      asciiCaseInsensitiveEqual(input, "T") ||
+      asciiCaseInsensitiveEqual(input, "TRUE")) {
+    return true;
+  }
+  if (asciiCaseInsensitiveEqual(input, "0") ||
+      asciiCaseInsensitiveEqual(input, "N") ||
+      asciiCaseInsensitiveEqual(input, "NO") ||
+      asciiCaseInsensitiveEqual(input, "F") ||
+      asciiCaseInsensitiveEqual(input, "FALSE")) {
+    return false;
+  }
+  return true;
 }
 
 void initProcMetaData() {

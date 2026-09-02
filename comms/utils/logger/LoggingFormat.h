@@ -28,6 +28,13 @@ uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv);
 std::string parseDebugFile(const char* ncclDebugFileEnv);
 
 LogLevel getLoggerDebugLevel(std::string_view levelStr);
+LogLevel getNcclLoggerDebugLevel(std::string_view levelStr);
+
+/*
+ * The fallback applies only when value is absent. Any present value other
+ * than a recognized false token enables logging, matching NCCL cvar parsing.
+ */
+bool parseDebugLoggingAsync(const char* value, bool valueWhenUnset);
 
 void initProcMetaData();
 
