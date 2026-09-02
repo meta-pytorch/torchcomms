@@ -988,7 +988,13 @@ std::future<Status> TcpTransport::get(
   auto state = std::make_shared<TcpOpState>();
   auto future = state->promise.get_future();
 
+  // Pre-flight. Same reason as put(): nothing that can fail may run after the
+  // first frame is queued, because a queued ReadRequest is already on its way
+  // to the peer and cannot be recalled. Resolving segIds here rather than in
+  // the emit loop is what makes a rejected get() leave the peer untouched.
   size_t totalChunks = 0;
+  std::vector<uint64_t> segIds;
+  segIds.reserve(requests.size());
   for (const auto& req : requests) {
     if (req.local.size() != req.remote.size()) {
       state->fail(
@@ -996,6 +1002,12 @@ std::future<Status> TcpTransport::get(
               "tcp get: local and remote buffer sizes must match"));
       return future;
     }
+    auto remoteHandle = findRemoteHandle(req.remote);
+    if (!remoteHandle) {
+      state->fail(std::move(remoteHandle).error());
+      return future;
+    }
+    segIds.push_back(remoteHandle.value()->segId());
     const size_t len = req.local.size();
     const size_t chunkSize = adaptiveGetChunk(len, lanes_.size());
     totalChunks += (len == 0) ? 1 : (len + chunkSize - 1) / chunkSize;
@@ -1013,13 +1025,9 @@ std::future<Status> TcpTransport::get(
     }
   }
 
-  for (const auto& req : requests) {
-    auto remoteHandle = findRemoteHandle(req.remote);
-    if (!remoteHandle) {
-      state->fail(std::move(remoteHandle).error());
-      return future;
-    }
-    const uint64_t segId = remoteHandle.value()->segId();
+  for (size_t reqIdx = 0; reqIdx < requests.size(); ++reqIdx) {
+    const auto& req = requests[reqIdx];
+    const uint64_t segId = segIds[reqIdx];
     const uint64_t baseOffset = static_cast<uint64_t>(req.remote.remoteOffset_);
     const size_t len = req.local.size();
     const MemoryType memType = req.local.memType();
@@ -1834,7 +1842,15 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
     // the connection. It cannot wait either: that stops it draining the socket
     // and reintroduces the mutual-READ deadlock the reader/sender split exists
     // to avoid. What bounds this queue is the drain rate, not a byte cap.
-    if (lane.outClosed) {
+    // Refused on connBroken_ as well as outClosed, so this admission point
+    // gives the same answer as admitInflight() and recvImpl(). failAllPending()
+    // sets connBroken_ and clears this queue but never sets outClosed -- only a
+    // dead sender does that -- and handleFrame's exception containment sweeps
+    // without closing the connection, leaving the sender alive. Checking
+    // outClosed alone therefore lets a frame admitted before the sweep land in
+    // the cleared queue and go out on the wire for an op whose caller has
+    // already been told it failed.
+    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
       return false;
     }
     lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
@@ -1871,7 +1887,7 @@ bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
             lane.queue.empty() || lane.bytes + bytes <= cap;
       });
     }
-    if (lane.outClosed) {
+    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
       return false;
     }
     for (auto& frame : frames) {
@@ -1913,7 +1929,7 @@ void TcpTransport::enqueueSendFrame(
       return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
           lane.queue.empty() || lane.bytes + bytes <= cap;
     });
-    if (lane.outClosed) {
+    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
       closed = true;
       // Taken over here so each path has exactly one owner: the queue takes it
       // when the frame is enqueued, this does when it cannot be.
@@ -2354,13 +2370,29 @@ void TcpTransport::handleFrameImpl(
         std::lock_guard<std::mutex> lk(inflightMu_);
         inflight_.erase(header.reqId);
       };
+      // An Ack answers a Write and a ReadReply answers a ReadRequest, so a
+      // reply whose kind disagrees with the request it names is version skew or
+      // a hostile peer. Rejected here rather than per-branch because the Ack
+      // direction is the dangerous one and it used to fall straight through to
+      // completeOne(): the get chunk resolved Ok with entry.dst never written,
+      // handing the caller back whatever its buffer already held. Every other
+      // peer-supplied dimension on this path fails loudly; this one did not
+      // fail at all. Error is exempt because it is kind-agnostic by design.
+      if (op != TcpOp::Error && (op == TcpOp::ReadReply) != entry.isRead) {
+        eraseInflight();
+        entry.state->fail(
+            Err(ErrCode::TransportError,
+                "tcp: reply op does not match the request kind"));
+        break;
+      }
       if (op == TcpOp::Error) {
         eraseInflight();
         entry.state->fail(
             Err(ErrCode::TransportError, "tcp: peer reported an error"));
       } else if (op == TcpOp::ReadReply) {
-        if (!entry.isRead || payload.size() != header.len ||
-            header.len != entry.len) {
+        // Kind is settled above, so this is purely a size check and its message
+        // says so.
+        if (payload.size() != header.len || header.len != entry.len) {
           eraseInflight();
           entry.state->fail(Err(
               ErrCode::TransportError, "tcp get: read reply size mismatch"));
