@@ -571,6 +571,10 @@ class CtranIb {
     return numNics;
   }
 
+  uint32_t getTrafficClass() const {
+    return trafficClass_;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -588,9 +592,12 @@ class CtranIb {
       std::optional<int> maxNumCqe = std::nullopt,
       std::optional<int> maxNumNic = std::nullopt);
 
-  commResult_t setPgToTrafficClassMap();
-
-  uint32_t getPgToTrafficClassValue() const;
+  // Resolve the effective traffic class once from:
+  //   per-comm NcclConfig.traffic_class hint (0..255)
+  //   > NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map (matched on commDesc prefix)
+  //   > NCCL_IB_TC global fallback
+  // Called once from init(); result stored in trafficClass_.
+  commResult_t resolveTrafficClass();
 
   const char* ibv_wc_status_str(enum ibverbx::ibv_wc_status status);
 
@@ -1165,7 +1172,9 @@ class CtranIb {
   folly::F14FastMap<int, PendingOpQueue> rankToPendingOpsMap;
   std::mutex pendingOpsMutex;
 
-  std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
+  // Traffic class resolved once at init from hint > env-map > NCCL_IB_TC.
+  // Used for all QPs on this CtranIb / comm.
+  uint32_t trafficClass_{0};
 
   std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl_{nullptr};
 };
