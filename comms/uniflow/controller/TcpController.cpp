@@ -613,12 +613,16 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
+  auto& stats = recvPhaseStats();
+  const auto tStart = std::chrono::steady_clock::now();
+
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
     return Err(
         ErrCode::ConnectionFailed,
         "recv header failed: " + std::system_category().message(errno));
   }
+  const auto tFirstByte = std::chrono::steady_clock::now();
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
@@ -641,6 +645,17 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
         ErrCode::ConnectionFailed,
         "recv payload failed: " + std::system_category().message(errno));
   }
+
+  const auto tDone = std::chrono::steady_clock::now();
+  using ns = std::chrono::nanoseconds;
+  stats.headerWaitNs.fetch_add(
+      std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
+      std::memory_order_relaxed);
+  stats.payloadDrainNs.fetch_add(
+      std::chrono::duration_cast<ns>(tDone - tFirstByte).count(),
+      std::memory_order_relaxed);
+  stats.frames.fetch_add(1, std::memory_order_relaxed);
+  stats.payloadBytes.fetch_add(len, std::memory_order_relaxed);
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv(span): fd={} bytes={}", sock_, len);
   return static_cast<size_t>(len);

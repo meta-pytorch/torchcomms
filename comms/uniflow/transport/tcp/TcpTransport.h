@@ -848,6 +848,9 @@ class TcpTransport : public Transport {
   // nothing more.
   std::atomic<uint64_t> dstCopyNs_{0};
   std::atomic<uint64_t> dstCopyCount_{0};
+  std::atomic<uint64_t> receiveSlabAttempts_{0};
+  std::atomic<uint64_t> receiveSlabMisses_{0};
+  std::atomic<uint64_t> vectorReceiveCount_{0};
   std::shared_ptr<H2dPollState> h2dState_;
 
   // Serialises bind()/connect()/shutdown(), which together own server_,
