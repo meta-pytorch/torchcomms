@@ -23,6 +23,10 @@ using namespace uniflow::controller;
 struct AddrFamily {
   std::string serverAddr;
   std::string clientHost;
+  // Stated rather than derived from clientHost: comparing against the
+  // "127.0.0.1" literal silently defaults every other spelling -- "localhost",
+  // "[::1]", a resolvable hostname -- to AF_INET6.
+  int family;
 };
 
 class TcpAsyncAcceptTest : public ::testing::TestWithParam<AddrFamily> {
@@ -113,8 +117,7 @@ TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
 // copy. Before the config was threaded through the accept policy,
 // configureAcceptedSocket hardcoded 1 MiB, so a caller had no way to opt out.
 TEST_P(TcpAsyncAcceptTest, UnsetSocketBufSizeLeavesKernelAutotuning) {
-  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
-  const int kernelDefault = kernelDefaultRcvBuf(family);
+  const int kernelDefault = kernelDefaultRcvBuf(GetParam().family);
   ASSERT_GT(kernelDefault, 0);
 
   TcpSocketConfig cfg;
@@ -157,8 +160,7 @@ TEST_P(TcpAsyncAcceptTest, UnsetSocketBufSizeLeavesKernelAutotuning) {
 // enough to contain the unconfigured default would also be satisfied if
 // socketBufSize were dropped again.
 TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
-  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
-  const int kernelDefault = kernelDefaultRcvBuf(family);
+  const int kernelDefault = kernelDefaultRcvBuf(GetParam().family);
   ASSERT_GT(kernelDefault, 0);
 
   // Scaled off the probe rather than a literal. A quarter of the default
@@ -168,7 +170,7 @@ TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
   // untouched one on any stock host. Staying below the default also keeps the
   // request clear of net.core.rmem_max, so it is not silently clamped.
   const int requested = kernelDefault / 4;
-  const int expected = rcvBufForRequest(family, requested);
+  const int expected = rcvBufForRequest(GetParam().family, requested);
   ASSERT_GT(expected, 0);
 
   // Whether the configured size is observably different from the default is a
@@ -344,14 +346,11 @@ TEST_P(TcpAsyncAcceptTest, AsyncAcceptRejectsNonUniflowClient) {
   auto future = server.accept();
 
   {
-    int sock = ::socket(
-        GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6,
-        SOCK_STREAM | SOCK_CLOEXEC,
-        0);
+    int sock = ::socket(GetParam().family, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_GE(sock, 0);
 
     sockaddr_storage addr{};
-    if (GetParam().clientHost == "127.0.0.1") {
+    if (GetParam().family == AF_INET) {
       auto* sa = reinterpret_cast<sockaddr_in*>(&addr);
       sa->sin_family = AF_INET;
       sa->sin_port = htons(static_cast<uint16_t>(port));
@@ -454,8 +453,8 @@ INSTANTIATE_TEST_SUITE_P(
     AddrFamilies,
     TcpAsyncAcceptTest,
     ::testing::Values(
-        AddrFamily{"127.0.0.1:0", "127.0.0.1"},
-        AddrFamily{":::0", "::1"}),
+        AddrFamily{"127.0.0.1:0", "127.0.0.1", AF_INET},
+        AddrFamily{":::0", "::1", AF_INET6}),
     [](const ::testing::TestParamInfo<AddrFamily>& info) {
-      return info.param.clientHost == "127.0.0.1" ? "IPv4" : "IPv6";
+      return info.param.family == AF_INET ? "IPv4" : "IPv6";
     });
