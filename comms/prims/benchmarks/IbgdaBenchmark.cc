@@ -572,7 +572,8 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
   // per-size delta between the two is the marginal cost of the signal. No
   // counter is used, keeping the companion QP out of the measurement.
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
@@ -626,7 +627,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
-    XLOGF(
+    COMMS_LOG(
         INFO,
         "Rank {}: GPU clock rate = {:.2f} GHz",
         globalRank,
@@ -663,7 +664,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
 
         results.push_back(result);
 
-        XLOGF(
+        COMMS_LOG(
             INFO,
             "Rank {}: {} - Latency: {:.2f} us, BW: {:.2f} GB/s",
             globalRank,
