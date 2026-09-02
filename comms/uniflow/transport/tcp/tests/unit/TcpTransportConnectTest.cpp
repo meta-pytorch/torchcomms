@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
@@ -190,6 +191,42 @@ TEST_F(TcpTransportConnectTest, BindAfterShutdownIsRefused) {
 
   EXPECT_TRUE(transport_->bind().empty())
       << "bind() must not re-open a shut-down transport";
+}
+
+// bind() re-arms the Initialized state that connect() gates on, so without an
+// already-bound guard a second bind() lets a second connect() through on a live
+// transport. establishLanes() clears lanes_ as its first act, which destroys
+// the current lanes' joinable reader/sender threads -- and ~std::thread on a
+// joinable thread calls std::terminate, taking down every other transport in
+// the process with it.
+TEST_F(TcpTransportConnectTest, BindAfterConnectIsRefused) {
+  auto peerEvb =
+      std::make_unique<ScopedEventBaseThread>("tcp-connect-test-peer");
+  auto peer = std::make_unique<TcpTransport>(
+      /*deviceId=*/-1,
+      peerEvb->getEventBase(),
+      registry_,
+      controller::TcpSocketConfig{},
+      /*host=*/"127.0.0.1");
+
+  const TransportInfo selfInfo = transport_->bind();
+  const TransportInfo peerInfo = peer->bind();
+  ASSERT_FALSE(selfInfo.empty());
+  ASSERT_FALSE(peerInfo.empty());
+  // Each side dials or accepts by endpoint order, so both connects have to be
+  // in flight at once for the handshake to complete.
+  std::thread dialer([&]() { (void)peer->connect(selfInfo); });
+  const Status status = transport_->connect(peerInfo);
+  dialer.join();
+  ASSERT_FALSE(status.hasError()) << status.error().message();
+  ASSERT_EQ(transport_->state(), TransportState::Connected);
+
+  EXPECT_TRUE(transport_->bind().empty())
+      << "bind() must not re-arm a transport that is already connected";
+  EXPECT_EQ(transport_->state(), TransportState::Connected)
+      << "a refused bind() must leave the live connection intact";
+
+  peer->shutdown();
 }
 
 // The factory's topology blob used to be a default-constructed *addressing*
