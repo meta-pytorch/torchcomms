@@ -297,6 +297,7 @@ class Workload:
     mode: str
     timeout: int
     validate_performance_outputs: bool
+    perf_only: bool = False
 
     @property
     def measured_requests(self) -> int:
@@ -325,6 +326,7 @@ class MastConfig:
     progress_idle_timeout_sec: int
     progress_check_interval_sec: int
     kv_transport: str = "rdma"
+    accuracy_max_token_divergence: int = 0
 
     @property
     def scheduler_args(self) -> str:
@@ -354,6 +356,25 @@ class MastConfig:
         # tcp is host-staged for VRAM). Read by uniflow_connector.py.
         if self.kv_transport and self.kv_transport != "rdma":
             values["UNIFLOW_KV_TRANSPORT"] = self.kv_transport
+        # MI350/MI300 (ROCm) vLLM enablement recipe: pin attention/GEMM to the
+        # known-good ROCm path. Default ROCm attention kernels can produce a
+        # degenerate ("!!!") forward pass on MI350 (see SEV S685789 class); these
+        # flags match the MI350 vLLM enablement doc. Dense-model only (no
+        # MoE/MLA/FP8 flags). NVIDIA hosts are left untouched.
+        host = (self.host_type or "").lower()
+        if "mi350" in host or "mi300" in host:
+            # Only the three flags below are recognized by the packaged vLLM build
+            # and are what actually stabilize the MI350 forward pass (eliminate the
+            # degenerate all-'!' output). VLLM_USE_TRITON_FLASH_ATTN /
+            # VLLM_FLASH_ATTN_VERSION are "Unknown vLLM env var" in this build, so
+            # they are intentionally omitted.
+            values.update(
+                {
+                    "FLASH_ATTENTION_TRITON_AMD_ENABLE": "TRUE",
+                    "VLLM_ROCM_USE_AITER": "0",
+                    "HIPBLASLT_ALLOW_TF32": "1",
+                }
+            )
         return ",".join(f"{key}={value}" for key, value in values.items())
 
 
@@ -1882,6 +1903,15 @@ class MastBenchmarkRunner:
         ]
         if self.workload.validate_performance_outputs:
             cmd.append("--validate-performance-outputs")
+        if self.workload.perf_only:
+            cmd.append("--perf-only")
+        if self.config.accuracy_max_token_divergence > 0:
+            cmd.extend(
+                [
+                    "--accuracy-max-token-divergence",
+                    str(self.config.accuracy_max_token_divergence),
+                ]
+            )
         if spec.connector_key == "nixl":
             cmd.extend(
                 [
@@ -2282,6 +2312,15 @@ def parse_args() -> argparse.Namespace:
             "for publishable correctness runs."
         ),
     )
+    parser.add_argument(
+        "--perf-only",
+        action="store_true",
+        help=(
+            "Accuracy mode: skip the correctness gate and only measure "
+            "performance (TTFT/TPOT/throughput). Perf is emitted regardless of "
+            "output correctness. Intended for perf sweeps."
+        ),
+    )
     parser.add_argument("--host-type", default="grandteton_80g_roce")
     parser.add_argument("--hpc-identity", default="networkai_mast_job_identity")
     parser.add_argument("--hpc-cluster-uuid", default="MastGenAICluster")
@@ -2297,6 +2336,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "KV-transfer transport for the uniflow connector (default: rdma). "
             "tcp host-stages VRAM and is slower; used to validate the TCP path."
+        ),
+    )
+    parser.add_argument(
+        "--accuracy-max-token-divergence",
+        type=int,
+        default=0,
+        help=(
+            "Forwarded to disagg_entry: tolerate up to N differing whitespace "
+            "tokens between a disagg output and its standalone baseline before "
+            "counting a correctness mismatch (default 0 = strict exact match)."
         ),
     )
     parser.add_argument(
@@ -2546,6 +2595,7 @@ def make_workload(args: argparse.Namespace, profile: BenchmarkProfile) -> Worklo
         mode=profile_value(args, profile, "mode"),
         timeout=profile_value(args, profile, "timeout"),
         validate_performance_outputs=args.validate_performance_outputs,
+        perf_only=args.perf_only,
     )
 
 
@@ -2589,6 +2639,7 @@ def main() -> int:
         opec_tag=args.opec_tag,
         host_type=args.host_type,
         kv_transport=args.kv_transport,
+        accuracy_max_token_divergence=args.accuracy_max_token_divergence,
         presto_identity=args.presto_identity,
         poll_interval_sec=args.poll_interval_sec,
         job_timeout_sec=profile_value(args, profile, "job_timeout_sec"),
