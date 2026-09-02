@@ -14,6 +14,7 @@
 #include <cstring>
 #include <deque>
 #include <future>
+#include <iostream>
 #include <random>
 #include <string>
 #include <utility>
@@ -450,11 +451,20 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
         "TcpBandwidthBenchmark: no global IPv6 on interface '{}'", iface_);
     return {};
   }
+  const std::string asyncGetH2dMode = asyncGetH2d_ ? "on" : "off";
+  const std::string sockBufMode =
+      sockBufSize_ ? std::to_string(*sockBufSize_) : "os-default";
+  std::cerr << "TcpBandwidthBenchmark: rank=" << bootstrap.rank
+            << " iface=" << iface_ << " async_get_h2d=" << asyncGetH2dMode
+            << " tcp_sockbuf=" << sockBufMode << '\n';
   UNIFLOW_LOG_WARN(
-      "TcpBandwidthBenchmark: rank {} using {} address {}",
+      "TcpBandwidthBenchmark: rank {} using {} address {} "
+      "async_get_h2d={} tcp_sockbuf={}",
       bootstrap.rank,
       iface_,
-      host);
+      host,
+      asyncGetH2dMode,
+      sockBufMode);
 
   const int dev = config.cudaDevice;
   BufferPair bufs;
@@ -463,10 +473,11 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   }
 
   ScopedEventBaseThread evbThread("bench-tcp-evb");
-  controller::TcpSocketConfig sockConfig;
-  sockConfig.socketBufSize = sockBufSize_;
+  TcpTransportConfig transportConfig;
+  transportConfig.socketConfig.socketBufSize = sockBufSize_;
+  transportConfig.asyncGetH2d = asyncGetH2d_;
   auto factory = std::make_unique<TcpTransportFactory>(
-      dev, evbThread.getEventBase(), sockConfig, host);
+      dev, evbThread.getEventBase(), transportConfig, host);
 
   // Handshake over the rendezvous control channel.
   auto localTopo = factory->getTopology();
@@ -637,12 +648,13 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
           .messageRateMops = r.messageRateMops,
       });
       UNIFLOW_LOG_WARN(
-          "[rank {}] {} size={:<10} iface={} batch={:<3} txdepth={:<3} "
-          "iters={:<6} bw={:.2f} GB/s avg={:.1f} us {}",
+          "[rank {}] {} size={:<10} iface={} async_get_h2d={} batch={:<3} "
+          "txdepth={:<3} iters={:<6} bw={:.2f} GB/s avg={:.1f} us {}",
           bootstrap.rank,
           dir,
           size,
           iface_,
+          asyncGetH2dMode,
           std::max(1, config.batchSize),
           std::max(1, config.txDepth),
           r.totalOps,

@@ -105,4 +105,11 @@ class MockCudaApi : public CudaApi {
   }
 };
 
+/// Vendor types for gmock matcher arguments. This header is hipified on AMD;
+/// test TUs are not, so they cannot name cudaStream_t or cudaMemcpyKind
+/// themselves. `auto` covers lambda parameters in actions -- matchers have no
+/// equivalent, so pin them through these.
+using MockStream = cudaStream_t;
+inline constexpr auto kMockMemcpyH2D = cudaMemcpyHostToDevice;
+
 } // namespace uniflow
