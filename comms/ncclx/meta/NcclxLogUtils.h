@@ -19,7 +19,7 @@
       __VA_ARGS__)
 
 #define NCCLX_LOG_STREAM_EVERY_MS(level, ms) \
-  COMMS_LOG_NAMED_STREAM_EVERY_MS(::ncclx::logging::kNcclxLoggerName, level, ms)
+  COMMS_LOGGER_STREAM_EVERY_MS(::ncclx::logging::getNcclxLogger(), level, ms)
 
 #define NCCLX_ERR(code, ...)                                                  \
   do {                                                                        \

@@ -5,6 +5,7 @@
 
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -141,6 +142,11 @@ std::string readFile(const std::filesystem::path& path) {
       std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
+[[noreturn]] meta::comms::logger::CommsSpdlogLogger&
+throwLoggerLookupFailure() {
+  throw std::runtime_error{"logger lookup failure"};
+}
+
 bool waitForFileToContain(
     const std::filesystem::path& path,
     std::string_view message) {
@@ -166,6 +172,8 @@ class LogLevelRestoringTest : public testing::Test {
     resetLogger(getSpdlogLogger(), "COMMS");
     resetLogger(getSpdlogLogger("comms.paired_test"), "PAIRED");
     resetLogger(getSpdlogLogger("comms.named_only_test"), "NAMED_ONLY");
+    resetLogger(getSpdlogLogger("comms.varying_macro_a"), "TEST");
+    resetLogger(getSpdlogLogger("comms.varying_macro_b"), "TEST");
   }
 };
 
@@ -179,6 +187,46 @@ TEST(SpdlogLoggerTest, ReturnsStableLoggerPerContext) {
   EXPECT_EQ(&ctranLogger, &getSpdlogLogger("comms.ctran"));
   EXPECT_NE(&ctranLogger, &getSpdlogLogger("comms.ncclx"));
   EXPECT_EQ(ctranLogger.name(), "comms.ctran");
+}
+
+TEST_F(LogLevelRestoringTest, NamedMacrosResolveVaryingNamesFromOneCallSite) {
+  constexpr std::array kNames{
+      std::string_view{"comms.varying_macro_a"},
+      std::string_view{"comms.varying_macro_b"}};
+  const auto messages =
+      std::make_shared<std::array<std::vector<std::string>, kNames.size()>>();
+
+  for (std::size_t index = 0; index < kNames.size(); ++index) {
+    auto& logger = getSpdlogLogger(kNames[index]);
+    logger.configure(
+        "TEST",
+        []() { return 0; },
+        [messages, index](std::string_view message) {
+          (*messages)[index].emplace_back(message);
+        },
+        false);
+    logger.set_level(spdlog::level::err);
+  }
+
+  const auto logFormatted = [](std::string_view name) {
+    COMMS_LOG_NAMED(name, ERR, "formatted {}", name);
+  };
+  const auto logStream = [](std::string_view name) {
+    COMMS_LOG_NAMED_STREAM(name, ERR) << "stream " << name;
+  };
+  for (const auto name : kNames) {
+    logFormatted(std::string{name});
+    logStream(std::string{name});
+  }
+
+  EXPECT_EQ(
+      (*messages)[0],
+      (std::vector<std::string>{
+          "formatted comms.varying_macro_a", "stream comms.varying_macro_a"}));
+  EXPECT_EQ(
+      (*messages)[1],
+      (std::vector<std::string>{
+          "formatted comms.varying_macro_b", "stream comms.varying_macro_b"}));
 }
 
 TEST(SpdlogLoggerTest, SupportsLoggerExpressionDbg5Stream) {
@@ -433,6 +481,14 @@ TEST(SpdlogLoggerTest, AbortDoesNotEvaluateDisabledArguments) {
       "");
 
   EXPECT_FALSE(std::filesystem::exists(evaluationMarker.path()));
+}
+
+TEST(SpdlogLoggerTest, FatalStreamAbortsWhenLoggerResolutionThrows) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      COMMS_LOGGER_STREAM(throwLoggerLookupFailure(), FATAL)
+          << "unreachable fatal record",
+      "FATAL: communications logging failed");
 }
 
 TEST(SpdlogLoggerTest, ShutdownDrainsEveryLoggerAndKeepsFallbackSynchronous) {
