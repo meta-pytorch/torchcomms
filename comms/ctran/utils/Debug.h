@@ -8,7 +8,7 @@
 #include <folly/system/ThreadName.h>
 
 #include "comms/ctran/utils/CtranLogUtils.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 
 inline void commNamedThreadStart(
     const char* threadName,

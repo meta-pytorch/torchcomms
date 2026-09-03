@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 
 #include <sstream>
 #include <string>

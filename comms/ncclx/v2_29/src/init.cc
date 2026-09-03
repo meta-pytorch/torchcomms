@@ -55,7 +55,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/wrapper/MetaFactory.h"

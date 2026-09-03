@@ -27,7 +27,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ErrorStackUtil.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "meta/logger/NcclDebugLog.h"
 
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)

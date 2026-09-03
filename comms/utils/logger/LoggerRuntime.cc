@@ -5,8 +5,8 @@
 #include <mutex>
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/DataTableWrapper.h"
-#include "comms/utils/logger/LoggingFormat.h"
 
 namespace meta::comms::logger {
 namespace {
