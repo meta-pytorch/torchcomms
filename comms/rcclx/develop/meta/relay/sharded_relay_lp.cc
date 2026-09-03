@@ -91,12 +91,12 @@ bool lpDtypeSupported(ncclDataType_t datatype) {
   return datatype == ncclBfloat16 || datatype == ncclFloat32;
 }
 
-bool lpCountsAligned(const size_t* counts, int nGroups) {
-  if (counts == nullptr || nGroups <= 0) {
+bool lpCountsAligned(const size_t* counts, int nGroups, size_t alignElems) {
+  if (counts == nullptr || nGroups <= 0 || alignElems == 0) {
     return false;
   }
   for (int g = 0; g < nGroups; g++) {
-    if (counts[g] == 0 || counts[g] % kLpBlockElems != 0) {
+    if (counts[g] == 0 || counts[g] % alignElems != 0) {
       return false;
     }
   }
@@ -126,7 +126,7 @@ bool lpEligible(const LpGateInputs& in) {
     lpRecordDecline(LpDecline::Dtype);
     return false;
   }
-  if (!lpCountsAligned(in.counts, in.nGroups)) {
+  if (!lpCountsAligned(in.counts, in.nGroups, in.countAlignElems)) {
     lpRecordDecline(LpDecline::Alignment);
     return false;
   }
