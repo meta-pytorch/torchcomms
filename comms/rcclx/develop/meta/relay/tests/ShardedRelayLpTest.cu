@@ -314,6 +314,36 @@ TEST(ShardedRelayLpGate, RequiresEveryPerGroupCountToBeAWholeNumberOfBlocks) {
   EXPECT_FALSE(lpCountsAligned(aligned, 0));
 }
 
+TEST(ShardedRelayLpGate, CountAlignmentRequirementIsPerCall) {
+  // 128 elements is the floor, but a schedule that subdivides a region needs
+  // more. The flat A>2 allreduce splits its direct region into A per-owner
+  // shards, and pD / A is only a whole number of wire blocks when the count is
+  // a multiple of A * 128 -- so a count that satisfies the floor can still be
+  // wrong for that schedule, and the gate has to be told which it is.
+  const size_t blockAligned[] = {4 * kBlock}; // 512 elements
+  EXPECT_TRUE(lpCountsAligned(blockAligned, 1));
+  EXPECT_TRUE(lpCountsAligned(blockAligned, 1, 4 * kBlock));
+  // A whole number of blocks, but not of 4 blocks: fine at A=2, not at A=4.
+  const size_t threeBlocks[] = {3 * kBlock};
+  EXPECT_TRUE(lpCountsAligned(threeBlocks, 1));
+  EXPECT_FALSE(lpCountsAligned(threeBlocks, 1, 4 * kBlock));
+  EXPECT_FALSE(lpCountsAligned(blockAligned, 1, 0));
+
+  // And it reaches lpEligible through LpGateInputs.
+  LpGateInputs in;
+  in.datatype = ncclFloat32;
+  in.counts = threeBlocks;
+  in.nGroups = 1;
+  in.nActiveRanksPerGroup = 4;
+  in.routeSizeBytes = static_cast<size_t>(64) << 20;
+  in.relayRouteSelected = true;
+  lpResetCounters();
+  EXPECT_TRUE(lpEligible(in));
+  in.countAlignElems = 4 * kBlock;
+  EXPECT_FALSE(lpEligible(in));
+  EXPECT_EQ(lpDeclineCount(LpDecline::Alignment), 1u);
+}
+
 TEST(ShardedRelayLpGate, EachDeclineReasonIsCountedSeparately) {
   // Engagement is asserted through these counters everywhere low precision is
   // tested, because the gate declines SILENTLY -- an LP run that quietly fell

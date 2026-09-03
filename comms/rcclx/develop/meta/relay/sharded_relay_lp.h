@@ -243,9 +243,17 @@ enum class LpCollective {
  */
 bool lpDtypeSupported(ncclDataType_t datatype);
 
-// Every per-group count is a whole number of wire blocks. See the file comment
-// for why this is the gate rather than a tail-padding scheme.
-bool lpCountsAligned(const size_t* counts, int nGroups);
+// Every per-group count is a whole number of `alignElems` elements. 128 (one
+// wire block) is the floor, but a schedule whose geometry divides a region
+// further needs more: the flat A>2 allreduce splits its direct region into A
+// per-owner shards, and `pD / A` is only a whole number of blocks when the
+// count is a multiple of A * 128. Passing that requirement in keeps the check
+// size-only and therefore collective-consistent, which is what matters -- see
+// the file comment.
+bool lpCountsAligned(
+    const size_t* counts,
+    int nGroups,
+    size_t alignElems = kLpBlockElems);
 
 /**
  * Smallest message low precision is used for, in the same byte metric the
@@ -279,6 +287,10 @@ struct LpGateInputs {
   int nActiveRanksPerGroup{0};
   size_t routeSizeBytes{0};
   bool relayRouteSelected{false};
+  // Elements the per-group counts must be a whole multiple of. Defaults to one
+  // wire block; a schedule that subdivides a region further raises it. See
+  // lpCountsAligned().
+  size_t countAlignElems{kLpBlockElems};
 };
 
 // Why an LP request was declined. Recorded per reason because the gate declines
