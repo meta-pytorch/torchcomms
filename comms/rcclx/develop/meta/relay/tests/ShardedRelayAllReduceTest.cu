@@ -2824,6 +2824,143 @@ TEST_F(ShardedRelayAllReduceLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
   HIPCHECK_TEST(hipFree(buff));
 }
 
+// ---------------------------------------------------------------------------
+// 4 active (flat offload schedule)
+// ---------------------------------------------------------------------------
+class ShardedRelayAllReduceFlatLowPrecisionTest
+    : public ShardedRelayMultiGroupAllReduceTest {
+ protected:
+  static constexpr int kGroups = 2;
+  static constexpr int kActive = 4;
+  // A multiple of A*128 == 512, which the flat schedule requires: it splits its
+  // direct region into A per-owner shards of pD/A, and pD being a whole number
+  // of wire blocks does not make pD/A one.
+  static constexpr size_t kCount = 2ULL * 1024 * 1024;
+
+  // Rank r is active for group r/4, helper for the other.
+  int myGroup() const {
+    return this->globalRank / kActive;
+  }
+
+  ncclResult_t
+  run(void** mem, size_t count, ncclDataType_t dt, int lowPrecision) {
+    static const int g0[] = {0, 1, 2, 3};
+    static const int g1[] = {4, 5, 6, 7};
+    const int* allActiveRanks[] = {g0, g1};
+    const void* sendPtrs[kGroups];
+    void* recvPtrs[kGroups];
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      sendPtrs[g] = mem[g];
+      recvPtrs[g] = mem[g];
+      counts[g] = count;
+    }
+    return callAllReduceCompat(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        dt,
+        ncclSum,
+        this->commFor(kActive),
+        this->stream,
+        allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  void alloc(void** mem, size_t count) {
+    for (int g = 0; g < kGroups; g++) {
+      const size_t elems =
+          (g == myGroup()) ? count : static_cast<size_t>(kActive) * count;
+      HIPCHECK_TEST(hipMalloc(&mem[g], elems * sizeof(float)));
+      if (g == myGroup()) {
+        // Contribution 1..4 by active index, so the sum is exactly 10.
+        const std::vector<float> host(
+            count, static_cast<float>(this->globalRank % kActive) + 1.0f);
+        HIPCHECK_TEST(hipMemcpy(
+            mem[g], host.data(), count * sizeof(float), hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(mem[g], 0, elems * sizeof(float)));
+      }
+    }
+  }
+
+  void expectSumIsTen(void** mem, size_t count) {
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        mem[myGroup()],
+        count * sizeof(float),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != 10.0f) {
+        reported++;
+        ADD_FAILURE() << "element " << i << ": got " << got[i] << ", want 10";
+      }
+    }
+  }
+
+  void freeAll(void** mem) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(mem[g]));
+    }
+  }
+};
+
+TEST_F(ShardedRelayAllReduceFlatLowPrecisionTest, ConstantBlocksAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  void* mem[kGroups];
+  alloc(mem, kCount);
+  barrierSyncOn(static_cast<int32_t*>(mem[0]));
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(run(mem, kCount, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  // 1+2+3+4 == 10, exactly, in every element. This covers both of the flat
+  // schedule's regions at once: the direct reduce-scatter/all-gather over
+  // [0, pD) and the helper-reduced offload region over [pD, count).
+  expectSumIsTen(mem, kCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  freeAll(mem);
+}
+
+TEST_F(
+    ShardedRelayAllReduceFlatLowPrecisionTest,
+    DeclinesOnCountAlignedToBlocksButNotToShards) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The regression test for the reason the gate needs a per-call alignment:
+  // this count IS a whole number of 128-element wire blocks, so the 2-active
+  // gate would admit it, but it is NOT a multiple of A*128, so pD/A would be a
+  // fractional block and every offset in the direct region would be wrong.
+  const size_t count =
+      kCount + rcclx::relay::kLpBlockElems; // + 128: still blocks, not shards
+  ASSERT_EQ(count % 128u, 0u);
+  ASSERT_NE(count % (kActive * 128u), 0u);
+
+  void* mem[kGroups];
+  alloc(mem, count);
+  barrierSyncOn(static_cast<int32_t*>(mem[0]));
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(run(mem, count, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  // Full precision, so still exactly 10.
+  expectSumIsTen(mem, count);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Alignment), 0u);
+  freeAll(mem);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
