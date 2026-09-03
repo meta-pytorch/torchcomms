@@ -64,6 +64,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
 #include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
@@ -2884,6 +2885,351 @@ TEST_F(
   for (int g = 0; g < nGroups; g++) {
     HIPCHECK_TEST(hipFree(sendBuffs[g]));
   }
+}
+
+// ===========================================================================
+// LOW PRECISION (fp8e4m3 wire format)
+// ===========================================================================
+//
+// Every case here asserts that low precision actually ENGAGED or actually
+// DECLINED, via the counters, rather than trusting the flag. The gate declines
+// silently on several independent grounds, so an "LP" run that quietly fell
+// back to full precision produces exactly the numbers a passing LP run
+// produces -- the counter is the only thing that tells them apart.
+//
+// The comparators stay EXACT. Each active rank fills every block it contributes
+// with a single constant, so every 128-element wire block has that constant as
+// its absmax; the power-of-two normalization target then makes
+// quantize/dequantize an identity, and a sum of equal values behaves the same
+// way. These cases are therefore a genuine detector for a wrong scale, a wrong
+// block boundary or a dropped scale. Do not loosen them.
+//
+// Reduce-scatter's own hazard, which no allreduce case can catch: the halves of
+// the send buffer are DIFFERENT blocks bound for different places, and
+// sendBlockOffset selects the one shipped to the partner. Filling each block
+// with a different constant means a wire offset computed against the wrong
+// block, or a quantize hoisted over the wrong span, changes the answer instead
+// of cancelling out.
+class ShardedRelayReduceScatterLowPrecisionTest
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int kActive = 2;
+  static constexpr int kGroups = 4;
+
+  // 2 Mi elements per output block = 16 MiB of fp32 input per active rank,
+  // comfortably above the low-precision size threshold and a whole number of
+  // 128-element blocks.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  // bf16 is carried as raw bits, the convention the rest of this file uses, so
+  // that no host-side bf16 arithmetic or comparison is involved. These
+  // overloads are selected by a value-initialized tag of the storage type.
+  static float encodeAs(float v, float) {
+    return v;
+  }
+  static int32_t encodeAs(float v, int32_t) {
+    return static_cast<int32_t>(v);
+  }
+  static uint16_t encodeAs(float v, uint16_t) {
+    return bfloat16Bits(v);
+  }
+
+  template <typename T>
+  static T encode(float v) {
+    return encodeAs(v, T{});
+  }
+
+  // Active rank r's input block b holds this value, so the expected output for
+  // whichever rank owns block b is the sum over r -- a different constant per
+  // owner, which is what makes a swapped block detectable. All four values
+  // (5, 6, 9, 10) and both sums (14, 16) are exactly representable in fp32,
+  // bf16 and, after the power-of-two normalization, e4m3.
+  static float blockValue(int activeIndex, int blockIndex) {
+    return static_cast<float>((activeIndex + 1) * 4 + (blockIndex + 1));
+  }
+
+  static float expectedOwnerValue(int blockIndex) {
+    float sum = 0.0f;
+    for (int r = 0; r < kActive; r++) {
+      sum += blockValue(r, blockIndex);
+    }
+    return sum;
+  }
+
+  struct Buffers {
+    std::vector<void*> sendMem;
+    void* recvMem{nullptr};
+    const void* sendPtrs[kGroups];
+    void* recvPtrs[kGroups];
+    size_t counts[kGroups];
+    int nGroups{kGroups};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  // Out-of-place buffers, one contiguous send/recv pair per group. Helper
+  // groups pass their send allocation as the output placeholder, as the rest of
+  // this suite does; only the active group's output is read.
+  template <typename T>
+  void makeBuffers(size_t count, int nGroups, Buffers& b) {
+    b = Buffers{};
+    b.nGroups = nGroups;
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    b.sendMem.resize(nGroups);
+    const size_t elems = static_cast<size_t>(kActive) * count;
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], elems * sizeof(T)));
+      if (g == b.myActiveGroup) {
+        std::vector<T> host(elems);
+        for (int blk = 0; blk < kActive; blk++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(blk * count),
+              host.begin() + static_cast<ptrdiff_t>((blk + 1) * count),
+              encode<T>(blockValue(b.myActiveIndex, blk)));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            elems * sizeof(T),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, elems * sizeof(T)));
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.counts[g] = count;
+    }
+    HIPCHECK_TEST(hipMalloc(&b.recvMem, count * sizeof(T)));
+    HIPCHECK_TEST(hipMemset(b.recvMem, 0, count * sizeof(T)));
+    for (int g = 0; g < nGroups; g++) {
+      b.recvPtrs[g] = (g == b.myActiveGroup) ? b.recvMem : b.sendMem[g];
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (void* p : b.sendMem) {
+      HIPCHECK_TEST(hipFree(p));
+    }
+    HIPCHECK_TEST(hipFree(b.recvMem));
+    b.sendMem.clear();
+    b.recvMem = nullptr;
+  }
+
+  // Exact, element by element. Only the ranks that own an output block check
+  // it; for a single-group call the rest are helpers with no output of their
+  // own.
+  template <typename T>
+  void expectOutputEquals(const Buffers& b, size_t count, float wantValue) {
+    if (b.myActiveGroup >= b.nGroups) {
+      return;
+    }
+    const T want = encode<T>(wantValue);
+    std::vector<T> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), b.recvMem, count * sizeof(T), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << " differs (raw comparison against the encoding of "
+                      << wantValue << ")";
+      }
+    }
+  }
+
+  ncclResult_t
+  call(const Buffers& b, ncclDataType_t dt, ncclRedOp_t op, int lowPrecision) {
+    Standard4GroupActiveRanks layout;
+    return callReduceScatterCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        dt,
+        op,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        b.nGroups,
+        lowPrecision);
+  }
+};
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, ConstantBlocksAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, Bfloat16IsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The other supported dtype, and the one the wire format was built for: bf16
+  // in, fp8 on the wire, bf16 out, with a single rounding on the whole path
+  // because reduce-scatter's helper never requantizes.
+  Buffers b;
+  makeBuffers<uint16_t>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclBfloat16, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<uint16_t>(
+      b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, AvgAppliesTheDivisorOnce) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclAvg is where reduce-scatter parts company with allreduce. Its helper is
+  // a PURE RELAY, so the divisor belongs solely to the active rank's closing
+  // reduce. A divisor also applied at the helper -- which is correct for
+  // allreduce and wrong here -- would halve the relayed chunks and leave the
+  // two direct chunks right, and the exact comparator catches that at the first
+  // relayed element. 14 / 2 and 16 / 2 are both exact.
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(
+      b,
+      kLpCount,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, DeclinesOnUnsupportedDtype) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclInt32 is not a low-precision dtype, so the flag must fall through to
+  // full precision and the answer must be exactly the full-precision answer.
+  Buffers b;
+  makeBuffers<int32_t>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclInt32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<int32_t>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Dtype), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    DeclinesOnCountThatIsNotWholeBlocks) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // One element past a whole number of 128-element blocks. sendBlockOffset is a
+  // raw per-group count here, so an unaligned count breaks additivity in the
+  // MIDDLE of the send buffer, not only in its tail -- the gate must refuse.
+  const size_t count = kLpCount + 1;
+  Buffers b;
+  makeBuffers<float>(count, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, count, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Alignment), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The behaviour an env var could not express, and the whole point of making
+  // this a per-call argument: two calls on the SAME communicator, one low
+  // precision and one not, with no state leaking from the first into the
+  // second.
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  HIPCHECK_TEST(hipMemset(b.recvMem, 0, kLpCount * sizeof(float)));
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    DeclinesForTheSingleGroupPipelinedSchedule) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // A single-group call at this size pipelines, and the pipelined schedule does
+  // not carry the wire format yet. The decline has to be unanimous, and it is
+  // because the tile count is a pure function of the counts. The pipeline
+  // selection is asserted rather than assumed, so this case cannot quietly
+  // become a second test of the non-pipelined path.
+  const size_t count = 4ULL * 1024 * 1024;
+  const int numHelpers = 8 - kActive;
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::relayShapeA2(numHelpers), count, sizeof(float)),
+      1);
+
+  Buffers b;
+  makeBuffers<float>(count, /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, count, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Route), 0u)
+      << "the decline must be recorded, not silent";
+  freeBuffers(b);
 }
 
 int main(int argc, char* argv[]) {
