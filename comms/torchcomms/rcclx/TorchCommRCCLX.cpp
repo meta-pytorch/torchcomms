@@ -730,7 +730,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
     const std::vector<std::vector<int64_t>>& all_active_ranks,
     const std::vector<int64_t>& per_group_counts,
     bool async_op,
-    std::optional<std::vector<at::Tensor>> output_tensors) {
+    std::optional<std::vector<at::Tensor>> output_tensors,
+    bool low_precision) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -902,7 +903,7 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
       nGroups,
-      /*lowPrecision=*/0);
+      low_precision ? 1 : 0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -926,7 +927,8 @@ TorchCommRCCLX::sharded_relay_multi_group_reduce_scatter(
     const ReduceOp& op,
     const std::vector<std::vector<int64_t>>& all_active_ranks,
     const std::vector<int64_t>& per_group_recv_counts,
-    bool async_op) {
+    bool async_op,
+    bool low_precision) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -1081,7 +1083,7 @@ TorchCommRCCLX::sharded_relay_multi_group_reduce_scatter(
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
       nGroups,
-      /*lowPrecision=*/0);
+      low_precision ? 1 : 0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -1104,7 +1106,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_to_all(
     std::vector<at::Tensor>& output_tensors,
     const std::vector<std::vector<int64_t>>& all_active_ranks,
     const std::vector<int64_t>& per_group_segment_counts,
-    bool async_op) {
+    bool async_op,
+    bool low_precision) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -1253,7 +1256,7 @@ TorchCommRCCLX::sharded_relay_multi_group_all_to_all(
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
       nGroups,
-      /*lowPrecision=*/0);
+      low_precision ? 1 : 0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -1276,7 +1279,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_gather(
     std::vector<at::Tensor>& output_tensors,
     const std::vector<std::vector<int64_t>>& all_active_ranks,
     const std::vector<int64_t>& per_group_send_counts,
-    bool async_op) {
+    bool async_op,
+    bool low_precision) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -1426,7 +1430,7 @@ TorchCommRCCLX::sharded_relay_multi_group_all_gather(
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
       nGroups,
-      /*lowPrecision=*/0);
+      low_precision ? 1 : 0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(

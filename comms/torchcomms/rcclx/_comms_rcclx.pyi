@@ -17,6 +17,7 @@ class TorchCommRCCLX:
         per_group_counts: list[int],
         async_op: bool = False,
         output_tensors: list[torch.Tensor] | None = None,
+        low_precision: bool = False,
     ) -> TorchWork | None:
         """
         Fused multi-group sharded relay allreduce for 2D sparse parallelism.
@@ -37,6 +38,15 @@ class TorchCommRCCLX:
                 allreduce is in-place. When provided, the active group's
                 reduced result is written out-of-place into these tensors
                 while the inputs are preserved.
+            low_precision: If True, use the low-precision (fp8e4m3) wire format
+                where it pays. An internal size-only gate decides -- an
+                unsupported dtype, counts that are not a multiple of 128, or a
+                message below the measured crossover all decline to full
+                precision SILENTLY, so assert engagement rather than assuming
+                it. COLLECTIVE: pass the same value on every rank of the call,
+                exactly like the dtype and the counts. Ranks that disagree
+                disagree on how many bytes cross each link, so the call hangs or
+                corrupts rather than degrading.
 
         Returns:
             TorchWork handle if async_op=True, else None
@@ -51,6 +61,7 @@ class TorchCommRCCLX:
         all_active_ranks: list[list[int]],
         per_group_recv_counts: list[int],
         async_op: bool = False,
+        low_precision: bool = False,
     ) -> TorchWork | None:
         """
         Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
@@ -72,6 +83,9 @@ class TorchCommRCCLX:
                 active rank IDs for one sparse group
             per_group_recv_counts: List of OUTPUT element counts (one per group)
             async_op: If True, returns a TorchWork handle for async operation
+            low_precision: If True, use the fp8e4m3 wire format where it pays.
+                See sharded_relay_multi_group_all_reduce -- same gate, same
+                COLLECTIVE contract.
 
         Returns:
             TorchWork handle if async_op=True, else None
@@ -85,6 +99,7 @@ class TorchCommRCCLX:
         all_active_ranks: list[list[int]],
         per_group_segment_counts: list[int],
         async_op: bool = False,
+        low_precision: bool = False,
     ) -> TorchWork | None:
         """
         Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
@@ -109,6 +124,9 @@ class TorchCommRCCLX:
             all_active_ranks: List of lists of active rank IDs per sparse group
             per_group_segment_counts: List of per-segment element counts
             async_op: If True, returns a TorchWork handle for async operation
+            low_precision: If True, use the fp8e4m3 wire format where it pays.
+                See sharded_relay_multi_group_all_reduce -- same gate, same
+                COLLECTIVE contract.
 
         Returns:
             TorchWork handle if async_op=True, else None
@@ -122,6 +140,7 @@ class TorchCommRCCLX:
         all_active_ranks: list[list[int]],
         per_group_send_counts: list[int],
         async_op: bool = False,
+        low_precision: bool = False,
     ) -> TorchWork | None:
         """
         Fused multi-group sharded relay all-gather for 2D sparse parallelism.
@@ -148,6 +167,9 @@ class TorchCommRCCLX:
             all_active_ranks: List of lists of active rank IDs per sparse group
             per_group_send_counts: List of per-rank contribution counts
             async_op: If True, returns a TorchWork handle for async operation
+            low_precision: If True, use the fp8e4m3 wire format where it pays.
+                See sharded_relay_multi_group_all_reduce -- same gate, same
+                COLLECTIVE contract.
 
         Returns:
             TorchWork handle if async_op=True, else None
