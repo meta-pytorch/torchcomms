@@ -2330,7 +2330,11 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
     cudaStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
+  // Accepted and ignored: the wire-format substitution lands in a later commit,
+  // so this commit cannot change behaviour.
+  (void)lowPrecision;
   int nRanks, rank;
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));

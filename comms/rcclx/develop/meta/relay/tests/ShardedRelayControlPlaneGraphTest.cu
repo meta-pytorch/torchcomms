@@ -292,7 +292,8 @@ class ShardedRelayControlPlaneGraphTest : public ::testing::TestWithParam<int> {
         this->stream,
         allActiveRanks,
         nActive(),
-        1));
+        1,
+        /*lowPrecision=*/0));
   }
 
   // EndCapture always runs, so a failure inside `body` cannot leave the stream
