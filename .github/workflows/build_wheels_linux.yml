@@ -84,7 +84,7 @@ jobs:
       pre-script: |
         free -g; df -h .; ulimit -a
       post-script: |
-        du -sh build/ncclx/obj build/ncclx/lib 2>/dev/null; free -g; df -h .
+        du -sh build/ncclx/obj build/ncclx/lib 2>/dev/null || true; free -g; df -h .
       build-platform: "python-build-package"
       build-command: "scripts/_build_wheel.sh"
       smoke-test-script: "scripts/smoke_test.py"
