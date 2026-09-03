@@ -304,49 +304,51 @@ bool lpCountsAligned(
  * ratio is LP-vs-FULL-PRECISION-RELAY: above 1.00x the wire format is faster
  * than the same relay carrying full-precision bytes. It is deliberately NOT a
  * ratio against NCCL, which would fold in the relay's own 2x-2.5x and make
- * every shape look like a win -- including the ones where enabling low
- * precision would make the product slower.
+ * every shape look like a win, including ones where enabling low precision
+ * makes things slower.
  *
- * Taken AFTER the wavefront-absmax rewrite. Before it, low precision won for
- * two shapes; the numbers below are why the policy changed.
+ * Taken after the chunk-alignment fix. The history is worth keeping, because
+ * twice the table said "low precision does not pay here" when it was measuring
+ * a stall: 2 of 16 shapes enabled  -- before the wavefront-absmax rewrite 7 of
+ * 16                 -- after it, before the chunk-alignment fix 11 of 16 --
+ * now
  *
  *                       nGroups == 1 (uncontended)   nGroups > 1 (fused)
- *   allreduce      A=2      0.78x - 1.14x                1.03x - 1.31x  ENABLED
- *   allreduce      A=4      1.08x - 1.30x  ENABLED       0.92x - 1.28x  ENABLED
- *   reduce-scatter A=2      0.79x - 1.27x                0.98x - 1.40x  ENABLED
- *   reduce-scatter A=4      0.95x - 1.27x                0.95x - 1.31x
- *   all-gather     A=2      0.78x - 1.18x                1.02x - 1.33x  ENABLED
- *   all-gather     A=4      0.82x - 1.27x                1.00x - 1.45x  ENABLED
- *   all-to-all     A=2      0.76x - 0.97x                1.03x - 1.32x  ENABLED
- *   all-to-all     A=4      0.70x - 1.15x                0.64x - 1.19x
+ *   allreduce      A=2      0.78x - 1.14x                1.20x - 1.30x  ENABLED
+ *   allreduce      A=4      1.09x - 1.29x  ENABLED       1.15x - 1.28x  ENABLED
+ *   reduce-scatter A=2      1.11x - 1.28x  ENABLED       1.17x - 1.42x  ENABLED
+ *   reduce-scatter A=4      0.98x - 1.26x                0.97x - 1.32x
+ *   all-gather     A=2      1.17x - 1.23x  ENABLED       1.14x - 1.33x  ENABLED
+ *   all-gather     A=4      1.20x - 1.30x  ENABLED       1.30x - 1.45x  ENABLED
+ *   all-to-all     A=2      0.91x - 0.96x                1.14x - 1.33x  ENABLED
+ *   all-to-all     A=4      1.08x - 1.16x  ENABLED       1.16x - 1.20x  ENABLED
  *
- * CONTENTION IS WHAT LOW PRECISION WINS. nGroups > 1 puts several groups on the
- * XGMI links at once, so there is a real bandwidth term for halved wire bytes
- * to shrink. One group leaves the links slack, and then the quantize/dequantize
- * passes are pure added cost. That is why nearly every enabled entry is fused,
- * and why measuring only the single-group best case (which this work did first)
- * measures the one configuration where the feature cannot help.
+ * THE nGroups COLUMN NO LONGER TELLS THE STORY, and that is the substantive
+ * change. The earlier reading was that contention is what low precision wins --
+ * fused shapes paid, uncontended ones did not -- which was a plausible
+ * bandwidth argument and wrong. Nearly every single-group shape was sitting in
+ * an alignment stall. With it gone, five of them pay. Contention still helps
+ * (the fused ratios are higher) but it is not the dividing line.
  *
- * A RANGE IS NOT A THRESHOLD, which is why three shapes with plateaus
- * above 1.15x are still off. A min-bytes gate can only say "from here up", and
- * these win on both sides of a reproducible dip:
+ * Three shapes stay off, for three different reasons:
  *
- *   - fused all-to-all A=4 reads 1.16x-1.19x from 27 MB but craters to 0.64x at
- *     exactly 32 MB and 0.65x at 40 MB.
- *   - most nGroups == 1 shapes dip through 31.5-63 MB and recover above it,
- * e.g. all-gather A=2: 1.15x, 1.18x, then 0.79x, 0.90x, 0.90x, 0.85x, 0.79x.
- *   - fused reduce-scatter A=4 sits at 0.95x-1.04x through 40 MB and only
- * reaches 1.29x at 63 MB, the top of the measured range. A threshold at the
- * edge of the data is a guess; it needs measuring past 72 MB.
+ *   - reduce-scatter A=4, EITHER grouping: 0.98x-1.03x through 40 MB, reaching
+ *     1.24x-1.32x only at 63 MB, the top of the measured range. A threshold at
+ * the edge of the data is a guess. Needs measuring past 72 MB, not explaining.
+ *   - single-group allreduce A=2: wins 1.09x-1.14x from 13.5 MB to 27 MB, then
+ *     drops to 0.78x-0.92x from 31.5 MB up. A min-bytes gate cannot express
+ * "this band only". The chunk-alignment fix did NOT move it -- every other
+ * troughed shape recovered and this one did not -- so it is a separate
+ * mechanism, under profiling. It is the last known stall in the feature.
+ *   - single-group all-to-all A=2: the only shape that genuinely never wins,
+ *     0.91x-0.96x at every size, unmoved by either fix.
  *
- * Both dips survived the absmax rewrite at lower absolute ratios, so they are a
- * separate mechanism from the reduction cost, and both are size-specific enough
- * to suggest a tiling or allocation boundary. They are the largest remaining
- * opportunity here: explaining them would enable three more shapes.
- *
- * Single-group allreduce A=4 is the one uncontended shape enabled, because it
- * is monotone rather than troughed -- 1.08x at 13.5 MB rising steadily to 1.30x
- * at 72 MB with no dip anywhere.
+ * Fused all-to-all A=4 starts at 27 MiB, which is also exactly where its
+ * XOR-relay route starts when fused. That is not a coincidence to be tidied
+ * away: below the route crossover the call is a direct exchange with the
+ * helpers idle, so there is nothing staged for the wire format to shrink and
+ * low precision would decline on route regardless. The two gates agree by
+ * construction.
  *
  * NCCL_SHARDED_RELAY_LP_MIN_KB overrides all of it, which is what made the
  * table measurable: the built-in values decline before anything is timed. The
