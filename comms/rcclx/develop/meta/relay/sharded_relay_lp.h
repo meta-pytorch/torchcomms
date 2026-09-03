@@ -315,14 +315,21 @@ bool lpCountsAligned(
  * every shape look like a win, including ones where enabling low precision
  * makes things slower.
  *
- * The bf16 history is worth keeping, because twice the table said "low
+ * The bf16 history is worth keeping, because THREE times this table said "low
  * precision does not pay here" when it was measuring a stall: 2 of 16 shapes
- * enabled before the wavefront-absmax rewrite, 7 of 16 after it and before the
- * chunk-alignment fix, 11 of 16 now. fp32 enables 15 of 16.
+ * enabled before the wavefront-absmax rewrite, 7 of 16 after it, 11 of 16 after
+ * the chunk alignment was raised to 512, and 12 of 16 once allreduce actually
+ * PICKED UP that alignment change -- it had its own hard-coded 128 and silently
+ * did not get it. fp32 enables 15 of 16.
+ *
+ * The pattern is worth internalizing: every single time a shape looked like it
+ * had a deep reason not to pay, it was an alignment or latency bug in this
+ * code, not a property of the wire format. Treat a shape that does not improve
+ * monotonically with size as a bug report against the schedule.
  *
  *                     bf16                      fp32
  *                     nGroups==1   fused        nGroups==1   fused
- *   allreduce      A=2   --        12 MiB         4.5 MiB     4.5 MiB
+ *   allreduce      A=2    8 MiB     8 MiB         4.5 MiB     4.5 MiB
  *   allreduce      A=4   12 MiB    12 MiB         9 MiB       9 MiB
  *   reduce-scatter A=2   12 MiB    12 MiB         4.5 MiB     4.5 MiB
  *   reduce-scatter A=4   60 MiB      --           60 MiB      60 MiB
@@ -371,11 +378,11 @@ bool lpCountsAligned(
  *     the same flat ~1.00x through 40 MB and then a step, but fp32's step is to
  *     2.01x-2.63x across six consecutive sizes, which is a crossover rather
  *     than a plateau at the edge of the data.
- *   - single-group allreduce A=2 is ENABLED for fp32 and off for bf16. The bf16
- *     stall is still visible here as VARIANCE (1.19x to 1.83x, non-monotonic in
- *     size) but never as a regression: the 3.88x wire saving is large enough to
- *     stay ahead of whatever the memory system is doing. Enabling it for fp32
- *     is therefore not a claim that the stall was fixed.
+ *   - single-group allreduce A=2 pays in BOTH dtypes now. It was fp32-only,
+ * with bf16 off for an unexplained stall and fp32 showing that same stall as
+ *     non-monotonic VARIANCE (1.19x to 1.83x) that the 3.88x saving stayed
+ * ahead of. The allreduce chunk-alignment fix removed both: fp32 now rises
+ * smoothly from 1.08x at 4.5 MB to 2.26x at 1 GB, and bf16 is enabled at 8 MiB.
  *
  * ONE shape stays off for fp32: single-group all-to-all A=2, which peaks at
  * 1.12x at 27 MB and falls back to 0.99x-1.02x from 63 MB up. Same shape as
@@ -395,25 +402,25 @@ bool lpCountsAligned(
  * the eight pay in bf16 and seven in fp32. Contention still helps, since the
  * fused ratios are higher, but it is not the dividing line.
  *
- * Two bf16 shapes stay off, for two different reasons:
+ * Two bf16 shapes stay off, for two different reasons, and NEITHER is allreduce
+ * any more -- single-group allreduce A=2 was listed here as an unexplained
+ * stall and turned out to be an alignment bug in this code:
  *
  *   - reduce-scatter A=4 FUSED: 0.97x-1.03x through 40 MB and 1.32x only at
  *     63 MB, the top of the range it was tuned on. A plateau at the edge of the
  *     data is not a measured crossover. fp32 at the same shape DOES cross (see
  *     above), so this one is a candidate for re-measuring rather than a
  *     settled no.
- *   - single-group allreduce A=2: a STALL, not a threshold. Wins 1.09x-1.13x
- *     from 13.5 to 27 MB, then 0.75x-0.92x at every larger size out to 144 MB,
- *     so a min-bytes gate cannot express it. PROFILED: the same three transfers
- *     with the same grid run 1.85x slower for 1.167x more bytes, effective
- *     bandwidth falling from ~125 to ~78 GB/s. Not the kernels (they scale at
- *     1.23x against an expected 1.167x), not the pipeline tile count (still 1
- *     at the size it breaks), not chunk alignment (that fix recovered every
- *     other troughed shape and left this one untouched). A memory-system effect
- *     inside an unchanged transfer; needs hardware counters, not a kernel
- * trace.
- *   - single-group all-to-all A=2: never wins at any size in either grouping in
- *     bf16, and gets WORSE with size -- 0.95x-0.97x small, 0.88x at 135-144 MB.
+ *   - single-group all-to-all A=2: never wins at any size in bf16 and gets
+ * WORSE with size -- 0.95x-0.97x small, 0.88x at 135-144 MB. This one is
+ *     STRUCTURAL rather than a threshold or a bug. `foldDiagonalIntoGroup` is
+ *     set exactly when nGroups == 1, and the folded self-peer diagonal stays
+ *     FULL PRECISION because RCCL services it as a local copy that never
+ * crosses a boundary. At A=2 that diagonal is one of two segments, so HALF the
+ *     payload cannot shrink while the low-precision machinery is paid over all
+ *     of it. At A=4 the diagonal is a quarter and the shape pays 1.24x; fused
+ *     does not fold at all and pays 1.35x. Fixing it means not folding under
+ * low precision, or quantizing the diagonal -- not moving a threshold.
  *
  * Fused all-to-all A=4 starts at 27 MiB in BOTH dtypes, which is also exactly
  * where its XOR-relay route starts when fused. That is not a coincidence to be

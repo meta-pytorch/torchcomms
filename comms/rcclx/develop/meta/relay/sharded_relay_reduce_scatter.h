@@ -80,7 +80,8 @@
  *
  * Chunking:
  * =========
- *   chunkSize = recvCounts[g] / numChunks rounded down to 128 elements,
+ *   chunkSize = recvCounts[g] / numChunks rounded down to
+ *   kRelayChunkAlignElements (512) elements,
  *   numChunks = numHelpers + 2. The active<->active link is idle while the
  * relay scatter and forward run on the cross links, so instead of a third comm
  * group for one direct chunk, one direct chunk rides along with each relay
