@@ -911,6 +911,10 @@ Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
   }
 
   auto s = static_cast<cudaStream_t>(stream);
+  // Spans the launches and the synchronize below, so bytes/this is the D2H
+  // bandwidth the put path actually gets, not the device's peak.
+  const auto tStageStart = std::chrono::steady_clock::now();
+  size_t waveBytes = 0;
   std::vector<TcpFrame> frames;
   frames.reserve(wave.size());
   // Devices whose copies were launched, so the wait below covers each of them
@@ -948,6 +952,7 @@ Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
     if (!staging) {
       break;
     }
+    waveBytes += chunk.len;
     if (std::find(
             launchedDevices.begin(), launchedDevices.end(), chunk.deviceId) ==
         launchedDevices.end()) {
@@ -970,6 +975,18 @@ Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
   if (!staging) {
     return std::move(staging).error();
   }
+  // Recorded after the synchronize, so it covers the full wait for the copies.
+  // Only successful waves are counted: a failed one abandons partway and its
+  // timing would not describe the copy path.
+  stagingNs_.fetch_add(
+      static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - tStageStart)
+              .count()),
+      std::memory_order_relaxed);
+  stagingBytes_.fetch_add(waveBytes, std::memory_order_relaxed);
+  stagingWaves_.fetch_add(1, std::memory_order_relaxed);
+  stagingChunks_.fetch_add(wave.size(), std::memory_order_relaxed);
   return frames;
 }
 
@@ -2091,6 +2108,35 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
       lane->conn->recvPhaseStats().reset();
     }
   }
+  // Reported separately from the frame block above: on a put run this side
+  // receives only Acks, so gating the staging numbers on receive frames would
+  // hide them exactly where they matter.
+  const uint64_t stgNs = stagingNs_.load(std::memory_order_relaxed);
+  const uint64_t stgBytes = stagingBytes_.load(std::memory_order_relaxed);
+  const uint64_t stgWaves = stagingWaves_.load(std::memory_order_relaxed);
+  const uint64_t stgChunks = stagingChunks_.load(std::memory_order_relaxed);
+  if (stgWaves > 0) {
+    // bytes/ns is GB/s directly (1e9 bytes per second per byte-per-ns).
+    const double stgGBps = stgNs > 0
+        ? static_cast<double>(stgBytes) / static_cast<double>(stgNs)
+        : 0.0;
+    UNIFLOW_LOG_INFO(
+        "tcp d2h staging [{}]: waves={} chunks={} bytes={} | {:.2f} GB/s | "
+        "{:.1f}us/wave {:.1f}us/chunk",
+        label,
+        stgWaves,
+        stgChunks,
+        stgBytes,
+        stgGBps,
+        static_cast<double>(stgNs) / static_cast<double>(stgWaves) / 1000.0,
+        stgChunks > 0 ? static_cast<double>(stgNs) /
+                static_cast<double>(stgChunks) / 1000.0
+                      : 0.0);
+  }
+  stagingNs_.store(0, std::memory_order_relaxed);
+  stagingBytes_.store(0, std::memory_order_relaxed);
+  stagingWaves_.store(0, std::memory_order_relaxed);
+  stagingChunks_.store(0, std::memory_order_relaxed);
   dstCopyNs_.store(0, std::memory_order_relaxed);
   dstCopyCount_.store(0, std::memory_order_relaxed);
   h2dState_->copyNs.store(0, std::memory_order_relaxed);
