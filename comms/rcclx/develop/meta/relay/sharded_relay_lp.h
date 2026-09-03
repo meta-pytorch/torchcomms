@@ -130,11 +130,18 @@ namespace rcclx::relay {
 // Wire layout
 // ---------------------------------------------------------------------------
 
-// Payload elements per wire block. Tied to the relay's chunk alignment, not
-// chosen independently: the whole format rests on every LP region boundary
-// being a whole number of blocks, and kRelayChunkAlignElements is what the
-// collectives already align every chunk, offset and tile to.
-inline constexpr size_t kLpBlockElems = kRelayChunkAlignElements;
+// Payload elements per wire block. A property of the FORMAT, so it is its own
+// constant: the 33/32 wire ratio and the exactness of lpWireBytes() both depend
+// on it being 128, and the static asserts below hold it there.
+//
+// It used to be defined as kRelayChunkAlignElements, on the reasoning that
+// every region boundary must be a whole number of blocks and that constant is
+// what the schedules align to. The REQUIREMENT is divisibility, not equality,
+// and conflating them made the wire format hostage to a tuning constant --
+// raising the chunk alignment to fix a misalignment stall would have silently
+// redefined a block as 516 bytes and coarsened the scale granularity fourfold.
+// The divisibility assertion below is the real invariant.
+inline constexpr size_t kLpBlockElems = 128;
 
 // One fp32 scale per block, trailing its payload.
 inline constexpr size_t kLpScaleBytes = sizeof(float);
@@ -143,6 +150,34 @@ inline constexpr size_t kLpScaleBytes = sizeof(float);
 inline constexpr size_t kLpBlockBytes = kLpBlockElems + kLpScaleBytes;
 
 static_assert(kLpBlockElems == 128, "the 33/32 wire ratio assumes 128");
+static_assert(
+    kRelayChunkAlignElements % kLpBlockElems == 0,
+    "every relay chunk boundary must be a whole number of wire blocks, or a "
+    "region offset in wire bytes would not be additive");
+
+// A chunk boundary must also land on a 16-BYTE-ALIGNED wire offset, which is a
+// strictly stronger requirement than being a whole number of blocks and is the
+// reason kRelayChunkAlignElements is 512.
+//
+// A block is 132 bytes and 132 = 4 * 33, so a boundary of B blocks sits at
+// 132*B bytes, which is 16-byte aligned only when B is a multiple of 4. Full
+// precision never had this problem: its offsets are elements * elementSize, and
+// a power-of-two element size turns element alignment into byte alignment for
+// free. The 33/32 ratio is what breaks the implication, so this is a
+// low-precision-specific constraint even though it is satisfied by a shared
+// constant.
+//
+// MEASURED COST of getting this wrong, on the shapes where a boundary happened
+// to land on an odd block count: fused all-to-all A=4 ran at 0.64x of
+// full-precision relay at 32 MB and 0.65x at 40 MB while reading 1.16x-1.19x at
+// every neighbouring size, and single-group all-gather sat at 0.78x-0.90x
+// across 31.5-72 MB. With the boundary 4-block aligned those became 1.13x-1.19x
+// and 1.19x-1.30x. The offending sizes were exactly those whose chunk count was
+// not a multiple of 4; nothing about the data or the reduction changed.
+static_assert(
+    (kRelayChunkAlignElements / kLpBlockElems) % 4 == 0,
+    "a relay chunk boundary must be a multiple of 4 wire blocks so its offset in "
+    "wire bytes (132 per block) is 16-byte aligned");
 static_assert(
     kLpBlockBytes * 32 == kLpBlockElems * 33,
     "wire bytes per element must be exactly 33/32");
