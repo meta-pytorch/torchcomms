@@ -1140,7 +1140,7 @@ commResult_t CtranIb::resolveTrafficClass() {
     const int hint = comm->config_.trafficClass;
     if (hint >= 0 && hint <= kMaxTrafficClass) {
       trafficClass_ = static_cast<uint32_t>(hint);
-      CLOGF_SUBSYS(
+      CTRAN_LOG_SUBSYS(
           INFO,
           INIT,
           "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from per-comm hint)",
@@ -1150,7 +1150,7 @@ commResult_t CtranIb::resolveTrafficClass() {
       return commSuccess;
     }
     if (hint > kMaxTrafficClass) {
-      CLOGF(
+      CTRAN_LOG(
           WARN,
           "CTRAN-IB: commHash {:x}, commDesc {} ignoring out-of-range per-comm trafficClass hint {} (valid range [0, {}]); falling back to env settings.",
           commHash,
@@ -1211,7 +1211,7 @@ commResult_t CtranIb::resolveTrafficClass() {
 
   if (matchedTc.has_value()) {
     trafficClass_ = *matchedTc;
-    CLOGF_SUBSYS(
+    CTRAN_LOG_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map)",
@@ -1223,7 +1223,7 @@ commResult_t CtranIb::resolveTrafficClass() {
 
   // 3. Global fallback.
   trafficClass_ = static_cast<uint32_t>(NCCL_IB_TC);
-  CLOGF_SUBSYS(
+  CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
       "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from NCCL_IB_TC global fallback)",
