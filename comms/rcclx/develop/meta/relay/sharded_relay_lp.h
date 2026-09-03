@@ -118,6 +118,11 @@
  * asked.
  *
  * The env vars here are tuning and provisioning only, never a feature switch.
+ * NCCL_SHARDED_RELAY_LP_MIN_KB is the one worth knowing about: it moves the
+ * size crossover, which is how the crossover gets measured in the first place
+ * -- the built-in value declines small messages before anything is timed, so a
+ * sweep that could not override it would have no way to see whether low
+ * precision would have won there.
  */
 namespace rcclx::relay {
 
@@ -265,6 +270,12 @@ bool lpCountsAligned(
  * gain there would mean the measurement is wrong. These get their measured
  * values from the LP sweep, with the same "measured crossover, here is the
  * provenance" convention sharded_relay_route.h uses for the route thresholds.
+ *
+ * NCCL_SHARDED_RELAY_LP_MIN_KB overrides it, which is what makes the sweep
+ * possible at all: the built-in value declines below 4 MiB before anything is
+ * timed, so the crossover is precisely the number a sweep cannot otherwise
+ * observe. Set it to 0 (or 1) to make every size eligible and let the data say
+ * where low precision starts paying.
  */
 size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups);
 
