@@ -54,6 +54,178 @@ const char* declineName(LpDecline reason) {
   return "unknown";
 }
 
+// Thresholds shared by both dtype tables. Named for the size they are, so a
+// table entry reads as the measured number it came from.
+constexpr size_t kNever = std::numeric_limits<size_t>::max();
+constexpr size_t k4p5Mib = (static_cast<size_t>(9) << 20) / 2;
+constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
+constexpr size_t k9Mib = static_cast<size_t>(9) << 20;
+constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
+constexpr size_t k13p5Mib = (static_cast<size_t>(27) << 20) / 2;
+constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
+constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
+constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
+
+// bf16 crossovers. 1.94x fewer wire bytes per element, so this is the later of
+// the two tables; 11 of 16 shapes pay. Full provenance in the header.
+size_t
+lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
+  if (nGroups <= 1) {
+    // Uncontended, measured across the full range. CO-RESIDENT JOBS LAND HERE:
+    // a parallel relay job is nGroups == 1, so these are also what several
+    // independent jobs sharing a node get, and they were measured with the node
+    // otherwise idle.
+    switch (coll) {
+      case LpCollective::AllReduce:
+        // A=4: 0.97x at 9 MB, 1.08x at 13.5 MB, then 1.19x-1.29x to 144 MB, so
+        // the crossover really is between 9 and 13.5 and 12 MiB sits in it.
+        //
+        // A=2 is the one shape with a genuine STALL rather than a threshold. It
+        // wins 1.09x-1.13x from 13.5 to 27 MB and then drops to 0.75x-0.92x for
+        // every larger size out to 144 MB. Profiling localized it: the same
+        // three transfers, same grid, 1.85x slower for 1.167x more bytes --
+        // effective bandwidth falling from ~125 to ~78 GB/s. Not the kernels
+        // (they scale at 1.23x), not the tile count (1 at the size it breaks),
+        // not chunk alignment (that fix moved every other troughed shape and
+        // not this one). fp32 enables this shape; see lpMinBytesFp32.
+        return nActiveRanksPerGroup == 4 ? k12Mib : kNever;
+      case LpCollective::AllGather:
+        // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4)
+        // and only A=4 loses at 4.5 MB. This is the earliest-paying collective
+        // here, same as in the fused table.
+        return k8Mib;
+      case LpCollective::ReduceScatter:
+        // A=2: 1.05x at 9 MB, 1.13x at 13.5 MB, up to 1.30x. 12 MiB.
+        //
+        // A=4 sits at 0.90x-1.07x through 40 MB and then holds 1.18x-1.27x
+        // across FIVE consecutive sizes from 63 MB to 144 MB. 60 MiB rather
+        // than 48: there is no data between 40 and 63 MB, and 31.5 MB reads
+        // 0.90x, so the threshold goes just below the first measured win
+        // instead of into the unmeasured gap.
+        return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
+      case LpCollective::AllToAll:
+        // A=4: flat 0.96x-0.97x through 13.5 MB, then 1.07x-1.17x from 27 MB.
+        //
+        // A=2 is the only shape that never wins at any size in either grouping,
+        // and it gets WORSE with size (0.95x-0.97x small, 0.88x at 135-144 MB),
+        // which is the opposite of every other shape here. Whatever it is, it
+        // is not a threshold. fp32 declines it too, for the same trend.
+        return nActiveRanksPerGroup == 4 ? k24Mib : kNever;
+    }
+    return kNever;
+  }
+
+  switch (coll) {
+    case LpCollective::AllReduce:
+      // A=2: 1.20x at 13.5 MB, 1.26x-1.30x above. A=4: 1.15x then 1.23x-1.28x.
+      return k12Mib;
+    case LpCollective::AllGather:
+      // A=2 pays earliest of anything measured, 1.14x already at 9 MB, so it
+      // gets the lower threshold. A=4: 1.30x at 13.5 MB up to 1.45x, still the
+      // largest win in the table.
+      return nActiveRanksPerGroup == 2 ? k8Mib : k12Mib;
+    case LpCollective::ReduceScatter:
+      // A=2: 1.17x at 13.5 MB rising to 1.42x, the best of the fused
+      // reductions.
+      //
+      // A=4 reaches 1.32x only at 63 MB, the top of the range it was tuned on,
+      // and a plateau at the edge of the data is not a crossover. fp32 at this
+      // same shape DOES cross cleanly, so this is a candidate for re-measuring
+      // rather than a settled no.
+      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
+    case LpCollective::AllToAll:
+      // A=2: 1.14x at 13.5 MB, 1.23x-1.33x above. A=4 reads 1.00x at 13.5 MB
+      // and 1.16x at 27 MB, and 27 MiB is also exactly where its XOR-relay
+      // route starts when fused (kXorRelayMinBytes) -- below that the call is a
+      // direct exchange and low precision would decline on route anyway, so the
+      // two gates agree by construction rather than by coincidence.
+      return nActiveRanksPerGroup == 2 ? k12Mib : k27Mib;
+  }
+  return kNever;
+}
+
+// fp32 crossovers. 3.88x fewer wire bytes per element -- twice bf16's saving --
+// so every threshold is at or below its bf16 counterpart and 15 of 16 shapes
+// pay. EVERY VALUE IS EXACTLY THE SMALLEST SIZE MEASURED TO WIN: the sweep
+// jumps 576 KB to 4.5 MB, so a 4.5 MiB entry means "wins at the first size in
+// the MB decade and the decade below is unmeasured", not "wins from 4.5 MiB".
+size_t
+lpMinBytesFp32(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
+  if (nGroups <= 1) {
+    switch (coll) {
+      case LpCollective::AllReduce:
+        // A=2 is ENABLED here and off for bf16. 1.09x at 4.5 MB and never below
+        // 1.19x after, out to 2.26x at 1 GB. The bf16 stall is still visible as
+        // VARIANCE -- 1.63x at 31.5 MB against 1.25x at 32 MB, non-monotonic in
+        // size -- but the 3.88x saving stays ahead of it at every size. This is
+        // not a claim that the stall was fixed.
+        //
+        // A=4: 1.02x at 4.5 MB is a tie, 1.21x at 9 MB is the first clear win.
+        return nActiveRanksPerGroup == 4 ? k9Mib : k4p5Mib;
+      case LpCollective::AllGather:
+        // Both widths win 1.14x at 4.5 MB, the earliest size measured, and rise
+        // to 2.04x (A=2) and 2.33x (A=4).
+        return k4p5Mib;
+      case LpCollective::ReduceScatter:
+        // A=2: 1.08x at 4.5 MB up to 2.31x.
+        //
+        // A=4 has the same profile as its bf16 twin -- 0.94x-1.03x through
+        // 40 MB, nothing in the 40-63 MB gap, then a step -- but fp32's step is
+        // to 1.89x-2.24x across six consecutive sizes.
+        //
+        // 60 MiB, the SAME value as bf16, and the one place this table does not
+        // use the first measured win (63 MB). Both dtypes' first win is that
+        // same point and there is no data in the 40-63 MB gap to separate them,
+        // so 63 MiB here would put fp32 above bf16 on identical evidence --
+        // breaking the ordering that makes the two tables comparable, to move a
+        // threshold by 5%.
+        return nActiveRanksPerGroup == 2 ? k4p5Mib : k60Mib;
+      case LpCollective::AllToAll:
+        // A=4: 1.02x at 9 MB, 1.18x at 13.5 MB, up to 1.90x.
+        //
+        // A=2 is the ONE fp32 exclusion. It peaks at 1.12x at 27 MB and falls
+        // back to 0.99x-1.02x from 63 MB up -- the same wrong-way-with-size
+        // trend as bf16 (0.88x-0.97x), shifted up by the extra saving. A
+        // min-bytes gate cannot express a band that closes again.
+        return nActiveRanksPerGroup == 4 ? k13p5Mib : kNever;
+    }
+    return kNever;
+  }
+
+  switch (coll) {
+    case LpCollective::AllReduce:
+      // A=2: 1.08x at 4.5 MB to 2.65x at 1 GB. A=4: 1.03x at 4.5 MB is
+      // break-even, 1.26x at 9 MB is the first clear win.
+      return nActiveRanksPerGroup == 4 ? k9Mib : k4p5Mib;
+    case LpCollective::AllGather:
+      // A=2: 1.14x at 4.5 MB up to 2.44x.
+      //
+      // A=4 reads 1.01x at 4.5 MB and 1.00x at 9 MB, then jumps to 1.92x at
+      // 13.5 MB -- a step, not a ramp. The SECOND of the two entries that take
+      // bf16's rounded-down value (12 MiB) instead of their own first measured
+      // win (13.5 MB): bf16 also reads 1.00x at 9 MB and also first wins at
+      // 13.5 MB, so the evidence is identical and fp32 sitting above bf16 on it
+      // would break the ordering the two tables are compared by.
+      return nActiveRanksPerGroup == 2 ? k4p5Mib : k12Mib;
+    case LpCollective::ReduceScatter:
+      // A=2: 1.09x at 4.5 MB up to 2.68x.
+      //
+      // A=4 is ENABLED here and off for bf16, which is the clearest case for
+      // splitting the table by dtype: identical flat ~1.00x through 40 MB in
+      // both, then bf16 manages 1.32x at one size at the edge of its range
+      // while fp32 holds 2.01x-2.63x across six. 60 MiB to match the
+      // single-group entry, for the reason given there.
+      return nActiveRanksPerGroup == 2 ? k4p5Mib : k60Mib;
+    case LpCollective::AllToAll:
+      // A=2: 1.08x at 4.5 MB up to 2.41x. A=4: 1.02x at 13.5 MB, 1.64x at
+      // 27 MB -- the same 27 MiB as bf16, and again exactly where the fused
+      // XOR-relay route starts, because the route gate does not depend on the
+      // wire format.
+      return nActiveRanksPerGroup == 2 ? k4p5Mib : k27Mib;
+  }
+  return kNever;
+}
+
 } // namespace
 
 // Tuning and provisioning only. There is deliberately no
@@ -105,7 +277,11 @@ bool lpCountsAligned(const size_t* counts, int nGroups, size_t alignElems) {
   return true;
 }
 
-size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
+size_t lpMinBytes(
+    LpCollective coll,
+    int nActiveRanksPerGroup,
+    int nGroups,
+    ncclDataType_t datatype) {
   // NCCL_SHARDED_RELAY_LP_MIN_KB overrides the crossover. This exists so the
   // crossover can be MEASURED: the built-in values below refuse most shapes
   // outright, and the gate declines before anything is timed, so without an
@@ -117,113 +293,24 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
   // -- never change what the wire format does. Read through NCCL_PARAM, which
   // caches on first read, so it has to be set before the first relay call; that
   // is the same contract every other knob here has.
+  //
+  // Deliberately dtype-INDEPENDENT: an override is a single number a human
+  // typed to move one gate out of the way, so making it mean two different
+  // things depending on the tensor would defeat the point.
   const int64_t minKb = ncclParamShardedRelayLpMinKb();
   if (minKb > 0) {
     return static_cast<size_t>(minKb) << 10;
   }
 
-  // MEASURED after the chunk-alignment fix, which changed the answer again: low
-  // precision now pays for ELEVEN of the sixteen (collective, width, grouping)
-  // shapes. It paid for two before the wavefront-absmax rewrite and seven
-  // before the alignment fix -- both of those were measuring stalls, not the
-  // wire format. The full table with provenance is in the header.
-  //
-  // Three shapes stay off, and none of them because low precision loses
-  // everywhere:
-  //
-  //  - reduce-scatter A=4, either grouping, sits at 0.98x-1.03x through 40 MB
-  //  and
-  //    only reaches 1.24x-1.32x at 63 MB, the TOP of the measured range. A
-  //    threshold at the edge of the data is a guess; it needs measuring past 72
-  //    MB.
-  //  - single-group allreduce A=2 wins 1.09x-1.14x from 13.5 MB to 27 MB, then
-  //    drops to 0.78x-0.92x from 31.5 MB up. A min-bytes gate cannot say "this
-  //    band only", and the alignment fix did NOT move it, so it is a separate
-  //    mechanism still being profiled.
-  //  - single-group all-to-all A=2 is the only shape that genuinely never wins:
-  //    0.91x-0.96x at every size, before and after every fix.
-  constexpr size_t kNever = std::numeric_limits<size_t>::max();
-  constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
-  constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
-  constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
-  constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
-  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
-
-  if (nGroups <= 1) {
-    // Uncontended, and now measured across the FULL size range (4.5 MB to 144
-    // MB) rather than from 13.5 MB up. That mattered: two thresholds were a
-    // size band too high, and one shape was off only because 72 MB had been the
-    // edge of the data.
-    //
-    // NOTE FOR ANYONE RETUNING: co-resident jobs land here too. A parallel
-    // relay job is nGroups == 1, so these thresholds are what several
-    // independent jobs sharing a node get, and they were measured with the node
-    // otherwise idle.
-    switch (coll) {
-      case LpCollective::AllReduce:
-        // A=4: 0.97x at 9 MB, 1.08x at 13.5 MB, then 1.19x-1.29x to 144 MB, so
-        // the crossover really is between 9 and 13.5 and 12 MiB sits in it.
-        //
-        // A=2 is the one shape with a genuine STALL rather than a threshold. It
-        // wins 1.09x-1.13x from 13.5 to 27 MB and then drops to 0.75x-0.92x for
-        // every larger size out to 144 MB. Profiling localized it: the same
-        // three transfers, same grid, 1.85x slower for 1.167x more bytes --
-        // effective bandwidth falling from ~125 to ~78 GB/s. Not the kernels
-        // (they scale at 1.23x), not the tile count (1 at the size it breaks),
-        // not chunk alignment (that fix moved every other troughed shape and
-        // not this one).
-        return nActiveRanksPerGroup == 4 ? k12Mib : kNever;
-      case LpCollective::AllGather:
-        // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4)
-        // and only A=4 loses at 4.5 MB. This is the earliest-paying collective
-        // here, same as in the fused table.
-        return k8Mib;
-      case LpCollective::ReduceScatter:
-        // A=2: 1.05x at 9 MB, 1.13x at 13.5 MB, up to 1.30x. 12 MiB.
-        //
-        // A=4 is ENABLED NOW, and only because the range was extended. It sits
-        // at 0.90x-1.07x through 40 MB and then holds 1.18x-1.27x across FIVE
-        // consecutive sizes from 63 MB to 144 MB. Previously 72 MB was the top
-        // of the sweep, so that plateau was two points at the edge of the data
-        // and declining it was the honest call; 135 and 144 MB confirm it. 60
-        // MiB rather than 48: there is no data between 40 and 63 MB, and 31.5
-        // MB reads 0.90x, so the threshold goes just below the first measured
-        // win instead of into the unmeasured gap.
-        return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
-      case LpCollective::AllToAll:
-        // A=4: flat 0.96x-0.97x through 13.5 MB, then 1.07x-1.17x from 27 MB.
-        //
-        // A=2 is the only shape that never wins at any size in either grouping,
-        // and it gets WORSE with size (0.95x-0.97x small, 0.88x at 135-144 MB),
-        // which is the opposite of every other shape here. Whatever it is, it
-        // is not a threshold.
-        return nActiveRanksPerGroup == 4 ? k24Mib : kNever;
-    }
-    return kNever;
-  }
-
-  switch (coll) {
-    case LpCollective::AllReduce:
-      // A=2: 1.20x at 13.5 MB, 1.26x-1.30x above. A=4: 1.15x then 1.23x-1.28x.
-      return k12Mib;
-    case LpCollective::AllGather:
-      // A=2 pays earliest of anything measured, 1.14x already at 9 MB, so it
-      // gets the lower threshold. A=4: 1.30x at 13.5 MB up to 1.45x, still the
-      // largest win in the table.
-      return nActiveRanksPerGroup == 2 ? k8Mib : k12Mib;
-    case LpCollective::ReduceScatter:
-      // A=2: 1.17x at 13.5 MB rising to 1.42x, the best of the fused
-      // reductions.
-      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
-    case LpCollective::AllToAll:
-      // A=2: 1.14x at 13.5 MB, 1.23x-1.33x above. A=4 reads 1.00x at 13.5 MB
-      // and 1.16x at 27 MB, and 27 MiB is also exactly where its XOR-relay
-      // route starts when fused (kXorRelayMinBytes) -- below that the call is a
-      // direct exchange and low precision would decline on route anyway, so the
-      // two gates agree by construction rather than by coincidence.
-      return nActiveRanksPerGroup == 2 ? k12Mib : k27Mib;
-  }
-  return kNever;
+  // Two independently measured tables. fp32 is the earlier one everywhere,
+  // because quantizing 4 bytes to 33/32 saves twice what quantizing 2 does.
+  // Anything else falls back to bf16, the more conservative table --
+  // unreachable in practice, since lpEligible() rejects unsupported dtypes
+  // before the size gate, but a wrong answer here would silently widen the
+  // policy.
+  return datatype == ncclFloat32
+      ? lpMinBytesFp32(coll, nActiveRanksPerGroup, nGroups)
+      : lpMinBytesBf16(coll, nActiveRanksPerGroup, nGroups);
 }
 
 bool lpEligible(const LpGateInputs& in) {
@@ -240,7 +327,7 @@ bool lpEligible(const LpGateInputs& in) {
     return false;
   }
   if (in.routeSizeBytes <
-      lpMinBytes(in.coll, in.nActiveRanksPerGroup, in.nGroups)) {
+      lpMinBytes(in.coll, in.nActiveRanksPerGroup, in.nGroups, in.datatype)) {
     lpRecordDecline(LpDecline::Size);
     return false;
   }
