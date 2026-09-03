@@ -426,18 +426,22 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
 
 // Pins the MEASURED policy. Without this, a refactor that widened low precision
 // back to every shape would look like an improvement and pass every other case
-// in this file -- while reintroducing the regressions the sweep measured, down
-// to 0.64x on the fused all-to-all at A=4.
+// in this file, while reintroducing the regressions the sweep measured.
 //
-// The provenance for every entry is the table in sharded_relay_lp.h. Update
-// both together, and only from a measurement.
+// It also pins the three deliberate EXCLUSIONS, which matter more than the
+// inclusions: each is off for a different reason, and two of them win at some
+// sizes. Someone reading only the ratios would reasonably switch them on.
+//
+// Provenance for every entry is the table in sharded_relay_lp.h. Update both
+// together, and only from a measurement.
 TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
   constexpr size_t kNever = std::numeric_limits<size_t>::max();
   constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
+  constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
+  constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
 
-  // Fused, i.e. contended: this is where halved wire bytes have a bandwidth
-  // term to shrink, and six of eight shapes win.
+  // ---- fused ----
   for (int g : {2, 4}) {
     EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g), k12Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g), k12Mib);
@@ -446,27 +450,32 @@ TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
     EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g), k12Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, g), k12Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g), k12Mib);
+    // Also exactly where the fused XOR-relay route starts, so the size gate and
+    // the route gate agree by construction rather than by coincidence.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g), k27Mib);
+  }
 
-    // Off because a minimum cannot express their shape, NOT because they lose
-    // everywhere. All-to-all A=4 reads 1.16x-1.19x from 27 MB but craters to
-    // 0.64x at 32 MB and 0.65x at 40 MB, inside that range. Reduce-scatter A=4
-    // only reaches 1.29x at 63 MB, the top of the measured range.
-    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g), kNever);
+  // ---- single group ----
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, 1), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1), k24Mib);
+
+  // ---- the three exclusions, each for its own reason ----
+
+  // Only reaches 1.24x-1.32x at 63 MB, the top of the measured range. Off
+  // because a threshold at the edge of the data is a guess, not because it
+  // loses.
+  for (int g : {1, 2, 4}) {
     EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, g), kNever);
   }
-
-  // Uncontended. One group leaves the links slack, so the quantize/dequantize
-  // passes are pure added cost, and most shapes dip through a 31.5-63 MB
-  // trough.
-  for (int a : {2, 4}) {
-    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, a, 1), kNever);
-    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, a, 1), kNever);
-    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, a, 1), kNever);
-  }
+  // Wins 1.09x-1.14x from 13.5 to 27 MB, then troughs to 0.78x-0.92x. A
+  // min-bytes gate cannot express a band, and the chunk-alignment fix did not
+  // move this one.
   EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1), kNever);
-  // The one exception, and it is an exception because it is monotone rather
-  // than troughed: 1.08x at 13.5 MB rising steadily to 1.30x at 72 MB.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1), k12Mib);
+  // The only shape that genuinely never wins: 0.91x-0.96x everywhere.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1), kNever);
 }
 
 TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {
