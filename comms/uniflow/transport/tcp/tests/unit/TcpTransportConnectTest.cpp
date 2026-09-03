@@ -385,7 +385,7 @@ TEST_F(TcpTransportConnectTest, RejectsPeerWithDifferentDeviceCount) {
   controller::TcpSocketConfig socketConfig;
   socketConfig.connTimeout = std::chrono::seconds{2};
   TcpTransportConfig config{socketConfig};
-  config.numSockets = 2;
+  config.numSocketsPerDevice = 2;
   // The device list is left empty, so this transport binds exactly one
   // endpoint. That is the case being contrasted against a peer that advertises
   // two.
@@ -414,8 +414,8 @@ TEST_F(TcpTransportConnectTest, RejectsPeerWithDifferentDeviceCount) {
   local->shutdown();
 }
 
-// numSockets below the device count would leave a bound listener with no lane.
-// Not covered here: reaching that guard requires two locally bound devices, so
-// it needs a host with two globally addressed NICs rather than a unit test.
+// There is no longer a guard for "fewer lanes than devices": lanes are counted
+// per device, so the product is always at least the device count and that state
+// is unreachable by construction.
 
 } // namespace uniflow

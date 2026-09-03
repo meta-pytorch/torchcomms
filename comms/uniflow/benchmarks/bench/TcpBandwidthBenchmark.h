@@ -26,12 +26,12 @@ class TcpBandwidthBenchmark : public Benchmark {
       std::string iface,
       std::optional<int> sockBufSize,
       bool asyncGetH2d = true,
-      size_t numSockets = 4,
+      size_t socketsPerNic = 4,
       std::vector<std::string> bindDevs = {})
       : iface_(std::move(iface)),
         sockBufSize_(sockBufSize),
         asyncGetH2d_(asyncGetH2d),
-        numSockets_(numSockets),
+        socketsPerNic_(socketsPerNic),
         bindDevs_(std::move(bindDevs)) {}
 
   std::string name() const override {
@@ -47,7 +47,8 @@ class TcpBandwidthBenchmark : public Benchmark {
   std::string iface_;
   std::optional<int> sockBufSize_;
   bool asyncGetH2d_{true};
-  size_t numSockets_{4};
+  // Lanes per bound device; total is this times the device count.
+  size_t socketsPerNic_{4};
   std::vector<std::string> bindDevs_;
 };
 

@@ -337,18 +337,6 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
   const auto handshakeTimeout = config_.socketConfig.connTimeout.value_or(
       std::chrono::seconds{kDefaultHandshakeTimeoutSeconds});
 
-  // The lane hello addresses lanes with a uint8_t.
-  constexpr size_t kMaxLanes = 255;
-  const size_t laneCount = std::max<size_t>(config_.numSockets, 1);
-  if (laneCount > kMaxLanes) {
-    state_ = TransportState::Error;
-    return Err(
-        ErrCode::InvalidArgument,
-        "tcp connect: numSockets " + std::to_string(laneCount) +
-            " exceeds the " + std::to_string(kMaxLanes) +
-            " lanes the hello can address");
-  }
-
   // Both peers derive lane-to-device placement from the lane index, so they
   // must agree on the device count. The dialer can check this up front because
   // the listener advertises one endpoint per device; catching it here gives a
@@ -364,13 +352,22 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
             " device endpoints, local is configured for " +
             std::to_string(localDevices) + "; both peers must agree");
   }
-  if (laneCount < localDevices) {
+
+  // Lanes are configured per device, so every device gets a full complement and
+  // no device can end up without a lane. It is the product that has to fit the
+  // uint16_t the hello addresses lanes with.
+  constexpr size_t kMaxLanes = 1024;
+  const size_t lanesPerDevice =
+      std::max<size_t>(config_.numSocketsPerDevice, 1);
+  const size_t laneCount = lanesPerDevice * localDevices;
+  if (laneCount > kMaxLanes) {
     state_ = TransportState::Error;
     return Err(
         ErrCode::InvalidArgument,
-        "tcp connect: numSockets " + std::to_string(laneCount) +
-            " is below the " + std::to_string(localDevices) +
-            " configured devices, so some device would carry no lane");
+        "tcp connect: numSocketsPerDevice " + std::to_string(lanesPerDevice) +
+            " across " + std::to_string(localDevices) + " devices is " +
+            std::to_string(laneCount) + " lanes, above the " +
+            std::to_string(kMaxLanes) + " the hello can address");
   }
 
   if (auto status = establishLanes(listener, peer, laneCount, handshakeTimeout);
@@ -585,8 +582,8 @@ Status TcpTransport::establishLanes(
       }
       if (exchangeHello) {
         TcpLaneHello hello;
-        hello.laneIndex = static_cast<uint8_t>(i);
-        hello.laneCount = static_cast<uint8_t>(laneCount);
+        hello.laneIndex = static_cast<uint16_t>(i);
+        hello.laneCount = static_cast<uint16_t>(laneCount);
         hello.sessionId = sessionId;
         // Named, so the buffer outlives the send rather than depending on
         // temporary lifetime across the future.
