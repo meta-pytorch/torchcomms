@@ -724,6 +724,79 @@ bool a2aA4LpPrepare(
   return true;
 }
 
+// The same three regions as a2aA4LpCarve(), at the pipelined schedule's
+// geometry. Only the helper region differs in shape: two ping-pong units per
+// relay TASK rather than a segment's worth of compact slots, and nGroups is
+// always 1 because that is the only shape that pipelines.
+//
+// No geometry predicate is needed. The schedule already rejects u == 0
+// outright, and u is a non-zero multiple of the chunk alignment, so the relay
+// tiles, the direct chunks and the tail are all whole numbers of wire blocks
+// once the count is. The diagonal's own chunking is irrelevant: those pieces
+// stay full precision.
+size_t a2aA4PipeLpRequiredBytes(
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  return a2aLpAlign(rcclx::relay::lpWireBytes(A * segmentCount)) +
+      a2aLpAlign((A - 1) * rcclx::relay::lpWireBytes(segmentCount)) +
+      a2aLpAlign(
+             static_cast<size_t>(tasksPerHelper) * 2 *
+             rcclx::relay::lpWireBytes(u));
+}
+
+A2aA4LpPlan a2aA4PipeLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+
+  A2aA4LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(A * segmentCount));
+  p.gatherRecv = carver.take((A - 1) * rcclx::relay::lpWireBytes(segmentCount));
+  p.helper[0] = carver.take(
+      static_cast<size_t>(tasksPerHelper) * 2 * rcclx::relay::lpWireBytes(u));
+  p.valid = carver.ok();
+  return p;
+}
+
+bool a2aA4PipeLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper,
+    A2aA4LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!a2aLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (a2aA4PipeLpRequiredBytes(segmentCount, u, nActiveRanks, tasksPerHelper) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = a2aA4PipeLpCarve(lease, segmentCount, u, nActiveRanks, tasksPerHelper);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
 } // namespace
 
 /**
@@ -1658,7 +1731,8 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     const ShardedRelayRankConfig* configs,
     int myActiveGroup,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t sc = segmentCounts[0];
   const int T = nTiles;
@@ -1688,15 +1762,72 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
       ((sc / static_cast<size_t>(T + 1)) / CHUNK_ALIGN_ELEMENTS) *
       CHUNK_ALIGN_ELEMENTS;
 
-  // Helper staging: two ping-pong units per task.
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Reached by every rank -- the u == 0 and task-build rejections above are the
+  // only earlier exits and both are pure functions of the geometry, so the
+  // ranks agree on them.
+  A2aA4LpPlan lpPlan{};
+  const bool lp = a2aA4PipeLpPrepare(
+      wantLp,
+      comm,
+      stream,
+      sc,
+      u,
+      cfg.nActiveRanks,
+      A4_RELAY_TASKS_PER_HELPER,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the whole send buffer, before the first group. Every
+  // off-diagonal segment is read from it across the T+1 groups and nothing is
+  // produced mid-call. The diagonal segment is included so a shadow offset is
+  // the same number as the caller-buffer offset; see A2aA4LpPlan.
+  if (lp && cfg.isActiveRank) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[0],
+        static_cast<size_t>(cfg.nActiveRanks) * sc,
+        stream);
+  }
+
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) + offsetElems * elementSize;
+  };
+
+  // Arrivals for SOURCE s go to its PACKED staging slot under low precision,
+  // and straight to recvBuff's segment s otherwise.
+  auto recvAt = [&](int s, size_t offsetElems) -> char* {
+    if (lp) {
+      const int mine = cfg.myActiveIndex;
+      const size_t packed = static_cast<size_t>((s < mine) ? s : s - 1);
+      return lpPlan.gatherRecv + wire.bytes(packed * sc + offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (static_cast<size_t>(s) * sc + offsetElems) * elementSize;
+  };
+
+  // Helper staging: two ping-pong units per task. Under low precision it comes
+  // from the arena in wire bytes; this helper is a pure passthrough and needs
+  // no relayout.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        static_cast<size_t>(A4_RELAY_TASKS_PER_HELPER) * 2 * u * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          static_cast<size_t>(A4_RELAY_TASKS_PER_HELPER) * 2 * u * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
 
@@ -1731,62 +1862,59 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     for (const A4RelayTask& task : tasks) {
       if (cfg.isActiveRank) {
         if (task.sourceIndex == m) {
-          const char* sendSegment = static_cast<const char*>(sendBuffs[0]) +
-              static_cast<size_t>(task.destIndex) * sc * elementSize;
+          const size_t segBase = static_cast<size_t>(task.destIndex) * sc;
           if (k < T) {
             NCCLCHECK(ncclSend(
-                sendSegment + static_cast<size_t>(k) * u * elementSize,
-                u,
-                datatype,
+                sendFrom(segBase + static_cast<size_t>(k) * u),
+                wire.count(u),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
           }
           NCCLCHECK(ncclSend(
-              sendSegment + directOffset * elementSize,
-              directSize,
-              datatype,
+              sendFrom(segBase + directOffset),
+              wire.count(directSize),
+              wire.dtype,
               cfg.activeRanks[task.destIndex],
               comm,
               stream));
         }
         if (task.destIndex == m) {
-          char* recvSegment = static_cast<char*>(recvBuffs[0]) +
-              static_cast<size_t>(task.sourceIndex) * sc * elementSize;
           if (k > 0) {
             NCCLCHECK(ncclRecv(
-                recvSegment + static_cast<size_t>(k - 1) * u * elementSize,
-                u,
-                datatype,
+                recvAt(task.sourceIndex, static_cast<size_t>(k - 1) * u),
+                wire.count(u),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
           }
           NCCLCHECK(ncclRecv(
-              recvSegment + directOffset * elementSize,
-              directSize,
-              datatype,
+              recvAt(task.sourceIndex, directOffset),
+              wire.count(directSize),
+              wire.dtype,
               cfg.activeRanks[task.sourceIndex],
               comm,
               stream));
         }
       } else if (task.helperIndex == cfg.myHelperIndex) {
         char* slotBase =
-            hbuff + static_cast<size_t>(task.helperSlot) * 2 * u * elementSize;
+            hbuff + wire.bytes(static_cast<size_t>(task.helperSlot) * 2 * u);
         if (k < T) {
           NCCLCHECK(ncclRecv(
-              slotBase + static_cast<size_t>(k % 2) * u * elementSize,
-              u,
-              datatype,
+              slotBase + wire.bytes(static_cast<size_t>(k % 2) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[task.sourceIndex],
               comm,
               stream));
         }
         if (k > 0) {
           NCCLCHECK(ncclSend(
-              slotBase + static_cast<size_t>((k - 1) % 2) * u * elementSize,
-              u,
-              datatype,
+              slotBase + wire.bytes(static_cast<size_t>((k - 1) % 2) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[task.destIndex],
               comm,
               stream));
@@ -1794,6 +1922,30 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
       }
     }
     NCCLCHECK(ncclGroupEnd());
+  }
+
+  // =========================================================================
+  // LOW PRECISION: land the A-1 foreign segments
+  // =========================================================================
+  // One launch per foreign segment, after the last group rather than per tile:
+  // the relay tiles and the direct chunks a segment receives are disjoint and
+  // together cover it. The diagonal has no staging slot and keeps its self-pair
+  // copies.
+  if (lp && cfg.isActiveRank) {
+    const int mine = cfg.myActiveIndex;
+    for (int s = 0; s < cfg.nActiveRanks; s++) {
+      if (s == mine) {
+        continue;
+      }
+      const size_t packed = static_cast<size_t>((s < mine) ? s : s - 1);
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          static_cast<char*>(recvBuffs[0]) +
+              static_cast<size_t>(s) * sc * elementSize,
+          lpPlan.gatherRecv + wire.bytes(packed * sc),
+          sc,
+          stream);
+    }
   }
 
   return ncclSuccess;
@@ -2064,10 +2216,10 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
         rcclx::relay::relayMaxCount(segmentCounts, nGroups),
         elementSize);
 
-    // Only the non-pipelined A=4 relay carries the wire format so far, so a
-    // pipelined call is reported to the gate as "no LP-capable route selected"
-    // and lands in the Route decline counter rather than declining silently.
-    // Safe because the tile count is a pure function of the counts.
+    // Both A=4 relay schedules carry the wire format. The remaining route,
+    // PureDirect, is excluded by the gate on purpose: it stages nothing through
+    // a helper, so there is no boundary-crossing volume for the wire format to
+    // shrink.
     bool wantLpA4 = false;
     if (lowPrecision != 0) {
       wantLpA4 = rcclx::relay::lpEligible(allToAllLpGate(
@@ -2076,7 +2228,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
           nGroups,
           nActiveRanksPerGroup,
           elementSize,
-          nTiles == 1,
+          /*relayRouteSelected=*/true,
           rcclx::relay::kLpBlockElems));
     }
 
@@ -2090,7 +2242,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
                            configs,
                            myActiveGroup,
                            nTiles,
-                           elementSize)
+                           elementSize,
+                           wantLpA4)
                      : shardedRelayAllToAllA4XorRelay(
                            sendBuffs2,
                            recvBuffs2,
