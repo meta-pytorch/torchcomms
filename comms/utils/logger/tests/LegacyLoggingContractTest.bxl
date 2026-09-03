@@ -16,7 +16,9 @@ def _scope_source_fragment(scope: str) -> str:
     relative_path = scope[len(_SCOPE_LABEL_PREFIX) : -len(_SCOPE_LABEL_SUFFIX)]
     return "//{}/".format(relative_path)
 
-_SCOPES = [scope for scope, _ in _SCOPE_CONFIGS]
+_SCOPES = [scope for scope, _ in _SCOPE_CONFIGS] + [
+    "fbcode//comms/utils/logger:comms_logging",
+]
 _SCOPE_SOURCE_FRAGMENTS = [fragment for _, fragment in _SCOPE_CONFIGS]
 
 _SOURCE_EXTENSIONS = (
@@ -101,6 +103,12 @@ _FOLLY_LOGGING_SYMBOL = regex(
 )
 _FOLLY_LOGGING_INCLUDE = regex(
     '^[ \\t]*#[ \\t]*include[ \\t]*[<"]folly/logging/.*',
+)
+_LEGACY_COMPATIBILITY_TARGETS = (
+    "fbcode//comms/utils/logger:log_utils",
+    "fbcode//comms/utils/logger:logger",
+    "fbcode//comms/utils/logger:logging_format",
+    "fbcode//comms/utils/logger:nccl_writer_wrapper",
 )
 
 def _is_identifier_character(character: str) -> bool:
@@ -205,8 +213,8 @@ def _strip_non_code_line(line: str, in_block_comment: bool = False, raw_terminat
         escaped,
     )
 
-def _is_folly_logging_dependency(label: str) -> bool:
-    return "//folly/logging:" in label
+def _is_legacy_logging_dependency(label: str) -> bool:
+    return "//folly/logging:" in label or label in _LEGACY_COMPATIBILITY_TARGETS
 
 def _contains_folly_logging_include(line: str, starts_in_literal: bool) -> bool:
     return not starts_in_literal and _FOLLY_LOGGING_INCLUDE.match(line)
@@ -222,19 +230,19 @@ def _is_scoped_source(path: str) -> bool:
     for source_fragment in _SCOPE_SOURCE_FRAGMENTS:
         if source_fragment in path:
             return True
-    return False
+    return path.endswith("/comms/utils/logger/CommsLogging.cc") or path.endswith("/comms/utils/logger/CommsLogging.h")
 
 def _check_direct_dependencies(ctx: bxl.Context) -> None:
     violations = {}
     for scope in _SCOPES:
         for dependency in ctx.uquery().deps(scope, 1):
             dependency_label = str(dependency.label)
-            if _is_folly_logging_dependency(dependency_label):
+            if _is_legacy_logging_dependency(dependency_label):
                 violations[dependency_label] = True
 
     if violations:
         fail(
-            "Migrated comms targets must not depend directly on Folly logging:\n" + "\n".join(sorted(violations.keys())),
+            "Migrated comms targets must not depend directly on legacy logging:\n" + "\n".join(sorted(violations.keys())),
         )
 
 def _check_source_content(ctx: bxl.Context) -> None:
@@ -440,10 +448,14 @@ def _validate_detector() -> None:
     if _contains_folly_logging_include(include_string, False):
         fail("Folly include detector rejected a string literal")
 
-    if not _is_folly_logging_dependency("fbcode//folly/logging:logging"):
+    if not _is_legacy_logging_dependency("fbcode//folly/logging:logging"):
         fail("Folly dependency detector missed its positive control")
-    if _is_folly_logging_dependency("fbcode//folly:format"):
+    if not _is_legacy_logging_dependency("fbcode//comms/utils/logger:logging_format"):
+        fail("Compatibility dependency detector missed its positive control")
+    if _is_legacy_logging_dependency("fbcode//folly:format"):
         fail("Folly dependency detector rejected a non-logging target")
+    if _is_legacy_logging_dependency("fbcode//comms/utils/logger:comms_logging"):
+        fail("Compatibility dependency detector rejected the native target")
 
 def _audit_legacy_logging(ctx: bxl.Context) -> None:
     _validate_detector()

@@ -10,7 +10,7 @@
 
 #include "comms/utils/Conversion.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 
 // Base case
 template <typename... ErrorCodes>

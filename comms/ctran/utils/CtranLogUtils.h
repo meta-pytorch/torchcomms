@@ -6,8 +6,8 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LogTypes.h"
-#include "comms/utils/logger/LoggingFormat.h"
 
 #define CTRAN_LOG_SUBSYS(level, subsys, ...)            \
   CTRAN_LOG_IF(                                         \
