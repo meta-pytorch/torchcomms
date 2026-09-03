@@ -26,6 +26,11 @@ namespace uniflow::controller {
 /// Socket configuration for TcpServer and TcpClient.
 /// Optional fields: valued → setsockopt, nullopt → OS kernel default.
 /// Default-constructed with production-tuned values.
+///
+/// Applied identically to accepted and client-side connections by
+/// applySocketConfig. connTimeout is the one field that does not fall through
+/// to the OS on nullopt: it backs SO_SNDTIMEO/SO_RCVTIMEO, which default to 30s
+/// so that an unresponsive peer cannot wedge a blocking recv forever.
 struct TcpSocketConfig {
   std::optional<std::chrono::seconds> connTimeout{std::chrono::seconds{30}};
   std::optional<int> socketBufSize{1 << 20}; // 1MB
@@ -232,14 +237,13 @@ struct AsyncAccept {
 
  private:
   // All private methods run on the loop thread only.
-  void acceptPendingConnections(std::atomic<int>& listenSock);
+  void acceptPendingConnections(
+      std::atomic<int>& listenSock,
+      const TcpSocketConfig& config);
   void teardown(int fd);
 
   EventBase& evb_;
   bool accepting_{false}; // loop-thread-only
-  // Buffer sizing for sockets accepted on the loop thread. Copied rather than
-  // referenced because accept() returns before acceptPendingConnections runs.
-  std::optional<int> socketBufSize_; // loop-thread-only
   std::queue<std::unique_ptr<Conn>> readyConns_;
   std::queue<std::promise<std::unique_ptr<Conn>>> pendingPromises_;
 };
