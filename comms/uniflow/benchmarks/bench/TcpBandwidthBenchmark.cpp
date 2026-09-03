@@ -431,6 +431,23 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   // With striping the transport binds one listener per device and resolves each
   // device's address itself, so the address advertised for endpoint 0 must be
   // the one belonging to the first device rather than to --tcp-iface.
+  // With no --tcp-iface, discover the same NICs MultiTransport would rather
+  // than leaving egress to the routing table. Without this the default run
+  // measures one routing-chosen NIC and reports it as what the default
+  // configuration delivers, which is not what any caller going through
+  // MultiTransport actually gets.
+  if (bindDevs_.empty()) {
+    bindDevs_ = enumerateFrontendDevices(
+        std::string(::uniflow::kDefaultFrontendDevicePrefix),
+        ::uniflow::kDefaultMaxFrontendDevices);
+    if (bindDevs_.empty()) {
+      UNIFLOW_LOG_WARN(
+          "TcpBandwidthBenchmark: no usable '{}' device found; leaving egress "
+          "to the routing table",
+          ::uniflow::kDefaultFrontendDevicePrefix);
+    }
+  }
+
   const std::string addrDevice = bindDevs_.empty() ? iface_ : bindDevs_.front();
   const std::string host = getInterfaceIpv6(addrDevice);
   if (host.empty()) {

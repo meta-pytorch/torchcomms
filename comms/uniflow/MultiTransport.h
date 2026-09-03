@@ -63,14 +63,17 @@ struct MultiTransportFactoryOptions {
   // compile where the transport is not built. The struct layout stays
   // platform-independent this way, so callers need no #ifdef to leave it unset.
   std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
-  // Frontend NIC name prefix for TCP lane striping. Devices are discovered by
+  // Frontend NIC name prefix for TCP lane striping. Must match
+  // kDefaultFrontendDevicePrefix in TcpTransport.h, which owns the discovery;
+  // this header cannot include that one (see tcpTransportConfig above), so the
+  // value is repeated rather than shared. Devices are discovered by
   // name because link speed does not distinguish them -- every candidate here
   // is 200G -- and the backend fabric (beth*) is addressed identically; "eth"
   // is the frontend convention.
   std::string tcpDevicePrefix{"eth"};
-  // How many discovered devices to stripe across, lowest name first. Two
-  // saturates the measured path (~38 GB/s against ~22 for one); past that the
-  // receive-side H2D copy rather than NIC count appears to bind.
+  // How many discovered devices to stripe across, lowest name first. Two is
+  // enough to saturate the measured path; past that the receive-side H2D copy
+  // rather than NIC count appears to bind.
   size_t tcpMaxDevices{2};
 };
 

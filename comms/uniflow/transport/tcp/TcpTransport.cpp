@@ -9,9 +9,15 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -22,6 +28,98 @@
 #include "comms/uniflow/transport/tcp/TcpWireProtocol.h"
 
 namespace uniflow {
+
+// Frontend data NICs to stripe TCP lanes across, one port per card where
+// possible.
+//
+// Candidates are found by name prefix because nothing else separates them:
+// every eth port here is a 200G link that is up, so speed carries no signal,
+// and the backend fabric (beth*) is addressed exactly like the frontend.
+//
+// Selection then spreads across PCI cards rather than taking the first two
+// names, because a name sort always lands on a single card: the two ports of
+// one card are adjacent in the numbering, being functions .0 and .1 of one PCI
+// device.
+//
+// Both ports of a card share its upstream bandwidth, and that shows up as a
+// ceiling rather than as a fixed cost: no single-card pair beat the best
+// two-card pairs, while half the two-card pairs beat every single-card one, and
+// the medians differ little and overlap. Spreading removes a cap rather than
+// reliably buying a fixed gain.
+//
+// When only one card is present its second port is used: a second port on the
+// same card is worth far more than no second port at all.
+//
+// Order is deterministic -- cards by PCI address, ports by name -- because lane
+// i maps to device i on both peers, so an unstable order would pair a different
+// physical port from one run to the next.
+//
+// Usability is delegated to deviceGlobalIpv6 rather than re-derived: it already
+// applies the address-flag rules, and it is what bind() will call for the
+// address, so discovery cannot disagree with what actually gets bound.
+std::vector<std::string> enumerateFrontendDevices(
+    const std::string& prefix,
+    size_t maxDevices) {
+  std::map<std::string, std::set<std::string>> byCard;
+  std::error_code ec;
+  std::filesystem::directory_iterator it("/sys/class/net", ec);
+  if (ec) {
+    return {};
+  }
+  for (const auto& entry : it) {
+    const std::string dev = entry.path().filename().string();
+    if (dev.rfind(prefix, 0) != 0) {
+      continue;
+    }
+    std::ifstream st("/sys/class/net/" + dev + "/operstate");
+    std::string state;
+    if (!st.is_open() || !(st >> state) || state != "up") {
+      continue;
+    }
+    if (!controller::deviceGlobalIpv6(dev)) {
+      continue;
+    }
+    // The PCI function identifies the port, so drop it: the remaining
+    // domain:bus:device is the card whose bandwidth the ports share.
+    std::string card;
+    const auto link =
+        std::filesystem::read_symlink("/sys/class/net/" + dev + "/device", ec);
+    if (!ec) {
+      card = link.filename().string();
+      const auto dot = card.rfind('.');
+      if (dot != std::string::npos) {
+        card.resize(dot);
+      }
+    }
+    if (card.empty()) {
+      // Topology unreadable; treating it as its own card spreads rather than
+      // stacks, which is the safer guess.
+      card = dev;
+    }
+    byCard[card].insert(dev);
+  }
+
+  std::vector<std::string> devices;
+  for (size_t round = 0; devices.size() < maxDevices; ++round) {
+    bool tookAny = false;
+    for (const auto& [card, ports] : byCard) {
+      if (ports.size() <= round) {
+        continue;
+      }
+      auto port = ports.begin();
+      std::advance(port, round);
+      devices.push_back(*port);
+      tookAny = true;
+      if (devices.size() == maxDevices) {
+        break;
+      }
+    }
+    if (!tookAny) {
+      break;
+    }
+  }
+  return devices;
+}
 
 namespace {
 // Fallback when TcpSocketConfig::connTimeout is unset.
