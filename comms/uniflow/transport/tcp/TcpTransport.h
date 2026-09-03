@@ -32,6 +32,24 @@ class TcpRemoteRegistrationHandle;
 /// Transport-local behavior plus the controller's socket configuration.
 /// The converting constructor preserves existing callsites that pass a bare
 /// TcpSocketConfig as the transport/factory constructor argument.
+/// Defaults for frontend NIC discovery. Kept with the transport that consumes
+/// them so MultiTransport and anything building a TcpTransportFactory directly
+/// stripe across the same NICs.
+inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
+inline constexpr size_t kDefaultMaxFrontendDevices = 2;
+
+/// Frontend data NICs to stripe lanes across, lowest name first and one port
+/// per PCI card before taking a second port from any card. Only devices that
+/// are up and carry a usable global address are returned.
+///
+/// Leaving TcpTransportConfig::bindToDevices empty means no binding at all, so
+/// egress falls to the routing table and lands on one NIC. MultiTransport calls
+/// this to fill that in; it is declared here so a caller bypassing
+/// MultiTransport shares the selection instead of re-deriving and drifting.
+std::vector<std::string> enumerateFrontendDevices(
+    const std::string& prefix,
+    size_t maxDevices);
+
 struct TcpTransportConfig {
   controller::TcpSocketConfig socketConfig{};
   bool asyncGetH2d{true};
@@ -41,11 +59,10 @@ struct TcpTransportConfig {
   // complement rather than the connection's lanes being divided among them.
   //
   // One TCP connection is bounded by what a single sender thread can push, so
-  // more lanes are the only way past that. Measured on MI350/eth2, 4 MiB get:
-  // 10.78 GB/s at 1 lane, 15.81 at 2, 23.14 at 4, and 23.10 at 8 -- 4 reaches
-  // 99.5% of the 23.25 GB/s NIC ceiling and 8 adds threads for nothing, which
-  // is why 4 is the default. That ceiling is per NIC, which is what makes
-  // per-device the right unit.
+  // more lanes are the only way past that. Throughput scales with lane count
+  // until a NIC saturates; past that extra lanes only add threads, which is why
+  // 4 is the default. That ceiling is per NIC, which is what makes per-device
+  // the right unit.
   //
   // Both peers must agree, and so must their device counts: above 1 total lane
   // the lanes exchange a TcpLaneHello, so a peer defaulting to 4 cannot talk to
@@ -64,23 +81,20 @@ struct TcpTransportConfig {
   /// lane-to-device mapping from the lane index alone.
   ///
   /// numSocketsPerDevice applies to each device, so striping does not dilute
-  /// the per-NIC lane count: the default 4 gives 8 lanes across 2 devices,
-  /// which is what reaches ~35 GB/s. Splitting 4 lanes total across 2 devices
-  /// reaches only 27.6 GB/s, leaving both NICs half-fed -- the configuration
-  /// this per-device unit exists to make unreachable.
+  /// the per-NIC lane count: the default 4 gives 8 lanes across 2 devices.
+  /// Dividing a fixed lane total across devices instead leaves every NIC
+  /// half-fed -- the configuration this per-device unit exists to make
+  /// unreachable.
   ///
-  /// Only worth enabling for large transfers. Measured on MI350, get, median of
-  /// 3, 2 devices against 1: 1.00x at 8 MiB, 1.45x at 16 MiB, 1.63x at 64 MiB.
-  /// At 1-4 MiB the path is latency-bound and striping is neutral to slightly
-  /// negative.
+  /// Only worth enabling for large transfers. Small transfers are latency-bound
+  /// rather than bandwidth-bound, where striping is neutral to slightly
+  /// negative; the gain grows with transfer size.
   ///
-  /// Pairing two ports on one PCI card measured the same as two ports on
-  /// separate cards (34.0 against 34.7-35.4 GB/s at 8 lanes, 64 MiB), even
-  /// though raw iperf3 on this hardware shows a clear card limit. This path
-  /// tops out around 276 Gbit/s, under the ~289 Gbit/s a single card sustains,
-  /// so the card is not yet the binding constraint -- the receive-side H2D copy
-  /// is, at roughly 73% of wire time. Card affinity starts to matter once that
-  /// is fixed.
+  /// Pairing two ports on one PCI card measured no worse than two ports on
+  /// separate cards, even though raw iperf3 on this hardware shows a clear card
+  /// limit: this path does not yet reach what a single card sustains, so the
+  /// card is not the binding constraint. The receive-side H2D copy is, and card
+  /// affinity starts to matter once that is fixed.
   ///
   /// Device names are per-host and need not match between peers: the same
   /// physical port is eth3 on one MI350 host and eth0 on the next.
@@ -1051,10 +1065,10 @@ class TcpTransport : public Transport {
   // Half the usable pool, not all of it. A wave sized to the whole pool cannot
   // begin staging until the previous one has drained completely, because its
   // all-or-nothing acquire needs every slab back, so staging never overlaps
-  // transmit. Halving it keeps a wave's worth of slabs free for the next wave
-  // and measured +56% to +88% on GB-scale puts -- about 11 to 20 GB/s at the
-  // default tx depth -- with no change in pinned memory. The ratio is what
-  // matters, not the constant: this stays correct if the pool size changes.
+  // transmit. Halving it keeps a wave's worth of slabs free for the next wave,
+  // which measured a large gain on GB-scale puts at no cost in pinned memory.
+  // The ratio is what matters, not the constant: this stays correct if the pool
+  // size changes.
   static constexpr size_t kMaxPutWaveChunks =
       (kStagingSlabCount - kStagingSlabsReservedForReader) / 2;
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
