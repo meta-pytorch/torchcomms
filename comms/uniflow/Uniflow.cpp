@@ -52,6 +52,16 @@ UniflowAgent::UniflowAgent(
   }
 }
 
+UniflowAgent::~UniflowAgent() noexcept {
+  shutdown();
+}
+
+void UniflowAgent::shutdown() noexcept {
+  if (server_) {
+    server_->shutdown();
+  }
+}
+
 Result<std::string> UniflowAgent::getUniqueId() const {
   if (!server_) {
     return Err(ErrCode::InvalidArgument, "no server configured");

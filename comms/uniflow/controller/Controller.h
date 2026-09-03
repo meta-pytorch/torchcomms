@@ -92,6 +92,11 @@ class Server {
   virtual const std::string& getId() const = 0;
 
   [[nodiscard]] virtual std::future<std::unique_ptr<Conn>> accept() = 0;
+
+  /// Interrupt any blocked accept(). Every pending or subsequent accept()
+  /// future must become ready with nullptr. Thread-safe with accept(),
+  /// idempotent, and non-throwing.
+  virtual void shutdown() noexcept = 0;
 };
 
 class Client {
