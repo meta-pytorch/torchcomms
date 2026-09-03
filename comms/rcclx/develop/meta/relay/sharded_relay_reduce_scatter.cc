@@ -1650,6 +1650,83 @@ bool rsFlatLpPrepare(
   return true;
 }
 
+// The same four regions as rsFlatLpCarve(), at the pipelined schedule's
+// geometry. Only the helper region differs in shape: the pipelined helper holds
+// two ping-pong buffers of A*(A-1) slots of one tile each, rather than one
+// A*(A-1) set of full slices, and nGroups is always 1 because that is the only
+// shape that pipelines.
+//
+// No geometry predicate is needed. The schedule already rejects w == 0
+// outright, and w is a non-zero multiple of the chunk alignment, so every
+// offset it derives
+// -- direct piece, offload tile, helper slot -- is a whole number of wire
+// blocks once the count is.
+size_t rsFlatPipeLpRequiredBytes(
+    size_t recvcount,
+    size_t directSz,
+    size_t offloadTotal,
+    size_t w,
+    int nActiveRanks) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  return rsLpAlign(rcclx::relay::lpWireBytes(A * recvcount)) +
+      rsLpAlign(rcclx::relay::lpWireBytes((A - 1) * directSz)) +
+      rsLpAlign(rcclx::relay::lpWireBytes(offloadTotal)) +
+      rsLpAlign(rcclx::relay::lpWireBytes(2 * A * (A - 1) * w));
+}
+
+RsFlatLpPlan rsFlatPipeLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    size_t recvcount,
+    size_t directSz,
+    size_t offloadTotal,
+    size_t w,
+    int nActiveRanks) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+
+  RsFlatLpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(A * recvcount));
+  p.directRecv = carver.take(rcclx::relay::lpWireBytes((A - 1) * directSz));
+  p.offloadRecv = carver.take(rcclx::relay::lpWireBytes(offloadTotal));
+  p.helper[0] = carver.take(rcclx::relay::lpWireBytes(2 * A * (A - 1) * w));
+  p.valid = carver.ok();
+  return p;
+}
+
+bool rsFlatPipeLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    size_t recvcount,
+    size_t directSz,
+    size_t offloadTotal,
+    size_t w,
+    int nActiveRanks,
+    RsFlatLpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!rsLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (rsFlatPipeLpRequiredBytes(
+          recvcount, directSz, offloadTotal, w, nActiveRanks) > lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = rsFlatPipeLpCarve(
+      lease, recvcount, directSz, offloadTotal, w, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
 } // namespace
 
 /**
@@ -3124,7 +3201,8 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     int numHelpers,
     int nActiveRanksPerGroup,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t rc = recvCounts[0];
   const int A = nActiveRanksPerGroup;
@@ -3151,6 +3229,38 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     return (k < T) ? heavy : (directSz - directOffset(T));
   };
 
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Reached by every rank -- the w == 0 rejection above is the only earlier
+  // exit and it is a pure function of the count, so the ranks agree on it.
+  RsFlatLpPlan lpPlan{};
+  const bool lp = rsFlatPipeLpPrepare(
+      wantLp, comm, stream, rc, directSz, offloadTotal, w, A, &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the whole send buffer, before the first group. Every send
+  // in the pipeline reads a foreign block of it and none is produced mid-call,
+  // so per-tile quantizes would cost T launches for nothing. The own block is
+  // included so a shadow offset is the same number as the caller-buffer offset;
+  // see RsFlatLpPlan.
+  if (lp && myActiveGroup == 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[0],
+        static_cast<size_t>(A) * rc,
+        stream);
+  }
+
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) + offsetElems * elementSize;
+  };
+
   // Active-rank scratch, both mirroring the flat path so the closing reduction
   // is identical: dScratch holds the A-1 peer contributions to my direct
   // region, one contiguous directSz block each; oScratch mirrors my output's
@@ -3164,42 +3274,64 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     isInPlace =
         (static_cast<const void*>(recvBuffs[0]) ==
          static_cast<const void*>(ownBlock));
-    dScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS,
-        static_cast<size_t>(A - 1) * directSz * elementSize,
-        stream);
-    oScratch = ScratchBufferCache::getInstance().get(
-        0, offloadTotal * elementSize, stream);
-    if (dScratch == nullptr || oScratch == nullptr) {
-      return ncclInternalError;
+    // Under low precision the arrivals are wire bytes, so lpPlan.directRecv and
+    // lpPlan.offloadRecv stage them instead, in the same two orderings.
+    if (!lp) {
+      dScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS,
+          static_cast<size_t>(A - 1) * directSz * elementSize,
+          stream);
+      oScratch = ScratchBufferCache::getInstance().get(
+          0, offloadTotal * elementSize, stream);
+      if (dScratch == nullptr || oScratch == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
+
+  auto directAt = [&](size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.directRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(dScratch) + offsetElems * elementSize;
+  };
+
+  auto offloadAt = [&](size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.offloadRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(oScratch) + offsetElems * elementSize;
+  };
 
   // Helper staging: one slot per (owner, contributing source) per ping-pong
   // buffer. Laid out buffer-major so that for a fixed buffer and owner the A-1
   // contributions are contiguous with stride w, which is what the fused
-  // multi-input reduce below requires.
+  // multi-input reduce below requires -- and, under low precision, what lets
+  // the reduce-and-requantize kernel read them from one base.
   char* hbuff = nullptr;
   const size_t slotsPerBuf = static_cast<size_t>(A) * (A - 1);
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase, 2 * slotsPerBuf * w * elementSize, stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase, 2 * slotsPerBuf * w * elementSize, stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
   auto helperSlot = [&](int owner, int t, int k) -> char* {
     return hbuff +
-        ((static_cast<size_t>(k % 2) * slotsPerBuf +
-          static_cast<size_t>(owner) * (A - 1) + static_cast<size_t>(t)) *
-         w) *
-        elementSize;
+        wire.bytes(
+            (static_cast<size_t>(k % 2) * slotsPerBuf +
+             static_cast<size_t>(owner) * (A - 1) + static_cast<size_t>(t)) *
+            w);
   };
 
   for (int k = 0; k <= T; k++) {
     NCCLCHECK(ncclGroupStart());
     if (cfg.isActiveRank) {
-      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
       const int m = cfg.myActiveIndex;
       const size_t dOff = directOffset(k);
       const size_t dSz = directSize(k);
@@ -3235,10 +3367,9 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
         }
         for (int i = 0; i < dN; i++) {
           NCCLCHECK(ncclSend(
-              sendbuff +
-                  (static_cast<size_t>(j) * rc + dPieceOff(i)) * elementSize,
-              dPieceSz(i),
-              datatype,
+              sendFrom(static_cast<size_t>(j) * rc + dPieceOff(i)),
+              wire.count(dPieceSz(i)),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -3252,13 +3383,12 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
               continue;
             }
             NCCLCHECK(ncclSend(
-                sendbuff +
-                    (static_cast<size_t>(j) * rc + directSz +
-                     static_cast<size_t>(h) * tileStride +
-                     static_cast<size_t>(k) * w) *
-                        elementSize,
-                w,
-                datatype,
+                sendFrom(
+                    static_cast<size_t>(j) * rc + directSz +
+                    static_cast<size_t>(h) * tileStride +
+                    static_cast<size_t>(k) * w),
+                wire.count(w),
+                wire.dtype,
                 cfg.helperRanks[h],
                 comm,
                 stream));
@@ -3272,11 +3402,9 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
         const int p = (s < m) ? s : s - 1;
         for (int i = 0; i < dN; i++) {
           NCCLCHECK(ncclRecv(
-              static_cast<char*>(dScratch) +
-                  (static_cast<size_t>(p) * directSz + dPieceOff(i)) *
-                      elementSize,
-              dPieceSz(i),
-              datatype,
+              directAt(static_cast<size_t>(p) * directSz + dPieceOff(i)),
+              wire.count(dPieceSz(i)),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -3287,12 +3415,11 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
         // it.
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclRecv(
-              static_cast<char*>(oScratch) +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k - 1) * w) *
-                      elementSize,
-              w,
-              datatype,
+              offloadAt(
+                  static_cast<size_t>(h) * tileStride +
+                  static_cast<size_t>(k - 1) * w),
+              wire.count(w),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -3310,8 +3437,8 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
             const int t = (s < j) ? s : s - 1;
             NCCLCHECK(ncclRecv(
                 helperSlot(j, t, k),
-                w,
-                datatype,
+                wire.count(w),
+                wire.dtype,
                 cfg.activeRanks[s],
                 comm,
                 stream));
@@ -3322,8 +3449,8 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
         for (int j = 0; j < A; j++) {
           NCCLCHECK(ncclSend(
               helperSlot(j, 0, k - 1),
-              w,
-              datatype,
+              wire.count(w),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -3333,10 +3460,20 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     NCCLCHECK(ncclGroupEnd());
 
     // Sum this tile's A-1 contributions per owner, before the next group ships
-    // them. No divisor here: the owner applies it once at the end.
+    // them. No divisor here: the owner applies it once at the end, because this
+    // region does have an active-side closing reduce to defer it to. See
+    // sharded_relay_lp_kernels.h.
     if (!cfg.isActiveRank && k < T) {
       for (int j = 0; j < A; j++) {
         char* dst = helperSlot(j, 0, k);
+        if (lp) {
+          // Wire in, wire out, summed in fp32 and requantized against a fresh
+          // absmax. The A-1 contributions are contiguous from dst at
+          // wire.bytes(w) stride, which is what the buffer-major layout is for.
+          launchLpReduceRequantizeKernel(
+              dst, dst, A - 1, w, /*divisor=*/1, stream);
+          continue;
+        }
         DISPATCH_MULTI_REDUCE(
             datatype, dst, dst + w * elementSize, A - 2, w, 1, stream);
       }
@@ -3350,7 +3487,30 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     const char* ownBlock = static_cast<const char*>(sendBuffs[0]) +
         static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
 
-    if (A == 4 && !isInPlace) {
+    if (lp) {
+      // The divisor lands here for BOTH regions: this is the active-side
+      // closing reduce, and the helper deliberately returned a plain sum.
+      if (isInPlace) {
+        DISPATCH_LP_MULTI_REDUCE(
+            datatype,
+            out,
+            lpPlan.directRecv,
+            A - 1,
+            directSz,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_LP_SEEDED_MULTI_REDUCE(
+            datatype,
+            out,
+            ownBlock,
+            lpPlan.directRecv,
+            A - 1,
+            directSz,
+            reductionDivisor,
+            stream);
+      }
+    } else if (A == 4 && !isInPlace) {
       DISPATCH_SEEDED_MULTI_REDUCE(
           datatype,
           out,
@@ -3374,7 +3534,30 @@ static ncclResult_t shardedRelayReduceScatterFlatPipelined(
     }
 
     char* oOut = out + directSz * elementSize;
-    if (isInPlace) {
+    if (lp) {
+      // ONE wire contribution: the H reduced tiles are contiguous and already
+      // mirror the output, so wire(offloadTotal) is exactly this span.
+      if (isInPlace) {
+        DISPATCH_LP_MULTI_REDUCE(
+            datatype,
+            oOut,
+            lpPlan.offloadRecv,
+            1,
+            offloadTotal,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_LP_SEEDED_MULTI_REDUCE(
+            datatype,
+            oOut,
+            ownBlock + directSz * elementSize,
+            lpPlan.offloadRecv,
+            1,
+            offloadTotal,
+            reductionDivisor,
+            stream);
+      }
+    } else if (isInPlace) {
       if (reductionDivisor > 1) {
         DISPATCH_INCREMENTAL_ADD_AND_SCALE(
             datatype, oOut, oScratch, offloadTotal, reductionDivisor, stream);
@@ -3585,10 +3768,10 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
             elementSize)
       : 1;
 
-  // Only the non-pipelined flat schedule carries the wire format so far, so a
-  // pipelined call is reported to the gate as "no LP-capable route selected"
-  // and lands in the Route decline counter rather than declining silently. Safe
-  // because the tile count is a pure function of the counts.
+  // Both flat schedules carry the wire format. The alignment requirement is ONE
+  // wire block, unlike the flat allreduce's A*128: this schedule exchanges its
+  // direct region whole rather than splitting it into A per-owner shards, so
+  // there is no pD/A to keep block-aligned. See RsFlatLpPlan.
   bool wantLpFlat = false;
   if (lowPrecision != 0) {
     wantLpFlat = rcclx::relay::lpEligible(reduceScatterLpGate(
@@ -3597,7 +3780,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
         nGroups,
         nActiveRanksPerGroup,
         elementSize,
-        offload && nTiles == 1,
+        offload,
         rcclx::relay::kLpBlockElems));
   }
 
@@ -3615,7 +3798,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
         numHelpers,
         nActiveRanksPerGroup,
         nTiles,
-        elementSize);
+        elementSize,
+        wantLpFlat);
   }
   return shardedRelayReduceScatterFlat(
       sendBuffs,
