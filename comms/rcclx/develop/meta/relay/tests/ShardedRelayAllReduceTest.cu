@@ -2745,6 +2745,85 @@ TEST_F(ShardedRelayAllReduceLowPrecisionTest, InterleavesWithFullPrecision) {
   freeBuffers(b);
 }
 
+TEST_F(ShardedRelayAllReduceLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The 4-group fixture above cannot reach the pipelined schedule:
+  // relayPipelineTiles() returns 1 whenever nGroups != 1. So this case is
+  // single-group, at a size large enough that the depth selector picks T > 1 --
+  // asserted below rather than assumed, because a size that quietly failed to
+  // pipeline would silently re-test the schedule the other cases already cover.
+  const int nGroups = 1;
+  const size_t count =
+      16ULL * 1024 * 1024; // 64 MiB fp32, a whole number of blocks
+
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          nGroups,
+          rcclx::relay::relayShapeA2(this->numRanks - kActive),
+          count,
+          sizeof(float)),
+      1)
+      << "chosen count does not pipeline, so this case would not exercise the "
+         "pipelined schedule";
+
+  const int activeRanks[] = {0, 1};
+  const int* allActiveRanks[] = {activeRanks};
+  const bool isActive = (this->globalRank == 0 || this->globalRank == 1);
+  const float contribution =
+      isActive ? static_cast<float>(this->globalRank % kActive) + 1.0f : 0.0f;
+
+  const size_t elems = isActive ? count : static_cast<size_t>(kActive) * count;
+  float* buff = nullptr;
+  HIPCHECK_TEST(hipMalloc(&buff, elems * sizeof(float)));
+  barrierSyncOn(reinterpret_cast<int32_t*>(buff));
+  if (isActive) {
+    const std::vector<float> host(count, contribution);
+    HIPCHECK_TEST(hipMemcpy(
+        buff, host.data(), count * sizeof(float), hipMemcpyHostToDevice));
+  } else {
+    HIPCHECK_TEST(hipMemset(buff, 0, elems * sizeof(float)));
+  }
+
+  const void* sendPtrs[1] = {buff};
+  void* recvPtrs[1] = {buff};
+  size_t counts[1] = {count};
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(
+      callAllReduceCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclFloat32,
+          ncclSum,
+          this->commFor(kActive),
+          this->stream,
+          allActiveRanks,
+          kActive,
+          nGroups,
+          /*lowPrecision=*/1),
+      ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (isActive) {
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), buff, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != 3.0f) {
+        reported++;
+        ADD_FAILURE() << "element " << i << ": got " << got[i] << ", want 3";
+      }
+    }
+    EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+        << "low precision never engaged, so this case proved nothing";
+  }
+  HIPCHECK_TEST(hipFree(buff));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
