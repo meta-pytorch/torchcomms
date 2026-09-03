@@ -35,16 +35,23 @@ class TcpRemoteRegistrationHandle;
 struct TcpTransportConfig {
   controller::TcpSocketConfig socketConfig{};
   bool asyncGetH2d{true};
-  // Number of parallel data sockets ("lanes") per peer. One TCP connection is
-  // bounded by what a single sender thread can push, so more lanes are the only
-  // way past that. Measured on MI350/eth2, 4 MiB get: 10.78 GB/s at 1 lane,
-  // 15.81 at 2, 23.14 at 4, and 23.10 at 8 -- 4 reaches 99.5% of the 23.25 GB/s
-  // NIC ceiling and 8 adds threads for nothing, which is why 4 is the default.
+  // Number of parallel data sockets ("lanes") per bound device, not per peer.
+  // The total for a connection is this times the device count, so the default
+  // of 4 gives 4 lanes on one NIC and 8 across two -- each device gets a full
+  // complement rather than the connection's lanes being divided among them.
   //
-  // Both peers must agree: above 1 the lanes exchange a TcpLaneHello, so a peer
-  // defaulting to 4 cannot talk to one that predates lanes or is pinned to 1.
-  // Set this to 1 on both sides for mixed-version interoperability.
-  size_t numSockets{4};
+  // One TCP connection is bounded by what a single sender thread can push, so
+  // more lanes are the only way past that. Measured on MI350/eth2, 4 MiB get:
+  // 10.78 GB/s at 1 lane, 15.81 at 2, 23.14 at 4, and 23.10 at 8 -- 4 reaches
+  // 99.5% of the 23.25 GB/s NIC ceiling and 8 adds threads for nothing, which
+  // is why 4 is the default. That ceiling is per NIC, which is what makes
+  // per-device the right unit.
+  //
+  // Both peers must agree, and so must their device counts: above 1 total lane
+  // the lanes exchange a TcpLaneHello, so a peer defaulting to 4 cannot talk to
+  // one that predates lanes or is pinned to 1. Set this to 1 with no bound
+  // devices on both sides for mixed-version interoperability.
+  size_t numSocketsPerDevice{4};
 
   /// Network devices to stripe lanes across, e.g. {"eth1", "eth2"}. Empty (the
   /// default) leaves egress to the routing table, exactly as before.
@@ -56,9 +63,11 @@ struct TcpTransportConfig {
   /// name the same number of devices, because each side derives the
   /// lane-to-device mapping from the lane index alone.
   ///
-  /// Size numSockets at about 4 lanes per device: one 200G NIC saturates near 4
-  /// lanes (~21 GB/s), so 2 devices need 8 to reach ~35 GB/s. Two devices with
-  /// only 4 lanes total reaches 27.6 GB/s, leaving both NICs half-fed.
+  /// numSocketsPerDevice applies to each device, so striping does not dilute
+  /// the per-NIC lane count: the default 4 gives 8 lanes across 2 devices,
+  /// which is what reaches ~35 GB/s. Splitting 4 lanes total across 2 devices
+  /// reaches only 27.6 GB/s, leaving both NICs half-fed -- the configuration
+  /// this per-device unit exists to make unreachable.
   ///
   /// Only worth enabling for large transfers. Measured on MI350, get, median of
   /// 3, 2 devices against 1: 1.00x at 8 MiB, 1.45x at 16 MiB, 1.63x at 64 MiB.
@@ -590,7 +599,8 @@ struct TcpPendingRecv {
 
 /// Native, self-contained TCP data transport.
 ///
-/// Establishes `numSockets` full-duplex data connections ("lanes") per peer
+/// Establishes `numSocketsPerDevice` full-duplex data connections ("lanes") per
+/// bound device
 /// (deterministic listener/dialer role by host:port ordering, lane identity
 /// from an explicit hello). Per connection:
 ///  - reader, one per lane: blocking recv + demultiplex; never blocks on a
@@ -943,8 +953,9 @@ class TcpTransport : public Transport {
   std::vector<TcpTransportInfo::Endpoint> localEndpoints_;
 
   /// One data socket plus the reader thread that drains it. Phase 1 establishes
-  /// numSockets lanes but sends everything on lane 0, so only establishment,
-  /// reader topology and teardown differ from the single-socket path.
+  /// the configured lanes but sends everything on lane 0, so only
+  /// establishment, reader topology and teardown differ from the single-socket
+  /// path.
   struct TcpLane {
     std::unique_ptr<controller::Conn> conn;
     std::thread reader;
