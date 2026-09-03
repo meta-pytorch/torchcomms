@@ -21,10 +21,12 @@ class TcpBandwidthBenchmark : public Benchmark {
   TcpBandwidthBenchmark(
       std::string iface,
       std::optional<int> sockBufSize,
-      bool asyncGetH2d = true)
+      bool asyncGetH2d = true,
+      size_t numSockets = 4)
       : iface_(std::move(iface)),
         sockBufSize_(sockBufSize),
-        asyncGetH2d_(asyncGetH2d) {}
+        asyncGetH2d_(asyncGetH2d),
+        numSockets_(numSockets) {}
 
   std::string name() const override {
     return "tcp_bandwidth";
@@ -39,6 +41,7 @@ class TcpBandwidthBenchmark : public Benchmark {
   std::string iface_;
   std::optional<int> sockBufSize_;
   bool asyncGetH2d_{true};
+  size_t numSockets_{4};
 };
 
 } // namespace uniflow::benchmark

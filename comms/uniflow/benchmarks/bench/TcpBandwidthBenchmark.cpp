@@ -476,6 +476,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   TcpTransportConfig transportConfig;
   transportConfig.socketConfig.socketBufSize = sockBufSize_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
+  transportConfig.numSockets = numSockets_;
   auto factory = std::make_unique<TcpTransportFactory>(
       dev, evbThread.getEventBase(), transportConfig, host);
 
