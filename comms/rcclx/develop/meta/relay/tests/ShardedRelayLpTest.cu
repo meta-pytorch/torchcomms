@@ -440,6 +440,7 @@ TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
   constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
+  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
 
   // ---- fused ----
   for (int g : {2, 4}) {
@@ -455,26 +456,40 @@ TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
     EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g), k27Mib);
   }
 
-  // ---- single group ----
+  // ---- single group, measured 4.5 MB to 144 MB ----
+  // Co-resident jobs get these too: a parallel relay job is nGroups == 1, so
+  // this column is also the policy for several independent jobs sharing a node.
   EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1), k12Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1), k12Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1), k12Mib);
+  // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4).
+  // Measuring below 13.5 MB is what found this; the earlier threshold was a
+  // band too high.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1), k8Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1), k8Mib);
   EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, 1), k12Mib);
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1), k24Mib);
+  // ENABLED only once the sweep reached past 72 MB: 1.18x-1.27x across five
+  // consecutive sizes from 63 to 144 MB, against 0.90x-1.07x below 40 MB. 60
+  // MiB rather than 48 because there is no data between 40 and 63 MB -- the
+  // threshold goes just under the first measured win, not into the unmeasured
+  // gap.
+  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1), k60Mib);
 
   // ---- the three exclusions, each for its own reason ----
 
-  // Only reaches 1.24x-1.32x at 63 MB, the top of the measured range. Off
-  // because a threshold at the edge of the data is a guess, not because it
-  // loses.
-  for (int g : {1, 2, 4}) {
+  // FUSED reduce-scatter A=4 reaches 1.32x only at 63 MB, the top of the fused
+  // range. Off for the reason the single-group one was until its sweep was
+  // extended: a plateau at the edge of the data is not a measured crossover.
+  for (int g : {2, 4}) {
     EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, g), kNever);
   }
-  // Wins 1.09x-1.14x from 13.5 to 27 MB, then troughs to 0.78x-0.92x. A
-  // min-bytes gate cannot express a band, and the chunk-alignment fix did not
-  // move this one.
+  // A STALL, not a threshold: wins 1.09x-1.13x from 13.5 to 27 MB, then
+  // 0.75x-0.92x at every larger size out to 144 MB. Profiling put it in the
+  // transfers -- same three, same grid, 1.85x slower for 1.167x more bytes --
+  // and the chunk-alignment fix, which recovered every other troughed shape,
+  // left this one untouched.
   EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1), kNever);
-  // The only shape that genuinely never wins: 0.91x-0.96x everywhere.
+  // The only shape that never wins at any size, and the only one that gets
+  // WORSE with size: 0.95x-0.97x small, 0.88x at 135-144 MB.
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1), kNever);
 }
 
