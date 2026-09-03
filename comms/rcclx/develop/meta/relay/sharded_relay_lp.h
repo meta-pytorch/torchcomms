@@ -299,78 +299,140 @@ bool lpCountsAligned(
  * Smallest message low precision is used for, in the same byte metric the
  * collective's route selector uses (its per-rank input label).
  *
- * MEASURED, on MI350X, bf16, best-of-N over 8-10 reps x 100 iterations, low
- * precision and full precision timed back to back on the SAME communicator. The
+ * PER DTYPE, because bf16 and fp32 are not one policy measured twice. fp32
+ * quantized to e4m3 sends 4 bytes per element as 33/32, a 3.88x reduction;
+ * bf16 sends 2 as 33/32, only 1.94x. Twice the saving buys a crossover roughly
+ * a size band and a half earlier and a peak twice as high, so a single table
+ * keyed only on (collective, width, grouping) has to pick one dtype to be
+ * right about. It used to pick bf16, which left fp32 running full precision
+ * across a range where it wins 1.1x-2.8x.
+ *
+ * MEASURED on MI350X, best-of-N over 10 reps x 20 iterations, low precision and
+ * full precision timed back to back on the SAME communicator, 4 KB to 1 GB. The
  * ratio is LP-vs-FULL-PRECISION-RELAY: above 1.00x the wire format is faster
  * than the same relay carrying full-precision bytes. It is deliberately NOT a
  * ratio against NCCL, which would fold in the relay's own 2x-2.5x and make
  * every shape look like a win, including ones where enabling low precision
  * makes things slower.
  *
- * Taken after the chunk-alignment fix. The history is worth keeping, because
- * twice the table said "low precision does not pay here" when it was measuring
- * a stall: 2 of 16 shapes enabled  -- before the wavefront-absmax rewrite 7 of
- * 16                 -- after it, before the chunk-alignment fix 11 of 16 --
- * now
+ * The bf16 history is worth keeping, because twice the table said "low
+ * precision does not pay here" when it was measuring a stall: 2 of 16 shapes
+ * enabled before the wavefront-absmax rewrite, 7 of 16 after it and before the
+ * chunk-alignment fix, 11 of 16 now. fp32 enables 15 of 16.
  *
- * The single-group column is measured across the FULL range, 4.5 MB to 144 MB.
- * The fused column still stops at 72 MB.
+ *                     bf16                      fp32
+ *                     nGroups==1   fused        nGroups==1   fused
+ *   allreduce      A=2   --        12 MiB         4.5 MiB     4.5 MiB
+ *   allreduce      A=4   12 MiB    12 MiB         9 MiB       9 MiB
+ *   reduce-scatter A=2   12 MiB    12 MiB         4.5 MiB     4.5 MiB
+ *   reduce-scatter A=4   60 MiB      --           60 MiB      60 MiB
+ *   all-gather     A=2    8 MiB     8 MiB         4.5 MiB     4.5 MiB
+ *   all-gather     A=4    8 MiB    12 MiB         4.5 MiB    12 MiB
+ *   all-to-all     A=2    --       12 MiB          --         4.5 MiB
+ *   all-to-all     A=4   24 MiB    27 MiB        13.5 MiB    27 MiB
  *
- *                       nGroups == 1 (uncontended)   nGroups > 1 (fused)
- *   allreduce      A=2      0.75x - 1.13x  stall         1.20x - 1.30x  ENABLED
- *   allreduce      A=4      0.93x - 1.29x  ENABLED       1.15x - 1.28x  ENABLED
- *   reduce-scatter A=2      1.01x - 1.30x  ENABLED       1.17x - 1.42x  ENABLED
- *   reduce-scatter A=4      0.90x - 1.27x  ENABLED       0.97x - 1.32x
- *   all-gather     A=2      1.03x - 1.23x  ENABLED       1.14x - 1.33x  ENABLED
- *   all-gather     A=4      0.98x - 1.29x  ENABLED       1.30x - 1.45x  ENABLED
- *   all-to-all     A=2      0.88x - 0.97x                1.14x - 1.33x  ENABLED
- *   all-to-all     A=4      0.96x - 1.17x  ENABLED       1.16x - 1.20x  ENABLED
+ *   -- means off at every size.
+ *
+ * EVERY fp32 THRESHOLD IS EXACTLY THE SMALLEST SIZE MEASURED TO WIN, with two
+ * stated exceptions. The sweep jumps 576 KB to 4.5 MB, so five of these shapes
+ * win at the first size in the MB decade and their true crossovers are
+ * somewhere in that gap. 4.5 MiB claims only what was measured; anyone wanting
+ * it lower has to add sizes to the sweep, not round down.
+ *
+ * The exceptions are reduce-scatter A=4 (60 MiB, own first win 63 MB) and FUSED
+ * all-gather A=4 (12 MiB, own first win 13.5 MB). Both take bf16's rounded-down
+ * value, because in both cases the two dtypes first win at the SAME measured
+ * point with nothing in the gap below it to separate them -- so fp32 sitting
+ * ABOVE bf16 on identical evidence would break the ordering that makes the two
+ * tables comparable, to move a threshold by a few percent.
+ *
+ * THE TABLES ARE ORDERED, and a test pins it: no fp32 threshold may be higher
+ * than its bf16 counterpart. It follows from the
+ * wire format rather than from any measurement -- the same shape has strictly
+ * more to gain at 3.88x than at 1.94x -- so it holds across retunes and is what
+ * catches a value copied into the wrong table. It has already earned that: the
+ * fused all-gather exception above was a 13.5 MiB entry this test rejected.
+ *
+ * ONE MEASURED CAVEAT ON THE EXCLUSION. Single-group all-to-all A=2 is off in
+ * both dtypes, and in fp32 that is a judgement call rather than a clear no: run
+ * truly alone it peaks at 1.12x and fades to ~1.00x, but under FOUR CO-RESIDENT
+ * jobs it holds 1.07x-1.20x across the whole range. Both cases are nGroups == 1
+ * and the gate cannot tell them apart, so the conservative reading wins and
+ * co-resident callers give up about 1.1x. Separating them needs a contention
+ * signal the gate does not have.
+ *
+ * fp32 peaks, over each shape's enabled range: 2.04x-2.33x single-group
+ * all-gather, 2.20x-2.26x single-group allreduce, up to 2.83x fused all-gather
+ * A=4. The reductions are the ones that gain most from the dtype split, because
+ * they were the ones bf16 gated latest.
+ *
+ * fp32 also settles two shapes bf16 could not:
+ *   - reduce-scatter A=4 FUSED is ENABLED for fp32 and off for bf16. Both show
+ *     the same flat ~1.00x through 40 MB and then a step, but fp32's step is to
+ *     2.01x-2.63x across six consecutive sizes, which is a crossover rather
+ *     than a plateau at the edge of the data.
+ *   - single-group allreduce A=2 is ENABLED for fp32 and off for bf16. The bf16
+ *     stall is still visible here as VARIANCE (1.19x to 1.83x, non-monotonic in
+ *     size) but never as a regression: the 3.88x wire saving is large enough to
+ *     stay ahead of whatever the memory system is doing. Enabling it for fp32
+ *     is therefore not a claim that the stall was fixed.
+ *
+ * ONE shape stays off for fp32: single-group all-to-all A=2, which peaks at
+ * 1.12x at 27 MB and falls back to 0.99x-1.02x from 63 MB up. Same shape as
+ * bf16 (0.88x-0.97x), just shifted up by the extra saving -- still not a
+ * threshold, because the trend runs the wrong way with size.
  *
  * CO-RESIDENT JOBS LAND IN THE nGroups == 1 COLUMN. A parallel relay job is a
- * single-group call, so these thresholds are also what several independent jobs
- * sharing a node get -- and that column was measured with the node otherwise
- * idle. It is the largest untested assumption in this table.
+ * single-group call, so that column is also what several independent jobs
+ * sharing a node get, and it was measured with the node otherwise idle. The
+ * parallel sweep says this is conservative rather than optimistic: every
+ * enabled shape does slightly BETTER under four co-resident jobs.
  *
  * THE nGroups COLUMN DOES NOT TELL THE STORY. An earlier reading of it was that
  * contention is what low precision wins -- fused shapes paid, uncontended ones
  * did not -- which was a plausible bandwidth argument and wrong. Nearly every
  * single-group shape was sitting in an alignment stall; with that gone, six of
- * the eight pay. Contention still helps, since the fused ratios are higher, but
- * it is not the dividing line.
+ * the eight pay in bf16 and seven in fp32. Contention still helps, since the
+ * fused ratios are higher, but it is not the dividing line.
  *
- * Three shapes stay off, for three different reasons:
+ * Two bf16 shapes stay off, for two different reasons:
  *
  *   - reduce-scatter A=4 FUSED: 0.97x-1.03x through 40 MB and 1.32x only at
- *     63 MB, the top of the FUSED range. Off for the reason the single-group
- * one was until its sweep was extended -- the plateau is at the edge of the
- *     data. Extending the fused sweep the same way would likely enable it.
+ *     63 MB, the top of the range it was tuned on. A plateau at the edge of the
+ *     data is not a measured crossover. fp32 at the same shape DOES cross (see
+ *     above), so this one is a candidate for re-measuring rather than a
+ *     settled no.
  *   - single-group allreduce A=2: a STALL, not a threshold. Wins 1.09x-1.13x
  *     from 13.5 to 27 MB, then 0.75x-0.92x at every larger size out to 144 MB,
  *     so a min-bytes gate cannot express it. PROFILED: the same three transfers
  *     with the same grid run 1.85x slower for 1.167x more bytes, effective
  *     bandwidth falling from ~125 to ~78 GB/s. Not the kernels (they scale at
  *     1.23x against an expected 1.167x), not the pipeline tile count (still 1
- * at the size it breaks), not chunk alignment (that fix recovered every other
- *     troughed shape and left this one untouched). A memory-system effect
- * inside an unchanged transfer; needs hardware counters, not a kernel trace.
- *   - single-group all-to-all A=2: the only shape that never wins at any size
- * in either grouping, and the only one that gets WORSE with size -- 0.95x-0.97x
- *     small, 0.88x at 135-144 MB. That trend is the opposite of every other
- *     entry, so it is not a threshold either.
+ *     at the size it breaks), not chunk alignment (that fix recovered every
+ *     other troughed shape and left this one untouched). A memory-system effect
+ *     inside an unchanged transfer; needs hardware counters, not a kernel
+ * trace.
+ *   - single-group all-to-all A=2: never wins at any size in either grouping in
+ *     bf16, and gets WORSE with size -- 0.95x-0.97x small, 0.88x at 135-144 MB.
  *
- * Fused all-to-all A=4 starts at 27 MiB, which is also exactly where its
- * XOR-relay route starts when fused. That is not a coincidence to be tidied
- * away: below the route crossover the call is a direct exchange with the
+ * Fused all-to-all A=4 starts at 27 MiB in BOTH dtypes, which is also exactly
+ * where its XOR-relay route starts when fused. That is not a coincidence to be
+ * tidied away: below the route crossover the call is a direct exchange with the
  * helpers idle, so there is nothing staged for the wire format to shrink and
  * low precision would decline on route regardless. The two gates agree by
- * construction.
+ * construction, and they agree for both dtypes because the route gate does not
+ * depend on the wire format.
  *
  * NCCL_SHARDED_RELAY_LP_MIN_KB overrides all of it, which is what made the
  * table measurable: the built-in values decline before anything is timed. The
  * collective test suites set it too, so they cover the mechanism without being
  * coupled to this policy.
  */
-size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups);
+size_t lpMinBytes(
+    LpCollective coll,
+    int nActiveRanksPerGroup,
+    int nGroups,
+    ncclDataType_t datatype);
 
 /**
  * Everything the caller does not already know, in one place.
