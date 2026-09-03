@@ -309,23 +309,16 @@ CollStatSnapshot collStatsReadWindow(
       // Left resident, its counts become the next window's starting balance and
       // inflate it. Best-effort: a stream wedged badly enough to fail above
       // will fail here too, and then the counts are unrecoverable either way.
-      // Return values are consumed to satisfy HIP's nodiscard on
-      // hipMemsetAsync/hipStreamSynchronize; the recovery is best-effort, so
-      // there is nothing to do with a failure here.
+      // Return value is consumed to satisfy HIP's nodiscard on hipMemsetAsync.
       [[maybe_unused]] const cudaError_t e0 = cudaMemsetAsync(
           handle.values[currentEpoch & 1u],
           0,
           static_cast<std::size_t>(handle.keyCapacity + 1) *
               sizeof(CollStatValue),
           readerStream);
-      [[maybe_unused]] const cudaError_t e1 =
-          cudaStreamSynchronize(readerStream);
     }
-    // `staging` is freed on the way out of this scope, and the failure may have
-    // been the synchronize above with both D2H copies already enqueued -- so
-    // drain before the pinned buffer they land in goes away. Best-effort, and
-    // deliberately not relying on cudaFreeHost's implicit synchronize, which is
-    // an implementation detail rather than a documented barrier.
+    // The failure can be the synchronize itself, leaving the D2H copies in
+    // flight into `staging`, which is freed on scope exit.
     [[maybe_unused]] const cudaError_t drained =
         cudaStreamSynchronize(readerStream);
     return CollStatSnapshot{};

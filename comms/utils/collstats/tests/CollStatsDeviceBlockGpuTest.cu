@@ -43,6 +43,19 @@ class CollStatsDeviceBlockGpuTest : public ::testing::Test {
     if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
       GTEST_SKIP() << "no CUDA device";
     }
+    // The span helpers are behind __CUDA_ARCH__ >= 900; below Hopper they are
+    // no-ops and every span assertion here passes vacuously.
+    int major = 0;
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(
+            &major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess) {
+      GTEST_SKIP() << "cannot query compute capability";
+    }
+    if (major < 9) {
+      GTEST_SKIP() << "span helpers are compiled out below sm_90; device is sm_"
+                   << major << "x";
+    }
   }
 
   // The retired bank is always read back whole, so the copy and its sizing live
@@ -200,6 +213,40 @@ TEST_F(CollStatsDeviceBlockGpuTest, SpanRecordsOneObservationPerLaunch) {
   }
   EXPECT_GT(maxDur, 0u);
   EXPECT_LT(maxDur, 1'000'000'000ull); // well under a second
+
+  collStatsFreeDeviceBlock(h);
+}
+
+// Every block arrives, satisfying the barrier, but nothing ever sets `start`.
+__global__ void spanFinalizeOnlyKernel(
+    CollStatsDeviceBlock* block,
+    uint32_t keyId) {
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    collStatsSpanFinalizeElectedById(block, /*slot=*/0, keyId, 4096);
+  }
+}
+
+// `end - kSpanStartInit` wraps to `end + 1`: a sub-microsecond duration that
+// buckets as a real, very fast collective. The finalizer drops it instead.
+TEST_F(CollStatsDeviceBlockGpuTest, FinalizeWithoutEntryRecordsNothing) {
+  const uint32_t capacity = 64;
+  CollStatsDeviceBlockHandle h =
+      collStatsAllocDeviceBlock(capacity, /*numSlots=*/4);
+  ASSERT_NE(h.dev, nullptr);
+
+  // No pre-reset, so `start` is still the allocator's sentinel.
+  spanFinalizeOnlyKernel<<<16, 64>>>(h.dev, /*keyId=*/0);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+
+  const std::vector<CollStatValue> values = readValues(h, capacity);
+  EXPECT_EQ(totalCount(values), 0u);
+  uint64_t maxDur = 0;
+  for (const auto& v : values) {
+    maxDur = v.durMaxNs > maxDur ? v.durMaxNs : maxDur;
+  }
+  EXPECT_EQ(maxDur, 0u);
 
   collStatsFreeDeviceBlock(h);
 }

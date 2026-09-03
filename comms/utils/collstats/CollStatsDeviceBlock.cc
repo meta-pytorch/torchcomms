@@ -81,8 +81,11 @@ CollStatsDeviceBlockHandle collStatsAllocDeviceBlock(
   // log2(dur / tMinNs) infinite and the cast to a bucket index undefined.
   const CollStatHistGeometry derived = collStatMakeHistGeometry(
       cfg.hist.tMinNs, cfg.hist.tMaxNs, cfg.hist.subBucketsPerOctave);
+  // sizeClasses stays host-side, but sizeClassOf() still walks `i < sc.n` over
+  // a fixed-capacity edges[].
   if (derived.numBuckets == 0 || derived.numBuckets != cfg.hist.numBuckets ||
-      cfg.numThresholds > kMaxThresholds) {
+      cfg.numThresholds > kMaxThresholds ||
+      cfg.sizeClasses.n > kMaxSizeClasses) {
     return CollStatsDeviceBlockHandle{};
   }
   // A zero-slot block allocates nothing for the span scratch but still reports
