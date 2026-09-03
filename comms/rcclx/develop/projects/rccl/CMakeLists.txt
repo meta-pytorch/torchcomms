@@ -1115,6 +1115,8 @@ set(COMMON_FILES
   comms/utils/logger/Logger.h
   comms/utils/logger/LoggerRuntime.cc
   comms/utils/logger/LoggerRuntime.h
+  comms/utils/logger/CommsLogging.cc
+  comms/utils/logger/CommsLogging.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
   comms/utils/logger/LogTypes.cc
