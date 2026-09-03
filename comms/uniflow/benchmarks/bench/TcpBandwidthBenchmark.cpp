@@ -21,6 +21,7 @@
 
 #include <cuda_runtime_api.h> // @manual=third-party//cuda:cuda-lazy
 
+#include <fmt/format.h>
 #include "comms/uniflow/Segment.h"
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/SegmentHelper.h"
@@ -462,8 +463,10 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   }
 
   ScopedEventBaseThread evbThread("bench-tcp-evb");
+  controller::TcpSocketConfig sockConfig;
+  sockConfig.socketBufSize = sockBufSize_;
   auto factory = std::make_unique<TcpTransportFactory>(
-      dev, evbThread.getEventBase(), controller::TcpSocketConfig{}, host);
+      dev, evbThread.getEventBase(), sockConfig, host);
 
   // Handshake over the rendezvous control channel.
   auto localTopo = factory->getTopology();
@@ -600,12 +603,24 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       if (aborted || !isActiveRank) {
         continue;
       }
+      // Bracket the timed loop so the phase split covers the same frames the
+      // reported bandwidth does, warmup included -- runTransfer does its own
+      // warmup internally, so the reset has to sit before the call, not inside.
+      auto* tcpTransport =
+          dynamic_cast<::uniflow::TcpTransport*>(transport.get());
+      if (tcpTransport != nullptr) {
+        tcpTransport->logAndResetPhaseStats("reset");
+      }
       auto r = runTransfer(*transport, localReg, remoteReg, size, dir, config);
       if (!r.ok) {
         // Latched rather than returned: every remaining size has a barrier the
         // peer is going to execute.
         aborted = true;
         continue;
+      }
+      if (tcpTransport != nullptr) {
+        tcpTransport->logAndResetPhaseStats(
+            fmt::format("{} size={}", dir, size));
       }
       auto stats = Stats::compute(std::move(r.latenciesUs));
       results.push_back({
