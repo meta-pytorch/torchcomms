@@ -424,53 +424,49 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
   }
 }
 
-// Pins the MEASURED policy, which is mostly "off". Without this, a refactor
-// that widened low precision back to every shape would look like an improvement
-// and pass every other test in this file -- while reintroducing the regressions
-// the sweep measured (down to 0.56x on single-group all-to-all A=4).
+// Pins the MEASURED policy. Without this, a refactor that widened low precision
+// back to every shape would look like an improvement and pass every other case
+// in this file -- while reintroducing the regressions the sweep measured, down
+// to 0.64x on the fused all-to-all at A=4.
 //
-// The provenance for each entry is the table in sharded_relay_lp.h. Update both
-// together, and only from a measurement.
+// The provenance for every entry is the table in sharded_relay_lp.h. Update
+// both together, and only from a measurement.
 TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
   constexpr size_t kNever = std::numeric_limits<size_t>::max();
+  constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
+  constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
 
-  // Fused all-gather at A=4: 1.18x at 13.5 MB rising to a 1.22x-1.29x plateau.
-  EXPECT_EQ(
-      lpMinBytes(LpCollective::AllGather, 4, 2), static_cast<size_t>(12) << 20);
-  EXPECT_EQ(
-      lpMinBytes(LpCollective::AllGather, 4, 4), static_cast<size_t>(12) << 20);
-  // Fused reduce-scatter at A=2: 1.09x-1.12x from 27 MB.
-  EXPECT_EQ(
-      lpMinBytes(LpCollective::ReduceScatter, 2, 4),
-      static_cast<size_t>(27) << 20);
+  // Fused, i.e. contended: this is where halved wire bytes have a bandwidth
+  // term to shrink, and six of eight shapes win.
+  for (int g : {2, 4}) {
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g), k12Mib);
+    // All-gather A=2 pays earliest of anything measured, 1.14x at 9 MB.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, g), k8Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, g), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g), k12Mib);
 
-  // A single group leaves the links uncontended, so there is no bandwidth term
-  // for halved wire bytes to shrink. Measured a regression almost everywhere.
-  for (const LpCollective coll :
-       {LpCollective::AllReduce,
-        LpCollective::ReduceScatter,
-        LpCollective::AllGather,
-        LpCollective::AllToAll}) {
-    for (int a : {2, 4}) {
-      EXPECT_EQ(lpMinBytes(coll, a, 1), kNever)
-          << "nGroups==1 must be disabled; coll=" << static_cast<int>(coll)
-          << " A=" << a;
-    }
+    // Off because a minimum cannot express their shape, NOT because they lose
+    // everywhere. All-to-all A=4 reads 1.16x-1.19x from 27 MB but craters to
+    // 0.64x at 32 MB and 0.65x at 40 MB, inside that range. Reduce-scatter A=4
+    // only reaches 1.29x at 63 MB, the top of the measured range.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g), kNever);
+    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, g), kNever);
   }
 
-  // Never won at any width or grouping.
+  // Uncontended. One group leaves the links slack, so the quantize/dequantize
+  // passes are pure added cost, and most shapes dip through a 31.5-63 MB
+  // trough.
   for (int a : {2, 4}) {
-    for (int g : {2, 4}) {
-      EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, a, g), kNever);
-    }
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, a, 1), kNever);
+    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, a, 1), kNever);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, a, 1), kNever);
   }
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 2), kNever);
-  // Off despite a consistent small win, because 1.02x-1.06x does not pay for
-  // fp8 rounding plus the arena.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 4), kNever);
-  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 4), kNever);
-  // Wrong width for its enabled entry.
-  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 2), kNever);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1), kNever);
+  // The one exception, and it is an exception because it is monotone rather
+  // than troughed: 1.08x at 13.5 MB rising steadily to 1.30x at 72 MB.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1), k12Mib);
 }
 
 TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {
