@@ -669,6 +669,69 @@ bool agFlatLpPrepare(
   return true;
 }
 
+// The same three regions as agFlatLpCarve(), at the pipelined schedule's
+// geometry. Only the helper region differs in shape: two ping-pong tiles per
+// active source rather than one slice per source, and nGroups is always 1
+// because that is the only shape that pipelines.
+//
+// No geometry predicate is needed. The schedule already rejects v == 0
+// outright, and v is a non-zero multiple of the chunk alignment, so every
+// offset it derives
+// -- tile, direct piece, slot -- is a whole number of wire blocks once the
+// count is.
+size_t agFlatPipeLpRequiredBytes(size_t sendCount, size_t v, int nActiveRanks) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  return agLpAlign(rcclx::relay::lpWireBytes(sendCount)) +
+      agLpAlign((A - 1) * rcclx::relay::lpWireBytes(sendCount)) +
+      agLpAlign(A * 2 * rcclx::relay::lpWireBytes(v));
+}
+
+AgFlatLpPlan agFlatPipeLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    size_t sendCount,
+    size_t v,
+    int nActiveRanks) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+
+  AgFlatLpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(sendCount));
+  p.gatherRecv = carver.take((A - 1) * rcclx::relay::lpWireBytes(sendCount));
+  p.helper[0] = carver.take(A * 2 * rcclx::relay::lpWireBytes(v));
+  p.valid = carver.ok();
+  return p;
+}
+
+bool agFlatPipeLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    size_t sendCount,
+    size_t v,
+    int nActiveRanks,
+    AgFlatLpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!agLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (agFlatPipeLpRequiredBytes(sendCount, v, nActiveRanks) > lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = agFlatPipeLpCarve(lease, sendCount, v, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
 } // namespace
 
 /**
@@ -1671,7 +1734,8 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
     int numHelpers,
     int nActiveRanksPerGroup,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t sc = sendCounts[0];
   const int A = nActiveRanksPerGroup;
@@ -1701,7 +1765,18 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
     return (k < T) ? heavy : (sc - directOffset(T));
   };
 
-  // Diagonal: recvBuff[m*sc] = sendBuff, a no-op when in-place.
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the shard
+  // =========================================================================
+  // Reached by every rank -- the v == 0 rejection above is the only earlier
+  // exit and it is a pure function of the count, so the ranks agree on it.
+  AgFlatLpPlan lpPlan{};
+  const bool lp = agFlatPipeLpPrepare(wantLp, comm, stream, sc, v, A, &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // Diagonal: recvBuff[m*sc] = sendBuff, a no-op when in-place. Full precision
+  // on both paths -- this is this rank's own data and never crosses a boundary.
   if (myActiveGroup == 0) {
     char* diag = static_cast<char*>(recvBuffs[0]) +
         static_cast<size_t>(cfg.myActiveIndex) * sc * elementSize;
@@ -1716,28 +1791,58 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
     }
   }
 
-  // Helper staging: two ping-pong tiles per active source.
+  // One quantize over the whole shard, before the first group. Every send in
+  // the pipeline reads part of it and nothing is produced mid-call.
+  if (lp && myActiveGroup == 0) {
+    DISPATCH_LP_QUANTIZE(datatype, lpPlan.sendShadow, sendBuffs[0], sc, stream);
+  }
+
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) + offsetElems * elementSize;
+  };
+
+  // Arrivals for SOURCE s go to its PACKED staging slot under low precision,
+  // and straight to recvBuff's slot s otherwise. Packed index s < m ? s : s -
+  // 1, so the diagonal has no slot at all; see AgFlatLpPlan.
+  auto gatherAt = [&](int s, size_t offsetElems) -> char* {
+    if (lp) {
+      const int m = cfg.myActiveIndex;
+      const size_t packed = static_cast<size_t>((s < m) ? s : s - 1);
+      return lpPlan.gatherRecv + wire.bytes(packed * sc + offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (static_cast<size_t>(s) * sc + offsetElems) * elementSize;
+  };
+
+  // Helper staging: two ping-pong tiles per active source. Under low precision
+  // it comes from the arena in wire bytes; this helper is a pure fan-out, so it
+  // needs no relayout.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        static_cast<size_t>(A) * 2 * v * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          static_cast<size_t>(A) * 2 * v * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
   auto helperSlot = [&](int s, int k) -> char* {
     return hbuff +
-        (static_cast<size_t>(s) * 2 + static_cast<size_t>(k % 2)) * v *
-        elementSize;
+        wire.bytes(
+            (static_cast<size_t>(s) * 2 + static_cast<size_t>(k % 2)) * v);
   };
 
   for (int k = 0; k <= T; k++) {
     NCCLCHECK(ncclGroupStart());
     if (cfg.isActiveRank) {
-      const char* sendbuff = static_cast<const char*>(sendBuffs[0]);
-      char* recvbuff = static_cast<char*>(recvBuffs[0]);
       const int m = cfg.myActiveIndex;
       const size_t dOff = directOffset(k);
       const size_t dSz = directSize(k);
@@ -1766,9 +1871,9 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
         }
         for (int i = 0; i < dN; i++) {
           NCCLCHECK(ncclSend(
-              sendbuff + dPieceOff(i) * elementSize,
-              dPieceSz(i),
-              datatype,
+              sendFrom(dPieceOff(i)),
+              wire.count(dPieceSz(i)),
+              wire.dtype,
               cfg.activeRanks[d],
               comm,
               stream));
@@ -1777,12 +1882,11 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
       if (k < T) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclSend(
-              sendbuff +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k) * v) *
-                      elementSize,
-              v,
-              datatype,
+              sendFrom(
+                  static_cast<size_t>(h) * tileStride +
+                  static_cast<size_t>(k) * v),
+              wire.count(v),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -1794,10 +1898,9 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
         }
         for (int i = 0; i < dN; i++) {
           NCCLCHECK(ncclRecv(
-              recvbuff +
-                  (static_cast<size_t>(s) * sc + dPieceOff(i)) * elementSize,
-              dPieceSz(i),
-              datatype,
+              gatherAt(s, dPieceOff(i)),
+              wire.count(dPieceSz(i)),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -1811,13 +1914,12 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
               continue;
             }
             NCCLCHECK(ncclRecv(
-                recvbuff +
-                    (static_cast<size_t>(s) * sc +
-                     static_cast<size_t>(h) * tileStride +
-                     static_cast<size_t>(k - 1) * v) *
-                        elementSize,
-                v,
-                datatype,
+                gatherAt(
+                    s,
+                    static_cast<size_t>(h) * tileStride +
+                        static_cast<size_t>(k - 1) * v),
+                wire.count(v),
+                wire.dtype,
                 cfg.helperRanks[h],
                 comm,
                 stream));
@@ -1828,7 +1930,12 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
       if (k < T) {
         for (int s = 0; s < A; s++) {
           NCCLCHECK(ncclRecv(
-              helperSlot(s, k), v, datatype, cfg.activeRanks[s], comm, stream));
+              helperSlot(s, k),
+              wire.count(v),
+              wire.dtype,
+              cfg.activeRanks[s],
+              comm,
+              stream));
         }
       }
       if (k > 0) {
@@ -1840,8 +1947,8 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
             }
             NCCLCHECK(ncclSend(
                 helperSlot(s, k - 1),
-                v,
-                datatype,
+                wire.count(v),
+                wire.dtype,
                 cfg.activeRanks[d],
                 comm,
                 stream));
@@ -1850,6 +1957,29 @@ static ncclResult_t shardedRelayAllGatherFlatPipelined(
       }
     }
     NCCLCHECK(ncclGroupEnd());
+  }
+
+  // =========================================================================
+  // LOW PRECISION: land the A-1 foreign slots
+  // =========================================================================
+  // One launch per foreign slot, after the last group rather than per tile: the
+  // tiles a slot receives are disjoint, so per-tile launches would buy nothing.
+  // The diagonal has no staging slot and keeps its full-precision copy.
+  if (lp && myActiveGroup == 0) {
+    const int m = cfg.myActiveIndex;
+    for (int s = 0; s < A; s++) {
+      if (s == m) {
+        continue;
+      }
+      const size_t packed = static_cast<size_t>((s < m) ? s : s - 1);
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          static_cast<char*>(recvBuffs[0]) +
+              static_cast<size_t>(s) * sc * elementSize,
+          lpPlan.gatherRecv + wire.bytes(packed * sc),
+          sc,
+          stream);
+    }
   }
 
   return ncclSuccess;
@@ -2028,10 +2158,10 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
               elementSize)
         : 1;
 
-    // Only the non-pipelined flat schedule carries the wire format so far, so a
-    // pipelined call is reported to the gate as "no LP-capable route selected"
-    // and lands in the Route decline counter rather than declining silently.
-    // Safe because the tile count is a pure function of the counts.
+    // Both flat schedules carry the wire format. The offload has to be on for
+    // it to mean anything: with the offload disabled this degenerates to a
+    // pure-direct all-gather, which is the regime the one-shot path and the
+    // route gate already claim.
     bool wantLpFlat = false;
     if (lowPrecision != 0) {
       wantLpFlat = rcclx::relay::lpEligible(allGatherLpGate(
@@ -2040,7 +2170,7 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
           nGroups,
           nActiveRanksPerGroup,
           elementSize,
-          offload && nTiles == 1,
+          offload,
           rcclx::relay::kLpBlockElems));
     }
 
@@ -2057,7 +2187,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllGatherImpl(
           numHelpers,
           nActiveRanksPerGroup,
           nTiles,
-          elementSize);
+          elementSize,
+          wantLpFlat);
     } else {
       r = shardedRelayAllGatherFlat(
           sendBuffs2,
