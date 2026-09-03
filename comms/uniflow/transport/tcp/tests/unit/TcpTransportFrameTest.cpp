@@ -2054,46 +2054,46 @@ TEST_F(TcpTransportFrameTest, AFailedWaveQueuesNothingAndDrainsWhatItLaunched) {
          "them held by a frame it queued";
 }
 
-// Above one wave the guarantee is per wave, not per put, and that boundary is
-// documented on put(). This pins it: with 16 chunks the first 15 are queued --
-// and so may reach the peer -- while the 16th has not been staged at all.
-// Whatever this test asserts is what callers are promised, so it is worth being
-// explicit that the promise stops here.
-TEST_F(TcpTransportFrameTest, APutLargerThanOneWaveIsAtomicOnlyPerWave) {
+// put() tells callers a failed put may have partially applied, and that what
+// applied is not a prefix. This is the test that makes that true rather than
+// merely written down: the first wave stages and queues, the second fails, and
+// the caller is told it failed while the first wave's frames are already on
+// their way to a peer that will apply them and never hear otherwise.
+//
+// Deliberately not asserted: that the put parks. It used to, because a wave
+// sized to the whole pool left the next wave nothing to stage into, and a test
+// resting on that would go red purely from resizing the wave.
+TEST_F(TcpTransportFrameTest, AFailedPutAboveOneWaveLeavesEarlierWavesQueued) {
   setConnected();
   stubStagingCopies();
   releaseStagingCopies();
+  // Succeed through the first wave, then fail the second wave's first copy.
+  failCopyAfter(waveCap());
 
   const size_t chunks = waveCap() + 1;
   VramPut transfer(chunks * slabPayloadCap());
-  // On its own thread because it is expected to park: nothing drains the queue,
-  // so the first wave's slabs stay on loan and the second wave has nothing to
-  // stage into.
-  auto putResult = std::async(
-      std::launch::async, [&]() { return put(transfer.requests()).get(); });
+  auto future = put(transfer.requests());
 
-  EXPECT_TRUE(waitFor([&]() { return outQueueDepth() == waveCap(); }));
-  EXPECT_EQ(outQueueDepth(), waveCap())
-      << "the documented boundary moved: a put above one wave is expected to "
-         "queue its first wave before the rest has been staged";
-  EXPECT_EQ(stagedCopyCount(), waveCap())
-      << "the second wave must not be staged until slabs come back";
-
-  // And teardown must not strand the parked put. It is released by the queue
-  // being dropped, which is what hands its slabs back; a caller thread is not
-  // one shutdown() can join its way out of, so nothing else would.
-  transport_->shutdown();
   ASSERT_EQ(
-      putResult.wait_for(std::chrono::seconds(5)), std::future_status::ready)
-      << "teardown left a put parked waiting for staging slabs";
-  EXPECT_TRUE(putResult.get().hasError());
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "the caller must be told it failed";
+  EXPECT_EQ(outQueueDepth(), waveCap())
+      << "the first wave must still be queued: a failed put is documented as "
+         "possibly partial, and this is the case that makes it so";
+  EXPECT_EQ(stagedCopyCount(), waveCap() + 1)
+      << "the failure must be the second wave's copy, not something earlier";
 }
 
-// Two waves, a queue whose cap (64 MiB) is only just above one wave (60 MiB),
-// and a pool that only refills as the sender drains. Every one of those can
-// block a put, and they depend on each other: the wave waits for slabs, the
-// slabs wait for the sender, and the sender needs the queue mutex the wave must
-// therefore not be holding.
+// A put long enough that both limits bind several times over: the pool refills
+// only as the sender drains, and the payload is well past the queue's byte cap.
+// Each can block a put and they depend on each other -- the wave waits for
+// slabs, the slabs wait for the sender, and the sender needs the queue mutex
+// the wave must therefore not be holding.
+//
+// The chunk count carries this test. Two waves used to strain a 64 MiB queue
+// because one wave was 60 MiB of it; a wave is now half the pool, so two waves
+// fit easily and the interlock would go untested while the test still passed.
+// Enough waves to recycle the pool is what keeps it honest.
 TEST_F(TcpTransportFrameTest, BackToBackWavesDrainWithoutDeadlock) {
   setConnected();
   stubStagingCopies();
@@ -2101,7 +2101,7 @@ TEST_F(TcpTransportFrameTest, BackToBackWavesDrainWithoutDeadlock) {
   auto& conn = installCountingConn();
   std::thread sender([this]() { runSenderLoop(); });
 
-  const size_t chunks = 2 * waveCap();
+  const size_t chunks = 4 * waveCap();
   VramPut transfer(chunks * slabPayloadCap());
   // The future stays open -- nothing Acks these writes -- so the frames
   // reaching the connection are what says both waves got through.

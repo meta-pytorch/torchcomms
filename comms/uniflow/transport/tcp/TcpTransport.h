@@ -656,21 +656,28 @@ class TcpTransport : public Transport {
 
   /// Writes the local spans into the peer's registered segments.
   ///
-  /// What a failed put() promises about the peer's memory, and what it does
-  /// not:
+  /// A failed put() promises nothing about the peer's memory. Treat the
+  /// destination as undefined until a later put over it succeeds, and do not
+  /// read it in between:
   ///
-  /// - A put of at most kMaxPutWaveChunks chunks -- 60 MiB of payload at the
-  ///   4 MiB chunk size, which covers the great majority of calls -- either
-  ///   queues every one of its frames or none of them. A host-staging failure
-  ///   queues nothing, so the peer's segment is untouched.
-  /// - A larger put is split into waves of that size, and the guarantee holds
-  /// per
-  ///   wave. A failure in wave N+1 can leave wave N applied on the peer, with
-  ///   nothing telling the peer which offsets those were.
-  /// - At every size this is staging-and-queue atomicity, not a remote
-  ///   transaction. Frames that reach the queue are frames the peer will apply;
-  ///   a connection that breaks mid-wave still leaves a partial write. Aborting
-  ///   at the wire level needs a protocol change, tracked in T285791201.
+  /// - Any put may partially apply. Work is staged and queued in waves of
+  ///   kMaxPutWaveChunks; a failure in wave N+1 leaves wave N queued, and
+  ///   queued frames are frames the peer applies.
+  /// - What did apply is not a prefix. Frames are striped across lanes, which
+  ///   are independent sockets that fail independently, so a break leaves an
+  ///   arbitrary subset with holes at offsets the caller cannot determine.
+  ///   There is no offset to resume from; the only recovery is to re-put the
+  ///   whole range.
+  /// - The peer is never told. It applies each frame as it arrives and has no
+  ///   notion of the put it belonged to, so its application can read a
+  ///   half-written segment and see nothing wrong. Only the caller learns of
+  ///   the failure, and not how much of it landed.
+  /// - A host-staging failure is contained to the wave it happened in, so it
+  ///   cannot put anything on the wire that a successful wave had not already
+  ///   sent. That bounds one failure mode; it is not a transaction, and it
+  ///   bounds nothing at the sizes callers actually use.
+  ///
+  /// A real abort needs a wire-level change, tracked in T285791201.
   std::future<Status> put(
       std::span<const TransferRequest> requests,
       const RequestOptions& options = {}) override;
@@ -1041,8 +1048,15 @@ class TcpTransport : public Transport {
   // Chunks staged, and so queued, as one indivisible wave. Everything put()
   // promises about partial writes is bounded by this: a put of at most this
   // many chunks either reaches the queue whole or not at all.
+  // Half the usable pool, not all of it. A wave sized to the whole pool cannot
+  // begin staging until the previous one has drained completely, because its
+  // all-or-nothing acquire needs every slab back, so staging never overlaps
+  // transmit. Halving it keeps a wave's worth of slabs free for the next wave
+  // and measured +56% to +88% on GB-scale puts -- about 11 to 20 GB/s at the
+  // default tx depth -- with no change in pinned memory. The ratio is what
+  // matters, not the constant: this stays correct if the pool size changes.
   static constexpr size_t kMaxPutWaveChunks =
-      kStagingSlabCount - kStagingSlabsReservedForReader;
+      (kStagingSlabCount - kStagingSlabsReservedForReader) / 2;
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
   // exhaustion falls back to the reusable vector instead of blocking receive.
   static constexpr size_t kReceiveSlabCount = 2;
