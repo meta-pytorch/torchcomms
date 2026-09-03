@@ -43,6 +43,11 @@ std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
     std::size_t size,
     DmaBufExportKind kind = DmaBufExportKind::Default);
 
+std::optional<DmaBufExport> export_gpu_dmabuf_va_range_aligned(
+    void* ptr,
+    std::size_t size,
+    DmaBufExportKind kind = DmaBufExportKind::Default);
+
 } // namespace comms::prims
 
 #endif // __HIP_PLATFORM_AMD__

@@ -35,8 +35,6 @@
 #include "comms/prims/transport/amd/nic/ionic/IonicGidDiscovery.h"
 #endif
 #else
-#include <cuda_runtime.h>
-
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
 // meta::comms::DeviceBuffer (CUDA RAII) for the send/recv staging bulks.
@@ -44,6 +42,11 @@
 #endif
 
 namespace comms::prims {
+
+IbBufferRegistration::~IbBufferRegistration() {
+  LOG_IF(DFATAL, valid())
+      << "IbBufferRegistration destroyed without deregisterIbBufferRange()";
+}
 
 namespace {
 constexpr int kDefaultGidIndex = 3; // Default RoCE GID index
@@ -1100,6 +1103,15 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     void* ptr,
     std::size_t size,
     bool relaxedOrdering) {
+  auto registrations = registrationState_.wlock();
+  return registerBufferLocked(ptr, size, relaxedOrdering, *registrations);
+}
+
+IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
+    void* ptr,
+    std::size_t size,
+    bool relaxedOrdering,
+    RegistrationState& registrations) {
   if (ptr == nullptr || size == 0) {
     throw std::invalid_argument("Invalid buffer pointer or size");
   }
@@ -1121,8 +1133,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   // Fast path: containment lookup — if [ptr, ptr+size) falls entirely within an
   // existing registration with the same effective ordering, return the cached
   // per-NIC lkeys with no driver call.
-  auto it = registeredBuffers_.upper_bound(addr);
-  if (it != registeredBuffers_.begin()) {
+  auto it = registrations.registeredBuffers.upper_bound(addr);
+  if (it != registrations.registeredBuffers.begin()) {
     --it;
     if (rangeContains(it->first, it->second.allocSize, addr, size)) {
       // The cache holds one MR set per allocation; its access flags (including
@@ -1335,7 +1347,8 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
     cached.mrs[n] = mr;
   }
 
-  registeredBuffers_.emplace(static_cast<uintptr_t>(allocBase), cached);
+  registrations.registeredBuffers.emplace(
+      static_cast<uintptr_t>(allocBase), cached);
 
   NetworkLKeys keys(numNics_);
   for (int n = 0; n < numNics_; ++n) {
@@ -1344,119 +1357,184 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBuffer(
   return IbgdaLocalBuffer(ptr, keys);
 }
 
-IbBufferRegistrationLease MultiPeerIbTransportBase::registerIbBulkBuffer(
+IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
     void* ptr,
     std::size_t size) {
-  checkedRangeEnd(ptr, size, "registerIbBulkBuffer");
-  const auto localBuffer = registerBuffer(ptr, size, /*relaxedOrdering=*/true);
-
-  try {
-    const auto addr = reinterpret_cast<uintptr_t>(ptr);
-    auto mrIt = registeredBuffers_.upper_bound(addr);
-    if (mrIt == registeredBuffers_.begin()) {
-      throw std::logic_error(
-          "registerIbBulkBuffer: MR missing after registration");
-    }
-    --mrIt;
-    if (!rangeContains(mrIt->first, mrIt->second.allocSize, addr, size)) {
-      throw std::logic_error(
-          "registerIbBulkBuffer: MR does not contain registered range");
-    }
-    if (nextBulkBufferGeneration_ == std::numeric_limits<uint64_t>::max()) {
-      throw std::overflow_error(
-          "registerIbBulkBuffer: lease generation exhausted");
-    }
-
-    const uint64_t generation = nextBulkBufferGeneration_++;
-    bulkBufferRegistrations_.emplace(
-        generation,
-        BulkBufferRegistration{
-            .ptr = ptr,
-            .size = size,
-            .localBuffer = localBuffer,
-            .relaxedOrdering = mrIt->second.relaxedOrdering,
-        });
-    return IbBufferRegistrationLease(generation);
-  } catch (...) {
-    deregisterBuffer(ptr);
-    throw;
-  }
-}
-
-std::optional<IbBufferRegistrationView>
-MultiPeerIbTransportBase::lookupIbBulkBuffer(
-    const IbBufferRegistrationLease& lease,
-    void* ptr,
-    std::size_t size) const {
-  checkedRangeEnd(ptr, size, "lookupIbBulkBuffer");
-  if (!lease.valid()) {
-    return std::nullopt;
+  checkedRangeEnd(ptr, size, "registerIbBufferRange");
+  const bool useRelaxedOrdering =
+      relaxedOrderingActiveForNic(config_, relaxedOrderingCapable_);
+  // Exact-range registrations are local send sources: callers receive only
+  // lkeys and never exchange rkeys. Keep remote access disabled so the
+  // provider-level page widening required by Data-Direct does not grant peers
+  // access outside the caller-visible range.
+  int accessFlags = ibverbx::IBV_ACCESS_LOCAL_WRITE;
+  if (useRelaxedOrdering) {
+    accessFlags |= ibverbx::IBV_ACCESS_RELAXED_ORDERING;
   }
 
-  const auto registration = bulkBufferRegistrations_.find(lease.generation());
-  if (registration == bulkBufferRegistrations_.end()) {
-    return std::nullopt;
-  }
-
-  const auto& active = registration->second;
-  const auto requestedBegin = reinterpret_cast<uintptr_t>(ptr);
-  const auto registeredBegin = reinterpret_cast<uintptr_t>(active.ptr);
-  if (!rangeContains(registeredBegin, active.size, requestedBegin, size)) {
-    return std::nullopt;
-  }
-
-  return IbBufferRegistrationView{
-      .leaseGeneration = lease.generation(),
-      .localBuffer =
-          active.localBuffer.subBuffer(requestedBegin - registeredBegin),
-      .size = size,
-      .relaxedOrdering = active.relaxedOrdering,
-  };
-}
-
-void MultiPeerIbTransportBase::deregisterIbBulkBuffer(
-    IbBufferRegistrationLease& lease) {
-  if (!lease.valid()) {
-    throw std::invalid_argument(
-        "deregisterIbBulkBuffer: invalid registration lease");
-  }
-
-  const auto registration = bulkBufferRegistrations_.find(lease.generation());
-  if (registration == bulkBufferRegistrations_.end()) {
+  bool mayUsePlainMr = true;
+#ifndef __HIP_PLATFORM_AMD__
+  if (cuda_driver_lazy_init() != 0 || pfn_cuMemGetAddressRange == nullptr) {
     throw std::runtime_error(
-        "deregisterIbBulkBuffer: stale registration lease");
+        "registerIbBufferRange: failed to initialize CUDA driver API");
+  }
+  CUdeviceptr allocationBase = 0;
+  std::size_t allocationSize = 0;
+  const CUresult addressRangeResult = pfn_cuMemGetAddressRange(
+      &allocationBase, &allocationSize, reinterpret_cast<CUdeviceptr>(ptr));
+  if (addressRangeResult != CUDA_SUCCESS || allocationBase == 0) {
+    throw std::runtime_error(
+        "registerIbBufferRange: cuMemGetAddressRange failed for ptr");
+  }
+  const auto requestedEnd = checkedRangeEnd(ptr, size, "registerIbBufferRange");
+  const auto allocationEnd =
+      static_cast<uintptr_t>(allocationBase) + allocationSize;
+  mayUsePlainMr = requestedEnd <= allocationEnd;
+#endif
+
+  auto& symbols = ibverbx::ibvSymbols;
+  std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
+  const auto cleanup = [&](int end) {
+    for (int n = 0; n < end; ++n) {
+      if (mrs[n] != nullptr) {
+        symbols.ibv_internal_dereg_mr(mrs[n]);
+        mrs[n] = nullptr;
+      }
+    }
+  };
+
+  for (int n = 0; n < numNics_; ++n) {
+    ibverbx::ibv_mr* mr = nullptr;
+    if (dataDirectActiveForNic(config_, nics_[n].isDataDirect)) {
+      if (symbols.mlx5dv_internal_reg_dmabuf_mr == nullptr) {
+        cleanup(n);
+        throw std::runtime_error(
+            fmt::format(
+                "Data-Direct selected for NIC {} but DMA-BUF registration is unavailable",
+                n));
+      }
+      auto dmabuf =
+          export_gpu_dmabuf_va_range_aligned(ptr, size, DmaBufExportKind::Pcie);
+      if (!dmabuf) {
+        cleanup(n);
+        throw std::runtime_error(
+            fmt::format(
+                "Data-Direct selected for NIC {} but exact VA DMA-BUF export "
+                "failed (ptr={} size={})",
+                n,
+                ptr,
+                size));
+      }
+      errno = 0;
+      // mlx5 Data-Direct requires the MR to cover the complete exported
+      // mapping. Registering only the logical subrange can succeed on GB300
+      // but fault when the NIC first reads it. The returned registration still
+      // exposes exactly ptr/size; the aligned extent is provider bookkeeping.
+      mr = symbols.mlx5dv_internal_reg_dmabuf_mr(
+          nics_[n].ibvPd,
+          /*offset=*/0,
+          dmabuf->alignment.alignedSize,
+          reinterpret_cast<uint64_t>(dmabuf->alignment.alignedBase),
+          dmabuf->fd,
+          accessFlags,
+          ibverbx::MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);
+      const int regErrno = errno;
+      close(dmabuf->fd);
+      if (!mr) {
+        cleanup(n);
+        throw std::runtime_error(
+            fmt::format(
+                "Data-Direct exact VA registration failed for NIC {} "
+                "(ptr={} size={} errno={} ({}))",
+                n,
+                ptr,
+                size,
+                regErrno,
+                folly::errnoStr(regErrno)));
+      }
+    } else {
+      auto dmabuf = export_gpu_dmabuf_va_range_aligned(ptr, size);
+      int dmabufErrno = 0;
+      if (dmabuf && symbols.ibv_internal_reg_dmabuf_mr != nullptr) {
+        errno = 0;
+        mr = symbols.ibv_internal_reg_dmabuf_mr(
+            nics_[n].ibvPd,
+            dmabuf->alignment.dmabufOffset,
+            size,
+            reinterpret_cast<uint64_t>(ptr),
+            dmabuf->fd,
+            accessFlags);
+        dmabufErrno = errno;
+      }
+      if (dmabuf) {
+        close(dmabuf->fd);
+      }
+      if (!mr && symbols.ibv_internal_reg_mr != nullptr && mayUsePlainMr) {
+        errno = 0;
+        mr =
+            symbols.ibv_internal_reg_mr(nics_[n].ibvPd, ptr, size, accessFlags);
+      }
+      if (!mr) {
+        const int regErrno = errno;
+        cleanup(n);
+        throw std::runtime_error(
+            fmt::format(
+                "Exact VA registration failed for NIC {} "
+                "(ptr={} size={} dmabuf_errno={} ({}) errno={} ({}) "
+                "plain_mr_safe={})",
+                n,
+                ptr,
+                size,
+                dmabufErrno,
+                folly::errnoStr(dmabufErrno),
+                regErrno,
+                folly::errnoStr(regErrno),
+                mayUsePlainMr));
+      }
+    }
+    mrs[n] = mr;
   }
 
-  void* const ptr = registration->second.ptr;
-  bulkBufferRegistrations_.erase(registration);
-  deregisterBuffer(ptr);
-  lease.reset();
+  NetworkLKeys keys(numNics_);
+  for (int n = 0; n < numNics_; ++n) {
+    keys[n] = NetworkLKey(HostLKey(mrs[n]->lkey));
+  }
+  return IbBufferRegistration(
+      IbgdaLocalBuffer(ptr, keys), size, useRelaxedOrdering, mrs, numNics_);
 }
 
-bool MultiPeerIbTransportBase::isIbBulkBufferViewActive(
-    const IbBufferRegistrationView& view) const {
-  if (!view.valid()) {
-    return false;
+void MultiPeerIbTransportBase::deregisterIbBufferRange(
+    IbBufferRegistration& registration) {
+  if (!registration.valid()) {
+    throw std::invalid_argument(
+        "deregisterIbBufferRange: invalid registration");
   }
-  const auto registration = bulkBufferRegistrations_.find(view.leaseGeneration);
-  if (registration == bulkBufferRegistrations_.end()) {
-    return false;
+  for (int n = 0; n < registration.numNics_; ++n) {
+    if (registration.mrs_[n] != nullptr) {
+      const int rc =
+          ibverbx::ibvSymbols.ibv_internal_dereg_mr(registration.mrs_[n]);
+      if (rc != 0) {
+        LOG(WARNING) << "Failed to deregister exact VA MR on NIC " << n
+                     << ": rc=" << rc;
+      }
+    }
   }
-
-  const auto& active = registration->second;
-  return rangeContains(
-      reinterpret_cast<uintptr_t>(active.ptr),
-      active.size,
-      reinterpret_cast<uintptr_t>(view.localBuffer.ptr),
-      view.size);
+  registration.reset();
 }
 
 void MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
+  auto registrations = registrationState_.wlock();
+  deregisterBufferLocked(ptr, *registrations);
+}
+
+void MultiPeerIbTransportBase::deregisterBufferLocked(
+    void* ptr,
+    RegistrationState& registrations) {
   // Containment lookup on the ordered map avoids resolving the allocation range
   // again (which fails once the underlying memory is freed).
   const auto addr = reinterpret_cast<uintptr_t>(ptr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  if (it != registeredBuffers_.begin()) {
+  auto it = registrations.registeredBuffers.upper_bound(addr);
+  if (it != registrations.registeredBuffers.begin()) {
     --it;
     if (addr < it->first + it->second.allocSize) {
       it->second.refs--;
@@ -1468,7 +1546,7 @@ void MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
         for (int n = 0; n < numNics_; ++n) {
           ibverbx::ibvSymbols.ibv_internal_dereg_mr(it->second.mrs[n]);
         }
-        registeredBuffers_.erase(it);
+        registrations.registeredBuffers.erase(it);
       }
       return;
     }
@@ -1484,23 +1562,25 @@ std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
   // allocation covering localBuf.ptr. Avoids re-resolving the allocation base;
   // sub-buffers resolve correctly via the ordered map.
   const auto addr = reinterpret_cast<uintptr_t>(localBuf.ptr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  if (it == registeredBuffers_.begin()) {
-    throw std::runtime_error(
-        "Buffer not registered - call registerBuffer() first");
-  }
-  --it;
-  if (addr >= it->first + it->second.allocSize) {
-    throw std::runtime_error(
-        "Buffer not registered - call registerBuffer() first");
-  }
-
   // allGather addr + per-NIC rkeys; one entry per rank.
   std::vector<IbgdaBufferExchInfo> allInfo(nRanks_);
   allInfo[myRank_].addr = reinterpret_cast<uint64_t>(localBuf.ptr);
   allInfo[myRank_].numNics = numNics_;
-  for (int n = 0; n < numNics_; ++n) {
-    allInfo[myRank_].rkey_per_device[n] = HostRKey(it->second.mrs[n]->rkey);
+  {
+    auto registrations = registrationState_.rlock();
+    auto it = registrations->registeredBuffers.upper_bound(addr);
+    if (it == registrations->registeredBuffers.begin()) {
+      throw std::runtime_error(
+          "Buffer not registered - call registerBuffer() first");
+    }
+    --it;
+    if (addr >= it->first + it->second.allocSize) {
+      throw std::runtime_error(
+          "Buffer not registered - call registerBuffer() first");
+    }
+    for (int n = 0; n < numNics_; ++n) {
+      allInfo[myRank_].rkey_per_device[n] = HostRKey(it->second.mrs[n]->rkey);
+    }
   }
 
   auto result =
@@ -1624,8 +1704,9 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerSlotMemory(
 
   NetworkLKeys keys(numNics_);
   const auto addr = reinterpret_cast<uintptr_t>(registrationPtr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  CHECK(it != registeredBuffers_.begin())
+  auto registrations = registrationState_.rlock();
+  auto it = registrations->registeredBuffers.upper_bound(addr);
+  CHECK(it != registrations->registeredBuffers.begin())
       << "slot allocation MR not found after registration";
   --it;
   CHECK(addr < it->first + it->second.allocSize)
@@ -1643,8 +1724,9 @@ IbgdaBufferExchInfo MultiPeerIbTransportBase::registeredSlotMemoryExchInfo(
         "MultiPeerIbTransport: invalid slot memory exchange info");
   }
   const auto addr = reinterpret_cast<uintptr_t>(registrationPtr);
-  auto it = registeredBuffers_.upper_bound(addr);
-  CHECK(it != registeredBuffers_.begin())
+  auto registrations = registrationState_.rlock();
+  auto it = registrations->registeredBuffers.upper_bound(addr);
+  CHECK(it != registrations->registeredBuffers.begin())
       << "slot allocation MR not found after registration";
   --it;
   CHECK(addr < it->first + it->second.allocSize)

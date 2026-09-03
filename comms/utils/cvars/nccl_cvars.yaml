@@ -2058,10 +2058,12 @@ cvars:
    default     : "off"
    choices     : off, force
    description : |-
-     Select send-side zero-copy for MCCL-native AllReduce.
+     Select zero-copy for MCCL-native AllReduce.
      off - Preserve the existing copy-based registration and collective paths.
-     force - Require every rank and the exact Phase-2 source range to be
-             eligible for IBGDA zero-copy; never fall back to the copy path.
+     force - Use zero-copy when every rank is eligible during CUDA graph
+             capture. Eager calls and graph captures where any rank is
+             ineligible or registration fails collectively use the copy path.
+             Invalid or rank-mismatched requests return an error.
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool

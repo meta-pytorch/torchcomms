@@ -407,54 +407,30 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
       "localRegisterIbgdaBuffer: IB transport not available");
 }
 
-IbBufferRegistrationLease MultiPeerTransport::registerIbBulkBuffer(
+IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
     void* ptr,
     std::size_t size) {
   if (ibgdaTransport_) {
-    return ibgdaTransport_->registerIbBulkBuffer(ptr, size);
+    return ibgdaTransport_->registerIbBufferRange(ptr, size);
   }
   if (ibrcTransport_) {
-    return ibrcTransport_->registerIbBulkBuffer(ptr, size);
+    return ibrcTransport_->registerIbBufferRange(ptr, size);
   }
-  throw std::runtime_error("registerIbBulkBuffer: IB transport not available");
+  throw std::runtime_error("registerIbBufferRange: IB transport not available");
 }
 
-std::optional<IbBufferRegistrationView> MultiPeerTransport::lookupIbBulkBuffer(
-    const IbBufferRegistrationLease& lease,
-    void* ptr,
-    std::size_t size) const {
+void MultiPeerTransport::deregisterIbBufferRange(
+    IbBufferRegistration& registration) {
   if (ibgdaTransport_) {
-    return ibgdaTransport_->lookupIbBulkBuffer(lease, ptr, size);
-  }
-  if (ibrcTransport_) {
-    return ibrcTransport_->lookupIbBulkBuffer(lease, ptr, size);
-  }
-  return std::nullopt;
-}
-
-void MultiPeerTransport::deregisterIbBulkBuffer(
-    IbBufferRegistrationLease& lease) {
-  if (ibgdaTransport_) {
-    ibgdaTransport_->deregisterIbBulkBuffer(lease);
+    ibgdaTransport_->deregisterIbBufferRange(registration);
     return;
   }
   if (ibrcTransport_) {
-    ibrcTransport_->deregisterIbBulkBuffer(lease);
+    ibrcTransport_->deregisterIbBufferRange(registration);
     return;
   }
   throw std::runtime_error(
-      "deregisterIbBulkBuffer: IB transport not available");
-}
-
-bool MultiPeerTransport::isIbBulkBufferViewActive(
-    const IbBufferRegistrationView& view) const {
-  if (ibgdaTransport_) {
-    return ibgdaTransport_->isIbBulkBufferViewActive(view);
-  }
-  if (ibrcTransport_) {
-    return ibrcTransport_->isIbBulkBufferViewActive(view);
-  }
-  return false;
+      "deregisterIbBufferRange: IB transport not available");
 }
 
 void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {

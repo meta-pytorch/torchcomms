@@ -249,7 +249,7 @@ class MultipeerIbgdaTransport
   // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
   friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
 
-  // myRank_/nRanks_/bootstrap_/config_/registeredBuffers_/nics_/lazy-state are
+  // myRank_/nRanks_/bootstrap_/config_/registrationState_/nics_/lazy-state are
   // inherited (protected) from MultiPeerIbTransport.
 
   // DOCA GPU context (shared across NICs).
@@ -304,7 +304,7 @@ class MultipeerIbgdaTransport
   std::size_t sinkBufferAllocSize_{0};
   std::uint64_t sinkBufferHandle_{0};
 
-  // The refcounted MR cache (CachedMr + registeredBuffers_) lives in
+  // The refcounted MR cache (CachedMr + registrationState_) lives in
   // MultiPeerIbTransport.
 
   // GPU PCIe bus ID.
