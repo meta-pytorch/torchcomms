@@ -3,6 +3,7 @@
 #include "comms/uniflow/controller/TcpController.h"
 
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <optional>
@@ -88,6 +89,26 @@ int rcvBufForRequest(int family, int request) {
 int acceptedFd(const std::unique_ptr<Conn>& conn) {
   auto* tcp = dynamic_cast<TcpConn<SyncIO>*>(conn.get());
   return tcp == nullptr ? -1 : tcp->getFd();
+}
+
+int getSockOptInt(int fd, int level, int optname) {
+  int val = 0;
+  socklen_t len = sizeof(val);
+  EXPECT_EQ(::getsockopt(fd, level, optname, &val, &len), 0);
+  return val;
+}
+
+// The value an untouched socket of this family reports, so "the kernel is still
+// in charge" is measured rather than assumed. Hardcoding 0 would encode a
+// current Linux default instead of the property under test.
+int probeSockOptInt(int family, int level, int optname) {
+  int probe = ::socket(family, SOCK_STREAM, 0);
+  if (probe < 0) {
+    return -1;
+  }
+  int val = getSockOptInt(probe, level, optname);
+  ::close(probe);
+  return val;
 }
 
 } // namespace
@@ -202,6 +223,65 @@ TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
   const int fd = acceptedFd(conn);
   ASSERT_GE(fd, 0);
   EXPECT_EQ(getRcvBuf(fd), expected);
+}
+
+// osDefaults() means "leave the OS alone", and that has to hold for accepted
+// sockets too. Before configureAcceptedSocket applied the config, it hardcoded
+// TCP_NODELAY=1 and SO_KEEPALIVE=1 regardless, so this configuration was
+// silently ignored on the server side while the client honoured it.
+TEST_P(TcpAsyncAcceptTest, AcceptedSocketLeavesOsDefaultsUntouched) {
+  const int family = GetParam().family;
+  const int probeNoDelay = probeSockOptInt(family, IPPROTO_TCP, TCP_NODELAY);
+  const int probeKeepalive = probeSockOptInt(family, SOL_SOCKET, SO_KEEPALIVE);
+  ASSERT_GE(probeNoDelay, 0);
+  ASSERT_GE(probeKeepalive, 0);
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(
+      GetParam().serverAddr,
+      TcpSocketConfig::osDefaults(),
+      *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(getSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY), probeNoDelay);
+  EXPECT_EQ(getSockOptInt(fd, SOL_SOCKET, SO_KEEPALIVE), probeKeepalive);
+}
+
+// A server that turns keepalive off must actually get it off. This is the case
+// that used to be a no-op with no compiler error and no failing test.
+TEST_P(TcpAsyncAcceptTest, AcceptedSocketHonoursKeepaliveDisable) {
+  TcpSocketConfig cfg;
+  cfg.enableKeepalive = false;
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(GetParam().serverAddr, cfg, *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(getSockOptInt(fd, SOL_SOCKET, SO_KEEPALIVE), 0);
 }
 
 TEST_P(TcpAsyncAcceptTest, MultipleAsyncAccepts) {
