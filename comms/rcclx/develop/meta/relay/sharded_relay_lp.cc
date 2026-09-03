@@ -62,6 +62,7 @@ const char* declineName(LpDecline reason) {
 NCCL_PARAM(ShardedRelayLpHops, "SHARDED_RELAY_LP_HOPS", 2);
 NCCL_PARAM(ShardedRelayLpPrealloc, "SHARDED_RELAY_LP_PREALLOC", 0);
 NCCL_PARAM(ShardedRelayLpMaxMsgMb, "SHARDED_RELAY_LP_MAX_MSG_MB", 1024);
+NCCL_PARAM(ShardedRelayLpMinKb, "SHARDED_RELAY_LP_MIN_KB", 0);
 
 int lpHops() {
   const int64_t hops = ncclParamShardedRelayLpHops();
@@ -107,6 +108,24 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
   (void)coll;
   (void)nActiveRanksPerGroup;
   (void)nGroups;
+
+  // NCCL_SHARDED_RELAY_LP_MIN_KB overrides the crossover. This exists so the
+  // crossover can be MEASURED: the built-in value below refuses low precision
+  // under 4 MiB, which means a sweep cannot see whether low precision would
+  // have won at 1 MiB -- the gate declines before anything is timed, so the
+  // answer the sweep needs is the one value it cannot observe. Setting this to
+  // 0 in a bench pass makes every size eligible and turns the crossover into
+  // data.
+  //
+  // Tuning only, and it can only make low precision apply MORE widely or less
+  // -- never change what the wire format does. Read through NCCL_PARAM, which
+  // caches on first read, so it has to be set before the first relay call; that
+  // is the same contract every other knob here has.
+  const int64_t minKb = ncclParamShardedRelayLpMinKb();
+  if (minKb > 0) {
+    return static_cast<size_t>(minKb) << 10;
+  }
+
   // PROVISIONAL, pending the LP sweep. 4 MiB is above the entire flat
   // launch-bound band (measured flat across 4 KB..576 KB) and at or above every
   // relay-route crossover in sharded_relay_route.h, so low precision is only
