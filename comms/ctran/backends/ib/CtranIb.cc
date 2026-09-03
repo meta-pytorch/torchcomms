@@ -34,6 +34,7 @@
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/LogUtils.h"
 #include "folly/synchronization/CallOnce.h"
 
 using namespace ctran::ib;
