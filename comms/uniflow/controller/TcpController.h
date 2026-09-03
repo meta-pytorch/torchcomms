@@ -149,6 +149,18 @@ class TcpConn : public Conn {
   std::future<Result<size_t>> send(std::span<const uint8_t> data) override;
   std::future<Result<size_t>> recv(std::vector<uint8_t>& data) override;
   std::future<Result<size_t>> recv(std::span<uint8_t> buf) override;
+  /// Closes the socket. Safe from any thread for SyncIO, which is what every
+  /// caller holds today: a SyncIO fd is never registered with an EventBase, so
+  /// there is no deferred unregisterFd to drain first and no loop thread
+  /// reading sock_.
+  ///
+  /// NOT safe off the loop thread for AsyncIO. That fd is registered with
+  /// epoll, and the loop thread reads sock_ in trySend(), onRecvReady() and
+  /// updateFdRegistration(); closing from elsewhere both races those reads and
+  /// closes a still-registered fd, which EventBase::unregisterFd forbids. See
+  /// ~TcpConn for the sequence such a close would have to follow --
+  /// dispatchAndWait(failAllOps), then a second dispatchAndWait to drain the
+  /// deferred unregister.
   void close() override;
 
   int getFd() const {
@@ -236,6 +248,12 @@ struct SyncAccept {
 /// EventBase. Subsequent calls queue promises that are resolved as
 /// connections arrive. All async state is accessed exclusively on the
 /// loop thread via dispatch() — no atomics needed.
+///
+/// "Async" describes the accept, not the connection. The Conn handed back is a
+/// TcpConn<SyncIO>: blocking send/recv on the caller's thread, fd never
+/// registered with the EventBase, which has no further part in the data path
+/// once the handshake completes. Callers wanting async I/O must build a
+/// TcpConn<AsyncIO> themselves; nothing does today.
 ///
 /// Lifetime: The EventBase must outlive all calls to shutdown(). The
 /// BasicTcpServer destructor calls shutdown(), so either:
