@@ -297,9 +297,38 @@ __global__ void lpDequantizeKernel(T* out, const uint8_t* wire, size_t count) {
   const size_t tid = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
 
-  for (size_t e = tid; e < count; e += stride) {
+  // Four contiguous elements per thread, matching the quantize side: one dword
+  // load of four fp8 codes, one scale load shared by all four, and one wide
+  // store (dwordx2 for bf16, dwordx4 for fp32) instead of four of each.
+  //
+  // A run of four never straddles a block boundary, because kLpBlockElems is
+  // 128 and 128 % 4 == 0. That is what lets the scale be loaded once per run
+  // rather than once per element, and it is why the quad index maps to a block
+  // with a plain shift rather than a per-element divide.
+  const size_t quads = count / kLpElemsPerLane;
+  for (size_t q = tid; q < quads; q += stride) {
+    const size_t e = q * kLpElemsPerLane;
     const uint8_t* block = wire + (e / kLpBlockElems) * kLpBlockBytes;
-    // Broadcast read: 128 consecutive threads share one scale.
+    const float scale = scaleOf(block);
+
+    uint8_t codes[kLpElemsPerLane];
+    lpLoadFourCodes(block + (e % kLpBlockElems), codes);
+
+    T vals[kLpElemsPerLane];
+    for (int i = 0; i < kLpElemsPerLane; i++) {
+      vals[i] = lpFromFloat<T>(lpDecodeByte(codes[i]) * scale);
+    }
+    __builtin_memcpy(out + e, vals, sizeof(vals));
+  }
+
+  // Tail, for a count that is not a whole number of quads. The low-precision
+  // gate requires every per-group count to be a multiple of 128, and every
+  // region boundary is 512-element aligned, so in practice this never runs --
+  // but the kernel is called with per-REGION counts and the last region absorbs
+  // a remainder, so it does not get to assume that.
+  const size_t tailStart = quads * kLpElemsPerLane;
+  for (size_t e = tailStart + tid; e < count; e += stride) {
+    const uint8_t* block = wire + (e / kLpBlockElems) * kLpBlockBytes;
     const float scale = scaleOf(block);
     out[e] = lpFromFloat<T>(lpDecodeByte(block[e % kLpBlockElems]) * scale);
   }
