@@ -1051,6 +1051,26 @@ class TcpTransport : public Transport {
   // at 64 MiB; a chunk (header + payload) stays safely under that, so large
   // put/get transfers are split across multiple frames.
   static constexpr size_t kMaxChunkSize = 4UL * 1024 * 1024;
+  // Floor for adaptive get chunking. Splitting below this loses more to
+  // per-frame cost than it gains from the extra lane: at a 4 MiB get, 512 KiB
+  // and 1 MiB chunks measured the same, 256 KiB gave up part of the gain, and
+  // 128 KiB was worse than not splitting at all.
+  static constexpr size_t kMinAdaptiveChunkSize = 512UL * 1024;
+
+  // Chunk size for one get request. A transfer no larger than kMaxChunkSize is
+  // a single frame, and a frame goes to a single lane, so it uses one lane
+  // however many are configured. Splitting it across lanes is worth up to 1.44x
+  // at 4 MiB.
+  //
+  // Only transfers that would otherwise be one frame are split. Larger ones
+  // already span lanes, and measured worse when chunked smaller -- past a few
+  // frames per-frame cost dominates and the largest chunk wins.
+  //
+  // Requester-side only, so it needs no protocol change: replies stay within
+  // kMaxChunkSize, which is all a peer enforces. The count in get() and the
+  // request loop must derive their chunk from this same function or the reply
+  // count will not match what the operation waits for.
+  static size_t adaptiveGetChunk(size_t len, size_t laneCount);
   // ~64 MiB of pinned host memory, sized against kMaxOutQueueBytes: the pool
   // and the out queue bound the same pipeline, so a full set of staged frames
   // fits in the queue rather than being refused by its cap.

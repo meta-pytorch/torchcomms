@@ -57,6 +57,14 @@ namespace uniflow {
 // Usability is delegated to deviceGlobalIpv6 rather than re-derived: it already
 // applies the address-flag rules, and it is what bind() will call for the
 // address, so discovery cannot disagree with what actually gets bound.
+size_t TcpTransport::adaptiveGetChunk(size_t len, size_t laneCount) {
+  if (len == 0 || len > kMaxChunkSize || laneCount <= 1) {
+    return kMaxChunkSize;
+  }
+  const size_t perLane = (len + laneCount - 1) / laneCount;
+  return std::max(perLane, kMinAdaptiveChunkSize);
+}
+
 std::vector<std::string> enumerateFrontendDevices(
     const std::string& prefix,
     size_t maxDevices) {
@@ -977,7 +985,8 @@ std::future<Status> TcpTransport::get(
       return future;
     }
     const size_t len = req.local.size();
-    totalChunks += (len == 0) ? 1 : (len + kMaxChunkSize - 1) / kMaxChunkSize;
+    const size_t chunkSize = adaptiveGetChunk(len, lanes_.size());
+    totalChunks += (len == 0) ? 1 : (len + chunkSize - 1) / chunkSize;
   }
   state->remaining = totalChunks;
 
@@ -1005,9 +1014,10 @@ std::future<Status> TcpTransport::get(
     const int deviceId = req.local.deviceId();
     auto* dst = static_cast<uint8_t*>(req.local.mutable_data());
 
+    const size_t chunkSize = adaptiveGetChunk(len, lanes_.size());
     size_t off = 0;
     do {
-      const size_t chunk = std::min(kMaxChunkSize, len - off);
+      const size_t chunk = std::min(chunkSize, len - off);
       const uint64_t reqId = nextReqId_.fetch_add(1, std::memory_order_relaxed);
       if (auto admitted = admitInflight(
               reqId,
