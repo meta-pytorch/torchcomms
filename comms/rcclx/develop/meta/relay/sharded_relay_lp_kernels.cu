@@ -31,16 +31,51 @@ static_assert(
     sizeof(rccl_float8) == 1,
     "the wire format stores one fp8 code per byte");
 
-// Two wire blocks per workgroup, one thread per payload element.
+// ONE WAVEFRONT OWNS ONE WIRE BLOCK, with each lane holding kLpElemsPerLane
+// payload elements.
 //
-// The absmax reduction is done as a shared-memory BROADCAST loop rather than a
-// tree: every thread of a sub-block reads all 128 of its block's absolute
-// values and takes the max itself. That is 128x the LDS reads of a tree, but
-// LDS broadcast is one instruction per wavefront regardless of lane count, and
-// it costs ONE barrier per block instead of seven. Barriers, not LDS bandwidth,
-// are what a 256-byte-per-block kernel cannot afford.
-constexpr int kLpBlocksPerCta = 2;
-constexpr int kLpThreadsPerCta = kLpBlockElems * kLpBlocksPerCta;
+// This replaced a layout of one thread per element (128 threads spanning two
+// wavefronts per block) whose absmax was a shared-memory BROADCAST loop: every
+// thread read all 128 of its block's absolute values and took the max itself.
+// The argument for it was that LDS broadcast is one instruction per wavefront
+// and it needs one barrier instead of a tree's seven -- barriers being what a
+// 256-byte-per-block kernel cannot afford.
+//
+// The barrier half of that was right and the conclusion did not follow.
+// Reducing WITHIN a wavefront needs neither LDS nor barriers: __shfl_xor is a
+// register permute. The old loop paid a 128-long SERIAL dependent fmaxf chain
+// per thread, with an LDS read feeding every link, to produce one output byte
+// -- a latency chain no amount of occupancy hides. Six shuffle steps replace
+// it, and because a wavefront is implicitly in lockstep both __syncthreads()
+// calls and the whole
+// __shared__ array disappear with it. That also lets a wave whose block is out
+// of range simply leave, instead of every thread staying resident to service a
+// barrier.
+//
+// Sizing the block to the wavefront is what makes the reduction purely
+// intra-wave; two wavefronts per block would put a cross-wave combine (and so
+// LDS and a barrier) back into the critical path for one extra step of
+// reduction.
+constexpr int kLpLanesPerBlock = 64; // CDNA wavefront
+constexpr int kLpThreadsPerCta = 256;
+constexpr int kLpBlocksPerCta = kLpThreadsPerCta / kLpLanesPerBlock;
+constexpr int kLpElemsPerLane = kLpBlockElems / kLpLanesPerBlock;
+
+static_assert(
+    kLpBlockElems % kLpLanesPerBlock == 0,
+    "a wire block must divide evenly among the lanes of one wavefront");
+static_assert(
+    kLpThreadsPerCta % kLpLanesPerBlock == 0,
+    "a workgroup must be a whole number of wavefronts");
+
+// The intra-wavefront reduction below is only correct on a 64-lane wavefront:
+// it xor-reduces over exactly kLpLanesPerBlock lanes and takes the whole
+// block's absmax to live in that one wavefront. Fail at compile time rather
+// than compute a per-half-block scale that every rank would still agree on and
+// that would still decode -- silently, and slightly wrong.
+#if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
+#error "sharded relay low precision kernels assume a 64-lane wavefront"
+#endif
 
 // Enough workgroups to fill the device several times over without making the
 // grid-stride loop pointless. The kernels are memory bound, so the exact value
@@ -120,14 +155,24 @@ __device__ __forceinline__ uint8_t lpEncodeWithScale(float v, float scale) {
   return lpEncodeByte(scale > 0.0f ? v / scale : 0.0f);
 }
 
-// Max of the 128 absolute values this thread's sub-block wrote into `shared`.
-__device__ __forceinline__ float subBlockAbsMax(const float* shared, int sub) {
-  const float* mine = shared + sub * kLpBlockElems;
-  float m = 0.0f;
-  for (int i = 0; i < kLpBlockElems; i++) {
-    m = fmaxf(m, mine[i]);
+/*
+ * Absolute maximum across the one wavefront that owns a wire block, left in
+ * EVERY lane.
+ *
+ * log2(64) = 6 xor-shuffle steps, no LDS and no barrier. Every lane ends with
+ * the full result, which is what the caller wants: all of them need the scale
+ * to encode with, so a reduce-then-broadcast would be a wasted step.
+ *
+ * fmaxf is associative and the inputs are already non-negative (callers pass
+ * fabsf), so the xor order does not change the result -- every lane computes
+ * the identical value, bit for bit, which is what keeps the scale a property of
+ * the block rather than of the lane that happened to compute it.
+ */
+__device__ __forceinline__ float waveAbsMax(float absValue) {
+  for (int mask = kLpLanesPerBlock / 2; mask > 0; mask >>= 1) {
+    absValue = fmaxf(absValue, __shfl_xor(absValue, mask, kLpLanesPerBlock));
   }
-  return m;
+  return absValue;
 }
 
 } // namespace
@@ -138,32 +183,38 @@ __device__ __forceinline__ float subBlockAbsMax(const float* shared, int sub) {
 
 template <typename T>
 __global__ void lpQuantizeKernel(const T* in, uint8_t* wire, size_t nBlocks) {
-  __shared__ float sAbs[kLpThreadsPerCta];
-  const int sub = static_cast<int>(threadIdx.x) / kLpBlockElems;
-  const int lane = static_cast<int>(threadIdx.x) % kLpBlockElems;
+  const int wave = static_cast<int>(threadIdx.x) / kLpLanesPerBlock;
+  const int lane = static_cast<int>(threadIdx.x) % kLpLanesPerBlock;
   const size_t ctaStride =
       static_cast<size_t>(gridDim.x) * static_cast<size_t>(kLpBlocksPerCta);
 
   for (size_t base = static_cast<size_t>(blockIdx.x) * kLpBlocksPerCta;
        base < nBlocks;
        base += ctaStride) {
-    const size_t b = base + sub;
-    const bool live = b < nBlocks;
-    const float v = live ? lpToFloat<T>(in[b * kLpBlockElems + lane]) : 0.0f;
-    sAbs[threadIdx.x] = fabsf(v);
-    __syncthreads();
-
-    if (live) {
-      const float scale = lpScaleFor(subBlockAbsMax(sAbs, sub));
-      uint8_t* block = wire + b * kLpBlockBytes;
-      block[lane] = lpEncodeWithScale(v, scale);
-      if (lane == 0) {
-        *scaleSlot(block) = scale;
-      }
+    const size_t b = base + static_cast<size_t>(wave);
+    // No barrier in this loop, so a wavefront with no block to do just leaves.
+    if (b >= nBlocks) {
+      continue;
     }
-    // sAbs is reused by the next iteration, and the reads above are not done
-    // until every thread of the sub-block has finished them.
-    __syncthreads();
+    const T* src = in + b * kLpBlockElems;
+
+    // Lane l takes elements l, l + 64, ... so each of the kLpElemsPerLane
+    // accesses is one contiguous 64-lane run.
+    float v[kLpElemsPerLane];
+    float absMax = 0.0f;
+    for (int i = 0; i < kLpElemsPerLane; i++) {
+      v[i] = lpToFloat<T>(src[lane + i * kLpLanesPerBlock]);
+      absMax = fmaxf(absMax, fabsf(v[i]));
+    }
+
+    const float scale = lpScaleFor(waveAbsMax(absMax));
+    uint8_t* block = wire + b * kLpBlockBytes;
+    for (int i = 0; i < kLpElemsPerLane; i++) {
+      block[lane + i * kLpLanesPerBlock] = lpEncodeWithScale(v[i], scale);
+    }
+    if (lane == 0) {
+      *scaleSlot(block) = scale;
+    }
   }
 }
 
@@ -223,46 +274,51 @@ __global__ void lpReduceRequantizeKernel(
     size_t nBlocks,
     size_t contribStride,
     int divisor) {
-  __shared__ float sAbs[kLpThreadsPerCta];
-  const int sub = static_cast<int>(threadIdx.x) / kLpBlockElems;
-  const int lane = static_cast<int>(threadIdx.x) % kLpBlockElems;
+  const int wave = static_cast<int>(threadIdx.x) / kLpLanesPerBlock;
+  const int lane = static_cast<int>(threadIdx.x) % kLpLanesPerBlock;
   const size_t ctaStride =
       static_cast<size_t>(gridDim.x) * static_cast<size_t>(kLpBlocksPerCta);
 
   for (size_t base = static_cast<size_t>(blockIdx.x) * kLpBlocksPerCta;
        base < nBlocks;
        base += ctaStride) {
-    const size_t b = base + sub;
-    const bool live = b < nBlocks;
+    const size_t b = base + static_cast<size_t>(wave);
+    if (b >= nBlocks) {
+      continue;
+    }
+    const size_t blockOffset = b * kLpBlockBytes;
 
     // fp32 accumulation, which is the whole reason the sum does not have to be
     // range-limited the way an fp8 accumulation would.
-    float acc = 0.0f;
-    if (live) {
-      const size_t blockOffset = b * kLpBlockBytes;
-      for (int p = 0; p < numContribs; p++) {
-        const uint8_t* block =
-            wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
-        acc += lpDecodeByte(block[lane]) * scaleOf(block);
+    float acc[kLpElemsPerLane] = {};
+    for (int p = 0; p < numContribs; p++) {
+      const uint8_t* block =
+          wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
+      const float contribScale = scaleOf(block);
+      for (int i = 0; i < kLpElemsPerLane; i++) {
+        acc[i] +=
+            lpDecodeByte(block[lane + i * kLpLanesPerBlock]) * contribScale;
       }
+    }
+
+    float absMax = 0.0f;
+    for (int i = 0; i < kLpElemsPerLane; i++) {
       // Exact: the divisor is a power of two, so this rescales the block's
       // absmax by the same factor and leaves every code below unchanged.
       if (divisor > 1) {
-        acc /= static_cast<float>(divisor);
+        acc[i] /= static_cast<float>(divisor);
       }
+      absMax = fmaxf(absMax, fabsf(acc[i]));
     }
-    sAbs[threadIdx.x] = fabsf(acc);
-    __syncthreads();
 
-    if (live) {
-      const float scale = lpScaleFor(subBlockAbsMax(sAbs, sub));
-      uint8_t* block = wireOut + b * kLpBlockBytes;
-      block[lane] = lpEncodeWithScale(acc, scale);
-      if (lane == 0) {
-        *scaleSlot(block) = scale;
-      }
+    const float scale = lpScaleFor(waveAbsMax(absMax));
+    uint8_t* block = wireOut + b * kLpBlockBytes;
+    for (int i = 0; i < kLpElemsPerLane; i++) {
+      block[lane + i * kLpLanesPerBlock] = lpEncodeWithScale(acc[i], scale);
     }
-    __syncthreads();
+    if (lane == 0) {
+      *scaleSlot(block) = scale;
+    }
   }
 }
 
