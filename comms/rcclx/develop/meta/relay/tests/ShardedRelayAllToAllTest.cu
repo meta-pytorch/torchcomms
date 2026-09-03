@@ -2306,6 +2306,186 @@ TEST_F(ShardedRelayAllToAllLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
   freeBuffers(b);
 }
 
+// ===========================================================================
+// LOW PRECISION, A=4 XOR/LATIN RELAY PATH
+// ===========================================================================
+//
+// Same exactness discipline as the 2-active fixture, at the 2-group 4-active
+// geometry that reaches shardedRelayAllToAllA4XorRelay.
+//
+// This schedule splits every off-diagonal segment into three ADJACENT regions
+// -- directA one hop, relay two hops through a helper, directB one hop -- so a
+// wire offset that disagrees with a peer's shows up partway through a segment
+// rather than everywhere, and the exact per-element comparator localizes it.
+// The arrival staging is packed to A-1 slots with a per-rank mapping, so a
+// wrong packed index swaps two segments.
+class ShardedRelayAllToAllA4LowPrecisionTest
+    : public ShardedRelayMultiGroupAllToAllTest {
+ protected:
+  static constexpr int kActive = 4;
+  static constexpr int kGroups = 2;
+
+  // 4 Mi elements per segment = 64 MiB per-rank buffer in fp32. The route
+  // metric is A * max(segmentCounts) * elementSize = 64 MiB, above both the
+  // fused XOR-relay lower bound (27 MB) and the low-precision threshold; the
+  // test asserts the route rather than assuming it.
+  static constexpr size_t kLpCount = 4ULL * 1024 * 1024;
+
+  static float segValue(int source, int dest) {
+    return static_cast<float>((source + 1) * 8 + (dest + 1));
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem[kGroups]{};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  void makeBuffers(size_t count, Buffers& b) {
+    b = Buffers{};
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t total = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], total * sizeof(float)));
+      HIPCHECK_TEST(hipMalloc(&b.recvMem[g], total * sizeof(float)));
+      if (g == b.myActiveGroup) {
+        std::vector<float> host(total);
+        for (int d = 0; d < kActive; d++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(d * count),
+              host.begin() + static_cast<ptrdiff_t>((d + 1) * count),
+              segValue(b.myActiveIndex, d));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            total * sizeof(float),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, total * sizeof(float)));
+      }
+      HIPCHECK_TEST(hipMemset(b.recvMem[g], 0xff, total * sizeof(float)));
+      b.sendPtrs[g] = b.sendMem[g];
+      b.recvPtrs[g] = b.recvMem[g];
+      b.counts[g] = count;
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+      HIPCHECK_TEST(hipFree(b.recvMem[g]));
+    }
+  }
+
+  void expectEverySegmentIsItsSource(const Buffers& b, size_t count) {
+    const size_t total = static_cast<size_t>(kActive) * count;
+    std::vector<float> got(total);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        b.recvMem[b.myActiveGroup],
+        total * sizeof(float),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int seg = 0; seg < kActive && reported < 8; seg++) {
+      const float want = segValue(seg, b.myActiveIndex);
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const float v = got[static_cast<size_t>(seg) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": segment " << seg
+                        << " element " << i << ": got " << v << ", want "
+                        << want
+                        << (seg == b.myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, int lowPrecision) {
+    TwoGroupFourActiveRanks layout;
+    return callAllToAllCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        ncclFloat32,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  void assertXorRelayRouteSelected(size_t count) {
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      counts[g] = count;
+    }
+    ASSERT_EQ(
+        rcclx::relay::selectAllToAllRoute(
+            kActive, 8 - kActive, kGroups, counts, sizeof(float)),
+        rcclx::relay::AllToAllRoute::A4XorRelay);
+  }
+};
+
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, ConstantSegmentsAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertXorRelayRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource(b, kLpCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertXorRelayRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource(b, kLpCount);
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  freeBuffers(b);
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
