@@ -3260,6 +3260,231 @@ TEST_F(
   freeBuffers(b);
 }
 
+// ===========================================================================
+// LOW PRECISION, FLAT A>2 PATH
+// ===========================================================================
+//
+// Same exactness discipline as the 2-active fixture above, at the 2-group
+// 4-active geometry, which is what reaches shardedRelayReduceScatterFlat.
+//
+// Every value here is a distinct per-(source, owner) constant, so a wrong block
+// index, a wrong helper slot or a wrong owner changes the answer. Exactness
+// survives even though the offload region rounds TWICE -- once on the way up
+// and again when the helper requantizes its sum -- because each 128-element
+// wire block is constant, and a constant block's absmax normalization makes the
+// code exactly 128 and the round trip exact for ANY value. That is the property
+// kLpNormalizeMax being a power of two buys, and it is what makes these exact
+// comparators legitimate rather than lucky.
+class ShardedRelayReduceScatterFlatLowPrecisionTest
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int kActive = 4;
+  static constexpr int kGroups = 2;
+
+  // 4 Mi elements per output block = 64 MiB of fp32 input per rank. The flat
+  // route's own metric is A * recvCount * elementSize = 64 MiB, which is above
+  // both the offload crossover (~48 MB) and the low-precision threshold; the
+  // test asserts the offload route rather than assuming it.
+  static constexpr size_t kLpCount = 4ULL * 1024 * 1024;
+
+  // Source s's contribution to owner j. Distinct in both indices.
+  static float blockValue(int sourceIndex, int ownerIndex) {
+    return static_cast<float>((sourceIndex + 1) * 10 + (ownerIndex + 1));
+  }
+
+  static float expectedOwnerValue(int ownerIndex) {
+    float sum = 0.0f;
+    for (int s = 0; s < kActive; s++) {
+      sum += blockValue(s, ownerIndex);
+    }
+    return sum;
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem{nullptr};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  void makeBuffers(size_t count, Buffers& b) {
+    b = Buffers{};
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t inputCount = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], inputCount * sizeof(float)));
+      if (g == b.myActiveGroup) {
+        std::vector<float> host(inputCount);
+        for (int owner = 0; owner < kActive; owner++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(owner * count),
+              host.begin() + static_cast<ptrdiff_t>((owner + 1) * count),
+              blockValue(b.myActiveIndex, owner));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            inputCount * sizeof(float),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, inputCount * sizeof(float)));
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.counts[g] = count;
+    }
+
+    HIPCHECK_TEST(hipMalloc(&b.recvMem, count * sizeof(float)));
+    HIPCHECK_TEST(hipMemset(b.recvMem, 0, count * sizeof(float)));
+    for (int g = 0; g < kGroups; g++) {
+      b.recvPtrs[g] = (g == b.myActiveGroup) ? b.recvMem : b.sendMem[g];
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+    }
+    HIPCHECK_TEST(hipFree(b.recvMem));
+  }
+
+  void expectOutputEquals(const Buffers& b, size_t count, float wantValue) {
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), b.recvMem, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != wantValue) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << ": got " << got[i] << ", want " << wantValue;
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, ncclRedOp_t op, int lowPrecision) {
+    TwoGroupFourActiveRanks layout;
+    return callReduceScatterCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        ncclFloat32,
+        op,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  // The flat schedule only routes through the helpers above the offload
+  // crossover; below it the call degenerates to a pure-direct all-to-all with
+  // the helpers idle, which low precision declines. Asserting the route keeps a
+  // resized test from silently covering the wrong schedule.
+  void assertOffloadRouteSelected(size_t count) {
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      counts[g] = count;
+    }
+    ASSERT_EQ(
+        rcclx::relay::selectReduceScatterRoute(
+            kActive, 8 - kActive, kGroups, counts, sizeof(float)),
+        rcclx::relay::ReduceScatterRoute::FlatOffload);
+  }
+};
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    ConstantBlocksAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  // Covers both regions of the schedule at once: the direct all-to-all over the
+  // intra links and the reduce-at-helper offload over the cross links. Their
+  // boundary is interior to the output block, so a wire offset that disagrees
+  // with a peer's shows up as a mismatch partway through rather than
+  // everywhere.
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    AvgAppliesTheDivisorOnce) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The divisor placement differs BETWEEN THE TWO REGIONS of this one schedule.
+  // The offload region's helper reduces and returns a plain sum, so the divisor
+  // waits for the owner's fold; the direct region has no helper at all and gets
+  // it in the same owner-side reduce. A divisor applied at the helper as well
+  // would scale only the offload region, which the exact comparator catches at
+  // the region boundary rather than everywhere.
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals(
+      b,
+      kLpCount,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  HIPCHECK_TEST(hipMemset(b.recvMem, 0, kLpCount * sizeof(float)));
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
