@@ -24,7 +24,7 @@
 #include <unordered_set>
 #include "os.h"
 
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LoggerRuntime.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/InitFolly.h"

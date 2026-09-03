@@ -10,7 +10,7 @@
 #include "comms/ctran/utils/CtranAvlTree.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 
 class Range {
  public:

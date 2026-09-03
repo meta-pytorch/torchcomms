@@ -4,8 +4,8 @@
 
 #include <fmt/format.h>
 
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LogTypes.h"
-#include "comms/utils/logger/LoggingFormat.h"
 #include "meta/NcclxLogger.h"
 
 #define NCCLX_LOG_SUBSYS(level, subsys, ...)            \
