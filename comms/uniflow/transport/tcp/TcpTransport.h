@@ -46,6 +46,37 @@ struct TcpTransportConfig {
   // Set this to 1 on both sides for mixed-version interoperability.
   size_t numSockets{4};
 
+  /// Network devices to stripe lanes across, e.g. {"eth1", "eth2"}. Empty (the
+  /// default) leaves egress to the routing table, exactly as before.
+  ///
+  /// Lane i is placed on device i % bindToDevices.size(), so the listener needs
+  /// one bound socket per device: for a `get` the bulk data flows listener to
+  /// dialer and the listener's egress follows its own routing table, so binding
+  /// only the dialer would leave `get` traffic on a single NIC. Both peers must
+  /// name the same number of devices, because each side derives the
+  /// lane-to-device mapping from the lane index alone.
+  ///
+  /// Size numSockets at about 4 lanes per device: one 200G NIC saturates near 4
+  /// lanes (~21 GB/s), so 2 devices need 8 to reach ~35 GB/s. Two devices with
+  /// only 4 lanes total reaches 27.6 GB/s, leaving both NICs half-fed.
+  ///
+  /// Only worth enabling for large transfers. Measured on MI350, get, median of
+  /// 3, 2 devices against 1: 1.00x at 8 MiB, 1.45x at 16 MiB, 1.63x at 64 MiB.
+  /// At 1-4 MiB the path is latency-bound and striping is neutral to slightly
+  /// negative.
+  ///
+  /// Pairing two ports on one PCI card measured the same as two ports on
+  /// separate cards (34.0 against 34.7-35.4 GB/s at 8 lanes, 64 MiB), even
+  /// though raw iperf3 on this hardware shows a clear card limit. This path
+  /// tops out around 276 Gbit/s, under the ~289 Gbit/s a single card sustains,
+  /// so the card is not yet the binding constraint -- the receive-side H2D copy
+  /// is, at roughly 73% of wire time. Card affinity starts to matter once that
+  /// is fixed.
+  ///
+  /// Device names are per-host and need not match between peers: the same
+  /// physical port is eth3 on one MI350 host and eth0 on the next.
+  std::vector<std::string> bindToDevices;
+
   TcpTransportConfig() = default;
   /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
       : socketConfig(std::move(config)) {}
@@ -180,6 +211,29 @@ struct TcpTransportInfo {
 
   std::string host{"127.0.0.1"};
   uint16_t port{0};
+
+  /// One listener socket's address, as advertised to the peer.
+  struct Endpoint {
+    std::string host;
+    uint16_t port{0};
+  };
+
+  /// Additional listeners, one per extra device when striping. Endpoint 0 is
+  /// (host, port) above, so this holds devices 1..D-1 and stays empty unless
+  /// TcpTransportConfig::bindToDevices names more than one device.
+  ///
+  /// Appended after the host bytes instead of being counted in Header, so a
+  /// single-device transport serializes byte-identically to a build that
+  /// predates striping. A multi-device one does not: the extra bytes fail the
+  /// old exact-size check, so striping requires this build on both peers.
+  std::vector<Endpoint> extraEndpoints;
+
+  /// Endpoint `index`, counting (host, port) as 0. Maps a lane to the listener
+  /// it belongs on. Indices past the end clamp to endpoint 0.
+  Endpoint endpointAt(size_t index) const;
+  size_t endpointCount() const {
+    return 1 + extraEndpoints.size();
+  }
 
   TransportInfo serialize() const;
   static Result<TcpTransportInfo> deserialize(std::span<const uint8_t> data);
@@ -880,7 +934,13 @@ class TcpTransport : public Transport {
   std::string host_{"127.0.0.1"};
   uint16_t port_{0};
 
-  std::unique_ptr<controller::AsyncTcpServer> server_;
+  /// One listener per entry in TcpTransportConfig::bindToDevices, or exactly
+  /// one unbound listener when that list is empty. servers_[d] owns the lanes
+  /// with index % servers_.size() == d.
+  std::vector<std::unique_ptr<controller::AsyncTcpServer>> servers_;
+
+  /// Endpoints advertised by bind(), parallel to servers_.
+  std::vector<TcpTransportInfo::Endpoint> localEndpoints_;
 
   /// One data socket plus the reader thread that drains it. Phase 1 establishes
   /// numSockets lanes but sends everything on lane 0, so only establishment,

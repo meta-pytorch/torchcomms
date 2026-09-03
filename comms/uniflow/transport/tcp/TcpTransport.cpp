@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <future>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -58,15 +60,41 @@ std::string hostOrderKey(const std::string& host) {
 // TcpTransportInfo
 // ---------------------------------------------------------------------------
 
+TcpTransportInfo::Endpoint TcpTransportInfo::endpointAt(size_t index) const {
+  if (index == 0 || index > extraEndpoints.size()) {
+    return Endpoint{host, port};
+  }
+  return extraEndpoints[index - 1];
+}
+
 TransportInfo TcpTransportInfo::serialize() const {
   Header header{
       .port = port,
       .hostLen = static_cast<uint16_t>(host.size()),
   };
-  TransportInfo data(sizeof(Header) + host.size());
+  size_t extraBytes = 0;
+  for (const auto& ep : extraEndpoints) {
+    extraBytes += sizeof(Header) + ep.host.size();
+  }
+  TransportInfo data(sizeof(Header) + host.size() + extraBytes);
   std::memcpy(data.data(), &header, sizeof(header));
   if (!host.empty()) {
     std::memcpy(data.data() + sizeof(header), host.data(), host.size());
+  }
+  // Same {port, hostLen, host} shape repeated, so with no extra endpoints the
+  // bytes are identical to a build that predates striping.
+  size_t offset = sizeof(header) + host.size();
+  for (const auto& ep : extraEndpoints) {
+    Header extra{
+        .port = ep.port,
+        .hostLen = static_cast<uint16_t>(ep.host.size()),
+    };
+    std::memcpy(data.data() + offset, &extra, sizeof(extra));
+    offset += sizeof(extra);
+    if (!ep.host.empty()) {
+      std::memcpy(data.data() + offset, ep.host.data(), ep.host.size());
+      offset += ep.host.size();
+    }
   }
   return data;
 }
@@ -79,7 +107,7 @@ Result<TcpTransportInfo> TcpTransportInfo::deserialize(
 
   Header header;
   std::memcpy(&header, data.data(), sizeof(header));
-  if (data.size() != sizeof(header) + header.hostLen) {
+  if (data.size() < sizeof(header) + header.hostLen) {
     return Err(ErrCode::InvalidArgument, "tcp transport info size mismatch");
   }
 
@@ -88,6 +116,31 @@ Result<TcpTransportInfo> TcpTransportInfo::deserialize(
   info.host.assign(
       reinterpret_cast<const char*>(data.data() + sizeof(header)),
       header.hostLen);
+
+  // Anything left over is extra endpoints. Consuming exactly the remainder
+  // keeps the old exact-size guarantee: trailing junk is still rejected.
+  size_t offset = sizeof(header) + header.hostLen;
+  while (offset < data.size()) {
+    if (data.size() - offset < sizeof(Header)) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp transport info has a truncated extra endpoint");
+    }
+    Header extra;
+    std::memcpy(&extra, data.data() + offset, sizeof(extra));
+    offset += sizeof(extra);
+    if (data.size() - offset < extra.hostLen) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp transport info extra endpoint host is truncated");
+    }
+    Endpoint ep;
+    ep.port = extra.port;
+    ep.host.assign(
+        reinterpret_cast<const char*>(data.data() + offset), extra.hostLen);
+    offset += extra.hostLen;
+    info.extraEndpoints.push_back(std::move(ep));
+  }
   return info;
 }
 
@@ -169,22 +222,65 @@ TransportInfo TcpTransport::bind() {
     UNIFLOW_LOG_ERROR("TcpTransport::bind: transport is already shut down");
     return TransportInfo{};
   }
-  server_ = std::make_unique<controller::AsyncTcpServer>(
-      host_ + ":0", config_.socketConfig, *evb_);
-  auto status = server_->init();
-  if (!status) {
-    UNIFLOW_LOG_ERROR(
-        "TcpTransport::bind: server init failed: {}", status.error().message());
-    state_ = TransportState::Error;
-    server_.reset();
-    return TransportInfo{};
+  // One listener per device when striping, otherwise a single listener on host_
+  // with egress left to the routing table. Each device's listener binds that
+  // device's own address *and* sets SO_BINDTODEVICE, because accepted sockets
+  // inherit the listener's device binding and that inheritance is what puts
+  // `get` payload on the intended NIC.
+  std::vector<std::pair<std::string, std::optional<std::string>>> targets;
+  if (config_.bindToDevices.empty()) {
+    targets.emplace_back(host_, std::nullopt);
+  } else {
+    for (const auto& device : config_.bindToDevices) {
+      auto addr = controller::deviceGlobalIpv6(device);
+      if (!addr) {
+        UNIFLOW_LOG_ERROR(
+            "TcpTransport::bind: cannot resolve device {}: {}",
+            device,
+            addr.error().message());
+        state_ = TransportState::Error;
+        return TransportInfo{};
+      }
+      targets.emplace_back(addr.value(), device);
+    }
   }
-  port_ = static_cast<uint16_t>(server_->getPort());
+
+  servers_.clear();
+  localEndpoints_.clear();
+  for (const auto& [addr, device] : targets) {
+    auto socketConfig = config_.socketConfig;
+    if (device) {
+      socketConfig.bindToDevice = device;
+    }
+    auto server = std::make_unique<controller::AsyncTcpServer>(
+        addr + ":0", socketConfig, *evb_);
+    auto status = server->init();
+    if (!status) {
+      UNIFLOW_LOG_ERROR(
+          "TcpTransport::bind: server init failed for {}{}: {}",
+          addr,
+          device ? fmt::format(" (dev {})", *device) : "",
+          status.error().message());
+      state_ = TransportState::Error;
+      servers_.clear();
+      localEndpoints_.clear();
+      return TransportInfo{};
+    }
+    localEndpoints_.push_back({addr, static_cast<uint16_t>(server->getPort())});
+    servers_.push_back(std::move(server));
+  }
+
+  // Endpoint 0 stays the transport's identity: it orders the listener/dialer
+  // roles and it is what a single-device peer sees.
+  host_ = localEndpoints_.front().host;
+  port_ = localEndpoints_.front().port;
   state_ = TransportState::Initialized;
 
   TcpTransportInfo info;
   info.host = host_;
   info.port = port_;
+  info.extraEndpoints.assign(
+      localEndpoints_.begin() + 1, localEndpoints_.end());
   return info.serialize();
 }
 
@@ -253,6 +349,30 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
             " lanes the hello can address");
   }
 
+  // Both peers derive lane-to-device placement from the lane index, so they
+  // must agree on the device count. The dialer can check this up front because
+  // the listener advertises one endpoint per device; catching it here gives a
+  // clear error instead of a handshake timeout on the lanes that map to a
+  // device the peer never bound.
+  const size_t localDevices =
+      config_.bindToDevices.empty() ? 1 : config_.bindToDevices.size();
+  if (peer.endpointCount() != localDevices) {
+    state_ = TransportState::Error;
+    return Err(
+        ErrCode::InvalidArgument,
+        "tcp connect: peer advertised " + std::to_string(peer.endpointCount()) +
+            " device endpoints, local is configured for " +
+            std::to_string(localDevices) + "; both peers must agree");
+  }
+  if (laneCount < localDevices) {
+    state_ = TransportState::Error;
+    return Err(
+        ErrCode::InvalidArgument,
+        "tcp connect: numSockets " + std::to_string(laneCount) +
+            " is below the " + std::to_string(localDevices) +
+            " configured devices, so some device would carry no lane");
+  }
+
   if (auto status = establishLanes(listener, peer, laneCount, handshakeTimeout);
       !status) {
     state_ = TransportState::Error;
@@ -294,84 +414,133 @@ Status TcpTransport::establishLanes(
   const bool exchangeHello = laneCount > 1;
 
   if (listener) {
-    if (!server_) {
+    if (servers_.empty()) {
       return Err(ErrCode::ConnectionFailed, "tcp connect: no server bound");
     }
+    // Lane i lives on device i % D, so listener d owns exactly the lanes
+    // congruent to d.
+    //
+    // Every listener must be armed before this thread blocks on any of them.
+    // AsyncAccept registers its listen fd with the EventBase lazily, on the
+    // first accept() call, and an accepted socket's magic exchange runs from
+    // that fd's EPOLLIN handler. An unarmed listener therefore leaves a
+    // dialed-in connection sitting in the kernel backlog with nobody completing
+    // its handshake, so the dialer's exchange times out after 500ms. Accepting
+    // device-by-device without pre-arming deadlocks as soon as one device owns
+    // two lanes: this thread waits for device 0's second lane, which the dialer
+    // only dials after device 1's lane succeeds, which it cannot.
+    const size_t deviceCount = servers_.size();
     uint64_t sessionId = 0;
     std::vector<bool> filled(laneCount, false);
-    for (size_t accepted = 0; accepted < laneCount; ++accepted) {
-      auto future = server_->accept();
-      if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
-        // shutdown() resolves the queued promise with nullptr (via teardown),
-        // so the get() below returns immediately instead of blocking. Safe from
-        // this thread: AsyncAccept::shutdown marshals teardown onto the
-        // EventBase thread and waits when called from outside the loop.
-        UNIFLOW_LOG_ERROR(
-            "TcpTransport::connect: only {} of {} lanes dialed in within {}s; "
-            "tearing down listener {}:{}",
-            accepted,
-            laneCount,
-            handshakeTimeout.count(),
-            host_,
-            port_);
-        server_->shutdown();
+    std::vector<size_t> quota(deviceCount);
+    for (size_t d = 0; d < deviceCount; ++d) {
+      // Lanes d, d+D, d+2D, ... land on this listener.
+      quota[d] =
+          laneCount / deviceCount + (d < laneCount % deviceCount ? 1 : 0);
+    }
+    // One outstanding accept per listener, purely to arm the fds. Once armed a
+    // listener keeps accepting and handshaking arrivals into readyConns_
+    // whether or not this thread is currently waiting on it.
+    std::vector<std::future<std::unique_ptr<controller::Conn>>> armed(
+        deviceCount);
+    for (size_t d = 0; d < deviceCount; ++d) {
+      if (quota[d] > 0) {
+        armed[d] = servers_[d]->accept();
       }
-      auto conn = future.get();
-      if (!conn) {
-        return Err(
-            ErrCode::ConnectionFailed, "tcp connect: data connection failed");
-      }
+    }
+    size_t accepted = 0;
+    for (size_t dev = 0; dev < deviceCount; ++dev) {
+      for (size_t n = 0; n < quota[dev]; ++n, ++accepted) {
+        auto future = armed[dev].valid() ? std::move(armed[dev])
+                                         : servers_[dev]->accept();
+        if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
+          // shutdown() resolves the queued promise with nullptr (via teardown),
+          // so the get() below returns immediately instead of blocking. Safe
+          // from this thread: AsyncAccept::shutdown marshals teardown onto the
+          // EventBase thread and waits when called from outside the loop.
+          UNIFLOW_LOG_ERROR(
+              "TcpTransport::connect: only {} of {} lanes dialed in within {}s; "
+              "tearing down listener {}:{} (dev {} of {})",
+              accepted,
+              laneCount,
+              handshakeTimeout.count(),
+              localEndpoints_[dev].host,
+              localEndpoints_[dev].port,
+              dev,
+              deviceCount);
+          servers_[dev]->shutdown();
+        }
+        auto conn = future.get();
+        if (!conn) {
+          return Err(
+              ErrCode::ConnectionFailed, "tcp connect: data connection failed");
+        }
 
-      // Accept order is not lane identity: the peer dials the lanes without
-      // any ordering guarantee, so the index has to come off the wire.
-      size_t laneIdx = accepted;
-      if (exchangeHello) {
-        std::vector<uint8_t> msg;
-        auto received = conn->recv(msg).get();
-        if (!received) {
-          return Err(
-              ErrCode::ConnectionFailed,
-              "tcp connect: lane hello not received: " +
-                  received.error().message());
+        // Accept order is not lane identity: the peer dials the lanes without
+        // any ordering guarantee, so the index has to come off the wire.
+        size_t laneIdx = accepted;
+        if (exchangeHello) {
+          std::vector<uint8_t> msg;
+          auto received = conn->recv(msg).get();
+          if (!received) {
+            return Err(
+                ErrCode::ConnectionFailed,
+                "tcp connect: lane hello not received: " +
+                    received.error().message());
+          }
+          auto helloResult = TcpLaneHello::deserialize(
+              std::span<const uint8_t>{msg.data(), received.value()});
+          if (!helloResult) {
+            return std::move(helloResult).error();
+          }
+          const auto hello = helloResult.value();
+          if (hello.laneCount != laneCount) {
+            return Err(
+                ErrCode::InvalidArgument,
+                "tcp connect: peer configured " +
+                    std::to_string(hello.laneCount) + " lanes, local is " +
+                    std::to_string(laneCount) + "; both peers must agree");
+          }
+          if (hello.laneIndex >= laneCount) {
+            return Err(
+                ErrCode::InvalidArgument,
+                "tcp connect: lane index " + std::to_string(hello.laneIndex) +
+                    " out of range for " + std::to_string(laneCount) +
+                    " lanes");
+          }
+          if (accepted == 0) {
+            sessionId = hello.sessionId;
+          } else if (hello.sessionId != sessionId) {
+            // A second dialer reaching this listener would otherwise take a
+            // lane and leave the real peer one short, hanging both.
+            return Err(
+                ErrCode::ConnectionFailed,
+                "tcp connect: lane session mismatch; another peer is dialing "
+                "this listener");
+          }
+          laneIdx = hello.laneIndex;
+          if (filled[laneIdx]) {
+            return Err(
+                ErrCode::ConnectionFailed,
+                "tcp connect: duplicate lane index " + std::to_string(laneIdx));
+          }
+          // The mapping is derived, not negotiated, so a lane arriving on the
+          // wrong listener means the peers disagree on device count. Left
+          // undetected it would silently place this lane's payload on the wrong
+          // NIC, which is exactly the mislabeling this feature exists to fix.
+          if (laneIdx % deviceCount != dev) {
+            return Err(
+                ErrCode::InvalidArgument,
+                "tcp connect: lane " + std::to_string(laneIdx) +
+                    " arrived on device " + std::to_string(dev) +
+                    " but maps to " + std::to_string(laneIdx % deviceCount) +
+                    "; peers disagree on device count (" +
+                    std::to_string(deviceCount) + " local)");
+          }
         }
-        auto helloResult = TcpLaneHello::deserialize(
-            std::span<const uint8_t>{msg.data(), received.value()});
-        if (!helloResult) {
-          return std::move(helloResult).error();
-        }
-        const auto hello = helloResult.value();
-        if (hello.laneCount != laneCount) {
-          return Err(
-              ErrCode::InvalidArgument,
-              "tcp connect: peer configured " +
-                  std::to_string(hello.laneCount) + " lanes, local is " +
-                  std::to_string(laneCount) + "; both peers must agree");
-        }
-        if (hello.laneIndex >= laneCount) {
-          return Err(
-              ErrCode::InvalidArgument,
-              "tcp connect: lane index " + std::to_string(hello.laneIndex) +
-                  " out of range for " + std::to_string(laneCount) + " lanes");
-        }
-        if (accepted == 0) {
-          sessionId = hello.sessionId;
-        } else if (hello.sessionId != sessionId) {
-          // A second dialer reaching this listener would otherwise take a lane
-          // and leave the real peer one short, hanging both.
-          return Err(
-              ErrCode::ConnectionFailed,
-              "tcp connect: lane session mismatch; another peer is dialing "
-              "this listener");
-        }
-        laneIdx = hello.laneIndex;
-        if (filled[laneIdx]) {
-          return Err(
-              ErrCode::ConnectionFailed,
-              "tcp connect: duplicate lane index " + std::to_string(laneIdx));
-        }
+        filled[laneIdx] = true;
+        lanes_[laneIdx]->conn = std::move(conn);
       }
-      filled[laneIdx] = true;
-      lanes_[laneIdx]->conn = std::move(conn);
     }
   } else {
     // Only has to distinguish this dialer from another one racing for the same
@@ -382,15 +551,28 @@ Status TcpTransport::establishLanes(
         static_cast<uint64_t>(
             std::chrono::steady_clock::now().time_since_epoch().count());
     for (size_t i = 0; i < laneCount; ++i) {
-      controller::AsyncTcpClient client(config_.socketConfig, *evb_);
-      auto future = client.connect(peer.host + ":" + std::to_string(peer.port));
+      // Same derived mapping as the listener: lane i on device i % D, dialing
+      // the endpoint the peer advertised for that device. Binding the dialer
+      // matters for `put` and for the request headers; the listener's own
+      // binding is what carries `get` payload.
+      const size_t deviceCount =
+          config_.bindToDevices.empty() ? 1 : config_.bindToDevices.size();
+      const size_t dev = i % deviceCount;
+      auto socketConfig = config_.socketConfig;
+      if (!config_.bindToDevices.empty()) {
+        socketConfig.bindToDevice = config_.bindToDevices[dev];
+      }
+      const auto target = peer.endpointAt(dev);
+      controller::AsyncTcpClient client(socketConfig, *evb_);
+      auto future =
+          client.connect(target.host + ":" + std::to_string(target.port));
       if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
         UNIFLOW_LOG_ERROR(
             "TcpTransport::connect: lane {} dial to {}:{} did not complete "
             "within {}s",
             i,
-            peer.host,
-            peer.port,
+            target.host,
+            target.port,
             handshakeTimeout.count());
         // No teardown hook on the client side; abandon the attempt. The future
         // owns its own state, so letting it go out of scope is safe.
@@ -1702,15 +1884,27 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
 // caller's destination. Anything unaccounted for is reader-thread work between
 // those points.
 void TcpTransport::logAndResetPhaseStats(std::string_view label) {
-  auto* conn = primaryConn();
-  if (conn == nullptr) {
+  if (lanes_.empty()) {
     return;
   }
-  auto& rs = conn->recvPhaseStats();
-  const uint64_t frames = rs.frames.load(std::memory_order_relaxed);
-  const uint64_t hdrNs = rs.headerWaitNs.load(std::memory_order_relaxed);
-  const uint64_t drainNs = rs.payloadDrainNs.load(std::memory_order_relaxed);
-  const uint64_t bytes = rs.payloadBytes.load(std::memory_order_relaxed);
+  // Summed over every lane: each lane has its own reader and its own stats, so
+  // reading lane 0 alone would report 1/N of the traffic and hide any imbalance
+  // between lanes. Per-lane frame counts are logged too, since an uneven split
+  // is itself a finding.
+  uint64_t frames = 0, hdrNs = 0, drainNs = 0, bytes = 0;
+  std::string perLaneFrames;
+  for (size_t i = 0; i < lanes_.size(); ++i) {
+    if (lanes_[i] == nullptr || lanes_[i]->conn == nullptr) {
+      continue;
+    }
+    auto& lrs = lanes_[i]->conn->recvPhaseStats();
+    const uint64_t lf = lrs.frames.load(std::memory_order_relaxed);
+    frames += lf;
+    hdrNs += lrs.headerWaitNs.load(std::memory_order_relaxed);
+    drainNs += lrs.payloadDrainNs.load(std::memory_order_relaxed);
+    bytes += lrs.payloadBytes.load(std::memory_order_relaxed);
+    perLaneFrames += (i == 0 ? "" : ",") + std::to_string(lf);
+  }
   const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed) +
       h2dState_->copyNs.load(std::memory_order_relaxed);
   const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed) +
@@ -1741,7 +1935,7 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         "tcp phases [{}]: frames={} bytes={} | first-byte {:.1f}us/frame "
         "({:.1f}%) | drain {:.1f}us/frame ({:.1f}%, {:.2f} GB/s) | dstcopy "
         "{:.1f}us x{} ({:.1f}% of wire) | receive_slabs attempts={} misses={} "
-        "vector_recvs={}",
+        "vector_recvs={} | lanes={} frames_per_lane=[{}]",
         label,
         frames,
         bytes,
@@ -1755,9 +1949,15 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         pct(copyNs),
         slabAttempts,
         slabMisses,
-        vectorReceives);
+        vectorReceives,
+        lanes_.size(),
+        perLaneFrames);
   }
-  rs.reset();
+  for (auto& lane : lanes_) {
+    if (lane != nullptr && lane->conn != nullptr) {
+      lane->conn->recvPhaseStats().reset();
+    }
+  }
   dstCopyNs_.store(0, std::memory_order_relaxed);
   dstCopyCount_.store(0, std::memory_order_relaxed);
   h2dState_->copyNs.store(0, std::memory_order_relaxed);
