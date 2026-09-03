@@ -2,13 +2,16 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -25,6 +28,18 @@
 namespace uniflow {
 
 class TcpRemoteRegistrationHandle;
+
+/// Transport-local behavior plus the controller's socket configuration.
+/// The converting constructor preserves existing callsites that pass a bare
+/// TcpSocketConfig as the transport/factory constructor argument.
+struct TcpTransportConfig {
+  controller::TcpSocketConfig socketConfig{};
+  bool asyncGetH2d{true};
+
+  TcpTransportConfig() = default;
+  /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
+      : socketConfig(std::move(config)) {}
+};
 
 /// Completion state shared by all requests in a single put()/get()/send()/
 /// recv() call. The call's promise is fulfilled once every request's reply has
@@ -46,33 +61,58 @@ struct TcpOpState {
     failLocked(std::move(status));
   }
 
+  /// Reserves the right to write into a caller-owned destination. Promise
+  /// resolution is deferred until every reservation retires, so the caller
+  /// cannot free the destination while a write is still in flight.
+  bool tryBeginWrite() {
+    std::lock_guard<std::mutex> lk(mu);
+    if (done) {
+      return false;
+    }
+    ++writesInFlight_;
+    return true;
+  }
+
+  /// Retires one write reservation and records that chunk's result. The first
+  /// failure wins, but is not published until every in-flight write is done.
+  void endWrite(Status status) {
+    std::lock_guard<std::mutex> lk(mu);
+    if (writesInFlight_ == 0) {
+      return;
+    }
+    --writesInFlight_;
+    if (status.hasError()) {
+      latchFailureLocked(std::move(status));
+    } else if (remaining > 0) {
+      --remaining;
+    }
+    settleLocked();
+  }
+
   /// Copies a reply payload into the caller's destination buffer (`write`) and
-  /// records that chunk's completion as one atomic step.
+  /// records that chunk's completion as one atomic lifetime reservation.
   ///
   /// Resolving this op's promise is what releases the caller to free or reuse
-  /// the destination, so a write into it may only start while the promise is
-  /// unresolved and must keep it unresolved until the write finishes. Holding
-  /// `mu` across `write` gives both: a concurrent fail() (send error, peer
-  /// disconnect, shutdown) either resolves the op first, in which case `write`
-  /// is skipped because the destination may already be gone, or it blocks
-  /// until the write is done.
+  /// the destination. The reservation keeps the promise unresolved while
+  /// `write` runs without holding `mu`; a concurrent failure is latched and
+  /// published only after the write retires. This is the same lifetime rule
+  /// used by asynchronous writes whose completion happens on another thread.
   ///
   /// `mu` is a leaf lock: nothing in this struct acquires another mutex while
   /// holding it, and no caller may hold one of the transport's container
-  /// mutexes (`inflightMu_`, `recvMu_`, `outMu_`) when calling in. `write`
-  /// therefore must only touch the destination buffer -- a memcpy or a device
-  /// copy -- and never reach back into the transport's queues.
+  /// mutexes (`inflightMu_`, `recvMu_`, `outMu_`) when calling in.
   template <typename Fn>
   void writeAndComplete(Fn&& write) {
-    std::lock_guard<std::mutex> lk(mu);
-    if (done) {
+    if (!tryBeginWrite()) {
       return;
     }
-    Status status = write();
-    if (status.hasError()) {
-      failLocked(std::move(status));
-    } else {
-      completeOneLocked();
+    try {
+      endWrite(write());
+    } catch (...) {
+      endWrite(
+          Err(ErrCode::TransportError,
+              "tcp: destination write raised an exception"));
+      throw;
     }
   }
 
@@ -84,19 +124,42 @@ struct TcpOpState {
     if (remaining > 0) {
       --remaining;
     }
-    if (remaining == 0) {
-      done = true;
-      promise.set_value(Ok());
-    }
+    settleLocked();
   }
 
   void failLocked(Status status) {
     if (done) {
       return;
     }
+    if (writesInFlight_ > 0) {
+      latchFailureLocked(std::move(status));
+      return;
+    }
     done = true;
     promise.set_value(std::move(status));
   }
+
+  void latchFailureLocked(Status status) {
+    if (!firstFailure_.has_value()) {
+      firstFailure_.emplace(std::move(status));
+    }
+  }
+
+  void settleLocked() {
+    if (done || writesInFlight_ > 0) {
+      return;
+    }
+    if (firstFailure_.has_value()) {
+      done = true;
+      promise.set_value(std::move(*firstFailure_));
+    } else if (remaining == 0) {
+      done = true;
+      promise.set_value(Ok());
+    }
+  }
+
+  size_t writesInFlight_{0};
+  std::optional<Status> firstFailure_;
 };
 
 struct TcpTransportInfo {
@@ -396,6 +459,39 @@ struct PendingReadReply {
   int deviceId{-1};
 };
 
+/// One slab-backed get destination copy waiting for its CUDA event. The write
+/// reservation and receive slab stay owned here until the GPU has finished
+/// reading the source and writing the caller's destination.
+struct PendingH2d {
+  std::shared_ptr<TcpOpState> state;
+  TcpPinnedSlab slab;
+  void* event{nullptr};
+  int deviceId{-1};
+  void* stream{nullptr};
+  uint64_t reqId{0};
+  std::chrono::steady_clock::time_point launchedAt;
+};
+
+/// Shared independently of TcpTransport so queued EventBase callbacks never
+/// retain or dereference a transport that shutdown has already destroyed.
+struct H2dPollState {
+  std::mutex mu;
+  std::condition_variable drained;
+  std::deque<PendingH2d> pending;
+  std::shared_ptr<TcpOpState> retiringState;
+  // There are exactly two receive slabs, so at most two copies can become
+  // unquiesceable. Fixed slots avoid allocating on this driver-failure path.
+  std::array<std::optional<PendingH2d>, 2> quarantined;
+  std::shared_ptr<H2dPollState> quarantineKeepalive;
+  bool pollScheduled{false};
+  bool stopping{false};
+  size_t activeRetirements{0};
+  EventBase* evb{nullptr};
+  std::shared_ptr<CudaApi> cudaApi;
+  std::atomic<uint64_t> copyNs{0};
+  std::atomic<uint64_t> copyCount{0};
+};
+
 /// A VRAM ReadReply that has not been started because no staging slab was free.
 /// Everything needed to build and launch it later is here, so the reader can
 /// record it and go straight back to the socket.
@@ -449,7 +545,7 @@ class TcpTransport : public Transport {
       int deviceId,
       EventBase* evb,
       std::shared_ptr<TcpSegmentRegistry> registry,
-      controller::TcpSocketConfig config = {},
+      TcpTransportConfig config = {},
       std::string host = "127.0.0.1",
       std::shared_ptr<CudaApi> cudaApi = nullptr);
 
@@ -470,6 +566,10 @@ class TcpTransport : public Transport {
 
   TransportState state() const noexcept override {
     return state_;
+  }
+
+  bool asyncGetH2dEnabled() const noexcept {
+    return config_.asyncGetH2d;
   }
 
   TransportInfo bind() override;
@@ -523,6 +623,7 @@ class TcpTransport : public Transport {
   // directly and assert the bounds checks reject them. Those checks are the
   // memory-safety boundary of this transport, so they are worth pinning.
   friend class TcpTransportFrameTest;
+  friend class TcpReceivePoolTest;
 
   Result<const TcpRemoteRegistrationHandle*> findRemoteHandle(
       const RemoteRegisteredSegment::Span& span) const;
@@ -538,13 +639,18 @@ class TcpTransport : public Transport {
  private:
   // Sender thread: drains outQueue_ and performs all socket sends.
   void senderLoop() noexcept;
-  // Handles one fully-received inbound frame (reader thread).
-  void handleFrame(std::span<const uint8_t> frame) noexcept;
+  // Handles one fully-received inbound frame (reader thread). `receiveSlab`
+  // owns frame.data() when the reader received directly into pinned memory.
+  void handleFrame(
+      std::span<const uint8_t> frame,
+      TcpPinnedSlab receiveSlab = {}) noexcept;
   // The body of handleFrame(), allowed to throw. Peer-supplied lengths size
   // allocations in here and the VRAM staging path throws on an invalid
   // deviceId, so handleFrame() is the boundary that stops either reaching the
   // top of the reader thread.
-  void handleFrameImpl(std::span<const uint8_t> frame);
+  void handleFrameImpl(
+      std::span<const uint8_t> frame,
+      TcpPinnedSlab receiveSlab);
   // Queues one fire-and-forget framed message for the sender thread.
   // `mayBlock` must be true only for caller threads. Returns false if the frame
   // was not queued (transport closing, or the reader hit the cap and refused
@@ -637,6 +743,33 @@ class TcpTransport : public Transport {
   // transport per peer -- including the DRAM-only peers that never stage at
   // all.
   Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool();
+  // The independent inbound pool. It is created only for async-enabled,
+  // non-zero VRAM get(), and is sized to the wire cap because recv(span)
+  // consumes the length prefix before it can reject an undersized buffer.
+  std::shared_ptr<TcpPinnedSlabPool> ensureReceivePool();
+  // Reader-only lookup: never allocates and never blocks.
+  std::shared_ptr<TcpPinnedSlabPool> receivePoolIfCreated();
+  // Starts a slab-backed get destination copy. On success the pending queue
+  // owns `slab` and the caller's write reservation until event retirement.
+  Status startAsyncH2d(
+      const TcpInflight& entry,
+      std::span<const uint8_t> payload,
+      TcpPinnedSlab slab,
+      uint64_t reqId);
+  void schedulePendingH2dPoll();
+  static void pollPendingH2d(std::shared_ptr<H2dPollState> state) noexcept;
+  static Status waitForH2dCopy(
+      const std::shared_ptr<H2dPollState>& state,
+      int deviceId,
+      void* stream) noexcept;
+  static void destroyH2dEvent(
+      const std::shared_ptr<H2dPollState>& state,
+      int deviceId,
+      void* event) noexcept;
+  static void quarantineH2d(
+      const std::shared_ptr<H2dPollState>& state,
+      PendingH2d copy) noexcept;
+  void drainPendingH2d();
   // Retires staged replies whose copy has finished, oldest first. Runs on the
   // EventBase, never on the reader thread: polling from the reader would put
   // the head-of-line block straight back.
@@ -696,7 +829,7 @@ class TcpTransport : public Transport {
   EventBase* evb_{nullptr};
   std::shared_ptr<TcpSegmentRegistry> registry_;
   std::shared_ptr<CudaApi> cudaApi_;
-  controller::TcpSocketConfig config_;
+  TcpTransportConfig config_;
   std::string name_{"tcp"};
   // Atomic: written by bind()/connect()/shutdown() and read by the
   // put/get/send/recv guards and state(), which callers may invoke from any
@@ -715,6 +848,7 @@ class TcpTransport : public Transport {
   // nothing more.
   std::atomic<uint64_t> dstCopyNs_{0};
   std::atomic<uint64_t> dstCopyCount_{0};
+  std::shared_ptr<H2dPollState> h2dState_;
 
   // Serialises bind()/connect()/shutdown(), which together own server_,
   // dataConn_, reader_ and sender_. Without it a shutdown() concurrent with an
@@ -767,6 +901,9 @@ class TcpTransport : public Transport {
   // many chunks either reaches the queue whole or not at all.
   static constexpr size_t kMaxPutWaveChunks =
       kStagingSlabCount - kStagingSlabsReservedForReader;
+  // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
+  // exhaustion falls back to the reusable vector instead of blocking receive.
+  static constexpr size_t kReceiveSlabCount = 2;
   // Bytes currently queued in outQueue_. Guarded by outMu_.
   size_t outBytes_{0};
 
@@ -820,6 +957,14 @@ class TcpTransport : public Transport {
   std::mutex poolMu_;
   std::shared_ptr<TcpPinnedSlabPool> slabPool_;
 
+  // Separate from the outbound/responder staging pool: receive slabs must hold
+  // any legal wire frame, not just one kMaxChunkSize payload.
+  std::mutex receivePoolCreateMu_;
+  // Accessed with the std::atomic_load/store free functions, which support
+  // shared_ptr before std::atomic<shared_ptr> is available in the toolchain.
+  std::shared_ptr<TcpPinnedSlabPool> receiveSlabPool_;
+  bool receivePoolUnavailable_{false};
+
   // Outbound frame queue drained by the sender thread. Decoupling all sends
   // from the reader thread is what prevents a mutual-READ deadlock (two peers'
   // readers both blocked mid-send while neither drains its recv).
@@ -850,7 +995,7 @@ class TcpTransportFactory : public TransportFactory {
   explicit TcpTransportFactory(
       int deviceId,
       EventBase* evb,
-      controller::TcpSocketConfig config = {},
+      TcpTransportConfig config = {},
       std::string host = "127.0.0.1",
       std::shared_ptr<CudaApi> cudaApi = nullptr);
 
@@ -871,7 +1016,7 @@ class TcpTransportFactory : public TransportFactory {
  private:
   int deviceId_{-1};
   EventBase* evb_{nullptr};
-  controller::TcpSocketConfig config_;
+  TcpTransportConfig config_;
   std::string host_{"127.0.0.1"};
   std::shared_ptr<CudaApi> cudaApi_;
   std::shared_ptr<TcpSegmentRegistry> registry_{
