@@ -2,9 +2,9 @@
 
 #include "comms/utils/RankUtils.h"
 
+#include <charconv>
+#include <cstring>
 #include <cstdlib>
-
-#include <folly/Conv.h>
 
 namespace {
 
@@ -40,9 +40,12 @@ RunType getRunType() {
 /* static */
 std::optional<int64_t> RankUtils::getInt64FromEnv(const char* envVar) {
   char* envVarValue = getenv(envVar);
-  if (envVarValue && strlen(envVarValue)) {
-    if (auto result = folly::tryTo<int64_t>(envVarValue); result.hasValue()) {
-      return result.value();
+  if (envVarValue) {
+    int64_t parsed_value = 0;
+    const char* end = envVarValue + std::strlen(envVarValue);
+    auto [ptr, ec] = std::from_chars(envVarValue, end, parsed_value);
+    if (ec == std::errc{} && ptr == end) {
+      return parsed_value;
     }
   }
   return std::nullopt;
