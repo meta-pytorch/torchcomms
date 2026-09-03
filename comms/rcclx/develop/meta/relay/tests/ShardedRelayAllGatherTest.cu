@@ -2333,6 +2333,192 @@ TEST_F(ShardedRelayAllGatherLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
   freeBuffers(b);
 }
 
+// ===========================================================================
+// LOW PRECISION, FLAT A>2 PATH
+// ===========================================================================
+//
+// Same exactness discipline as the 2-active fixture, at the 2-group 4-active
+// geometry that reaches shardedRelayAllGatherFlat. Each rank's shard is a
+// distinct constant, and the comparator checks EVERY one of the A output slots,
+// so a wrong slot, a wrong packed staging index, or a dequantize that strayed
+// onto the diagonal all change the answer.
+//
+// The packed arrival region is the thing under test that has no analogue in the
+// other collectives: foreign slot s stages at index (s < m ? s : s - 1), which
+// is a DIFFERENT mapping on every rank. Getting it wrong swaps two slots, which
+// the per-slot comparator names precisely.
+class ShardedRelayAllGatherFlatLowPrecisionTest
+    : public ShardedRelayMultiGroupAllGatherTest {
+ protected:
+  static constexpr int kActive = 4;
+  static constexpr int kGroups = 2;
+
+  // 4 Mi elements per shard = 16 MiB fp32 in, 64 MiB out. The flat route's
+  // metric is max(sendCounts) * elementSize = 16 MiB, above both the offload
+  // crossover and the low-precision threshold; the test asserts the route
+  // rather than assuming it.
+  static constexpr size_t kLpCount = 4ULL * 1024 * 1024;
+
+  static float shardValue(int activeIndex) {
+    return static_cast<float>(activeIndex + 1) * 5.0f;
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem[kGroups]{};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  void makeBuffers(size_t count, Buffers& b) {
+    b = Buffers{};
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t outCount = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], count * sizeof(float)));
+      if (g == b.myActiveGroup) {
+        const std::vector<float> host(count, shardValue(b.myActiveIndex));
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            count * sizeof(float),
+            hipMemcpyHostToDevice));
+        HIPCHECK_TEST(hipMalloc(&b.recvMem[g], outCount * sizeof(float)));
+        // Poison, so a slot the implementation never writes fails rather than
+        // accidentally passing.
+        HIPCHECK_TEST(hipMemset(b.recvMem[g], 0xff, outCount * sizeof(float)));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, count * sizeof(float)));
+        b.recvMem[g] = b.sendMem[g];
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.recvPtrs[g] = b.recvMem[g];
+      b.counts[g] = count;
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+      if (g == b.myActiveGroup) {
+        HIPCHECK_TEST(hipFree(b.recvMem[g]));
+      }
+    }
+  }
+
+  void expectEverySlotIsItsOwner(const Buffers& b, size_t count) {
+    const size_t outCount = static_cast<size_t>(kActive) * count;
+    std::vector<float> got(outCount);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        b.recvMem[b.myActiveGroup],
+        outCount * sizeof(float),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int slot = 0; slot < kActive && reported < 8; slot++) {
+      const float want = shardValue(slot);
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const float v = got[static_cast<size_t>(slot) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": slot " << slot
+                        << " element " << i << ": got " << v << ", want "
+                        << want
+                        << (slot == b.myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, int lowPrecision) {
+    TwoGroupFourActiveRanks layout;
+    return callAllGatherCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        ncclFloat32,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  void assertOffloadRouteSelected(size_t count) {
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      counts[g] = count;
+    }
+    ASSERT_EQ(
+        rcclx::relay::selectAllGatherRoute(
+            kActive, 8 - kActive, kGroups, counts, sizeof(float)),
+        rcclx::relay::AllGatherRoute::FlatOffload);
+  }
+};
+
+TEST_F(ShardedRelayAllGatherFlatLowPrecisionTest, ConstantShardsAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  // Covers both regions at once: the direct all-to-all over the intra links and
+  // the fan-out offload through the helpers. Their boundary is interior to each
+  // slot, so a wire offset a peer computes differently shows up partway through
+  // a slot rather than everywhere.
+  expectEverySlotIsItsOwner(b, kLpCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayAllGatherFlatLowPrecisionTest,
+    InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySlotIsItsOwner(b, kLpCount);
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  freeBuffers(b);
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySlotIsItsOwner(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
