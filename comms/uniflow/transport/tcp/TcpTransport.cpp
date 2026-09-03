@@ -99,7 +99,7 @@ TcpTransport::TcpTransport(
     int deviceId,
     EventBase* evb,
     std::shared_ptr<TcpSegmentRegistry> registry,
-    controller::TcpSocketConfig config,
+    TcpTransportConfig config,
     std::string host,
     std::shared_ptr<CudaApi> cudaApi)
     : deviceId_(deviceId),
@@ -116,6 +116,9 @@ TcpTransport::TcpTransport(
   if (!host.empty()) {
     host_ = std::move(host);
   }
+  h2dState_ = std::make_shared<H2dPollState>();
+  h2dState_->evb = evb_;
+  h2dState_->cudaApi = cudaApi_;
 }
 
 Status TcpTransport::hostFromDevice(
@@ -167,7 +170,7 @@ TransportInfo TcpTransport::bind() {
     return TransportInfo{};
   }
   server_ = std::make_unique<controller::AsyncTcpServer>(
-      host_ + ":0", config_, *evb_);
+      host_ + ":0", config_.socketConfig, *evb_);
   auto status = server_->init();
   if (!status) {
     UNIFLOW_LOG_ERROR(
@@ -236,7 +239,7 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
   // This matters beyond TCP: MultiTransport::connect() connects every
   // registered transport, so on AMD a wedged TCP handshake would stall
   // connection setup even for jobs whose data path is RDMA.
-  const auto handshakeTimeout = config_.connTimeout.value_or(
+  const auto handshakeTimeout = config_.socketConfig.connTimeout.value_or(
       std::chrono::seconds{kDefaultHandshakeTimeoutSeconds});
 
   if (listener) {
@@ -260,7 +263,7 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
     }
     conn = future.get();
   } else {
-    controller::AsyncTcpClient client(config_, *evb_);
+    controller::AsyncTcpClient client(config_.socketConfig, *evb_);
     auto future = client.connect(peer.host + ":" + std::to_string(peer.port));
     if (future.wait_for(handshakeTimeout) != std::future_status::ready) {
       UNIFLOW_LOG_ERROR(
@@ -559,6 +562,17 @@ std::future<Status> TcpTransport::get(
   }
   state->remaining = totalChunks;
 
+  if (config_.asyncGetH2d) {
+    const bool needsReceivePool = std::any_of(
+        requests.begin(), requests.end(), [](const TransferRequest& req) {
+          return req.local.size() > 0 &&
+              req.local.memType() == MemoryType::VRAM;
+        });
+    if (needsReceivePool) {
+      (void)ensureReceivePool();
+    }
+  }
+
   for (const auto& req : requests) {
     auto remoteHandle = findRemoteHandle(req.remote);
     if (!remoteHandle) {
@@ -609,6 +623,38 @@ std::future<Status> TcpTransport::get(
   }
 
   return future;
+}
+
+std::shared_ptr<TcpPinnedSlabPool> TcpTransport::ensureReceivePool() {
+  if (auto pool = std::atomic_load_explicit(
+          &receiveSlabPool_, std::memory_order_acquire)) {
+    return pool;
+  }
+  std::lock_guard<std::mutex> lk(receivePoolCreateMu_);
+  if (auto pool = std::atomic_load_explicit(
+          &receiveSlabPool_, std::memory_order_relaxed)) {
+    return pool;
+  }
+  if (receivePoolUnavailable_ || cudaApi_ == nullptr) {
+    return nullptr;
+  }
+  auto pool = TcpPinnedSlabPool::create(
+      cudaApi_, kMaxFrameSize, kReceiveSlabCount, /*reservedForReader=*/0);
+  if (!pool) {
+    receivePoolUnavailable_ = true;
+    UNIFLOW_LOG_WARN(
+        "tcp get: pinned receive pool unavailable; using vector fallback: {}",
+        pool.error().message());
+    return nullptr;
+  }
+  std::atomic_store_explicit(
+      &receiveSlabPool_, pool.value(), std::memory_order_release);
+  return pool.value();
+}
+
+std::shared_ptr<TcpPinnedSlabPool> TcpTransport::receivePoolIfCreated() {
+  return std::atomic_load_explicit(
+      &receiveSlabPool_, std::memory_order_acquire);
 }
 
 Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool() {
@@ -847,6 +893,283 @@ void TcpTransport::startDeferredReadReplies() {
       (void)enqueueFrame(
           makeHeaderFrame(TcpOp::Error, deferred.reqId), /*mayBlock=*/false);
     }
+  }
+}
+
+Status TcpTransport::startAsyncH2d(
+    const TcpInflight& entry,
+    std::span<const uint8_t> payload,
+    TcpPinnedSlab slab,
+    uint64_t reqId) {
+  if (!entry.state->tryBeginWrite()) {
+    return Err(
+        ErrCode::ConnectionFailed,
+        "tcp get: operation completed before destination copy started");
+  }
+
+  auto stream = static_cast<cudaStream_t>(entry.stream);
+  cudaEvent_t event{};
+  bool copyIssued = false;
+  Status status = Ok();
+  try {
+    CudaDeviceGuard guard(*cudaApi_, entry.deviceId);
+    if (status = cudaApi_->eventCreate(&event); status.hasError()) {
+      entry.state->endWrite(status);
+      return status;
+    }
+    if (status = cudaApi_->memcpyAsync(
+            entry.dst,
+            payload.data(),
+            payload.size(),
+            cudaMemcpyHostToDevice,
+            stream);
+        status.hasError()) {
+      (void)cudaApi_->eventDestroy(event);
+      entry.state->endWrite(status);
+      return status;
+    }
+    copyIssued = true;
+    if (status = cudaApi_->eventRecord(event, stream); status.hasError()) {
+      PendingH2d uncertain{
+          entry.state,
+          std::move(slab),
+          event,
+          entry.deviceId,
+          entry.stream,
+          reqId,
+          std::chrono::steady_clock::now()};
+      const auto syncStatus =
+          waitForH2dCopy(h2dState_, uncertain.deviceId, uncertain.stream);
+      if (syncStatus.hasError()) {
+        quarantineH2d(h2dState_, std::move(uncertain));
+        return syncStatus;
+      }
+      destroyH2dEvent(h2dState_, uncertain.deviceId, uncertain.event);
+      entry.state->endWrite(Ok());
+      return Ok();
+    }
+  } catch (const std::exception& e) {
+    if (copyIssued &&
+        waitForH2dCopy(h2dState_, entry.deviceId, entry.stream).hasError()) {
+      quarantineH2d(
+          h2dState_,
+          PendingH2d{
+              entry.state,
+              std::move(slab),
+              event,
+              entry.deviceId,
+              entry.stream,
+              reqId,
+              std::chrono::steady_clock::now()});
+      return Err(
+          ErrCode::DriverError,
+          "tcp get: destination copy could not be quiesced");
+    }
+    if (event != nullptr) {
+      destroyH2dEvent(h2dState_, entry.deviceId, event);
+    }
+    status =
+        Err(ErrCode::InvalidArgument,
+            "tcp get: VRAM destination needs a selectable deviceId, got " +
+                std::to_string(entry.deviceId) + ": " + e.what());
+    entry.state->endWrite(status);
+    return status;
+  }
+
+  PendingH2d pending{
+      entry.state,
+      std::move(slab),
+      event,
+      entry.deviceId,
+      entry.stream,
+      reqId,
+      std::chrono::steady_clock::now()};
+  try {
+    std::lock_guard<std::mutex> lk(h2dState_->mu);
+    if (h2dState_->stopping) {
+      status =
+          Err(ErrCode::ConnectionFailed,
+              "tcp get: transport stopped while destination copy started");
+    } else {
+      h2dState_->pending.push_back(std::move(pending));
+      return Ok();
+    }
+  } catch (const std::exception& e) {
+    status = Err(
+        ErrCode::TransportError,
+        "tcp get: could not track destination copy: " + std::string(e.what()));
+  }
+
+  if (auto syncStatus = waitForH2dCopy(h2dState_, entry.deviceId, entry.stream);
+      syncStatus.hasError()) {
+    quarantineH2d(h2dState_, std::move(pending));
+    return syncStatus;
+  }
+  destroyH2dEvent(h2dState_, entry.deviceId, event);
+  entry.state->endWrite(status);
+  return status;
+}
+
+void TcpTransport::schedulePendingH2dPoll() {
+  auto state = h2dState_;
+  {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping || state->pollScheduled || state->pending.empty()) {
+      return;
+    }
+    state->pollScheduled = true;
+  }
+  state->evb->dispatch(
+      [state = std::move(state)]() noexcept { pollPendingH2d(state); });
+}
+
+void TcpTransport::pollPendingH2d(
+    std::shared_ptr<H2dPollState> state) noexcept {
+  while (true) {
+    PendingH2d retired;
+    Status result = Ok();
+    bool haveRetired = false;
+    bool queryFailed = false;
+    bool reschedule = false;
+    {
+      std::lock_guard<std::mutex> lk(state->mu);
+      if (state->stopping) {
+        state->pollScheduled = false;
+        return;
+      }
+      for (auto it = state->pending.begin(); it != state->pending.end(); ++it) {
+        Result<bool> done =
+            Err(ErrCode::DriverError,
+                "tcp get: could not select device for event query");
+        try {
+          CudaDeviceGuard guard(*state->cudaApi, it->deviceId);
+          done =
+              state->cudaApi->eventQuery(static_cast<cudaEvent_t>(it->event));
+        } catch (const std::exception& e) {
+          done = Err(ErrCode::DriverError, e.what());
+        }
+        if (done.hasValue() && !done.value()) {
+          continue;
+        }
+        if (done.hasError()) {
+          result = std::move(done).error();
+          queryFailed = true;
+        }
+        retired = std::move(*it);
+        state->retiringState = retired.state;
+        state->pending.erase(it);
+        ++state->activeRetirements;
+        haveRetired = true;
+        break;
+      }
+      if (!haveRetired) {
+        if (state->pending.empty()) {
+          state->pollScheduled = false;
+          return;
+        }
+        reschedule = true;
+      }
+    }
+
+    if (reschedule) {
+      std::this_thread::yield();
+      state->evb->dispatch(
+          [state = std::move(state)]() noexcept { pollPendingH2d(state); });
+      return;
+    }
+
+    if (queryFailed) {
+      if (waitForH2dCopy(state, retired.deviceId, retired.stream).hasError()) {
+        quarantineH2d(state, std::move(retired));
+        std::lock_guard<std::mutex> lk(state->mu);
+        state->retiringState.reset();
+        --state->activeRetirements;
+        state->drained.notify_all();
+        continue;
+      }
+      result = Ok();
+    }
+    destroyH2dEvent(state, retired.deviceId, retired.event);
+    state->copyNs.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - retired.launchedAt)
+            .count(),
+        std::memory_order_relaxed);
+    state->copyCount.fetch_add(1, std::memory_order_relaxed);
+    retired.state->endWrite(std::move(result));
+    retired.slab.reset();
+
+    {
+      std::lock_guard<std::mutex> lk(state->mu);
+      state->retiringState.reset();
+      --state->activeRetirements;
+      if (state->activeRetirements == 0) {
+        state->drained.notify_all();
+      }
+    }
+  }
+}
+
+Status TcpTransport::waitForH2dCopy(
+    const std::shared_ptr<H2dPollState>& state,
+    int deviceId,
+    void* stream) noexcept {
+  try {
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
+    return state->cudaApi->streamSynchronize(static_cast<cudaStream_t>(stream));
+  } catch (const std::exception& e) {
+    return Err(ErrCode::DriverError, e.what());
+  }
+}
+
+void TcpTransport::destroyH2dEvent(
+    const std::shared_ptr<H2dPollState>& state,
+    int deviceId,
+    void* event) noexcept {
+  try {
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
+    (void)state->cudaApi->eventDestroy(static_cast<cudaEvent_t>(event));
+  } catch (const std::exception&) {
+  }
+}
+
+void TcpTransport::quarantineH2d(
+    const std::shared_ptr<H2dPollState>& state,
+    PendingH2d copy) noexcept {
+  // Neither the event nor stream established quiescence. Deliberately retain
+  // the write reservation and slab: resolving or recycling either could let
+  // the caller or pool free memory still touched by DMA.
+  copy.state->fail(
+      Err(ErrCode::DriverError,
+          "tcp get: destination copy could not be safely quiesced"));
+  std::lock_guard<std::mutex> lk(state->mu);
+  for (auto& slot : state->quarantined) {
+    if (!slot.has_value()) {
+      slot.emplace(std::move(copy));
+      state->quarantineKeepalive = state;
+      return;
+    }
+  }
+  std::terminate();
+}
+
+void TcpTransport::drainPendingH2d() {
+  auto state = h2dState_;
+  std::deque<PendingH2d> pending;
+  {
+    std::unique_lock<std::mutex> lk(state->mu);
+    pending.swap(state->pending);
+    state->drained.wait(lk, [&]() { return state->activeRetirements == 0; });
+  }
+  for (auto& copy : pending) {
+    if (waitForH2dCopy(state, copy.deviceId, copy.stream).hasError()) {
+      quarantineH2d(state, std::move(copy));
+      continue;
+    }
+    destroyH2dEvent(state, copy.deviceId, copy.event);
+    copy.state->endWrite(
+        Err(ErrCode::ConnectionFailed,
+            "tcp transport shut down during destination copy"));
   }
 }
 
@@ -1200,8 +1523,10 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
   const uint64_t hdrNs = rs.headerWaitNs.load(std::memory_order_relaxed);
   const uint64_t drainNs = rs.payloadDrainNs.load(std::memory_order_relaxed);
   const uint64_t bytes = rs.payloadBytes.load(std::memory_order_relaxed);
-  const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed);
-  const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed);
+  const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed) +
+      h2dState_->copyNs.load(std::memory_order_relaxed);
+  const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed) +
+      h2dState_->copyCount.load(std::memory_order_relaxed);
 
   if (frames == 0) {
     UNIFLOW_LOG_INFO("tcp phases [{}]: no frames", label);
@@ -1237,23 +1562,40 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
   rs.reset();
   dstCopyNs_.store(0, std::memory_order_relaxed);
   dstCopyCount_.store(0, std::memory_order_relaxed);
+  h2dState_->copyNs.store(0, std::memory_order_relaxed);
+  h2dState_->copyCount.store(0, std::memory_order_relaxed);
 }
 
 void TcpTransport::readerLoop() noexcept {
-  // Hoisted so a steady stream of same-size frames stops reallocating: recv()
-  // resize()s this to the frame length, and resizing to the size it already has
-  // neither reallocates nor value-initializes, so the per-frame malloc, 4 MiB
-  // zero-fill, and free all disappear once capacity settles at the high-water
-  // mark. Worth ~8% at 512 MiB and ~14% at 1 GiB on a 200G front-end link.
-  //
-  // Safe only because every frame is fully consumed before handleFrame()
-  // returns: the ReadReply path copies out under writeAndComplete(), and
-  // deviceFromHost() synchronizes its stream. If the H2D copy is ever made
-  // truly async, the reader would overwrite this buffer while a DMA is still
-  // sourcing from it; such a change must stage the payload in storage that
-  // outlives the frame rather than reading it from here.
+  // Reused for every frame that cannot use a receive slab: async H2D disabled,
+  // no VRAM get has created the pool yet, allocation failed, or both slabs are
+  // busy. The reader never waits for a slab, because draining the socket is
+  // what prevents mutual-READ deadlock.
   std::vector<uint8_t> msg;
   while (running_.load(std::memory_order_acquire)) {
+    TcpPinnedSlab receiveSlab;
+    if (config_.asyncGetH2d) {
+      if (auto pool = receivePoolIfCreated()) {
+        receiveSlab = pool->tryAcquire(/*allowReserved=*/true);
+      }
+    }
+    if (receiveSlab) {
+      auto result = dataConn_
+                        ->recv(
+                            std::span<uint8_t>{
+                                receiveSlab.data(), receiveSlab.capacity()})
+                        .get();
+      if (!result) {
+        break;
+      }
+      const auto* receiveData = receiveSlab.data();
+      const auto receivedSize = result.value();
+      handleFrame(
+          std::span<const uint8_t>{receiveData, receivedSize},
+          std::move(receiveSlab));
+      continue;
+    }
+
     auto result = dataConn_->recv(msg).get();
     if (!result) {
       // Connection closed, errored, or idle-timed-out; stop reading.
@@ -1269,7 +1611,9 @@ void TcpTransport::readerLoop() noexcept {
   failAllPending("tcp: reader stopped (connection closed or read error)");
 }
 
-void TcpTransport::handleFrame(std::span<const uint8_t> frame) noexcept {
+void TcpTransport::handleFrame(
+    std::span<const uint8_t> frame,
+    TcpPinnedSlab receiveSlab) noexcept {
   // An exception leaving a noexcept function is std::terminate, and the throw
   // sites in here are reachable from the wire: a ReadRequest's length sizes an
   // allocation, and the VRAM staging path throws if the segment was registered
@@ -1280,7 +1624,7 @@ void TcpTransport::handleFrame(std::span<const uint8_t> frame) noexcept {
   // protocol state that cannot be reasoned about. Stopping the reader also
   // resolves outstanding ops, so no caller is left blocked in future.get().
   try {
-    handleFrameImpl(frame);
+    handleFrameImpl(frame, std::move(receiveSlab));
   } catch (const std::exception& e) {
     UNIFLOW_LOG_ERROR(
         "tcp: frame handling raised '{}'; failing the connection", e.what());
@@ -1295,7 +1639,9 @@ void TcpTransport::handleFrame(std::span<const uint8_t> frame) noexcept {
   }
 }
 
-void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
+void TcpTransport::handleFrameImpl(
+    std::span<const uint8_t> frame,
+    TcpPinnedSlab receiveSlab) {
   auto headerResult = deserializeTcpHeader(frame);
   if (!headerResult) {
     UNIFLOW_LOG_ERROR(
@@ -1468,29 +1814,52 @@ void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
         std::lock_guard<std::mutex> lk(inflightMu_);
         auto it = inflight_.find(header.reqId);
         if (it != inflight_.end()) {
-          entry = std::move(it->second);
-          inflight_.erase(it);
+          entry = it->second;
           found = true;
         }
       }
       if (!found || !entry.state) {
         break;
       }
+
+      const auto eraseInflight = [&]() {
+        std::lock_guard<std::mutex> lk(inflightMu_);
+        inflight_.erase(header.reqId);
+      };
       if (op == TcpOp::Error) {
+        eraseInflight();
         entry.state->fail(
             Err(ErrCode::TransportError, "tcp: peer reported an error"));
       } else if (op == TcpOp::ReadReply) {
-        if (payload.size() != header.len || header.len != entry.len) {
+        if (!entry.isRead || payload.size() != header.len ||
+            header.len != entry.len) {
+          eraseInflight();
           entry.state->fail(Err(
               ErrCode::TransportError, "tcp get: read reply size mismatch"));
           break;
         }
-        // The copy into the caller's get() destination and this chunk's
-        // completion must be one step: a concurrent failAllPending() resolving
-        // the op (via a sibling chunk of the same multi-chunk get()) releases
-        // the caller to free entry.dst, so writing it either side of that
-        // resolution is a write-after-free. writeAndComplete() drops the copy
-        // if the op is already resolved.
+
+        const bool asyncH2d = config_.asyncGetH2d && receiveSlab &&
+            header.len > 0 && entry.dst != nullptr &&
+            entry.memType == MemoryType::VRAM;
+        if (asyncH2d) {
+          const auto status = startAsyncH2d(
+              entry, payload, std::move(receiveSlab), header.reqId);
+          // The pending record is visible before this erase. A concurrent
+          // failure therefore sees the state in inflight_, the H2D queue, or
+          // both, matching RDMA's handoff into transport-owned progress state.
+          eraseInflight();
+          if (status.hasValue()) {
+            schedulePendingH2dPoll();
+          }
+          break;
+        }
+
+        eraseInflight();
+        // Vector-backed VRAM replies cannot outlive this call because the
+        // reader reuses their storage. Keep that fallback synchronous, with the
+        // same reservation that prevents a concurrent failure releasing
+        // entry.dst.
         entry.state->writeAndComplete([&]() -> Status {
           if (header.len == 0 || entry.dst == nullptr) {
             return Ok();
@@ -1516,6 +1885,7 @@ void TcpTransport::handleFrameImpl(std::span<const uint8_t> frame) {
           return st;
         });
       } else { // Ack
+        eraseInflight();
         entry.state->completeOne();
       }
       break;
@@ -1563,6 +1933,17 @@ void TcpTransport::failAllPending(const char* message) {
       }
     }
     inflight_.clear();
+  }
+  {
+    std::lock_guard<std::mutex> lk(h2dState_->mu);
+    for (const auto& copy : h2dState_->pending) {
+      if (copy.state) {
+        toFail.push_back(copy.state);
+      }
+    }
+    if (h2dState_->retiringState) {
+      toFail.push_back(h2dState_->retiringState);
+    }
   }
   {
     std::lock_guard<std::mutex> lk(recvMu_);
@@ -1787,6 +2168,27 @@ void TcpTransport::shutdown() {
   // in-progress send on the sender thread. A no-op if the reader already
   // refused the connection, in which case it is on its way out anyway.
   closeDataConnOnce();
+
+  // Closed before the joins: this is the one pool with a *blocking* acquire,
+  // and the thread parked in it is not one we own. acquire() waits on `freed_`
+  // with no deadline and `closed_` as its only escape, and the put path calls
+  // it on the application's own thread, which shutdown() never joins. Without
+  // this a put() in flight across shutdown() parks forever, because the senders
+  // that would have freed a staging slab are about to be joined away.
+  //
+  // close() only sets the flag and notifies, so outstanding leases stay valid
+  // and doing this early costs nothing. The receive pool needs no equivalent --
+  // the reader only ever tryAcquire()s it. Read under poolMu_, which is what
+  // stagingPool() publishes slabPool_ under.
+  std::shared_ptr<TcpPinnedSlabPool> staging;
+  {
+    std::lock_guard<std::mutex> lk(poolMu_);
+    staging = slabPool_;
+  }
+  if (staging != nullptr) {
+    staging->close();
+  }
+
   if (reader_.joinable()) {
     reader_.join();
   }
@@ -1794,7 +2196,17 @@ void TcpTransport::shutdown() {
     sender_.join();
   }
 
+  if (auto pool = std::atomic_load_explicit(
+          &receiveSlabPool_, std::memory_order_acquire)) {
+    pool->close();
+  }
+
+  {
+    std::lock_guard<std::mutex> lk(h2dState_->mu);
+    h2dState_->stopping = true;
+  }
   failAllPending("tcp transport shut down");
+  drainPendingH2d();
 
   // After the reader is joined, so nothing can add to the queue, and before the
   // transport goes away: a staged reply's frame is memory the device may still
@@ -1823,7 +2235,7 @@ Status TcpTransportFactory::supported() {
 TcpTransportFactory::TcpTransportFactory(
     int deviceId,
     EventBase* evb,
-    controller::TcpSocketConfig config,
+    TcpTransportConfig config,
     std::string host,
     std::shared_ptr<CudaApi> cudaApi)
     : TransportFactory(TransportType::TCP),

@@ -56,6 +56,7 @@ struct CliOptions {
   bool bidirectional{false};
   bool dataDirect{false};
   bool noVerify{false};
+  bool tcpAsyncH2d{true};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
   int pipelineDepth{2};
@@ -145,6 +146,7 @@ void printUsage(const char* prog) {
       << "  --tcp-iface <name>     Front-end interface for the TCP transport (default: eth2)\n"
       << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 1048576,\n"
       << "                         0 = leave unset so the kernel autotunes the window)\n"
+      << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
@@ -200,6 +202,7 @@ CliOptions parseArgs(int argc, char** argv) {
       {"gpu-nics", required_argument, nullptr, 265},
       {"tcp-iface", required_argument, nullptr, 266},
       {"tcp-sockbuf", required_argument, nullptr, 268},
+      {"no-tcp-async-h2d", no_argument, nullptr, 269},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -287,6 +290,9 @@ CliOptions parseArgs(int argc, char** argv) {
           std::cerr << "Invalid value for --tcp-sockbuf: '" << optarg << "'\n";
           std::exit(1);
         }
+        break;
+      case 269:
+        opts.tcpAsyncH2d = false;
         break;
       case 'd':
         opts.direction = optarg;
@@ -441,7 +447,8 @@ int main(int argc, char** argv) {
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
           opts.tcpIface,
           opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
-                              : std::nullopt));
+                              : std::nullopt,
+          opts.tcpAsyncH2d));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());

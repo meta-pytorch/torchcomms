@@ -18,8 +18,8 @@ class TcpPinnedSlabPool;
 
 /// A borrow of one pinned staging slab. Move-only, and returned to the pool
 /// when it is destroyed, so a slab is held for exactly as long as some object
-/// owns the lease -- which on the outbound path means until the frame built in
-/// it has been handed to the socket and the queue entry is gone.
+/// owns the lease. Outbound frames retain it through socket send; inbound
+/// frames retain it through the destination copy that still reads from it.
 class TcpPinnedSlab {
  public:
   TcpPinnedSlab() = default;
