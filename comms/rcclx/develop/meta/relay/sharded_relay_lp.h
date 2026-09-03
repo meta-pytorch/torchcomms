@@ -264,18 +264,47 @@ bool lpCountsAligned(
  * Smallest message low precision is used for, in the same byte metric the
  * collective's route selector uses (its per-rank input label).
  *
- * PROVISIONAL. Low precision starts where the relay routes start, which is the
- * conservative choice: below ~576 KB the measured relay time is flat -- that
- * band is pure launch cost with no bandwidth term -- and LP adds launches, so a
- * gain there would mean the measurement is wrong. These get their measured
- * values from the LP sweep, with the same "measured crossover, here is the
- * provenance" convention sharded_relay_route.h uses for the route thresholds.
+ * MEASURED, on MI350X, bf16, best-of-N with 10 reps over 100 iterations, low
+ * precision and full precision timed back to back on the SAME communicator. The
+ * ratio below is LP-vs-full-precision-relay; above 1.00x low precision is
+ * faster.
  *
- * NCCL_SHARDED_RELAY_LP_MIN_KB overrides it, which is what makes the sweep
- * possible at all: the built-in value declines below 4 MiB before anything is
- * timed, so the crossover is precisely the number a sweep cannot otherwise
- * observe. Set it to 0 (or 1) to make every size eligible and let the data say
- * where low precision starts paying.
+ *                       nGroups == 1 (uncontended)   nGroups > 1 (fused)
+ *   allreduce      A=2      0.64x - 0.96x                0.94x - 0.98x
+ *   allreduce      A=4      0.82x - 1.08x                0.89x - 0.98x
+ *   reduce-scatter A=2      0.70x - 1.17x (noisy)        1.05x - 1.12x  ENABLED
+ *   reduce-scatter A=4      0.85x - 1.03x                0.93x - 1.07x
+ *   all-gather     A=2      0.65x - 1.00x                1.01x - 1.05x
+ *   all-gather     A=4      0.75x - 1.10x (see below)    1.18x - 1.29x  ENABLED
+ *   all-to-all     A=2      0.67x - 1.10x                1.02x - 1.06x
+ *   all-to-all     A=4      0.56x - 1.05x                0.85x - 0.98x
+ *
+ * The organising fact is the nGroups column. ONE group leaves the XGMI links
+ * uncontended, so there is no bandwidth term for halved wire bytes to shrink,
+ * while the quantize/dequantize passes still cost HBM traffic and two extra
+ * launches -- so low precision is a regression almost everywhere there.
+ * Contention is what gives it something to win, which is why every enabled
+ * entry is fused.
+ *
+ * Only two shapes clear a margin worth paying fp8 rounding for. The all-gather
+ * at A=4 is the strong one, and plausibly because its flat offload stages more
+ * bytes through helpers than any other schedule here -- the wire format acts on
+ * exactly those bytes. Everything else is off, including four shapes that
+ * measured a consistent but small 1.01x-1.06x: real, but not worth the
+ * precision or the arena's memory. Enabling them is a one-line change in
+ * lpMinBytes().
+ *
+ * One anomaly, recorded rather than explained: single-group all-gather A=4 wins
+ * 1.03x-1.09x from 9 MB to 27 MB, drops to 0.75x from 31.5 MB to 63 MB, then
+ * recovers to 1.09x at 67.5 MB. Reproduced across two independent runs, so it
+ * is mechanism and not noise. A min-bytes threshold cannot exclude a middle
+ * band, so that shape stays off; if it is ever wanted, the trough needs
+ * explaining first.
+ *
+ * NCCL_SHARDED_RELAY_LP_MIN_KB overrides all of it, which is what made the
+ * table measurable: the built-in values decline before anything is timed. The
+ * collective test suites set it too, so they cover the mechanism without being
+ * coupled to this policy.
  */
 size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups);
 

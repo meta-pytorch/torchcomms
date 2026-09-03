@@ -3041,6 +3041,13 @@ TEST_F(
 }
 
 int main(int argc, char* argv[]) {
+  // The low-precision size thresholds that SHIP are a tuning policy measured
+  // per shape, and they decline most shapes outright (see lpMinBytes()). This
+  // suite covers the MECHANISM -- that the wire format is correct wherever it
+  // runs -- so it must not be coupled to that policy: a retune would otherwise
+  // silently turn these cases into no-ops that still pass. Set before any
+  // communicator exists, because NCCL_PARAM caches on first read.
+  setenv("NCCL_SHARDED_RELAY_LP_MIN_KB", "1", /*overwrite=*/1);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);
