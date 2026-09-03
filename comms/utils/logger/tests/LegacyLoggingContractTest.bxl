@@ -19,6 +19,9 @@ def _scope_source_fragment(scope: str) -> str:
 _SCOPES = [scope for scope, _ in _SCOPE_CONFIGS]
 _SCOPE_SOURCE_FRAGMENTS = [fragment for _, fragment in _SCOPE_CONFIGS]
 
+_EXCLUDED_SCOPES = ("fbcode//comms/mccl/coordinator/...",)
+_EXCLUDED_SOURCE_FRAGMENTS = [_scope_source_fragment(scope) for scope in _EXCLUDED_SCOPES]
+
 _SOURCE_EXTENSIONS = (
     ".c",
     ".cc",
@@ -219,15 +222,27 @@ def _is_scoped_source(path: str) -> bool:
             break
     if not has_source_extension:
         return False
+    for excluded_fragment in _EXCLUDED_SOURCE_FRAGMENTS:
+        if excluded_fragment in path:
+            return False
     for source_fragment in _SCOPE_SOURCE_FRAGMENTS:
         if source_fragment in path:
             return True
     return False
 
+def _scope_dependency_query(scope: str) -> str:
+    scope_prefix = scope[: -len(_SCOPE_LABEL_SUFFIX)] + "/"
+    query = scope
+    for excluded in _EXCLUDED_SCOPES:
+        if excluded.startswith(scope_prefix):
+            query += " - {}".format(excluded)
+    return query
+
 def _check_direct_dependencies(ctx: bxl.Context) -> None:
     violations = {}
     for scope in _SCOPES:
-        for dependency in ctx.uquery().deps(scope, 1):
+        universe = ctx.uquery().eval(_scope_dependency_query(scope))
+        for dependency in ctx.uquery().deps(universe, 1):
             dependency_label = str(dependency.label)
             if _is_folly_logging_dependency(dependency_label):
                 violations[dependency_label] = True
@@ -338,9 +353,31 @@ def _validate_detector() -> None:
         "//comms/utils/logger/Source.cc",
         "//comms/ctran/README.md",
         "//comms/torchcomms/source.cc",
+        "//comms/mccl/coordinator/zelos/CoordinatorSidecar.cpp",
     ):
         if _is_scoped_source(source_path):
             fail("Migrated scope detector accepted: {}".format(source_path))
+
+    for source_path in (
+        "//comms/mccl/McclComm.cpp",
+        "//comms/mccl/utils/logger/McclLogger.cpp",
+    ):
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector excluded in-scope source: {}".format(source_path))
+
+    for scope, expected_query in (
+        ("fbcode//comms/mccl/...", "fbcode//comms/mccl/... - fbcode//comms/mccl/coordinator/..."),
+        ("fbcode//comms/ctran/...", "fbcode//comms/ctran/..."),
+    ):
+        actual_query = _scope_dependency_query(scope)
+        if actual_query != expected_query:
+            fail(
+                "Migrated scope {} produced dependency query {}, expected {}".format(
+                    scope,
+                    actual_query,
+                    expected_query,
+                ),
+            )
 
     for source in (
         "XLOG(ERR)",
