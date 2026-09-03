@@ -25,7 +25,6 @@
 #ifdef __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 #else
-#include <cuda_runtime.h>
 #endif
 
 #include <fmt/core.h>
@@ -355,21 +354,24 @@ void MultipeerIbrcTransport::cleanup() {
   cleanupSignalCounterResources();
 
   auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_dereg_mr != nullptr) {
-    for (auto& [_, cached] : registeredBuffers_) {
-      for (int n = 0; n < numNics_; ++n) {
-        if (cached.mrs[n] != nullptr) {
-          int rc = symbols.ibv_internal_dereg_mr(cached.mrs[n]);
-          if (rc != 0) {
-            LOG(WARNING) << "Failed to deregister IBRC MR on NIC " << n
-                         << ": rc=" << rc;
+  {
+    auto registrations = registrationState_.wlock();
+    if (symbols.ibv_internal_dereg_mr != nullptr) {
+      for (auto& [_, cached] : registrations->registeredBuffers) {
+        for (int n = 0; n < numNics_; ++n) {
+          if (cached.mrs[n] != nullptr) {
+            int rc = symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+            if (rc != 0) {
+              LOG(WARNING) << "Failed to deregister IBRC MR on NIC " << n
+                           << ": rc=" << rc;
+            }
+            cached.mrs[n] = nullptr;
           }
-          cached.mrs[n] = nullptr;
         }
       }
     }
+    registrations->registeredBuffers.clear();
   }
-  registeredBuffers_.clear();
 
   statusHostByNic_.clear();
   statusDeviceByNic_.clear();

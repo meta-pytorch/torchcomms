@@ -140,9 +140,10 @@ struct TransportHandle {
   std::unique_ptr<MultipeerIbgdaTransport> ibgda;
   std::unique_ptr<MultipeerIbrcTransport> ibrc;
 
-  IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size) {
-    return ibgda ? ibgda->registerBuffer(ptr, size)
-                 : ibrc->registerBuffer(ptr, size);
+  IbgdaLocalBuffer
+  registerBuffer(void* ptr, std::size_t size, bool relaxedOrdering = false) {
+    return ibgda ? ibgda->registerBuffer(ptr, size, relaxedOrdering)
+                 : ibrc->registerBuffer(ptr, size, relaxedOrdering);
   }
 
   void deregisterBuffer(void* ptr) {
@@ -153,30 +154,17 @@ struct TransportHandle {
     }
   }
 
-  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size) {
-    return ibgda ? ibgda->registerIbBulkBuffer(ptr, size)
-                 : ibrc->registerIbBulkBuffer(ptr, size);
+  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size) {
+    return ibgda ? ibgda->registerIbBufferRange(ptr, size)
+                 : ibrc->registerIbBufferRange(ptr, size);
   }
 
-  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
-      const IbBufferRegistrationLease& lease,
-      void* ptr,
-      std::size_t size) const {
-    return ibgda ? ibgda->lookupIbBulkBuffer(lease, ptr, size)
-                 : ibrc->lookupIbBulkBuffer(lease, ptr, size);
-  }
-
-  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease) {
+  void deregisterIbBufferRange(IbBufferRegistration& registration) {
     if (ibgda) {
-      ibgda->deregisterIbBulkBuffer(lease);
+      ibgda->deregisterIbBufferRange(registration);
     } else {
-      ibrc->deregisterIbBulkBuffer(lease);
+      ibrc->deregisterIbBufferRange(registration);
     }
-  }
-
-  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const {
-    return ibgda ? ibgda->isIbBulkBufferViewActive(view)
-                 : ibrc->isIbBulkBufferViewActive(view);
   }
 };
 
@@ -283,7 +271,37 @@ TEST_P(MultiSegmentRegistrationTest, ContiguousBufferRegistration) {
   CUDACHECK_TEST(cudaFree(devPtr));
 }
 
-TEST_P(MultiSegmentRegistrationTest, BulkLeaseBoundsContainedViews) {
+TEST_P(MultiSegmentRegistrationTest, ExactRangeSpansDisjointSegments) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam());
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kTotalSize = 8 * 1024 * 1024;
+  constexpr int kNumSegments = 4;
+  DisjointBuffer disjointBuffer;
+  try {
+    disjointBuffer = DisjointBuffer::allocate(kTotalSize, kNumSegments, 0);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "cuMem VMM allocation failed: " << e.what();
+  }
+
+  auto registration =
+      transport.registerIbBufferRange(disjointBuffer.ptr(), kTotalSize);
+  EXPECT_TRUE(registration.valid());
+  EXPECT_EQ(registration.localBuffer.ptr, disjointBuffer.ptr());
+  EXPECT_EQ(registration.size, kTotalSize);
+
+  transport.deregisterIbBufferRange(registration);
+  disjointBuffer.free();
+}
+
+TEST_P(MultiSegmentRegistrationTest, ExactRangeRegistrationUsesRequestedVa) {
   CUDACHECK_TEST(cudaSetDevice(0));
 
   TransportHandle transport;
@@ -295,52 +313,32 @@ TEST_P(MultiSegmentRegistrationTest, BulkLeaseBoundsContainedViews) {
   }
 
   constexpr std::size_t kAllocationSize = 4 * 1024 * 1024;
-  constexpr std::size_t kLeaseOffset = 512 * 1024;
-  constexpr std::size_t kLeaseSize = 2 * 1024 * 1024;
-  constexpr std::size_t kViewOffset = 128 * 1024;
-  constexpr std::size_t kViewSize = 256 * 1024;
+  constexpr std::size_t kRangeOffset = 512 * 1024;
+  constexpr std::size_t kRangeSize = 2 * 1024 * 1024;
   void* allocation = nullptr;
   CUDACHECK_TEST(cudaMalloc(&allocation, kAllocationSize));
-  auto* const leasePtr = static_cast<char*>(allocation) + kLeaseOffset;
+  auto* const rangePtr = static_cast<char*>(allocation) + kRangeOffset;
 
   EXPECT_THROW(
-      transport.registerIbBulkBuffer(leasePtr, 0), std::invalid_argument);
-  auto lease = transport.registerIbBulkBuffer(leasePtr, kLeaseSize);
+      transport.registerIbBufferRange(rangePtr, 0), std::invalid_argument);
   EXPECT_THROW(
-      transport.lookupIbBulkBuffer(lease, leasePtr, 0), std::invalid_argument);
-  EXPECT_THROW(
-      transport.lookupIbBulkBuffer(
-          lease, leasePtr, std::numeric_limits<std::size_t>::max()),
+      transport.registerIbBufferRange(
+          rangePtr, std::numeric_limits<std::size_t>::max()),
       std::invalid_argument);
-  auto exact = transport.lookupIbBulkBuffer(lease, leasePtr, kLeaseSize);
-  auto contained =
-      transport.lookupIbBulkBuffer(lease, leasePtr + kViewOffset, kViewSize);
-  auto tail = transport.lookupIbBulkBuffer(lease, leasePtr + kLeaseSize - 1, 1);
-  auto before = transport.lookupIbBulkBuffer(lease, leasePtr - 1, kViewSize);
-  auto after = transport.lookupIbBulkBuffer(
-      lease, leasePtr + kLeaseSize - kViewSize + 1, kViewSize);
 
-  ASSERT_TRUE(exact.has_value());
-  ASSERT_TRUE(contained.has_value());
-  ASSERT_TRUE(tail.has_value());
-  EXPECT_EQ(exact->localBuffer.ptr, leasePtr);
-  EXPECT_EQ(contained->localBuffer.ptr, leasePtr + kViewOffset);
-  EXPECT_EQ(contained->size, kViewSize);
-  EXPECT_EQ(contained->leaseGeneration, lease.generation());
-  EXPECT_FALSE(before.has_value());
-  EXPECT_FALSE(after.has_value());
-  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*contained));
+  auto registration = transport.registerIbBufferRange(rangePtr, kRangeSize);
+  EXPECT_TRUE(registration.valid());
+  EXPECT_EQ(registration.localBuffer.ptr, rangePtr);
+  EXPECT_EQ(registration.size, kRangeSize);
 
-  transport.deregisterIbBulkBuffer(lease);
-  EXPECT_FALSE(lease.valid());
-  EXPECT_FALSE(
-      transport.lookupIbBulkBuffer(lease, leasePtr, kViewSize).has_value());
-  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*contained));
-  EXPECT_THROW(transport.deregisterIbBulkBuffer(lease), std::invalid_argument);
+  transport.deregisterIbBufferRange(registration);
+  EXPECT_FALSE(registration.valid());
+  EXPECT_THROW(
+      transport.deregisterIbBufferRange(registration), std::invalid_argument);
   CUDACHECK_TEST(cudaFree(allocation));
 }
 
-TEST_P(MultiSegmentRegistrationTest, BulkLeaseReportsEffectiveStrictOrdering) {
+TEST_P(MultiSegmentRegistrationTest, ExactRangeReportsEffectiveStrictOrdering) {
   CUDACHECK_TEST(cudaSetDevice(0));
 
   auto config = makeConfig();
@@ -358,16 +356,53 @@ TEST_P(MultiSegmentRegistrationTest, BulkLeaseReportsEffectiveStrictOrdering) {
   void* allocation = nullptr;
   CUDACHECK_TEST(cudaMalloc(&allocation, kSize));
 
-  auto lease = transport.registerIbBulkBuffer(allocation, kSize);
-  auto view = transport.lookupIbBulkBuffer(lease, allocation, kSize);
-  ASSERT_TRUE(view.has_value());
-  EXPECT_FALSE(view->relaxedOrdering);
+  auto registration = transport.registerIbBufferRange(allocation, kSize);
+  EXPECT_FALSE(registration.relaxedOrdering);
 
-  transport.deregisterIbBulkBuffer(lease);
+  transport.deregisterIbBufferRange(registration);
   CUDACHECK_TEST(cudaFree(allocation));
 }
 
-TEST_P(MultiSegmentRegistrationTest, OverlappingBulkLeasesRemainDistinct) {
+TEST_P(MultiSegmentRegistrationTest, ExactRangeDoesNotReuseCachedRegistration) {
+  CUDACHECK_TEST(cudaSetDevice(0));
+
+  auto config = makeConfig();
+  config.enablePciRelaxedOrdering =
+      MultipeerIbTransportConfig::PciRelaxedOrderingMode::Enabled;
+  TransportHandle transport;
+  try {
+    transport = createTransport(GetParam(), config);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << backendName(GetParam())
+                 << " transport not available: " << e.what();
+  }
+
+  constexpr std::size_t kSize = 2 * 1024 * 1024;
+  void* allocation = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&allocation, kSize));
+
+  const auto cached =
+      transport.registerBuffer(allocation, kSize, /*relaxedOrdering=*/false);
+  constexpr std::size_t kRangeOffset = 17;
+  constexpr std::size_t kRangeSize = kSize - 4099;
+  auto* const range = static_cast<char*>(allocation) + kRangeOffset;
+  auto exact = transport.registerIbBufferRange(range, kRangeSize);
+  EXPECT_TRUE(exact.valid());
+  EXPECT_EQ(exact.localBuffer.ptr, range);
+  EXPECT_EQ(exact.size, kRangeSize);
+  ASSERT_EQ(
+      cached.lkey_per_device.size, exact.localBuffer.lkey_per_device.size);
+  for (int nic = 0; nic < cached.lkey_per_device.size; ++nic) {
+    EXPECT_NE(
+        cached.lkey_per_device[nic], exact.localBuffer.lkey_per_device[nic]);
+  }
+
+  transport.deregisterIbBufferRange(exact);
+  transport.deregisterBuffer(allocation);
+  CUDACHECK_TEST(cudaFree(allocation));
+}
+
+TEST_P(MultiSegmentRegistrationTest, OverlappingExactRangesRemainIndependent) {
   CUDACHECK_TEST(cudaSetDevice(0));
 
   TransportHandle transport;
@@ -386,55 +421,17 @@ TEST_P(MultiSegmentRegistrationTest, OverlappingBulkLeasesRemainDistinct) {
   CUDACHECK_TEST(cudaMalloc(&allocation, kAllocationSize));
   auto* const base = static_cast<char*>(allocation);
 
-  auto outer = transport.registerIbBulkBuffer(base, kOuterSize);
-  auto inner = transport.registerIbBulkBuffer(base + kInnerOffset, kInnerSize);
-  auto outerView =
-      transport.lookupIbBulkBuffer(outer, base + kInnerOffset, kInnerSize);
-  auto innerView =
-      transport.lookupIbBulkBuffer(inner, base + kInnerOffset, kInnerSize);
+  auto outer = transport.registerIbBufferRange(base, kOuterSize);
+  auto inner = transport.registerIbBufferRange(base + kInnerOffset, kInnerSize);
+  EXPECT_TRUE(outer.valid());
+  EXPECT_TRUE(inner.valid());
+  EXPECT_EQ(outer.localBuffer.ptr, base);
+  EXPECT_EQ(inner.localBuffer.ptr, base + kInnerOffset);
 
-  ASSERT_TRUE(outerView.has_value());
-  ASSERT_TRUE(innerView.has_value());
-  EXPECT_NE(outer.generation(), inner.generation());
-  EXPECT_EQ(outerView->leaseGeneration, outer.generation());
-  EXPECT_EQ(innerView->leaseGeneration, inner.generation());
-
-  transport.deregisterIbBulkBuffer(inner);
-  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*innerView));
-  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*outerView));
-  transport.deregisterIbBulkBuffer(outer);
-  CUDACHECK_TEST(cudaFree(allocation));
-}
-
-TEST_P(MultiSegmentRegistrationTest, ReregistrationChangesLeaseGeneration) {
-  CUDACHECK_TEST(cudaSetDevice(0));
-
-  TransportHandle transport;
-  try {
-    transport = createTransport(GetParam());
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << backendName(GetParam())
-                 << " transport not available: " << e.what();
-  }
-
-  constexpr std::size_t kSize = 2 * 1024 * 1024;
-  void* allocation = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&allocation, kSize));
-
-  auto first = transport.registerIbBulkBuffer(allocation, kSize);
-  auto firstView = transport.lookupIbBulkBuffer(first, allocation, kSize);
-  ASSERT_TRUE(firstView.has_value());
-  const uint64_t firstGeneration = first.generation();
-  transport.deregisterIbBulkBuffer(first);
-
-  auto second = transport.registerIbBulkBuffer(allocation, kSize);
-  auto secondView = transport.lookupIbBulkBuffer(second, allocation, kSize);
-  ASSERT_TRUE(secondView.has_value());
-  EXPECT_NE(firstGeneration, second.generation());
-  EXPECT_FALSE(transport.isIbBulkBufferViewActive(*firstView));
-  EXPECT_TRUE(transport.isIbBulkBufferViewActive(*secondView));
-
-  transport.deregisterIbBulkBuffer(second);
+  transport.deregisterIbBufferRange(inner);
+  EXPECT_FALSE(inner.valid());
+  EXPECT_TRUE(outer.valid());
+  transport.deregisterIbBufferRange(outer);
   CUDACHECK_TEST(cudaFree(allocation));
 }
 

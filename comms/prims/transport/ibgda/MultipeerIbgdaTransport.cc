@@ -1220,17 +1220,20 @@ void MultipeerIbgdaTransport::cleanup() {
   cleanupSignalCounterResources();
 
   // Destroy user buffer MRs
-  for (auto& [_, cached] : registeredBuffers_) {
-    // numNics_=1 today; loop is the multi-NIC-ready shape (P2.x fills the
-    // rest of mrs[]).
-    for (int n = 0; n < numNics_; ++n) {
-      if (cached.mrs[n] != nullptr &&
-          symbols.ibv_internal_dereg_mr != nullptr) {
-        symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+  {
+    auto registrations = registrationState_.wlock();
+    for (auto& [_, cached] : registrations->registeredBuffers) {
+      // numNics_=1 today; loop is the multi-NIC-ready shape (P2.x fills the
+      // rest of mrs[]).
+      for (int n = 0; n < numNics_; ++n) {
+        if (cached.mrs[n] != nullptr &&
+            symbols.ibv_internal_dereg_mr != nullptr) {
+          symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+        }
       }
     }
+    registrations->registeredBuffers.clear();
   }
-  registeredBuffers_.clear();
 
   // Destroy per-NIC sink MRs. Iterate over actual nicDoca_ entries
   // (vector is empty if cleanup runs before openIbDevice; partial init leaves
