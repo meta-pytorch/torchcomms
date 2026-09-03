@@ -168,3 +168,45 @@ Consequences for IBGDA:
 Adding a second poster to a QP is therefore not a configuration change; it would
 require revisiting the slot geometry, the cursor increment, and the fence
 placement together.
+
+### Partitioned groups alias channel ids
+
+The invariant above is per QP, not per channel, and a channel id is not unique
+across concurrently running groups. `ThreadGroup::partition` renumbers each
+subgroup relative to its partition start:
+
+```cpp
+.group_id = group_id - partition_start
+```
+
+so every partition hands out subgroup ids beginning at 0. Two blocks in
+different partitions carry the same `group_id`, select the same channel id, and
+reach the same QP slots.
+
+Direction is what keeps that safe today, not the channel id. The canonical
+partition splits a send role from a recv role — the example in `ThreadGroup.cuh`
+is `send_group` on partition 0 and `recv_group` on partition 1 — and the two
+roles post in opposite directions, which the slot index separates. Nothing
+enforces the split; it holds because of how the current callers are written.
+
+The sharp edge is the APIs that choose the direction themselves. `put` always
+posts Send, `signal` defaults to Send, the thread-scope `flush()` and `fence()`
+overloads pass Send unconditionally, and `wait_local` /
+`is_local_completion_ready` resolve their lane against Send. A recv-role group
+that calls one of these lands on the send-role group's QP, with two separate
+consequences:
+
+- Posting APIs give that QP a second poster. Under `EXCLUSIVE` the WQ-slot
+  reservation is a plain load and store, so both posters can be handed the same
+  WQE index and overwrite each other's WQE before the doorbell. That is silent
+  corruption rather than contention: the shared mode's `atomicAdd` would have
+  handed out distinct indices, so the same call was merely slow.
+- `flush` and `fence` share the direction's `IbQpState`. The drain exchanges
+  `pendingFlushLanesMask` to zero, so one group's flush consumes the other's
+  pending lanes and can return while those WQEs are still in flight.
+
+A group that may share a channel id with another concurrently running group
+must therefore pass an explicit direction that differs from the peer group's,
+and must not use the direction-defaulting overloads. Driving one
+`(channel_id, direction)` from two groups is the caller error named above; under
+`EXCLUSIVE` it now costs correctness on the posting path, not just performance.

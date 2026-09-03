@@ -43,7 +43,11 @@ class UniflowAgent {
       const UniflowAgentConfig& config,
       std::unique_ptr<controller::Client> client = nullptr,
       std::unique_ptr<controller::Server> server = nullptr);
-  ~UniflowAgent() = default;
+  ~UniflowAgent() noexcept;
+  UniflowAgent(const UniflowAgent&) = delete;
+  UniflowAgent& operator=(const UniflowAgent&) = delete;
+  UniflowAgent(UniflowAgent&&) = delete;
+  UniflowAgent& operator=(UniflowAgent&&) = delete;
 
   Result<std::string> getUniqueId() const;
 
@@ -59,6 +63,8 @@ class UniflowAgent {
 
   /// Client-side: connect to a remote peer by its UniqueId
   Result<std::unique_ptr<Connection>> connect(std::string peerId);
+
+  void shutdown() noexcept;
 
  private:
   friend class UniflowAgentTest;

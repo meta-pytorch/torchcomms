@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -97,6 +99,7 @@ class CommsSpdlogLogger {
 
   bool should_log(spdlog::level::level_enum level) const;
   const std::string& name() const;
+  std::string outputPath() const;
   void set_level(spdlog::level::level_enum level);
   bool usesAsyncLogging() const;
   void flush();
@@ -107,6 +110,19 @@ class CommsSpdlogLogger {
       std::function<void(std::string_view)> errorCallback = {},
       bool asyncLogging = true);
   void configureOutput(std::string_view logFilePath);
+  void reconfigure(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging);
+  void reconfigure(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging,
+      spdlog::level::level_enum logLevel);
 
   // Test-only: appends to the dist sink so a test can observe delivery from
   // inside the sink call, which is the only point where the lease scoping in
@@ -121,19 +137,41 @@ class CommsSpdlogLogger {
     bool asyncLogging{true};
   };
 
+  struct Backend {
+    std::string outputPath;
+    std::shared_ptr<spdlog::logger> logger;
+    std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink;
+    std::shared_ptr<spdlog::logger> synchronousLogger;
+  };
+
+  struct State {
+    std::shared_ptr<const Configuration> configuration;
+    std::shared_ptr<Backend> backend;
+  };
+
 #if defined(__cpp_lib_atomic_shared_ptr) && \
     __cpp_lib_atomic_shared_ptr >= 201711L
-  using ConfigurationStorage =
-      std::atomic<std::shared_ptr<const Configuration>>;
+  using StateStorage = std::atomic<std::shared_ptr<const State>>;
 #else
   // NCCLX also builds this target as C++17, before atomic<shared_ptr> exists.
-  using ConfigurationStorage = std::shared_ptr<const Configuration>;
+  using StateStorage = std::shared_ptr<const State>;
 #endif
 
   static std::string_view getLevelName(spdlog::level::level_enum level);
 
-  std::shared_ptr<const Configuration> loadConfiguration() const;
-  void storeConfiguration(std::shared_ptr<const Configuration> configuration);
+  std::shared_ptr<const State> loadState() const;
+  void storeState(std::shared_ptr<const State> state);
+  std::shared_ptr<Backend> createBackend(
+      std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink,
+      std::string outputPath,
+      bool asyncLogging) const;
+  void reconfigureImpl(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging,
+      std::optional<spdlog::level::level_enum> logLevel);
 
   void logFormatted(
       spdlog::source_loc location,
@@ -142,10 +180,10 @@ class CommsSpdlogLogger {
       std::string_view message,
       bool bypassLevelGate);
 
-  std::shared_ptr<spdlog::logger> logger_;
-  std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink_;
-  std::shared_ptr<spdlog::logger> synchronousLogger_;
-  ConfigurationStorage configuration_;
+  std::string name_;
+  std::atomic<spdlog::level::level_enum> logLevel_{spdlog::level::info};
+  mutable std::mutex reconfigurationMutex_;
+  StateStorage state_;
 };
 
 class CommsLogStreamBase {

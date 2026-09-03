@@ -4,6 +4,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "comms/uniflow/benchmarks/Reporter.h"
 #include "comms/uniflow/benchmarks/bench/RdmaBandwidthBenchmark.h"
 #include "comms/uniflow/benchmarks/bench/SendRecvBandwidthBenchmark.h"
+#include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
 #include "comms/uniflow/logging/Logger.h"
 
 // ConnectionSetup/NVLink/NcclSendRecv benchmarks are NVIDIA-only (they depend
@@ -53,12 +55,18 @@ struct CliOptions {
   std::vector<std::vector<std::string>> gpuNicGroups;
   bool bidirectional{false};
   bool dataDirect{false};
+  bool noVerify{false};
+  bool tcpAsyncH2d{true};
   std::vector<int> numStreams{1, 2, 4, 8};
   std::string topology{"fanout"};
   int pipelineDepth{2};
   size_t slabSize{0};
   int slabNum{0};
   std::vector<std::string> rdmaDevices;
+  std::string tcpIface{"eth2"};
+  // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
+  // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
+  int tcpSockBuf{1 << 20};
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -122,18 +130,23 @@ void printUsage(const char* prog) {
       << "\n"
       << "Options:\n"
       << "  --benchmark <name>     Benchmark to run (default: all)\n"
-      << "  --transport <type>     Transport backend: nvlink|rdma (default: nvlink)\n"
+      << "  --transport <type>     Transport backend: nvlink|rdma|tcp (default: nvlink)\n"
       << "  --min-size <bytes>     Minimum message size (default: 1)\n"
       << "  --max-size <bytes>     Maximum message size (default: 1073741824)\n"
       << "  --iterations <n>       Iterations per size (default: 100)\n"
       << "  --warmup <n>           Warmup iterations (default: 10)\n"
       << "  --loop-count <n>       Transport calls per timed iteration (default: 1)\n"
       << "  --bidirectional        Both ranks transfer simultaneously (default: unidirectional)\n"
+      << "  --no-verify            Skip the pre-timing correctness sweep (tcp_bandwidth)\n"
       << "  --direction <dir>      put|get|both (default: both)\n"
       << "  --num-streams <list>   Comma-separated stream counts (default: 1,2,4,8)\n"
       << "  --output <path>        CSV output file path\n"
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
+      << "  --tcp-iface <name>     Front-end interface for the TCP transport (default: eth2)\n"
+      << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 1048576,\n"
+      << "                         0 = leave unset so the kernel autotunes the window)\n"
+      << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
@@ -187,6 +200,10 @@ CliOptions parseArgs(int argc, char** argv) {
       {"data-direct", no_argument, nullptr, 263},
       {"cuda-devices", required_argument, nullptr, 264},
       {"gpu-nics", required_argument, nullptr, 265},
+      {"tcp-iface", required_argument, nullptr, 266},
+      {"tcp-sockbuf", required_argument, nullptr, 268},
+      {"no-tcp-async-h2d", no_argument, nullptr, 269},
+      {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
       {nullptr, 0, nullptr, 0},
@@ -250,11 +267,32 @@ CliOptions parseArgs(int argc, char** argv) {
       case 263:
         opts.dataDirect = true;
         break;
+      case 267:
+        opts.noVerify = true;
+        break;
       case 264:
         opts.cudaDevices = parseIntList(optarg);
         break;
       case 265:
         opts.gpuNicGroups = parseNicGroups(optarg);
+        break;
+      case 266:
+        opts.tcpIface = optarg;
+        break;
+      case 268:
+        try {
+          opts.tcpSockBuf = std::stoi(optarg);
+          if (opts.tcpSockBuf < 0) {
+            std::cerr << "Invalid value for --tcp-sockbuf: must be >= 0\n";
+            std::exit(1);
+          }
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --tcp-sockbuf: '" << optarg << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 269:
+        opts.tcpAsyncH2d = false;
         break;
       case 'd':
         opts.direction = optarg;
@@ -405,6 +443,12 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::RdmaBandwidthBenchmark>(
           opts.rdmaDevices));
+  runner.registerBenchmark(
+      std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
+          opts.tcpIface,
+          opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
+                              : std::nullopt,
+          opts.tcpAsyncH2d));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());
@@ -444,6 +488,7 @@ int main(int argc, char** argv) {
   config.loopCount = opts.loopCount;
   config.bidirectional = opts.bidirectional;
   config.dataDirect = opts.dataDirect;
+  config.verify = !opts.noVerify;
   config.direction = opts.direction;
   config.batchSize = opts.batchSize;
   config.txDepth = opts.txDepth;

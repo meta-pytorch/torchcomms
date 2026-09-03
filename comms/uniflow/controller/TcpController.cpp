@@ -71,10 +71,6 @@ namespace {
 constexpr uint32_t kMaxMessageSize = 64 << 20;
 constexpr int kAcceptTimeoutSec = 5;
 constexpr int kConnectedTimeoutSec = 30;
-constexpr int kKeepaliveIdleSec = 60;
-constexpr int kKeepaliveIntervalSec = 5;
-constexpr int kKeepaliveCount = 3;
-constexpr int kUserTimeoutMs = 60000;
 
 // Magic value exchanged during connection handshake to validate that both
 // endpoints are uniflow controllers (rejects stray connections).
@@ -248,34 +244,68 @@ Result<int> createListenSocket(int domain) {
   return sock;
 }
 
-// Applies the connected-socket options to a freshly accepted fd.
+// Applies a TcpSocketConfig to a connected socket. Shared by the client and
+// accept paths: both need identical treatment of a connected fd, and keeping
+// one implementation is what stops the two from drifting apart again.
 //
-// Only @p socketBufSize is caller-controlled; the keepalive and timeout values
-// remain the constants above. Buffer sizing is the one option a caller has a
-// reason to override per connection: setting SO_RCVBUF explicitly disables
-// Linux receive-window autotuning, which caps a single stream at window/RTT, so
-// a bulk-data connection wants it left unset while the control connection does
-// not care.
-Status configureAcceptedSocket(
-    int sock,
-    const std::optional<int>& socketBufSize) {
-  SockOptSetter opt(sock);
-  if (socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *socketBufSize, "SO_RCVBUF");
+// Every field falls through to the OS kernel default when nullopt, with one
+// deliberate exception -- connTimeout, see below.
+void applySocketConfig(SockOptSetter& opt, const TcpSocketConfig& config) {
+  // Buffer sizing is the option a caller most often wants left alone: setting
+  // SO_RCVBUF explicitly disables Linux receive-window autotuning, which caps a
+  // single stream at window/RTT, so a bulk-data connection wants it unset while
+  // the control connection does not care.
+  if (config.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
   }
-  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
-  opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
-  opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
-  opt.set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepaliveIntervalSec, "TCP_KEEPINTVL");
-  opt.set(IPPROTO_TCP, TCP_KEEPCNT, kKeepaliveCount, "TCP_KEEPCNT");
-  opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, kUserTimeoutMs, "TCP_USER_TIMEOUT");
+  if (config.tcpNoDelay) {
+    int val = *config.tcpNoDelay ? 1 : 0;
+    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
+  }
+  if (config.enableKeepalive) {
+    int val = *config.enableKeepalive ? 1 : 0;
+    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
+  }
+  if (config.enableKeepalive && *config.enableKeepalive) {
+    if (config.keepaliveIdle) {
+      int val = static_cast<int>(config.keepaliveIdle->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
+    }
+    if (config.keepaliveInterval) {
+      int val = static_cast<int>(config.keepaliveInterval->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
+    }
+    if (config.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
+    }
+  }
+  if (config.userTimeout) {
+    int val = static_cast<int>(config.userTimeout->count());
+    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
+  }
+  /*
+   * Default the send/recv timeout to kConnectedTimeoutSec when the caller does
+   * not specify one. This is the one field that does not fall through to the
+   * OS. Without it a connected socket blocks forever: a peer that accepts the
+   * TCP connection but stops responding mid-handshake (e.g. its transport setup
+   * failed) would wedge a blocking recv during the handshake exchange
+   * indefinitely, which is only reaped as an opaque process-unresponsive
+   * failure. Bounding it turns the hang into a surfaced ConnectionFailed error.
+   */
+  {
+    struct timeval tv{};
+    tv.tv_sec =
+        config.connTimeout ? config.connTimeout->count() : kConnectedTimeoutSec;
+    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  }
+}
 
-  struct timeval tv{};
-  tv.tv_sec = kConnectedTimeoutSec;
-  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-
+// Applies the connected-socket options to a freshly accepted fd.
+Status configureAcceptedSocket(int sock, const TcpSocketConfig& config) {
+  SockOptSetter opt(sock);
+  applySocketConfig(opt, config);
   return opt.status();
 }
 
@@ -532,12 +562,19 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
+  // Split the wait: blocking on the length prefix is first-byte latency,
+  // blocking on the payload is drain time. Two clock reads per frame (~20ns
+  // each) against a frame that takes hundreds of microseconds.
+  auto& stats = recvPhaseStats();
+  const auto tStart = std::chrono::steady_clock::now();
+
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
     return Err(
         ErrCode::ConnectionFailed,
         "recv header failed: " + std::system_category().message(errno));
   }
+  const auto tFirstByte = std::chrono::steady_clock::now();
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
@@ -554,6 +591,17 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
         ErrCode::ConnectionFailed,
         "recv payload failed: " + std::system_category().message(errno));
   }
+
+  const auto tDone = std::chrono::steady_clock::now();
+  using ns = std::chrono::nanoseconds;
+  stats.headerWaitNs.fetch_add(
+      std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
+      std::memory_order_relaxed);
+  stats.payloadDrainNs.fetch_add(
+      std::chrono::duration_cast<ns>(tDone - tFirstByte).count(),
+      std::memory_order_relaxed);
+  stats.frames.fetch_add(1, std::memory_order_relaxed);
+  stats.payloadBytes.fetch_add(len, std::memory_order_relaxed);
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv: fd={} bytes={}", sock_, len);
   return static_cast<size_t>(len);
@@ -1040,7 +1088,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
           "TcpServer: accepted fd={} from {}",
           clientSock,
           formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock, config.socketBufSize);
+      auto status = configureAcceptedSocket(clientSock, config);
       if (!status) {
         UNIFLOW_LOG_ERROR(
             "TcpServer: socket config failed fd={}: {}",
@@ -1132,7 +1180,9 @@ void AsyncAccept::teardown(int fd) {
   readyConns_ = {};
 }
 
-void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
+void AsyncAccept::acceptPendingConnections(
+    std::atomic<int>& listenSock,
+    const TcpSocketConfig& config) {
   if (!accepting_) {
     return;
   }
@@ -1190,7 +1240,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
     // configureAcceptedSocket sets 30s timeouts — must come after the
     // 500ms handshake timeout to avoid overriding it.
-    auto status = configureAcceptedSocket(conn->getFd(), socketBufSize_);
+    auto status = configureAcceptedSocket(conn->getFd(), config);
     if (!status) {
       UNIFLOW_LOG_ERROR(
           "TcpServer: async socket config failed fd={}: {}",
@@ -1221,21 +1271,13 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
 
   evb_.dispatch([this,
                  &listenSock,
-                 bufSize = config.socketBufSize,
+                 cfg = config,
                  p = std::move(promise)]() mutable noexcept {
     int sock = listenSock.load();
     if (sock < 0) {
       p.set_value(nullptr);
       return;
     }
-
-    // Server-level, not per-accept: BasicTcpServer passes its own config_ to
-    // every accept() call, so every dispatch writes the same value and there is
-    // no per-call setting to lose. Nothing here binds an accepted fd to a
-    // particular accept() anyway -- connections go to whichever promise is
-    // queued first. A future per-accept override would have to travel with the
-    // connection instead.
-    socketBufSize_ = bufSize;
 
     // Lazy setup: fcntl + registerFd both on the loop thread.
     if (!accepting_) {
@@ -1248,9 +1290,17 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
         p.set_value(nullptr);
         return;
       }
-      evb_.registerFd(sock, EPOLLIN, [this, &listenSock](uint32_t /*events*/) {
-        acceptPendingConnections(listenSock);
-      });
+      // The config travels with the fd registration rather than through a
+      // member: it is server-level, so freezing it when the fd is armed loses
+      // nothing -- BasicTcpServer hands its own config_ to every accept() call
+      // and never reassigns it. Nothing here binds an accepted fd to a
+      // particular accept() anyway; connections go to whichever promise is
+      // queued first. A future per-accept override would have to travel with
+      // the connection instead.
+      evb_.registerFd(
+          sock, EPOLLIN, [this, &listenSock, cfg](uint32_t /*events*/) {
+            acceptPendingConnections(listenSock, cfg);
+          });
       accepting_ = true;
     }
 
@@ -1396,54 +1446,7 @@ namespace {
 
 Status configureClientSocket(int sock, const TcpSocketConfig& config) {
   SockOptSetter opt(sock);
-
-  if (config.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
-  }
-  if (config.tcpNoDelay) {
-    int val = *config.tcpNoDelay ? 1 : 0;
-    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
-  }
-  if (config.enableKeepalive) {
-    int val = *config.enableKeepalive ? 1 : 0;
-    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
-  }
-  if (config.enableKeepalive && *config.enableKeepalive) {
-    if (config.keepaliveIdle) {
-      int val = static_cast<int>(config.keepaliveIdle->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
-    }
-    if (config.keepaliveInterval) {
-      int val = static_cast<int>(config.keepaliveInterval->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
-    }
-    if (config.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
-    }
-  }
-  if (config.userTimeout) {
-    int val = static_cast<int>(config.userTimeout->count());
-    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
-  }
-  /*
-   * Default the send/recv timeout to kConnectedTimeoutSec when the caller does
-   * not specify one, matching configureAcceptedSocket on the server side.
-   * Without this the client's connected socket blocks forever: a peer that
-   * accepts the TCP connection but stops responding mid-handshake (e.g. its
-   * transport setup failed) would wedge the client's blocking recv during the
-   * handshake exchange indefinitely, which is only reaped as an opaque
-   * process-unresponsive failure. Bounding it turns the hang into a surfaced
-   * ConnectionFailed error.
-   */
-  {
-    struct timeval tv{};
-    tv.tv_sec =
-        config.connTimeout ? config.connTimeout->count() : kConnectedTimeoutSec;
-    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-  }
-
+  applySocketConfig(opt, config);
   return opt.status();
 }
 

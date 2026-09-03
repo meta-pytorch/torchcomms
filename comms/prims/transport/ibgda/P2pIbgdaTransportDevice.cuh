@@ -596,6 +596,14 @@ class P2pIbgdaTransportDevice {
    * before signal(group, ...). A fused put(..., signal) remains self-ordered
    * because the put and signal are posted on the same QP.
    *
+   * `direction` selects more than a lane. Channel ids are not unique across
+   * concurrently running groups: `ThreadGroup::partition` renumbers each
+   * subgroup from 0, so two blocks in different partitions land on the same
+   * channel and are kept apart only by direction. Posting is `EXCLUSIVE`, so a
+   * recv-role group that takes the Send default shares a QP with the send-role
+   * group and both can reserve the same WQ slot. See "Partitioned groups alias
+   * channel ids" in comms/prims/docs/Channels.md.
+   *
    * @param group     Thread group; all threads must call. Leader posts WQE,
    *                  all sync.
    * @param signalBuf Pre-resolved remote signal slot (must point to the
@@ -616,7 +624,12 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
-  /** signal (thread-scope) - Single-thread variant. */
+  /**
+   * signal (thread-scope) - Single-thread variant.
+   *
+   * Posts Send unconditionally; a recv-role group sharing a channel id with a
+   * concurrent send-role group must use the direction-taking overload.
+   */
   __device__ void signal(
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1) {
@@ -672,6 +685,10 @@ class P2pIbgdaTransportDevice {
     wait_counter_impl(group, counterBuf, expected, abortDevice);
   }
 
+  // wait_local and is_local_completion_ready resolve their lane against Send
+  // unconditionally, so on a channel id shared with a concurrent recv-role
+  // group they poll the send-role group's CQ. See "Partitioned groups alias
+  // channel ids" in comms/prims/docs/Channels.md.
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
@@ -780,7 +797,15 @@ class P2pIbgdaTransportDevice {
     group.sync();
   }
 
-  /** flush (thread-scope) - Single-thread variant. */
+  /**
+   * flush (thread-scope) - Single-thread variant.
+   *
+   * Drains Send unconditionally. Two groups sharing a `(channel_id, direction)`
+   * share that direction's `IbQpState`, and the drain exchanges
+   * `pendingFlushLanesMask` to zero, so one group's flush consumes the other's
+   * pending lanes and can return with those WQEs still in flight. See
+   * "Partitioned groups alias channel ids" in comms/prims/docs/Channels.md.
+   */
   __device__ void flush(const AbortDevice& abortDevice = AbortDevice()) {
     ThreadGroup solo = make_thread_solo();
     flush(solo, IbDirection::Send, abortDevice);
@@ -801,7 +826,12 @@ class P2pIbgdaTransportDevice {
     flush(group, direction, abortDevice);
   }
 
-  /** fence (thread-scope) - Single-thread variant. */
+  /**
+   * fence (thread-scope) - Single-thread variant.
+   *
+   * Drains Send unconditionally; same shared-`IbQpState` caveat as the
+   * thread-scope flush() above.
+   */
   __device__ void fence(const AbortDevice& abortDevice = AbortDevice()) {
     flush(abortDevice);
   }

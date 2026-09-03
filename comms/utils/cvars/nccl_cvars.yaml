@@ -2063,6 +2063,16 @@ cvars:
      force - Require every rank and the exact Phase-2 source range to be
              eligible for IBGDA zero-copy; never fall back to the copy path.
 
+ - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Enable bidirectional registered Ring reduce-scatter and all-gather for
+     in-place collectives with every supported virtual-stripe geometry.
+     Out-of-place collectives continue to use the unidirectional registered
+     Ring path. This value must be set identically on every rank. Set false to
+     use the unidirectional registered Ring path.
+
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
    default     : false
@@ -3013,7 +3023,7 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Controls if the folly logging should be async or not.
+     Controls whether comms logging uses asynchronous delivery.
 
  - name        : NCCL_NETWORK_PERF_MONITOR_SCUBA_LOGGING_ENABLE
    type        : bool

@@ -3,6 +3,7 @@
 #include "comms/uniflow/controller/TcpController.h"
 
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <optional>
@@ -23,6 +24,10 @@ using namespace uniflow::controller;
 struct AddrFamily {
   std::string serverAddr;
   std::string clientHost;
+  // Stated rather than derived from clientHost: comparing against the
+  // "127.0.0.1" literal silently defaults every other spelling -- "localhost",
+  // "[::1]", a resolvable hostname -- to AF_INET6.
+  int family;
 };
 
 class TcpAsyncAcceptTest : public ::testing::TestWithParam<AddrFamily> {
@@ -86,6 +91,26 @@ int acceptedFd(const std::unique_ptr<Conn>& conn) {
   return tcp == nullptr ? -1 : tcp->getFd();
 }
 
+int getSockOptInt(int fd, int level, int optname) {
+  int val = 0;
+  socklen_t len = sizeof(val);
+  EXPECT_EQ(::getsockopt(fd, level, optname, &val, &len), 0);
+  return val;
+}
+
+// The value an untouched socket of this family reports, so "the kernel is still
+// in charge" is measured rather than assumed. Hardcoding 0 would encode a
+// current Linux default instead of the property under test.
+int probeSockOptInt(int family, int level, int optname) {
+  int probe = ::socket(family, SOCK_STREAM, 0);
+  if (probe < 0) {
+    return -1;
+  }
+  int val = getSockOptInt(probe, level, optname);
+  ::close(probe);
+  return val;
+}
+
 } // namespace
 
 TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
@@ -113,8 +138,7 @@ TEST_P(TcpAsyncAcceptTest, SingleAsyncAccept) {
 // copy. Before the config was threaded through the accept policy,
 // configureAcceptedSocket hardcoded 1 MiB, so a caller had no way to opt out.
 TEST_P(TcpAsyncAcceptTest, UnsetSocketBufSizeLeavesKernelAutotuning) {
-  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
-  const int kernelDefault = kernelDefaultRcvBuf(family);
+  const int kernelDefault = kernelDefaultRcvBuf(GetParam().family);
   ASSERT_GT(kernelDefault, 0);
 
   TcpSocketConfig cfg;
@@ -157,8 +181,7 @@ TEST_P(TcpAsyncAcceptTest, UnsetSocketBufSizeLeavesKernelAutotuning) {
 // enough to contain the unconfigured default would also be satisfied if
 // socketBufSize were dropped again.
 TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
-  const int family = GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6;
-  const int kernelDefault = kernelDefaultRcvBuf(family);
+  const int kernelDefault = kernelDefaultRcvBuf(GetParam().family);
   ASSERT_GT(kernelDefault, 0);
 
   // Scaled off the probe rather than a literal. A quarter of the default
@@ -168,7 +191,7 @@ TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
   // untouched one on any stock host. Staying below the default also keeps the
   // request clear of net.core.rmem_max, so it is not silently clamped.
   const int requested = kernelDefault / 4;
-  const int expected = rcvBufForRequest(family, requested);
+  const int expected = rcvBufForRequest(GetParam().family, requested);
   ASSERT_GT(expected, 0);
 
   // Whether the configured size is observably different from the default is a
@@ -200,6 +223,65 @@ TEST_P(TcpAsyncAcceptTest, AcceptedSocketAppliesConfiguredSocketBufSize) {
   const int fd = acceptedFd(conn);
   ASSERT_GE(fd, 0);
   EXPECT_EQ(getRcvBuf(fd), expected);
+}
+
+// osDefaults() means "leave the OS alone", and that has to hold for accepted
+// sockets too. Before configureAcceptedSocket applied the config, it hardcoded
+// TCP_NODELAY=1 and SO_KEEPALIVE=1 regardless, so this configuration was
+// silently ignored on the server side while the client honoured it.
+TEST_P(TcpAsyncAcceptTest, AcceptedSocketLeavesOsDefaultsUntouched) {
+  const int family = GetParam().family;
+  const int probeNoDelay = probeSockOptInt(family, IPPROTO_TCP, TCP_NODELAY);
+  const int probeKeepalive = probeSockOptInt(family, SOL_SOCKET, SO_KEEPALIVE);
+  ASSERT_GE(probeNoDelay, 0);
+  ASSERT_GE(probeKeepalive, 0);
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(
+      GetParam().serverAddr,
+      TcpSocketConfig::osDefaults(),
+      *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(getSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY), probeNoDelay);
+  EXPECT_EQ(getSockOptInt(fd, SOL_SOCKET, SO_KEEPALIVE), probeKeepalive);
+}
+
+// A server that turns keepalive off must actually get it off. This is the case
+// that used to be a no-op with no compiler error and no failing test.
+TEST_P(TcpAsyncAcceptTest, AcceptedSocketHonoursKeepaliveDisable) {
+  TcpSocketConfig cfg;
+  cfg.enableKeepalive = false;
+
+  ScopedEventBaseThread evbThread("async-accept");
+  AsyncTcpServer server(GetParam().serverAddr, cfg, *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  auto future = server.accept();
+  TcpClient client;
+  auto clientConn = client.connect(clientAddr(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr) << "Client failed to connect";
+  auto conn = future.get();
+  ASSERT_NE(conn, nullptr);
+
+  const int fd = acceptedFd(conn);
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(getSockOptInt(fd, SOL_SOCKET, SO_KEEPALIVE), 0);
 }
 
 TEST_P(TcpAsyncAcceptTest, MultipleAsyncAccepts) {
@@ -344,14 +426,11 @@ TEST_P(TcpAsyncAcceptTest, AsyncAcceptRejectsNonUniflowClient) {
   auto future = server.accept();
 
   {
-    int sock = ::socket(
-        GetParam().clientHost == "127.0.0.1" ? AF_INET : AF_INET6,
-        SOCK_STREAM | SOCK_CLOEXEC,
-        0);
+    int sock = ::socket(GetParam().family, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_GE(sock, 0);
 
     sockaddr_storage addr{};
-    if (GetParam().clientHost == "127.0.0.1") {
+    if (GetParam().family == AF_INET) {
       auto* sa = reinterpret_cast<sockaddr_in*>(&addr);
       sa->sin_family = AF_INET;
       sa->sin_port = htons(static_cast<uint16_t>(port));
@@ -454,8 +533,8 @@ INSTANTIATE_TEST_SUITE_P(
     AddrFamilies,
     TcpAsyncAcceptTest,
     ::testing::Values(
-        AddrFamily{"127.0.0.1:0", "127.0.0.1"},
-        AddrFamily{":::0", "::1"}),
+        AddrFamily{"127.0.0.1:0", "127.0.0.1", AF_INET},
+        AddrFamily{":::0", "::1", AF_INET6}),
     [](const ::testing::TestParamInfo<AddrFamily>& info) {
-      return info.param.clientHost == "127.0.0.1" ? "IPv4" : "IPv6";
+      return info.param.family == AF_INET ? "IPv4" : "IPv6";
     });
