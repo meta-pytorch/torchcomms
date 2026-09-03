@@ -56,23 +56,56 @@ static_assert(
 // intra-wave; two wavefronts per block would put a cross-wave combine (and so
 // LDS and a barrier) back into the critical path for one extra step of
 // reduction.
-constexpr int kLpLanesPerBlock = 64; // CDNA wavefront
+// EACH LANE OWNS FOUR CONTIGUOUS ELEMENTS, which is what makes the memory
+// access wide. The previous layout gave a lane elements l, l+64, ... so that
+// one wavefront covered exactly one block and the absmax was a full-wave
+// reduction. Clean reduction, poor memory access: strided single-element access
+// compiles to one load and one STORE PER ELEMENT -- global_load_ushort and
+// global_store_byte for bf16 -- because neither a lane's reads nor its fp8
+// writes are adjacent.
+//
+// Four contiguous elements instead: one global_load_dwordx2 for four bf16 and
+// ONE global_store_dword for the four fp8 bytes. Same work, a QUARTER of the
+// memory instructions (8 -> 2 per lane), confirmed in the emitted ISA.
+//
+// This is also why the stall it fixes was bf16-SPECIFIC. At a given message
+// size bf16 has twice the elements of fp32, so it paid twice the per-element
+// loads and stores; fp32, with half the elements for the same bytes, was much
+// less exposed. Single-group allreduce A=2 measured 0.75x-0.92x in bf16
+// above 31.5 MB against 1.14x-1.76x in fp32 at the SAME byte sizes, which is
+// what pointed here.
+//
+// The CONVERSION was never the problem and is deliberately left alone:
+// static_cast<float> on a bf16 plus fp8 construction already compiles to
+// v_cvt_pk_fp8_f32, the packed hardware fp32->fp8 op, so hand-written asm for
+// it would buy nothing.
+constexpr int kLpLanesPerWave = 64; // CDNA wavefront
+constexpr int kLpElemsPerLane = 4;
 constexpr int kLpThreadsPerCta = 256;
+
+// A block is owned by kLpBlockElems / kLpElemsPerLane = 32 lanes, HALF a
+// wavefront, so a wavefront carries two blocks and a workgroup eight.
+constexpr int kLpLanesPerBlock = kLpBlockElems / kLpElemsPerLane;
 constexpr int kLpBlocksPerCta = kLpThreadsPerCta / kLpLanesPerBlock;
-constexpr int kLpElemsPerLane = kLpBlockElems / kLpLanesPerBlock;
 
 static_assert(
-    kLpBlockElems % kLpLanesPerBlock == 0,
-    "a wire block must divide evenly among the lanes of one wavefront");
+    kLpBlockElems % kLpElemsPerLane == 0,
+    "a wire block must divide evenly into per-lane runs");
+static_assert(
+    kLpElemsPerLane == 4,
+    "the single-dword fp8 store writes exactly four bytes per lane");
+static_assert(
+    kLpLanesPerWave % kLpLanesPerBlock == 0,
+    "a wavefront must hold a whole number of blocks, so the absmax reduction "
+    "stays inside one wavefront and needs no barrier");
 static_assert(
     kLpThreadsPerCta % kLpLanesPerBlock == 0,
-    "a workgroup must be a whole number of wavefronts");
+    "a workgroup must be a whole number of blocks");
 
-// The intra-wavefront reduction below is only correct on a 64-lane wavefront:
-// it xor-reduces over exactly kLpLanesPerBlock lanes and takes the whole
-// block's absmax to live in that one wavefront. Fail at compile time rather
-// than compute a per-half-block scale that every rank would still agree on and
-// that would still decode -- silently, and slightly wrong.
+// The reduction below xor-reduces over a BLOCK's lanes, and the block-per-wave
+// arithmetic above assumes a 64-lane wavefront. Fail at compile time rather
+// than compute a scale over the wrong lane set, which every rank would still
+// agree on and which would still decode -- silently, and slightly wrong.
 #if defined(__AMDGCN_WAVEFRONT_SIZE) && __AMDGCN_WAVEFRONT_SIZE != 64
 #error "sharded relay low precision kernels assume a 64-lane wavefront"
 #endif
@@ -111,6 +144,25 @@ __device__ __forceinline__ T lpFromFloat(float v) {
 // exactly one place in the tree. Encode and decode always run on the same
 // device, so they always agree; the BYTES are arch-local, which is fine for an
 // intra-node homogeneous relay and documented as latent otherwise.
+// Four fp8 codes written as ONE dword. A block is 132 bytes and every block
+// offset is 4-block aligned, so byte offset 4*lane inside a block is always
+// 4-byte aligned and this store is never misaligned.
+__device__ __forceinline__ void lpStoreFourCodes(
+    uint8_t* dst,
+    const uint8_t (&codes)[4]) {
+  uint32_t word;
+  __builtin_memcpy(&word, codes, 4);
+  __builtin_memcpy(dst, &word, 4);
+}
+
+__device__ __forceinline__ void lpLoadFourCodes(
+    const uint8_t* src,
+    uint8_t (&codes)[4]) {
+  uint32_t word;
+  __builtin_memcpy(&word, src, 4);
+  __builtin_memcpy(codes, &word, 4);
+}
+
 __device__ __forceinline__ uint8_t lpEncodeByte(float v) {
   const rccl_float8 q(v);
   uint8_t byte;
@@ -168,7 +220,10 @@ __device__ __forceinline__ uint8_t lpEncodeWithScale(float v, float scale) {
  * the identical value, bit for bit, which is what keeps the scale a property of
  * the block rather than of the lane that happened to compute it.
  */
-__device__ __forceinline__ float waveAbsMax(float absValue) {
+__device__ __forceinline__ float blockAbsMax(float absValue) {
+  // log2(32) = 5 steps over the lanes of ONE block. The xor width is the
+  // block's lane count rather than the wavefront's, so the two blocks sharing a
+  // wavefront reduce independently and neither sees the other's values.
   for (int mask = kLpLanesPerBlock / 2; mask > 0; mask >>= 1) {
     absValue = fmaxf(absValue, __shfl_xor(absValue, mask, kLpLanesPerBlock));
   }
@@ -196,22 +251,23 @@ __global__ void lpQuantizeKernel(const T* in, uint8_t* wire, size_t nBlocks) {
     if (b >= nBlocks) {
       continue;
     }
-    const T* src = in + b * kLpBlockElems;
+    // Lane l owns the contiguous run [4l, 4l+4), so this is one wide load.
+    const T* src = in + b * kLpBlockElems + lane * kLpElemsPerLane;
 
-    // Lane l takes elements l, l + 64, ... so each of the kLpElemsPerLane
-    // accesses is one contiguous 64-lane run.
     float v[kLpElemsPerLane];
     float absMax = 0.0f;
     for (int i = 0; i < kLpElemsPerLane; i++) {
-      v[i] = lpToFloat<T>(src[lane + i * kLpLanesPerBlock]);
+      v[i] = lpToFloat<T>(src[i]);
       absMax = fmaxf(absMax, fabsf(v[i]));
     }
 
-    const float scale = lpScaleFor(waveAbsMax(absMax));
+    const float scale = lpScaleFor(blockAbsMax(absMax));
     uint8_t* block = wire + b * kLpBlockBytes;
+    uint8_t codes[kLpElemsPerLane];
     for (int i = 0; i < kLpElemsPerLane; i++) {
-      block[lane + i * kLpLanesPerBlock] = lpEncodeWithScale(v[i], scale);
+      codes[i] = lpEncodeWithScale(v[i], scale);
     }
+    lpStoreFourCodes(block + lane * kLpElemsPerLane, codes);
     if (lane == 0) {
       *scaleSlot(block) = scale;
     }
@@ -295,9 +351,11 @@ __global__ void lpReduceRequantizeKernel(
       const uint8_t* block =
           wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
       const float contribScale = scaleOf(block);
+      // One dword load per contribution instead of four byte loads.
+      uint8_t codes[kLpElemsPerLane];
+      lpLoadFourCodes(block + lane * kLpElemsPerLane, codes);
       for (int i = 0; i < kLpElemsPerLane; i++) {
-        acc[i] +=
-            lpDecodeByte(block[lane + i * kLpLanesPerBlock]) * contribScale;
+        acc[i] += lpDecodeByte(codes[i]) * contribScale;
       }
     }
 
@@ -311,11 +369,13 @@ __global__ void lpReduceRequantizeKernel(
       absMax = fmaxf(absMax, fabsf(acc[i]));
     }
 
-    const float scale = lpScaleFor(waveAbsMax(absMax));
+    const float scale = lpScaleFor(blockAbsMax(absMax));
     uint8_t* block = wireOut + b * kLpBlockBytes;
+    uint8_t codes[kLpElemsPerLane];
     for (int i = 0; i < kLpElemsPerLane; i++) {
-      block[lane + i * kLpLanesPerBlock] = lpEncodeWithScale(acc[i], scale);
+      codes[i] = lpEncodeWithScale(acc[i], scale);
     }
+    lpStoreFourCodes(block + lane * kLpElemsPerLane, codes);
     if (lane == 0) {
       *scaleSlot(block) = scale;
     }
