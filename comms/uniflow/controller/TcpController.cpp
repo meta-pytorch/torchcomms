@@ -381,12 +381,11 @@ bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
 // for these sockets, and widening it here would hide a non-blocking data socket
 // rather than fix one.
 template <typename IOPolicy>
-bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
-  int idx = 0;
-  while (idx < iovCnt) {
+bool TcpConn<IOPolicy>::sendAllVec(std::span<iovec> iov) {
+  while (!iov.empty()) {
     msghdr msg{};
-    msg.msg_iov = iov + idx;
-    msg.msg_iovlen = static_cast<size_t>(iovCnt - idx);
+    msg.msg_iov = iov.data();
+    msg.msg_iovlen = iov.size();
     ssize_t n = ::sendmsg(sock_, &msg, MSG_NOSIGNAL);
     if (n < 0) {
       if (errno == EINTR) {
@@ -407,13 +406,14 @@ bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
     // covered by tests -- an attempt to force it with an oversized payload did
     // not reach this branch.
     auto consumed = static_cast<size_t>(n);
-    while (idx < iovCnt && consumed >= iov[idx].iov_len) {
-      consumed -= iov[idx].iov_len;
-      ++idx;
+    while (!iov.empty() && consumed >= iov.front().iov_len) {
+      consumed -= iov.front().iov_len;
+      iov = iov.subspan(1);
     }
-    if (idx < iovCnt && consumed > 0) {
-      iov[idx].iov_base = static_cast<uint8_t*>(iov[idx].iov_base) + consumed;
-      iov[idx].iov_len -= consumed;
+    if (!iov.empty() && consumed > 0) {
+      iov.front().iov_base =
+          static_cast<uint8_t*>(iov.front().iov_base) + consumed;
+      iov.front().iov_len -= consumed;
     }
   }
   return true;
@@ -541,14 +541,14 @@ Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
   iovec iov[2];
   iov[0].iov_base = &len;
   iov[0].iov_len = sizeof(len);
-  int iovCnt = 1;
+  size_t iovCnt = 1;
   if (!data.empty()) {
     // const_cast: iovec has no const variant, and sendmsg only reads.
     iov[1].iov_base = const_cast<uint8_t*>(data.data());
     iov[1].iov_len = data.size();
     iovCnt = 2;
   }
-  if (!sendAllVec(iov, iovCnt)) {
+  if (!sendAllVec(std::span{iov}.first(iovCnt))) {
     return Err(
         ErrCode::ConnectionFailed,
         "send frame failed: " + std::system_category().message(errno));
