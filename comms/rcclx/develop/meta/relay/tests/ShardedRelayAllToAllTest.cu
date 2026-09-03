@@ -2272,17 +2272,19 @@ TEST_F(ShardedRelayAllToAllLowPrecisionTest, InterleavesWithFullPrecision) {
   freeBuffers(b);
 }
 
-TEST_F(
-    ShardedRelayAllToAllLowPrecisionTest,
-    DeclinesForTheSingleGroupPipelinedSchedule) {
+TEST_F(ShardedRelayAllToAllLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks";
   }
-  // A single-group call at this size pipelines, and the pipelined schedule does
-  // not carry the wire format yet. The decline must be unanimous, and it is,
-  // because the tile count is a pure function of the counts. The pipeline
-  // selection is asserted so this cannot quietly become a second test of the
-  // non-pipelined path.
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the 4-group cases
+  // above cannot reach the pipelined schedule. Single-group at a size the depth
+  // selector pipelines -- asserted, so a resize cannot quietly turn this into a
+  // second test of the non-pipelined path.
+  //
+  // This is also the case that exercises the FULL-PRECISION DIAGONAL mixed into
+  // a wire-format group: here the diagonal is split into T+1 self P2P pairs,
+  // one per group, each keeping the caller's dtype while every other operation
+  // in the group carries wire bytes.
   const size_t count = 4ULL * 1024 * 1024;
   ASSERT_GT(
       rcclx::relay::relayPipelineTiles(
@@ -2298,9 +2300,9 @@ TEST_F(
   HIPCHECK_TEST(hipStreamSynchronize(this->stream));
 
   expectEverySegmentIsItsSource<float>(b, count);
-  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
-  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Route), 0u)
-      << "the decline must be recorded, not silent";
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
   freeBuffers(b);
 }
 
