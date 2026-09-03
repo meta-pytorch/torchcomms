@@ -55,6 +55,8 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
+#include "meta/relay/sharded_relay_lp_arena.h"
 #include "meta/relay/sharded_relay_oneshot.h"
 #include "nccl.h"
 
@@ -840,6 +842,184 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
     HIPEXPECT_TEST(hipFree(recvBuff));
   }
   HIPEXPECT_TEST(hipFree(sendBuff));
+}
+
+// ===========================================================================
+// LOW PRECISION UNDER GRAPH CAPTURE
+// ===========================================================================
+//
+// ONE case, because it has to run in a defined order and this binary shares a
+// single communicator across every suite: the arena is per-communicator and
+// created once, so "the arena is not up yet" is a state that exists exactly
+// once per process. Splitting this into two cases would make the second depend
+// on gtest's ordering.
+//
+// The whole low-precision graph-capture contract in sequence:
+//
+//   1. arena cold + capture  -> LP DECLINES (GraphCapture), because bringing
+//   the
+//      arena up runs a bootstrap all-gather and that must never land inside a
+//      capture. The captured graph is still valid and still correct -- the
+//      decline is a clean fall back to full precision, not a broken graph.
+//   2. eager call             -> LP ENGAGES and the arena comes up.
+//   3. arena warm + capture   -> LP ENGAGES INSIDE THE CAPTURE.
+//   4. replay x3              -> exact every time.
+//
+// Step 4 is what the arena exists for. Its partition is carved from a fixed
+// base at offsets derived only from the counts, so every replay reads and
+// writes the same addresses the capture recorded. A ScratchBufferCache-style
+// allocation would fail here in three separate documented ways; see
+// sharded_relay_lp_arena.h.
+class ShardedRelayGraphCaptureLowPrecisionTest
+    : public ShardedRelayGraphCaptureTest {
+ protected:
+  // A multiple of kActive * 128, which is what the flat allreduce needs: it
+  // splits its direct region into A per-owner shards, and a shard is only a
+  // whole number of wire blocks when the count is a multiple of A * 128. 8 MiB
+  // in fp32, comfortably above the low-precision size threshold.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  static float shardValue(int activeIndex) {
+    return static_cast<float>(activeIndex + 1);
+  }
+
+  // 1 + 2 + 3 + 4, exactly, in every element.
+  static float expectedSum() {
+    float sum = 0.0f;
+    for (int r = 0; r < kActive; r++) {
+      sum += shardValue(r);
+    }
+    return sum;
+  }
+
+  void fillMine(float* buff, size_t count) {
+    if (!this->isActive) {
+      return;
+    }
+    const std::vector<float> host(count, shardValue(this->myActiveIndex));
+    HIPCHECK_TEST(hipMemcpy(
+        buff, host.data(), count * sizeof(float), hipMemcpyHostToDevice));
+  }
+
+  void expectSum(float* buff, size_t count, const char* what) {
+    if (!this->isActive) {
+      return;
+    }
+    const float want = expectedSum();
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), buff, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": " << what << " element "
+                      << i << ": got " << got[i] << ", want " << want;
+      }
+    }
+  }
+};
+
+TEST_F(ShardedRelayGraphCaptureLowPrecisionTest, DeclinesColdThenEngagesWarm) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+  const size_t count = kLpCount;
+  const size_t bytes = count * sizeof(float);
+
+  float* buff = nullptr;
+  HIPCHECK_TEST(hipMalloc(
+      &buff, this->isActive ? bytes : static_cast<size_t>(kActive) * bytes));
+  barrier();
+  if (!this->isActive) {
+    HIPCHECK_TEST(hipMemset(buff, 0, static_cast<size_t>(kActive) * bytes));
+  }
+
+  const void* sendPtrs[kGroups] = {buff};
+  void* recvPtrs[kGroups] = {buff};
+  const size_t counts[kGroups] = {count};
+  auto enqueueLp = [&]() {
+    return ncclShardedRelayMultiGroupAllReduce(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        ncclFloat32,
+        ncclSum,
+        this->comm,
+        this->stream,
+        this->allActiveRanks,
+        kActive,
+        kGroups,
+        /*lowPrecision=*/1);
+  };
+
+  // This case owns the cold-arena state for the whole process. If a future low
+  // precision case in this binary runs first, this fires rather than silently
+  // testing the warm path twice.
+  ASSERT_FALSE(rcclx::relay::lpArenaReady(this->comm))
+      << "another low-precision case already brought the arena up; this case "
+         "must be the first, because the cold-arena state exists once per "
+         "communicator";
+
+  // ---- 1. Cold arena inside a capture: LP must decline, graph must be sound.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  ncclResult_t captured = ncclSuccess;
+  hipGraphExec_t coldExec = captureGraph([&]() { captured = enqueueLp(); });
+  ASSERT_EQ(captured, ncclSuccess);
+  ASSERT_NE(coldExec, nullptr);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision must not bootstrap its arena inside a capture";
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::GraphCapture), 0u)
+      << "the decline must be recorded against GraphCapture, not silent";
+
+  // The declined capture is a full-precision graph and has to work like one.
+  for (int r = 0; r < 2; r++) {
+    fillMine(buff, count);
+    barrier();
+    replay(coldExec, /*skew=*/true);
+    expectSum(buff, count, "cold-arena (full precision) replay");
+  }
+  HIPEXPECT_TEST(hipGraphExecDestroy(coldExec));
+
+  // ---- 2. Eager call: LP engages and the arena comes up.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(enqueueLp(), ncclSuccess);
+  syncStream("eager low-precision drain");
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "the eager call must engage, or the arena never came up and the rest "
+         "of this case proves nothing";
+  expectSum(buff, count, "eager low precision");
+  ASSERT_TRUE(rcclx::relay::lpArenaReady(this->comm));
+  barrier();
+
+  // ---- 3. Warm arena inside a capture: LP must engage this time.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  hipGraphExec_t warmExec = captureGraph([&]() { captured = enqueueLp(); });
+  ASSERT_EQ(captured, ncclSuccess);
+  ASSERT_NE(warmExec, nullptr);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision must engage inside a capture once the arena is up";
+  EXPECT_EQ(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::GraphCapture), 0u);
+
+  // ---- 4. Replay: the arena's fixed partition must give the same addresses
+  // every time, so every replay is exact.
+  for (int r = 0; r < 3; r++) {
+    fillMine(buff, count);
+    barrier();
+    replay(warmExec, /*skew=*/true);
+    expectSum(buff, count, "warm-arena low-precision replay");
+  }
+
+  HIPEXPECT_TEST(hipGraphExecDestroy(warmExec));
+  HIPEXPECT_TEST(hipFree(buff));
 }
 
 int main(int argc, char* argv[]) {
