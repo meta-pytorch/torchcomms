@@ -15,6 +15,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CachingAllocatorHookMock.hpp"
+#include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CtranMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CudaMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
 
@@ -135,6 +136,7 @@ class TorchCommNCCLXTest : public ::testing::Test {
   // Raw pointers to mocks for setting expectations
   std::shared_ptr<NiceMock<CudaMock>> cuda_mock_;
   std::shared_ptr<NiceMock<NcclxMock>> nccl_mock_;
+  std::shared_ptr<NiceMock<CtranMock>> ctran_mock_;
   std::vector<WorkEvent> work_events_;
 
   CommOptions default_options_;
