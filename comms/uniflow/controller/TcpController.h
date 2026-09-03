@@ -13,6 +13,7 @@
 #include <optional>
 #include <queue>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "comms/uniflow/controller/Controller.h"
@@ -22,6 +23,13 @@ class EventBase;
 } // namespace uniflow
 
 namespace uniflow::controller {
+
+/// First live global IPv6 address on `device`, or an error if it has none.
+///
+/// Deprecated addresses (IFA_F_DEPRECATED) are skipped: they bind successfully
+/// and so are indistinguishable from a live address at the socket layer, but a
+/// peer is not supposed to reply to them.
+Result<std::string> deviceGlobalIpv6(const std::string& device);
 
 /// Socket configuration for TcpServer and TcpClient.
 /// Optional fields: valued → setsockopt, nullopt → OS kernel default.
@@ -42,6 +50,14 @@ struct TcpSocketConfig {
   std::optional<int> keepaliveCount{3};
   std::optional<std::chrono::milliseconds> userTimeout{
       std::chrono::milliseconds{60000}};
+
+  /// Network device (e.g. "eth2") to pin egress to via SO_BINDTODEVICE.
+  /// Unset by default: without it the kernel routing table picks the egress
+  /// device, so binding a source address on the listener still leaves no
+  /// control over which NIC traffic actually leaves through. Opt-in because
+  /// forcing egress onto one device breaks connectivity wherever routing was
+  /// selecting a different, working NIC.
+  std::optional<std::string> bindToDevice;
 
   int acceptRetryCnt{5};
   size_t connectRetries{10};
