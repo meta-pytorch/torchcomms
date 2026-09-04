@@ -4,6 +4,7 @@
 
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
 #include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbExecution.cuh"
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
@@ -74,6 +75,35 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     return;
   }
   char* output_bytes = reinterpret_cast<char*>(output);
+
+  if constexpr (!kQuantized) {
+    direct_ib_reduce_scatter_role_range<
+        T,
+        DirectIbReceiveReduction<ReduceOp>,
+        kStaggerChannels>(
+        my_rank,
+        W,
+        DirectIbStridedInput<T>{
+            .data = input_base,
+            .chunkStrideBytes = args.chunk_elements * sizeof(T),
+        },
+        static_cast<std::size_t>(channel) * output_tile.tile_elements,
+        DirectIbOutput<T>{
+            .data = output,
+            .initialization = args.in_place
+                ? ReduceScatterOutputInitialization::ALREADY_INITIALIZED
+                : ReduceScatterOutputInitialization::COPY_OWN_INPUT,
+        },
+        output_tile.tile_size(channel),
+        DirectIbReceiveReduction<ReduceOp>{},
+        max_sig,
+        args.peers,
+        group,
+        is_recv ? DirectIbReduceScatterRole::RECEIVE
+                : DirectIbReduceScatterRole::SEND,
+        abortDevice);
+    return;
+  }
 
   if (is_recv) {
     const T* own_src = input_base +
