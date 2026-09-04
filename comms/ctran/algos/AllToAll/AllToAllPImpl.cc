@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/algos/common/NvlUtils.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -234,6 +235,11 @@ commResult_t ctranAllToAllPIbImpl(
       ? alltoallpIbConfig->qpScalingTh
       : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
 
+  // Set-once ambient IB config for this collective; the data-phase puts below
+  // observe it without per-call overrides.
+  CtranIbActiveConfigRAII activeIbConfig(
+      comm->ctran_->mapper->ctranIbPtr(), alltoallpIbConfig);
+
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
 
@@ -256,7 +262,6 @@ commResult_t ctranAllToAllPIbImpl(
             .memHdl_ = sendMemHdl,
             .remoteAccessKey_ = pArgs->remoteAccessKeys[peer],
             .notify_ = true /*notify*/,
-            .ibConfig_ = alltoallpIbConfig,
             .ibFastPath_ = enableFastPath},
         &ibPutReqs[idx++]));
     if (useProfiler) {
