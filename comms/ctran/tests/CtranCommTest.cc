@@ -32,6 +32,45 @@ TEST(CtranCommTest, AbortAvailableAndEnabled) {
   EXPECT_TRUE(comm.testAbort());
 }
 
+TEST(CtranCommTest, AbortReasonAndContextAreForwarded) {
+  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  CtranComm comm(abort);
+  const std::string context{"collective\0failed", 17};
+
+  comm.setAbort(
+      comms::fault_tolerance::AbortInfo{
+          .reason = comms::fault_tolerance::AbortReason::INTERNAL_ERROR,
+          .context = context,
+      });
+
+  const auto abortInfo = comm.getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(
+      *abortInfo,
+      (comms::fault_tolerance::AbortInfo{
+          .reason = comms::fault_tolerance::AbortReason::INTERNAL_ERROR,
+          .context = context,
+      }));
+  EXPECT_EQ(
+      comm.abortMessage(),
+      "comm aborted reason=internal_error context=\"collective\\000failed\"");
+}
+
+TEST(CtranCommTest, AbortMessageEscapesContext) {
+  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  CtranComm comm(abort);
+
+  comm.setAbort(
+      comms::fault_tolerance::AbortInfo{
+          .reason = comms::fault_tolerance::AbortReason::NETWORK_ERROR,
+          .context = "peer=\"rank 1\"\\socket",
+      });
+
+  EXPECT_EQ(
+      comm.abortMessage(),
+      "comm aborted reason=network_error context=\"peer=\\\"rank 1\\\"\\\\socket\"");
+}
+
 TEST(CtranCommTest, AbortAvailableAndEnabledDoubleAbort) {
   auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
   CtranComm comm(abort);

@@ -223,9 +223,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
         comm->logMetaData_.commHash);
     this->ctranTcpDm->cancelQueuedRecv(&notify->tcpDmReq);
 
-    auto _abort = comm->getAbort();
-    std::string _ctx =
-        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    std::string _ctx = comm->abortMessage();
     throw ctran::utils::Exception(
         _ctx,
         commRemoteError,
@@ -235,9 +233,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
   }
 
   [[noreturn]] void throwTcpDmRequestsAbort(size_t numRequests) {
-    auto _abort = comm->getAbort();
-    std::string _ctx =
-        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
+    std::string _ctx = comm->abortMessage();
     throw ctran::utils::Exception(
         _ctx,
         commRemoteError,
@@ -1180,10 +1176,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
 
   [[noreturn]] inline void throwCommAbortException(
       const std::string& abortContext) {
-    auto commAbort = comm->getAbort();
-    std::string message = commAbort->isTimedOut()
-        ? "comm aborted due to timeout"
-        : "comm aborted";
+    std::string message = comm->abortMessage();
     throw ctran::utils::Exception(
         message,
         commRemoteError,
@@ -1300,9 +1293,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     }
 
     if (comm->testAbort()) {
-      auto _abort = comm->getAbort();
-      std::string _ctx =
-          _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted";
+      std::string _ctx = comm->abortMessage();
       throw ctran::utils::Exception(
           _ctx,
           commRemoteError,

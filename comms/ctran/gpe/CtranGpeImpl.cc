@@ -8,6 +8,7 @@
 
 #include <folly/dynamic.h>
 
+#include "comms/common/fault_tolerance/AbortTypes.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
@@ -774,22 +775,26 @@ void CtranGpe::Impl::gpeThreadFn() {
       }
       SCOPE_EXIT {
         if (comm->testAbort()) {
-          // Preserve abort state across cancelTimeout(): an aborted comm
-          // must never flip back to not-aborted.
-          comm->setAbort();
-          const std::string_view reason =
-              comm->getAbort()->isTimedOut() ? "timeout" : "explicit";
+          const auto abortInfo = comm->getAbortInfo();
+          const auto reasonAndContext = abortInfo.has_value()
+              ? fmt::format(
+                    "reason={} context=\"{}\"",
+                    comms::fault_tolerance::abortReasonToString(
+                        abortInfo->reason),
+                    folly::cEscape<std::string>(abortInfo->context))
+              : std::string{"reason=unknown context=\"\""};
 
           // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
           if (!isTerminateCmd) {
-            gpeProfiler_->mark(ctran::GpeTracePoint::ALGO_ABORTED, reason);
+            gpeProfiler_->mark(
+                ctran::GpeTracePoint::ALGO_ABORTED, reasonAndContext);
           }
 
           const std::string_view phase = isTerminateCmd ? " now TERMINATE" : "";
           CTRAN_LOG(
               ERR,
               "Communicator aborted ({}){} on rank {} commHash {:x} {}",
-              reason,
+              reasonAndContext,
               phase,
               statex->rank(),
               statex->commHash(),
