@@ -76,17 +76,29 @@ namespace rcclx::relay {
 // many elements as fp32 does, and the LP footprint scales with ELEMENTS.
 //
 // The widest shape is the A=4 all-gather, which needs one send shadow of the
-// rank's own shard plus A-1 foreign arrival slots of the same size, so the
-// budget is multiplied by kLpArenaShadowsPerMessage. At the 1024 MB default
-// that is 2112 MiB per communicator -- a real number, and the reason
+// rank's own shard, A-1 foreign arrival slots of the same size, and one more
+// shard's worth of helper staging, so the budget is multiplied by
+// kLpArenaShadowsPerMessage. At the 1024 MB default that is 2640 MiB per
+// communicator -- a real number, and the reason
 // NCCL_SHARDED_RELAY_LP_PREALLOC defaults off: nothing is provisioned until a
 // caller actually asks for low precision. A job whose messages are smaller
-// should say so; NCCL_SHARDED_RELAY_LP_MAX_MSG_MB=256 costs 528 MiB.
+// should say so; NCCL_SHARDED_RELAY_LP_MAX_MSG_MB=256 costs 660 MiB.
 size_t lpArenaCapacityBytes();
 
 // The multiplier above, named so the collectives in later commits can raise it
 // in one place if a shape turns out to need more than four shadows.
-inline constexpr size_t kLpArenaShadowsPerMessage = 4;
+//
+// It did. The estimate above counts the flat all-gather's send shadow and its
+// A-1 foreign arrival slots but not its HELPER staging, which is carved on
+// every rank rather than only on the ranks acting as helpers -- that is what
+// makes the partition byte-identical across ranks and the capacity check a pure
+// function of the counts. At A=4, H=4, nGroups=2 that staging is nGroups * A *
+// wire(sc/(A+H)) = one more shadow, for five: 1 + (A-1) + 1. So the 1024 MB
+// default costs 2640 MiB per communicator, still lazily provisioned and still
+// worth overriding with NCCL_SHARDED_RELAY_LP_MAX_MSG_MB for a job that knows
+// its real sizes
+// (=256 costs 660 MiB).
+inline constexpr size_t kLpArenaShadowsPerMessage = 5;
 
 /**
  * The whole arena, handed to one call.
