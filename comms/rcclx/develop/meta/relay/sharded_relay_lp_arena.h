@@ -98,6 +98,18 @@ size_t lpArenaCapacityBytes();
 // worth overriding with NCCL_SHARDED_RELAY_LP_MAX_MSG_MB for a job that knows
 // its real sizes
 // (=256 costs 660 MiB).
+//
+// "The widest shape is the A=4 all-gather" was an assertion about all-gather,
+// not a survey. The A=4 ALLREDUCE was never costed against this number, and it
+// did not fit: its plan wanted 7500 permille of wire(count) where this provides
+// 5000, so every message at the top of the declared budget declined on capacity
+// -- 1.1x capacity at nGroups=1 and 1.5x fused, which is why bf16 read exactly
+// 1.00x at 1 GB while fp32, with half the ELEMENTS at the same byte size, won
+// 2.3x-2.8x. Its regions are now sized at what its two schedules actually
+// index, which is 4375 permille, and sharded_relay_allreduce.cc carries a
+// static_assert tying that number to this constant so the pair cannot drift
+// apart silently again. All-gather at 5000 remains the widest shape, so this
+// value is still 5 -- but now because it was checked rather than assumed.
 inline constexpr size_t kLpArenaShadowsPerMessage = 5;
 
 /**

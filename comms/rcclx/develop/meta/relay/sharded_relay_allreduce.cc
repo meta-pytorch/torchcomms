@@ -1308,54 +1308,138 @@ bool a2LpPrepare(
  */
 struct FlatLpPlan {
   char* sendShadow{nullptr}; // wire(count): quantized [0, count) for group 1
-  char* directRecv{
-      nullptr}; // wire(pD): the A-1 received direct shards (dScratch)
+  char* directRecv{nullptr}; // wire((A-1)*dShard): received direct shards
   char* agStage{nullptr}; // wire(pD): reduced shards, mine out and theirs in
   char* offloadRecv{
       nullptr}; // wire(pO): the reduced offload region coming back
-  char* helper[SHARDED_RELAY_MAX_GROUPS]{};
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{}; // 2*A*wire(oChunk): staging
   bool valid{false};
 };
+
+/*
+ * Every region below is sized at what the two flat schedules actually index,
+ * which is NOT what this used to reserve. Sizing them at maxCount and
+ * maxOffload instead was described as costing "a little arena"; it cost 7500
+ * permille of wire(count) against an arena that provides 5000, so the widest
+ * shape declined on capacity for any message at the top of its own declared
+ * budget. See the static_assert below.
+ *
+ * The bounds, verified against shardedRelayAllReduceFlat and
+ * ...FlatPipelined rather than inferred:
+ *
+ *   sendShadow   the whole send buffer is quantized in one pass    count
+ *   directRecv   dScratch holds the A-1 FOREIGN shards. Flat reads
+ *                slot p of A-1; pipelined indexes dSlot(t, p) =
+ *                (A-1)*tileOffset(t) + p*tileSize(t), whose top is
+ *                (A-1)*dShard exactly                          (A-1)*dShard
+ *   agStage      A shards: theirsOff = k*dShard for k < A, plus
+ *                dShard, and the closing dequantize reads
+ *                [afterMine, pD)                                        pD
+ *   offloadRecv  H chunks: off = h*oChunk for h < H, plus oChunk         pO
+ *   helper       Flat indexes a*oChunk for a < A. Pipelined
+ *                ping-pongs, helperSlot(a, k) = (k%2 * A + a)*oTile
+ *                with oTile = oChunk/T, so 2*A*oTile <= 2*A*oChunk
+ *                for every T >= 1. The 2x is what makes one number
+ *                cover both schedules without T here        2*A*oChunk
+ *
+ * dShard and oChunk are whole wire blocks: pO is aligned to H*CHUNK_ALIGN so
+ * oChunk = pO/H is a multiple of 512, and dShard = pD/A is a multiple of 128
+ * because the gate requires count to be a multiple of A*128 and pO already is.
+ *
+ * Still carved unconditionally at the worst case over groups, so the partition
+ * stays byte-identical on every rank and the capacity check stays a pure
+ * function of the counts. numHelpers is passed rather than assumed equal to
+ * nActiveRanks: it happens to be on an 8-GPU node at A=4, and a reader should
+ * not have to know that to check this arithmetic.
+ */
+size_t flatLpMaxDirect(const size_t* counts, const size_t* pOArr, int nGroups) {
+  size_t maxDirect = 0;
+  for (int g = 0; g < nGroups; g++) {
+    const size_t pD = (counts[g] > pOArr[g]) ? counts[g] - pOArr[g] : 0;
+    if (pD > maxDirect) {
+      maxDirect = pD;
+    }
+  }
+  return maxDirect;
+}
 
 size_t flatLpRequiredBytes(
     const size_t* counts,
     const size_t* pOArr,
     int nGroups,
-    int nActiveRanks) {
+    int nActiveRanks,
+    int numHelpers) {
   const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
   const size_t maxOffload = rcclx::relay::relayMaxCount(pOArr, nGroups);
-  // pD and the AG stage are both bounded by maxCount, which costs a little
-  // arena and removes a per-group subtraction from a number every rank must
-  // agree on.
-  size_t total = a2LpAlign(rcclx::relay::lpWireBytes(maxCount)) +
-      2 * a2LpAlign(rcclx::relay::lpWireBytes(maxCount)) +
-      a2LpAlign(rcclx::relay::lpWireBytes(maxOffload));
+  const size_t maxDirect = flatLpMaxDirect(counts, pOArr, nGroups);
+  const size_t dShard =
+      (nActiveRanks > 0) ? maxDirect / static_cast<size_t>(nActiveRanks) : 0;
+  const size_t oChunk =
+      (numHelpers > 0) ? maxOffload / static_cast<size_t>(numHelpers) : 0;
+
+  size_t total = a2LpAlign(rcclx::relay::lpWireBytes(maxCount));
+  total += a2LpAlign(
+      rcclx::relay::lpWireBytes(
+          static_cast<size_t>(nActiveRanks - 1) * dShard));
+  total += a2LpAlign(rcclx::relay::lpWireBytes(maxDirect));
+  total += a2LpAlign(rcclx::relay::lpWireBytes(maxOffload));
   total += static_cast<size_t>(nGroups) *
       a2LpAlign(
-               static_cast<size_t>(nActiveRanks) *
-               rcclx::relay::lpWireBytes(maxOffload));
+               2 * static_cast<size_t>(nActiveRanks) *
+               rcclx::relay::lpWireBytes(oChunk));
   return total;
 }
+
+// Compile-time restatement of the above for the widest configuration this route
+// ever runs, in permille of wire(count): A == H == 4, hence nGroups <= 2 on an
+// 8-GPU node, and allReduceOffloadPermille() == 500 so pO == pD == count/2.
+//
+//   sendShadow                            count            1000
+//   directRecv    (A-1)/A * pD  = 3/8 * count               375
+//   agStage       pD            = 1/2 * count               500
+//   offloadRecv   pO            = 1/2 * count               500
+//   helper        nGroups * 2*A * oChunk, oChunk = pO/H
+//                              = 2 * 8 * count/8          2000
+//                                                        -----
+//                                                         4375
+//
+// The arena provides kLpArenaShadowsPerMessage * wire(budget), i.e. 5000
+// permille of wire(count) when count is the declared budget. This assert is
+// what makes "a message inside NCCL_SHARDED_RELAY_LP_MAX_MSG_MB never declines
+// on capacity" a checked property instead of a hope. It was silently false at
+// 7500.
+constexpr size_t kFlatLpWorstCasePermille = 1000 + 375 + 500 + 500 + 2000;
+static_assert(
+    kFlatLpWorstCasePermille <= rcclx::relay::kLpArenaShadowsPerMessage * 1000,
+    "the flat allreduce low-precision plan does not fit the arena budget");
 
 FlatLpPlan flatLpCarve(
     const rcclx::relay::LpArenaLease& lease,
     const size_t* counts,
     const size_t* pOArr,
     int nGroups,
-    int nActiveRanks) {
+    int nActiveRanks,
+    int numHelpers) {
   const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
   const size_t maxOffload = rcclx::relay::relayMaxCount(pOArr, nGroups);
+  const size_t maxDirect = flatLpMaxDirect(counts, pOArr, nGroups);
+  const size_t dShard =
+      (nActiveRanks > 0) ? maxDirect / static_cast<size_t>(nActiveRanks) : 0;
+  const size_t oChunk =
+      (numHelpers > 0) ? maxOffload / static_cast<size_t>(numHelpers) : 0;
 
   FlatLpPlan p{};
   rcclx::relay::LpArenaCarver carver(lease);
   p.sendShadow = carver.take(rcclx::relay::lpWireBytes(maxCount));
-  p.directRecv = carver.take(rcclx::relay::lpWireBytes(maxCount));
-  p.agStage = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  p.directRecv = carver.take(
+      rcclx::relay::lpWireBytes(
+          static_cast<size_t>(nActiveRanks - 1) * dShard));
+  p.agStage = carver.take(rcclx::relay::lpWireBytes(maxDirect));
   p.offloadRecv = carver.take(rcclx::relay::lpWireBytes(maxOffload));
   for (int g = 0; g < nGroups; g++) {
     p.helper[g] = carver.take(
-        static_cast<size_t>(nActiveRanks) *
-        rcclx::relay::lpWireBytes(maxOffload));
+        2 * static_cast<size_t>(nActiveRanks) *
+        rcclx::relay::lpWireBytes(oChunk));
   }
   p.valid = carver.ok();
   return p;
@@ -1406,6 +1490,7 @@ bool flatLpPrepare(
     const size_t* pOArr,
     int nGroups,
     int nActiveRanks,
+    int numHelpers,
     FlatLpPlan* out) {
   if (!wantLp) {
     return false;
@@ -1428,11 +1513,12 @@ bool flatLpPrepare(
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
     return false;
   }
-  if (flatLpRequiredBytes(counts, pOArr, nGroups, nActiveRanks) > lease.bytes) {
+  if (flatLpRequiredBytes(counts, pOArr, nGroups, nActiveRanks, numHelpers) >
+      lease.bytes) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
     return false;
   }
-  *out = flatLpCarve(lease, counts, pOArr, nGroups, nActiveRanks);
+  *out = flatLpCarve(lease, counts, pOArr, nGroups, nActiveRanks, numHelpers);
   if (!out->valid) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
     return false;
@@ -2473,6 +2559,7 @@ static ncclResult_t shardedRelayAllReduceFlat(
       pOArr,
       nGroups,
       nActiveRanksPerGroup,
+      H,
       &lpPlan);
   const rcclx::relay::RelayWire wire =
       rcclx::relay::lpWireFor(datatype, elementSize, lp);
@@ -2908,7 +2995,7 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
   const size_t lpPO[1] = {pO};
   FlatLpPlan lpPlan{};
   const bool lp = flatLpPrepare(
-      wantLp, comm, stream, counts, lpPO, /*nGroups=*/1, A, &lpPlan);
+      wantLp, comm, stream, counts, lpPO, /*nGroups=*/1, A, H, &lpPlan);
   const rcclx::relay::RelayWire wire =
       rcclx::relay::lpWireFor(datatype, elementSize, lp);
 
