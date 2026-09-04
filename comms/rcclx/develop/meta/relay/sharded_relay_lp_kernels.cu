@@ -1,0 +1,447 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+// Device bodies for the low-precision relay kernels. Separate from the header
+// for the same reason sharded_relay_allreduce_kernels.cu is: this TU is
+// compiled as a monolithic non-RDC HIP library WITHOUT `--offload-host-only`,
+// so the
+// `__global__` bodies survive into the archive, and the explicit instantiations
+// at the bottom give the host TUs' `<<<...>>>` stubs something to bind to.
+
+#include "meta/relay/sharded_relay_lp_kernels.h"
+
+#include <hip/hip_runtime.h>
+
+#include "meta/relay/sharded_relay_lp.h"
+#include "rccl_float8.h"
+
+namespace {
+
+using rcclx::relay::kLpBlockBytes;
+using rcclx::relay::kLpBlockElems;
+using rcclx::relay::kLpInvNormalizeMax;
+using rcclx::relay::lpWireBytes;
+
+static_assert(
+    sizeof(rccl_float8) == 1,
+    "the wire format stores one fp8 code per byte");
+
+// Two wire blocks per workgroup, one thread per payload element.
+//
+// The absmax reduction is done as a shared-memory BROADCAST loop rather than a
+// tree: every thread of a sub-block reads all 128 of its block's absolute
+// values and takes the max itself. That is 128x the LDS reads of a tree, but
+// LDS broadcast is one instruction per wavefront regardless of lane count, and
+// it costs ONE barrier per block instead of seven. Barriers, not LDS bandwidth,
+// are what a 256-byte-per-block kernel cannot afford.
+constexpr int kLpBlocksPerCta = 2;
+constexpr int kLpThreadsPerCta = kLpBlockElems * kLpBlocksPerCta;
+
+// Enough workgroups to fill the device several times over without making the
+// grid-stride loop pointless. The kernels are memory bound, so the exact value
+// is not delicate.
+constexpr int kLpMaxCtas = 8192;
+
+int ctaCount(size_t nBlocks) {
+  const size_t ctas = (nBlocks + kLpBlocksPerCta - 1) / kLpBlocksPerCta;
+  return static_cast<int>(
+      ctas < kLpMaxCtas ? (ctas == 0 ? 1 : ctas) : kLpMaxCtas);
+}
+
+int elementCtaCount(size_t count) {
+  const size_t ctas = (count + kLpThreadsPerCta - 1) / kLpThreadsPerCta;
+  return static_cast<int>(
+      ctas < kLpMaxCtas ? (ctas == 0 ? 1 : ctas) : kLpMaxCtas);
+}
+
+// Widening and narrowing in one place, so a dtype whose conversion needs an
+// intrinsic rather than a cast is a two-line change here.
+template <typename T>
+__device__ __forceinline__ float lpToFloat(T v) {
+  return static_cast<float>(v);
+}
+
+template <typename T>
+__device__ __forceinline__ T lpFromFloat(float v) {
+  return static_cast<T>(v);
+}
+
+// fp8e4m3 code <-> value, through rccl_float8 so the flavour question
+// (__hip_fp8_e4m3_fnuz on gfx942, OCP __hip_fp8_e4m3 elsewhere) is answered in
+// exactly one place in the tree. Encode and decode always run on the same
+// device, so they always agree; the BYTES are arch-local, which is fine for an
+// intra-node homogeneous relay and documented as latent otherwise.
+__device__ __forceinline__ uint8_t lpEncodeByte(float v) {
+  const rccl_float8 q(v);
+  uint8_t byte;
+  __builtin_memcpy(&byte, &q, 1);
+  return byte;
+}
+
+__device__ __forceinline__ float lpDecodeByte(uint8_t byte) {
+  rccl_float8 q{};
+  __builtin_memcpy(&q, &byte, 1);
+  return static_cast<float>(q);
+}
+
+// Where a block's inline scale lives. kLpBlockBytes is a multiple of 4 and
+// every LP buffer offset is a whole number of blocks, so this is always 4-byte
+// aligned.
+__device__ __forceinline__ float* scaleSlot(uint8_t* block) {
+  return reinterpret_cast<float*>(block + kLpBlockElems);
+}
+
+__device__ __forceinline__ float scaleOf(const uint8_t* block) {
+  return *reinterpret_cast<const float*>(block + kLpBlockElems);
+}
+
+/*
+ * Scale for a block whose absolute maximum is absMax.
+ *
+ * absMax * 2^-7 is EXACT (a power-of-two multiply), and the decode is
+ * code * scale, so a block whose elements are all equal round-trips
+ * bit-exactly: v / (v * 2^-7) has the exact quotient 128, fp8e4m3 represents
+ * 128 exactly, and 128 * (v * 2^-7) is v again. Normalizing to the format's own
+ * maximum (240 or 448) instead would make the scale a rounded fp32 value and
+ * throw that property away for no precision gain. See sharded_relay_lp.h.
+ *
+ * An all-zero block gets scale 0 and codes 0, which decodes back to 0. A block
+ * holding a NaN or an inf gets a non-finite scale and decodes non-finite; see
+ * lpAbsMaxFold().
+ */
+__device__ __forceinline__ float lpScaleFor(float absMax) {
+  return absMax * kLpInvNormalizeMax;
+}
+
+__device__ __forceinline__ uint8_t lpEncodeWithScale(float v, float scale) {
+  return lpEncodeByte(scale > 0.0f ? v / scale : 0.0f);
+}
+
+/*
+ * One step of the absmax fold, NaN-STICKY.
+ *
+ * Deliberately not fmaxf: fmaxf returns the NON-NaN operand, so an absmax
+ * folded with it reports the max of a block's FINITE elements and reports 0 for
+ * a block that is entirely NaN. Zero is the all-zero block's absmax, so a
+ * diverged block would be written as scale 0 with 128 zero codes and decode
+ * back to clean 0.0 -- silently erasing the divergence, and stopping a
+ * post-collective isfinite() check from firing on exactly the runs that need
+ * it.
+ *
+ * Sticky instead: once a NaN is in the accumulator it stays, because `v > acc`
+ * is false for a NaN acc. absMax then being non-finite makes lpScaleFor()
+ * non-finite, which makes every element of that block decode non-finite -- so
+ * the block is destroyed either way, but visibly. An inf absmax reaches the
+ * same place without help: the scale is inf, so every finite element encodes to
+ * 0 and decodes to 0 * inf == NaN.
+ *
+ * Still commutative and associative over the non-negative inputs the callers
+ * pass, so every lane of a block computes the identical value, bit for bit.
+ */
+__device__ __forceinline__ float lpAbsMaxFold(float acc, float v) {
+  return (v > acc || __builtin_isnan(v)) ? v : acc;
+}
+
+// Max of the 128 absolute values this thread's sub-block wrote into `shared`.
+__device__ __forceinline__ float subBlockAbsMax(const float* shared, int sub) {
+  const float* mine = shared + sub * kLpBlockElems;
+  float m = 0.0f;
+  for (int i = 0; i < kLpBlockElems; i++) {
+    m = lpAbsMaxFold(m, mine[i]);
+  }
+  return m;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Quantize
+// ---------------------------------------------------------------------------
+
+template <typename T>
+__global__ void lpQuantizeKernel(const T* in, uint8_t* wire, size_t nBlocks) {
+  __shared__ float sAbs[kLpThreadsPerCta];
+  const int sub = static_cast<int>(threadIdx.x) / kLpBlockElems;
+  const int lane = static_cast<int>(threadIdx.x) % kLpBlockElems;
+  const size_t ctaStride =
+      static_cast<size_t>(gridDim.x) * static_cast<size_t>(kLpBlocksPerCta);
+
+  for (size_t base = static_cast<size_t>(blockIdx.x) * kLpBlocksPerCta;
+       base < nBlocks;
+       base += ctaStride) {
+    const size_t b = base + sub;
+    const bool live = b < nBlocks;
+    const float v = live ? lpToFloat<T>(in[b * kLpBlockElems + lane]) : 0.0f;
+    sAbs[threadIdx.x] = fabsf(v);
+    __syncthreads();
+
+    if (live) {
+      const float scale = lpScaleFor(subBlockAbsMax(sAbs, sub));
+      uint8_t* block = wire + b * kLpBlockBytes;
+      block[lane] = lpEncodeWithScale(v, scale);
+      if (lane == 0) {
+        *scaleSlot(block) = scale;
+      }
+    }
+    // sAbs is reused by the next iteration, and the reads above are not done
+    // until every thread of the sub-block has finished them.
+    __syncthreads();
+  }
+}
+
+template <typename T>
+void launchLpQuantizeKernel(
+    void* wireOut,
+    const void* in,
+    size_t count,
+    cudaStream_t stream) {
+  const size_t nBlocks = count / kLpBlockElems;
+  if (nBlocks == 0) {
+    return;
+  }
+  lpQuantizeKernel<T><<<ctaCount(nBlocks), kLpThreadsPerCta, 0, stream>>>(
+      static_cast<const T*>(in), static_cast<uint8_t*>(wireOut), nBlocks);
+}
+
+// ---------------------------------------------------------------------------
+// Dequantize
+// ---------------------------------------------------------------------------
+
+template <typename T>
+__global__ void lpDequantizeKernel(T* out, const uint8_t* wire, size_t count) {
+  const size_t tid = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+
+  for (size_t e = tid; e < count; e += stride) {
+    const uint8_t* block = wire + (e / kLpBlockElems) * kLpBlockBytes;
+    // Broadcast read: 128 consecutive threads share one scale.
+    const float scale = scaleOf(block);
+    out[e] = lpFromFloat<T>(lpDecodeByte(block[e % kLpBlockElems]) * scale);
+  }
+}
+
+template <typename T>
+void launchLpDequantizeKernel(
+    void* out,
+    const void* wireIn,
+    size_t count,
+    cudaStream_t stream) {
+  if (count == 0) {
+    return;
+  }
+  lpDequantizeKernel<T>
+      <<<elementCtaCount(count), kLpThreadsPerCta, 0, stream>>>(
+          static_cast<T*>(out), static_cast<const uint8_t*>(wireIn), count);
+}
+
+// ---------------------------------------------------------------------------
+// Helper-side reduce and requantize (wire in, wire out)
+// ---------------------------------------------------------------------------
+
+__global__ void lpReduceRequantizeKernel(
+    uint8_t* wireOut,
+    const uint8_t* wireContribs,
+    int numContribs,
+    size_t nBlocks,
+    size_t contribStride,
+    int divisor) {
+  __shared__ float sAbs[kLpThreadsPerCta];
+  const int sub = static_cast<int>(threadIdx.x) / kLpBlockElems;
+  const int lane = static_cast<int>(threadIdx.x) % kLpBlockElems;
+  const size_t ctaStride =
+      static_cast<size_t>(gridDim.x) * static_cast<size_t>(kLpBlocksPerCta);
+
+  for (size_t base = static_cast<size_t>(blockIdx.x) * kLpBlocksPerCta;
+       base < nBlocks;
+       base += ctaStride) {
+    const size_t b = base + sub;
+    const bool live = b < nBlocks;
+
+    // fp32 accumulation, which is the whole reason the sum does not have to be
+    // range-limited the way an fp8 accumulation would.
+    float acc = 0.0f;
+    if (live) {
+      const size_t blockOffset = b * kLpBlockBytes;
+      for (int p = 0; p < numContribs; p++) {
+        const uint8_t* block =
+            wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
+        acc += lpDecodeByte(block[lane]) * scaleOf(block);
+      }
+      // Exact: the divisor is a power of two, so this rescales the block's
+      // absmax by the same factor and leaves every code below unchanged.
+      if (divisor > 1) {
+        acc /= static_cast<float>(divisor);
+      }
+    }
+    sAbs[threadIdx.x] = fabsf(acc);
+    __syncthreads();
+
+    if (live) {
+      const float scale = lpScaleFor(subBlockAbsMax(sAbs, sub));
+      uint8_t* block = wireOut + b * kLpBlockBytes;
+      block[lane] = lpEncodeWithScale(acc, scale);
+      if (lane == 0) {
+        *scaleSlot(block) = scale;
+      }
+    }
+    __syncthreads();
+  }
+}
+
+void launchLpReduceRequantizeKernel(
+    void* wireOut,
+    const void* wireContribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream) {
+  const size_t nBlocks = count / kLpBlockElems;
+  if (nBlocks == 0 || numContribs <= 0) {
+    return;
+  }
+  lpReduceRequantizeKernel<<<ctaCount(nBlocks), kLpThreadsPerCta, 0, stream>>>(
+      static_cast<uint8_t*>(wireOut),
+      static_cast<const uint8_t*>(wireContribs),
+      numContribs,
+      nBlocks,
+      lpWireBytes(count),
+      divisor);
+}
+
+// ---------------------------------------------------------------------------
+// Active-rank closing reduce (wire contributions in, caller's dtype out)
+// ---------------------------------------------------------------------------
+
+template <typename T>
+__global__ void lpMultiReduceKernel(
+    T* dst,
+    const uint8_t* wireContribs,
+    int numContribs,
+    size_t count,
+    size_t contribStride,
+    int divisor) {
+  const size_t tid = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+
+  for (size_t e = tid; e < count; e += stride) {
+    const size_t blockOffset = (e / kLpBlockElems) * kLpBlockBytes;
+    const size_t lane = e % kLpBlockElems;
+    float acc = lpToFloat<T>(dst[e]);
+    for (int p = 0; p < numContribs; p++) {
+      const uint8_t* block =
+          wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
+      acc += lpDecodeByte(block[lane]) * scaleOf(block);
+    }
+    if (divisor > 1) {
+      acc /= static_cast<float>(divisor);
+    }
+    dst[e] = lpFromFloat<T>(acc);
+  }
+}
+
+template <typename T>
+void launchLpMultiReduceKernel(
+    void* dst,
+    const void* wireContribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream) {
+  if (count == 0) {
+    return;
+  }
+  lpMultiReduceKernel<T>
+      <<<elementCtaCount(count), kLpThreadsPerCta, 0, stream>>>(
+          static_cast<T*>(dst),
+          static_cast<const uint8_t*>(wireContribs),
+          numContribs,
+          count,
+          lpWireBytes(count),
+          divisor);
+}
+
+template <typename T>
+__global__ void lpSeededMultiReduceKernel(
+    T* dst,
+    const T* seed,
+    const uint8_t* wireContribs,
+    int numContribs,
+    size_t count,
+    size_t contribStride,
+    int divisor) {
+#pragma clang fp reassociate(off)
+  const size_t tid = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  const size_t stride = static_cast<size_t>(blockDim.x) * gridDim.x;
+
+#pragma clang loop vectorize(disable) interleave(disable)
+  for (size_t e = tid; e < count; e += stride) {
+    const size_t blockOffset = (e / kLpBlockElems) * kLpBlockBytes;
+    const size_t lane = e % kLpBlockElems;
+    float acc = lpToFloat<T>(seed[e]);
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+    for (int p = 0; p < numContribs; p++) {
+      const uint8_t* block =
+          wireContribs + static_cast<size_t>(p) * contribStride + blockOffset;
+      acc = acc + lpDecodeByte(block[lane]) * scaleOf(block);
+    }
+    if (divisor > 1) {
+      acc = acc / static_cast<float>(divisor);
+    }
+    dst[e] = lpFromFloat<T>(acc);
+  }
+}
+
+template <typename T>
+void launchLpSeededMultiReduceKernel(
+    void* dst,
+    const void* seed,
+    const void* wireContribs,
+    int numContribs,
+    size_t count,
+    int divisor,
+    cudaStream_t stream) {
+  if (count == 0) {
+    return;
+  }
+  lpSeededMultiReduceKernel<T>
+      <<<elementCtaCount(count), kLpThreadsPerCta, 0, stream>>>(
+          static_cast<T*>(dst),
+          static_cast<const T*>(seed),
+          static_cast<const uint8_t*>(wireContribs),
+          numContribs,
+          count,
+          lpWireBytes(count),
+          divisor);
+}
+
+// Explicit instantiations. bf16 and fp32 only -- see the header.
+#define RCCLX_INSTANTIATE_RELAY_LP_KERNELS(T)                            \
+  template void launchLpQuantizeKernel<T>(                               \
+      void* wireOut, const void* in, size_t count, cudaStream_t stream); \
+  template void launchLpDequantizeKernel<T>(                             \
+      void* out, const void* wireIn, size_t count, cudaStream_t stream); \
+  template void launchLpMultiReduceKernel<T>(                            \
+      void* dst,                                                         \
+      const void* wireContribs,                                          \
+      int numContribs,                                                   \
+      size_t count,                                                      \
+      int divisor,                                                       \
+      cudaStream_t stream);                                              \
+  template void launchLpSeededMultiReduceKernel<T>(                      \
+      void* dst,                                                         \
+      const void* seed,                                                  \
+      const void* wireContribs,                                          \
+      int numContribs,                                                   \
+      size_t count,                                                      \
+      int divisor,                                                       \
+      cudaStream_t stream);
+
+RCCLX_INSTANTIATE_RELAY_LP_KERNELS(float)
+RCCLX_INSTANTIATE_RELAY_LP_KERNELS(__nv_bfloat16)
+
+#undef RCCLX_INSTANTIATE_RELAY_LP_KERNELS
