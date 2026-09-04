@@ -57,8 +57,6 @@ typedef struct ncclWindow_vidmem* ncclWindow_t;
 // we will remove it once the PG is deprecated.
 typedef ncclWindow_t ncclWin_t;
 #define NCCL_COMM_NULL NULL
-extern ncclComm_t ncclCommWorld;
-#define NCCL_COMM_WORLD ncclCommWorld
 
 #define NCCL_UNIQUE_ID_BYTES 128
 typedef struct ncclUniqueId { char internal[NCCL_UNIQUE_ID_BYTES] = {0};} ncclUniqueId;

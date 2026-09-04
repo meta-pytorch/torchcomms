@@ -75,8 +75,6 @@
 #define NCCL_GROUP_CUDA_STREAM 1 // CGMD: CUDA 9.0,9.1 Need to use an internal CUDA stream
 #endif
 
-ncclComm_t ncclCommWorld __attribute__ ((visibility("default")));
-
 const char* ncclFuncStr[NCCL_NUM_FUNCTIONS] = { "Broadcast", "Reduce", "AllGather", "ReduceScatter", "AllReduce" };
 const char* ncclAlgoStr[NCCL_NUM_ALGORITHMS] = { "Tree", "Ring", "CollNetDirect", "CollNetChain", "NVLS", "NVLSTree", "PAT" };
 const char* ncclProtoStr[NCCL_NUM_PROTOCOLS] = { "LL", "LL128", "Simple" };
@@ -2528,18 +2526,6 @@ static void ncclCommInitJobFree(void* _job) {
   delete job;
 }
 
-static std::mutex ncclxCommWorldMutex; // used by meta-ncclx to set NCCL_FIRST_COMM_AS_WORLD
-static void ncclxSetFirstCommAsWorld(ncclComm_t* newcomm) {
-  if (NCCL_FIRST_COMM_AS_WORLD) {
-    ncclxCommWorldMutex.lock();
-    if (NCCL_COMM_WORLD == nullptr && newcomm != nullptr) {
-      NCCL_COMM_WORLD = *newcomm;
-      INFO(NCCL_INIT, "Assign comm %p to NCCL_COMM_WORLD with commHash %lx", *newcomm, NCCL_COMM_WORLD->commHash);
-    }
-    ncclxCommWorldMutex.unlock();
-  }
-}
-
 static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId, ncclUniqueId* commId, int myrank, int cudaDev, ncclConfig_t *config, const char funcName[]) {
   auto contextNRanks = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::num_ranks, fmt::format("{}", nranks));
   auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", myrank));
@@ -2628,8 +2614,6 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   }
   launchedJob = true;
   NCCLCHECKGOTO(ncclAsyncLaunch((struct ncclAsyncJob*)job, ncclCommInitRankFunc, NULL, ncclCommInitJobFree, comm), res, fail);
-
-  ncclxSetFirstCommAsWorld(newcomm); // (meta-ncclx) set NCCL_COMM_WORLD
 
 exit:
   return ncclGroupErrCheck(res);

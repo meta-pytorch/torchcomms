@@ -2597,14 +2597,6 @@ cvars:
       Must be less than or equal to the number of physical gpus on the node.
       The number of nodes will be infered as number of physical ranks / nLocalRanks.
 
- - name        : NCCL_FIRST_COMM_AS_WORLD
-   type        : bool
-   default     : false
-   description : |-
-     When set to true, the first communicator created will be taken as the comm
-     world (assigned to NCCL_COMM_WORLD).
-     All optimizations (by meta) for Large Scale Jobs
-
  - name        : NCCL_TOPO_FILE_PATH
    type        : string
    default     : "/etc/fbwhoami"

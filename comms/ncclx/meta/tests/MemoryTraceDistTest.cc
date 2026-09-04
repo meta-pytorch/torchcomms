@@ -421,7 +421,6 @@ void MemoryTraceTestFixture::runUserBufferLoggingTest() {
       EnvRAII(NCCL_COMM_REGISTER_LOG_ENABLE, true);
 
   auto logFileName = initLogger();
-  EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints;
   if (noLocal_) {
