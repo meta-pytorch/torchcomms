@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "meta/relay/sharded_relay_lp.h"
+#include "meta/relay/sharded_relay_lp_arena.h"
 #include "meta/relay/sharded_relay_lp_kernels.h"
 #include "nccl.h"
 
@@ -374,6 +375,43 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
       EXPECT_GE(lpMinBytes(LpCollective::AllToAll, a, g), size_t{576} << 10);
     }
   }
+}
+
+TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {
+  // A pure function of NCCL_SHARDED_RELAY_LP_MAX_MSG_MB, which is what makes it
+  // safe for every rank to compare its footprint against independently.
+  const size_t maxElems = lpMaxMsgBytes() / sizeof(uint16_t);
+  EXPECT_EQ(
+      lpArenaCapacityBytes(),
+      kLpArenaShadowsPerMessage * lpWireBytesRoundUp(maxElems));
+  EXPECT_GT(lpArenaCapacityBytes(), lpMaxMsgBytes());
+}
+
+TEST(ShardedRelayLpArena, CarverPartitionsDeterministicallyAndRefusesOverrun) {
+  std::vector<char> backing(1 << 20);
+  LpArenaLease lease{backing.data(), backing.size()};
+
+  LpArenaCarver first(lease);
+  char* a1 = first.take(1000);
+  char* b1 = first.take(4096);
+  ASSERT_NE(a1, nullptr);
+  ASSERT_NE(b1, nullptr);
+
+  // Same order, same addresses -- which is what lets a captured graph replay.
+  LpArenaCarver second(lease);
+  EXPECT_EQ(second.take(1000), a1);
+  EXPECT_EQ(second.take(4096), b1);
+
+  // 256-byte aligned, so the inline fp32 scales are always aligned too.
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(a1) % LpArenaCarver::kAlign, 0u);
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(b1) % LpArenaCarver::kAlign, 0u);
+  EXPECT_GE(b1 - a1, 1000);
+
+  LpArenaCarver small(LpArenaLease{backing.data(), 512});
+  EXPECT_NE(small.take(256), nullptr);
+  EXPECT_TRUE(small.ok());
+  EXPECT_EQ(small.take(1024), nullptr);
+  EXPECT_FALSE(small.ok());
 }
 
 // ---------------------------------------------------------------------------
