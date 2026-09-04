@@ -193,13 +193,21 @@ class TorchCommRCCLX : public TorchCommBackend,
   // Fused multi-group sharded relay allreduce for 2D sparse parallelism
   // Executes multiple allreduce groups in lockstep phases to eliminate XGMI
   // contention
+  //
+  // `low_precision` asks for the fp8e4m3 wire format where it pays; an internal
+  // size-only gate declines to full precision silently otherwise. It is a
+  // COLLECTIVE argument -- identical on every rank of the call, like the dtype,
+  // the op and the counts -- because ranks that disagree disagree on how many
+  // bytes cross each link, so the call hangs or corrupts rather than degrading.
+  // The same contract applies to the three collectives below.
   c10::intrusive_ptr<TorchWork> sharded_relay_multi_group_all_reduce(
       std::vector<at::Tensor>& tensors,
       const ReduceOp& op,
       const std::vector<std::vector<int64_t>>& all_active_ranks,
       const std::vector<int64_t>& per_group_counts,
       bool async_op,
-      std::optional<std::vector<at::Tensor>> output_tensors = std::nullopt);
+      std::optional<std::vector<at::Tensor>> output_tensors = std::nullopt,
+      bool low_precision = false);
 
   // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
   // input_tensors[g] / output_tensors[g] are the contiguous send / recv buffer
@@ -210,7 +218,8 @@ class TorchCommRCCLX : public TorchCommBackend,
       const ReduceOp& op,
       const std::vector<std::vector<int64_t>>& all_active_ranks,
       const std::vector<int64_t>& per_group_recv_counts,
-      bool async_op);
+      bool async_op,
+      bool low_precision = false);
 
   // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
   // Each active rank's input/output hold nActiveRanks x
@@ -223,7 +232,8 @@ class TorchCommRCCLX : public TorchCommBackend,
       std::vector<at::Tensor>& output_tensors,
       const std::vector<std::vector<int64_t>>& all_active_ranks,
       const std::vector<int64_t>& per_group_segment_counts,
-      bool async_op);
+      bool async_op,
+      bool low_precision = false);
 
   // Fused multi-group sharded relay all-gather for 2D sparse parallelism.
   // Each active rank's input holds per_group_send_counts[g] elements (its
@@ -237,7 +247,8 @@ class TorchCommRCCLX : public TorchCommBackend,
       std::vector<at::Tensor>& output_tensors,
       const std::vector<std::vector<int64_t>>& all_active_ranks,
       const std::vector<int64_t>& per_group_send_counts,
-      bool async_op);
+      bool async_op,
+      bool low_precision = false);
 
   // Relay control plane: how a helper rank learns what collectives to call.
   //
