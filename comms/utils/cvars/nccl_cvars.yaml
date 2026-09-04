@@ -2067,14 +2067,30 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable bidirectional Ring reduce-scatter and all-gather for non-LL
      collectives with more than two nodes on both staged-copy and registered
      zero-copy paths. Out-of-place ranks stage their input before running the
      same peer schedule. Fine-grained tracing is suppressed without changing
      that schedule. A divergent value across ranks fails communicator
-     initialization.
+     initialization. Enabled by default; set false to use the unidirectional
+     Ring path.
+
+ - name        : MCCL_ALLREDUCE_RING_BIDIR_MAX_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Total message bytes strictly below which MCCL fused Ring AllReduce uses
+     the bidirectional schedule when
+     MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE is enabled. This threshold is
+     resolved for every collective call rather than communicator creation.
+     Set it identically on every rank; like the collective's count and
+     datatype, a divergent value can select incompatible peer schedules.
+
+       0  (default) apply no size gate; preserve the enabled setting at every
+          message size.
+      >0  use bidirectional strictly below this many total message bytes.
 
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
