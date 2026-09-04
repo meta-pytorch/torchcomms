@@ -3201,15 +3201,15 @@ TEST_F(
 
 TEST_F(
     ShardedRelayReduceScatterLowPrecisionTest,
-    DeclinesForTheSingleGroupPipelinedSchedule) {
+    SingleGroupPipelinedIsBitExact) {
   if (this->numRanks != 8) {
     GTEST_SKIP() << "Test requires exactly 8 ranks";
   }
-  // A single-group call at this size pipelines, and the pipelined schedule does
-  // not carry the wire format yet. The decline has to be unanimous, and it is
-  // because the tile count is a pure function of the counts. The pipeline
-  // selection is asserted rather than assumed, so this case cannot quietly
-  // become a second test of the non-pipelined path.
+  // The 4-group fixture above cannot reach the pipelined schedule:
+  // relayPipelineTiles() returns 1 whenever nGroups != 1. So this case is
+  // single-group, at a size the depth selector pipelines -- asserted rather
+  // than assumed, because a size that quietly failed to pipeline would silently
+  // re-test the schedule the other cases already cover.
   const size_t count = 4ULL * 1024 * 1024;
   const int numHelpers = 8 - kActive;
   ASSERT_GT(
@@ -3226,9 +3226,37 @@ TEST_F(
   HIPCHECK_TEST(hipStreamSynchronize(this->stream));
 
   expectOutputEquals<float>(b, count, expectedOwnerValue(b.myActiveIndex));
-  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
-  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Route), 0u)
-      << "the decline must be recorded, not silent";
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    SingleGroupPipelinedAvgIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The pipelined schedule reduces PER REGION on a side stream rather than once
+  // at the end, so the divisor is applied T + 1 times over disjoint spans. This
+  // pins that it is applied exactly once per element: a divisor that also
+  // landed at the helper, or one applied twice to an overlapping span, breaks
+  // the exact comparator.
+  const size_t count = 4ULL * 1024 * 1024;
+  Buffers b;
+  makeBuffers<float>(count, /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(
+      b,
+      count,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
   freeBuffers(b);
 }
 
