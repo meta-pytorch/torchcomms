@@ -1550,6 +1550,38 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
       peerIndex * ibrcDeviceSlotSize());
 }
 
+P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format("getHostWriter: invalid peerRank={}", peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const PeerResources& peer = peerResources_[peerIndex];
+  if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        fmt::format(
+            "getHostWriter: peerRank={} command queues not published (materialize the peer first)",
+            peerRank));
+  }
+  if (queueIndex >= peer.cmdQueues.size()) {
+    throw std::out_of_range(
+        fmt::format(
+            "getHostWriter: queueIndex={} out of range (peer has {} rings)",
+            queueIndex,
+            peer.cmdQueues.size()));
+  }
+  const IbrcCmdQueueHost& q = peer.cmdQueues[queueIndex];
+  return P2pIbrcHostWriter(
+      q.descsHost,
+      q.piHost,
+      q.ciHost,
+      statusHostByNic_.at(q.nic),
+      q.device.depth,
+      q.nic);
+}
+
 void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
   const int peerIndex = rankToPeerIndex(peerRank);
 

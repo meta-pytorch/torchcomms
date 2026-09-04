@@ -24,6 +24,7 @@
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
+#include "comms/prims/transport/ibrc/P2pIbrcHostWriter.h"
 
 namespace comms::prims {
 
@@ -86,6 +87,15 @@ class MultipeerIbrcTransport
   // Per-peer device handle accessor used by Ring/SendRecv algorithms. The
   // requested peer is materialized before its device slot is returned.
   P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank);
+
+  // Host-side writer into a peer's IBRC command-queue ring, so a CPU thread can
+  // post RDMA put/signal without a kernel; the CPU proxy drains host-produced
+  // descriptors unchanged. `queueIndex` selects one (qpSlot, nic) ring. The
+  // peer must already be materialized and remain materialized while the
+  // returned writer is used; P2pIbrcHostWriter is a non-owning view of the
+  // queue's mapped host memory. Do not concurrently drive the same ring from
+  // device code.
+  P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
 
  private:
   // Lazy per-peer materialization hook. The shared base owns queueing,
