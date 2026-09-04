@@ -46,6 +46,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
 #include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
@@ -2064,6 +2065,275 @@ TEST_F(
       HIPCHECK_TEST(hipFree(recvBuffs[g]));
     }
   }
+}
+
+// ===========================================================================
+// LOW PRECISION (fp8e4m3 wire format)
+// ===========================================================================
+//
+// Every case asserts that low precision actually ENGAGED or actually DECLINED,
+// via the counters, rather than trusting the flag. The gate declines silently
+// on several independent grounds, so an "LP" run that quietly fell back to full
+// precision produces exactly the numbers a passing LP run produces.
+//
+// The comparators stay EXACT. Each rank fills its shard with a single constant,
+// so every 128-element wire block has that constant as its absmax; the
+// power-of-two normalization target then makes quantize/dequantize an identity.
+// These cases are therefore a genuine detector for a wrong scale, a wrong block
+// boundary or a dropped scale. Do not loosen them.
+//
+// All-gather's own hazard, which none of the reduce-scatter cases can catch:
+// the DIAGONAL slot must come out full precision and untouched while the
+// foreign slot round-trips through fp8. Giving each rank a distinct constant
+// means a dequantize that covered the diagonal, or one that landed at the wrong
+// slot offset, changes a value that should not have moved.
+class ShardedRelayAllGatherLowPrecisionTest
+    : public ShardedRelayMultiGroupAllGatherTest {
+ protected:
+  static constexpr int kGroups = 4;
+  static constexpr int kActive = 2;
+
+  // 2 Mi elements per shard = 8 MiB in fp32, above the low-precision threshold
+  // and a whole number of 128-element blocks.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  // Rank-distinct shard value, so a wrong slot is visible.
+  static float shardValue(int activeIndex) {
+    return static_cast<float>(activeIndex + 1) * 3.0f;
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem[kGroups]{};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+    int nGroups{kGroups};
+  };
+
+  // Out-of-place: a separate send buffer per group and an A*count output for
+  // the active group. Helper groups reuse their send allocation as the
+  // placeholder.
+  template <typename T>
+  void makeBuffers(size_t count, T value, int nGroups, Buffers& b) {
+    b = Buffers{};
+    b.nGroups = nGroups;
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t outCount = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], count * sizeof(T)));
+      if (g == b.myActiveGroup) {
+        const std::vector<T> host(count, value);
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            count * sizeof(T),
+            hipMemcpyHostToDevice));
+        HIPCHECK_TEST(hipMalloc(&b.recvMem[g], outCount * sizeof(T)));
+        // Poison the output so a slot the implementation never writes is a
+        // failure rather than an accidental pass.
+        HIPCHECK_TEST(hipMemset(b.recvMem[g], 0xff, outCount * sizeof(T)));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, count * sizeof(T)));
+        b.recvMem[g] = b.sendMem[g];
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.recvPtrs[g] = b.recvMem[g];
+      b.counts[g] = count;
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < b.nGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+      if (g == b.myActiveGroup) {
+        HIPCHECK_TEST(hipFree(b.recvMem[g]));
+      }
+    }
+  }
+
+  // Slot i must hold shardValue(i), exactly, for every i -- diagonal included.
+  template <typename T>
+  void expectEverySlotIsItsOwner(const Buffers& b, size_t count) {
+    if (b.myActiveGroup >= b.nGroups) {
+      return;
+    }
+    const size_t outCount = static_cast<size_t>(kActive) * count;
+    std::vector<T> got(outCount);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        b.recvMem[b.myActiveGroup],
+        outCount * sizeof(T),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int slot = 0; slot < kActive && reported < 8; slot++) {
+      const T want = static_cast<T>(shardValue(slot));
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const T v = got[static_cast<size_t>(slot) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": slot " << slot
+                        << " element " << i << ": got " << static_cast<float>(v)
+                        << ", want " << static_cast<float>(want)
+                        << (slot == b.myActiveIndex ? " (DIAGONAL -- must stay"
+                                                      " full precision)"
+                                                    : "");
+        }
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, ncclDataType_t dt, int lowPrecision) {
+    Standard4GroupActiveRanks layout;
+    return callAllGatherCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        dt,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        b.nGroups,
+        lowPrecision);
+  }
+};
+
+TEST_F(ShardedRelayAllGatherLowPrecisionTest, ConstantShardsAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  Buffers b;
+  makeBuffers<float>(
+      kLpCount, shardValue(this->globalRank % kActive), kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySlotIsItsOwner<float>(b, kLpCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllGatherLowPrecisionTest, DeclinesOnUnsupportedDtype) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclInt32 is not a low-precision dtype, so the flag must fall through to
+  // full precision and the answer must be exactly the full-precision answer.
+  Buffers b;
+  makeBuffers<int32_t>(
+      kLpCount,
+      static_cast<int32_t>(shardValue(this->globalRank % kActive)),
+      kGroups,
+      b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclInt32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySlotIsItsOwner<int32_t>(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Dtype), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayAllGatherLowPrecisionTest,
+    DeclinesOnCountThatIsNotWholeBlocks) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // One element past a whole number of 128-element blocks. The slot stride is a
+  // raw per-group count here, so an unaligned count breaks additivity in the
+  // MIDDLE of the output buffer, not only in its tail -- the gate must refuse.
+  const size_t count = kLpCount + 1;
+  Buffers b;
+  makeBuffers<float>(count, shardValue(this->globalRank % kActive), kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySlotIsItsOwner<float>(b, count);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Alignment), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllGatherLowPrecisionTest, InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The behaviour an env var could not express, and the whole point of making
+  // this a per-call argument: two calls on the SAME communicator, one low
+  // precision and one not, with no state leaking from the first into the
+  // second.
+  const float value = shardValue(this->globalRank % kActive);
+  Buffers b;
+  makeBuffers<float>(kLpCount, value, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySlotIsItsOwner<float>(b, kLpCount);
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  freeBuffers(b);
+  makeBuffers<float>(kLpCount, value, kGroups, b);
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySlotIsItsOwner<float>(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayAllGatherLowPrecisionTest,
+    DeclinesForTheSingleGroupPipelinedSchedule) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // A single-group call at this size pipelines, and the pipelined schedule does
+  // not carry the wire format yet. The decline must be unanimous, and it is,
+  // because the tile count is a pure function of the counts. The pipeline
+  // selection is asserted so this cannot quietly become a second test of the
+  // non-pipelined path.
+  const size_t count = 4ULL * 1024 * 1024;
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::relayShapeA2(8 - kActive), count, sizeof(float)),
+      1);
+
+  Buffers b;
+  makeBuffers<float>(
+      count, shardValue(this->globalRank % kActive), /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySlotIsItsOwner<float>(b, count);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Route), 0u)
+      << "the decline must be recorded, not silent";
+  freeBuffers(b);
 }
 
 int main(int argc, char* argv[]) {
