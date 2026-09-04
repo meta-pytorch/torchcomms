@@ -132,6 +132,8 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept override;
 
+  CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept override;
+
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
 
@@ -213,6 +215,7 @@ class CollTrace : public ICollTrace {
   std::mutex graphStateMutex_;
   std::unordered_map<unsigned long long, std::shared_ptr<GraphCollTraceState>>
       graphStateMap_;
+  std::atomic<bool> hasCancelledGraphCollectives_{false};
 
   // Single shared ring buffer for ALL cuda graphs. RAII-managed via
   // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).

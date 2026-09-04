@@ -2,11 +2,9 @@
 
 #include "comms/utils/colltrace/CommLogDataSerialize.h"
 
-// We need to define in folly namespace, so intentionally not using namespace
-// here.
+namespace meta::comms::colltrace {
 
-folly::dynamic folly::DynamicConstructor<CommLogData>::construct(
-    const CommLogData& m) {
+folly::dynamic commLogDataToDynamic(const CommLogData& m) {
   folly::dynamic result = folly::dynamic::object();
 
   result["commId"] = m.commId;
@@ -18,8 +16,7 @@ folly::dynamic folly::DynamicConstructor<CommLogData>::construct(
   return result;
 }
 
-CommLogData folly::DynamicConverter<CommLogData>::convert(
-    const folly::dynamic& d) {
+CommLogData commLogDataFromDynamic(const folly::dynamic& d) {
   CommLogData result;
 
   result.commId = d["commId"].asInt();
@@ -29,4 +26,16 @@ CommLogData folly::DynamicConverter<CommLogData>::convert(
   result.nRanks = d["nRanks"].asInt();
 
   return result;
+}
+
+} // namespace meta::comms::colltrace
+
+folly::dynamic folly::DynamicConstructor<CommLogData>::construct(
+    const CommLogData& m) {
+  return meta::comms::colltrace::commLogDataToDynamic(m);
+}
+
+CommLogData folly::DynamicConverter<CommLogData>::convert(
+    const folly::dynamic& d) {
+  return meta::comms::colltrace::commLogDataFromDynamic(d);
 }

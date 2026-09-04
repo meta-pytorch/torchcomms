@@ -328,6 +328,27 @@ ICollTracePlugin* CollTrace::getPluginByName(std::string name) noexcept {
   return folly::get_ptr(pluginByName_, name);
 }
 
+CommsMaybeVoid CollTrace::cancelEvent(CollTraceEvent& collEvent) noexcept {
+  if (&collEvent == pendingEnqueueColl_.get()) {
+    eventToHandleMap_.erase(&collEvent);
+    pendingEnqueueColl_.reset();
+    return folly::unit;
+  }
+
+  std::lock_guard<std::mutex> lock(graphStateMutex_);
+  for (auto& [_, state] : graphStateMap_) {
+    for (auto& collective : state->collectives) {
+      if (collective.second.event.get() == &collEvent) {
+        collective.second.cancelled = true;
+        hasCancelledGraphCollectives_.store(true, std::memory_order_release);
+        return folly::unit;
+      }
+    }
+  }
+  return folly::makeUnexpected(
+      CommsError("CollTrace event is no longer pending", commInvalidArgument));
+}
+
 CommsMaybeVoid CollTrace::triggerEventState(
     CollTraceEvent& collEvent,
     CollTraceHandleTriggerState state) noexcept {
@@ -352,7 +373,9 @@ CommsMaybeVoid CollTrace::triggerEventState(
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
           *logger_, plugins_, collEvent); // Trigger before calling waitEvent
       EXPECT_CHECK(collEvent.waitEvent->afterCollKernelScheduled());
-      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(precisionNow());
+      auto enqueueTime = collEvent.waitEvent->getCollEnqueueTime();
+      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(
+          enqueueTime.hasValue() ? enqueueTime.value() : precisionNow());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
         // If the write fails, pendingEnqueueColl_ will not be moved. Do a
@@ -434,7 +457,9 @@ CollTrace::recordGraphCollectiveImpl(
   auto* registrationEvent = collEvent.get();
 
   auto handle = std::make_shared<GraphCollTraceHandle>(
-      rawWaitEvent, std::move(recordPtr));
+      rawWaitEvent, std::move(recordPtr), [this, registrationEvent] {
+        return cancelEvent(*registrationEvent);
+      });
 
   uint32_t collId = rawWaitEvent->getCollId();
 
@@ -516,6 +541,25 @@ void CollTrace::pollGraphEvents(
       }
       return false;
     });
+
+    if (hasCancelledGraphCollectives_.exchange(
+            false, std::memory_order_acq_rel)) {
+      for (auto& [_, state] : graphStateMap_) {
+        std::erase_if(state->collectives, [this](const auto& entry) {
+          if (!entry.second.cancelled) {
+            return false;
+          }
+          if (auto handle = entry.second.handle.lock()) {
+            handle->invalidate();
+          }
+          const auto collId = entry.first;
+          collIdMap_.erase(collId);
+          progressingGraphCollectives_.erase(collId);
+          inFlightReplays_.erase(collId);
+          return true;
+        });
+      }
+    }
 
     // add new collectives that aren't in collIdMap_ yet.
     for (auto& [_, state] : graphStateMap_) {

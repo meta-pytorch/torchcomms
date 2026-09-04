@@ -142,6 +142,19 @@ TEST_F(CollTraceHandleTest, Invalidate) {
   EXPECT_EQ(triggerResult.error().errorCode, commInvalidArgument);
 }
 
+TEST_F(CollTraceHandleTest, CancelRemovesOwnedEventAndInvalidatesHandle) {
+  EXPECT_CALL(*mockCollTrace, cancelEvent(testing::Ref(*emptyEvent)))
+      .WillOnce(Return(folly::unit));
+
+  const auto cancelResult = handle->cancel();
+  ASSERT_TRUE(cancelResult.hasValue()) << cancelResult.error().message;
+
+  auto triggerResult =
+      handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+  EXPECT_FALSE(triggerResult.hasValue());
+  EXPECT_EQ(triggerResult.error().errorCode, commInvalidArgument);
+}
+
 // Test with null CollTrace
 TEST_F(CollTraceHandleTest, NullCollTrace) {
   // Create a handle with null CollTrace

@@ -87,8 +87,7 @@ class CollMetadataImpl : public ICollMetadata {
   folly::dynamic toDynamic() const noexcept override {
     folly::dynamic result = folly::dynamic::object();
 
-    result.update(
-        folly::DynamicConstructor<CommLogData>::construct(commMetadata_));
+    result.update(commLogDataToDynamic(commMetadata_));
     result.update(backendSpecificMetadata_.toDynamic());
     result.update(genericMetadata_.toDynamic());
     result["MetadataType"] = std::string(GenericMetadata::getMetadataType());
@@ -97,7 +96,7 @@ class CollMetadataImpl : public ICollMetadata {
   }
   void fromDynamic(const folly::dynamic& d) noexcept override {
     // Use the fromDynamic methods for the other components
-    commMetadata_ = folly::DynamicConverter<CommLogData>::convert(d);
+    commMetadata_ = commLogDataFromDynamic(d);
     backendSpecificMetadata_ = BackendSpecificMetadata::fromDynamic(d);
     genericMetadata_ = GenericMetadata::fromDynamic(d);
   }
