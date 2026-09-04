@@ -52,46 +52,48 @@ class Case:
 # Float32 and BF16 coverage for each reduction collective. Float32 excludes the
 # CtranDirect algorithm, which is BF16-only in this matrix. ReduceScatter uses the
 # Ring algorithm because Pat/CtranDirect are skipped on some fixed topologies.
+# v2_29 deleted, now comparing v2_30 as baseline (old and new both v2_30 for build validation;
+# future comparisons should use v2_30 vs newer version).
 DEFAULT_CASES: tuple[Case, ...] = (
     Case(
         "AllReduce",
         "Float32",
-        "allreduce_numerical_test_v2_29",
+        "allreduce_numerical_test_v2_30",
         "allreduce_numerical_test_v2_30",
         "*Float32*:-*CtranDirect*",
     ),
     Case(
         "AllReduce",
         "Bfloat16",
-        "allreduce_numerical_test_v2_29",
+        "allreduce_numerical_test_v2_30",
         "allreduce_numerical_test_v2_30",
         "*Bfloat16*",
     ),
     Case(
         "ReduceScatter",
         "Float32",
-        "reducescatter_numerical_test_v2_29",
+        "reducescatter_numerical_test_v2_30",
         "reducescatter_numerical_test_v2_30",
         "*Ring_Float32*",
     ),
     Case(
         "ReduceScatter",
         "Bfloat16",
-        "reducescatter_numerical_test_v2_29",
+        "reducescatter_numerical_test_v2_30",
         "reducescatter_numerical_test_v2_30",
         "*Ring_Bfloat16*",
     ),
     Case(
         "Reduce",
         "Float32",
-        "reduce_numerical_test_v2_29",
+        "reduce_numerical_test_v2_30",
         "reduce_numerical_test_v2_30",
         "*Float32*:-*CtranDirect*",
     ),
     Case(
         "Reduce",
         "Bfloat16",
-        "reduce_numerical_test_v2_29",
+        "reduce_numerical_test_v2_30",
         "reduce_numerical_test_v2_30",
         "*Bfloat16*",
     ),
@@ -345,7 +347,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--entitlement", required=True)
     parser.add_argument("--hw", choices=SUPPORTED_HARDWARE, required=True)
     parser.add_argument("--nnode", type=int, default=2)
-    parser.add_argument("--old-version", default="2.29")
+    parser.add_argument("--old-version", default="2.30")
     parser.add_argument("--new-version", default="2.30")
     parser.add_argument("--allow-numerical-test-failures", action="store_true")
     parser.add_argument("--tcpstore-timeout-seconds", type=int, default=900)
