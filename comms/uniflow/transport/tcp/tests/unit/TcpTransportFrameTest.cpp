@@ -206,6 +206,8 @@ class TcpTransportFrameTest : public ::testing::Test {
  protected:
   static constexpr uint64_t kSegId = 42;
   static constexpr size_t kSegLen = 256;
+  /// Destination length for the reply-kind-mismatch tests.
+  static constexpr size_t kAckDstLen = 16;
 
   void SetUp() override {
     evbThread_ = std::make_unique<ScopedEventBaseThread>("tcp-frame-test");
@@ -1177,6 +1179,122 @@ TEST_F(TcpTransportFrameTest, AdmissionIsRefusedOnceTeardownHasSwept) {
   // The caller is expected to fail the op on refusal; nothing else can.
   EXPECT_NE(future.wait_for(std::chrono::seconds{0}), std::future_status::ready)
       << "admitInflight must not resolve the promise itself";
+}
+
+// The three admission points must agree about connBroken_. admitInflight() and
+// recvImpl() re-test it under their container mutex; the enqueue paths listed
+// it only in the wait predicate, as a wake condition, and then checked
+// outClosed alone. failAllPending() does not set outClosed -- the only writer
+// is the dead sender -- so after a sweep that leaves the connection open
+// (handleFrame's exception containment does exactly that: it stops the reader
+// without closing) a frame admitted before the sweep still lands in the
+// just-cleared queue and the live sender transmits it.
+//
+// For put that means a Write applied to the peer's segment for an operation the
+// caller was already told had failed, which is the partial-write-nobody-knows
+// -about case put()'s pre-flight exists to prevent.
+TEST_F(TcpTransportFrameTest, EnqueueIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  EXPECT_FALSE(enqueueFrame(makeFrame(
+      TcpOp::Write, kSegId, /*offset=*/0, /*len=*/8, /*payloadBytes=*/8)))
+      << "a frame queued after the sweep is transmitted for a failed op";
+  EXPECT_EQ(outQueueDepth(), 0u) << "no frame may remain queued after a sweep";
+}
+
+TEST_F(TcpTransportFrameTest, EnqueueFramesIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  std::vector<TcpFrame> group;
+  group.emplace_back(makeFrame(
+      TcpOp::Write, kSegId, /*offset=*/0, /*len=*/8, /*payloadBytes=*/8));
+
+  EXPECT_FALSE(enqueueFrames(std::move(group), /*mayBlock=*/false))
+      << "a staged wave queued after the sweep is transmitted for a failed op";
+  EXPECT_EQ(outQueueDepth(), 0u);
+}
+
+// send() owns a promise, so refusal has to fail it rather than drop the frame.
+// Reporting success here says a send completed on a transport that has failed
+// everything else and stopped reading.
+TEST_F(TcpTransportFrameTest, SendFrameIsRefusedOnceTeardownHasSwept) {
+  setConnected();
+  failAllPending();
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+
+  enqueueSendFrame(
+      makeFrame(TcpOp::Send, kSegId, /*offset=*/0, /*len=*/8, 8), state);
+
+  EXPECT_EQ(outQueueDepth(), 0u) << "the send frame must not be queued";
+  ASSERT_EQ(future.wait_for(std::chrono::seconds{5}), std::future_status::ready)
+      << "a refused send must fail its promise, not leave the caller waiting";
+  EXPECT_TRUE(future.get().hasError())
+      << "send must not report success on a failed connection";
+}
+
+// Ack answers a Write, ReadReply answers a ReadRequest, and reqIds are unique
+// per chunk, so a same-version peer never crosses them. The ReadReply direction
+// was already rejected; the Ack direction was not, and it failed silently
+// rather than loudly: the get chunk resolved Ok with its destination never
+// written, so the caller read back whatever the buffer held before. Every other
+// peer-supplied dimension on this path -- segId, offset, len, payload size --
+// is checked, and all of those fail with an error.
+//
+// Version-skew or a hostile peer only, which is the same bar as
+// OversizedReadRequestIsRefusedPerRequest.
+TEST_F(TcpTransportFrameTest, AckOnAReadRequestIsRejected) {
+  setConnected();
+
+  // A destination pre-filled with a known pattern, so "never written" is
+  // detectable rather than merely assumed.
+  std::vector<uint8_t> dst(kAckDstLen, uint8_t{0x11});
+  const std::vector<uint8_t> pristineDst = dst;
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+  ASSERT_FALSE(admitInflight(
+                   /*reqId=*/1,
+                   TcpInflight{state, dst.data(), kAckDstLen, /*isRead=*/true})
+                   .hasError());
+
+  feed(makeFrame(
+      TcpOp::Ack, kSegId, /*offset=*/0, /*len=*/0, /*payloadBytes=*/0));
+
+  ASSERT_EQ(future.wait_for(std::chrono::seconds{5}), std::future_status::ready)
+      << "the op must be resolved rather than left outstanding";
+  EXPECT_TRUE(future.get().hasError())
+      << "an Ack cannot complete a get: the destination was never written";
+  EXPECT_EQ(dst, pristineDst) << "the destination buffer must be untouched";
+  EXPECT_EQ(inflightCount(), 0u)
+      << "a rejected reply must not leave its admission slot held";
+}
+
+// The mirror direction, already guarded before this change. Kept as a pair so a
+// future edit cannot close one direction and reopen the other.
+TEST_F(TcpTransportFrameTest, ReadReplyOnAWriteIsRejected) {
+  setConnected();
+
+  auto state = std::make_shared<TcpOpState>();
+  state->remaining = 1;
+  auto future = state->promise.get_future();
+  ASSERT_FALSE(admitInflight(
+                   /*reqId=*/1,
+                   TcpInflight{state, nullptr, kAckDstLen, /*isRead=*/false})
+                   .hasError());
+
+  feed(makeFrame(
+      TcpOp::ReadReply, kSegId, /*offset=*/0, kAckDstLen, kAckDstLen));
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds{5}), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasError()) << "a ReadReply cannot complete a put";
+  EXPECT_EQ(inflightCount(), 0u);
 }
 
 TEST_F(TcpTransportFrameTest, AdmissionSucceedsOnAHealthyTransport) {
