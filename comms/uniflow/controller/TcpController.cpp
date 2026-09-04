@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
@@ -13,7 +14,9 @@
 #include <cerrno>
 #include <charconv>
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <thread>
 
@@ -59,6 +62,18 @@ Status TcpSocketConfig::validate() const {
   }
   if (acceptRetryCnt <= 0) {
     return Err(ErrCode::InvalidArgument, "acceptRetryCnt must be positive");
+  }
+  if (bindToDevice) {
+    if (bindToDevice->empty()) {
+      return Err(ErrCode::InvalidArgument, "bindToDevice must not be empty");
+    }
+    // The kernel copies the name into an IFNAMSIZ buffer and needs room for the
+    // terminator, so reject an over-long name here instead of letting
+    // setsockopt fail with an opaque error.
+    if (bindToDevice->size() >= IFNAMSIZ) {
+      return Err(
+          ErrCode::InvalidArgument, "bindToDevice too long: " + *bindToDevice);
+    }
   }
   if (retryTimeout.count() < 0) {
     return Err(ErrCode::InvalidArgument, "retryTimeout must be non-negative");
@@ -108,6 +123,22 @@ class SockOptSetter {
     return Ok();
   }
 };
+
+// Pins the socket's egress to `device` via SO_BINDTODEVICE. Must be called
+// before bind() or connect(): the option only takes effect on the route
+// selection made at that point, so applying it to an already-connected fd is
+// too late to move any traffic.
+Status bindSocketToDevice(int sock, const std::string& device) {
+  char ifname[IFNAMSIZ]{};
+  device.copy(ifname, sizeof(ifname) - 1);
+  SockOptSetter opt(sock);
+  opt.set(
+      SOL_SOCKET,
+      SO_BINDTODEVICE,
+      ifname,
+      fmt::format("SO_BINDTODEVICE({})", device).c_str());
+  return opt.status();
+}
 
 // Aligned with ctran/bootstrap/Socket.cc::shouldRetry().
 bool shouldRetry(int errcode) {
@@ -217,12 +248,22 @@ std::string formatAddr(const sockaddr_storage& addr) {
   return std::string(buf) + ":" + std::to_string(ntohs(sa->sin_port));
 }
 
-Result<int> createListenSocket(int domain) {
+Result<int> createListenSocket(
+    int domain,
+    const std::optional<std::string>& bindDevice) {
   int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) {
     return Err(
         ErrCode::ConnectionFailed,
         "socket creation failed: " + std::system_category().message(errno));
+  }
+
+  if (bindDevice) {
+    auto status = bindSocketToDevice(sock, *bindDevice);
+    if (!status) {
+      ::close(sock);
+      return std::move(status).error();
+    }
   }
 
   SockOptSetter opt(sock);
@@ -343,6 +384,52 @@ Status setHandshakeTimeout(int sock) {
 
 } // namespace
 
+Result<std::string> deviceGlobalIpv6(const std::string& device) {
+  // Read /proc/net/if_inet6 rather than getifaddrs(): the address flags are the
+  // point, and getifaddrs() does not expose them (ifa_flags carries the
+  // interface's IFF_* bits, not the address's IFA_F_* bits). A deprecated
+  // address is still returned by getifaddrs() and still binds successfully, so
+  // picking one silently produces a working socket bound to an address the peer
+  // is not supposed to reply to. On the MI350 hosts every frontend NIC except
+  // eth2 carries a deprecated address alongside its live one, and enumeration
+  // order is not specified, so the deprecated one can win.
+  std::ifstream f("/proc/net/if_inet6");
+  if (!f) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "cannot open /proc/net/if_inet6 to resolve device " + device);
+  }
+
+  // Columns: address(32 hex, no colons) ifindex prefixlen scope flags name
+  std::string hex, ifindex, prefixLen, scope, flags, name;
+  while (f >> hex >> ifindex >> prefixLen >> scope >> flags >> name) {
+    if (name != device || hex.size() != 32) {
+      continue;
+    }
+    // Scope 0 is global; this skips link-local (0x20) and host (0x10).
+    if (std::stoul(scope, nullptr, 16) != 0) {
+      continue;
+    }
+    constexpr unsigned long kIfaFDeprecated = 0x20;
+    if ((std::stoul(flags, nullptr, 16) & kIfaFDeprecated) != 0) {
+      continue;
+    }
+    in6_addr addr{};
+    for (size_t i = 0; i < sizeof(addr.s6_addr); ++i) {
+      addr.s6_addr[i] =
+          static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
+    }
+    char buf[INET6_ADDRSTRLEN] = {};
+    if (inet_ntop(AF_INET6, &addr, buf, sizeof(buf)) == nullptr) {
+      continue;
+    }
+    return std::string(buf);
+  }
+  return Err(
+      ErrCode::InvalidArgument,
+      "no live global IPv6 address on device " + device);
+}
+
 // ---------------------------------------------------------------------------
 // TcpConn<IOPolicy> — shared sync methods
 // ---------------------------------------------------------------------------
@@ -381,12 +468,11 @@ bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
 // for these sockets, and widening it here would hide a non-blocking data socket
 // rather than fix one.
 template <typename IOPolicy>
-bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
-  int idx = 0;
-  while (idx < iovCnt) {
+bool TcpConn<IOPolicy>::sendAllVec(std::span<iovec> iov) {
+  while (!iov.empty()) {
     msghdr msg{};
-    msg.msg_iov = iov + idx;
-    msg.msg_iovlen = static_cast<size_t>(iovCnt - idx);
+    msg.msg_iov = iov.data();
+    msg.msg_iovlen = iov.size();
     ssize_t n = ::sendmsg(sock_, &msg, MSG_NOSIGNAL);
     if (n < 0) {
       if (errno == EINTR) {
@@ -407,13 +493,14 @@ bool TcpConn<IOPolicy>::sendAllVec(iovec* iov, int iovCnt) {
     // covered by tests -- an attempt to force it with an oversized payload did
     // not reach this branch.
     auto consumed = static_cast<size_t>(n);
-    while (idx < iovCnt && consumed >= iov[idx].iov_len) {
-      consumed -= iov[idx].iov_len;
-      ++idx;
+    while (!iov.empty() && consumed >= iov.front().iov_len) {
+      consumed -= iov.front().iov_len;
+      iov = iov.subspan(1);
     }
-    if (idx < iovCnt && consumed > 0) {
-      iov[idx].iov_base = static_cast<uint8_t*>(iov[idx].iov_base) + consumed;
-      iov[idx].iov_len -= consumed;
+    if (!iov.empty() && consumed > 0) {
+      iov.front().iov_base =
+          static_cast<uint8_t*>(iov.front().iov_base) + consumed;
+      iov.front().iov_len -= consumed;
     }
   }
   return true;
@@ -541,14 +628,14 @@ Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
   iovec iov[2];
   iov[0].iov_base = &len;
   iov[0].iov_len = sizeof(len);
-  int iovCnt = 1;
+  size_t iovCnt = 1;
   if (!data.empty()) {
     // const_cast: iovec has no const variant, and sendmsg only reads.
     iov[1].iov_base = const_cast<uint8_t*>(data.data());
     iov[1].iov_len = data.size();
     iovCnt = 2;
   }
-  if (!sendAllVec(iov, iovCnt)) {
+  if (!sendAllVec(std::span{iov}.first(iovCnt))) {
     return Err(
         ErrCode::ConnectionFailed,
         "send frame failed: " + std::system_category().message(errno));
@@ -613,12 +700,16 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
+  auto& stats = recvPhaseStats();
+  const auto tStart = std::chrono::steady_clock::now();
+
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
     return Err(
         ErrCode::ConnectionFailed,
         "recv header failed: " + std::system_category().message(errno));
   }
+  const auto tFirstByte = std::chrono::steady_clock::now();
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
@@ -641,6 +732,17 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
         ErrCode::ConnectionFailed,
         "recv payload failed: " + std::system_category().message(errno));
   }
+
+  const auto tDone = std::chrono::steady_clock::now();
+  using ns = std::chrono::nanoseconds;
+  stats.headerWaitNs.fetch_add(
+      std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
+      std::memory_order_relaxed);
+  stats.payloadDrainNs.fetch_add(
+      std::chrono::duration_cast<ns>(tDone - tFirstByte).count(),
+      std::memory_order_relaxed);
+  stats.frames.fetch_add(1, std::memory_order_relaxed);
+  stats.payloadBytes.fetch_add(len, std::memory_order_relaxed);
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv(span): fd={} bytes={}", sock_, len);
   return static_cast<size_t>(len);
@@ -1046,6 +1148,10 @@ TcpConn<IOPolicy>::~TcpConn() {
 
 template <typename IOPolicy>
 void TcpConn<IOPolicy>::close() {
+  // Off-loop callers are fine for SyncIO and not for AsyncIO -- see the
+  // declaration in TcpController.h for why. Both current callers
+  // (TcpTransport::shutdown() on an application thread and the reader refusing
+  // a connection) hold SyncIO conns.
   if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
@@ -1233,6 +1339,8 @@ void AsyncAccept::acceptPendingConnections(
       continue;
     }
 
+    // SyncIO deliberately: see the AsyncAccept doc comment. The accept is
+    // async, the connection it yields is not.
     auto conn = TcpConn<SyncIO>::create(clientSock);
     if (!conn) {
       continue;
@@ -1383,7 +1491,7 @@ Status BasicTcpServer<AcceptPolicy>::init() {
   }
   int domain = domainResult.value();
 
-  auto sockResult = createListenSocket(domain);
+  auto sockResult = createListenSocket(domain, config_.bindToDevice);
   if (!sockResult) {
     UNIFLOW_LOG_ERROR("TcpServer: socket creation failed on {}", id_);
     return std::move(sockResult).error();
@@ -1573,6 +1681,15 @@ std::future<std::unique_ptr<Conn>> SyncConnect::connect(
       return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
 
+    if (config.bindToDevice) {
+      auto status = bindSocketToDevice(sock, *config.bindToDevice);
+      if (!status) {
+        UNIFLOW_LOG_ERROR("TcpClient: {}: {}", id, status.error().toString());
+        ::close(sock);
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+    }
+
     if (::connect(
             sock,
             reinterpret_cast<sockaddr*>(&resolved->addr),
@@ -1622,6 +1739,15 @@ std::future<std::unique_ptr<Conn>> AsyncConnect::connect(
         "TcpClient: socket creation failed: {}",
         std::system_category().message(errno));
     return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  if (config.bindToDevice) {
+    auto bindStatus = bindSocketToDevice(sock, *config.bindToDevice);
+    if (!bindStatus) {
+      UNIFLOW_LOG_ERROR("TcpClient: {}", bindStatus.error().toString());
+      ::close(sock);
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
+    }
   }
 
   int rc = ::connect(

@@ -63,10 +63,24 @@ struct CliOptions {
   size_t slabSize{0};
   int slabNum{0};
   std::vector<std::string> rdmaDevices;
+  // Selects which local IPv6 address the TCP transport binds and advertises,
+  // and nothing else. Which NIC actually carries the bytes is a separate axis
+  // -- see --tcp-bind-dev below.
   std::string tcpIface{"eth2"};
   // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
   // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
-  int tcpSockBuf{1 << 20};
+  int tcpSockBuf{0};
+  // Parallel TCP data sockets per bound device. Tracks the TcpTransportConfig
+  // default; the total is this times the device count, and 1 with no bound
+  // devices keeps the pre-lane wire format.
+  size_t tcpSocketsPerNic{4};
+  // Pin TCP egress to --tcp-iface via SO_BINDTODEVICE. Opt-in: without it
+  // --tcp-iface only selects a source address and routing chooses the NIC.
+  bool tcpBindDev{false};
+  // Devices to stripe TCP lanes across, e.g. "eth1,eth2". Overrides
+  // --tcp-bind-dev. Names are per-host, so the two hosts may need different
+  // lists for the same pair of physical ports.
+  std::string tcpBindDevs;
 };
 
 std::vector<int> parseIntList(const std::string& s) {
@@ -82,6 +96,32 @@ std::vector<int> parseIntList(const std::string& s) {
     }
   }
   return result;
+}
+
+// --tcp-bind-devs wins over --tcp-bind-dev, which is just the single-device
+// shorthand for whatever --tcp-iface names. Empty means no device binding.
+//
+// --tcp-iface keeps selecting the source address either way, so when striping
+// it wants to name one of the bound devices: pointing it at an unbound NIC
+// advertises an address on a device carrying no lanes.
+std::vector<std::string> tcpBindDevList(const CliOptions& opts) {
+  std::vector<std::string> devices;
+  if (!opts.tcpBindDevs.empty()) {
+    std::istringstream iss(opts.tcpBindDevs);
+    std::string token;
+    while (std::getline(iss, token, ',')) {
+      if (!token.empty()) {
+        devices.push_back(token);
+      }
+    }
+    if (devices.empty()) {
+      std::cerr << "Invalid --tcp-bind-devs: '" << opts.tcpBindDevs << "'\n";
+      std::exit(1);
+    }
+  } else if (opts.tcpBindDev) {
+    devices.push_back(opts.tcpIface);
+  }
+  return devices;
 }
 
 std::vector<std::string> parseStringList(const std::string& s) {
@@ -143,10 +183,26 @@ void printUsage(const char* prog) {
       << "  --output <path>        CSV output file path\n"
       << "  --format <fmt>         table|csv|both (default: table)\n"
       << "  --rdma-devices <list>  Comma-separated RDMA device names (default: auto-discover)\n"
-      << "  --tcp-iface <name>     Front-end interface for the TCP transport (default: eth2)\n"
-      << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 1048576,\n"
-      << "                         0 = leave unset so the kernel autotunes the window)\n"
+      << "  --tcp-iface <name>     Interface whose address the TCP transport binds and\n"
+      << "                         advertises (default: eth2). Selects the source address\n"
+      << "                         only -- see --tcp-bind-dev to pin the egress NIC\n"
+      << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 0,\n"
+      << "                         which leaves it unset so the kernel autotunes the\n"
+      << "                         window; setting it explicitly disables autotuning)\n"
       << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
+      << "  --tcp-sockets-per-nic <n>  Parallel TCP data sockets per bound device\n"
+      << "                         (default: 4). Total lanes is this times the device\n"
+      << "                         count, so 4 with two --tcp-bind-devs is 8 lanes. Both\n"
+      << "                         peers must agree; 1 with no bound devices keeps the\n"
+      << "                         pre-lane wire format\n"
+      << "  --tcp-bind-dev         Pin TCP egress to --tcp-iface via SO_BINDTODEVICE\n"
+      << "                         (default: off, so routing picks the egress NIC and\n"
+      << "                         --tcp-iface only selects the source address)\n"
+      << "  --tcp-bind-devs <l>    Comma-separated devices to stripe lanes across, e.g.\n"
+      << "                         \"eth1,eth2\". Lane i goes to device i%count, one\n"
+      << "                         listener per device. Overrides --tcp-bind-dev; both\n"
+      << "                         peers must name the same number of devices; lanes\n"
+      << "                         are per device, so each gets --tcp-sockets-per-nic\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
       << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
@@ -203,6 +259,9 @@ CliOptions parseArgs(int argc, char** argv) {
       {"tcp-iface", required_argument, nullptr, 266},
       {"tcp-sockbuf", required_argument, nullptr, 268},
       {"no-tcp-async-h2d", no_argument, nullptr, 269},
+      {"tcp-sockets-per-nic", required_argument, nullptr, 270},
+      {"tcp-bind-dev", no_argument, nullptr, 271},
+      {"tcp-bind-devs", required_argument, nullptr, 272},
       {"no-verify", no_argument, nullptr, 267},
       {"list", no_argument, nullptr, 'l'},
       {"help", no_argument, nullptr, 'h'},
@@ -293,6 +352,27 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 269:
         opts.tcpAsyncH2d = false;
+        break;
+      case 270:
+        try {
+          const int parsed = std::stoi(optarg);
+          if (parsed < 1) {
+            std::cerr
+                << "Invalid value for --tcp-sockets-per-nic: must be >= 1\n";
+            std::exit(1);
+          }
+          opts.tcpSocketsPerNic = static_cast<size_t>(parsed);
+        } catch (const std::exception&) {
+          std::cerr << "Invalid value for --tcp-sockets-per-nic: '" << optarg
+                    << "'\n";
+          std::exit(1);
+        }
+        break;
+      case 271:
+        opts.tcpBindDev = true;
+        break;
+      case 272:
+        opts.tcpBindDevs = optarg;
         break;
       case 'd':
         opts.direction = optarg;
@@ -448,7 +528,9 @@ int main(int argc, char** argv) {
           opts.tcpIface,
           opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
                               : std::nullopt,
-          opts.tcpAsyncH2d));
+          opts.tcpAsyncH2d,
+          opts.tcpSocketsPerNic,
+          tcpBindDevList(opts)));
 #ifndef __HIP_PLATFORM_AMD__
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::ConnectionSetupBenchmark>());

@@ -2058,20 +2058,23 @@ cvars:
    default     : "off"
    choices     : off, force
    description : |-
-     Select send-side zero-copy for MCCL-native AllReduce.
+     Select zero-copy for MCCL-native AllReduce.
      off - Preserve the existing copy-based registration and collective paths.
-     force - Require every rank and the exact Phase-2 source range to be
-             eligible for IBGDA zero-copy; never fall back to the copy path.
+     force - Use zero-copy when every rank is eligible during CUDA graph
+             capture. Eager calls and graph captures where any rank is
+             ineligible or registration fails collectively use the copy path.
+             Invalid or rank-mismatched requests return an error.
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
-   default     : true
+   default     : false
    description : |-
-     Enable bidirectional registered Ring reduce-scatter and all-gather for
-     in-place collectives with every supported virtual-stripe geometry.
-     Out-of-place collectives continue to use the unidirectional registered
-     Ring path. This value must be set identically on every rank. Set false to
-     use the unidirectional registered Ring path.
+     Enable bidirectional Ring reduce-scatter and all-gather for non-LL
+     collectives with more than two nodes on both staged-copy and registered
+     zero-copy paths. Out-of-place ranks stage their input before running the
+     same peer schedule. Fine-grained tracing is suppressed without changing
+     that schedule. A divergent value across ranks fails communicator
+     initialization.
 
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
@@ -2593,14 +2596,6 @@ cvars:
       The number of local ranks when NCCL_COMM_STATE_DEBUG_TOPO is set to vnode.
       Must be less than or equal to the number of physical gpus on the node.
       The number of nodes will be infered as number of physical ranks / nLocalRanks.
-
- - name        : NCCL_FIRST_COMM_AS_WORLD
-   type        : bool
-   default     : false
-   description : |-
-     When set to true, the first communicator created will be taken as the comm
-     world (assigned to NCCL_COMM_WORLD).
-     All optimizations (by meta) for Large Scale Jobs
 
  - name        : NCCL_TOPO_FILE_PATH
    type        : string
@@ -3431,8 +3426,8 @@ cvars:
    default     : 1
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
-     in MCCL fused AllReduce. Ring supports 1, 2, 4, and 10; Tree supports 1
-     and 2. The default preserves the existing full-block protocol.
+     in MCCL fused AllReduce. Ring and Tree support 1, 2, 4, and 10. The
+     default preserves the existing full-block protocol.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int

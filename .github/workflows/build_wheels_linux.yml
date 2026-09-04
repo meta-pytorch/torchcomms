@@ -81,8 +81,8 @@ jobs:
     with:
       repository: meta-pytorch/torchcomms
       ref: ""
-      pre-script: ""
-      post-script: ""
+      pre-script: "scripts/ci_log_resources_pre.sh"
+      post-script: "scripts/ci_log_resources_post.sh"
       build-platform: "python-build-package"
       build-command: "scripts/_build_wheel.sh"
       smoke-test-script: "scripts/smoke_test.py"

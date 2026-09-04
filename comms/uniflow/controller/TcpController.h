@@ -13,6 +13,7 @@
 #include <optional>
 #include <queue>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "comms/uniflow/controller/Controller.h"
@@ -22,6 +23,13 @@ class EventBase;
 } // namespace uniflow
 
 namespace uniflow::controller {
+
+/// First live global IPv6 address on `device`, or an error if it has none.
+///
+/// Deprecated addresses (IFA_F_DEPRECATED) are skipped: they bind successfully
+/// and so are indistinguishable from a live address at the socket layer, but a
+/// peer is not supposed to reply to them.
+Result<std::string> deviceGlobalIpv6(const std::string& device);
 
 /// Socket configuration for TcpServer and TcpClient.
 /// Optional fields: valued → setsockopt, nullopt → OS kernel default.
@@ -42,6 +50,14 @@ struct TcpSocketConfig {
   std::optional<int> keepaliveCount{3};
   std::optional<std::chrono::milliseconds> userTimeout{
       std::chrono::milliseconds{60000}};
+
+  /// Network device (e.g. "eth2") to pin egress to via SO_BINDTODEVICE.
+  /// Unset by default: without it the kernel routing table picks the egress
+  /// device, so binding a source address on the listener still leaves no
+  /// control over which NIC traffic actually leaves through. Opt-in because
+  /// forcing egress onto one device breaks connectivity wherever routing was
+  /// selecting a different, working NIC.
+  std::optional<std::string> bindToDevice;
 
   int acceptRetryCnt{5};
   size_t connectRetries{10};
@@ -133,6 +149,18 @@ class TcpConn : public Conn {
   std::future<Result<size_t>> send(std::span<const uint8_t> data) override;
   std::future<Result<size_t>> recv(std::vector<uint8_t>& data) override;
   std::future<Result<size_t>> recv(std::span<uint8_t> buf) override;
+  /// Closes the socket. Safe from any thread for SyncIO, which is what every
+  /// caller holds today: a SyncIO fd is never registered with an EventBase, so
+  /// there is no deferred unregisterFd to drain first and no loop thread
+  /// reading sock_.
+  ///
+  /// NOT safe off the loop thread for AsyncIO. That fd is registered with
+  /// epoll, and the loop thread reads sock_ in trySend(), onRecvReady() and
+  /// updateFdRegistration(); closing from elsewhere both races those reads and
+  /// closes a still-registered fd, which EventBase::unregisterFd forbids. See
+  /// ~TcpConn for the sequence such a close would have to follow --
+  /// dispatchAndWait(failAllOps), then a second dispatchAndWait to drain the
+  /// deferred unregister.
   void close() override;
 
   int getFd() const {
@@ -145,7 +173,7 @@ class TcpConn : public Conn {
   bool sendAll(const void* buf, size_t len);
   /// Vectored sendAll: one syscall for the length prefix plus payload. Mutates
   /// @p iov to track partial writes, so it must not be reused by the caller.
-  bool sendAllVec(iovec* iov, int iovCnt);
+  bool sendAllVec(std::span<iovec> iov);
   bool recvAll(void* buf, size_t len);
   bool exchangeMagic();
   Result<size_t> syncSend(std::span<const uint8_t> data);
@@ -220,6 +248,12 @@ struct SyncAccept {
 /// EventBase. Subsequent calls queue promises that are resolved as
 /// connections arrive. All async state is accessed exclusively on the
 /// loop thread via dispatch() — no atomics needed.
+///
+/// "Async" describes the accept, not the connection. The Conn handed back is a
+/// TcpConn<SyncIO>: blocking send/recv on the caller's thread, fd never
+/// registered with the EventBase, which has no further part in the data path
+/// once the handshake completes. Callers wanting async I/O must build a
+/// TcpConn<AsyncIO> themselves; nothing does today.
 ///
 /// Lifetime: The EventBase must outlive all calls to shutdown(). The
 /// BasicTcpServer destructor calls shutdown(), so either:

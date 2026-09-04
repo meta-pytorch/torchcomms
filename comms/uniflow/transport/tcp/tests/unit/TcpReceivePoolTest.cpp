@@ -144,6 +144,10 @@ class TcpReceivePoolTest : public ::testing::Test {
         config,
         /*host=*/"127.0.0.1",
         cudaApi_);
+
+    // These tests drive the outbound path without connecting a peer, so give
+    // the transport the single lane that path indexes.
+    transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
   }
 
   std::future<Status> issueGet(size_t len, MemoryType memType) {
@@ -190,9 +194,9 @@ class TcpReceivePoolTest : public ::testing::Test {
 
   void runReader(std::unique_ptr<ScriptedRecvConn> conn) {
     scriptedConn_ = conn.get();
-    transport_->dataConn_ = std::move(conn);
+    transport_->lanes_[0]->conn = std::move(conn);
     transport_->running_.store(true, std::memory_order_release);
-    transport_->readerLoop();
+    transport_->readerLoop(0);
   }
 
   std::future<Status>
@@ -365,6 +369,127 @@ TEST_F(TcpReceivePoolTest, VramReadReplyKeepsSlabUntilEventCompletes) {
   EXPECT_TRUE(future.get().hasValue());
   onlyFreeSlab.reset();
   EXPECT_TRUE(pool->tryAcquire(/*allowReserved=*/true));
+}
+
+TEST_F(
+    TcpReceivePoolTest,
+    EventRecordFailureCompletesGetWhenStreamSynchronizationSucceeds) {
+  makeTransport();
+  auto pool = createReceivePool();
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(slab);
+  auto frame = readReplyFrame(/*reqId=*/1, kLen);
+  ASSERT_LE(frame.size(), slab.capacity());
+  std::memcpy(slab.data(), frame.data(), frame.size());
+  const auto bytes = std::span<const uint8_t>{slab.data(), frame.size()};
+
+  std::vector<uint8_t> destination(kLen);
+  auto* const callerStream = reinterpret_cast<void*>(0xCA11);
+  auto future = postVramRead(destination.data(), callerStream);
+
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          destination.data(),
+          ::testing::_,
+          kLen,
+          kMockMemcpyH2D,
+          static_cast<MockStream>(callerStream)))
+      .WillOnce([&](void* dst, const void* src, size_t len, auto, auto) {
+        std::memcpy(dst, src, len);
+        return Ok();
+      });
+  EXPECT_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillOnce([](auto* event) -> Status {
+        *event = {};
+        return Ok();
+      });
+  EXPECT_CALL(
+      *cudaApi_,
+      eventRecord(::testing::_, static_cast<MockStream>(callerStream)))
+      .WillOnce(
+          ::testing::Return(
+              Err(ErrCode::DriverError, "test: event record failed")));
+  EXPECT_CALL(
+      *cudaApi_, streamSynchronize(static_cast<MockStream>(callerStream)))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventQuery(::testing::_)).Times(0);
+
+  handleFrame(bytes, std::move(slab));
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_TRUE(
+      std::all_of(destination.begin(), destination.end(), [](uint8_t b) {
+        return b == uint8_t{0xCD};
+      }));
+  auto returnedSlabs = pool->acquire(2);
+  EXPECT_TRUE(returnedSlabs.hasValue());
+}
+
+TEST_F(
+    TcpReceivePoolTest,
+    EventQueryFailureCompletesGetWhenStreamSynchronizationSucceeds) {
+  makeTransport();
+  auto pool = createReceivePool();
+  ASSERT_NE(pool, nullptr);
+  auto slab = pool->tryAcquire(/*allowReserved=*/true);
+  ASSERT_TRUE(slab);
+  auto frame = readReplyFrame(/*reqId=*/1, kLen);
+  ASSERT_LE(frame.size(), slab.capacity());
+  std::memcpy(slab.data(), frame.data(), frame.size());
+  const auto bytes = std::span<const uint8_t>{slab.data(), frame.size()};
+
+  std::vector<uint8_t> destination(kLen);
+  auto* const callerStream = reinterpret_cast<void*>(0xCA11);
+  auto future = postVramRead(destination.data(), callerStream);
+
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          destination.data(),
+          ::testing::_,
+          kLen,
+          kMockMemcpyH2D,
+          static_cast<MockStream>(callerStream)))
+      .WillOnce([&](void* dst, const void* src, size_t len, auto, auto) {
+        std::memcpy(dst, src, len);
+        return Ok();
+      });
+  EXPECT_CALL(*cudaApi_, eventCreate(::testing::_))
+      .WillOnce([](auto* event) -> Status {
+        *event = {};
+        return Ok();
+      });
+  EXPECT_CALL(
+      *cudaApi_,
+      eventRecord(::testing::_, static_cast<MockStream>(callerStream)))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventQuery(::testing::_))
+      .WillOnce([](auto) -> Result<bool> {
+        return Err(ErrCode::DriverError, "test: event query failed");
+      });
+  EXPECT_CALL(
+      *cudaApi_, streamSynchronize(static_cast<MockStream>(callerStream)))
+      .WillOnce(::testing::Return(Ok()));
+  EXPECT_CALL(*cudaApi_, eventDestroy(::testing::_))
+      .WillOnce(::testing::Return(Ok()));
+
+  handleFrame(bytes, std::move(slab));
+
+  ASSERT_EQ(
+      future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+  EXPECT_TRUE(future.get().hasValue());
+  EXPECT_TRUE(
+      std::all_of(destination.begin(), destination.end(), [](uint8_t b) {
+        return b == uint8_t{0xCD};
+      }));
+  auto returnedSlabs = pool->acquire(2);
+  EXPECT_TRUE(returnedSlabs.hasValue());
 }
 
 TEST_F(TcpReceivePoolTest, VectorBackedVramReadReplyRemainsSynchronous) {

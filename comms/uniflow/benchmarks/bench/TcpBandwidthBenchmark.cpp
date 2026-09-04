@@ -2,8 +2,6 @@
 
 #include "comms/uniflow/benchmarks/bench/TcpBandwidthBenchmark.h"
 
-#include <arpa/inet.h>
-#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
@@ -27,6 +25,7 @@
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 #include "comms/uniflow/benchmarks/SegmentHelper.h"
 #include "comms/uniflow/benchmarks/Stats.h"
+#include "comms/uniflow/controller/TcpController.h"
 #include "comms/uniflow/executor/ScopedEventBaseThread.h"
 #include "comms/uniflow/logging/Logger.h"
 #include "comms/uniflow/transport/tcp/TcpTransport.h"
@@ -38,31 +37,15 @@ namespace {
 // Fixed so a verification failure reproduces exactly; logged with the banner.
 constexpr uint64_t kVerifySeed = 0x5EED1234;
 
-/// First global (non-link-local) IPv6 address on `iface`, or "" if none.
+/// First live global (non-link-local, non-deprecated) IPv6 address on `iface`,
+/// or "" if none. Delegates to the controller so that the deprecated-address
+/// filtering is shared with the transport's own per-device resolution: several
+/// MI350 frontend NICs carry a deprecated address alongside their live one, and
+/// binding the deprecated one yields a working socket the peer will not reply
+/// to.
 std::string getInterfaceIpv6(const std::string& iface) {
-  struct ifaddrs* ifaddr = nullptr;
-  if (getifaddrs(&ifaddr) != 0) {
-    return "";
-  }
-  std::string result;
-  for (auto* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-    if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET6 ||
-        iface != ifa->ifa_name) {
-      continue;
-    }
-    auto* sa = reinterpret_cast<sockaddr_in6*>(ifa->ifa_addr);
-    if (sa->sin6_addr.s6_addr[0] == 0xfe &&
-        (sa->sin6_addr.s6_addr[1] & 0xc0) == 0x80) {
-      continue; // link-local
-    }
-    char buf[INET6_ADDRSTRLEN] = {};
-    if (inet_ntop(AF_INET6, &sa->sin6_addr, buf, sizeof(buf)) != nullptr) {
-      result = buf;
-      break;
-    }
-  }
-  freeifaddrs(ifaddr);
-  return result;
+  auto addr = controller::deviceGlobalIpv6(iface);
+  return addr ? addr.value() : std::string{};
 }
 
 // A src/dst buffer pair (DRAM or VRAM), freed on destruction.
@@ -445,26 +428,65 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     return {};
   }
 
-  const std::string host = getInterfaceIpv6(iface_);
+  // With striping the transport binds one listener per device and resolves each
+  // device's address itself, so the address advertised for endpoint 0 must be
+  // the one belonging to the first device rather than to --tcp-iface.
+  // With no --tcp-iface, discover the same NICs MultiTransport would rather
+  // than leaving egress to the routing table. Without this the default run
+  // measures one routing-chosen NIC and reports it as what the default
+  // configuration delivers, which is not what any caller going through
+  // MultiTransport actually gets.
+  if (bindDevs_.empty()) {
+    bindDevs_ = enumerateFrontendDevices(
+        std::string(::uniflow::kDefaultFrontendDevicePrefix),
+        ::uniflow::kDefaultMaxFrontendDevices);
+    if (bindDevs_.empty()) {
+      UNIFLOW_LOG_WARN(
+          "TcpBandwidthBenchmark: no usable '{}' device found; leaving egress "
+          "to the routing table",
+          ::uniflow::kDefaultFrontendDevicePrefix);
+    }
+  }
+
+  const std::string addrDevice = bindDevs_.empty() ? iface_ : bindDevs_.front();
+  const std::string host = getInterfaceIpv6(addrDevice);
   if (host.empty()) {
     UNIFLOW_LOG_ERROR(
-        "TcpBandwidthBenchmark: no global IPv6 on interface '{}'", iface_);
+        "TcpBandwidthBenchmark: no live global IPv6 on interface '{}'",
+        addrDevice);
     return {};
   }
   const std::string asyncGetH2dMode = asyncGetH2d_ ? "on" : "off";
   const std::string sockBufMode =
       sockBufSize_ ? std::to_string(*sockBufSize_) : "os-default";
+  // Recorded in the run log because the whole point of the flag is that an
+  // interface label alone does not tell you which NIC carried the traffic.
+  std::string bindDevMode;
+  for (const auto& d : bindDevs_) {
+    bindDevMode += bindDevMode.empty() ? d : "," + d;
+  }
+  if (bindDevMode.empty()) {
+    bindDevMode = "off";
+  }
+  const size_t totalLanes =
+      socketsPerNic_ * std::max<size_t>(bindDevs_.size(), 1);
   std::cerr << "TcpBandwidthBenchmark: rank=" << bootstrap.rank
             << " iface=" << iface_ << " async_get_h2d=" << asyncGetH2dMode
-            << " tcp_sockbuf=" << sockBufMode << '\n';
+            << " tcp_sockbuf=" << sockBufMode << " bind_dev=" << bindDevMode
+            << " sockets_per_nic=" << socketsPerNic_
+            << " total_lanes=" << totalLanes << '\n';
   UNIFLOW_LOG_WARN(
       "TcpBandwidthBenchmark: rank {} using {} address {} "
-      "async_get_h2d={} tcp_sockbuf={}",
+      "async_get_h2d={} tcp_sockbuf={} bind_dev={} sockets_per_nic={} "
+      "total_lanes={}",
       bootstrap.rank,
-      iface_,
+      addrDevice,
       host,
       asyncGetH2dMode,
-      sockBufMode);
+      sockBufMode,
+      bindDevMode,
+      socketsPerNic_,
+      totalLanes);
 
   const int dev = config.cudaDevice;
   BufferPair bufs;
@@ -475,7 +497,9 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   ScopedEventBaseThread evbThread("bench-tcp-evb");
   TcpTransportConfig transportConfig;
   transportConfig.socketConfig.socketBufSize = sockBufSize_;
+  transportConfig.bindToDevices = bindDevs_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
+  transportConfig.numSocketsPerDevice = socketsPerNic_;
   auto factory = std::make_unique<TcpTransportFactory>(
       dev, evbThread.getEventBase(), transportConfig, host);
 

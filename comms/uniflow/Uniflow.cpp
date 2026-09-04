@@ -17,6 +17,7 @@ MultiTransportFactoryOptions makeFactoryOptions(
   options.preferredTransport = config.preferredTransport;
   options.intraNodeTransport = config.intraNodeTransport;
   options.interNodeTransport = config.interNodeTransport;
+  options.tcpTransportConfig = config.tcpTransportConfig;
   return options;
 }
 

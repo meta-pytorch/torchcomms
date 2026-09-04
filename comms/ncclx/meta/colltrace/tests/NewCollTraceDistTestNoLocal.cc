@@ -26,7 +26,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "meta/NcclxLogger.h"
 #include "meta/commDump.h"
 

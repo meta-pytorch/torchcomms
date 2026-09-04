@@ -24,7 +24,7 @@
 #include <vector>
 #include <sstream>
 
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "meta/logger/NcclDebugLog.h"
 
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)

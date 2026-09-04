@@ -32,9 +32,73 @@ class TcpRemoteRegistrationHandle;
 /// Transport-local behavior plus the controller's socket configuration.
 /// The converting constructor preserves existing callsites that pass a bare
 /// TcpSocketConfig as the transport/factory constructor argument.
+/// Defaults for frontend NIC discovery. Kept with the transport that consumes
+/// them so MultiTransport and anything building a TcpTransportFactory directly
+/// stripe across the same NICs.
+inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
+inline constexpr size_t kDefaultMaxFrontendDevices = 2;
+
+/// Frontend data NICs to stripe lanes across, lowest name first and one port
+/// per PCI card before taking a second port from any card. Only devices that
+/// are up and carry a usable global address are returned.
+///
+/// Leaving TcpTransportConfig::bindToDevices empty means no binding at all, so
+/// egress falls to the routing table and lands on one NIC. MultiTransport calls
+/// this to fill that in; it is declared here so a caller bypassing
+/// MultiTransport shares the selection instead of re-deriving and drifting.
+std::vector<std::string> enumerateFrontendDevices(
+    const std::string& prefix,
+    size_t maxDevices);
+
 struct TcpTransportConfig {
   controller::TcpSocketConfig socketConfig{};
   bool asyncGetH2d{true};
+  // Number of parallel data sockets ("lanes") per bound device, not per peer.
+  // The total for a connection is this times the device count, so the default
+  // of 4 gives 4 lanes on one NIC and 8 across two -- each device gets a full
+  // complement rather than the connection's lanes being divided among them.
+  //
+  // One TCP connection is bounded by what a single sender thread can push, so
+  // more lanes are the only way past that. Throughput scales with lane count
+  // until a NIC saturates; past that extra lanes only add threads, which is why
+  // 4 is the default. That ceiling is per NIC, which is what makes per-device
+  // the right unit.
+  //
+  // Both peers must agree, and so must their device counts: above 1 total lane
+  // the lanes exchange a TcpLaneHello, so a peer defaulting to 4 cannot talk to
+  // one that predates lanes or is pinned to 1. Set this to 1 with no bound
+  // devices on both sides for mixed-version interoperability.
+  size_t numSocketsPerDevice{4};
+
+  /// Network devices to stripe lanes across, e.g. {"eth1", "eth2"}. Empty (the
+  /// default) leaves egress to the routing table, exactly as before.
+  ///
+  /// Lane i is placed on device i % bindToDevices.size(), so the listener needs
+  /// one bound socket per device: for a `get` the bulk data flows listener to
+  /// dialer and the listener's egress follows its own routing table, so binding
+  /// only the dialer would leave `get` traffic on a single NIC. Both peers must
+  /// name the same number of devices, because each side derives the
+  /// lane-to-device mapping from the lane index alone.
+  ///
+  /// numSocketsPerDevice applies to each device, so striping does not dilute
+  /// the per-NIC lane count: the default 4 gives 8 lanes across 2 devices.
+  /// Dividing a fixed lane total across devices instead leaves every NIC
+  /// half-fed -- the configuration this per-device unit exists to make
+  /// unreachable.
+  ///
+  /// Only worth enabling for large transfers. Small transfers are latency-bound
+  /// rather than bandwidth-bound, where striping is neutral to slightly
+  /// negative; the gain grows with transfer size.
+  ///
+  /// Pairing two ports on one PCI card measured no worse than two ports on
+  /// separate cards, even though raw iperf3 on this hardware shows a clear card
+  /// limit: this path does not yet reach what a single card sustains, so the
+  /// card is not the binding constraint. The receive-side H2D copy is, and card
+  /// affinity starts to matter once that is fixed.
+  ///
+  /// Device names are per-host and need not match between peers: the same
+  /// physical port is eth3 on one MI350 host and eth0 on the next.
+  std::vector<std::string> bindToDevices;
 
   TcpTransportConfig() = default;
   /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
@@ -100,7 +164,7 @@ struct TcpOpState {
   ///
   /// `mu` is a leaf lock: nothing in this struct acquires another mutex while
   /// holding it, and no caller may hold one of the transport's container
-  /// mutexes (`inflightMu_`, `recvMu_`, `outMu_`) when calling in.
+  /// mutexes (`inflightMu_`, `recvMu_`, a lane's `mu`) when calling in.
   template <typename Fn>
   void writeAndComplete(Fn&& write) {
     if (!tryBeginWrite()) {
@@ -170,6 +234,29 @@ struct TcpTransportInfo {
 
   std::string host{"127.0.0.1"};
   uint16_t port{0};
+
+  /// One listener socket's address, as advertised to the peer.
+  struct Endpoint {
+    std::string host;
+    uint16_t port{0};
+  };
+
+  /// Additional listeners, one per extra device when striping. Endpoint 0 is
+  /// (host, port) above, so this holds devices 1..D-1 and stays empty unless
+  /// TcpTransportConfig::bindToDevices names more than one device.
+  ///
+  /// Appended after the host bytes instead of being counted in Header, so a
+  /// single-device transport serializes byte-identically to a build that
+  /// predates striping. A multi-device one does not: the extra bytes fail the
+  /// old exact-size check, so striping requires this build on both peers.
+  std::vector<Endpoint> extraEndpoints;
+
+  /// Endpoint `index`, counting (host, port) as 0. Maps a lane to the listener
+  /// it belongs on. Indices past the end clamp to endpoint 0.
+  Endpoint endpointAt(size_t index) const;
+  size_t endpointCount() const {
+    return 1 + extraEndpoints.size();
+  }
 
   TransportInfo serialize() const;
   static Result<TcpTransportInfo> deserialize(std::span<const uint8_t> data);
@@ -526,13 +613,19 @@ struct TcpPendingRecv {
 
 /// Native, self-contained TCP data transport.
 ///
-/// Establishes one full-duplex data connection per peer (deterministic
-/// listener/dialer role by host:port ordering). Three threads run per
-/// connection:
-///  - reader: blocking recv + demultiplex; never blocks on a send, so it always
-///    drains inbound (avoids the mutual-READ deadlock).
-///  - sender: drains an outbound frame queue and performs all socket sends
-///    (requests, ACKs, READ replies), serialized by construction.
+/// Establishes `numSocketsPerDevice` full-duplex data connections ("lanes") per
+/// bound device
+/// (deterministic listener/dialer role by host:port ordering, lane identity
+/// from an explicit hello). Per connection:
+///  - reader, one per lane: blocking recv + demultiplex; never blocks on a
+///  send,
+///    so it always drains inbound (avoids the mutual-READ deadlock).
+///  - sender, one per transport: drains an outbound frame queue and performs
+///  all
+///    socket sends (requests, ACKs, READ replies), serialized by construction.
+///    Sends every frame on lane 0 -- the extra lanes are established and
+///    drained but not yet used outbound, so throughput is unchanged until
+///    striping schedules across them.
 ///
 /// put() copies a local buffer into a peer segment (WRITE + ACK). get() is
 /// emulated as a pull: READ_REQUEST -> peer replies READ_REPLY with the data.
@@ -577,21 +670,28 @@ class TcpTransport : public Transport {
 
   /// Writes the local spans into the peer's registered segments.
   ///
-  /// What a failed put() promises about the peer's memory, and what it does
-  /// not:
+  /// A failed put() promises nothing about the peer's memory. Treat the
+  /// destination as undefined until a later put over it succeeds, and do not
+  /// read it in between:
   ///
-  /// - A put of at most kMaxPutWaveChunks chunks -- 60 MiB of payload at the
-  ///   4 MiB chunk size, which covers the great majority of calls -- either
-  ///   queues every one of its frames or none of them. A host-staging failure
-  ///   queues nothing, so the peer's segment is untouched.
-  /// - A larger put is split into waves of that size, and the guarantee holds
-  /// per
-  ///   wave. A failure in wave N+1 can leave wave N applied on the peer, with
-  ///   nothing telling the peer which offsets those were.
-  /// - At every size this is staging-and-queue atomicity, not a remote
-  ///   transaction. Frames that reach the queue are frames the peer will apply;
-  ///   a connection that breaks mid-wave still leaves a partial write. Aborting
-  ///   at the wire level needs a protocol change, tracked in T285791201.
+  /// - Any put may partially apply. Work is staged and queued in waves of
+  ///   kMaxPutWaveChunks; a failure in wave N+1 leaves wave N queued, and
+  ///   queued frames are frames the peer applies.
+  /// - What did apply is not a prefix. Frames are striped across lanes, which
+  ///   are independent sockets that fail independently, so a break leaves an
+  ///   arbitrary subset with holes at offsets the caller cannot determine.
+  ///   There is no offset to resume from; the only recovery is to re-put the
+  ///   whole range.
+  /// - The peer is never told. It applies each frame as it arrives and has no
+  ///   notion of the put it belonged to, so its application can read a
+  ///   half-written segment and see nothing wrong. Only the caller learns of
+  ///   the failure, and not how much of it landed.
+  /// - A host-staging failure is contained to the wave it happened in, so it
+  ///   cannot put anything on the wire that a successful wave had not already
+  ///   sent. That bounds one failure mode; it is not a transaction, and it
+  ///   bounds nothing at the sizes callers actually use.
+  ///
+  /// A real abort needs a wire-level change, tracked in T285791201.
   std::future<Status> put(
       std::span<const TransferRequest> requests,
       const RequestOptions& options = {}) override;
@@ -628,8 +728,10 @@ class TcpTransport : public Transport {
   Result<const TcpRemoteRegistrationHandle*> findRemoteHandle(
       const RemoteRegisteredSegment::Span& span) const;
 
-  // Reader thread: blocking recv + demultiplex until the connection closes.
-  void readerLoop() noexcept;
+  // Reader thread, one per lane: blocking recv + demultiplex on that lane's
+  // socket until it closes. Takes the lane index rather than reading a single
+  // member, because each reader owns exactly one socket.
+  void readerLoop(size_t laneIdx) noexcept;
 
  public:
   /// Logs the get-path phase split (first-byte / drain / destination copy) and
@@ -637,8 +739,10 @@ class TcpTransport : public Transport {
   void logAndResetPhaseStats(std::string_view label);
 
  private:
-  // Sender thread: drains outQueue_ and performs all socket sends.
-  void senderLoop() noexcept;
+  // Sender thread, one per lane: drains that lane's queue and performs its
+  // socket sends. One writer per socket, which is what keeps TcpConn's
+  // single-writer requirement satisfied.
+  void senderLoop(size_t laneIdx) noexcept;
   // Handles one fully-received inbound frame (reader thread). `receiveSlab`
   // owns frame.data() when the reader received directly into pinned memory.
   void handleFrame(
@@ -656,11 +760,17 @@ class TcpTransport : public Transport {
   // was not queued (transport closing, or the reader hit the cap and refused
   // the connection).
   [[nodiscard]] bool enqueueFrame(TcpFrame frame, bool mayBlock);
-  // Queues a run of frames as one indivisible step: either every frame is in
-  // outQueue_ or none is. Enqueuing them one at a time would let the sender
-  // thread start transmitting a partially built group, which for a multi-chunk
-  // put means the peer applies a prefix of a transfer this side may still fail
-  // to finish staging.
+  // Queues a run of frames as one indivisible step: either every frame is
+  // queued or none is. Enqueuing them one at a time would let a sender thread
+  // start transmitting a partially built group, which for a multi-chunk put
+  // means the peer applies a prefix of a transfer this side may still fail to
+  // finish staging.
+  //
+  // The whole group therefore goes on ONE lane, so a single lock makes it
+  // atomic. Spreading a group across lanes would need every target lane's mutex
+  // held at once, and the room-waiting inside would then be a deadlock: a
+  // producer holding lanes 0..k-1 while waiting for room on lane k blocks the
+  // very senders that would free it.
   //
   // `mayBlock` behaves as in enqueueFrame, and is judged against the group's
   // total size, so a group larger than the queue cap still drains rather than
@@ -820,10 +930,25 @@ class TcpTransport : public Transport {
       void* stream = nullptr);
   // Fails every pending put/get/recv/queued-send; marks the conn broken.
   void failAllPending(const char* message);
-  // Closes the data connection, at most once for the lifetime of the transport.
-  // Both the reader thread and shutdown() refuse the connection, so this has
-  // two concurrent callers.
-  void closeDataConnOnce();
+  // Closes every lane's socket, each at most once for the lifetime of the
+  // transport. Both the reader threads and shutdown() refuse the connection, so
+  // this has concurrent callers. Any lane failing takes the whole transport
+  // down, so there is no partial-close path.
+  void closeLanesOnce();
+  // Marks every lane's outbound queue closed and wakes its waiters. Used by
+  // shutdown() and by a sender whose send failed, since one failed lane takes
+  // the whole transport down.
+  void closeAllLaneQueues();
+  // Establishes `laneCount` data sockets, either by accepting or by dialing,
+  // and fills lanes_ so that index i on one peer is index i on the other.
+  Status establishLanes(
+      bool listener,
+      const TcpTransportInfo& peer,
+      size_t laneCount,
+      std::chrono::seconds handshakeTimeout);
+  // Lane 0's socket, or nullptr before connect(). Phase 1 sends everything on
+  // lane 0 and reports its stats.
+  controller::Conn* primaryConn() const;
 
   [[maybe_unused]] int deviceId_{-1};
   EventBase* evb_{nullptr};
@@ -840,18 +965,69 @@ class TcpTransport : public Transport {
   std::string host_{"127.0.0.1"};
   uint16_t port_{0};
 
-  std::unique_ptr<controller::AsyncTcpServer> server_;
-  std::unique_ptr<controller::Conn> dataConn_;
+  /// One listener per entry in TcpTransportConfig::bindToDevices, or exactly
+  /// one unbound listener when that list is empty. servers_[d] owns the lanes
+  /// with index % servers_.size() == d.
+  std::vector<std::unique_ptr<controller::AsyncTcpServer>> servers_;
+
+  /// Endpoints advertised by bind(), parallel to servers_.
+  std::vector<TcpTransportInfo::Endpoint> localEndpoints_;
+
+  /// One data socket plus the reader thread that drains it. Phase 1 establishes
+  /// the configured lanes but sends everything on lane 0, so only
+  /// establishment, reader topology and teardown differ from the single-socket
+  /// path.
+  struct TcpLane {
+    std::unique_ptr<controller::Conn> conn;
+    std::thread reader;
+    std::thread sender;
+    // Gates this lane's close(). Conn::close() is a check-then-act on a bare
+    // fd, so two callers seeing it open both close it, and the second reaps a
+    // descriptor some unrelated thread may already have been handed.
+    std::atomic<bool> closed{false};
+
+    // This lane's outbound queue, drained by its own sender. Per-lane rather
+    // than shared so the senders never contend on one mutex -- a shared queue
+    // with N senders would serialise exactly the work striping exists to
+    // parallelise, and would also let one frame of a group be picked up while
+    // the rest are still being queued.
+    std::mutex mu;
+    std::condition_variable cv;
+    std::deque<TcpOutItem> queue;
+    size_t bytes{0};
+    bool outClosed{false};
+  };
+  // Indirected because TcpLane holds an atomic and a thread, so it is neither
+  // copyable nor movable and the vector must never have to relocate it. Written
+  // only by connect() under lifecycleMu_, and read by the reader threads, the
+  // sender thread and shutdown() -- all of which run only after connect() has
+  // installed every lane.
+  std::vector<std::unique_ptr<TcpLane>> lanes_;
 
   // get-path copy accounting, paired with Conn::RecvPhaseStats. Reader thread
   // only; relaxed because a torn read across a reset misattributes a sample and
   // nothing more.
   std::atomic<uint64_t> dstCopyNs_{0};
   std::atomic<uint64_t> dstCopyCount_{0};
+  std::atomic<uint64_t> receiveSlabAttempts_{0};
+  std::atomic<uint64_t> receiveSlabMisses_{0};
+  std::atomic<uint64_t> vectorReceiveCount_{0};
+  // put-path D2H staging accounting. `stagingNs_` covers the whole span
+  // stagePutWave() spends getting a wave's payload into pinned host memory --
+  // the memcpyAsync launches plus the synchronize that waits for them -- so
+  // stagingBytes_/stagingNs_ is the effective device-to-host bandwidth this
+  // path achieves, launch overhead included. That number is the ceiling on VRAM
+  // put: no amount of queueing, lane count or CPU saving can move a transfer
+  // faster than its bytes reach the host. Written only by caller threads inside
+  // stagePutWave; relaxed because a torn read misreports one sample.
+  std::atomic<uint64_t> stagingNs_{0};
+  std::atomic<uint64_t> stagingBytes_{0};
+  std::atomic<uint64_t> stagingWaves_{0};
+  std::atomic<uint64_t> stagingChunks_{0};
   std::shared_ptr<H2dPollState> h2dState_;
 
   // Serialises bind()/connect()/shutdown(), which together own server_,
-  // dataConn_, reader_ and sender_. Without it a shutdown() concurrent with an
+  // lanes_ and their threads. Without it a shutdown() concurrent with an
   // in-progress connect() races a unique_ptr and two std::thread objects, and
   // -- because connect() parks for the whole handshake -- can let connect()
   // install a live connection and both threads *after* shutdown() has already
@@ -862,14 +1038,13 @@ class TcpTransport : public Transport {
   // by config_.connTimeout) instead of interleaving with it. Deliberately NOT
   // taken by put/get/send/recv, which keep reading state_/connBroken_
   // atomically so a transfer is never serialised against a connect. Safe to
-  // hold across the reader_/sender_ joins in shutdown(): neither loop, nor
-  // failAllPending(), ever acquires it.
-  // Bounds on the outbound queue and the in-flight map, for work this side
-  // originates: outQueue_ holds whole payloads, and inflight_ one entry per
-  // outstanding chunk, so an application issuing put/get faster than the link
-  // drains would otherwise grow both without limit. Caller threads wait for
-  // room, which is real backpressure -- the application slows down and nothing
-  // breaks.
+  // hold across the per-lane reader/sender joins in shutdown(): neither loop,
+  // nor failAllPending(), ever acquires it. Bounds on the outbound queue and
+  // the in-flight map, for work this side originates: the lane queues hold
+  // whole payloads, and inflight_ one entry per outstanding chunk, so an
+  // application issuing put/get faster than the link drains would otherwise
+  // grow both without limit. Caller threads wait for room, which is real
+  // backpressure -- the application slows down and nothing breaks.
   //
   // kMaxOutQueueBytes deliberately does NOT apply to the reader thread's
   // replies. A get of N bytes legitimately requires up to N bytes of ReadReply
@@ -888,6 +1063,26 @@ class TcpTransport : public Transport {
   // at 64 MiB; a chunk (header + payload) stays safely under that, so large
   // put/get transfers are split across multiple frames.
   static constexpr size_t kMaxChunkSize = 4UL * 1024 * 1024;
+  // Floor for adaptive get chunking. Splitting below this loses more to
+  // per-frame cost than it gains from the extra lane: at a 4 MiB get, 512 KiB
+  // and 1 MiB chunks measured the same, 256 KiB gave up part of the gain, and
+  // 128 KiB was worse than not splitting at all.
+  static constexpr size_t kMinAdaptiveChunkSize = 512UL * 1024;
+
+  // Chunk size for one get request. A transfer no larger than kMaxChunkSize is
+  // a single frame, and a frame goes to a single lane, so it uses one lane
+  // however many are configured. Splitting it across lanes is worth up to 1.44x
+  // at 4 MiB.
+  //
+  // Only transfers that would otherwise be one frame are split. Larger ones
+  // already span lanes, and measured worse when chunked smaller -- past a few
+  // frames per-frame cost dominates and the largest chunk wins.
+  //
+  // Requester-side only, so it needs no protocol change: replies stay within
+  // kMaxChunkSize, which is all a peer enforces. The count in get() and the
+  // request loop must derive their chunk from this same function or the reply
+  // count will not match what the operation waits for.
+  static size_t adaptiveGetChunk(size_t len, size_t laneCount);
   // ~64 MiB of pinned host memory, sized against kMaxOutQueueBytes: the pool
   // and the out queue bound the same pipeline, so a full set of staged frames
   // fits in the queue rather than being refused by its cap.
@@ -899,13 +1094,26 @@ class TcpTransport : public Transport {
   // Chunks staged, and so queued, as one indivisible wave. Everything put()
   // promises about partial writes is bounded by this: a put of at most this
   // many chunks either reaches the queue whole or not at all.
+  // Half the usable pool, not all of it. A wave sized to the whole pool cannot
+  // begin staging until the previous one has drained completely, because its
+  // all-or-nothing acquire needs every slab back, so staging never overlaps
+  // transmit. Halving it keeps a wave's worth of slabs free for the next wave,
+  // which measured a large gain on GB-scale puts at no cost in pinned memory.
+  // The ratio is what matters, not the constant: this stays correct if the pool
+  // size changes.
   static constexpr size_t kMaxPutWaveChunks =
-      kStagingSlabCount - kStagingSlabsReservedForReader;
+      (kStagingSlabCount - kStagingSlabsReservedForReader) / 2;
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
   // exhaustion falls back to the reusable vector instead of blocking receive.
   static constexpr size_t kReceiveSlabCount = 2;
-  // Bytes currently queued in outQueue_. Guarded by outMu_.
-  size_t outBytes_{0};
+  // Per-lane queue cap, so the aggregate bound stays kMaxOutQueueBytes however
+  // many lanes are configured. An empty lane admits any frame regardless (see
+  // enqueueFrame), so dividing cannot make an oversized frame undrainable.
+  size_t laneCapBytes() const;
+  // Round-robins a lane for one frame. put/get frames each carry their own
+  // reqId/segId/offset, so the peer reassembles them without ordering help and
+  // any lane will do.
+  size_t pickLane();
 
   // Cap on bytes buffered in unmatchedSends_. The reader thread never stops
   // draining the socket -- that is what avoids the mutual-READ deadlock -- so
@@ -925,14 +1133,11 @@ class TcpTransport : public Transport {
   // first to finish rather than returning while teardown is still running.
   std::atomic<bool> shutdown_{false};
 
-  std::thread reader_;
-  std::thread sender_;
+  // Round-robin cursor for lane selection. Relaxed: an occasional duplicate or
+  // skipped index only perturbs balance, and nothing reads it for correctness.
+  std::atomic<uint64_t> nextLane_{0};
   std::atomic<bool> running_{false};
   std::atomic<bool> connBroken_{false};
-  // Gates closeDataConnOnce(). Conn::close() is a check-then-act on a bare fd,
-  // so two callers seeing it open both close it; the second reaps a descriptor
-  // some unrelated thread has since been handed.
-  std::atomic<bool> dataConnClosed_{false};
 
   // Guards the staging queue, which the reader thread appends to and the
   // EventBase drains.
@@ -964,14 +1169,6 @@ class TcpTransport : public Transport {
   // shared_ptr before std::atomic<shared_ptr> is available in the toolchain.
   std::shared_ptr<TcpPinnedSlabPool> receiveSlabPool_;
   bool receivePoolUnavailable_{false};
-
-  // Outbound frame queue drained by the sender thread. Decoupling all sends
-  // from the reader thread is what prevents a mutual-READ deadlock (two peers'
-  // readers both blocked mid-send while neither drains its recv).
-  std::mutex outMu_;
-  std::condition_variable outCv_;
-  std::deque<TcpOutItem> outQueue_;
-  bool outClosed_{false};
 
   std::mutex inflightMu_;
   std::unordered_map<uint64_t, TcpInflight> inflight_;

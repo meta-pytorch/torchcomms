@@ -35,6 +35,11 @@ struct UniflowAgentConfig {
   // a case's first choice (intra-node -> RDMA/TCP; inter-node -> TCP).
   std::optional<TransportType> intraNodeTransport;
   std::optional<TransportType> interNodeTransport;
+  // Forwarded to MultiTransportFactoryOptions::tcpTransportConfig -- socket
+  // options, lane count, and lane device binding for the TCP data path. Null
+  // keeps the transport's own defaults. See that field for why it is a pointer
+  // to a forward-declared type.
+  std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
 };
 
 class UniflowAgent {
