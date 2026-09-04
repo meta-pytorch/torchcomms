@@ -1148,6 +1148,10 @@ TcpConn<IOPolicy>::~TcpConn() {
 
 template <typename IOPolicy>
 void TcpConn<IOPolicy>::close() {
+  // Off-loop callers are fine for SyncIO and not for AsyncIO -- see the
+  // declaration in TcpController.h for why. Both current callers
+  // (TcpTransport::shutdown() on an application thread and the reader refusing
+  // a connection) hold SyncIO conns.
   if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
@@ -1335,6 +1339,8 @@ void AsyncAccept::acceptPendingConnections(
       continue;
     }
 
+    // SyncIO deliberately: see the AsyncAccept doc comment. The accept is
+    // async, the connection it yields is not.
     auto conn = TcpConn<SyncIO>::create(clientSock);
     if (!conn) {
       continue;
