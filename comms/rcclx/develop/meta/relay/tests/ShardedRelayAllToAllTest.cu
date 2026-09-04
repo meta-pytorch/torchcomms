@@ -2486,6 +2486,104 @@ TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, InterleavesWithFullPrecision) {
   freeBuffers(b);
 }
 
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the two-group
+  // cases above cannot reach the pipelined A=4 relay. Single-group at a size
+  // the depth selector pipelines -- asserted, so a resize cannot quietly turn
+  // this into a third test of the non-pipelined path.
+  //
+  // This case also exercises the FULL-PRECISION DIAGONAL mixed into a
+  // wire-format group: the diagonal is split into T+1 self P2P pairs, one per
+  // group, each keeping the caller's dtype while the relay and direct ops
+  // beside it carry wire bytes.
+  const size_t count = 8ULL * 1024 * 1024;
+  size_t counts[1] = {count};
+  ASSERT_EQ(
+      rcclx::relay::selectAllToAllRoute(
+          kActive, 8 - kActive, 1, counts, sizeof(float)),
+      rcclx::relay::AllToAllRoute::A4XorRelay);
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::kRelayShapeA4AllToAll, count, sizeof(float)),
+      1);
+
+  // Group 0's active ranks are {0, 1, 2, 3}; ranks 4-7 are its helpers.
+  const int myActiveIndex = this->globalRank % kActive;
+  const bool active = this->globalRank < kActive;
+  const size_t total = static_cast<size_t>(kActive) * count;
+
+  void* sendMem = nullptr;
+  void* recvMem = nullptr;
+  HIPCHECK_TEST(hipMalloc(&sendMem, total * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&recvMem, total * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(recvMem, 0xff, total * sizeof(float)));
+  if (active) {
+    std::vector<float> host(total);
+    for (int d = 0; d < kActive; d++) {
+      std::fill(
+          host.begin() + static_cast<ptrdiff_t>(d * count),
+          host.begin() + static_cast<ptrdiff_t>((d + 1) * count),
+          segValue(myActiveIndex, d));
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        sendMem, host.data(), total * sizeof(float), hipMemcpyHostToDevice));
+  } else {
+    HIPCHECK_TEST(hipMemset(sendMem, 0, total * sizeof(float)));
+  }
+
+  const void* sendPtrs[1] = {sendMem};
+  void* recvPtrs[1] = {recvMem};
+  barrierSyncOn(nullptr);
+
+  TwoGroupFourActiveRanks layout;
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(
+      callAllToAllCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclFloat32,
+          this->commFor(kActive),
+          this->stream,
+          layout.allActiveRanks,
+          kActive,
+          1,
+          /*lowPrecision=*/1),
+      ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (active) {
+    std::vector<float> got(total);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), recvMem, total * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int seg = 0; seg < kActive && reported < 8; seg++) {
+      const float want = segValue(seg, myActiveIndex);
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const float v = got[static_cast<size_t>(seg) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": segment " << seg
+                        << " element " << i << ": got " << v << ", want "
+                        << want
+                        << (seg == myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+
+  HIPCHECK_TEST(hipFree(sendMem));
+  HIPCHECK_TEST(hipFree(recvMem));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
