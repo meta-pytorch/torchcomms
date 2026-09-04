@@ -1495,6 +1495,161 @@ bool rsA2PipeLpPrepare(
   return true;
 }
 
+/**
+ * The wire buffers one flat (A>2) reduce-scatter call needs.
+ *
+ * Four regions, because this schedule has two independent landing areas -- the
+ * direct region's A-1 peer blocks and the offload region's H helper-reduced
+ * slices -- where the 2-active schedules have one.
+ *
+ * `sendShadow` covers the WHOLE send buffer, all A blocks, not just the A-1
+ * foreign ones. The own block is never read from it, so that wastes 1/A of the
+ * quantize; in exchange an offset into the shadow is the same offset it is in
+ * the caller's buffer, and every send site keeps the `k * rc + ...` shape it
+ * already has. A shadow that skipped one block in the middle would make each of
+ * those offsets a different expression under low precision.
+ *
+ * THE ALIGNMENT REQUIREMENT IS ONLY ONE BLOCK, unlike the flat allreduce. That
+ * schedule splits its direct region into A per-owner shards of pD/A, and pD
+ * being a whole number of wire blocks does not make pD/A one, so it needs
+ * counts aligned to A*128. Here the direct region is exchanged WHOLE -- each
+ * source sends the entire d1 and d2 span of its foreign block, no per-owner
+ * subdivision -- so cs being chunk-aligned makes directSz, d1 and d2 aligned
+ * whenever the count is.
+ *
+ * Carved unconditionally at the worst case over groups, for the reasons
+ * RsA2LpPlan documents: a byte-identical partition on every rank, and a
+ * capacity check that is a pure function of the counts.
+ */
+struct RsFlatLpPlan {
+  char* sendShadow{nullptr}; // wire(A * recvCount): the whole send buffer
+  char* directRecv{nullptr}; // wire((A-1) * directSz): the peer blocks
+  char* offloadRecv{nullptr}; // wire(H * cs): reduced slices, mirroring output
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{}; // A*(A-1) slices of wire(cs)
+  bool valid{false};
+};
+
+size_t rsFlatLpRequiredBytes(
+    const size_t* recvCounts,
+    const size_t* directSizes,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(recvCounts, nGroups);
+  const size_t maxDirect = rcclx::relay::relayMaxCount(directSizes, nGroups);
+  const size_t maxCs = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  const size_t Hn = static_cast<size_t>(numHelpers);
+
+  size_t total = rsLpAlign(rcclx::relay::lpWireBytes(A * maxCount)) +
+      rsLpAlign(rcclx::relay::lpWireBytes((A - 1) * maxDirect)) +
+      rsLpAlign(rcclx::relay::lpWireBytes(Hn * maxCs));
+  total += static_cast<size_t>(nGroups) *
+      rsLpAlign(rcclx::relay::lpWireBytes(A * (A - 1) * maxCs));
+  return total;
+}
+
+RsFlatLpPlan rsFlatLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    const size_t* recvCounts,
+    const size_t* directSizes,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(recvCounts, nGroups);
+  const size_t maxDirect = rcclx::relay::relayMaxCount(directSizes, nGroups);
+  const size_t maxCs = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  const size_t Hn = static_cast<size_t>(numHelpers);
+
+  RsFlatLpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(A * maxCount));
+  p.directRecv = carver.take(rcclx::relay::lpWireBytes((A - 1) * maxDirect));
+  p.offloadRecv = carver.take(rcclx::relay::lpWireBytes(Hn * maxCs));
+  for (int g = 0; g < nGroups; g++) {
+    p.helper[g] = carver.take(rcclx::relay::lpWireBytes(A * (A - 1) * maxCs));
+  }
+  p.valid = carver.ok();
+  return p;
+}
+
+/**
+ * The offload has to be ON for low precision to mean anything here.
+ *
+ * With cs == 0 this schedule degenerates to a single-group pure-direct
+ * all-to-all reduce-scatter with the helpers idle, which is the regime the
+ * one-shot kernel and the route gate already claim -- the dispatcher's
+ * relayRouteSelected excludes it. Checked again because the offload also
+ * carries the alignment argument: d1 = directSz - cs is a whole number of wire
+ * blocks only when cs is. Pure function of the counts, so all ranks decline
+ * together.
+ */
+bool rsFlatLpGeometryOk(
+    const size_t* recvCounts,
+    const size_t* chunkSizes,
+    int nGroups) {
+  for (int g = 0; g < nGroups; g++) {
+    if (recvCounts[g] > 0 && chunkSizes[g] == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool rsFlatLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const size_t* recvCounts,
+    const size_t* directSizes,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers,
+    RsFlatLpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  if (!rsFlatLpGeometryOk(recvCounts, chunkSizes, nGroups)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Alignment);
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!rsLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (rsFlatLpRequiredBytes(
+          recvCounts,
+          directSizes,
+          chunkSizes,
+          nGroups,
+          nActiveRanks,
+          numHelpers) > lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = rsFlatLpCarve(
+      lease,
+      recvCounts,
+      directSizes,
+      chunkSizes,
+      nGroups,
+      nActiveRanks,
+      numHelpers);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
 } // namespace
 
 /**
@@ -2435,7 +2590,8 @@ static ncclResult_t shardedRelayReduceScatterFlat(
     int numHelpers,
     int nActiveRanksPerGroup,
     int nGroups,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const int A = nActiveRanksPerGroup;
   const int H = numHelpers;
 
@@ -2489,6 +2645,52 @@ static ncclResult_t shardedRelayReduceScatterFlat(
     d1Arr[g] = (cs > 0) ? (directArr[g] - cs) : directArr[g];
   }
 
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Reached by every rank whenever the dispatcher's size-only gate said yes,
+  // helpers included, and every way it can decline is agreed across the
+  // communicator, so all ranks run the same wire format or none do.
+  RsFlatLpPlan lpPlan{};
+  const bool lp = rsFlatLpPrepare(
+      wantLp,
+      comm,
+      stream,
+      recvCounts,
+      directArr,
+      csArr,
+      nGroups,
+      A,
+      H,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the whole send buffer, before the first ncclGroupStart.
+  // Every send below reads a foreign block of it and none is produced mid-call,
+  // so one launch covers group 1's direct part, group 2's direct part and the
+  // offload scatter alike. The own block is included so that a shadow offset is
+  // the same number as the caller-buffer offset; see RsFlatLpPlan.
+  if (lp && myActiveGroup >= 0 && recvCounts[myActiveGroup] > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[myActiveGroup],
+        static_cast<size_t>(A) * recvCounts[myActiveGroup],
+        stream);
+  }
+
+  // Where a boundary-crossing send reads from, and where each of the two
+  // landing areas puts its arrivals. Offsets stay in ELEMENTS of the caller's
+  // dtype on both paths, which is what keeps every call site unchanged in
+  // shape.
+  auto sendFrom = [&](int g, size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[g]) + offsetElems * elementSize;
+  };
+
   // Active-rank scratch. dScratch holds the A-1 peer contributions to my direct
   // region, one contiguous directSz block each, so the whole direct region
   // reduces in a single multi-input pass. oScratch mirrors my output's offload
@@ -2505,23 +2707,44 @@ static ncclResult_t shardedRelayReduceScatterFlat(
         (static_cast<const void*>(recvBuffs[myActiveGroup]) ==
          static_cast<const void*>(ownBlock));
 
-    dScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS,
-        static_cast<size_t>(A - 1) * directArr[myActiveGroup] * elementSize,
-        stream);
-    if (dScratch == nullptr) {
-      return ncclInternalError;
-    }
-    if (csArr[myActiveGroup] > 0) {
-      oScratch = ScratchBufferCache::getInstance().get(
-          myActiveGroup,
-          static_cast<size_t>(H) * csArr[myActiveGroup] * elementSize,
+    // Under low precision the arrivals are wire bytes, so lpPlan.directRecv and
+    // lpPlan.offloadRecv stage them -- laid out to mirror these same two
+    // orderings -- and the owner reduce below reads them from there.
+    if (!lp) {
+      dScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS,
+          static_cast<size_t>(A - 1) * directArr[myActiveGroup] * elementSize,
           stream);
-      if (oScratch == nullptr) {
+      if (dScratch == nullptr) {
         return ncclInternalError;
+      }
+      if (csArr[myActiveGroup] > 0) {
+        oScratch = ScratchBufferCache::getInstance().get(
+            myActiveGroup,
+            static_cast<size_t>(H) * csArr[myActiveGroup] * elementSize,
+            stream);
+        if (oScratch == nullptr) {
+          return ncclInternalError;
+        }
       }
     }
   }
+
+  // Destination for a received peer block (offset within the A-1 packed blocks)
+  // and for a received reduced offload slice (offset within my offload region).
+  auto directAt = [&](size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.directRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(dScratch) + offsetElems * elementSize;
+  };
+
+  auto offloadAt = [&](size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.offloadRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(oScratch) + offsetElems * elementSize;
+  };
 
   // Helper staging is kernel-owned scratch: callers pass a placeholder buffer
   // for groups where they are a helper. Each helper group holds A*(A-1) offload
@@ -2530,6 +2753,13 @@ static ncclResult_t shardedRelayReduceScatterFlat(
   for (int g = 0; g < nGroups; g++) {
     const ShardedRelayRankConfig& cfg = configs[g];
     if (!cfg.isActiveRank && recvCounts[g] > 0 && csArr[g] > 0) {
+      if (lp) {
+        // Already carved, and in wire bytes. This helper DOES reduce, so unlike
+        // the 2-active schedules' it reads and writes the wire format -- but
+        // still never learns the caller's dtype.
+        helperScratch[g] = lpPlan.helper[g];
+        continue;
+      }
       size_t needBytes =
           static_cast<size_t>(A) * (A - 1) * csArr[g] * elementSize;
       helperScratch[g] = ScratchBufferCache::getInstance().get(
@@ -2555,7 +2785,6 @@ static ncclResult_t shardedRelayReduceScatterFlat(
     size_t d1 = d1Arr[g];
 
     if (cfg.isActiveRank) {
-      const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
       int m = cfg.myActiveIndex;
 
       if (d1 > 0) {
@@ -2563,9 +2792,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
           if (k == m)
             continue;
           NCCLCHECK(ncclSend(
-              sendbuff + static_cast<size_t>(k) * rc * elementSize,
-              d1,
-              datatype,
+              sendFrom(g, static_cast<size_t>(k) * rc),
+              wire.count(d1),
+              wire.dtype,
               cfg.activeRanks[k],
               comm,
               stream));
@@ -2575,10 +2804,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
             continue;
           int p = (s < m) ? s : s - 1;
           NCCLCHECK(ncclRecv(
-              static_cast<char*>(dScratch) +
-                  static_cast<size_t>(p) * directSz * elementSize,
-              d1,
-              datatype,
+              directAt(static_cast<size_t>(p) * directSz),
+              wire.count(d1),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -2591,12 +2819,12 @@ static ncclResult_t shardedRelayReduceScatterFlat(
           if (j == m)
             continue;
           NCCLCHECK(ncclSend(
-              sendbuff +
-                  (static_cast<size_t>(j) * rc + directSz +
-                   static_cast<size_t>(h) * cs) *
-                      elementSize,
-              cs,
-              datatype,
+              sendFrom(
+                  g,
+                  static_cast<size_t>(j) * rc + directSz +
+                      static_cast<size_t>(h) * cs),
+              wire.count(cs),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -2612,9 +2840,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
           int t = (s < j) ? s : s - 1;
           size_t slot = static_cast<size_t>(j) * (A - 1) + t;
           NCCLCHECK(ncclRecv(
-              hbuff + slot * cs * elementSize,
-              cs,
-              datatype,
+              hbuff + wire.bytes(slot * cs),
+              wire.count(cs),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -2636,7 +2864,10 @@ static ncclResult_t shardedRelayReduceScatterFlat(
   // HELPER REDUCE: sum each owner's A-1 contributions in place
   // =========================================================================
   // No divisor here: the owner applies the AVG divisor once when it folds in
-  // its own contribution.
+  // its own contribution. That is the SAME rule as the flat allreduce's offload
+  // region and the OPPOSITE of what the 2-active reduce-scatter does -- what
+  // decides it is whether the region has an active-side closing reduce to defer
+  // the divisor to, and this one does. See sharded_relay_lp_kernels.h.
   if (anyOffload) {
     for (int g = 0; g < nGroups; g++) {
       if (recvCounts[g] == 0 || csArr[g] == 0 || configs[g].isActiveRank)
@@ -2644,7 +2875,15 @@ static ncclResult_t shardedRelayReduceScatterFlat(
       char* hbuff = static_cast<char*>(helperScratch[g]);
       size_t cs = csArr[g];
       for (int j = 0; j < A; j++) {
-        char* dst = hbuff + static_cast<size_t>(j) * (A - 1) * cs * elementSize;
+        char* dst = hbuff + wire.bytes(static_cast<size_t>(j) * (A - 1) * cs);
+        if (lp) {
+          // Wire in, wire out, summed in fp32 and requantized against a fresh
+          // absmax. The A-1 contributions are contiguous from dst at
+          // wire.bytes(cs) stride, which is exactly how group 1 laid them out.
+          launchLpReduceRequantizeKernel(
+              dst, dst, A - 1, cs, /*divisor=*/1, stream);
+          continue;
+        }
         DISPATCH_MULTI_REDUCE(
             datatype, dst, dst + cs * elementSize, A - 2, cs, 1, stream);
       }
@@ -2668,7 +2907,6 @@ static ncclResult_t shardedRelayReduceScatterFlat(
       size_t d2 = directSz - d1;
 
       if (cfg.isActiveRank) {
-        const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
         int m = cfg.myActiveIndex;
 
         if (d2 > 0) {
@@ -2676,9 +2914,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
             if (k == m)
               continue;
             NCCLCHECK(ncclSend(
-                sendbuff + (static_cast<size_t>(k) * rc + d1) * elementSize,
-                d2,
-                datatype,
+                sendFrom(g, static_cast<size_t>(k) * rc + d1),
+                wire.count(d2),
+                wire.dtype,
                 cfg.activeRanks[k],
                 comm,
                 stream));
@@ -2688,10 +2926,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
               continue;
             int p = (s < m) ? s : s - 1;
             NCCLCHECK(ncclRecv(
-                static_cast<char*>(dScratch) +
-                    (static_cast<size_t>(p) * directSz + d1) * elementSize,
-                d2,
-                datatype,
+                directAt(static_cast<size_t>(p) * directSz + d1),
+                wire.count(d2),
+                wire.dtype,
                 cfg.activeRanks[s],
                 comm,
                 stream));
@@ -2701,10 +2938,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
         // Reduced offload slices land contiguously, mirroring my output.
         for (int h = 0; h < cfg.numHelpers; h++) {
           NCCLCHECK(ncclRecv(
-              static_cast<char*>(oScratch) +
-                  static_cast<size_t>(h) * cs * elementSize,
-              cs,
-              datatype,
+              offloadAt(static_cast<size_t>(h) * cs),
+              wire.count(cs),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -2714,9 +2950,9 @@ static ncclResult_t shardedRelayReduceScatterFlat(
         const char* hbuff = static_cast<const char*>(helperScratch[g]);
         for (int j = 0; j < A; j++) {
           NCCLCHECK(ncclSend(
-              hbuff + static_cast<size_t>(j) * (A - 1) * cs * elementSize,
-              cs,
-              datatype,
+              hbuff + wire.bytes(static_cast<size_t>(j) * (A - 1) * cs),
+              wire.count(cs),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -2739,7 +2975,32 @@ static ncclResult_t shardedRelayReduceScatterFlat(
         static_cast<size_t>(cfg.myActiveIndex) * rc * elementSize;
 
     // Direct region: own + the A-1 peer blocks, one fused multi-input pass.
-    if (A == 4 && directSz > 0 && !isInPlace) {
+    if (lp) {
+      // The divisor lands here for BOTH regions: this is the active-side
+      // closing reduce, and the helper deliberately returned a plain sum.
+      if (directSz > 0) {
+        if (isInPlace) {
+          DISPATCH_LP_MULTI_REDUCE(
+              datatype,
+              out,
+              lpPlan.directRecv,
+              A - 1,
+              directSz,
+              reductionDivisor,
+              stream);
+        } else {
+          DISPATCH_LP_SEEDED_MULTI_REDUCE(
+              datatype,
+              out,
+              ownBlock,
+              lpPlan.directRecv,
+              A - 1,
+              directSz,
+              reductionDivisor,
+              stream);
+        }
+      }
+    } else if (A == 4 && directSz > 0 && !isInPlace) {
       DISPATCH_SEEDED_MULTI_REDUCE(
           datatype,
           out,
@@ -2767,7 +3028,30 @@ static ncclResult_t shardedRelayReduceScatterFlat(
     if (cs > 0) {
       char* oOut = out + directSz * elementSize;
       size_t oCount = rc - directSz;
-      if (isInPlace) {
+      if (lp) {
+        // ONE wire contribution: the H slices are contiguous and already mirror
+        // the output, so wire(H * cs) is exactly this span.
+        if (isInPlace) {
+          DISPATCH_LP_MULTI_REDUCE(
+              datatype,
+              oOut,
+              lpPlan.offloadRecv,
+              1,
+              oCount,
+              reductionDivisor,
+              stream);
+        } else {
+          DISPATCH_LP_SEEDED_MULTI_REDUCE(
+              datatype,
+              oOut,
+              ownBlock + directSz * elementSize,
+              lpPlan.offloadRecv,
+              1,
+              oCount,
+              reductionDivisor,
+              stream);
+        }
+      } else if (isInPlace) {
         if (reductionDivisor > 1) {
           DISPATCH_INCREMENTAL_ADD_AND_SCALE(
               datatype, oOut, oScratch, oCount, reductionDivisor, stream);
@@ -3285,9 +3569,10 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
   // the offload enabled can additionally be software-pipelined so the scatter
   // and the reduced return share each cross link's two directions.
   //
-  // Neither flat schedule carries the wire format yet, so low precision is
-  // declined here -- identically on every rank, since the condition is
-  // nActiveRanksPerGroup.
+  // The alignment requirement is ONE wire block, unlike the flat allreduce's
+  // A*128: this schedule exchanges its direct region whole rather than
+  // splitting it into A per-owner shards, so there is no pD/A to keep
+  // block-aligned. See RsFlatLpPlan.
   const bool offload =
       rcclx::relay::selectReduceScatterRoute(
           nActiveRanksPerGroup, numHelpers, nGroups, recvCounts, elementSize) ==
@@ -3299,6 +3584,23 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
             rcclx::relay::relayMaxCount(recvCounts, nGroups),
             elementSize)
       : 1;
+
+  // Only the non-pipelined flat schedule carries the wire format so far, so a
+  // pipelined call is reported to the gate as "no LP-capable route selected"
+  // and lands in the Route decline counter rather than declining silently. Safe
+  // because the tile count is a pure function of the counts.
+  bool wantLpFlat = false;
+  if (lowPrecision != 0) {
+    wantLpFlat = rcclx::relay::lpEligible(reduceScatterLpGate(
+        datatype,
+        recvCounts,
+        nGroups,
+        nActiveRanksPerGroup,
+        elementSize,
+        offload && nTiles == 1,
+        rcclx::relay::kLpBlockElems));
+  }
+
   if (nTiles > 1) {
     return shardedRelayReduceScatterFlatPipelined(
         sendBuffs,
@@ -3328,5 +3630,6 @@ HOT ncclResult_t ncclShardedRelayMultiGroupReduceScatterImpl(
       numHelpers,
       nActiveRanksPerGroup,
       nGroups,
-      elementSize);
+      elementSize,
+      wantLpFlat);
 }
