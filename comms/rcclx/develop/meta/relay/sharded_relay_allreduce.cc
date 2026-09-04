@@ -25,7 +25,22 @@
 // GPU memory access alignment in elements for chunk size rounding.
 // Distinct from the CPU CACHE_LINE_SIZE (64 bytes) defined in comm.h
 // which is used for struct padding.
-static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
+//
+// SHARED with the other three collectives on purpose. This used to be a local
+// 128 and that was a BUG: when the shared constant was raised to 512 to make
+// every chunk boundary a whole number of FOUR wire blocks -- the condition for
+// a low-precision region offset (132 bytes per block) to be 16-byte aligned --
+// allreduce kept its own literal and silently did not get the fix. The
+// pipelined 2-active schedule then put its tile offsets on 4-byte-aligned wire
+// offsets at every size where the tile count reaches 4, which is 67.5 MB and
+// up.
+static constexpr size_t CHUNK_ALIGN_ELEMENTS =
+    rcclx::relay::kRelayChunkAlignElements;
+static_assert(
+    CHUNK_ALIGN_ELEMENTS % rcclx::relay::kLpBlockElems == 0 &&
+        (CHUNK_ALIGN_ELEMENTS / rcclx::relay::kLpBlockElems) % 4 == 0,
+    "every chunk boundary must be a multiple of 4 wire blocks so its offset in "
+    "wire bytes (132 per block) is 16-byte aligned");
 
 // The helpers below are duplicated, by design, across every sharded-relay TU
 // (reduce-scatter, all-gather, all-to-all, hierarchical all-to-all). Each of
