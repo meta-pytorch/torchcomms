@@ -4,12 +4,14 @@ set(UNIFLOW_CUDA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.cpp
 )
 
 set(UNIFLOW_CUDA_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaApi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapter.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CudaTopologyDiscovery.h
 )
 
 add_library(uniflow_cuda OBJECT

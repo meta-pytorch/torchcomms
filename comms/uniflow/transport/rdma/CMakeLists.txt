@@ -1,8 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 set(UNIFLOW_RDMA_TRANSPORT_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/CopyEngine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaTransport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaRegistrationHandle.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/RdmaResources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RdmaSlabPool.cpp
 )
 
@@ -23,4 +25,4 @@ target_include_directories(uniflow_rdma_transport PUBLIC
     ${ROOT}
 )
 
-target_link_libraries(uniflow_rdma_transport PUBLIC uniflow_ibv_api)
+target_link_libraries(uniflow_rdma_transport PUBLIC uniflow_ibv)

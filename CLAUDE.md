@@ -67,6 +67,7 @@ Backend selection is controlled by environment variables (ON/OFF or 1/0) set bef
 | `USE_RCCLX` | OFF | Meta's extended RCCL |
 | `USE_XCCL` | OFF | Intel XPU |
 | `USE_TRANSPORT` | ON (OFF on ROCm) | RDMA transport layer |
+| `USE_UNIFLOW` | ON (OFF on ROCm) | UniFlow point-to-point transfers (`uniflow._core` extension) |
 | `USE_SYSTEM_LIBS` | unset | When set, uses conda/system libs instead of building from source |
 
 ### NCCL-only (fastest build — skips NCCLX third-party dep compilation)
