@@ -33,6 +33,11 @@ static std::unordered_map<std::string, std::string>& nccl_config() {
   return config;
 };
 
+bool isCvarExplicitlySet(std::string_view name) {
+  const std::string key{name};
+  return getenv(key.c_str()) != nullptr || nccl_config().contains(key);
+}
+
 static void initEnvSet(std::unordered_set<std::string>& env);
 static void readCvarEnv();
 
