@@ -9,8 +9,6 @@
 #include <hip/hip_runtime.h>
 
 #include "comms/prims/transport/amd/HipHostCompat.h"
-#else
-#include <cuda_runtime.h>
 #endif
 #include <glog/logging.h>
 
@@ -21,6 +19,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <fmt/core.h>
@@ -40,6 +39,7 @@
 #include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 namespace comms::prims {
 
@@ -795,24 +795,33 @@ void MultipeerIbgdaTransport::allocateResources() {
       ((sinkBufferSize_ + granularity - 1) / granularity) * granularity;
 
   CUmemGenericAllocationHandle handle;
-  cuErr = pfn_cuMemCreate(&handle, sinkBufferAllocSize_, &prop, 0);
+  cuErr = meta::comms::memtrace::mcclCuMemCreate(
+      pfn_cuMemCreate,
+      &handle,
+      sinkBufferAllocSize_,
+      &prop,
+      0,
+      {
+          .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+              kIbgdaAtomicReturnSink,
+          .logicalBytes = sinkBufferSize_,
+      });
   if (cuErr != CUDA_SUCCESS) {
     throw std::runtime_error("Failed to create sink buffer allocation");
   }
-  sinkBufferHandle_ = static_cast<uint64_t>(handle);
 
   CUdeviceptr devPtr = 0;
   cuErr =
       pfn_cuMemAddressReserve(&devPtr, sinkBufferAllocSize_, granularity, 0, 0);
   if (cuErr != CUDA_SUCCESS) {
-    pfn_cuMemRelease(handle);
+    meta::comms::memtrace::mcclCuMemRelease(pfn_cuMemRelease, handle);
     throw std::runtime_error("Failed to reserve address for sink buffer");
   }
 
   cuErr = pfn_cuMemMap(devPtr, sinkBufferAllocSize_, 0, handle, 0);
   if (cuErr != CUDA_SUCCESS) {
     pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
-    pfn_cuMemRelease(handle);
+    meta::comms::memtrace::mcclCuMemRelease(pfn_cuMemRelease, handle);
     throw std::runtime_error("Failed to map sink buffer");
   }
 
@@ -824,11 +833,13 @@ void MultipeerIbgdaTransport::allocateResources() {
   if (cuErr != CUDA_SUCCESS) {
     pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
     pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
-    pfn_cuMemRelease(handle);
+    meta::comms::memtrace::mcclCuMemRelease(pfn_cuMemRelease, handle);
     throw std::runtime_error("Failed to set access for sink buffer");
   }
 
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): CUdeviceptr is an integer type
   sinkBuffer_ = reinterpret_cast<void*>(devPtr);
+  sinkBufferHandle_ = static_cast<uint64_t>(handle);
 
   cudaError_t cudaErr = cudaMemset(sinkBuffer_, 0, sinkBufferSize_);
   if (cudaErr != cudaSuccess) {
@@ -1332,14 +1343,14 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
 
-  // Free all GPU memory (transport objects + QP pointer arrays)
+  // Free transport metadata allocations.
   for (auto* ptr : gpuAllocations_) {
-    if (ptr != nullptr) {
-      cudaError_t err = cudaFree(ptr);
-      if (err != cudaSuccess) {
-        LOG(WARNING) << "Failed to free GPU memory: "
-                     << cudaGetErrorString(err);
-      }
+    if (ptr == nullptr) {
+      continue;
+    }
+    const auto err = meta::comms::memtrace::mcclCudaFree(ptr);
+    if (err != cudaSuccess) {
+      LOG(WARNING) << "Failed to free GPU memory: " << cudaGetErrorString(err);
     }
   }
   gpuAllocations_.clear();
@@ -1401,20 +1412,45 @@ void MultipeerIbgdaTransport::cleanup() {
     }
   }
 
-  // Free sink buffer. NVIDIA: cuMem-allocated with gpuDirectRDMACapable.
-  // AMD: hipHostMalloc'd. Shared across NICs — only one allocation,
-  // freed after all per-NIC MRs.
-  if (sinkBuffer_ != nullptr) {
+  // Shared across NICs, so free only after all per-NIC MRs.
+  if (sinkBuffer_ != nullptr || sinkBufferHandle_ != 0) {
 #ifdef __HIP_PLATFORM_AMD__
-    (void)hipHostFree(sinkBuffer_);
+    if (sinkBuffer_ != nullptr) {
+      const hipError_t err = hipHostFree(sinkBuffer_);
+      if (err != hipSuccess) {
+        LOG(WARNING) << "Failed to free AMD sink buffer: "
+                     << hipGetErrorString(err);
+      } else {
+        sinkBuffer_ = nullptr;
+      }
+    }
 #else
-    auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
-    pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
-    pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
-    pfn_cuMemRelease(
-        static_cast<CUmemGenericAllocationHandle>(sinkBufferHandle_));
+    if (sinkBuffer_ != nullptr) {
+      const auto devPtr = reinterpret_cast<CUdeviceptr>(sinkBuffer_);
+      const CUresult unmapErr = pfn_cuMemUnmap(devPtr, sinkBufferAllocSize_);
+      if (unmapErr != CUDA_SUCCESS) {
+        LOG(WARNING) << "Failed to unmap sink buffer allocation: " << unmapErr;
+      } else {
+        (void)pfn_cuMemAddressFree(devPtr, sinkBufferAllocSize_);
+        sinkBuffer_ = nullptr;
+      }
+    }
+    if (sinkBuffer_ == nullptr && sinkBufferHandle_ != 0) {
+      const CUresult releaseErr = meta::comms::memtrace::mcclCuMemRelease(
+          pfn_cuMemRelease,
+          static_cast<CUmemGenericAllocationHandle>(sinkBufferHandle_));
+      if (releaseErr != CUDA_SUCCESS) {
+        LOG(WARNING) << "Failed to release sink buffer allocation: "
+                     << releaseErr;
+      } else {
+        sinkBufferHandle_ = 0;
+      }
+    }
 #endif
-    sinkBuffer_ = nullptr;
+    if (sinkBuffer_ == nullptr && sinkBufferHandle_ == 0) {
+      sinkBufferSize_ = 0;
+      sinkBufferAllocSize_ = 0;
+    }
   }
 
   // Destroy per-NIC AH attributes
@@ -1456,7 +1492,15 @@ void MultipeerIbgdaTransport::exchange() {
   const int numPeers = nRanks_ - 1;
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
   const std::size_t totalBytes = numPeers * peerTransportSize_;
-  cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
+  gpuAllocations_.reserve(gpuAllocations_.size() + 1);
+  cudaError_t err = meta::comms::memtrace::mcclCudaMalloc(
+      &peerTransportsGpu_,
+      totalBytes,
+      {
+          .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+              kIbgdaPeerTransportArray,
+          .logicalBytes = totalBytes,
+      });
   if (err != cudaSuccess) {
     throw std::runtime_error(
         "Failed to allocate on-demand device transport array: " +

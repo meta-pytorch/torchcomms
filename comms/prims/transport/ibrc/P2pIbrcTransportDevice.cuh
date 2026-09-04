@@ -3,7 +3,7 @@
 #pragma once
 
 #ifdef __HIP_PLATFORM_AMD__
-#include "HipDeviceCompat.h"
+#include "HipDeviceCompat.h" // @manual
 #else
 #include <cuda/atomic>
 #endif

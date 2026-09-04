@@ -4,12 +4,23 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#include <cstddef>
+#include <memory>
+
+namespace meta::comms::memtrace {
+struct GpuMemoryAllocationMetadata;
+} // namespace meta::comms::memtrace
+
 namespace meta::comms {
 
 // RAII helper for device buffer pointers
 class DeviceBuffer {
  public:
   explicit DeviceBuffer(std::size_t size);
+  DeviceBuffer(
+      std::size_t size,
+      const memtrace::GpuMemoryAllocationMetadata& metadata);
   ~DeviceBuffer();
 
   // delete copy constructor
@@ -23,6 +34,8 @@ class DeviceBuffer {
   void* get() const;
 
  private:
+  void reset() noexcept;
+
   void* ptr_{nullptr};
   std::size_t size_{0};
 };

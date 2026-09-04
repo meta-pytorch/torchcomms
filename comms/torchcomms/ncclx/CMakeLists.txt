@@ -100,23 +100,26 @@ else()
     message(STATUS "ENABLE_PRIMS not set, building without prims support")
 endif()
 
-set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
+set(TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES "")
 if(USE_SYSTEM_LIBS)
-    # CudaRAII.cc calls into CommsSpdlogLogger, whose out-of-line definitions
-    # live in these two. libnccl.so cannot supply them: it is built
+    # CudaRAII.cc calls out-of-line logger and GPU-memory-accounting helpers.
+    # libnccl.so cannot supply them: it is built
     # -fvisibility=hidden behind version.script, which exports only the nccl*
     # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
     # importing the extension fails. The static path gets the definitions from
     # the libnccl_static.a archive instead.
     #
-    # These two are the whole out-of-line closure: SpdlogLogger.cc needs
-    # formatCommsLogMessage() from CommsLogFormatter.cc. LogTypes.h contributes
-    # only types on this path; none of its out-of-line accessors are referenced.
-    # RateLimit.h, the other SpdlogLogger.h dependency, is header-only.
+    # These sources are the whole out-of-line closure: SpdlogLogger.cc needs
+    # formatCommsLogMessage() from CommsLogFormatter.cc. McclCudaMemory.cc uses
+    # the subsystem mask from LogTypes.cc and delegates accounting to
+    # GpuMemoryTracker.cc. RateLimit.h is header-only.
     find_package(spdlog CONFIG REQUIRED)
-    list(APPEND TORCHCOMMS_NCCLX_LOGGER_SOURCES
+    list(APPEND TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES
         comms/utils/logger/SpdlogLogger.cc
         comms/utils/logger/CommsLogFormatter.cc
+        comms/utils/logger/LogTypes.cc
+        comms/utils/memtrace/McclCudaMemory.cc
+        comms/utils/memtrace/GpuMemoryTracker.cc
     )
 endif()
 
@@ -127,7 +130,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
-    ${TORCHCOMMS_NCCLX_LOGGER_SOURCES}
+    ${TORCHCOMMS_NCCLX_LOCAL_SUPPORT_SOURCES}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""

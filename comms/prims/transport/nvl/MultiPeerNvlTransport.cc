@@ -7,6 +7,7 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "comms/prims/transport/Transport.cuh"
@@ -21,6 +22,7 @@
 #include "comms/utils/CudaRAII.h"
 #endif
 #include "comms/utils/checks.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 namespace comms::prims {
 
@@ -139,7 +141,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       perPeerSignalBufferSize_ * (nRanks_ - 1);
 
   signalBufferHandler_ = std::make_unique<GpuMemHandler>(
-      bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode_);
+      bootstrap_,
+      myRank_,
+      nRanks_,
+      totalSignalBufferSize,
+      GpuMemHandler::Options{
+          .mode = memSharingMode_,
+          .gpuMemoryResourceType =
+              meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pSignal,
+      });
 
   // Initialize signal state buffer to 0 for all ranks
   auto signalPtr =
@@ -164,7 +174,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     const std::size_t totalChannelStateSize =
         perPeerChannelStateSize_ * (nRanks_ - 1);
     channelStateHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalChannelStateSize, memSharingMode_);
+        bootstrap_,
+        myRank_,
+        nRanks_,
+        totalChannelStateSize,
+        GpuMemHandler::Options{
+            .mode = memSharingMode_,
+            .gpuMemoryResourceType = meta::comms::memtrace::
+                GpuMemoryResourceType::kNvlP2pChannelState,
+        });
     auto* channelStatePtr = channelStateHandler_->getLocalDeviceMemPtr();
     CUDA_CHECK(cudaMemset(channelStatePtr, 0, totalChannelStateSize));
 
@@ -180,13 +198,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     // while leaving the pointer null. buildP2pTransportDevice leaves the device
     // progress pointers null, and the progress entry points trap on them.
     if (progressDirectionStride_ > 0) {
-      void* progressPtr = nullptr;
-      CUDA_CHECK(cudaMalloc(&progressPtr, progressDirectionStride_ * 2));
-      if (progressPtr == nullptr) {
-        throw std::runtime_error("failed to allocate NVL progress state");
-      }
-      progressBase_.reset(progressPtr);
-      CUDA_CHECK(cudaMemset(progressPtr, 0, progressDirectionStride_ * 2));
+      const std::size_t progressBytes = progressDirectionStride_ * 2;
+      progressBase_ = std::make_unique<meta::comms::DeviceBuffer>(
+          progressBytes,
+          meta::comms::memtrace::GpuMemoryAllocationMetadata{
+              .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                  kNvlP2pChannelProgress,
+              .logicalBytes = progressBytes,
+          });
+      CUDA_CHECK(cudaMemset(progressBase_->get(), 0, progressBytes));
     }
   }
 
@@ -196,7 +216,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
         getBarrierBufferSize(static_cast<int>(config_.p2pBarrierCount));
     std::size_t totalBarrierSize = perPeerBarrierBufferSize_ * (nRanks_ - 1);
     barrierBufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalBarrierSize, memSharingMode_);
+        bootstrap_,
+        myRank_,
+        nRanks_,
+        totalBarrierSize,
+        GpuMemHandler::Options{
+            .mode = memSharingMode_,
+            .gpuMemoryResourceType =
+                meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pBarrier,
+        });
 
     // Zero-initialize barrier counters
     auto* barrierPtr = barrierBufferHandler_->getLocalDeviceMemPtr();
@@ -208,7 +236,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     perPeerLl128BufferSize_ = config_.ll128BufferSize;
     std::size_t totalLl128Size = perPeerLl128BufferSize_ * (nRanks_ - 1);
     ll128BufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalLl128Size, memSharingMode_);
+        bootstrap_,
+        myRank_,
+        nRanks_,
+        totalLl128Size,
+        GpuMemHandler::Options{
+            .mode = memSharingMode_,
+            .gpuMemoryResourceType =
+                meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pLl128,
+        });
 
     // Initialize all LL128 packet flags to kLl128ReadyToWrite (-1).
     // cudaMemset(0xFF) sets all bytes to 0xFF = -1 in two's complement.
@@ -222,7 +258,15 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     perPeerLlBufferSize_ = config_.llBufferSize;
     std::size_t totalLlSize = perPeerLlBufferSize_ * (nRanks_ - 1);
     llBufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalLlSize, memSharingMode_);
+        bootstrap_,
+        myRank_,
+        nRanks_,
+        totalLlSize,
+        GpuMemHandler::Options{
+            .mode = memSharingMode_,
+            .gpuMemoryResourceType =
+                meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pLl,
+        });
 
     // Initialize all LL line flags to kLlReadyToWrite (0xFFFFFFFF).
     auto* llPtr = llBufferHandler_->getLocalDeviceMemPtr();
@@ -299,7 +343,15 @@ void MultiPeerNvlTransport::exchange() {
     const std::size_t totalDataBufferSize =
         perPeerDataBufferSize_ * (nRanks_ - 1);
     dataBufferHandler_ = std::make_unique<GpuMemHandler>(
-        bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+        bootstrap_,
+        myRank_,
+        nRanks_,
+        totalDataBufferSize,
+        GpuMemHandler::Options{
+            .mode = memSharingMode_,
+            .gpuMemoryResourceType = meta::comms::memtrace::
+                GpuMemoryResourceType::kNvlP2pDataStaging,
+        });
   }
 
   // Exchange buffer pointers across all ranks
@@ -398,7 +450,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   NvlChannelProgress* sendProgress = nullptr;
   NvlChannelProgress* recvProgress = nullptr;
   if (progressBase_) {
-    auto* progressPtr = static_cast<char*>(progressBase_.get()) +
+    auto* progressPtr = static_cast<char*>(progressBase_->get()) +
         localPeerIndex * perPeerChannelProgressSize_;
     sendProgress = reinterpret_cast<NvlChannelProgress*>(progressPtr);
     recvProgress = reinterpret_cast<NvlChannelProgress*>(
@@ -707,8 +759,14 @@ void MultiPeerNvlTransport::initializeMultimemNvlTransport() const {
 
 void MultiPeerNvlTransport::initializeTransportsArray() {
   // Allocate device memory for Transport objects using DeviceBuffer
-  transportsDevice_ =
-      std::make_unique<meta::comms::DeviceBuffer>(nRanks_ * sizeof(Transport));
+  const std::size_t transportsBytes = nRanks_ * sizeof(Transport);
+  transportsDevice_ = std::make_unique<meta::comms::DeviceBuffer>(
+      transportsBytes,
+      meta::comms::memtrace::GpuMemoryAllocationMetadata{
+          .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+              kNvlP2pTransportTable,
+          .logicalBytes = transportsBytes,
+      });
 
   // Build host-side Transport array, then batch copy to device
   // Note: We use move semantics since Transport is non-copyable

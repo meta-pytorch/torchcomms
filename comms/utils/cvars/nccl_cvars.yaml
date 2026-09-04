@@ -303,6 +303,13 @@ cvars:
      registrations. When enabled, memory events are logged to Scuba and
      tracked per-communicator for commDump reporting.
 
+ - name        : MCCL_GPU_MEMORY_ACCOUNTING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable per-communicator accounting and lifecycle reports for GPU memory owned
+     directly by MCCL and Prims transports. Reports use MCCL INFO logging.
+
  - name        : NCCL_MEM_ENABLE_MC_ALIGNMENT
    type        : bool
    default     : False
