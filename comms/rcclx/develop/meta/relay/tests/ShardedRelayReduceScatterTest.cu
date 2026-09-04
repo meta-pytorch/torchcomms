@@ -3485,6 +3485,102 @@ TEST_F(
   freeBuffers(b);
 }
 
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the two-group
+  // cases above cannot reach the pipelined flat schedule. This one is
+  // single-group, at a size the depth selector pipelines -- asserted, so a
+  // resize cannot quietly turn this into a third test of the non-pipelined
+  // path.
+  const size_t count = 8ULL * 1024 * 1024;
+  size_t counts[1] = {count};
+  ASSERT_EQ(
+      rcclx::relay::selectReduceScatterRoute(
+          kActive, 8 - kActive, 1, counts, sizeof(float)),
+      rcclx::relay::ReduceScatterRoute::FlatOffload);
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1,
+          rcclx::relay::relayShapeFanout(kActive, 8 - kActive),
+          count,
+          sizeof(float)),
+      1);
+
+  // Group 0's active ranks are {0, 1, 2, 3}; ranks 4-7 are its helpers.
+  const int myActiveIndex = this->globalRank % kActive;
+  const bool owner = this->globalRank < kActive;
+  const size_t inputCount = static_cast<size_t>(kActive) * count;
+
+  void* sendMem = nullptr;
+  void* recvMem = nullptr;
+  HIPCHECK_TEST(hipMalloc(&sendMem, inputCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&recvMem, count * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(recvMem, 0, count * sizeof(float)));
+  if (owner) {
+    std::vector<float> host(inputCount);
+    for (int j = 0; j < kActive; j++) {
+      std::fill(
+          host.begin() + static_cast<ptrdiff_t>(j * count),
+          host.begin() + static_cast<ptrdiff_t>((j + 1) * count),
+          blockValue(myActiveIndex, j));
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        sendMem,
+        host.data(),
+        inputCount * sizeof(float),
+        hipMemcpyHostToDevice));
+  } else {
+    HIPCHECK_TEST(hipMemset(sendMem, 0, inputCount * sizeof(float)));
+  }
+
+  const void* sendPtrs[1] = {sendMem};
+  void* recvPtrs[1] = {owner ? recvMem : sendMem};
+  barrierSyncOn(nullptr);
+
+  TwoGroupFourActiveRanks layout;
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(
+      callReduceScatterCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclFloat32,
+          ncclSum,
+          this->commFor(kActive),
+          this->stream,
+          layout.allActiveRanks,
+          kActive,
+          1,
+          /*lowPrecision=*/1),
+      ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (owner) {
+    const float want = expectedOwnerValue(myActiveIndex);
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), recvMem, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << ": got " << got[i] << ", want " << want;
+      }
+    }
+  }
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+
+  HIPCHECK_TEST(hipFree(sendMem));
+  HIPCHECK_TEST(hipFree(recvMem));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
