@@ -707,9 +707,8 @@ class P2pIbgdaTransportDevice {
       const AbortDevice& abortDevice = AbortDevice()) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
-    const int status = doca_gpu_dev_verbs_poll_one_cq_at<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-        doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
+    const int status =
+        poll_cq_once(doca_gpu_dev_verbs_qp_get_cq_sq(lane.qp), ticket.value);
     if (status == 0) {
       return true;
     }
@@ -1137,15 +1136,11 @@ class P2pIbgdaTransportDevice {
       // this once per QP lane.
       const AbortDevice& abortDevice = AbortDevice()) {
     if (!abortDevice.isEnabled()) {
-      doca_gpu_dev_verbs_wait<
-          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, ticket);
+      wait_cq(qp, ticket);
     } else {
       int status;
       do {
-        status = doca_gpu_dev_verbs_poll_one_cq_at<
-            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
+        status = poll_cq_once(doca_gpu_dev_verbs_qp_get_cq_sq(qp), ticket);
         if (status == EBUSY) {
           FT_ABORT_BREAK(
               abortDevice,
@@ -1529,9 +1524,82 @@ class P2pIbgdaTransportDevice {
   static constexpr auto kQpSharingMode =
       DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE;
 
+  // Scope of the acquire fence DOCA runs after observing a completion. On
+  // Blackwell the SYS form is `CCTL.IVALL`, a whole-L1 invalidate, worth ~1.6us
+  // per op; CTA is a NOP.
+  //
+  // CTA is correct here only because no path in this transport reads
+  // NIC-written data through L1 after a completion: we issue no RDMA READ,
+  // atomic results go to a discard sink, staging and SQ-ring reuse are writes,
+  // and wait_signal_impl() reads the signal via a system-scope atomic load that
+  // carries its own invalidate. Adding an RDMA READ, or any post-completion
+  // load of remotely-written memory that is not a system-scope atomic, means
+  // this must go back to SYS. Nothing enforces that; see
+  // third-party/nvidia-doca/patches/README.md.
+  //
+  // Scoped here rather than via a macro on purpose: the DOCA headers are shared
+  // with ncclx GIN, which does issue RDMA READ.
+  static constexpr auto kCqAcquireScope = DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA;
+
+  // The DOCA calls that opt into `acquire_scope` go through the three wrappers
+  // below, because the parameter is not always there. The counter and
+  // cooperative-put paths still call DOCA directly and keep SYS.
+  //
+  // ncclx bundles its own copy of the DOCA device headers at the SAME include
+  // path this file uses (`device/doca_gpunetio_dev_verbs_*.cuh`; see
+  // ncclx/v2_3x/src/transport/net_ib/gdaki/doca-gpunetio/include, exported
+  // publicly with `header_namespace = ""`). In a target that links both prims
+  // and ncclx -- the torchcomms integration tests, for instance -- `-I` order
+  // decides which copy we compile against, and it is not necessarily ours.
+  // Passing the extra template argument unconditionally fails there with
+  // "no instance of function template ... matches the argument list".
+  //
+  // So feature-detect on the macro our vendored header defines. Where our copy
+  // wins we get the CTA scope; where ncclx's wins we make the stock call and
+  // keep the SYS-scope fence -- slower, never wrong. The fallback is the
+  // *strong* fence, so a shadowed build is correct by construction.
   __device__ __forceinline__ uint64_t
   reserve_wqes(doca_gpu_dev_verbs_qp* qp, uint32_t count) const {
+    // Same acquire scope as the completion path: the SQ-slot wait polls the
+    // same CQ, so without this it keeps the SYS-scope L1 invalidate once per
+    // posting operation. Only fires once the SQ has wrapped.
+#ifdef DOCA_GPUNETIO_VERBS_META_HAS_ACQUIRE_SCOPE
+    return doca_gpu_dev_verbs_reserve_wq_slots<
+        kQpSharingMode,
+        DOCA_GPUNETIO_VERBS_QP_SQ,
+        kCqAcquireScope>(qp, count);
+#else
     return doca_gpu_dev_verbs_reserve_wq_slots<kQpSharingMode>(qp, count);
+#endif
+  }
+
+  __device__ __forceinline__ int poll_cq_once(
+      doca_gpu_dev_verbs_cq* cq,
+      doca_gpu_dev_verbs_ticket_t ticket) const {
+#ifdef DOCA_GPUNETIO_VERBS_META_HAS_ACQUIRE_SCOPE
+    return doca_gpu_dev_verbs_poll_one_cq_at<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_QP_SQ,
+        kCqAcquireScope>(cq, ticket);
+#else
+    return doca_gpu_dev_verbs_poll_one_cq_at<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(cq, ticket);
+#endif
+  }
+
+  __device__ __forceinline__ void wait_cq(
+      doca_gpu_dev_verbs_qp* qp,
+      doca_gpu_dev_verbs_ticket_t ticket) const {
+#ifdef DOCA_GPUNETIO_VERBS_META_HAS_ACQUIRE_SCOPE
+    doca_gpu_dev_verbs_wait<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
+        kCqAcquireScope>(qp, ticket);
+#else
+    doca_gpu_dev_verbs_wait<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, ticket);
+#endif
   }
 
   __device__ __forceinline__ void mark_wqes_ready_mode(
