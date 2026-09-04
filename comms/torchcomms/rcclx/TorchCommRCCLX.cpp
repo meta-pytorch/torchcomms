@@ -901,7 +901,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_reduce(
       stream,
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      /*lowPrecision=*/0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -1079,7 +1080,8 @@ TorchCommRCCLX::sharded_relay_multi_group_reduce_scatter(
       stream,
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      /*lowPrecision=*/0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -1250,7 +1252,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_to_all(
       stream,
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      /*lowPrecision=*/0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(
@@ -1422,7 +1425,8 @@ TorchCommRCCLX::sharded_relay_multi_group_all_gather(
       stream,
       allActiveRanksPtr.data(),
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      /*lowPrecision=*/0);
 
   if (result != ncclSuccess) {
     throw RCCLXException(

@@ -294,7 +294,8 @@ class ShardedRelayControlPlaneTest : public ::testing::TestWithParam<int> {
             this->stream,
             allActiveRanks,
             nActive,
-            1);
+            1,
+            /*lowPrecision=*/0);
       case rcclx::relay::kRelayOpReduceScatter:
         return ncclShardedRelayMultiGroupReduceScatter(
             sendPtrs,
@@ -306,7 +307,8 @@ class ShardedRelayControlPlaneTest : public ::testing::TestWithParam<int> {
             this->stream,
             allActiveRanks,
             nActive,
-            1);
+            1,
+            /*lowPrecision=*/0);
       case rcclx::relay::kRelayOpAllGather:
         return ncclShardedRelayMultiGroupAllGather(
             sendPtrs,
@@ -317,7 +319,8 @@ class ShardedRelayControlPlaneTest : public ::testing::TestWithParam<int> {
             this->stream,
             allActiveRanks,
             nActive,
-            1);
+            1,
+            /*lowPrecision=*/0);
       case rcclx::relay::kRelayOpAllToAll:
         return ncclShardedRelayMultiGroupAllToAll(
             sendPtrs,
@@ -328,7 +331,8 @@ class ShardedRelayControlPlaneTest : public ::testing::TestWithParam<int> {
             this->stream,
             allActiveRanks,
             nActive,
-            1);
+            1,
+            /*lowPrecision=*/0);
       default:
         return ncclInvalidArgument;
     }
