@@ -72,9 +72,9 @@ struct ctranPrimsConfig {
 // Per-communicator override first, global CVAR second. Both the transport
 // (comm init) and the collective launch geometry (per call) must resolve these
 // the same way, so they share these helpers rather than reading the CVAR
-// directly. NOTE: mccl's own launch-geometry validation still reads
-// MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS globally; a communicator that overrides
-// these and also runs mccl collectives would be validated against the global.
+// directly. MCCL may provision the shared transport above a Ring-specific
+// launch bound; other MCCL algorithms retain their existing global-cvar
+// behavior.
 inline int64_t ctranPrimsResolvedMaxChannels(const ctranPrimsConfig& pc) {
   return pc.maxChannels > 0 ? pc.maxChannels
                             : static_cast<int64_t>(MCCL_MAX_NCHANNELS);
