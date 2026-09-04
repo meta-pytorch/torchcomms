@@ -6,6 +6,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>

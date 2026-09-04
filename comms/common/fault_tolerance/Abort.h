@@ -42,7 +42,7 @@ enum class AbortCheckResult : int {
 /**
  * Host-owned state shared with CUDA device code through mapped pinned memory.
  *
- * Both fields are read and written with system-scope atomic operations. The
+ * All fields are read and written with system-scope atomic operations. The
  * allocation is owned by `Abort`; `AbortDevice` stores only a non-owning mapped
  * pointer to this same state.
  */
@@ -57,6 +57,16 @@ struct AbortState {
   int abort;
 
   /**
+   * Whether AbortInfo context publication is complete.
+   *
+   * Host winners set this after storing their context. Device winners also set
+   * it; their host-visible context is empty because device context is not
+   * persisted in mapped host state. Readers that observe a terminal reason
+   * wait while this remains false before returning AbortInfo.
+   */
+  int contextReady;
+
+  /**
    * Shared default timeout duration in milliseconds.
    *
    * `-1` means unset. Host code may update this value, and device handles read
@@ -68,6 +78,7 @@ struct AbortState {
 // Atomic operations require naturally aligned fields. Cacheline padding is a
 // performance choice, not a correctness requirement for this shared state.
 static_assert(offsetof(AbortState, abort) % alignof(int) == 0);
+static_assert(offsetof(AbortState, contextReady) % alignof(int) == 0);
 static_assert(offsetof(AbortState, timeoutMs) % alignof(int64_t) == 0);
 
 struct AbortDevice;
@@ -88,13 +99,16 @@ struct AbortDevice;
  * singleton returned by `createAbort(false)` is intended for code paths that
  * must accept an abort object without enabling fault tolerance.
  *
- * `AbortState::abort` and `AbortState::timeoutMs` are mutable shared fields.
- * Host code and device code access them with system-scope atomic operations so
- * updates from either side become visible to the other side. The abort reason
- * is first-writer-wins: an explicit abort records `AbortReason::ABORTED`; an
- * expired timeout records `AbortReason::TIMED_OUT` only if no earlier valid
- * terminal reason has been recorded. The default timeout duration is also
- * stored in shared state for graph-mode device code; host active-deadline
+ * `AbortState` fields are mutable shared state. Host code and device code
+ * access them with system-scope atomic operations so updates from either side
+ * become visible to the other side. The abort reason is first-writer-wins: an
+ * explicit abort records `AbortReason::ABORTED`; an expired timeout records
+ * `AbortReason::TIMED_OUT` only if no earlier valid terminal reason has been
+ * recorded. The winning writer then publishes `contextReady`, preventing a
+ * reader from returning a reason before its host context is stable. Device
+ * writers publish the same ready state after winning the reason transition;
+ * their host-visible context remains empty. The default timeout duration is
+ * also stored in shared state for graph-mode device code; host active-deadline
  * tracking remains host-only.
  */
 class Abort final {
@@ -149,10 +163,9 @@ class Abort final {
    * state.
    *
    * The context is copied before attempting the transition. When this call
-   * wins, that owned string is published in host-only state and becomes
-   * available through `getAbortInfo()`. A racing reader may observe the winning
-   * reason before the context is published and receive an empty context.
-   * Device-originated aborts never publish host context.
+   * wins, that owned string is published in host-only state before AbortInfo is
+   * marked ready. `getAbortInfo()` waits for that publication to complete.
+   * Device-originated aborts publish readiness without a host context.
    *
    * Returns whether this call performed the `NONE` to terminal transition.
    */
@@ -165,7 +178,14 @@ class Abort final {
    * std::nullopt when this controller has not been aborted.
    *
    * Like `isAborted()`, this materializes an expired host timeout before
-   * reading the snapshot. Device-originated aborts have an empty context.
+   * reading the snapshot. Once a terminal reason is visible, this waits up to
+   * 300ms for the winning host or device writer to complete AbortInfo
+   * publication. Device-originated aborts have an empty context. If the winner
+   * does not publish in time, this prints a warning and returns the reason with
+   * an empty context rather than waiting indefinitely. This fallback is best
+   * effort: publication may complete later and a subsequent call may return
+   * the context. Previously returned AbortInfo snapshots are values and are not
+   * updated, so a caller that caches the fallback retains its empty context.
    */
   std::optional<AbortInfo> getAbortInfo();
 
@@ -263,6 +283,7 @@ class Abort final {
   }
 
   int loadAbortReason() const;
+  bool isContextReady() const;
   bool trySetAbort(AbortReason newReason, std::string context);
 
   AbortState* state_{nullptr};
@@ -271,9 +292,7 @@ class Abort final {
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
   // Only the host reason-CAS winner writes context_. Readers copy it only after
-  // an acquire load observes contextReady_, so no mutex is needed. The flag is
-  // host-only and is never accessed by AbortDevice.
-  std::atomic<bool> contextReady_{false};
+  // an acquire load observes contextReady == 1, so no mutex is needed.
   std::string context_;
   AbortBehavior behavior_{AbortBehavior::SKIP};
 
