@@ -8,6 +8,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/common/OccupancyUtils.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -251,6 +252,12 @@ static commResult_t impl(
   static thread_local auto allReduceConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
 
+  // Set-once ambient IB config for this collective; all inter-node puts below
+  // (steps 2, 3, 7) observe it without per-call overrides. Note steps 3 and 7
+  // previously used the VC default; they now follow the collective override.
+  CtranIbActiveConfigRAII activeIbConfig(
+      comm->ctran_->mapper->ctranIbPtr(), allReduceConfig);
+
   while (totalStepCount) {
     size_t chunkCount = stepCount / nRanks;
     size_t chunk = chunkCount * typeSize;
@@ -297,8 +304,7 @@ static commResult_t impl(
               CtranMapperConfig{
                   .memHdl_ = recvHdl,
                   .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                  .notify_ = true,
-                  .ibConfig_ = allReduceConfig},
+                  .notify_ = true},
               &req));
           interNodePutReq[n] = std::unique_ptr<CtranMapperRequest>(req);
         }

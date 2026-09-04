@@ -24,6 +24,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/algos/common/OccupancyUtils.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
@@ -324,8 +325,12 @@ inline void progressSendPostTrans(
   char* tmpSendBuf = reinterpret_cast<char*>(resource.tmpSendBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
-  CtranIbConfig* allReduceConfig =
-      resource.ibConfig ? &*resource.ibConfig : nullptr;
+  // Set-once ambient IB config for the puts issued below. This progress
+  // function runs on the GPE thread after ctranAllReduceRing returns, so the
+  // guard lives here (the issuing scope), not at collective entry.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -337,8 +342,7 @@ inline void progressSendPostTrans(
           CtranMapperConfig{
               .memHdl_ = resource.tmpSendBufHdl,
               .remoteAccessKey_ = args.rightRemKey,
-              .notify_ = true,
-              .ibConfig_ = allReduceConfig},
+              .notify_ = true},
           &req),
       resource.comm->logMetaData_);
   dataSResps.at(round).reset(req);
@@ -400,6 +404,13 @@ inline void progressRecvPostFlush(
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   char* tmpRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
       tmpChunkId * algoCtx.chunkSize;
+
+  // Ambient config for the spray-forced flush check in iflush. This runs
+  // on the GPE thread after ctranAllReduceRing returns, so the guard lives
+  // here (the issuing scope), mirroring the send-side progress functions.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -729,8 +740,12 @@ inline void progressRevSendPostTrans(
   char* tmpSendBufRev = reinterpret_cast<char*>(resource.tmpSendBufRev) +
       tmpChunkId * algoCtx.chunkSize;
 
-  CtranIbConfig* allReduceConfig =
-      resource.ibConfig ? &*resource.ibConfig : nullptr;
+  // Set-once ambient IB config for the puts issued below. This progress
+  // function runs on the GPE thread after ctranAllReduceRing returns, so the
+  // guard lives here (the issuing scope), not at collective entry.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
 
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
@@ -742,8 +757,7 @@ inline void progressRevSendPostTrans(
           CtranMapperConfig{
               .memHdl_ = resource.tmpSendBufRevHdl,
               .remoteAccessKey_ = args.leftRemKeyRev,
-              .notify_ = true,
-              .ibConfig_ = allReduceConfig},
+              .notify_ = true},
           &req),
       resource.comm->logMetaData_);
   revDataSResps.at(round).reset(req);
@@ -790,6 +804,13 @@ inline void progressRevRecvPostFlush(
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   char* tmpRecvBufRev = reinterpret_cast<char*>(resource.tmpRecvBufRev) +
       tmpChunkId * algoCtx.chunkSize;
+
+  // Ambient config for the spray-forced flush check in iflush. This runs
+  // on the GPE thread after ctranAllReduceRing returns, so the guard lives
+  // here (the issuing scope), mirroring the send-side progress functions.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
 
   CtranMapperRequest* req = nullptr;
   FB_COMMCHECKTHROW_EX(
