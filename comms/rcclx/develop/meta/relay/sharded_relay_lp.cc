@@ -122,59 +122,77 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
     return static_cast<size_t>(minKb) << 10;
   }
 
-  // MEASURED after the wavefront-absmax rewrite, which changed the answer
-  // substantially: low precision now wins for SIX of the eight shapes when the
-  // groups contend, where before it won for two. The full table with provenance
-  // is in the header.
+  // MEASURED after the chunk-alignment fix, which changed the answer again: low
+  // precision now pays for ELEVEN of the sixteen (collective, width, grouping)
+  // shapes. It paid for two before the wavefront-absmax rewrite and seven
+  // before the alignment fix -- both of those were measuring stalls, not the
+  // wire format. The full table with provenance is in the header.
   //
-  // Two things shape this policy:
+  // Three shapes stay off, and none of them because low precision loses
+  // everywhere:
   //
-  //  - CONTENTION IS WHAT LOW PRECISION WINS. nGroups > 1 puts several groups
-  //  on
-  //    the XGMI links at once, so there is a bandwidth term for halved wire
-  //    bytes to shrink. Every fused shape below is enabled; almost no
-  //    single-group one is.
-  //  - A MIN-BYTES THRESHOLD CANNOT EXCLUDE A MIDDLE BAND. Two shapes win
-  //  either
-  //    side of a reproducible trough (fused all-to-all A=4 craters to 0.64x at
-  //    exactly 32 MB and 0.65x at 40 MB; most nGroups == 1 shapes dip through
-  //    31.5-63 MB). Enabling those would buy a 1.2x plateau at the price of a
-  //    0.65x cliff inside it, which is not a trade this knob can express. They
-  //    stay off until the trough is explained.
+  //  - reduce-scatter A=4, either grouping, sits at 0.98x-1.03x through 40 MB
+  //  and
+  //    only reaches 1.24x-1.32x at 63 MB, the TOP of the measured range. A
+  //    threshold at the edge of the data is a guess; it needs measuring past 72
+  //    MB.
+  //  - single-group allreduce A=2 wins 1.09x-1.14x from 13.5 MB to 27 MB, then
+  //    drops to 0.78x-0.92x from 31.5 MB up. A min-bytes gate cannot say "this
+  //    band only", and the alignment fix did NOT move it, so it is a separate
+  //    mechanism still being profiled.
+  //  - single-group all-to-all A=2 is the only shape that genuinely never wins:
+  //    0.91x-0.96x at every size, before and after every fix.
   constexpr size_t kNever = std::numeric_limits<size_t>::max();
   constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
+  constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
+  constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
 
   if (nGroups <= 1) {
-    // The one uncontended shape that is monotone rather than troughed: 1.08x at
-    // 13.5 MB rising steadily to 1.30x at 72 MB, with no dip anywhere. Every
-    // other single-group shape oscillates through the 31.5-63 MB band.
-    if (coll == LpCollective::AllReduce && nActiveRanksPerGroup == 4) {
-      return k12Mib;
+    // Uncontended. Still wins for most shapes, which is itself a change: before
+    // the alignment fix nearly every single-group shape was troughed, and that
+    // looked like "there is no bandwidth term to win when the links are slack".
+    // It was a stall.
+    switch (coll) {
+      case LpCollective::AllReduce:
+        // A=4: 1.09x at 13.5 MB rising to 1.29x. A=2 is the profiling target
+        // above -- it wins 13.5-27 MB and troughs from 31.5 MB.
+        return nActiveRanksPerGroup == 4 ? k12Mib : kNever;
+      case LpCollective::AllGather:
+        // A=2: 1.17x at 13.5 MB, 1.19x-1.23x above. A=4: 1.20x
+        // then 1.24x-1.30x.
+        return k12Mib;
+      case LpCollective::ReduceScatter:
+        // A=2: 1.11x at 13.5 MB rising to 1.28x.
+        return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
+      case LpCollective::AllToAll:
+        // A=4: 1.08x at 27 MB rising to 1.16x, and flat 0.97x-1.00x below, so
+        // the crossover sits between 13.5 and 27 MB.
+        return nActiveRanksPerGroup == 4 ? k24Mib : kNever;
     }
     return kNever;
   }
 
   switch (coll) {
     case LpCollective::AllReduce:
-      // A=2: 1.17x at 13.5 MB, 1.26x-1.31x above. A=4: 1.14x then 1.24x-1.28x.
+      // A=2: 1.20x at 13.5 MB, 1.26x-1.30x above. A=4: 1.15x then 1.23x-1.28x.
       return k12Mib;
     case LpCollective::AllGather:
-      // A=2 pays earliest of anything measured -- 1.14x already at 9
-      // MB, 1.24x-1.33x above -- so it gets the lower threshold. A=4: 1.30x
-      // at 13.5 MB up to 1.45x, the largest win in the table.
+      // A=2 pays earliest of anything measured, 1.14x already at 9 MB, so it
+      // gets the lower threshold. A=4: 1.30x at 13.5 MB up to 1.45x, still the
+      // largest win in the table.
       return nActiveRanksPerGroup == 2 ? k8Mib : k12Mib;
     case LpCollective::ReduceScatter:
-      // A=2: 1.16x at 13.5 MB rising to 1.40x. A=4 is deliberately off: it sits
-      // at 0.95x-1.04x through 40 MB and only reaches 1.29x at 63 MB, which is
-      // the top of the measured range -- a threshold set at the edge of the
-      // data is a guess, and it needs measuring past 72 MB first.
+      // A=2: 1.17x at 13.5 MB rising to 1.42x, the best of the fused
+      // reductions.
       return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
     case LpCollective::AllToAll:
-      // A=2: 1.14x at 13.5 MB, 1.21x-1.32x above. A=4 wins 1.16x-1.19x from 27
-      // MB but craters to 0.64x/0.65x at 32 MB and 40 MB, INSIDE that range, so
-      // a minimum cannot capture the win without the cliff.
-      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
+      // A=2: 1.14x at 13.5 MB, 1.23x-1.33x above. A=4 reads 1.00x at 13.5 MB
+      // and 1.16x at 27 MB, and 27 MiB is also exactly where its XOR-relay
+      // route starts when fused (kXorRelayMinBytes) -- below that the call is a
+      // direct exchange and low precision would decline on route anyway, so the
+      // two gates agree by construction rather than by coincidence.
+      return nActiveRanksPerGroup == 2 ? k12Mib : k27Mib;
   }
   return kNever;
 }
