@@ -3443,7 +3443,19 @@ cvars:
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
      in MCCL fused AllReduce. Ring and Tree support 1, 2, 4, and 10. The
-     default preserves the existing full-block protocol.
+     generated cvar default is 1. When MCCL fused Ring is selected and this
+     cvar is not explicitly configured, communicator initialization instead
+     selects 10 stripes for block caps 1 through 3, 4 stripes at block cap 4,
+     2 stripes for caps 5 through 16, and 1 stripe above 16 on GB300. This
+     keeps the implicit geometry at or below the validated 32-group budget.
+     Other GPU architectures, an enabled warp proxy, and platforms without
+     virtual-stripe support retain one implicit stripe. Tree retains the
+     generated default. An
+     explicit value always wins and Ring retains its existing per-call read and
+     validation. If stripes or MCCL_MAX_NBLOCKS change after communicator
+     initialization, the stored channel budget retains the existing block
+     clamp and emits a once-per-communicator WARN when it reduces the requested
+     block count.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
