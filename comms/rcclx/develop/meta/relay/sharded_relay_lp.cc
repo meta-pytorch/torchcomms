@@ -122,41 +122,59 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
     return static_cast<size_t>(minKb) << 10;
   }
 
-  // MEASURED, and the honest answer is that low precision pays for TWO shapes.
-  // The full table is in the header. The short version:
+  // MEASURED after the wavefront-absmax rewrite, which changed the answer
+  // substantially: low precision now wins for SIX of the eight shapes when the
+  // groups contend, where before it won for two. The full table with provenance
+  // is in the header.
   //
-  //  - nGroups == 1 pays NOWHERE. One group leaves the XGMI links uncontended,
-  //  so
-  //    there is no bandwidth term for halved wire bytes to shrink, while the
-  //    quantize/dequantize passes still cost HBM traffic and two extra
-  //    launches. Measured 0.64x-1.09x, i.e. mostly a regression.
-  //  - all-gather A=4 fused is the strong case: 1.18x at 13.5 MB rising to a
-  //    stable 1.22x-1.29x plateau. Its flat offload stages more bytes through
-  //    helpers than any other schedule here, which is what the wire format acts
-  //    on.
-  //  - reduce-scatter A=2 fused is the modest case: 1.09x-1.12x from 27 MB.
-  //  - allreduce never wins at any width or grouping (0.89x-0.98x), and neither
-  //    does all-to-all A=4 (0.85x-0.98x).
+  // Two things shape this policy:
   //
-  // Shapes that measured 1.01x-1.06x -- all-gather A=2, all-to-all A=2 -- are
-  // OFF deliberately. The win is consistent but small, and not worth fp8
-  // rounding plus the arena's memory to collect. Enabling them is a one-line
-  // change here.
+  //  - CONTENTION IS WHAT LOW PRECISION WINS. nGroups > 1 puts several groups
+  //  on
+  //    the XGMI links at once, so there is a bandwidth term for halved wire
+  //    bytes to shrink. Every fused shape below is enabled; almost no
+  //    single-group one is.
+  //  - A MIN-BYTES THRESHOLD CANNOT EXCLUDE A MIDDLE BAND. Two shapes win
+  //  either
+  //    side of a reproducible trough (fused all-to-all A=4 craters to 0.64x at
+  //    exactly 32 MB and 0.65x at 40 MB; most nGroups == 1 shapes dip through
+  //    31.5-63 MB). Enabling those would buy a 1.2x plateau at the price of a
+  //    0.65x cliff inside it, which is not a trade this knob can express. They
+  //    stay off until the trough is explained.
   constexpr size_t kNever = std::numeric_limits<size_t>::max();
+  constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
+  constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
 
   if (nGroups <= 1) {
+    // The one uncontended shape that is monotone rather than troughed: 1.08x at
+    // 13.5 MB rising steadily to 1.30x at 72 MB, with no dip anywhere. Every
+    // other single-group shape oscillates through the 31.5-63 MB band.
+    if (coll == LpCollective::AllReduce && nActiveRanksPerGroup == 4) {
+      return k12Mib;
+    }
     return kNever;
   }
+
   switch (coll) {
-    case LpCollective::AllGather:
-      return nActiveRanksPerGroup == 4 ? (static_cast<size_t>(12) << 20)
-                                       : kNever;
-    case LpCollective::ReduceScatter:
-      return nActiveRanksPerGroup == 2 ? (static_cast<size_t>(27) << 20)
-                                       : kNever;
     case LpCollective::AllReduce:
+      // A=2: 1.17x at 13.5 MB, 1.26x-1.31x above. A=4: 1.14x then 1.24x-1.28x.
+      return k12Mib;
+    case LpCollective::AllGather:
+      // A=2 pays earliest of anything measured -- 1.14x already at 9
+      // MB, 1.24x-1.33x above -- so it gets the lower threshold. A=4: 1.30x
+      // at 13.5 MB up to 1.45x, the largest win in the table.
+      return nActiveRanksPerGroup == 2 ? k8Mib : k12Mib;
+    case LpCollective::ReduceScatter:
+      // A=2: 1.16x at 13.5 MB rising to 1.40x. A=4 is deliberately off: it sits
+      // at 0.95x-1.04x through 40 MB and only reaches 1.29x at 63 MB, which is
+      // the top of the measured range -- a threshold set at the edge of the
+      // data is a guess, and it needs measuring past 72 MB first.
+      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
     case LpCollective::AllToAll:
-      return kNever;
+      // A=2: 1.14x at 13.5 MB, 1.21x-1.32x above. A=4 wins 1.16x-1.19x from 27
+      // MB but craters to 0.64x/0.65x at 32 MB and 40 MB, INSIDE that range, so
+      // a minimum cannot capture the win without the cliff.
+      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
   }
   return kNever;
 }
