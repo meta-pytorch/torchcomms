@@ -298,6 +298,58 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
       }));
 }
 
+TEST(AbortDeviceTest, abortFlagPublishesEmptyContext) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  EXPECT_EQ(
+      launchAbortFlagSetAbort(
+          abort.getDeviceHandle(),
+          AbortReason::INTERNAL_ERROR,
+          won.get(),
+          contextReady.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  EXPECT_EQ(readDeviceValue(won), 1);
+  EXPECT_EQ(readDeviceValue(contextReady), 1);
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::INTERNAL_ERROR,
+          .context = "",
+      }));
+}
+
+TEST(AbortDeviceTest, missingContextPublicationReturnsBestEffortSnapshot) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+
+  EXPECT_EQ(
+      launchDevicePublishReasonWithoutContext(
+          abort.getDeviceHandle(),
+          AbortReason::NETWORK_ERROR,
+          won.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(readDeviceValue(won), 1);
+
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "",
+      }));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{2});
+}
+
 TEST(AbortDeviceTest, deviceWinnerDoesNotExposeLosingHostContext) {
   Abort abort{/*enabled=*/true};
 
@@ -469,6 +521,9 @@ TEST(AbortDeviceTest, deviceTimeoutProducerHostAndDeviceConsumer) {
   EXPECT_EQ(readDeviceValue(observedIsAborted), 1);
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
+  EXPECT_EQ(
+      abort.getAbortInfo(),
+      (AbortInfo{.reason = AbortReason::TIMED_OUT, .context = ""}));
 }
 
 TEST(AbortDeviceTest, hostAbortWinsOverDeviceTimeout) {

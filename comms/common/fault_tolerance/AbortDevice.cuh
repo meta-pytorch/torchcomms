@@ -143,6 +143,11 @@ deviceCompareExchangeSystem(int* value, int* expected, int desired) {
 #endif
 }
 
+__device__ __forceinline__ void publishContextReady(AbortState* state) {
+  int expected = 0;
+  (void)deviceCompareExchangeSystem(&state->contextReady, &expected, 1);
+}
+
 } // namespace detail
 
 /**
@@ -411,6 +416,8 @@ struct AbortDevice final {
     const bool won = detail::deviceCompareExchangeSystem(
         &state_->abort, &expected, static_cast<int>(newReason));
     if (won) {
+      // Device context is intentionally not persisted in mapped host state.
+      detail::publishContextReady(state_);
       // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
       printf(
           FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
@@ -493,6 +500,7 @@ struct AbortDevice final {
             &state_->abort,
             &expected,
             static_cast<int>(AbortReason::TIMED_OUT))) {
+      detail::publishContextReady(state_);
       if (flippedHere != nullptr) {
         *flippedHere = true;
       }
@@ -596,6 +604,8 @@ struct AbortFlag final {
    * Writing shared state is safe to do from a shared handle -- it is a
    * system-scope CAS, which is exactly what the shared state is for. Only
    * *polling* needs per-thread throttle state, and this type has none.
+   * Device context is not persisted, so a winning writer publishes
+   * `contextReady` immediately after the reason.
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
@@ -610,8 +620,12 @@ struct AbortFlag final {
       return false;
     }
     int expected = static_cast<int>(AbortReason::NONE);
-    return detail::deviceCompareExchangeSystem(
+    const bool won = detail::deviceCompareExchangeSystem(
         &state_->abort, &expected, static_cast<int>(newReason));
+    if (won) {
+      detail::publishContextReady(state_);
+    }
+    return won;
   }
 
   /**

@@ -28,6 +28,33 @@ __global__ void deviceSetAbortWithContextKernel(
   }
 }
 
+__global__ void abortFlagSetAbortKernel(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner,
+    int* observedContextReady) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    const AbortFlag flag{abort};
+    *observedWinner = flag.setAbort(reason) ? 1 : 0;
+    *observedContextReady =
+        detail::deviceLoadAcquireSystem(&abort.stateForFlag()->contextReady);
+  }
+}
+
+__global__ void devicePublishReasonWithoutContextKernel(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    int expected = static_cast<int>(AbortReason::NONE);
+    *observedWinner =
+        detail::deviceCompareExchangeSystem(
+            &abort.stateForFlag()->abort, &expected, static_cast<int>(reason))
+        ? 1
+        : 0;
+  }
+}
+
 __global__ void
 deviceReadAbortKernel(AbortDevice abort, int* observed, int* observedMode) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -193,6 +220,27 @@ cudaError_t launchDeviceSetAbortWithContext(
     cudaStream_t stream) {
   deviceSetAbortWithContextKernel<<<1, 1, 0, stream>>>(
       abort, reason, useContext, observedWinner);
+  return cudaGetLastError();
+}
+
+cudaError_t launchAbortFlagSetAbort(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner,
+    int* observedContextReady,
+    cudaStream_t stream) {
+  abortFlagSetAbortKernel<<<1, 1, 0, stream>>>(
+      abort, reason, observedWinner, observedContextReady);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDevicePublishReasonWithoutContext(
+    AbortDevice abort,
+    AbortReason reason,
+    int* observedWinner,
+    cudaStream_t stream) {
+  devicePublishReasonWithoutContextKernel<<<1, 1, 0, stream>>>(
+      abort, reason, observedWinner);
   return cudaGetLastError();
 }
 

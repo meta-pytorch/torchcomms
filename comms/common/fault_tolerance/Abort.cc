@@ -13,8 +13,15 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace comms::fault_tolerance {
+
+namespace {
+
+constexpr std::chrono::milliseconds kAbortInfoPublicationTimeout{300};
+
+} // namespace
 
 Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   if (!enabled) {
@@ -44,6 +51,7 @@ Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
   state_ = new AbortState;
 #endif
   state_->abort = encode(AbortReason::NONE);
+  state_->contextReady = 0;
   state_->timeoutMs = -1;
 }
 
@@ -86,11 +94,27 @@ std::optional<AbortInfo> Abort::getAbortInfo() {
     return std::nullopt;
   }
 
-  std::string context;
-  if (contextReady_.load(std::memory_order_acquire)) {
-    context = context_;
+  const auto publicationDeadline =
+      std::chrono::steady_clock::now() + kAbortInfoPublicationTimeout;
+  auto contextReady = isContextReady();
+  while (!contextReady &&
+         std::chrono::steady_clock::now() < publicationDeadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    contextReady = isContextReady();
   }
-  return AbortInfo{.reason = reason, .context = std::move(context)};
+
+  if (!contextReady) {
+    const auto reasonString = abortReasonToString(reason);
+    std::fprintf(
+        stderr,
+        "WARNING: AbortInfo publication did not complete within %lldms for "
+        "abort reason %.*s; returning empty context\n",
+        static_cast<long long>(kAbortInfoPublicationTimeout.count()),
+        static_cast<int>(reasonString.size()),
+        reasonString.data());
+    return AbortInfo{.reason = reason, .context = {}};
+  }
+  return AbortInfo{.reason = reason, .context = context_};
 }
 
 bool Abort::isAborted() {
@@ -204,6 +228,11 @@ int Abort::loadAbortReason() const {
   return std::atomic_ref<int>{state_->abort}.load(std::memory_order_acquire);
 }
 
+bool Abort::isContextReady() const {
+  return std::atomic_ref<int>{state_->contextReady}.load(
+             std::memory_order_acquire) != 0;
+}
+
 bool Abort::trySetAbort(AbortReason newReason, std::string context) {
   int expected = encode(AbortReason::NONE);
   const bool won = std::atomic_ref<int>{state_->abort}.compare_exchange_strong(
@@ -215,9 +244,12 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
     return false;
   }
 
-  // The reason CAS gives this call exclusive ownership of context_. Publishing
-  // happens afterwards on purpose: a racing reader may return the reason with
-  // empty context, but it never reads context_ while this swap is in progress.
+  // The reason CAS gives this call exclusive ownership of context_. Publish
+  // readiness only after the swap so getAbortInfo() cannot return a terminal
+  // reason with a transiently incomplete host context.
+  context_.swap(context);
+  std::atomic_ref<int>{state_->contextReady}.store(
+      1, std::memory_order_release);
   const auto reasonString = abortReasonToString(newReason);
   std::fprintf(
       stderr,
@@ -225,9 +257,7 @@ bool Abort::trySetAbort(AbortReason newReason, std::string context) {
       static_cast<int>(newReason),
       static_cast<int>(reasonString.size()),
       reasonString.data(),
-      context.c_str());
-  context_.swap(context);
-  contextReady_.store(true, std::memory_order_release);
+      context_.c_str());
   return true;
 }
 
