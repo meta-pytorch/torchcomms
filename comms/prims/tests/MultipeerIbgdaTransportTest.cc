@@ -8,6 +8,7 @@
 #include "comms/utils/logger/SpdlogLogger.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -175,6 +176,10 @@ class TestIbTransport {
                   : ibrc_->isPeerMaterialized(peerRank);
   }
 
+  bool collapsedCqActive() const {
+    return ibgda_ != nullptr && ibgda_->collapsedCqActive();
+  }
+
  private:
   int firstPeerRank() const {
     return myRank() == 0 ? 1 : 0;
@@ -194,7 +199,8 @@ std::unique_ptr<TestIbTransport> createTestTransport(
     int numSignalSlots = 1,
     int numCounterSlots = 1,
     int maxGroups = 64,
-    int qpsPerBlockPerNic = 1) {
+    int qpsPerBlockPerNic = 1,
+    std::optional<bool> enableCollapsedCq = std::nullopt) {
   MultipeerIbTransportConfig config{
       .cudaDevice = localRank,
       .numSignalSlots = numSignalSlots,
@@ -202,7 +208,7 @@ std::unique_ptr<TestIbTransport> createTestTransport(
       .maxGroups = maxGroups,
       .qpsPerBlockPerNic = qpsPerBlockPerNic,
   };
-
+  config.enableCollapsedCq = enableCollapsedCq;
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   return std::make_unique<TestIbTransport>(
       backend, globalRank, numRanks, std::move(bootstrap), config);
@@ -225,7 +231,8 @@ class MultipeerIbTransportTestFixture
       int numSignalSlots = 1,
       int numCounterSlots = 1,
       int maxGroups = 64,
-      int qpsPerBlockPerNic = 1) {
+      int qpsPerBlockPerNic = 1,
+      std::optional<bool> enableCollapsedCq = std::nullopt) {
     return createTestTransport(
         backend(),
         globalRank,
@@ -234,7 +241,8 @@ class MultipeerIbTransportTestFixture
         numSignalSlots,
         numCounterSlots,
         maxGroups,
-        qpsPerBlockPerNic);
+        qpsPerBlockPerNic,
+        enableCollapsedCq);
   }
 };
 
@@ -462,10 +470,12 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
 /*
  * The completion-error path, reached deterministically.
  *
- * Rank 0 posts an RDMA write with the peer's rkey corrupted. The NIC answers
- * `REM_ACCESS_ERR`, and `flush()` picks it up inside `wait_local_on_qp`'s CQ
- * poll -- the branch that used to fall straight out of the
- * `while (status == EBUSY)` loop and report success from a `void` function.
+ * Rank 0 posts an RDMA write with the peer's rkey variant corrupted, queues
+ * four valid writes behind it, and only then polls. The preserved mkey index
+ * lets the responder attribute the request and return `REM_ACCESS_ERR`;
+ * `flush()` picks it up inside `wait_local_on_qp`'s CQ poll -- the branch that
+ * used to fall straight out of the `while (status == EBUSY)` loop and report
+ * success from a `void` function.
  *
  * **Why a bad rkey and not a dead peer.** The AllReduce-level
  * `DeadPeerCompletionErrorUnwinds` cannot reach this branch, and the
@@ -476,9 +486,9 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
  * and immediate, so it is the only way to make the CQE the *cause*.
  *
  * **What discriminates the two paths, with no timing assumption.** The reason.
- * The deadline records `TIMED_OUT`; this branch records `ABORTED`. The op
- * deadline is 30 s, far longer than the test can take, so `ABORTED` is only
- * reachable through the CQE.
+ * The deadline records `TIMED_OUT`; this branch records `NETWORK_ERROR`. The
+ * op deadline is 30 s, far longer than the test can take, so `NETWORK_ERROR`
+ * is only reachable through the CQE.
  *
  * Built on `createTransport()` rather than a raw `MultipeerIbgdaTransport`:
  * the wrapper materialises and connects peers, and an earlier revision of this
@@ -500,86 +510,115 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
   constexpr std::chrono::milliseconds kDeadline{30000};
   constexpr std::chrono::milliseconds kMaxElapsed{5000};
 
-  // Local outcome, reduced across ranks after the try so the skip decision is
-  // uniform. See the MPI_Allreduce below.
-  int localSetupOk = 0;
-  std::string skipReason;
-  try {
-    auto transport = createTransport();
-    DeviceBuffer dataBuffer(nbytes);
-    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+  for (const bool collapsed : {false, true}) {
+#ifdef __HIP_PLATFORM_AMD__
+    if (collapsed) {
+      continue;
+    }
+#endif
+    SCOPED_TRACE(collapsed ? "collapsed" : "ring");
+    std::unique_ptr<TestIbTransport> transport;
+    std::unique_ptr<DeviceBuffer> dataBuffer;
+    IbgdaLocalBuffer localDataBuf{};
+    std::vector<IbgdaRemoteBuffer> remoteDataBufs;
+    P2pIbTransportDevice peerTransport;
     const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
-    auto peerTransport = transport->getP2pTransportDevice(peerRank);
 
+    int localSetupOk = 0;
+    std::string skipReason;
+    try {
+      transport = createTransport(
+          /*numSignalSlots=*/1,
+          /*numCounterSlots=*/1,
+          /*maxGroups=*/64,
+          /*qpsPerBlockPerNic=*/1,
+          collapsed);
+      EXPECT_EQ(transport->collapsedCqActive(), collapsed);
+      dataBuffer = std::make_unique<DeviceBuffer>(nbytes);
+      localDataBuf = transport->registerBuffer(dataBuffer->get(), nbytes);
+      remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+      peerTransport = transport->getP2pTransportDevice(peerRank);
+      localSetupOk = 1;
+    } catch (const std::exception& e) {
+      skipReason = e.what();
+    }
+    int allSetupOk = 0;
+    MPI_CHECK(MPI_Allreduce(
+        &localSetupOk, &allSetupOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    if (globalRank == 0) {
-      // Flip the high bits rather than zeroing: zero is a plausible "unset"
-      // value that a future host-side guard might reject before the WQE is
-      // posted, which would silently stop this test exercising the NIC.
-      auto badRemoteBuf = remoteDataBufs[peerIndex];
-      // Every populated device key, not just [0]. QP lanes index this array by
-      // their own `nic_id`, so on a 2-NIC part (GB200/GB300) poisoning only
-      // slot 0 leaves NIC 1 perfectly valid and any put that lands on such a
-      // lane completes normally -- the test would pass while exercising
-      // nothing. `size` is the populated count; indexing past it traps.
-      ASSERT_GT(badRemoteBuf.rkey_per_device.size, 0);
-      for (int nic = 0; nic < badRemoteBuf.rkey_per_device.size; ++nic) {
-        badRemoteBuf.rkey_per_device[nic].value ^= 0xDEAD0000U;
-      }
-
-      comms::fault_tolerance::Abort abort(/*enabled=*/true);
-      // The budget belongs on the *device* handle. `startTimeout()` arms a
-      // host-side deadline only; the device resolves its own from
-      // `opTimeoutMs_`, and a bare `Abort` has none, leaving `deadlineCycles_`
-      // at 0 -- "no deadline". An earlier revision hung for exactly that.
-      auto deviceAbort = abort.getDeviceHandle();
-      deviceAbort.setOpTimeoutMs(kDeadline.count());
-
-      const auto start = std::chrono::steady_clock::now();
-      test::testPutAndFlushWithAbort(
-          peerTransport,
-          localDataBuf,
-          badRemoteBuf,
-          nbytes,
-          deviceAbort,
-          numBlocks,
-          blockSize);
-      // Deliberately not CUDACHECK_TEST: a trap surfaces here, and reporting it
-      // is the point rather than aborting the process on it.
-      const cudaError_t syncStatus = cudaDeviceSynchronize();
-      const auto elapsed =
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() - start);
-
-      EXPECT_EQ(cudaSuccess, syncStatus)
-          << "the completion error must unwind, not trap: "
-          << cudaGetErrorString(syncStatus);
-      EXPECT_LT(elapsed.count(), kMaxElapsed.count())
-          << "an error CQE is reported immediately; this long suggests the wait "
-             "ended on something other than the completion error";
-      EXPECT_EQ(
-          comms::fault_tolerance::AbortReason::NETWORK_ERROR, abort.reason())
-          << "expected the completion error to latch NETWORK_ERROR; TIMED_OUT "
-             "would mean the deadline won and the CQE branch was never reached";
+    if (allSetupOk == 0) {
+      GTEST_SKIP() << "IB transport not available on some rank: " << skipReason;
     }
 
-    localSetupOk = 1;
-  } catch (const std::exception& e) {
-    skipReason = e.what();
-  }
-  // Agreed across ranks BEFORE anyone skips. Only rank 0 runs the injection and
-  // the CUDA sync, so a rank-local launch failure used to send it through
-  // GTEST_SKIP() without ever entering the barrier below, leaving its peer
-  // blocked until the harness timeout. Reaching the barrier unconditionally and
-  // reducing the verdict makes both ranks skip or continue together.
-  int allSetupOk = 0;
-  MPI_CHECK(MPI_Allreduce(
-      &localSetupOk, &allSetupOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
-  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  if (allSetupOk == 0) {
-    GTEST_SKIP() << "IB transport not available on some rank: " << skipReason;
+    int localRunOk = 1;
+    std::string runFailure;
+    if (globalRank == 0) {
+      try {
+        // The low byte is the mlx5 mkey variant. Preserve the index so the peer
+        // can resolve the MR and return an immediate remote-access-error NAK;
+        // changing index bits can instead trigger transport retries for ~34 s.
+        auto badRemoteBuf = remoteDataBufs[peerIndex];
+        // Every populated device key, not just [0]. QP lanes index this array
+        // by their own `nic_id`, so on a 2-NIC part (GB200/GB300) poisoning
+        // only slot 0 leaves NIC 1 perfectly valid and any put that lands on
+        // such a lane completes normally -- the test would pass while
+        // exercising nothing. `size` is the populated count; indexing past it
+        // traps.
+        if (badRemoteBuf.rkey_per_device.size <= 0) {
+          throw std::runtime_error("remote buffer has no populated device key");
+        }
+        for (int nic = 0; nic < badRemoteBuf.rkey_per_device.size; ++nic) {
+          badRemoteBuf.rkey_per_device[nic].value ^=
+              comms::prims::detail::ibgdaNetworkByteOrderKey(0xFFU);
+        }
+
+        comms::fault_tolerance::Abort abort(/*enabled=*/true);
+        // The budget belongs on the *device* handle. `startTimeout()` arms a
+        // host-side deadline only; the device resolves its own from
+        // `opTimeoutMs_`, and a bare `Abort` has none, leaving
+        // `deadlineCycles_` at 0 -- "no deadline". An earlier revision hung for
+        // exactly that.
+        auto deviceAbort = abort.getDeviceHandle();
+        deviceAbort.setOpTimeoutMs(kDeadline.count());
+
+        const auto start = std::chrono::steady_clock::now();
+        test::testPutAndFlushWithAbort(
+            peerTransport,
+            localDataBuf,
+            badRemoteBuf,
+            remoteDataBufs[peerIndex],
+            nbytes,
+            deviceAbort,
+            numBlocks,
+            blockSize);
+        // Deliberately not CUDACHECK_TEST: a trap surfaces here, and reporting
+        // it is the point rather than aborting the process on it.
+        const cudaError_t syncStatus = cudaDeviceSynchronize();
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start);
+
+        EXPECT_EQ(cudaSuccess, syncStatus)
+            << "the completion error must unwind, not trap: "
+            << cudaGetErrorString(syncStatus);
+        EXPECT_LT(elapsed.count(), kMaxElapsed.count())
+            << "an error CQE is reported immediately; this long suggests the wait "
+               "ended on something other than the completion error";
+        EXPECT_EQ(
+            comms::fault_tolerance::AbortReason::NETWORK_ERROR, abort.reason())
+            << "expected the completion error to latch NETWORK_ERROR; TIMED_OUT "
+               "would mean the deadline won and the CQE branch was never reached";
+      } catch (const std::exception& e) {
+        localRunOk = 0;
+        runFailure = e.what();
+      }
+    }
+    int allRunOk = 0;
+    MPI_CHECK(MPI_Allreduce(
+        &localRunOk, &allRunOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(allRunOk, 1) << "bad-rkey exercise failed on one rank: "
+                           << runFailure;
   }
 }
 
@@ -595,9 +634,10 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
  * `ReduceScatterDirectIbV2.cu`'s `while (... != Drained)` spun for the life of
  * the kernel.
  *
- * A bad rkey is what makes the completions genuinely never land: the NIC
- * answers `REM_ACCESS_ERR`, `is_local_completion_ready()` stays false and
- * latches `ABORTED`. A pre-abort would be vacuous (nothing ever posts) and
+ * A bad-rkey variant is what makes the completions fail: the peer can resolve
+ * the mkey index and immediately answers `REM_ACCESS_ERR`, after which
+ * `is_local_completion_ready()` latches `NETWORK_ERROR`. A pre-abort would be
+ * vacuous (nothing ever posts) and
  * racing a healthy CQE would be flaky, so this is the only deterministic
  * construction.
  *
@@ -657,13 +697,14 @@ TEST_P(MultipeerIbTransportTestFixture, RegisteredSendDrainTerminatesOnAbort) {
 
     if (globalRank == 0) {
       const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
-      // Same poisoning as BadRkeyCompletionErrorUnwinds: flip the high bits of
-      // an exchanged peer buffer's rkey. Those keys are known-valid, unlike the
-      // channel layout's staging keys.
+      // Same poisoning as BadRkeyCompletionErrorUnwinds: change only the mkey
+      // variant of an exchanged peer buffer. Those keys are known-valid, unlike
+      // the channel layout's staging keys.
       auto poisonedRemote = remoteDataBufs[peerIndex];
       ASSERT_GT(poisonedRemote.rkey_per_device.size, 0);
       for (int nic = 0; nic < poisonedRemote.rkey_per_device.size; ++nic) {
-        poisonedRemote.rkey_per_device[nic].value ^= 0xDEAD0000U;
+        poisonedRemote.rkey_per_device[nic].value ^=
+            comms::prims::detail::ibgdaNetworkByteOrderKey(0xFFU);
       }
 
       DeviceBuffer observationBuf(sizeof(test::RegisteredSendObservation));
@@ -1428,6 +1469,142 @@ TEST_P(MultipeerIbTransportTestFixture, StressTest) {
       numIterations);
 }
 
+TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
+#ifdef __HIP_PLATFORM_AMD__
+  GTEST_SKIP() << "collapsed CQ is NVIDIA-only";
+#endif
+  if (numRanks != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks, got " << numRanks;
+  }
+
+  constexpr uint32_t kQpDepth = 32;
+  constexpr int kWqesPerLane = 65568;
+  constexpr std::size_t kBytesPerPut = 64;
+  constexpr int kSignalId = 0;
+  constexpr int kCounterId = 0;
+  const int peerRank = globalRank == 0 ? 1 : 0;
+
+  for (const bool collapsed : {false, true}) {
+    SCOPED_TRACE(collapsed ? "collapsed" : "ring");
+    std::unique_ptr<TestIbTransport> transport;
+    std::unique_ptr<DeviceBuffer> dataBuffer;
+    IbgdaLocalBuffer localDataBuf{};
+    std::vector<IbgdaRemoteBuffer> remoteDataBufs;
+    std::vector<uint8_t> expected;
+    int numBurstPuts = 0;
+    int numCompanionOps = 0;
+    int localSetupOk = 0;
+    std::string skipReason;
+    try {
+      MultipeerIbTransportConfig config{
+          .cudaDevice = localRank,
+          .numSignalSlots = 1,
+          .numCounterSlots = 1,
+          .maxGroups = 1,
+          .qpDepth = kQpDepth,
+      };
+      config.max_num_channels = 1;
+      config.enableCollapsedCq = collapsed;
+      auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+      transport = std::make_unique<TestIbTransport>(
+          IbTestBackend::Ibgda,
+          globalRank,
+          numRanks,
+          std::move(bootstrap),
+          config);
+      EXPECT_EQ(transport->collapsedCqActive(), collapsed);
+
+      const int laneCount = transport->numNics() * config.qpsPerConnection;
+      numBurstPuts = kWqesPerLane * laneCount;
+      // Each put+signal+counter operation posts two companion-QP WQEs.
+      numCompanionOps = (kWqesPerLane / 2) * laneCount;
+      const std::size_t totalBytes =
+          static_cast<std::size_t>(numBurstPuts) * kBytesPerPut;
+      expected.resize(totalBytes);
+      for (int put = 0; put < numBurstPuts; ++put) {
+        for (std::size_t byte = 0; byte < kBytesPerPut; ++byte) {
+          expected[put * kBytesPerPut + byte] = static_cast<uint8_t>(
+              (static_cast<uint32_t>(put) >> (8 * (byte % 4))) ^ byte);
+        }
+      }
+
+      dataBuffer = std::make_unique<DeviceBuffer>(totalBytes);
+      localDataBuf = transport->registerBuffer(dataBuffer->get(), totalBytes);
+      remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+      localSetupOk = 1;
+    } catch (const std::exception& e) {
+      skipReason = e.what();
+    }
+    int allSetupOk = 0;
+    MPI_CHECK(MPI_Allreduce(
+        &localSetupOk, &allSetupOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    if (allSetupOk == 0) {
+      GTEST_SKIP() << "IBGDA transport not available on some rank: "
+                   << skipReason;
+    }
+
+    const int peerIndex = peerRank < globalRank ? peerRank : peerRank - 1;
+    const auto remoteDataBuf = remoteDataBufs[peerIndex];
+    const auto peerTransport = transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      CUDACHECK_TEST(cudaMemcpy(
+          localDataBuf.ptr,
+          expected.data(),
+          expected.size(),
+          cudaMemcpyHostToDevice));
+    } else {
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      test::testBurstPutAndFlush(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          kBytesPerPut,
+          numBurstPuts,
+          1,
+          32);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      std::vector<uint8_t> actual(expected.size());
+      CUDACHECK_TEST(cudaMemcpy(
+          actual.data(),
+          localDataBuf.ptr,
+          actual.size(),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(actual, expected);
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    if (globalRank == 0) {
+      test::testPutSignalCounter(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          kBytesPerPut,
+          kSignalId,
+          1,
+          kCounterId,
+          1,
+          1,
+          32,
+          numCompanionOps);
+      test::testWaitCounter(peerTransport, kCounterId, numCompanionOps, 1, 32);
+    } else {
+      test::testWaitSignal(peerTransport, kSignalId, numCompanionOps, 1, 32);
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  }
+}
+
 // =============================================================================
 // Signal Only Test - Tests sending signals without data
 // =============================================================================
@@ -1777,7 +1954,7 @@ TEST_F(
 }
 
 // ANS (nvcompdx) is NVIDIA-only; the compressed CopyOp is not built on AMD/HIP.
-#ifndef __HIP_PLATFORM_AMD__
+#if !defined(__HIP_PLATFORM_AMD__) && defined(PIPES_ENABLE_ANS_COMPRESSION)
 // Round-trips a payload through the variable-size (ANS-compressed) CopyOp over
 // the blocking send()/recv() path added in D111967119: rank 0 compresses+sends,
 // rank 1 recvs+decompresses, and the received bytes must match the sent
@@ -1899,7 +2076,7 @@ TEST_F(
   runIbgdaAnsBlockingRoundTrip(
       localRank, globalRank, numRanks, /*maxSignalBytes=*/256 * 1024);
 }
-#endif // __HIP_PLATFORM_AMD__
+#endif // !__HIP_PLATFORM_AMD__ && PIPES_ENABLE_ANS_COMPRESSION
 
 TEST_F(
     MultipeerIbgdaTransportTestFixture,

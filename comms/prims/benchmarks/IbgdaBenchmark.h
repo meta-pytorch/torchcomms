@@ -103,6 +103,22 @@ void launchIbgdaPutSignalFlushBatch(
     cudaStream_t stream);
 
 /**
+ * Launch batched kernel: put + signal, wait for the WRITE ticket, then flush
+ * the trailing signal. A collapsed CQ can satisfy the second poll from the
+ * frontier advanced by the first.
+ */
+void launchIbgdaPutSignalWaitLocalFlushBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream);
+
+/**
  * Launch batched kernel: one thread per block uses the thread-scope put +
  * flush API on a block-private buffer slice.
  *

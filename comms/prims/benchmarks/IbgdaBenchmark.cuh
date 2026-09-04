@@ -76,6 +76,16 @@ __global__ void ibgdaPutSignalWaitCounterBatchKernel(
     int numIters,
     unsigned long long* totalCycles);
 
+__global__ void ibgdaPutSignalWaitLocalFlushBatchKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles);
+
 __global__ void ibgdaSignalOnlyBatchKernel(
     P2pIbTransportDevice transport,
     IbgdaRemoteBuffer remoteSignalBuf,
