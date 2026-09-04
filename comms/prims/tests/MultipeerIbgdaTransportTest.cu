@@ -256,6 +256,43 @@ void testMultiplePutAndSignal(
   }
 }
 
+__global__ void burstPutAndFlushKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    for (int i = 0; i < numPuts; ++i) {
+      transport.put(
+          localBuf.subBuffer(i * bytesPerPut),
+          remoteBuf.subBuffer(i * bytesPerPut),
+          bytesPerPut,
+          /*signalId=*/-1,
+          /*signalVal=*/0);
+    }
+    transport.flush();
+  }
+}
+
+void testBurstPutAndFlush(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    int numBlocks,
+    int blockSize) {
+  burstPutAndFlushKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, bytesPerPut, numPuts);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 // =============================================================================
 // Kernel: Signal only (no data)
 // =============================================================================
@@ -1246,18 +1283,21 @@ __global__ void putSignalCounterKernel(
     int signalId,
     uint64_t signalVal,
     int counterId,
-    uint64_t counterVal) {
+    uint64_t counterVal,
+    int numIterations) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport.put(
-        localDataBuf,
-        remoteDataBuf,
-        nbytes,
-        signalId,
-        signalVal,
-        counterId,
-        counterVal);
-    transport.wait_counter(counterId, counterVal);
+    for (int i = 0; i < numIterations; ++i) {
+      transport.put(
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          signalId,
+          signalVal,
+          counterId,
+          counterVal);
+    }
+    transport.wait_counter(counterId, counterVal * numIterations);
   }
 }
 
@@ -1271,7 +1311,8 @@ void testPutSignalCounter(
     int counterId,
     uint64_t counterVal,
     int numBlocks,
-    int blockSize) {
+    int blockSize,
+    int numIterations) {
   putSignalCounterKernel<<<numBlocks, blockSize>>>(
       deviceTransportPtr,
       localDataBuf,
@@ -1280,7 +1321,8 @@ void testPutSignalCounter(
       signalId,
       signalVal,
       counterId,
-      counterVal);
+      counterVal,
+      numIterations);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -1372,21 +1414,35 @@ void testMultiQpPutAndSignal(
 // =============================================================================
 // Kernel: put + flush against a caller-supplied abort handle
 //
-// No signal is posted -- the point is to reach the completion drain, and a
-// signal would only add a second WQE that fails the same way.
+// The first bad-rkey WQE puts the RC QP into error; the later valid-rkey WQEs
+// become flush errors. Posting them before one drain verifies that a collapsed
+// CQ still reports an error after later completions overwrite its single slot.
 // =============================================================================
 
 __global__ void putAndFlushWithAbortKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
+    IbgdaRemoteBuffer poisonedRemoteBuf,
+    IbgdaRemoteBuffer validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
     abort.start();
     transport.put(
-        localBuf, remoteBuf, nbytes, /*signalId=*/-1, /*signalVal=*/0);
+        localBuf,
+        poisonedRemoteBuf,
+        nbytes,
+        /*signalId=*/-1,
+        /*signalVal=*/0);
+    for (int i = 0; i < 4; ++i) {
+      transport.put(
+          localBuf,
+          validRemoteBuf,
+          nbytes,
+          /*signalId=*/-1,
+          /*signalVal=*/0);
+    }
     transport.flush(abort);
   }
 }
@@ -1508,13 +1564,14 @@ void testRegisteredSendDrainWithAbort(
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    const IbgdaRemoteBuffer& validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort,
     int numBlocks,
     int blockSize) {
   putAndFlushWithAbortKernel<<<numBlocks, blockSize>>>(
-      transport, localBuf, remoteBuf, nbytes, abort);
+      transport, localBuf, poisonedRemoteBuf, validRemoteBuf, nbytes, abort);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

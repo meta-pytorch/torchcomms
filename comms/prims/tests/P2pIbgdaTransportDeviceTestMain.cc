@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -84,6 +85,78 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, DefaultConstruction) {
     runTestP2pTransportDefaultConstruction(d_success);
   });
 }
+
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(P2pIbgdaTransportDeviceTestFixture, CollapsedCqPollerAdvancesFrontier) {
+  constexpr uint8_t kRequestCompletion = 0;
+  const std::vector<std::pair<CollapsedCqPollCase, uint64_t>> cases{
+      {{0, 0, 32, 0, kRequestCompletion, true}, 1},
+      {{0, 1, 32, 1, kRequestCompletion, false}, 2},
+      {{0, 0, 32, 5, kRequestCompletion, false}, 6},
+      {{65534, 65535, 32, 65535, kRequestCompletion, false}, 65536},
+      {{65534, 65535, 32, 1, kRequestCompletion, false}, 65538},
+      {{65535, 65536, 32, 0, kRequestCompletion, false}, 65537},
+      {{65536, 65536, 32, 1, kRequestCompletion, false}, 65538},
+  };
+
+  for (const auto& [testCase, expectedConsumerIndex] : cases) {
+    SCOPED_TRACE(testCase.ticket);
+    CollapsedCqPollResult result{};
+    CUDACHECK_TEST(runTestCollapsedCqPoll(testCase, &result));
+    EXPECT_EQ(result.status, 0);
+    EXPECT_EQ(result.finalConsumerIndex, expectedConsumerIndex);
+  }
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, CollapsedCqPollerStaysBusy) {
+  constexpr uint8_t kRequestCompletion = 0;
+  constexpr uint8_t kInvalidCompletion = 15;
+  const std::vector<CollapsedCqPollCase> cases{
+      {0, 1, 32, 0, kRequestCompletion, false},
+      {0, 32, 32, 31, kRequestCompletion, false},
+      {0, 32, 32, 100, kRequestCompletion, false},
+      {0, 0, 32, 0, kInvalidCompletion, false},
+      {65535, 65536, 32, 65535, kRequestCompletion, false},
+      {65535, 65541, 32, 65535, kRequestCompletion, false},
+  };
+
+  for (const auto& testCase : cases) {
+    SCOPED_TRACE(testCase.ticket);
+    CollapsedCqPollResult result{};
+    CUDACHECK_TEST(runTestCollapsedCqPoll(testCase, &result));
+    EXPECT_EQ(result.status, EBUSY);
+    EXPECT_EQ(result.finalConsumerIndex, testCase.initialConsumerIndex);
+  }
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    CollapsedCqPollerAcceptsRetiredTicket) {
+  constexpr uint8_t kInvalidCompletion = 15;
+  const CollapsedCqPollCase testCase{6, 3, 32, 0, kInvalidCompletion, false};
+  CollapsedCqPollResult result{};
+  CUDACHECK_TEST(runTestCollapsedCqPoll(testCase, &result));
+  EXPECT_EQ(result.status, 0);
+  EXPECT_EQ(result.finalConsumerIndex, 6);
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, CollapsedCqWaitReturnsError) {
+  constexpr uint8_t kRequestErrorCompletion = 13;
+  const std::vector<CollapsedCqPollCase> cases{
+      {0, 0, 32, 0, kRequestErrorCompletion, true},
+      // A sticky error must win over the bounded-window EBUSY check. Otherwise
+      // SQ reclamation can spin forever after the QP enters error state.
+      {0, 32, 32, 0, kRequestErrorCompletion, false},
+  };
+  for (const auto& testCase : cases) {
+    SCOPED_TRACE(testCase.ticket);
+    CollapsedCqPollResult result{};
+    CUDACHECK_TEST(runTestCollapsedCqPoll(testCase, &result));
+    EXPECT_EQ(result.status, -EIO);
+    EXPECT_EQ(result.finalConsumerIndex, 0);
+  }
+}
+#endif
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {
   // Test that read_signal returns correct values for each signal slot

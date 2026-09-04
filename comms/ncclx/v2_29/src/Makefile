@@ -42,6 +42,10 @@ endif
 ifeq ($(ENABLE_PRIMS),1)
 CXXFLAGS += -DENABLE_PRIMS
 NVCUFLAGS += -DENABLE_PRIMS
+# v2.29's bundled host GPUNetIO always creates ring CQs, even when Prims sees
+# the newer CONDA_INCLUDE_DIR header. Keep host creation and device polling ring.
+CXXFLAGS += -DPRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+NVCUFLAGS += -DPRIMS_IBGDA_DISABLE_COLLAPSED_CQ
 endif
 
 ##### src files
@@ -324,7 +328,10 @@ staticlib : $(LIBDIR)/$(STATICLIBTARGET)
 binary : $(BINDIR)/$(BINNAME)
 
 $(DEVMANIFEST): ALWAYS_REBUILD $(INCTARGETS)
-	$(MAKE) -C ./device BASE_DIR=$(BASE_DIR) CONDA_INCLUDE_DIR=$(CONDA_INCLUDE_DIR)
+	$(MAKE) -C ./device \
+		BASE_DIR=$(BASE_DIR) \
+		CONDA_INCLUDE_DIR=$(CONDA_INCLUDE_DIR) \
+		ENABLE_PRIMS=$(ENABLE_PRIMS)
 
 # Empty target to force rebuild
 .PHONY: ALWAYS_REBUILD

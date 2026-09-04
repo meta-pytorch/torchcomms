@@ -52,6 +52,7 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("NCCL_MIN_CTAS");
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
+    unsetenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
     unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
   }
 };
@@ -83,6 +84,29 @@ TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeParsesAllModes) {
     setenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE", value, 1);
     ncclCvarInit();
     EXPECT_EQ(MCCL_IBGDA_RELIABLE_DOORBELL_MODE, expected);
+  }
+}
+
+TEST_F(CvarInitTest, McclIbgdaCollapsedCqModeDefaultsToAuto) {
+  MCCL_IBGDA_COLLAPSED_CQ_MODE = MCCL_IBGDA_COLLAPSED_CQ_MODE::off;
+  ncclCvarInit();
+  EXPECT_EQ(MCCL_IBGDA_COLLAPSED_CQ_MODE, MCCL_IBGDA_COLLAPSED_CQ_MODE::auto_);
+  EXPECT_EQ(static_cast<int>(MCCL_IBGDA_COLLAPSED_CQ_MODE_DEFAULTCVARVALUE), 0);
+}
+
+TEST_F(CvarInitTest, McclIbgdaCollapsedCqModeParsesAllModes) {
+  using Mode = decltype(MCCL_IBGDA_COLLAPSED_CQ_MODE);
+  const std::vector<std::pair<const char*, Mode>> modes{
+      {"auto", Mode::auto_},
+      {"on", Mode::on},
+      {"off", Mode::off},
+  };
+  for (const auto& [value, expected] : modes) {
+    MCCL_IBGDA_COLLAPSED_CQ_MODE =
+        expected == Mode::auto_ ? Mode::on : Mode::auto_;
+    setenv("MCCL_IBGDA_COLLAPSED_CQ_MODE", value, 1);
+    ncclCvarInit();
+    EXPECT_EQ(MCCL_IBGDA_COLLAPSED_CQ_MODE, expected);
   }
 }
 

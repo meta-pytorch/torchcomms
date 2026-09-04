@@ -50,6 +50,7 @@ using doca_gpu_dev_verbs_wqe = ::prims_amd_gda_gpu_dev_verbs_wqe;
 using doca_gpu_dev_verbs_cq = ::prims_amd_gda_gpu_dev_verbs_cq;
 using doca_gpu_dev_verbs_ticket_t = uint64_t;
 using doca_gpu_dev_verbs_wqe_ctrl_flags = uint8_t;
+using doca_gpu_dev_verbs_resource_sharing_mode = int;
 
 // The shims below all carry the `ACQ` acquire-scope template parameter, so
 // declare the same capability the vendored DOCA header declares. Without this

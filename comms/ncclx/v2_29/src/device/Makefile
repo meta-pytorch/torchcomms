@@ -42,6 +42,9 @@ endif
 ifeq ($(ENABLE_PRIMS),1)
 NVCUFLAGS += --compiler-options "-DENABLE_PRIMS"
 NVCUFLAGS_SYM += --compiler-options "-DENABLE_PRIMS"
+# Match the host Makefile: its bundled GPUNetIO can create only ring CQs.
+NVCUFLAGS += -DPRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+NVCUFLAGS_SYM += -DPRIMS_IBGDA_DISABLE_COLLAPSED_CQ
 endif
 
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY

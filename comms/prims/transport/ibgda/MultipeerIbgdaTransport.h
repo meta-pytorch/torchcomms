@@ -215,6 +215,10 @@ class MultipeerIbgdaTransport
    */
   int getGidIndex() const;
 
+  bool collapsedCqActive() const {
+    return collapsedCq_;
+  }
+
  private:
   // Helper methods
   void initDocaGpu();
@@ -259,6 +263,10 @@ class MultipeerIbgdaTransport
   // taken in the ctor, then clamped to NIC capability in openIbDevice(). The
   // default of 1 reproduces the pre-existing wire behaviour exactly.
   uint8_t maxRdAtomic_{1};
+
+  // One local format for every device-visible main and companion CQ. Resolved
+  // before any QP is created; the host-only loopback CQs remain ordinary rings.
+  bool collapsedCq_{false};
 
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().

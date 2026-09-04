@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -50,6 +51,7 @@ constexpr int kHopLimit = 255;
 // The device-visible companion QP is created by create_qp_group_hl() with
 // mainAttr and therefore uses config_.qpDepth.
 constexpr uint32_t kLoopbackCompanionQpDepth = 32;
+constexpr uint32_t kCollapsedCqProbeDepth = 32;
 } // namespace
 
 namespace {
@@ -153,6 +155,41 @@ uint8_t resolveMaxRdAtomic(const MultipeerIbgdaTransportConfig& config) {
         fmt::format("maxRdAtomic={} is not a power of two in [1, 128]", value));
   }
   return static_cast<uint8_t>(value);
+}
+
+std::optional<bool> resolveCollapsedCqMode(
+    const MultipeerIbgdaTransportConfig& config) {
+  // Standalone Link-EP does not initialize NCCL CVARs, but must still honor
+  // the environment kill switch before constructing this transport. Remove
+  // this direct read when Link-EP initializes CVARs before transport setup.
+  if (const char* mode = std::getenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
+      mode != nullptr) {
+    if (std::strcmp(mode, "on") == 0) {
+      return true;
+    }
+    if (std::strcmp(mode, "off") == 0) {
+      return false;
+    }
+    if (std::strcmp(mode, "auto") == 0) {
+      return config.enableCollapsedCq;
+    }
+    LOG_FIRST_N(WARNING, 1) << "Ignoring unknown MCCL_IBGDA_COLLAPSED_CQ_MODE='"
+                            << mode << "'; expected auto, on, or off";
+  }
+  if (MCCL_IBGDA_COLLAPSED_CQ_MODE ==
+      MCCL_IBGDA_COLLAPSED_CQ_MODE_DEFAULTCVARVALUE) {
+    return config.enableCollapsedCq;
+  }
+  using Mode = decltype(MCCL_IBGDA_COLLAPSED_CQ_MODE);
+  switch (MCCL_IBGDA_COLLAPSED_CQ_MODE) {
+    case Mode::on:
+      return true;
+    case Mode::off:
+      return false;
+    case Mode::auto_:
+      break;
+  }
+  return std::nullopt;
 }
 
 // Largest power of two <= limit, or 0 when limit is 0.
@@ -452,6 +489,90 @@ void checkDocaError(doca_error_t err, const char* msg) {
   }
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+#ifndef PRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+// Probe through the high-level QP path so the CQ uses GPU UMEM, like
+// production. CX8 rejects an otherwise equivalent collapsed CQ backed by
+// internal host UMEM.
+doca_error_t
+tryCreateProbeQp(doca_gpu* gpuDev, ::ibv_pd* ibvPd, bool collapsed) {
+  doca_gpu_verbs_qp_init_attr_hl attr{};
+  attr.gpu_dev = gpuDev;
+  attr.ibpd = ibvPd;
+  attr.sq_nwqe = kCollapsedCqProbeDepth;
+  attr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
+  attr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
+  attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+  attr.cq_collapsed = collapsed;
+
+  doca_gpu_verbs_qp_hl* qp = nullptr;
+  const doca_error_t createStatus = doca_gpu_verbs_create_qp_hl(&attr, &qp);
+  if (createStatus != DOCA_SUCCESS) {
+    return createStatus;
+  }
+  if (qp == nullptr) {
+    return DOCA_ERROR_BAD_STATE;
+  }
+  checkDocaError(
+      doca_gpu_verbs_destroy_qp_hl(qp),
+      "Failed to destroy collapsed-CQ capability-probe QP");
+  return DOCA_SUCCESS;
+}
+#endif
+
+bool resolveCollapsedCqForNic(
+    const MultipeerIbgdaTransportConfig& config,
+    doca_gpu* gpuDev,
+    ::ibv_pd* ibvPd,
+    const std::string& deviceName) {
+#ifdef PRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+  static_cast<void>(gpuDev);
+  static_cast<void>(ibvPd);
+  if (config.enableCollapsedCq.value_or(false)) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} cannot use collapsed CQs because this build links a GPUNetIO "
+            "host library without collapsed-CQ creation support",
+            deviceName));
+  }
+  return false;
+#else
+  if (!collapsedCqNeedsCapabilityProbe(config)) {
+    return false;
+  }
+
+  const doca_error_t collapsedStatus = tryCreateProbeQp(gpuDev, ibvPd, true);
+  if (collapsedStatus == DOCA_SUCCESS) {
+    return true;
+  }
+  if (config.enableCollapsedCq.value_or(false)) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} rejected collapsed CQ creation: {}",
+            deviceName,
+            docaErrorToString(collapsedStatus)));
+  }
+
+  const doca_error_t ringStatus = tryCreateProbeQp(gpuDev, ibvPd, false);
+  if (ringStatus != DOCA_SUCCESS) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} rejected both collapsed and ring CQ capability probes: "
+            "collapsed={}, ring={}",
+            deviceName,
+            docaErrorToString(collapsedStatus),
+            docaErrorToString(ringStatus)));
+  }
+  LOG_FIRST_N(WARNING, 1)
+      << "MultipeerIbgdaTransport: NIC " << deviceName
+      << " rejected or could not create a collapsed CQ ("
+      << docaErrorToString(collapsedStatus)
+      << "); the ring-CQ control succeeded, so auto mode will use ring CQs";
+  return false;
+#endif
+}
+#endif
+
 } // namespace
 
 // Helper method implementations
@@ -488,6 +609,9 @@ void MultipeerIbgdaTransport::openIbDevice() {
   // all NICs — same fabric/HCA generation assumed), matching the prior inline
   // behavior.
   nicDoca_.resize(numNics_);
+#ifndef __HIP_PLATFORM_AMD__
+  bool allNicsAcceptCollapsedCq = true;
+#endif
   const doca_verbs_addr_type addrType =
       (nics_[0].linkLayer == ibverbx::IBV_LINK_LAYER_INFINIBAND)
       ? DOCA_VERBS_ADDR_TYPE_IB_NO_GRH
@@ -496,6 +620,12 @@ void MultipeerIbgdaTransport::openIbDevice() {
              : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
 #ifndef __HIP_PLATFORM_AMD__
+    allNicsAcceptCollapsedCq &= resolveCollapsedCqForNic(
+        config_,
+        docaGpu_,
+        reinterpret_cast<::ibv_pd*>(nics_[n].ibvPd),
+        nics_[n].deviceName);
+
     // Narrow the read/atomic depth to the most restrictive NIC before any QP
     // exists. At the default depth of 1 this returns immediately and issues no
     // capability query.
@@ -583,6 +713,15 @@ void MultipeerIbgdaTransport::openIbDevice() {
     err = doca_verbs_ah_attr_set_sl(nicDoca_[n].ahAttr, config_.serviceLevel);
     checkDocaError(err, "Failed to set service level");
   }
+#ifndef __HIP_PLATFORM_AMD__
+  collapsedCq_ =
+      collapsedCqActiveForTransport(config_, allNicsAcceptCollapsedCq);
+  LOG(INFO) << "MultipeerIbgdaTransport: collapsed_cq_mode="
+            << (config_.enableCollapsedCq.has_value()
+                    ? (*config_.enableCollapsedCq ? "on" : "off")
+                    : "auto")
+            << " active=" << collapsedCq_;
+#endif
 }
 
 void MultipeerIbgdaTransport::allocateResources() {
@@ -941,6 +1080,13 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     mainAttr.sq_nwqe = config_.qpDepth;
     mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
     mainAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(PRIMS_IBGDA_DISABLE_COLLAPSED_CQ)
+    // Collapsed CQ: the NIC writes every CQE to slot 0 and the poller keys off
+    // the CQE's own wqe_counter instead of ring position, so one success can
+    // retire several completions at once. Applies to the device-visible main
+    // and companion QPs (create_qp_group_hl shares this attr).
+    mainAttr.cq_collapsed = collapsedCq_;
+#endif
 #ifndef __HIP_PLATFORM_AMD__
     mainAttr.send_dbr_mode_ext = nicDoca_[nic].useReliableDoorbell
         ? DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW
@@ -955,6 +1101,12 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
 #endif
 
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(PRIMS_IBGDA_DISABLE_COLLAPSED_CQ)
+    // The standalone loopback QP is the responder peer of the device companion
+    // QP; it never posts device-side WQEs and its send CQ is never polled from
+    // the GPU. Leave it a ring CQ -- CQ format is local, not negotiated.
+    loopbackAttr.cq_collapsed = false;
+#endif
     loopbackAttr.sq_nwqe = kLoopbackCompanionQpDepth;
 #ifndef __HIP_PLATFORM_AMD__
     loopbackAttr.send_dbr_mode_ext =
@@ -1017,6 +1169,7 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   params.maxChannels = config_.max_num_channels;
   params.qpDirectionCount = config_.fixedChannelDirectionCount();
   params.qpsPerConnection = config_.qpsPerConnection;
+  params.collapsedCq = collapsedCq_;
   params.h_nicDeviceIbgdaResources.resize(numNics_);
   for (int n = 0; n < numNics_; ++n) {
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
@@ -1120,6 +1273,7 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     // MCCL_IBGDA_MAX_RD_ATOMIC) before any NIC or QP exists, so a bad value
     // fails immediately.
     maxRdAtomic_ = resolveMaxRdAtomic(config_);
+    config_.enableCollapsedCq = resolveCollapsedCqMode(config_);
 
     // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
     // use the CUDA driver API for GPU memory allocation).

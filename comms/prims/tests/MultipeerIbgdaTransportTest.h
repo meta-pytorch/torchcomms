@@ -98,6 +98,19 @@ void testMultiplePutAndSignal(
     int blockSize);
 
 /**
+ * Test kernel: post a burst larger than the SQ, then flush once. Slot reuse
+ * must therefore make progress through reserve_wq_slots' internal CQ poll.
+ */
+void testBurstPutAndFlush(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Send signal only (no data, slot-index)
  */
 void testSignalOnly(
@@ -405,7 +418,8 @@ void testPutSignalCounter(
     int counterId,
     uint64_t counterVal,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    int numIterations = 1);
 
 /**
  * Test kernel: Wait for local counter to reach expected value (slot-index)
@@ -489,7 +503,8 @@ void testRegisteredSendDrainWithAbort(
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    const IbgdaRemoteBuffer& validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort,
     int numBlocks,
