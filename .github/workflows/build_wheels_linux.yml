@@ -81,10 +81,8 @@ jobs:
     with:
       repository: meta-pytorch/torchcomms
       ref: ""
-      pre-script: |
-        free -g; df -h .; ulimit -a
-      post-script: |
-        du -sh build/ncclx/obj build/ncclx/lib 2>/dev/null || true; free -g; df -h .
+      pre-script: "scripts/ci_log_resources_pre.sh"
+      post-script: "scripts/ci_log_resources_post.sh"
       build-platform: "python-build-package"
       build-command: "scripts/_build_wheel.sh"
       smoke-test-script: "scripts/smoke_test.py"
