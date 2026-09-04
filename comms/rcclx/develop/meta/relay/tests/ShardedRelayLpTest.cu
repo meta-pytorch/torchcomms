@@ -463,7 +463,6 @@ TEST(ShardedRelayLpGate, Fp32IsNeverGatedLaterThanBf16) {
 // Provenance for every entry is the table in sharded_relay_lp.h. Update both
 // together, and only from a measurement.
 TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
-  constexpr size_t kNever = std::numeric_limits<size_t>::max();
   constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
@@ -520,11 +519,21 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(
       lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k60Mib);
 
-  // ---- the one exclusion ----
+  // ---- the former exclusion, now the best all-to-all shape in this table ----
 
-  // The only shape that never wins at any size, and the only one that gets
-  // WORSE with size: 0.95x-0.97x small, 0.88x at 135-144 MB.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclBfloat16), kNever);
+  // This was kNever, on the reading that it never won at any size and got WORSE
+  // with size (0.95x-0.97x small, 0.88x at 135-144 MB). The trend was real and
+  // the diagnosis was not: the 2-active schedules folded the full-precision
+  // diagonal into a wire-format comm group, where it is ~8x (non-pipelined) to
+  // ~11x (pipelined) the size of every op sharing that group once low precision
+  // halves them. The 2-active ALL-GATHER has the same 50/50 local-to-wire split
+  // and always paid 1.30x, because it issues that copy OUTSIDE its groups.
+  //
+  // Unfolded under low precision only, this rises monotonically: 1.10x at
+  // 13.5 MB, 1.32x at 27, 1.12x-1.16x across 31.5-40, 1.25x-1.37x to 144 MB,
+  // and 1.50x/1.55x/1.64x at 256/512 MB/1 GB. 9 MB reads 0.97x and 4.5 MB
+  // 0.93x, so 12 MiB sits just below the first win.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclBfloat16), k12Mib);
 }
 
 // The fp32 table, pinned the same way and for the same reason as the bf16 one.
@@ -537,8 +546,8 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
 // that 4.5 MiB is the crossover. Rounding them down would be asserting data
 // nobody took.
 TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
-  constexpr size_t kNever = std::numeric_limits<size_t>::max();
   constexpr size_t k4p5Mib = (static_cast<size_t>(9) << 20) / 2;
+  constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
   constexpr size_t k9Mib = static_cast<size_t>(9) << 20;
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k13p5Mib = (static_cast<size_t>(27) << 20) / 2;
@@ -590,11 +599,20 @@ TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclFloat32), k60Mib);
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1, ncclFloat32), k13p5Mib);
 
-  // The ONE fp32 exclusion. Peaks at 1.12x at 27 MB and falls back to
-  // 0.99x-1.02x from 63 MB up: the same wrong-way-with-size trend as bf16,
-  // shifted up by the extra saving. A min-bytes gate cannot express a band that
-  // closes again.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclFloat32), kNever);
+  // ---- the former exclusion, and now the largest win in either table ----
+
+  // This was the ONE fp32 exclusion, recorded as peaking at 1.12x at 27 MB and
+  // falling back to 0.99x-1.02x from 63 MB up -- "a band that closes again",
+  // which a min-bytes gate cannot express. Same cause as bf16: the
+  // full-precision diagonal folded into a wire-format comm group. The old peak
+  // at 27 MB is the tell -- that is the only size on the non-pipelined path,
+  // and the fall-back began exactly where the pipeline deepens.
+  //
+  // fp32 was hurt roughly twice as badly as bf16, its self op carrying 4 B/elem
+  // against ~1.03 B/elem of wire, and gains correspondingly more: 1.06x at
+  // 9 MB, 1.20x at 13.5, 1.62x at 27, 1.35x-1.93x to 144 MB, and
+  // 2.22x/2.35x/2.53x at 256/512 MB/1 GB. 4.5 MB is a 1.00x tie.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclFloat32), k8Mib);
 }
 
 TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {

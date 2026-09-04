@@ -111,11 +111,29 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       case LpCollective::AllToAll:
         // A=4: flat 0.96x-0.97x through 13.5 MB, then 1.07x-1.17x from 27 MB.
         //
-        // A=2 is the only shape that never wins at any size in either grouping,
-        // and it gets WORSE with size (0.95x-0.97x small, 0.88x at 135-144 MB),
-        // which is the opposite of every other shape here. Whatever it is, it
-        // is not a threshold. fp32 declines it too, for the same trend.
-        return nActiveRanksPerGroup == 4 ? k24Mib : kNever;
+        // A=2 is ENABLED NOW. It used to be the one shape that never won at any
+        // size and got WORSE with size (0.95x-0.97x small, 0.88x at
+        // 135-144 MB), which was recorded here as "whatever it is, it is not a
+        // threshold". That was right: it was the DIAGONAL FOLD. The 2-active
+        // schedules kept the diagonal as a full-precision self P2P pair inside
+        // a wire-format comm group, where it is ~8x (non-pipelined) to ~11x
+        // (pipelined, T=4) the size of every op sharing its group once low
+        // precision halves those ops, so it became the group's critical path.
+        // The all-gather, which moves the same bytes over the same links with
+        // the same 50/50 local-to-wire split, has always issued that copy
+        // outside its groups and always paid 1.30x.
+        //
+        // Unfolded under low precision only, A=2 now rises monotonically:
+        // 1.10x at 13.5 MB, 1.32x at 27, 1.12x-1.16x across 31.5-40, then
+        // 1.25x-1.37x to 144 MB and 1.50x/1.55x/1.64x at 256/512 MB/1 GB --
+        // the best all-to-all shape in this table. 9 MB reads 0.97x and 4.5 MB
+        // 0.93x, so 12 MiB sits just below the first win.
+        //
+        // A=4 was measured both ways and KEPT ITS FOLD: its ratio is only ~3.2x
+        // at T=2, mild enough that the in-kernel copy still beats a serialized
+        // memcpy. Folded 1.24x-1.31x against unfolded 1.24x-1.27x at
+        // 63-144 MB.
+        return nActiveRanksPerGroup == 4 ? k24Mib : k12Mib;
     }
     return kNever;
   }
@@ -195,11 +213,21 @@ lpMinBytesFp32(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       case LpCollective::AllToAll:
         // A=4: 1.02x at 9 MB, 1.18x at 13.5 MB, up to 1.90x.
         //
-        // A=2 is the ONE fp32 exclusion. It peaks at 1.12x at 27 MB and falls
-        // back to 0.99x-1.02x from 63 MB up -- the same wrong-way-with-size
-        // trend as bf16 (0.88x-0.97x), shifted up by the extra saving. A
-        // min-bytes gate cannot express a band that closes again.
-        return nActiveRanksPerGroup == 4 ? k13p5Mib : kNever;
+        // A=2 is ENABLED NOW, and it is the largest win in either table. It was
+        // the ONE fp32 exclusion, described here as peaking at 1.12x at 27 MB
+        // and falling back to 0.99x-1.02x from 63 MB up -- "a band that closes
+        // again", which a min-bytes gate cannot express. Same cause as bf16:
+        // the full-precision diagonal folded into a wire-format comm group.
+        // Note the old peak was at 27 MB, the only size on the non-pipelined
+        // path, and the fall-back began exactly where the pipeline deepens.
+        //
+        // fp32 is hurt worse by the fold than bf16 -- the self op carries
+        // 4 B/elem against ~1.03 B/elem of wire, so it is roughly twice the
+        // outlier -- and correspondingly gains more from unfolding: 1.06x at
+        // 9 MB, 1.20x at 13.5, 1.62x at 27, then 1.35x-1.93x to 144 MB and
+        // 2.22x/2.35x/2.53x at 256/512 MB/1 GB. 4.5 MB is a 1.00x tie, so
+        // 8 MiB sits just below the first win.
+        return nActiveRanksPerGroup == 4 ? k13p5Mib : k8Mib;
     }
     return kNever;
   }
