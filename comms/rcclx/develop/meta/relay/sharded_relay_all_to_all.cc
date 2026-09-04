@@ -956,7 +956,14 @@ static ncclResult_t shardedRelayAllToAll2Active(
   // transfer, and no second launch. Same gate as shardedRelayAllToAllFlat --
   // in the fused case all eight ranks would issue a self pair, which made a
   // fused all-gather routing test fail intermittently.
-  const bool foldDiagonalIntoGroup = (nGroups == 1);
+  //
+  // NOT under low precision, for the reason the pipelined sibling documents at
+  // length: the self op keeps the caller's dtype while every other op in its
+  // group carries wire bytes, and here it is the WHOLE segment against
+  // chunkSize = sc/(numHelpers + 2), so it is ~8x the wire ops in elements and
+  // ~15x in bytes -- the largest outlier of any relay schedule. Once low
+  // precision halves the transfers it dominates the group.
+  const bool foldDiagonalIntoGroup = (nGroups == 1) && !lp;
 
   if (!foldDiagonalIntoGroup && myActiveGroup >= 0 &&
       segmentCounts[myActiveGroup] > 0) {
@@ -1208,12 +1215,18 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
   const size_t directBase = static_cast<size_t>(H) * tileStride;
   const size_t lastDirect = sc - directBase - tileStride;
 
-  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
-  // which RCCL services as a local copy inside the same kernel: no transfer,
-  // and no second launch. It is split one chunk per group so the self op stays
-  // the same order of size as the u-sized ops sharing its group -- RCCL budgets
-  // channels per operation, so a single sc-sized self op would be the outlier
-  // in whichever group it landed in.
+  // AT FULL PRECISION the diagonal rides along in the T+1 comm groups below as
+  // a self P2P pair, which RCCL services as a local copy inside the same
+  // kernel: no transfer, and no second launch. It is split one chunk per group
+  // to keep any single self op from being the whole segment.
+  //
+  // UNDER LOW PRECISION it must NOT ride along; see the copy below. The split
+  // does not make the self op comparable to the ops it shares a group with:
+  // diagChunk is sc/(T+1) while every wire op is u = sc/((H+1)T+1), so at T=4,
+  // H=6 the self op is 5.8x larger in ELEMENTS, and because it keeps the
+  // caller's dtype while the others carry wire bytes it is ~11x larger in
+  // BYTES. RCCL budgets channels per operation, so it cannot borrow the
+  // bandwidth the wire format freed.
   size_t exchangeSegOffset = 0;
   size_t diagOffset = 0;
   if (myActiveGroup == 0) {
@@ -1234,6 +1247,26 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       wantLp, comm, stream, sc, u, cfg.nActiveRanks, &lpPlan);
   const rcclx::relay::RelayWire wire =
       rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // DIAGONAL, LOW PRECISION ONLY: a plain copy outside the comm groups, which
+  // is what the 2-active all-gather has always done.
+  //
+  // The diagonal is full precision on both paths -- it never crosses a rank
+  // boundary, so the wire format buys it nothing. Folding it into the groups is
+  // free while the wire ops are large enough to hide it, which is why full
+  // precision keeps doing that. Low precision halves them, the self copy does
+  // not shrink at all, and it becomes the per-group critical path: measured
+  // 0.94x-0.97x LP-vs-FP across 31.5-144 MB, degrading as T rises, against the
+  // all-gather's 1.30x at the same boundary-crossing bytes with the same
+  // quantize and dequantize.
+  if (lp && myActiveGroup == 0 && sc > 0) {
+    cudaMemcpyAsync(
+        static_cast<char*>(recvBuffs[0]) + diagOffset * elementSize,
+        static_cast<const char*>(sendBuffs[0]) + diagOffset * elementSize,
+        sc * elementSize,
+        cudaMemcpyDeviceToDevice,
+        stream);
+  }
 
   // One quantize over the whole exchange segment, before the first group. Every
   // send in the pipeline reads it and nothing is produced mid-call. The
@@ -1296,25 +1329,29 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       const size_t directOffset = directBase + static_cast<size_t>(k) * u;
       const size_t directSize = (k < T) ? u : lastDirect;
 
-      const size_t diagPieceOffset =
-          diagOffset + static_cast<size_t>(k) * diagChunk;
-      const size_t diagPieceSize =
-          (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
-      NCCLCHECK(ncclSend(
-          static_cast<const char*>(sendBuffs[0]) +
-              diagPieceOffset * elementSize,
-          diagPieceSize,
-          datatype,
-          cfg.activeRanks[cfg.myActiveIndex],
-          comm,
-          stream));
-      NCCLCHECK(ncclRecv(
-          static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
-          diagPieceSize,
-          datatype,
-          cfg.activeRanks[cfg.myActiveIndex],
-          comm,
-          stream));
+      // Full precision only: under low precision the whole diagonal was copied
+      // once before the loop, so posting it here would double-write it.
+      if (!lp) {
+        const size_t diagPieceOffset =
+            diagOffset + static_cast<size_t>(k) * diagChunk;
+        const size_t diagPieceSize =
+            (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
+        NCCLCHECK(ncclSend(
+            static_cast<const char*>(sendBuffs[0]) +
+                diagPieceOffset * elementSize,
+            diagPieceSize,
+            datatype,
+            cfg.activeRanks[cfg.myActiveIndex],
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
+            diagPieceSize,
+            datatype,
+            cfg.activeRanks[cfg.myActiveIndex],
+            comm,
+            stream));
+      }
 
       if (k < T) {
         for (int h = 0; h < H; h++) {
@@ -1755,12 +1792,19 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     return ncclInvalidArgument;
   }
 
-  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
-  // which RCCL services as a local copy inside the same kernel: no transfer,
-  // and no second launch. It is split one chunk per group so the self op stays
-  // the same order of size as the relay and direct ops sharing its group --
-  // RCCL budgets channels per operation, so a single sc-sized self op alongside
-  // u-sized transfers would be the outlier in the group it landed in.
+  // AT FULL PRECISION the diagonal rides along in the T+1 comm groups below as
+  // a self P2P pair, which RCCL services as a local copy inside the same
+  // kernel: no transfer, and no second launch. It is split one chunk per group
+  // to keep any single self op from being the whole segment.
+  //
+  // It stays folded UNDER LOW PRECISION TOO, unlike the 2-active path. Here
+  // diagChunk is sc/(T+1) against u = sc/(2T+1), so at T=2 the self op is 1.67x
+  // the wire ops in elements and ~3.2x in bytes -- a mild enough outlier that
+  // the fold is still the cheaper option. MEASURED both ways at 63-144 MB,
+  // bf16, forced LP: folded 1.24x-1.31x, unfolded 1.24x-1.27x, i.e. unfolding
+  // costs a consistent ~0.03 because it trades a hidden in-kernel copy for a
+  // serialized memcpy. The 2-active path's ratio is ~11x and there the trade
+  // goes the other way by a wide margin.
   const size_t diagOffset =
       cfg.isActiveRank ? static_cast<size_t>(cfg.myActiveIndex) * sc : 0;
   const size_t diagChunk =
