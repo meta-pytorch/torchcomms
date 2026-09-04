@@ -452,12 +452,14 @@ ncclResult_t ncclAllReduceWithBias_impl(const void* sendbuff, void* recvbuff, si
 NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupAllReduce, 
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 
 ncclResult_t ncclShardedRelayMultiGroupAllReduce_impl(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   // Validate operation - only SUM and AVG are supported
   if (op != ncclSum && op != ncclAvg) {
     WARN("ncclShardedRelayMultiGroupAllReduce: only ncclSum and ncclAvg operations are supported");
@@ -497,27 +499,32 @@ ncclResult_t ncclShardedRelayMultiGroupAllReduce_impl(
         nRanks, nActiveRanksPerGroup, nGroups);
   return ncclShardedRelayMultiGroupAllReduceImpl(
       sendBuffs, recvBuffs, counts,
-      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 ncclResult_t ncclShardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllReduce_impl(
       sendBuffs, recvBuffs, counts,
-      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupReduceScatter,
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 
 ncclResult_t ncclShardedRelayMultiGroupReduceScatter_impl(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   // Validate operation - only SUM and AVG are supported
   if (op != ncclSum && op != ncclAvg) {
     WARN("ncclShardedRelayMultiGroupReduceScatter: only ncclSum and ncclAvg operations are supported");
@@ -557,27 +564,32 @@ ncclResult_t ncclShardedRelayMultiGroupReduceScatter_impl(
         nRanks, nActiveRanksPerGroup, nGroups);
   return ncclShardedRelayMultiGroupReduceScatterImpl(
       sendBuffs, recvBuffs, recvCounts,
-      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 ncclResult_t ncclShardedRelayMultiGroupReduceScatter(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupReduceScatter_impl(
       sendBuffs, recvBuffs, recvCounts,
-      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, op, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupAllToAll,
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 
 ncclResult_t ncclShardedRelayMultiGroupAllToAll_impl(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   // Validate buffer pointers
   if (recvBuffs == nullptr || allActiveRanks == nullptr || segmentCounts == nullptr ||
       sendBuffs == nullptr) {
@@ -611,27 +623,32 @@ ncclResult_t ncclShardedRelayMultiGroupAllToAll_impl(
         nRanks, nActiveRanksPerGroup, nGroups);
   return ncclShardedRelayMultiGroupAllToAllImpl(
       sendBuffs, recvBuffs, segmentCounts,
-      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 ncclResult_t ncclShardedRelayMultiGroupAllToAll(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllToAll_impl(
       sendBuffs, recvBuffs, segmentCounts,
-      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 NCCL_API(ncclResult_t, ncclShardedRelayMultiGroupAllGather,
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 
 ncclResult_t ncclShardedRelayMultiGroupAllGather_impl(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
     ncclDataType_t datatype, ncclComm* comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   // Validate buffer pointers
   if (recvBuffs == nullptr || allActiveRanks == nullptr || sendCounts == nullptr ||
       sendBuffs == nullptr) {
@@ -665,16 +682,32 @@ ncclResult_t ncclShardedRelayMultiGroupAllGather_impl(
         nRanks, nActiveRanksPerGroup, nGroups);
   return ncclShardedRelayMultiGroupAllGatherImpl(
       sendBuffs, recvBuffs, sendCounts,
-      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
 }
 
 ncclResult_t ncclShardedRelayMultiGroupAllGather(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups) {
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllGather_impl(
       sendBuffs, recvBuffs, sendCounts,
-      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups);
+      datatype, comm, stream, allActiveRanks, nActiveRanksPerGroup, nGroups,
+      lowPrecision);
+}
+
+// The ABI probe for consumers that bind the four entry points above through
+// ctypes, with no compiler and no linker in the chain to notice that their
+// signatures changed. See nccl.h.in for why one exists at all.
+NCCL_API(int, ncclShardedRelayAbiVersion, void);
+
+int ncclShardedRelayAbiVersion_impl(void) {
+  return NCCL_SHARDED_RELAY_ABI_VERSION;
+}
+
+int ncclShardedRelayAbiVersion(void) {
+  return ncclShardedRelayAbiVersion_impl();
 }
 
 // Host control plane for the relay collectives. Two functions and one struct is

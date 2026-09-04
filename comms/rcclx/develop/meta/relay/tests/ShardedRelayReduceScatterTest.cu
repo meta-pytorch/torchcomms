@@ -172,7 +172,8 @@ static ncclResult_t callReduceScatterCompat(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision = 0) {
   return ncclShardedRelayMultiGroupReduceScatter(
       sendPtrs,
       recvPtrs,
@@ -183,7 +184,8 @@ static ncclResult_t callReduceScatterCompat(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
