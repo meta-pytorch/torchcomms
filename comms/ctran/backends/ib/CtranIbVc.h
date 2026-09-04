@@ -434,7 +434,7 @@ class CtranIbVirtualConn {
   }
 
   // Getter function for vcMode_
-  inline enum NCCL_CTRAN_IB_VC_MODE getVcMode() {
+  inline enum NCCL_CTRAN_IB_VC_MODE getVcMode() const {
     return vcMode_;
   }
 

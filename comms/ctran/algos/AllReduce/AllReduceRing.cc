@@ -405,6 +405,13 @@ inline void progressRecvPostFlush(
   char* tmpRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
+  // Ambient config for the spray-forced flush check in iflush. This runs
+  // on the GPE thread after ctranAllReduceRing returns, so the guard lives
+  // here (the issuing scope), mirroring the send-side progress functions.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
+
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
@@ -797,6 +804,13 @@ inline void progressRevRecvPostFlush(
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   char* tmpRecvBufRev = reinterpret_cast<char*>(resource.tmpRecvBufRev) +
       tmpChunkId * algoCtx.chunkSize;
+
+  // Ambient config for the spray-forced flush check in iflush. This runs
+  // on the GPE thread after ctranAllReduceRing returns, so the guard lives
+  // here (the issuing scope), mirroring the send-side progress functions.
+  CtranIbActiveConfigRAII activeIbConfig(
+      resource.comm->ctran_->mapper->ctranIbPtr(),
+      resource.ibConfig ? &*resource.ibConfig : nullptr);
 
   CtranMapperRequest* req = nullptr;
   FB_COMMCHECKTHROW_EX(

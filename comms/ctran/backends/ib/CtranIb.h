@@ -4,6 +4,7 @@
 #define CTRAN_IB_H_
 
 #include <folly/SocketAddress.h>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -849,6 +850,19 @@ class CtranIb {
     return activeIbConfig_;
   }
 
+  // True when a receiver-side flush is required for spray-mode data
+  // integrity even if NCCL_CTRAN_NET_FORCE_FLUSH=0: spray delivers data
+  // with plain RDMA writes and a separate WRITE_IMM notify, so the data
+  // may not be GPU-visible when the notify arrives. Spray is in effect
+  // when the ambient per-collective override selects it, or when any
+  // established VC's default mode is spray (and no override says
+  // otherwise — over-flushing in that corner is safe, only a perf cost).
+  inline bool sprayFlushRequired() const {
+    return (activeIbConfig_ != nullptr &&
+            activeIbConfig_->vcMode == NCCL_CTRAN_IB_VC_MODE::spray) ||
+        vcState_.anyVcDefaultUsesSpray();
+  }
+
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t iputBatchImpl(
       const std::vector<PutIbMsg>& puts,
@@ -1078,11 +1092,15 @@ class CtranIb {
           continueWhileLoop = true;
         }
 
-        if (enableLocalFlush_) {
+        // Also route here when a spray-forced flush was ever issued: its CQE
+        // can be polled after the issuing collective's ambient config is
+        // gone. localFlushUsed_ is set before the WQE is posted.
+        if (enableLocalFlush_ ||
+            localFlushUsed_.load(std::memory_order_acquire)) {
           CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
             auto& vc = localVc;
             // First check if it is a local flush CQE
-            if (wc.qp_num == vc->qpNum(device)) {
+            if (vc != nullptr && wc.qp_num == vc->qpNum(device)) {
               CQE_ERROR_CHECK(wc, rank, "localFlush");
               FB_COMMCHECK(vc->processCqe(wc.opcode));
               continue;
@@ -1144,6 +1162,12 @@ class CtranIb {
   // Contract: set only when no ops are outstanding (collective boundary),
   // while holding the epoch lock like all other CtranIb critical-path state.
   const CtranIbConfig* activeIbConfig_{nullptr};
+  // Sticky: a real local-flush WQE was issued at least once (via the
+  // spray-forced path below while enableLocalFlush_ is false). Keeps the
+  // progress loop routing local-flush CQEs to localVc after the issuing
+  // collective's ambient config is gone. Set (release) under localVcMutex
+  // before posting the WQE; read (acquire) in the CQE dispatch path.
+  std::atomic<bool> localFlushUsed_{false};
   BootstrapMode bootstrapMode{BootstrapMode::kDefaultServer};
 
   std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;
