@@ -137,11 +137,14 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       // A=2: 1.17x at 13.5 MB rising to 1.42x, the best of the fused
       // reductions.
       //
-      // A=4 reaches 1.32x only at 63 MB, the top of the range it was tuned on,
-      // and a plateau at the edge of the data is not a crossover. fp32 at this
-      // same shape DOES cross cleanly, so this is a candidate for re-measuring
-      // rather than a settled no.
-      return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
+      // A=4 is ENABLED NOW, and only because the range was extended to 1 GB. It
+      // was off when 1.32x at 63 MB was the top of the measured data, and a
+      // plateau at the edge of the data is not a crossover. With eight more
+      // sizes above it the step is unambiguous: flat 0.96x-1.01x through 40 MB,
+      // then 1.36x-1.48x at every size from 63 MB to 1 GB. 60 MiB, the same
+      // value its single-group and fp32 counterparts use -- all three cross at
+      // the same 63 MB point and nothing in the 40-63 MB gap separates them.
+      return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
     case LpCollective::AllToAll:
       // A=2: 1.14x at 13.5 MB, 1.23x-1.33x above. A=4 reads 1.00x at 13.5 MB
       // and 1.16x at 27 MB, and 27 MiB is also exactly where its XOR-relay

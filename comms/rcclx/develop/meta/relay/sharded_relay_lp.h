@@ -318,7 +318,7 @@ bool lpCountsAligned(
  * The bf16 history is worth keeping, because THREE times this table said "low
  * precision does not pay here" when it was measuring a stall: 2 of 16 shapes
  * enabled before the wavefront-absmax rewrite, 7 of 16 after it, 11 of 16 after
- * the chunk alignment was raised to 512, and 12 of 16 once allreduce actually
+ * the chunk alignment was raised to 512, and 15 of 16 once allreduce actually
  * PICKED UP that alignment change -- it had its own hard-coded 128 and silently
  * did not get it. fp32 enables 15 of 16.
  *
@@ -332,7 +332,7 @@ bool lpCountsAligned(
  *   allreduce      A=2    8 MiB     8 MiB         4.5 MiB     4.5 MiB
  *   allreduce      A=4   12 MiB    12 MiB         9 MiB       9 MiB
  *   reduce-scatter A=2   12 MiB    12 MiB         4.5 MiB     4.5 MiB
- *   reduce-scatter A=4   60 MiB      --           60 MiB      60 MiB
+ *   reduce-scatter A=4   60 MiB    60 MiB         60 MiB      60 MiB
  *   all-gather     A=2    8 MiB     8 MiB         4.5 MiB     4.5 MiB
  *   all-gather     A=4    8 MiB    12 MiB         4.5 MiB    12 MiB
  *   all-to-all     A=2    --       12 MiB          --         4.5 MiB
@@ -402,25 +402,29 @@ bool lpCountsAligned(
  * the eight pay in bf16 and seven in fp32. Contention still helps, since the
  * fused ratios are higher, but it is not the dividing line.
  *
- * Two bf16 shapes stay off, for two different reasons, and NEITHER is allreduce
- * any more -- single-group allreduce A=2 was listed here as an unexplained
- * stall and turned out to be an alignment bug in this code:
+ * BOTH DTYPES NOW ENABLE 15 OF 16 SHAPES, and the one exclusion is the same in
+ * both. Two entries used to be listed here and neither survived contact with
+ * more data: single-group allreduce A=2 was an unexplained "stall" that turned
+ * out to be an alignment bug in this code, and fused reduce-scatter A=4 was a
+ * plateau at the edge of a range that stopped at 72 MB.
  *
- *   - reduce-scatter A=4 FUSED: 0.97x-1.03x through 40 MB and 1.32x only at
- *     63 MB, the top of the range it was tuned on. A plateau at the edge of the
- *     data is not a measured crossover. fp32 at the same shape DOES cross (see
- *     above), so this one is a candidate for re-measuring rather than a
- *     settled no.
- *   - single-group all-to-all A=2: never wins at any size in bf16 and gets
- * WORSE with size -- 0.95x-0.97x small, 0.88x at 135-144 MB. This one is
- *     STRUCTURAL rather than a threshold or a bug. `foldDiagonalIntoGroup` is
- *     set exactly when nGroups == 1, and the folded self-peer diagonal stays
- *     FULL PRECISION because RCCL services it as a local copy that never
- * crosses a boundary. At A=2 that diagonal is one of two segments, so HALF the
- *     payload cannot shrink while the low-precision machinery is paid over all
- *     of it. At A=4 the diagonal is a quarter and the shape pays 1.24x; fused
- *     does not fold at all and pays 1.35x. Fixing it means not folding under
- * low precision, or quantizing the diagonal -- not moving a threshold.
+ * The one that stays off, in both dtypes:
+ *
+ *   - single-group all-to-all A=2: 0.95x-0.97x small and 0.88x at 135-144 MB in
+ *     bf16; fp32 peaks at 1.12x and falls back to ~1.00x. STRUCTURAL rather
+ * than a threshold or a bug. `foldDiagonalIntoGroup` is set exactly when
+ *     nGroups == 1, and the folded self-peer diagonal stays FULL PRECISION
+ *     because RCCL services it as a local copy that never crosses a boundary.
+ * At A=2 that diagonal is one of two segments, so HALF the payload cannot
+ *     shrink while the low-precision machinery is paid over all of it. At A=4
+ *     the diagonal is a quarter and the shape pays 1.25x; fused does not fold
+ * at all and pays 1.38x. Fixing it means not folding under low precision, or
+ *     quantizing the diagonal -- a schedule change, not a threshold.
+ *
+ *     The co-resident measurement is the tell: the same shape reads 1.05x
+ * (bf16) and 1.15x (fp32) under four parallel jobs. The gate declines a small
+ * real win there because it cannot tell that case from the uncontended one --
+ *     both are nGroups == 1.
  *
  * Fused all-to-all A=4 starts at 27 MiB in BOTH dtypes, which is also exactly
  * where its XOR-relay route starts when fused. That is not a coincidence to be
