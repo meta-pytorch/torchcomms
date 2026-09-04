@@ -3452,7 +3452,14 @@ cvars:
      Maximum number of fixed prims IB channels per peer. Channels index
      staging, signal, and QP resources through ThreadGroup::group_id and do
      not necessarily map one-to-one to CUDA blocks; for example, ctree uses
-     two channels per block.
+     two channels per block. When MCCL fused Ring is selected and this cvar is
+     not explicitly configured, communicator initialization derives the Ring
+     budget from requested blocks * virtual stripes and caps it at the
+     transport limit of 64. Because the IB transport is shared by collectives,
+     transport provisioning is never reduced below this cvar's default even
+     when Ring's launch bound is smaller. An explicit value always wins. Ring
+     snapshots both counts so launch validation cannot desynchronize from the
+     provisioned transport.
 
  - name        : MCCL_IB_MODE
    type        : enum

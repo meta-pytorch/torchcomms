@@ -53,12 +53,22 @@ class CvarInitTest : public ::testing::Test {
     unsetenv("MCCL_BOOTSTRAP_TCP_KEEPALIVE_ENABLED");
     unsetenv("MCCL_IBGDA_RELIABLE_DOORBELL_MODE");
     unsetenv("MCCL_IBGDA_QP_ORDERING_SEMANTIC");
+    unsetenv("MCCL_MAX_NCHANNELS");
   }
 };
 
 TEST_F(CvarInitTest, BasicInitialization) {
   // Test basic ncclCvarInit functionality
   EXPECT_NO_THROW(ncclCvarInit());
+}
+
+TEST_F(CvarInitTest, ReportsExplicitCvarEvenWhenValueEqualsDefault) {
+  ncclCvarInit();
+  EXPECT_FALSE(ncclx::isCvarExplicitlySet("__NCCL_UNIT_TEST_INT_CVAR__"));
+
+  setenv("__NCCL_UNIT_TEST_INT_CVAR__", "0", 1);
+  ncclCvarInit();
+  EXPECT_TRUE(ncclx::isCvarExplicitlySet("__NCCL_UNIT_TEST_INT_CVAR__"));
 }
 
 TEST_F(CvarInitTest, McclIbgdaReliableDoorbellModeDefaultsToAuto) {
