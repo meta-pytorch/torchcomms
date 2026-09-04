@@ -14,6 +14,7 @@
 #include "comms/prims/bootstrap/TeamStatusAgreement.h"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/utils/checks.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #else
@@ -132,8 +133,12 @@ MultimemNvlTransport::MultimemNvlTransport(
       nvlRank,
       nvlRanks_,
       combinedSize,
-      GpuMemHandler::detectBestMode(),
-      alignFloor);
+      GpuMemHandler::Options{
+          .mode = GpuMemHandler::detectBestMode(),
+          .alignFloor = alignFloor,
+          .gpuMemoryResourceType = meta::comms::memtrace::
+              GpuMemoryResourceType::kNvlMultimemCombinedBacking,
+      });
 
   // Zero the signal region so every rank starts from SignalState{0}. Neither
   // GpuMemHandler nor MultimemHandler zero the backing ("the caller is
@@ -192,8 +197,15 @@ MultimemNvlTransport::exchangeUnicastPeerViews() {
           peerSignals + config_.userSignalCount;
     }
 
+    const std::size_t pointerTableBytes =
+        peerInternalSignals.size() * sizeof(SignalState*);
     devicePeerInternalSignals = std::make_unique<meta::comms::DeviceBuffer>(
-        peerInternalSignals.size() * sizeof(SignalState*));
+        pointerTableBytes,
+        meta::comms::memtrace::GpuMemoryAllocationMetadata{
+            .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                kNvlMultimemPeerSignalPtrTable,
+            .logicalBytes = pointerTableBytes,
+        });
     FB_CUDACHECKTHROW(cudaMemcpy(
         devicePeerInternalSignals->get(),
         peerInternalSignals.data(),

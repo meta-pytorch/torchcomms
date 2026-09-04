@@ -11,6 +11,11 @@
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
 #include "comms/prims/transport/nvl/MultimemNvlTransportDevice.cuh"
+#ifdef __HIP_PLATFORM_AMD__
+#include "comms/prims/transport/amd/HipHostCompat.h"
+#else
+#include "comms/utils/CudaRAII.h"
+#endif
 
 namespace meta::comms {
 class DeviceBuffer;

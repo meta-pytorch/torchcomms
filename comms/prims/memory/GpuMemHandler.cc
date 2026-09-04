@@ -208,12 +208,7 @@ GpuMemHandler::GpuMemHandler(
     int32_t selfRank,
     int32_t nRanks,
     size_t size)
-    : GpuMemHandler(
-          std::move(bootstrap),
-          selfRank,
-          nRanks,
-          size,
-          detectBestMode()) {}
+    : GpuMemHandler(std::move(bootstrap), selfRank, nRanks, size, Options{}) {}
 
 GpuMemHandler::GpuMemHandler(
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
@@ -222,17 +217,33 @@ GpuMemHandler::GpuMemHandler(
     size_t size,
     MemSharingMode mode,
     std::size_t alignFloor)
+    : GpuMemHandler(
+          std::move(bootstrap),
+          selfRank,
+          nRanks,
+          size,
+          Options{
+              .mode = mode,
+              .alignFloor = alignFloor,
+          }) {}
+
+GpuMemHandler::GpuMemHandler(
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+    int32_t selfRank,
+    int32_t nRanks,
+    size_t size,
+    Options options)
     : bootstrap_(std::move(bootstrap)),
       selfRank_(selfRank),
       nRanks_(nRanks),
-      mode_(mode) {
+      mode_(options.mode.has_value() ? *options.mode : detectBestMode()) {
   if (mode_ == MemSharingMode::kFabric && !isFabricHandleSupported()) {
     throw std::runtime_error(
         "Fabric handle mode requested but not supported on this system. "
         "Requires Hopper (H100) or newer GPU with CUDA 12.3+.");
   }
 
-  init(size, alignFloor);
+  init(size, options.alignFloor, options.gpuMemoryResourceType);
 }
 
 GpuMemHandler::~GpuMemHandler() {
@@ -248,11 +259,14 @@ GpuMemHandler::~GpuMemHandler() {
   }
 }
 
-void GpuMemHandler::init(size_t size, std::size_t alignFloor) {
+void GpuMemHandler::init(
+    size_t size,
+    std::size_t alignFloor,
+    meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType) {
   if (isVmmMode()) {
-    allocateVmmMemory(size, alignFloor);
+    allocateVmmMemory(size, alignFloor, gpuMemoryResourceType);
   } else {
-    allocateCudaIpcMemory(size);
+    allocateCudaIpcMemory(size, gpuMemoryResourceType);
   }
 }
 
@@ -399,10 +413,14 @@ void* GpuMemHandler::getMultimemDeviceMemPtr() const {
 // VMM Mode Implementation (kFabric / kPosixFd)
 // ============================================================================
 
-void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
+void GpuMemHandler::allocateVmmMemory(
+    size_t size,
+    std::size_t alignFloor,
+    meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType) {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   (void)size;
   (void)alignFloor;
+  (void)gpuMemoryResourceType;
   throw std::runtime_error("VMM shareable handles require CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -430,7 +448,15 @@ void GpuMemHandler::allocateVmmMemory(size_t size, std::size_t alignFloor) {
     mask |= CU_MEM_HANDLE_TYPE_FABRIC;
   }
 
-  allocation_ = CuMemAllocation::create(cuDev, size, mask, alignFloor);
+  allocation_ = CuMemAllocation::create(
+      cuDev,
+      size,
+      mask,
+      alignFloor,
+      {
+          .resourceType = gpuMemoryResourceType,
+          .logicalBytes = size,
+      });
   allocatedSize_ = allocation_->size();
 
   // CuMemMapping reserves and maps the unicast VA and grants access. It co-owns
@@ -480,24 +506,54 @@ void GpuMemHandler::cleanupVmm() {
 // CudaIpc Mode Implementation
 // ============================================================================
 
-void GpuMemHandler::allocateCudaIpcMemory(size_t size) {
+void GpuMemHandler::allocateCudaIpcMemory(
+    size_t size,
+    meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType) {
   if (mode_ == MemSharingMode::kCudaIpcUncached) {
     // GPU-uncached alloc on AMD; see MemSharingMode::kCudaIpcUncached.
 #ifdef __HIP_PLATFORM_AMD__
     checkCudaError(
-        hipExtMallocWithFlags(&cudaIpcLocalPtr_, size, hipDeviceMallocUncached),
+        meta::comms::memtrace::mcclCudaMallocUncached(
+            &cudaIpcLocalPtr_,
+            size,
+            {
+                .resourceType = gpuMemoryResourceType,
+                .logicalBytes = size,
+            }),
         "hipExtMallocWithFlags(hipDeviceMallocUncached) failed");
 #else
-    checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
+    checkCudaError(
+        meta::comms::memtrace::mcclCudaMallocUncached(
+            &cudaIpcLocalPtr_,
+            size,
+            {
+                .resourceType = gpuMemoryResourceType,
+                .logicalBytes = size,
+            }),
+        "cudaMalloc failed");
 #endif
   } else {
-    checkCudaError(cudaMalloc(&cudaIpcLocalPtr_, size), "cudaMalloc failed");
+    checkCudaError(
+        meta::comms::memtrace::mcclCudaMalloc(
+            &cudaIpcLocalPtr_,
+            size,
+            {
+                .resourceType = gpuMemoryResourceType,
+                .logicalBytes = size,
+            }),
+        "cudaMalloc failed");
   }
   // Cache the local IPC handle for getLocalIpcHandle(). It depends only on the
   // local allocation, so deriving it here makes it valid before exchange too.
-  checkCudaError(
-      cudaIpcGetMemHandle(&cudaIpcLocalHandle_, cudaIpcLocalPtr_),
-      "cudaIpcGetMemHandle failed");
+  try {
+    checkCudaError(
+        cudaIpcGetMemHandle(&cudaIpcLocalHandle_, cudaIpcLocalPtr_),
+        "cudaIpcGetMemHandle failed");
+  } catch (...) {
+    (void)meta::comms::memtrace::mcclCudaFree(cudaIpcLocalPtr_);
+    cudaIpcLocalPtr_ = nullptr;
+    throw;
+  }
   allocatedSize_ = size;
 }
 
@@ -527,7 +583,7 @@ void GpuMemHandler::cleanupCudaIpc() {
 
   // Free local allocation
   if (cudaIpcLocalPtr_ != nullptr) {
-    cudaError_t err = cudaFree(cudaIpcLocalPtr_);
+    cudaError_t err = meta::comms::memtrace::mcclCudaFree(cudaIpcLocalPtr_);
     if (err != cudaSuccess) {
       LOG(ERROR) << "cudaFree failed: " << cudaGetErrorString(err);
     }

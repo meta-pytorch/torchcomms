@@ -24,6 +24,7 @@
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/rdma/DataDirectMode.h"
+#include "comms/utils/memtrace/GpuMemoryTracker.h"
 
 namespace meta::comms {
 class DeviceBuffer;
@@ -1199,7 +1200,8 @@ class MultiPeerIbTransportBase {
   void freeDeviceSlotAllocation(DeviceSlotAllocation& allocation) noexcept;
   DeviceSlotAllocation allocateDeviceSlotAllocation(
       std::size_t bytes,
-      const char* label);
+      const char* label,
+      meta::comms::memtrace::GpuMemoryResourceType resource);
   void freeCounterSlotAllocation(CounterSlotAllocation& allocation) noexcept;
   CounterSlotAllocation allocateCounterSlotAllocation(
       IbCounterStorage storage,
