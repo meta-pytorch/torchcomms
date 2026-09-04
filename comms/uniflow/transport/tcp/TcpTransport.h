@@ -1012,6 +1012,18 @@ class TcpTransport : public Transport {
   std::atomic<uint64_t> receiveSlabAttempts_{0};
   std::atomic<uint64_t> receiveSlabMisses_{0};
   std::atomic<uint64_t> vectorReceiveCount_{0};
+  // put-path D2H staging accounting. `stagingNs_` covers the whole span
+  // stagePutWave() spends getting a wave's payload into pinned host memory --
+  // the memcpyAsync launches plus the synchronize that waits for them -- so
+  // stagingBytes_/stagingNs_ is the effective device-to-host bandwidth this
+  // path achieves, launch overhead included. That number is the ceiling on VRAM
+  // put: no amount of queueing, lane count or CPU saving can move a transfer
+  // faster than its bytes reach the host. Written only by caller threads inside
+  // stagePutWave; relaxed because a torn read misreports one sample.
+  std::atomic<uint64_t> stagingNs_{0};
+  std::atomic<uint64_t> stagingBytes_{0};
+  std::atomic<uint64_t> stagingWaves_{0};
+  std::atomic<uint64_t> stagingChunks_{0};
   std::shared_ptr<H2dPollState> h2dState_;
 
   // Serialises bind()/connect()/shutdown(), which together own server_,
