@@ -313,35 +313,50 @@ bool lpCountsAligned(
  * 16                 -- after it, before the chunk-alignment fix 11 of 16 --
  * now
  *
- *                       nGroups == 1 (uncontended)   nGroups > 1 (fused)
- *   allreduce      A=2      0.78x - 1.14x                1.20x - 1.30x  ENABLED
- *   allreduce      A=4      1.09x - 1.29x  ENABLED       1.15x - 1.28x  ENABLED
- *   reduce-scatter A=2      1.11x - 1.28x  ENABLED       1.17x - 1.42x  ENABLED
- *   reduce-scatter A=4      0.98x - 1.26x                0.97x - 1.32x
- *   all-gather     A=2      1.17x - 1.23x  ENABLED       1.14x - 1.33x  ENABLED
- *   all-gather     A=4      1.20x - 1.30x  ENABLED       1.30x - 1.45x  ENABLED
- *   all-to-all     A=2      0.91x - 0.96x                1.14x - 1.33x  ENABLED
- *   all-to-all     A=4      1.08x - 1.16x  ENABLED       1.16x - 1.20x  ENABLED
+ * The single-group column is measured across the FULL range, 4.5 MB to 144 MB.
+ * The fused column still stops at 72 MB.
  *
- * THE nGroups COLUMN NO LONGER TELLS THE STORY, and that is the substantive
- * change. The earlier reading was that contention is what low precision wins --
- * fused shapes paid, uncontended ones did not -- which was a plausible
- * bandwidth argument and wrong. Nearly every single-group shape was sitting in
- * an alignment stall. With it gone, five of them pay. Contention still helps
- * (the fused ratios are higher) but it is not the dividing line.
+ *                       nGroups == 1 (uncontended)   nGroups > 1 (fused)
+ *   allreduce      A=2      0.75x - 1.13x  stall         1.20x - 1.30x  ENABLED
+ *   allreduce      A=4      0.93x - 1.29x  ENABLED       1.15x - 1.28x  ENABLED
+ *   reduce-scatter A=2      1.01x - 1.30x  ENABLED       1.17x - 1.42x  ENABLED
+ *   reduce-scatter A=4      0.90x - 1.27x  ENABLED       0.97x - 1.32x
+ *   all-gather     A=2      1.03x - 1.23x  ENABLED       1.14x - 1.33x  ENABLED
+ *   all-gather     A=4      0.98x - 1.29x  ENABLED       1.30x - 1.45x  ENABLED
+ *   all-to-all     A=2      0.88x - 0.97x                1.14x - 1.33x  ENABLED
+ *   all-to-all     A=4      0.96x - 1.17x  ENABLED       1.16x - 1.20x  ENABLED
+ *
+ * CO-RESIDENT JOBS LAND IN THE nGroups == 1 COLUMN. A parallel relay job is a
+ * single-group call, so these thresholds are also what several independent jobs
+ * sharing a node get -- and that column was measured with the node otherwise
+ * idle. It is the largest untested assumption in this table.
+ *
+ * THE nGroups COLUMN DOES NOT TELL THE STORY. An earlier reading of it was that
+ * contention is what low precision wins -- fused shapes paid, uncontended ones
+ * did not -- which was a plausible bandwidth argument and wrong. Nearly every
+ * single-group shape was sitting in an alignment stall; with that gone, six of
+ * the eight pay. Contention still helps, since the fused ratios are higher, but
+ * it is not the dividing line.
  *
  * Three shapes stay off, for three different reasons:
  *
- *   - reduce-scatter A=4, EITHER grouping: 0.98x-1.03x through 40 MB, reaching
- *     1.24x-1.32x only at 63 MB, the top of the measured range. A threshold at
- * the edge of the data is a guess. Needs measuring past 72 MB, not explaining.
- *   - single-group allreduce A=2: wins 1.09x-1.14x from 13.5 MB to 27 MB, then
- *     drops to 0.78x-0.92x from 31.5 MB up. A min-bytes gate cannot express
- * "this band only". The chunk-alignment fix did NOT move it -- every other
- * troughed shape recovered and this one did not -- so it is a separate
- * mechanism, under profiling. It is the last known stall in the feature.
- *   - single-group all-to-all A=2: the only shape that genuinely never wins,
- *     0.91x-0.96x at every size, unmoved by either fix.
+ *   - reduce-scatter A=4 FUSED: 0.97x-1.03x through 40 MB and 1.32x only at
+ *     63 MB, the top of the FUSED range. Off for the reason the single-group
+ * one was until its sweep was extended -- the plateau is at the edge of the
+ *     data. Extending the fused sweep the same way would likely enable it.
+ *   - single-group allreduce A=2: a STALL, not a threshold. Wins 1.09x-1.13x
+ *     from 13.5 to 27 MB, then 0.75x-0.92x at every larger size out to 144 MB,
+ *     so a min-bytes gate cannot express it. PROFILED: the same three transfers
+ *     with the same grid run 1.85x slower for 1.167x more bytes, effective
+ *     bandwidth falling from ~125 to ~78 GB/s. Not the kernels (they scale at
+ *     1.23x against an expected 1.167x), not the pipeline tile count (still 1
+ * at the size it breaks), not chunk alignment (that fix recovered every other
+ *     troughed shape and left this one untouched). A memory-system effect
+ * inside an unchanged transfer; needs hardware counters, not a kernel trace.
+ *   - single-group all-to-all A=2: the only shape that never wins at any size
+ * in either grouping, and the only one that gets WORSE with size -- 0.95x-0.97x
+ *     small, 0.88x at 135-144 MB. That trend is the opposite of every other
+ *     entry, so it is not a threshold either.
  *
  * Fused all-to-all A=4 starts at 27 MiB, which is also exactly where its
  * XOR-relay route starts when fused. That is not a coincidence to be tidied
