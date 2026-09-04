@@ -64,7 +64,13 @@ constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
 constexpr size_t k13p5Mib = (static_cast<size_t>(27) << 20) / 2;
 constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
 constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
-constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
+// 48 MiB is not a tuned number. It is kOffloadMinBytes from
+// selectReduceScatterRoute(), mirrored here: below it the 4-active
+// reduce-scatter takes PureDirect, so lpEligible() declines on ROUTE and the
+// wire format is not consulted at all. Same arrangement as the 4-active
+// all-to-all's 27 MiB against kXorRelayMinBytes -- the two gates agree because
+// one is the other, not because they were fitted to the same data.
+constexpr size_t k48Mib = static_cast<size_t>(48) << 20;
 
 // bf16 crossovers. 1.94x fewer wire bytes per element, so this is the later of
 // the two tables; 11 of 16 shapes pay. Full provenance in the header.
@@ -102,12 +108,27 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       case LpCollective::ReduceScatter:
         // A=2: 1.05x at 9 MB, 1.13x at 13.5 MB, up to 1.30x. 12 MiB.
         //
-        // A=4 sits at 0.90x-1.07x through 40 MB and then holds 1.18x-1.27x
-        // across FIVE consecutive sizes from 63 MB to 144 MB. 60 MiB rather
-        // than 48: there is no data between 40 and 63 MB, and 31.5 MB reads
-        // 0.90x, so the threshold goes just below the first measured win
-        // instead of into the unmeasured gap.
-        return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
+        // A=4 is 48 MiB, and the number is now MECHANISM rather than fit. The
+        // old entry said "60 MiB rather than 48: there is no data between 40
+        // and 63 MB", which was the right call on the evidence and the wrong
+        // answer: densifying that gap puts the step between 44 MB (0.99x) and
+        // 48 MB (1.27x), a 28-point jump across one 4 MB stride. A crossover
+        // ramps as a fixed quantize cost amortizes; this steps, then sits flat
+        // at 1.25x-1.35x for six consecutive sizes.
+        //
+        // 48 MiB is kOffloadMinBytes in selectReduceScatterRoute(). Below it a
+        // 4-active reduce-scatter is PureDirect -- no helpers, no relayed hop
+        // -- so lpEligible() declines on ROUTE and the wire format never runs.
+        // The flat sub-48 MiB readings were never low precision losing; they
+        // were low precision absent, which is why forcing this gate open does
+        // not move them.
+        //
+        // It also explains the coincidence that made this shape suspicious:
+        // both dtypes appeared to cross at the same size despite fp32
+        // saving 3.88x per element against bf16's 1.94x. They share a
+        // BYTE-keyed route gate. Past it they diverge exactly as the wire
+        // format predicts -- bf16 1.25x-1.35x, fp32 1.76x-2.09x.
+        return nActiveRanksPerGroup == 2 ? k12Mib : k48Mib;
       case LpCollective::AllToAll:
         // A=4: flat 0.96x-0.97x through 13.5 MB, then 1.07x-1.17x from 27 MB.
         //
@@ -155,14 +176,18 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       // A=2: 1.17x at 13.5 MB rising to 1.42x, the best of the fused
       // reductions.
       //
-      // A=4 is ENABLED NOW, and only because the range was extended to 1 GB. It
-      // was off when 1.32x at 63 MB was the top of the measured data, and a
-      // plateau at the edge of the data is not a crossover. With eight more
-      // sizes above it the step is unambiguous: flat 0.96x-1.01x through 40 MB,
-      // then 1.36x-1.48x at every size from 63 MB to 1 GB. 60 MiB, the same
-      // value its single-group and fp32 counterparts use -- all three cross at
-      // the same 63 MB point and nothing in the 40-63 MB gap separates them.
-      return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
+      // A=4 is 48 MiB == kOffloadMinBytes, for the reason given in the
+      // single-group entry: below it the route is PureDirect and low precision
+      // declines on ROUTE, so nothing under 48 MiB was ever a measurement of
+      // the wire format. The old entry read the flat sub-40 MB region as
+      // evidence about a crossover; it was evidence that the wire format never
+      // ran.
+      //
+      // Measured fused with the gate forced open: 1.00x at 44 MB and 1.31x at
+      // 48 MB in bf16, 1.03x and 1.88x in fp32. Same step at the same size in
+      // both groupings and both dtypes -- as it must be, since the route gate
+      // is keyed on bytes and does not depend on nGroups.
+      return nActiveRanksPerGroup == 2 ? k12Mib : k48Mib;
     case LpCollective::AllToAll:
       // A=2: 1.14x at 13.5 MB, 1.23x-1.33x above. A=4 reads 1.00x at 13.5 MB
       // and 1.16x at 27 MB, and 27 MiB is also exactly where its XOR-relay
@@ -199,17 +224,21 @@ lpMinBytesFp32(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
       case LpCollective::ReduceScatter:
         // A=2: 1.08x at 4.5 MB up to 2.31x.
         //
-        // A=4 has the same profile as its bf16 twin -- 0.94x-1.03x through
-        // 40 MB, nothing in the 40-63 MB gap, then a step -- but fp32's step is
-        // to 1.89x-2.24x across six consecutive sizes.
+        // A=4 is 48 MiB == kOffloadMinBytes. The old entry agonized over using
+        // 60 rather than the first measured win of 63 MB, on the grounds that
+        // "both dtypes' first win is that same point and there is no data in
+        // the 40-63 MB gap to separate them" -- and read that shared crossover
+        // as a reason to keep the two tables ordered. The shared crossover was
+        // real but it was not about the wire format: below 48 MiB the route is
+        // PureDirect and low precision declines on ROUTE in both dtypes alike.
         //
-        // 60 MiB, the SAME value as bf16, and the one place this table does not
-        // use the first measured win (63 MB). Both dtypes' first win is that
-        // same point and there is no data in the 40-63 MB gap to separate them,
-        // so 63 MiB here would put fp32 above bf16 on identical evidence --
-        // breaking the ordering that makes the two tables comparable, to move a
-        // threshold by 5%.
-        return nActiveRanksPerGroup == 2 ? k4p5Mib : k60Mib;
+        // Densified, gate forced open: 0.99x at 44 MB then 1.76x at 48 MB, and
+        // 1.76x-2.09x across every size from there to 144 MB. bf16 steps at the
+        // same 48 MB to only 1.27x, so once the route admits low precision the
+        // dtypes separate by roughly the ratio of what they save -- which is
+        // what makes 48 MiB the same number in both tables for a defensible
+        // reason rather than a coincidence to be preserved.
+        return nActiveRanksPerGroup == 2 ? k4p5Mib : k48Mib;
       case LpCollective::AllToAll:
         // A=4: 1.02x at 9 MB, 1.18x at 13.5 MB, up to 1.90x.
         //
@@ -250,12 +279,13 @@ lpMinBytesFp32(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
     case LpCollective::ReduceScatter:
       // A=2: 1.09x at 4.5 MB up to 2.68x.
       //
-      // A=4 is ENABLED here and off for bf16, which is the clearest case for
-      // splitting the table by dtype: identical flat ~1.00x through 40 MB in
-      // both, then bf16 manages 1.32x at one size at the edge of its range
-      // while fp32 holds 2.01x-2.63x across six. 60 MiB to match the
-      // single-group entry, for the reason given there.
-      return nActiveRanksPerGroup == 2 ? k4p5Mib : k60Mib;
+      // A=4 is 48 MiB == kOffloadMinBytes, for the reason given in the
+      // single-group entry. The old entry read this shape as "the clearest case
+      // for splitting the table by dtype", on identical flat ~1.00x through
+      // 40 MB in both. That flatness was a shared ROUTE decline, not a dtype
+      // difference, so it argued for nothing. Measured fused with the gate
+      // forced open: 1.03x at 44 MB, 1.88x at 48 MB, 1.91x-2.08x above.
+      return nActiveRanksPerGroup == 2 ? k4p5Mib : k48Mib;
     case LpCollective::AllToAll:
       // A=2: 1.08x at 4.5 MB up to 2.41x. A=4: 1.02x at 13.5 MB, 1.64x at
       // 27 MB -- the same 27 MiB as bf16, and again exactly where the fused

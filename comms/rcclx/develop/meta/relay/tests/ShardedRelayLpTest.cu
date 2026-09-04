@@ -467,7 +467,7 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
   constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
-  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
+  constexpr size_t k48Mib = static_cast<size_t>(48) << 20;
 
   // ---- fused ----
   for (int g : {2, 4}) {
@@ -480,13 +480,13 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
     EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g, ncclBfloat16), k12Mib);
     EXPECT_EQ(
         lpMinBytes(LpCollective::ReduceScatter, 2, g, ncclBfloat16), k12Mib);
-    // ENABLED once the range reached 1 GB. It was off when 1.32x at 63 MB was
-    // the top of the data, because a plateau at the edge is not a crossover;
-    // with eight sizes above it the step is unambiguous -- flat 0.96x-1.01x
-    // through 40 MB, then 1.36x-1.48x from 63 MB to 1 GB. Same 60 MiB as its
-    // single-group and fp32 counterparts, which cross at the same point.
+    // 48 MiB, and the number is kOffloadMinBytes from selectReduceScatterRoute
+    // rather than a fitted crossover. Below it a 4-active reduce-scatter is
+    // PureDirect, so lpEligible declines on ROUTE and the wire format never
+    // runs -- which is why the flat sub-48 MiB readings do not move when the
+    // size gate is forced open. Densified: 1.00x at 44 MB, 1.31x at 48 MB.
     EXPECT_EQ(
-        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), k60Mib);
+        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), k48Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g, ncclBfloat16), k12Mib);
     // Also exactly where the fused XOR-relay route starts, so the size gate and
     // the route gate agree by construction rather than by coincidence.
@@ -511,13 +511,13 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(
       lpMinBytes(LpCollective::ReduceScatter, 2, 1, ncclBfloat16), k12Mib);
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1, ncclBfloat16), k24Mib);
-  // ENABLED only once the sweep reached past 72 MB: 1.18x-1.27x across five
-  // consecutive sizes from 63 to 144 MB, against 0.90x-1.07x below 40 MB. 60
-  // MiB rather than 48 because there is no data between 40 and 63 MB -- the
-  // threshold goes just under the first measured win, not into the unmeasured
-  // gap.
+  // 48 MiB == kOffloadMinBytes. The gate used to be 60 MiB "rather than 48
+  // because there is no data between 40 and 63 MB"; densifying that gap put the
+  // step between 44 MB (0.99x) and 48 MB (1.27x), which is the route threshold
+  // exactly. Below it the route is PureDirect and low precision declines on
+  // ROUTE, so the sub-48 MiB region was never the wire format losing.
   EXPECT_EQ(
-      lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k60Mib);
+      lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k48Mib);
 
   // ---- the former exclusion, now the best all-to-all shape in this table ----
 
@@ -552,7 +552,7 @@ TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k13p5Mib = (static_cast<size_t>(27) << 20) / 2;
   constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
-  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
+  constexpr size_t k48Mib = static_cast<size_t>(48) << 20;
 
   // ---- fused ----
   for (int g : {2, 4}) {
@@ -572,12 +572,13 @@ TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
     // then bf16 manages 1.32x at one size at the edge of its range while fp32
     // holds 2.01x-2.63x across six consecutive sizes.
     //
-    // The one entry that is NOT this table's own first measured win (63 MB): it
-    // takes bf16's 60 MiB, because both dtypes cross at that same point and
-    // putting fp32 above bf16 on identical evidence would break the ordering
-    // that Fp32IsNeverGatedLaterThanBf16 pins.
+    // 48 MiB == kOffloadMinBytes, the SAME value as bf16 -- but now for a
+    // stated reason rather than to preserve an ordering. Both dtypes share a
+    // BYTE-keyed route gate, below which the route is PureDirect and low
+    // precision declines on ROUTE in both alike. Past it they diverge as the
+    // wire format predicts: fp32 1.88x at 48 MB against bf16's 1.31x.
     EXPECT_EQ(
-        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclFloat32), k60Mib);
+        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclFloat32), k48Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g, ncclFloat32), k4p5Mib);
     // The same 27 MiB as bf16, and again exactly where the fused XOR-relay
     // route starts: the route gate does not depend on the wire format, so the
@@ -596,7 +597,7 @@ TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1, ncclFloat32), k4p5Mib);
   EXPECT_EQ(
       lpMinBytes(LpCollective::ReduceScatter, 2, 1, ncclFloat32), k4p5Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclFloat32), k60Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclFloat32), k48Mib);
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1, ncclFloat32), k13p5Mib);
 
   // ---- the former exclusion, and now the largest win in either table ----
