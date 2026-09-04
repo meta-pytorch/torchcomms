@@ -367,6 +367,41 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
       << "All collectives should be marked completed after stream sync";
 }
 
+TEST_F(GraphColltraceProgressingTest, CancelledCaptureIgnoresReplayEvents) {
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  auto handle = colltrace_
+                    ->recordCollective(
+                        std::make_unique<SimpleMetadata>(),
+                        std::make_unique<GraphCudaWaitEvent>(stream_))
+                    .value();
+  const auto deviceHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel)
+                  .hasValue());
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kStart);
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kEnd);
+  ASSERT_TRUE(handle->cancel().hasValue());
+
+  CapturedGraph graph;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaStreamEndCapture(stream_, &graph.graph), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaGraphInstantiate(&graph.instance, graph.graph, nullptr, nullptr, 0),
+      cudaSuccess);
+  ASSERT_EQ(cudaGraphLaunch(graph.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  EXPECT_TRUE(progressPlugin_->getStartedCollIds().empty());
+  EXPECT_TRUE(progressPlugin_->getCompletedCollIds().empty());
+  const auto cancelledRecord = handle->getCollRecord();
+  ASSERT_TRUE(cancelledRecord.hasValue());
+  EXPECT_EQ(cancelledRecord.value(), nullptr);
+}
+
 TEST_F(GraphColltraceProgressingTest, PreservesIdentityAcrossReplays) {
   constexpr uint32_t kNumColls = 2;
   constexpr uint64_t kNumReplays = 2;

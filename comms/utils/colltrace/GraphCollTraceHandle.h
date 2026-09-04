@@ -3,6 +3,9 @@
 #pragma once
 
 #include <cassert>
+#include <functional>
+
+#include <folly/Synchronized.h>
 
 #include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
@@ -19,24 +22,31 @@ class GraphCollTraceHandle : public ICollTraceHandle {
  public:
   explicit GraphCollTraceHandle(
       ICollWaitEvent* waitEvent,
-      std::shared_ptr<ICollRecord> record)
-      : waitEvent_(waitEvent), record_(std::move(record)) {}
+      std::shared_ptr<ICollRecord> record,
+      std::function<CommsMaybeVoid()> cancel)
+      : state_(
+            State{
+                .waitEvent = waitEvent,
+                .record = std::move(record),
+                .cancel = std::move(cancel),
+            }) {}
 
   ~GraphCollTraceHandle() override = default;
 
   CommsMaybeVoid trigger(CollTraceHandleTriggerState state) noexcept override {
-    if (waitEvent_ == nullptr) {
+    auto handleState = state_.rlock();
+    if (handleState->waitEvent == nullptr) {
       return folly::Unit{};
     }
     switch (state) {
       case CollTraceHandleTriggerState::BeforeEnqueueKernel:
-        return waitEvent_->beforeCollKernelScheduled();
+        return handleState->waitEvent->beforeCollKernelScheduled();
       case CollTraceHandleTriggerState::AfterEnqueueKernel:
-        return waitEvent_->afterCollKernelScheduled();
+        return handleState->waitEvent->afterCollKernelScheduled();
       case CollTraceHandleTriggerState::KernelStarted:
-        return waitEvent_->signalCollStart();
+        return handleState->waitEvent->signalCollStart();
       case CollTraceHandleTriggerState::KernelFinished:
-        return waitEvent_->signalCollEnd();
+        return handleState->waitEvent->signalCollEnd();
       case CollTraceHandleTriggerState::NumTriggerStates:
         return folly::Unit{};
     }
@@ -50,17 +60,34 @@ class GraphCollTraceHandle : public ICollTraceHandle {
   }
 
   CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept override {
-    return record_;
+    return state_.rlock()->record;
+  }
+
+  CommsMaybeVoid cancel() noexcept override {
+    std::function<CommsMaybeVoid()> cancel;
+    {
+      auto handleState = state_.wlock();
+      cancel = std::move(handleState->cancel);
+      handleState->waitEvent = nullptr;
+      handleState->record = nullptr;
+    }
+    if (!cancel) {
+      return folly::unit;
+    }
+    return cancel();
   }
 
   CommsMaybeVoid invalidate() noexcept override {
-    waitEvent_ = nullptr;
-    record_ = nullptr;
+    auto handleState = state_.wlock();
+    handleState->waitEvent = nullptr;
+    handleState->record = nullptr;
+    handleState->cancel = nullptr;
     return folly::Unit{};
   }
 
   ColltraceDeviceHandle getColltraceDeviceHandle() noexcept override {
-    auto* graphWaitEvent = graphWaitEvent_();
+    auto handleState = state_.rlock();
+    auto* graphWaitEvent = graphWaitEvent_(handleState->waitEvent);
     if (graphWaitEvent == nullptr || !graphWaitEvent->hasRingBuffer()) {
       return {};
     }
@@ -76,19 +103,24 @@ class GraphCollTraceHandle : public ICollTraceHandle {
   }
 
  private:
+  struct State {
+    ICollWaitEvent* waitEvent;
+    std::shared_ptr<ICollRecord> record;
+    std::function<CommsMaybeVoid()> cancel;
+  };
+
   // waitEvent_ is always a GraphCudaWaitEvent for this handle (constructed by
   // CollTrace::recordGraphCollectiveImpl), or null after invalidate(). This is
   // on the submit hot path, so static_cast avoids RTTI; the debug-only assert
   // catches any future violation of that invariant.
-  GraphCudaWaitEvent* graphWaitEvent_() const {
+  static GraphCudaWaitEvent* graphWaitEvent_(ICollWaitEvent* waitEvent) {
     assert(
-        waitEvent_ == nullptr ||
-        dynamic_cast<GraphCudaWaitEvent*>(waitEvent_) != nullptr);
-    return static_cast<GraphCudaWaitEvent*>(waitEvent_);
+        waitEvent == nullptr ||
+        dynamic_cast<GraphCudaWaitEvent*>(waitEvent) != nullptr);
+    return static_cast<GraphCudaWaitEvent*>(waitEvent);
   }
 
-  ICollWaitEvent* waitEvent_;
-  std::shared_ptr<ICollRecord> record_;
+  folly::Synchronized<State> state_;
 };
 
 } // namespace meta::comms::colltrace

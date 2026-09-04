@@ -36,6 +36,9 @@ class ICollTraceHandle {
       std::string pluginName,
       folly::dynamic params) noexcept = 0;
   virtual CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept = 0;
+  // Cancel is part of the enqueue state machine and must be called by the
+  // thread that recorded and triggers this handle, before AfterEnqueueKernel.
+  virtual CommsMaybeVoid cancel() noexcept = 0;
   virtual CommsMaybeVoid invalidate() noexcept = 0;
 
   // In-kernel colltrace: expose the graph ring device handle + collId so the
@@ -60,6 +63,8 @@ class CollTraceHandle : public ICollTraceHandle {
       folly::dynamic params) noexcept override;
 
   CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept override;
+
+  CommsMaybeVoid cancel() noexcept override;
 
   CommsMaybeVoid invalidate() noexcept override;
 

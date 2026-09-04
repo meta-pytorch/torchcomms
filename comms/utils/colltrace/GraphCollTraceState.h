@@ -26,6 +26,7 @@ struct GraphCollectiveEntry {
   // the handle when the CUDA graph is destroyed, preventing use-after-free
   // of the raw GraphCudaWaitEvent pointer held by the handle.
   std::weak_ptr<ICollTraceHandle> handle;
+  bool cancelled{false};
 };
 
 // Per-graph coordinator for all graph-captured collectives. Manages CUDA

@@ -29,6 +29,8 @@ class ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept = 0;
 
+  virtual CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept = 0;
+
   // Request the poll thread to drain all pending events and return a
   // generation token. gen=0 is reserved as the no-op default; real
   // implementations start at 1 (via fetch_add(1)+1).

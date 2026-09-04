@@ -126,6 +126,26 @@ CollTraceHandle::getCollRecord() noexcept {
   return stateReadLocked->event_->collRecord;
 }
 
+CommsMaybeVoid CollTraceHandle::cancel() noexcept {
+  auto stateWriteLocked = state_.wlock();
+  if (stateWriteLocked->referenceInvalidated_) {
+    return folly::unit;
+  }
+  if (stateWriteLocked->collTrace_ == nullptr ||
+      stateWriteLocked->event_ == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Cannot cancel a handle without an owning CollTrace event",
+        commInternalError));
+  }
+
+  auto* collTrace = stateWriteLocked->collTrace_;
+  auto* event = stateWriteLocked->event_;
+  stateWriteLocked->referenceInvalidated_ = true;
+  stateWriteLocked->collTrace_ = nullptr;
+  stateWriteLocked->event_ = nullptr;
+  return collTrace->cancelEvent(*event);
+}
+
 CommsMaybeVoid CollTraceHandle::invalidate() noexcept {
   // Set the invalidated flag
   state_.wlock()->referenceInvalidated_ = true;
