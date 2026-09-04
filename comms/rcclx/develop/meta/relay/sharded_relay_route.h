@@ -91,7 +91,19 @@ enum class AllReduceRoute {
 
 // GPU memory access alignment in elements for relay chunk sizing. The relay
 // implementations define their CHUNK_ALIGN_ELEMENTS from this.
-inline constexpr size_t kRelayChunkAlignElements = 128;
+// Every chunk, offset and tile boundary in every relay schedule is a multiple
+// of this. 512 rather than 128 because of the LOW-PRECISION WIRE FORMAT: a wire
+// block is 132 bytes (128 fp8 payload + one fp32 scale) and 132 = 4 * 33, so a
+// boundary lands on a 16-byte-aligned wire offset only when it is a multiple of
+// FOUR blocks. At 128 the offset could be merely 4-byte aligned, which cost up
+// to 55% of the low-precision runtime -- see the alignment note on
+// lpChunkAlign() in sharded_relay_lp.h for the measurements.
+//
+// Full precision does not need it and is not harmed by it: its offsets are
+// elements * elementSize, so a 128-element boundary was already 256-byte
+// aligned for bf16. Measured across 88 fused and 28 single-group points, the
+// change moves full-precision time by a mean of -0.09% and a median of 0.00%.
+inline constexpr size_t kRelayChunkAlignElements = 512;
 
 // Largest per-group count, the value every size threshold is measured against.
 // All groups march through the same schedule to keep XGMI traffic phase-synced,
