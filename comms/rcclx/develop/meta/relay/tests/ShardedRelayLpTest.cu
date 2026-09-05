@@ -409,7 +409,33 @@ TEST(ShardedRelayLpGate, EachDeclineReasonIsCountedSeparately) {
 TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
   // Below ~576 KB the measured relay time is flat: that band is pure launch
   // cost, and low precision ADDS launches. A threshold inside it would make
-  // things slower. Holds for every shape, enabled or not.
+  // things slower. Holds for every shape, enabled or not, in BOTH dtypes --
+  // fp32 has the earlier crossovers, so it is the one that could plausibly
+  // reach down into this band, and it must not.
+  for (const ncclDataType_t dt : {ncclBfloat16, ncclFloat32}) {
+    for (const LpCollective coll :
+         {LpCollective::AllReduce,
+          LpCollective::ReduceScatter,
+          LpCollective::AllGather,
+          LpCollective::AllToAll}) {
+      for (int a : {2, 4}) {
+        for (int g : {1, 2, 4}) {
+          EXPECT_GE(lpMinBytes(coll, a, g, dt), size_t{576} << 10)
+              << "dtype=" << static_cast<int>(dt)
+              << " coll=" << static_cast<int>(coll) << " A=" << a << " G=" << g;
+        }
+      }
+    }
+  }
+}
+
+// fp32 sends 4 bytes per element as 33/32 and bf16 sends 2 as 33/32, so fp32
+// saves 3.88x against bf16's 1.94x. It cannot therefore be right for fp32 to be
+// gated LATER than bf16 anywhere: the same relay carrying the same message
+// shape has strictly more to gain. Pins the relationship between the two tables
+// rather than either table's values, so it keeps holding through a retune of
+// either -- and it is what would catch a copy-paste between them.
+TEST(ShardedRelayLpGate, Fp32IsNeverGatedLaterThanBf16) {
   for (const LpCollective coll :
        {LpCollective::AllReduce,
         LpCollective::ReduceScatter,
@@ -417,7 +443,9 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
         LpCollective::AllToAll}) {
     for (int a : {2, 4}) {
       for (int g : {1, 2, 4}) {
-        EXPECT_GE(lpMinBytes(coll, a, g), size_t{576} << 10)
+        EXPECT_LE(
+            lpMinBytes(coll, a, g, ncclFloat32),
+            lpMinBytes(coll, a, g, ncclBfloat16))
             << "coll=" << static_cast<int>(coll) << " A=" << a << " G=" << g;
       }
     }
@@ -434,7 +462,7 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
 //
 // Provenance for every entry is the table in sharded_relay_lp.h. Update both
 // together, and only from a measurement.
-TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
+TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   constexpr size_t kNever = std::numeric_limits<size_t>::max();
   constexpr size_t k8Mib = static_cast<size_t>(8) << 20;
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
@@ -444,35 +472,38 @@ TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
 
   // ---- fused ----
   for (int g : {2, 4}) {
-    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g), k12Mib);
-    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g, ncclBfloat16), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g, ncclBfloat16), k12Mib);
     // All-gather A=2 pays earliest of anything measured, 1.14x at 9 MB.
-    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, g), k8Mib);
-    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g), k12Mib);
-    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, g), k12Mib);
-    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, g, ncclBfloat16), k8Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g, ncclBfloat16), k12Mib);
+    EXPECT_EQ(
+        lpMinBytes(LpCollective::ReduceScatter, 2, g, ncclBfloat16), k12Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g, ncclBfloat16), k12Mib);
     // Also exactly where the fused XOR-relay route starts, so the size gate and
     // the route gate agree by construction rather than by coincidence.
-    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g), k27Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g, ncclBfloat16), k27Mib);
   }
 
   // ---- single group, measured 4.5 MB to 144 MB ----
   // Co-resident jobs get these too: a parallel relay job is nGroups == 1, so
   // this column is also the policy for several independent jobs sharing a node.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1, ncclBfloat16), k12Mib);
   // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4).
   // Measuring below 13.5 MB is what found this; the earlier threshold was a
   // band too high.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1), k8Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1), k8Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 2, 1), k12Mib);
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1), k24Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1, ncclBfloat16), k8Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1, ncclBfloat16), k8Mib);
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::ReduceScatter, 2, 1, ncclBfloat16), k12Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1, ncclBfloat16), k24Mib);
   // ENABLED only once the sweep reached past 72 MB: 1.18x-1.27x across five
   // consecutive sizes from 63 to 144 MB, against 0.90x-1.07x below 40 MB. 60
   // MiB rather than 48 because there is no data between 40 and 63 MB -- the
   // threshold goes just under the first measured win, not into the unmeasured
   // gap.
-  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1), k60Mib);
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k60Mib);
 
   // ---- the three exclusions, each for its own reason ----
 
@@ -480,17 +511,88 @@ TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
   // range. Off for the reason the single-group one was until its sweep was
   // extended: a plateau at the edge of the data is not a measured crossover.
   for (int g : {2, 4}) {
-    EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, g), kNever);
+    EXPECT_EQ(
+        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), kNever);
   }
   // A STALL, not a threshold: wins 1.09x-1.13x from 13.5 to 27 MB, then
   // 0.75x-0.92x at every larger size out to 144 MB. Profiling put it in the
   // transfers -- same three, same grid, 1.85x slower for 1.167x more bytes --
   // and the chunk-alignment fix, which recovered every other troughed shape,
   // left this one untouched.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1), kNever);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1, ncclBfloat16), kNever);
   // The only shape that never wins at any size, and the only one that gets
   // WORSE with size: 0.95x-0.97x small, 0.88x at 135-144 MB.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1), kNever);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclBfloat16), kNever);
+}
+
+// The fp32 table, pinned the same way and for the same reason as the bf16 one.
+// Provenance is the table in sharded_relay_lp.h; update both together, and only
+// from a measurement.
+//
+// EVERY VALUE IS EXACTLY THE SMALLEST SIZE MEASURED TO WIN. The sweep jumps
+// 576 KB to 4.5 MB, so the 4.5 MiB entries mean "wins at the first size in the
+// MB decade, and the decade below it is unmeasured" -- they are not a claim
+// that 4.5 MiB is the crossover. Rounding them down would be asserting data
+// nobody took.
+TEST(ShardedRelayLpGate, EnabledFp32ShapesAreExactlyTheMeasuredWins) {
+  constexpr size_t kNever = std::numeric_limits<size_t>::max();
+  constexpr size_t k4p5Mib = (static_cast<size_t>(9) << 20) / 2;
+  constexpr size_t k9Mib = static_cast<size_t>(9) << 20;
+  constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
+  constexpr size_t k13p5Mib = (static_cast<size_t>(27) << 20) / 2;
+  constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
+  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
+
+  // ---- fused ----
+  for (int g : {2, 4}) {
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g, ncclFloat32), k4p5Mib);
+    // 4.5 MB reads 1.03x, which is break-even; 9 MB is the first clear win.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g, ncclFloat32), k9Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, g, ncclFloat32), k4p5Mib);
+    // A step rather than a ramp: 1.01x at 4.5 MB, 1.00x at 9 MB, 1.92x at 13.5.
+    // Takes bf16's rounded-down 12 MiB rather than its own 13.5 MB first win,
+    // for the same reason as reduce-scatter A=4 below -- bf16 also reads 1.00x
+    // at 9 MB and also first wins at 13.5 MB, so the evidence is identical.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g, ncclFloat32), k12Mib);
+    EXPECT_EQ(
+        lpMinBytes(LpCollective::ReduceScatter, 2, g, ncclFloat32), k4p5Mib);
+    // ENABLED for fp32 and OFF for bf16 -- the clearest single case for
+    // splitting the table by dtype. Same flat ~1.00x through 40 MB in both,
+    // then bf16 manages 1.32x at one size at the edge of its range while fp32
+    // holds 2.01x-2.63x across six consecutive sizes.
+    //
+    // The one entry that is NOT this table's own first measured win (63 MB): it
+    // takes bf16's 60 MiB, because both dtypes cross at that same point and
+    // putting fp32 above bf16 on identical evidence would break the ordering
+    // that Fp32IsNeverGatedLaterThanBf16 pins.
+    EXPECT_EQ(
+        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclFloat32), k60Mib);
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g, ncclFloat32), k4p5Mib);
+    // The same 27 MiB as bf16, and again exactly where the fused XOR-relay
+    // route starts: the route gate does not depend on the wire format, so the
+    // two gates agree by construction in both dtypes.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, g, ncclFloat32), k27Mib);
+  }
+
+  // ---- single group ----
+  // ENABLED for fp32 and OFF for bf16. The bf16 stall is still visible here as
+  // variance (1.63x at 31.5 MB against 1.25x at 32 MB) but never as a
+  // regression, because 3.88x of wire saving stays ahead of it. Enabling it is
+  // NOT a claim that the stall was fixed.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1, ncclFloat32), k4p5Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1, ncclFloat32), k9Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 1, ncclFloat32), k4p5Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, 1, ncclFloat32), k4p5Mib);
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::ReduceScatter, 2, 1, ncclFloat32), k4p5Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclFloat32), k60Mib);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 1, ncclFloat32), k13p5Mib);
+
+  // The ONE fp32 exclusion. Peaks at 1.12x at 27 MB and falls back to
+  // 0.99x-1.02x from 63 MB up: the same wrong-way-with-size trend as bf16,
+  // shifted up by the extra saving. A min-bytes gate cannot express a band that
+  // closes again.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclFloat32), kNever);
 }
 
 TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {
