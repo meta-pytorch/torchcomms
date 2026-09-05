@@ -368,6 +368,32 @@ Status TcpTransport::hostFromDevice(
   return cudaApi_->streamSynchronize(s);
 }
 
+Result<void*> TcpTransport::writeStreamFor(int deviceId) {
+  std::lock_guard<std::mutex> lk(writeStreamMu_);
+  auto it = writeStreams_.find(deviceId);
+  if (it != writeStreams_.end()) {
+    return it->second;
+  }
+  if (cudaApi_ == nullptr) {
+    return Err(
+        ErrCode::InvalidArgument, "tcp write: no CUDA API for a VRAM segment");
+  }
+  cudaStream_t stream{};
+  // CudaDeviceGuard throws when setDevice fails, and it is deliberately NOT
+  // caught here. Before this stream existed the first guard on this path was
+  // the one inside deviceFromHost, and its throw is what handleFrame's catch
+  // turns into a failed connection -- see
+  // VramStagingThrowDoesNotAbortTheReader. Swallowing it here would silently
+  // narrow that behaviour, which is a separate decision from removing the null
+  // stream (see C-049).
+  CudaDeviceGuard guard(*cudaApi_, deviceId);
+  if (auto st = cudaApi_->streamCreateNonBlocking(&stream); !st) {
+    return std::move(st).error();
+  }
+  writeStreams_.emplace(deviceId, static_cast<void*>(stream));
+  return static_cast<void*>(stream);
+}
+
 Status TcpTransport::deviceFromHost(
     void* devDst,
     const void* hostSrc,
@@ -2639,8 +2665,23 @@ void TcpTransport::handleFrameImpl(
         if (header.len > 0) {
           void* dst = static_cast<uint8_t*>(entry->ptr) + header.offset;
           if (entry->memType == MemoryType::VRAM) {
-            st = deviceFromHost(
-                dst, payload.data(), header.len, entry->deviceId);
+            // On a dedicated non-blocking stream, never the null stream. The
+            // lease above is held across this copy and erase() waits on it, so
+            // a null-stream copy -- which serialises against every blocking
+            // stream on the device -- would park the reader on unrelated
+            // application GPU work that only the reader could unblock. Bounded
+            // here by this copy alone.
+            auto stream = writeStreamFor(entry->deviceId);
+            if (stream.hasError()) {
+              st = std::move(stream).error();
+            } else {
+              st = deviceFromHost(
+                  dst,
+                  payload.data(),
+                  header.len,
+                  entry->deviceId,
+                  stream.value());
+            }
           } else {
             std::memcpy(dst, payload.data(), header.len);
           }
@@ -3250,6 +3291,25 @@ void TcpTransport::shutdown() {
   // transport goes away: a staged reply's frame is memory the device may still
   // be writing into.
   drainPendingReadReplies();
+
+  // After the reader is joined, so no Write copy can still be using one. Every
+  // such copy was synchronized before its handler returned, so none has pending
+  // work at this point.
+  {
+    std::lock_guard<std::mutex> lk(writeStreamMu_);
+    for (auto& [deviceId, stream] : writeStreams_) {
+      if (stream == nullptr || cudaApi_ == nullptr) {
+        continue;
+      }
+      try {
+        CudaDeviceGuard guard(*cudaApi_, deviceId);
+        (void)cudaApi_->streamDestroy(static_cast<cudaStream_t>(stream));
+      } catch (const std::exception&) {
+        // The device is already unusable; the stream goes with it.
+      }
+    }
+    writeStreams_.clear();
+  }
 
   // Compare-exchange, not load-then-store: a concurrent bind() failure setting
   // Error in the gap between a load and a store would be clobbered back to

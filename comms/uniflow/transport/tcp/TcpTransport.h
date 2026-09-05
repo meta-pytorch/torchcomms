@@ -483,12 +483,23 @@ class TcpSegmentRegistry {
   /// for longer still: its copy has not been issued yet and starts only once a
   /// slab frees up.
   ///
-  /// What this can no longer do is deadlock. The reader thread does not wait
-  /// for any of it -- staging is asynchronous and exhaustion defers rather than
-  /// blocks -- so it keeps delivering inbound frames, including whatever the
-  /// application's GPU work is itself waiting on. Giving the staging copies a
-  /// dedicated non-blocking stream would remove the remaining wait on unrelated
-  /// device work.
+  /// **On the read-reply path** this can no longer deadlock. The reader thread
+  /// does not wait for any of that staging -- the copy is asynchronous and
+  /// exhaustion defers rather than blocks -- so it keeps delivering inbound
+  /// frames, including whatever the application's GPU work is itself waiting
+  /// on. Giving the staging copies a dedicated non-blocking stream would remove
+  /// the remaining wait on unrelated device work.
+  ///
+  /// The claim is scoped deliberately: it is about the read-reply path, not
+  /// about erase() in general. An inbound `TcpOp::Write` into a VRAM segment
+  /// also holds a lease across its H2D copy, and that copy the reader *does*
+  /// wait for. It runs on a dedicated non-blocking stream, so the wait is
+  /// bounded by that one copy and not by unrelated application GPU work --
+  /// which is what keeps it a delay rather than a deadlock. On the null stream
+  /// it was the latter: the reader would wait on every blocking stream on the
+  /// device, including work that could only be unblocked by a frame the parked
+  /// reader was itself supposed to deliver. A DRAM-only deployment never had
+  /// that exposure, because there the copy under lease is a plain memcpy.
   void erase(uint64_t segId) {
     std::unique_lock<std::mutex> lk(mu_);
     auto it = segs_.find(segId);
@@ -1436,6 +1447,25 @@ class TcpTransport : public Transport {
   // does.
   std::mutex& poolMu_{reply_->poolMu};
   std::shared_ptr<TcpPinnedSlabPool>& slabPool_{reply_->pool};
+
+  /// Non-blocking streams for inbound `TcpOp::Write` H2D copies, one per
+  /// device, created on first use for that device. Per-device because a stream
+  /// belongs to the device it was created on and registered segments may sit on
+  /// different devices -- one transport-wide stream would be used with the
+  /// wrong device current.
+  ///
+  /// The point of them is the lease. The Write handler holds a registry lease
+  /// across its copy, and erase() waits on that lease; on the null stream the
+  /// copy also waits on every blocking stream on the device, so the reader
+  /// could be parked on application GPU work that only the reader could
+  /// unblock. A non-blocking stream bounds the wait by the copy itself.
+  std::mutex writeStreamMu_;
+  std::unordered_map<int, void*> writeStreams_;
+
+  /// The non-blocking stream for `deviceId`, creating it on first use. Returns
+  /// an error rather than falling back to the null stream: the fallback is the
+  /// deadlock this exists to remove, so a Write is failed loudly instead.
+  Result<void*> writeStreamFor(int deviceId);
 
   // Separate from the outbound/responder staging pool: receive slabs must hold
   // any legal wire frame, not just one kMaxChunkSize payload.
