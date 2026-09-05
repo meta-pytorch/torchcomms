@@ -71,10 +71,6 @@ struct MultiTransportFactoryOptions {
   // is 200G -- and the backend fabric (beth*) is addressed identically; "eth"
   // is the frontend convention.
   std::string tcpDevicePrefix{"eth"};
-  // How many discovered devices to stripe across, lowest name first. Two is
-  // enough to saturate the measured path; past that the receive-side H2D copy
-  // rather than NIC count appears to bind.
-  size_t tcpMaxDevices{2};
 };
 
 class MultiTransport {

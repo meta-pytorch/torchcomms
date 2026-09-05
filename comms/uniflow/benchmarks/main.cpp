@@ -67,9 +67,6 @@ struct CliOptions {
   // and nothing else. Which NIC actually carries the bytes is a separate axis
   // -- see --tcp-bind-dev below.
   std::string tcpIface{"eth2"};
-  // SO_SNDBUF/SO_RCVBUF for the TCP data connection. Defaults to the
-  // TcpSocketConfig default; 0 leaves the kernel's sizing alone.
-  int tcpSockBuf{0};
   // Parallel TCP data sockets per bound device. Tracks the TcpTransportConfig
   // default; the total is this times the device count, and 1 with no bound
   // devices keeps the pre-lane wire format.
@@ -186,9 +183,6 @@ void printUsage(const char* prog) {
       << "  --tcp-iface <name>     Interface whose address the TCP transport binds and\n"
       << "                         advertises (default: eth2). Selects the source address\n"
       << "                         only -- see --tcp-bind-dev to pin the egress NIC\n"
-      << "  --tcp-sockbuf <bytes>  TCP data-connection SO_SNDBUF/SO_RCVBUF (default: 0,\n"
-      << "                         which leaves it unset so the kernel autotunes the\n"
-      << "                         window; setting it explicitly disables autotuning)\n"
       << "  --no-tcp-async-h2d    Disable asynchronous TCP get() H2D (default: enabled)\n"
       << "  --tcp-sockets-per-nic <n>  Parallel TCP data sockets per bound device\n"
       << "                         (default: 4). Total lanes is this times the device\n"
@@ -205,7 +199,11 @@ void printUsage(const char* prog) {
       << "                         are per device, so each gets --tcp-sockets-per-nic\n"
       << "  --batch-size <n>       Number of requests per transport call (default: 1)\n"
       << "  --tx-depth <n>         Outstanding transport calls before waiting (default: 1)\n"
-      << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all)\n"
+      << "  --num-nics <n>         Cap number of NICs to use (default: 0 = all\n"
+      << "                         for RDMA, the transport's own default for TCP,\n"
+      << "                         which is 2). On TCP a request above the number\n"
+      << "                         of usable ports the host has is clamped to it,\n"
+      << "                         with a warning; there is no fixed upper limit.\n"
       << "  --chunk-size <bytes>   RDMA transfer chunk size in bytes (default: 524288)\n"
       << "  --cuda-device <id>     GPU device index for buffer allocation (default: CPU memory)\n"
       << "  --topology <type>      Send/recv pattern: fanout|fanin (default: fanout)\n"
@@ -257,7 +255,6 @@ CliOptions parseArgs(int argc, char** argv) {
       {"cuda-devices", required_argument, nullptr, 264},
       {"gpu-nics", required_argument, nullptr, 265},
       {"tcp-iface", required_argument, nullptr, 266},
-      {"tcp-sockbuf", required_argument, nullptr, 268},
       {"no-tcp-async-h2d", no_argument, nullptr, 269},
       {"tcp-sockets-per-nic", required_argument, nullptr, 270},
       {"tcp-bind-dev", no_argument, nullptr, 271},
@@ -337,18 +334,6 @@ CliOptions parseArgs(int argc, char** argv) {
         break;
       case 266:
         opts.tcpIface = optarg;
-        break;
-      case 268:
-        try {
-          opts.tcpSockBuf = std::stoi(optarg);
-          if (opts.tcpSockBuf < 0) {
-            std::cerr << "Invalid value for --tcp-sockbuf: must be >= 0\n";
-            std::exit(1);
-          }
-        } catch (const std::exception&) {
-          std::cerr << "Invalid value for --tcp-sockbuf: '" << optarg << "'\n";
-          std::exit(1);
-        }
         break;
       case 269:
         opts.tcpAsyncH2d = false;
@@ -526,8 +511,6 @@ int main(int argc, char** argv) {
   runner.registerBenchmark(
       std::make_unique<uniflow::benchmark::TcpBandwidthBenchmark>(
           opts.tcpIface,
-          opts.tcpSockBuf > 0 ? std::optional<int>(opts.tcpSockBuf)
-                              : std::nullopt,
           opts.tcpAsyncH2d,
           opts.tcpSocketsPerNic,
           tcpBindDevList(opts)));

@@ -436,10 +436,19 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   // measures one routing-chosen NIC and reports it as what the default
   // configuration delivers, which is not what any caller going through
   // MultiTransport actually gets.
+  // --num-nics caps the device count here as well as on the RDMA path, where it
+  // used to be honoured only there: the flag reached BenchmarkConfig and then
+  // nothing on the TCP side read it, so asking for 4 NICs over TCP silently
+  // measured 2. 0 keeps the transport's own default.
+  TcpTransportConfig discoveryConfig;
+  if (config.numNics > 0) {
+    discoveryConfig.maxFrontendDevices = static_cast<size_t>(config.numNics);
+  }
+  const size_t maxDevices = discoveryConfig.resolveMaxFrontendDevices(
+      std::string(::uniflow::kDefaultFrontendDevicePrefix));
   if (bindDevs_.empty()) {
     bindDevs_ = enumerateFrontendDevices(
-        std::string(::uniflow::kDefaultFrontendDevicePrefix),
-        ::uniflow::kDefaultMaxFrontendDevices);
+        std::string(::uniflow::kDefaultFrontendDevicePrefix), maxDevices);
     if (bindDevs_.empty()) {
       UNIFLOW_LOG_WARN(
           "TcpBandwidthBenchmark: no usable '{}' device found; leaving egress "
@@ -457,8 +466,6 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     return {};
   }
   const std::string asyncGetH2dMode = asyncGetH2d_ ? "on" : "off";
-  const std::string sockBufMode =
-      sockBufSize_ ? std::to_string(*sockBufSize_) : "os-default";
   // Recorded in the run log because the whole point of the flag is that an
   // interface label alone does not tell you which NIC carried the traffic.
   std::string bindDevMode;
@@ -472,18 +479,17 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       socketsPerNic_ * std::max<size_t>(bindDevs_.size(), 1);
   std::cerr << "TcpBandwidthBenchmark: rank=" << bootstrap.rank
             << " iface=" << iface_ << " async_get_h2d=" << asyncGetH2dMode
-            << " tcp_sockbuf=" << sockBufMode << " bind_dev=" << bindDevMode
+            << " bind_dev=" << bindDevMode
             << " sockets_per_nic=" << socketsPerNic_
             << " total_lanes=" << totalLanes << '\n';
   UNIFLOW_LOG_WARN(
       "TcpBandwidthBenchmark: rank {} using {} address {} "
-      "async_get_h2d={} tcp_sockbuf={} bind_dev={} sockets_per_nic={} "
+      "async_get_h2d={} bind_dev={} sockets_per_nic={} "
       "total_lanes={}",
       bootstrap.rank,
       addrDevice,
       host,
       asyncGetH2dMode,
-      sockBufMode,
       bindDevMode,
       socketsPerNic_,
       totalLanes);
@@ -496,10 +502,12 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
 
   ScopedEventBaseThread evbThread("bench-tcp-evb");
   TcpTransportConfig transportConfig;
-  transportConfig.socketConfig.socketBufSize = sockBufSize_;
   transportConfig.bindToDevices = bindDevs_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
   transportConfig.numSocketsPerDevice = socketsPerNic_;
+  // Carried through even though bindToDevices is already resolved above, so the
+  // transport reports the cap it was asked for rather than its own default.
+  transportConfig.maxFrontendDevices = maxDevices;
   auto factory = std::make_unique<TcpTransportFactory>(
       dev, evbThread.getEventBase(), transportConfig, host);
 

@@ -4,6 +4,11 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -50,6 +55,26 @@ class TcpTransportConnectTest : public ::testing::Test {
       transport_.reset();
     }
     evbThread_.reset();
+  }
+
+  /// True if something accepts a TCP connection on 127.0.0.1:port right now.
+  /// The kernel completes the handshake into the accept queue whether or not
+  /// userspace has called accept(), so this reports whether the listening
+  /// socket is still open -- which is exactly what shutdown() is meant to
+  /// change.
+  static bool canConnectTo(uint16_t port) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+      return false;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const bool connected =
+        ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+    ::close(fd);
+    return connected;
   }
 
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
@@ -112,6 +137,39 @@ TEST_F(TcpTransportConnectTest, ListenerTimesOutWhenNoPeerDials) {
       << "s; the handshake wait is not bounded by connTimeout";
 
   listener->shutdown();
+}
+
+// shutdown() must close the listeners bind() opened, rather than leaving them
+// to the destructor.
+//
+// servers_ is a member, so leaving it untouched means the listener fds stay
+// open until the transport object is destroyed -- which in a real process is
+// during teardown, concurrent with the EventBase thread stopping.
+// AsyncAccept::shutdown() reaches the loop through an unbounded
+// dispatchAndWait(), so that overlap is precisely the window where teardown
+// wedges (see TcpAsyncAcceptMiscTest.ShutdownDoesNotBlockOnABusyEventBase).
+// Closing the listeners while shutdown() still owns a loop it knows is running
+// removes the window instead of narrowing it.
+//
+// Observed from outside the transport: once shutdown() returns, nothing is
+// listening on the port bind() published.
+TEST_F(TcpTransportConnectTest, ShutdownClosesTheListener) {
+  const TransportInfo self = transport_->bind();
+  ASSERT_FALSE(self.empty()) << "bind() must publish a routable endpoint";
+  auto info = TcpTransportInfo::deserialize(self);
+  ASSERT_TRUE(info.hasValue()) << info.error().message();
+  const uint16_t port = info.value().port;
+
+  // Sanity first, so a refusal below is shutdown()'s doing rather than a port
+  // that was never listening.
+  ASSERT_TRUE(canConnectTo(port)) << "bind() left no listening socket";
+
+  transport_->shutdown();
+
+  EXPECT_FALSE(canConnectTo(port))
+      << "the listener outlived shutdown(): it closes only when the transport is "
+         "destroyed, which in a real process races the EventBase thread stopping "
+         "and is where teardown wedges";
 }
 
 TEST_F(TcpTransportConnectTest, RejectsMalformedPeerInfo) {
@@ -255,6 +313,154 @@ class TcpTransportTopologyTest : public ::testing::Test {
 
 TEST(TcpTransportConfigTest, AsyncGetH2dDefaultsOn) {
   EXPECT_TRUE(TcpTransportConfig{}.asyncGetH2d);
+}
+
+// Data sockets must leave SO_SNDBUF/SO_RCVBUF to the kernel no matter how the
+// config was built. Asserted through the converting constructor specifically,
+// because that is the path that defeated the previous attempt: the default on
+// socketConfig was bulkDataDefaults(), but any caller handing over a bare
+// TcpSocketConfig -- the benchmark, the cross-host tests, anything arriving via
+// MultiTransport -- replaced it wholesale and silently restored that type's own
+// 1 MiB. A test on the default alone passed throughout, which is why this one
+// sets a value and demands it be dropped.
+TEST(TcpTransportConfigTest, DataSocketsAlwaysLeaveSocketBuffersToTheKernel) {
+  controller::TcpSocketConfig explicitCfg;
+  explicitCfg.socketBufSize = 4 << 20;
+  const TcpTransportConfig config{explicitCfg};
+
+  ASSERT_EQ(config.socketConfig.socketBufSize, 4 << 20)
+      << "precondition: the caller's value reaches the config";
+  EXPECT_FALSE(config.dataSocketConfig(std::nullopt).socketBufSize.has_value())
+      << "an explicit SO_RCVBUF pins the window below a 200G link's BDP";
+}
+
+// Only the buffer size is overridden. This is not osDefaults(): a data socket
+// still wants the keepalive and timeout settings the caller asked for, so a
+// future field cleared here by accident should show up as a failure.
+TEST(TcpTransportConfigTest, DataSocketConfigKeepsEveryOtherField) {
+  const TcpTransportConfig config{};
+  const auto data = config.dataSocketConfig(std::nullopt);
+  const auto& given = config.socketConfig;
+
+  EXPECT_EQ(data.connTimeout, given.connTimeout);
+  EXPECT_EQ(data.tcpNoDelay, given.tcpNoDelay);
+  EXPECT_EQ(data.enableKeepalive, given.enableKeepalive);
+  EXPECT_EQ(data.keepaliveIdle, given.keepaliveIdle);
+  EXPECT_EQ(data.keepaliveInterval, given.keepaliveInterval);
+  EXPECT_EQ(data.keepaliveCount, given.keepaliveCount);
+  EXPECT_EQ(data.userTimeout, given.userTimeout);
+}
+
+// The egress device is per-connection rather than per-config, so a nullopt
+// device has to clear an inherited binding rather than leave it. Asserted with
+// a binding already on the config, because asserting it on the default proves
+// nothing -- the default has none, so such a test passes whether the clearing
+// happens or not. A leaked binding would pin every lane to one device while the
+// transport believed it was striping across several.
+TEST(TcpTransportConfigTest, DataSocketConfigOverridesTheInheritedDevice) {
+  controller::TcpSocketConfig staleCfg;
+  staleCfg.bindToDevice = "eth9";
+  const TcpTransportConfig config{staleCfg};
+
+  ASSERT_EQ(config.socketConfig.bindToDevice, "eth9")
+      << "precondition: the caller's binding reaches the config";
+  EXPECT_EQ(config.dataSocketConfig("eth2").bindToDevice, "eth2")
+      << "the transport's own device model must win";
+  EXPECT_FALSE(config.dataSocketConfig(std::nullopt).bindToDevice.has_value())
+      << "no device given must leave egress to the routing table";
+}
+
+// The NIC cap is a single field on the config, reachable by both MultiTransport
+// and the benchmark. It used to be two constants -- one here and one on
+// MultiTransportOptions -- which could drift apart while each looked right on
+// its own, so the default is asserted rather than assumed.
+TEST(TcpTransportConfigTest, FrontendDeviceCapDefaultsToTwo) {
+  EXPECT_EQ(kDefaultMaxFrontendDevices, 2UL);
+  EXPECT_EQ(TcpTransportConfig{}.maxFrontendDevices, 2UL);
+}
+
+// Zero means "no opinion", not "no devices": a caller threading an unset flag
+// through would otherwise ask discovery for nothing and get a transport bound
+// to no NIC at all.
+TEST(TcpTransportConfigTest, FrontendDeviceCapOfZeroMeansDefault) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = 0;
+  EXPECT_EQ(
+      config.resolveMaxFrontendDevices(prefix),
+      std::min(kDefaultMaxFrontendDevices, capacity));
+}
+
+// The ceiling is what the host has, not a number in the source. A request above
+// it is clamped rather than honoured, so a caller cannot end up with lanes
+// bound to ports that do not exist.
+TEST(TcpTransportConfigTest, FrontendDeviceCapIsClampedToTheHostsPortCount) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = capacity + 100;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(prefix), capacity);
+}
+
+// Anything at or below capacity is the caller's to choose -- that is the point
+// of making it configurable.
+TEST(TcpTransportConfigTest, FrontendDeviceCapIsRaisableUpToCapacity) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  TcpTransportConfig config;
+  config.maxFrontendDevices = capacity;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(prefix), capacity);
+}
+
+// Capacity is a property of the host, so it must agree with what discovery
+// returns when asked for everything. Comparing the two rather than asserting a
+// number keeps this a test of the accessor and not of the machine.
+TEST(TcpTransportConfigTest, CapacityMatchesUnboundedDiscovery) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  EXPECT_EQ(
+      frontendDeviceCapacity(prefix),
+      enumerateFrontendDevices(prefix, std::numeric_limits<size_t>::max())
+          .size());
+}
+
+// An unknown prefix has no ports, and capacity 0 must not be mistaken for "cap
+// of none": resolve leaves the request alone so the caller's own no-device
+// handling reports the real problem.
+TEST(TcpTransportConfigTest, UnknownPrefixHasNoCapacityAndDoesNotClampToZero) {
+  const std::string absent = "nosuchdev";
+  ASSERT_EQ(frontendDeviceCapacity(absent), 0UL);
+  TcpTransportConfig config;
+  config.maxFrontendDevices = 4;
+  EXPECT_EQ(config.resolveMaxFrontendDevices(absent), 4UL);
+}
+
+// Discovery has to honour a raised cap for the config field to mean anything.
+// Bounded by what the host actually has: asserting a count would make this test
+// a statement about the test machine rather than about the cap.
+TEST(TcpTransportConfigTest, DiscoveryHonoursARaisedCap) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const auto atTwo = enumerateFrontendDevices(prefix, 2);
+  const auto atCapacity =
+      enumerateFrontendDevices(prefix, frontendDeviceCapacity(prefix));
+  EXPECT_LE(atTwo.size(), 2UL);
+  EXPECT_GE(atCapacity.size(), atTwo.size())
+      << "a larger cap must not return fewer devices";
+  if (atCapacity.size() > atTwo.size()) {
+    // The lower cap must be a prefix of the higher one, or lane i would map to
+    // a different physical port depending only on the cap.
+    EXPECT_TRUE(std::equal(atTwo.begin(), atTwo.end(), atCapacity.begin()))
+        << "device order must not depend on the cap";
+  }
 }
 
 TEST_F(TcpTransportTopologyTest, FactoryPropagatesDisabledAsyncGetH2d) {

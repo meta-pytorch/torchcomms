@@ -6,6 +6,10 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -38,6 +42,22 @@ class TcpAsyncAcceptTest : public ::testing::TestWithParam<AddrFamily> {
 };
 
 namespace {
+
+// Polls `flag` until it is set, or gives up. Used where the thing under test is
+// "does this call return at all", so a hang has to become a failed assertion
+// rather than a hung test binary.
+bool waitForFlag(
+    const std::atomic<bool>& flag,
+    std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (flag.load(std::memory_order_acquire)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return flag.load(std::memory_order_acquire);
+}
 
 int getRcvBuf(int fd) {
   int val = 0;
@@ -527,6 +547,85 @@ TEST_F(TcpAsyncAcceptMiscTest, AsyncAcceptBeforeInit) {
   // Before init, listenSock_ < 0, so accept returns nullptr
   auto conn = server.accept().get();
   EXPECT_EQ(conn, nullptr);
+}
+
+// shutdown() must not park forever because the EventBase happens to be busy.
+//
+// AsyncAccept::shutdown() reaches the loop through two dispatchAndWait() calls,
+// and dispatchAndWait() has no timeout: it waits on a condition variable that
+// only the loop can notify. So a loop occupied by any other callback holds
+// shutdown() for as long as that callback runs, and a loop that stops in the
+// window between the isLoopRunning() check and the dispatch holds it forever.
+//
+// This is not hypothetical load. The TCP transport runs its staged-read-reply
+// and H2D poll loops on this same EventBase, and those re-dispatch themselves
+// while a copy is outstanding, so teardown competes with the data path for the
+// one loop thread. A responder was observed wedged here for 600s during an
+// 8-GPU run, having logged the first of its two listener shutdowns and never
+// reaching the second.
+//
+// The occupying callback here stands in for that: it is what a busy loop looks
+// like from shutdown()'s perspective, and it makes the wedge deterministic
+// rather than a race to lose.
+TEST_F(TcpAsyncAcceptMiscTest, ShutdownDoesNotBlockOnABusyEventBase) {
+  ScopedEventBaseThread evbThread("async-accept-busy");
+  AsyncTcpServer server("127.0.0.1:0", {}, *evbThread.getEventBase());
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+
+  // Shared with the queued callback through a shared_ptr rather than captured
+  // by reference, for the same reason runOnLoopBounded() does it: the callback
+  // can still be unwinding after this frame is gone. evbThread is declared
+  // first and so destroyed last, meaning it joins the loop thread only after
+  // these locals would already have died -- capturing them by reference is a
+  // stack-use-after-scope, which ASAN reports on the wait predicate below.
+  struct Occupier {
+    std::mutex mu;
+    std::condition_variable released;
+    bool release{false};
+    std::atomic<bool> occupying{false};
+  };
+  auto occupier = std::make_shared<Occupier>();
+
+  // Occupy the loop thread until this test lets it go.
+  evbThread.getEventBase()->dispatch([occupier]() noexcept {
+    occupier->occupying.store(true, std::memory_order_release);
+    std::unique_lock<std::mutex> lk(occupier->mu);
+    occupier->released.wait(lk, [&occupier]() { return occupier->release; });
+  });
+  ASSERT_TRUE(waitForFlag(occupier->occupying))
+      << "the loop never picked up the callback";
+
+  std::atomic<bool> returned{false};
+  std::thread shutdownThread([&]() {
+    server.shutdown();
+    returned.store(true, std::memory_order_release);
+  });
+
+  // Must outlast AsyncAccept::kLoopTeardownTimeout (5000ms), not merely match
+  // it. With the loop occupied, shutdown() returns only once its first bounded
+  // wait expires, so it returns at ~kLoopTeardownTimeout + scheduling overhead.
+  // Waiting exactly as long as the code under test makes this a dead heat that
+  // fails under ASAN and coin-flips otherwise -- and it fails with a message
+  // claiming teardown blocked indefinitely, which is the opposite of what
+  // happened. The point of the assertion is "shutdown() returns at all", so the
+  // deadline only has to be comfortably clear of the production timeout.
+  const bool finished = waitForFlag(returned, std::chrono::seconds(30));
+
+  // Let the loop go regardless, so the test can always join and tear down.
+  {
+    std::lock_guard<std::mutex> lk(occupier->mu);
+    occupier->release = true;
+  }
+  occupier->released.notify_all();
+  shutdownThread.join();
+
+  EXPECT_TRUE(finished)
+      << "shutdown() blocked while the EventBase was busy: it waits on the loop "
+         "with no timeout, so any other callback -- including the transport's "
+         "own poll loops -- can hold teardown indefinitely";
 }
 
 INSTANTIATE_TEST_SUITE_P(
