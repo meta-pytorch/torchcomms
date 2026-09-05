@@ -17,7 +17,9 @@ namespace ctran::ib {
 LocalVirtualConn::LocalVirtualConn(
     std::vector<CtranIbDevice>& devices,
     CommLogData commLogData)
-    : devices_(devices), commLogData_(std::move(commLogData)) {
+    : devices_(devices),
+      commLogData_(std::move(commLogData)),
+      tracker_(devices_.size()) {
   FB_CHECKABORT(
       devices_.size() <= NCCL_CTRAN_IB_DEVICES_PER_RANK,
       "Invalid number of devices {} received in flush virtual connection compared to NCCL_CTRAN_IB_DEVICES_PER_RANK {}",
@@ -109,6 +111,30 @@ commResult_t LocalVirtualConn::iflush(
     const void* ibRegElem,
     CtranIbRequest* req) {
   auto mrs = reinterpret_cast<const std::vector<ibverbx::IbvMr>*>(ibRegElem);
+  FB_CHECKABORT(
+      mrs->size() >= devices_.size(),
+      "Flush requires one memory region per device, but got {} regions for {} devices",
+      mrs->size(),
+      devices_.size());
+
+  // Each flush burns one send-queue slot per device and nothing upstream bounds
+  // the number of flushes in flight, so the queue depth has to be enforced here
+  // while the failure is still recoverable.
+  for (int device = 0; device < devices_.size(); device++) {
+    if (tracker_.outstanding(device) >= static_cast<size_t>(MAX_SEND_WR)) {
+      CTRAN_ERR(
+          commInternalError,
+          "CTRAN-IB: flush send queue is full on device {} ({} outstanding, max {})",
+          device,
+          tracker_.outstanding(device),
+          MAX_SEND_WR);
+      return commInternalError;
+    }
+  }
+
+  tracker_.track(req);
+
+  bool posted = false;
   for (int device = 0; device < devices_.size(); device++) {
     ibverbx::ibv_send_wr wr;
     memset(&wr, 0, sizeof(wr));
@@ -122,7 +148,26 @@ commResult_t LocalVirtualConn::iflush(
 
     ibverbx::ibv_send_wr* bad_wr{nullptr};
     auto maybeSend = ibvQps_[device].postSend(&wr, &bad_wr);
-    FOLLY_EXPECTED_CHECK(maybeSend);
+    if (maybeSend.hasError()) {
+      // A partial post permanently desynchronizes the per-device deques against
+      // the CQEs they retire, so there is no recoverable exit once any work
+      // request of this flush has reached a queue. Until then the tracking is
+      // the only state the flush has created, and undoing it restores the
+      // tracker to exactly what it was before this call.
+      FB_CHECKABORT(
+          !posted,
+          "Failed to post flush RDMA READ on device {} after a partial post: {}",
+          device,
+          maybeSend.error().errStr);
+      tracker_.untrack(req);
+      CTRAN_ERR(
+          commSystemError,
+          "CTRAN-IB: failed to post flush RDMA READ on device {}: {}",
+          device,
+          maybeSend.error().errStr);
+      return commSystemError;
+    }
+    posted = true;
     CTRAN_LOG_TRACE(
         COLL,
         "CTRAN-IB: posted flush on qpn {}, req {}",
@@ -130,32 +175,18 @@ commResult_t LocalVirtualConn::iflush(
         (void*)req);
   }
 
-  // Push one entry per device CQE. Only the last carries the actual req;
-  // earlier entries are nullptr so processCqe drains them without completing.
-  for (int device = 0; device < devices_.size(); device++) {
-    outstandingReqs_.push_back(device == devices_.size() - 1 ? req : nullptr);
-  }
-
   return commSuccess;
 }
 
 commResult_t LocalVirtualConn::processCqe(
-    const enum ibverbx::ibv_wc_opcode opcode) {
+    const enum ibverbx::ibv_wc_opcode opcode,
+    const int device) {
   FB_CHECKABORT(
       opcode == ibverbx::IBV_WC_RDMA_READ,
       "Invalid opcode {} received in flush virtual connection",
       opcode);
 
-  // Since each flush is executed by network one by one, we complete each flush
-  // as simple FIFO. With multi-NIC, each iflush posts one RDMA READ per
-  // device; only the last entry carries the request to complete.
-  auto req = outstandingReqs_.front();
-  outstandingReqs_.pop_front();
-  if (req) {
-    FB_COMMCHECK(req->complete());
-  }
-
-  return commSuccess;
+  return tracker_.complete(device);
 }
 
 uint32_t LocalVirtualConn::qpNum(int device) const {

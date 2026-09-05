@@ -943,13 +943,22 @@ commResult_t CtranIb::iflush(
     CtranIbRequest* req) {
   FB_COMMCHECK(checkEpochLock(this));
 
-  if (enableLocalFlush_) {
+  if (enableLocalFlush_ && localRegHdl != nullptr) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
       auto& vc = localVc;
       return vc->iflush(dbuf, localRegHdl, req);
     });
   } else {
-    req->complete();
+    // A buffer with no IB registration never received IB RDMA writes, so there
+    // is nothing to order against and skipping is correct. Local flush being
+    // disabled altogether is the expected steady state, not an anomaly, so it
+    // stays silent.
+    if (enableLocalFlush_) {
+      CTRAN_LOG(WARN, "CTRAN-IB: No IB registration for flush, skip");
+    }
+    if (req != nullptr) {
+      FB_COMMCHECK(req->complete());
+    }
     return commSuccess;
   }
 }

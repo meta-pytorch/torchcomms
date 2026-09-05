@@ -1072,7 +1072,7 @@ class CtranIb {
             // First check if it is a local flush CQE
             if (wc.qp_num == vc->qpNum(device)) {
               CQE_ERROR_CHECK(wc, rank, "localFlush");
-              FB_COMMCHECK(vc->processCqe(wc.opcode));
+              FB_COMMCHECK(vc->processCqe(wc.opcode, device));
               continue;
             }
           });
