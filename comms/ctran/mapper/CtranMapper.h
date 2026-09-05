@@ -741,31 +741,39 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
    *   - buf: the local buffer to flush
    *   - regHdl: the local registration handle of the local buffer
    * Output arguments:
-   *   - req: the request object to track the progress of the flush.
+   *   - req: the request object to track the progress of the flush. Owned by
+   * the caller and always set on success; when no flush is posted (no IB
+   * backend or no IB registration) the request comes back already complete.
    */
   inline commResult_t
   iflush(const void* buf, const void* regHdl, CtranMapperRequest** req) {
     if (this->ctranIb) {
       auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(
           const_cast<void*>(regHdl));
-      if (!regElem) {
-        CTRAN_LOG(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+      if (regElem) {
+        auto regLk = regElem->stateMnger.rlock();
+        // Ownership transfers to the caller only once the flush is posted; on
+        // an error path the caller's pointer is left untouched.
+        std::unique_ptr<CtranMapperRequest> reqOwner;
+        CtranIbRequest* ibReq = nullptr;
+        if (req) {
+          reqOwner = std::make_unique<CtranMapperRequest>();
+          ibReq = &(reqOwner->ibReq);
+        }
+        FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
+        if (req) {
+          *req = reqOwner.release();
+        }
         return commSuccess;
       }
-      auto regLk = regElem->stateMnger.rlock();
-      CtranIbRequest* ibReq = nullptr;
-      if (req) {
-        *req = new CtranMapperRequest();
-        ibReq = &((*req)->ibReq);
-      }
-      FB_COMMCHECK(this->ctranIb->iflush(buf, regElem->ibRegElem, ibReq));
-    } else if (this->ctranTcpDm) {
-      // TCPDM: flush is unnecessary — data arrives via kernel unpack.
-      // Return a pre-completed request so callers can poll normally.
-      if (req) {
-        *req = new CtranMapperRequest();
-        (*req)->setComplete();
-      }
+      CTRAN_LOG(WARN, "CTRAN-MAPPER: No IB registration for flush, skip");
+    }
+    // No flush was posted: either no IB backend (TCPDM needs none, data
+    // arrives via kernel unpack) or no IB registration for the buffer.
+    // Return a pre-completed request so callers can poll normally.
+    if (req) {
+      *req = new CtranMapperRequest();
+      (*req)->setComplete();
     }
     return commSuccess;
   }
