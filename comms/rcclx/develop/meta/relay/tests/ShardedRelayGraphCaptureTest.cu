@@ -845,6 +845,150 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
 }
 
 // ===========================================================================
+// MIXED-OPERATION EAGER SEQUENCE
+// ===========================================================================
+//
+// Two open questions from the Avocado 42B V3 / V3.5 reports, in one case.
+//
+// (1) Does a back-to-back relay sequence need an end-of-forward
+//     `torch.cuda.current_stream().synchronize()`? V3 added one and measured
+//     104.7 / 111.6 / 114.1 ms of wait per relay-bearing eager forward. It
+//     landed together with a full-forward tensor keepalive, and the report
+//     never separated the two, so "the pair was sufficient" is all that was
+//     ever established. Here the keepalive's equivalent is holding the
+//     allocation for the whole sequence, and there is NO synchronize between
+//     calls or between iterations -- only one at the very end, to read results.
+//     If this sequence is correct, the per-forward barrier was not
+//     load-bearing.
+//
+// (2) Does all-to-all followed by all-reduce on ONE communicator hang? V3.5 2.3
+//     reports exactly that, reproducibly, and shipped only by pushing the
+//     all-reduce gate above 128 MiB to keep it off the relay entirely.
+//     RelayPlanInfo carries a single opCode per published plan, so a forward
+//     mixing the two must publish two epochs.
+//
+// The shapes VARY per iteration and each iteration reuses storage the previous
+// iteration used, with the all-reduce landing in-place on the very region the
+// preceding all-to-all read as its send buffer. That is a deliberate
+// write-after-read on reused storage with no intervening barrier -- the exact
+// hazard V3's keepalive was introduced for ("PyTorch reuses that storage for a
+// later shape or request while a helper still accesses it"). If same-stream
+// ordering is sufficient, this passes; if a relay leg escapes stream order,
+// this corrupts or hangs.
+//
+// Only the final iteration is validated: checking every iteration would require
+// a synchronize between them, which is the thing under test. A failure in an
+// earlier iteration shows up either as corruption that survives to the last one
+// or as a hang.
+TEST_F(
+    ShardedRelayGraphCaptureOtherCollectivesTest,
+    MixedA2AThenAllReduceEager) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+  constexpr int kIters = 6;
+  const size_t maxSegment = kMidCount;
+  const size_t regionCount = static_cast<size_t>(kActive) * maxSegment;
+
+  // Two regions, alternating roles, so every iteration reuses storage the
+  // previous one touched. Sized for the larger of the two contracts: the
+  // all-to-all needs A * segmentCount, and a HELPER's in-place all-reduce
+  // scratch needs A * count.
+  int32_t* region[2] = {nullptr, nullptr};
+  HIPCHECK_TEST(hipMalloc(&region[0], regionCount * sizeof(int32_t)));
+  HIPCHECK_TEST(hipMalloc(&region[1], regionCount * sizeof(int32_t)));
+  barrier();
+  HIPCHECK_TEST(hipMemset(region[0], 0, regionCount * sizeof(int32_t)));
+  HIPCHECK_TEST(hipMemset(region[1], 0, regionCount * sizeof(int32_t)));
+  barrier();
+
+  size_t lastSegment = 0;
+  int lastSend = 0;
+  for (int i = 0; i < kIters; i++) {
+    // Mixed shapes, still 512-aligned so the geometry stays representative.
+    const size_t shrink = 1u + static_cast<size_t>(i % 3);
+    size_t segmentCount = (maxSegment / shrink) & ~static_cast<size_t>(511);
+    if (segmentCount == 0) {
+      segmentCount = maxSegment;
+    }
+    const int sendIdx = i % 2;
+    const int recvIdx = 1 - sendIdx;
+    lastSegment = segmentCount;
+    lastSend = sendIdx;
+
+    if (this->isActive) {
+      fillBlocks(region[sendIdx], segmentCount, i);
+    }
+    barrier();
+
+    // --- all-to-all: reads region[sendIdx], writes region[recvIdx] ---
+    {
+      const void* sendPtrs[kGroups] = {region[sendIdx]};
+      void* recvPtrs[kGroups] = {region[recvIdx]};
+      const size_t segmentCounts[kGroups] = {segmentCount};
+      ASSERT_EQ(
+          ncclShardedRelayMultiGroupAllToAll(
+              sendPtrs,
+              recvPtrs,
+              segmentCounts,
+              ncclInt32,
+              this->comm,
+              this->stream,
+              this->allActiveRanks,
+              kActive,
+              kGroups,
+              /*lowPrecision=*/0),
+          ncclSuccess);
+    }
+
+    // --- all-reduce, in place, on the region the all-to-all just READ ---
+    // Deliberate write-after-read on reused storage, no barrier in between.
+    // Skipped on the final iteration so the all-to-all result survives to be
+    // checked; every earlier iteration exercises the hazard.
+    if (i + 1 < kIters) {
+      const void* sendPtrs[kGroups] = {region[sendIdx]};
+      void* recvPtrs[kGroups] = {region[sendIdx]};
+      const size_t counts[kGroups] = {segmentCount};
+      ASSERT_EQ(
+          ncclShardedRelayMultiGroupAllReduce(
+              sendPtrs,
+              recvPtrs,
+              counts,
+              ncclInt32,
+              ncclSum,
+              this->comm,
+              this->stream,
+              this->allActiveRanks,
+              kActive,
+              kGroups,
+              /*lowPrecision=*/0),
+          ncclSuccess);
+    }
+    // NO syncStream() and NO barrier() here on purpose. The next iteration's
+    // calls are enqueued straight behind these on the same stream, which is
+    // precisely the back-to-back case V3's barrier was guarding.
+  }
+
+  // The one and only synchronize, so the results can be read.
+  syncStream("mixed eager sequence drain");
+  barrier();
+
+  if (this->isActive) {
+    const int recvIdx = 1 - lastSend;
+    for (int src = 0; src < kActive; src++) {
+      expectUniform(
+          region[recvIdx] + static_cast<size_t>(src) * lastSegment,
+          lastSegment,
+          fillValue(src, this->myActiveIndex, kIters - 1),
+          "mixed eager all-to-all");
+    }
+  }
+
+  HIPEXPECT_TEST(hipFree(region[0]));
+  HIPEXPECT_TEST(hipFree(region[1]));
+}
+
+// ===========================================================================
 // LOW PRECISION UNDER GRAPH CAPTURE
 // ===========================================================================
 //
