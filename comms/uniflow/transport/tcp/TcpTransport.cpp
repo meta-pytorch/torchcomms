@@ -2916,6 +2916,18 @@ void TcpTransport::shutdown() {
   }
   running_.store(false, std::memory_order_release);
 
+  // Listeners first: stop accepting before tearing down what is already
+  // connected. Doing it here rather than leaving it to ~TcpTransport is the
+  // point -- the destructor runs during process teardown, concurrent with the
+  // EventBase thread stopping, and AsyncAccept::shutdown() has to reach that
+  // loop to unregister the fd. Closing the listeners while shutdown() still has
+  // a running loop removes that race instead of narrowing it.
+  for (auto& server : servers_) {
+    if (server != nullptr) {
+      server->shutdown();
+    }
+  }
+
   closeAllLaneQueues();
 
   // Closing the data connections unblocks the readers' blocking recv and any
