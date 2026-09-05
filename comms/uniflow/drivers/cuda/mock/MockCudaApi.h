@@ -68,6 +68,14 @@ class MockCudaApi : public CudaApi {
        cudaStream_t stream),
       (override));
 
+  MOCK_METHOD(
+      Status,
+      streamCreateNonBlocking,
+      (cudaStream_t * stream),
+      (override));
+
+  MOCK_METHOD(Status, streamDestroy, (cudaStream_t stream), (override));
+
   MOCK_METHOD(Status, streamSynchronize, (cudaStream_t stream), (override));
 
   MOCK_METHOD(Status, eventCreate, (cudaEvent_t * event), (override));
@@ -77,6 +85,7 @@ class MockCudaApi : public CudaApi {
       (cudaEvent_t event, cudaStream_t stream),
       (override));
   MOCK_METHOD(Result<bool>, eventQuery, (cudaEvent_t event), (override));
+  MOCK_METHOD(Status, eventSynchronize, (cudaEvent_t event), (override));
   MOCK_METHOD(Status, eventDestroy, (cudaEvent_t event), (override));
 
   MOCK_METHOD(Result<std::string>, getDeviceArch, (int device), (override));

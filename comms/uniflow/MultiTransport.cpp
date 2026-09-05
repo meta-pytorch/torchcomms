@@ -337,8 +337,14 @@ MultiTransportFactory::MultiTransportFactory(
         options_.tcpDevicePrefix, std::numeric_limits<size_t>::max());
     if (tcpConfig.bindToDevices.empty()) {
       tcpConfig.bindToDevices = usable;
-      if (tcpConfig.bindToDevices.size() > options_.tcpMaxDevices) {
-        tcpConfig.bindToDevices.resize(options_.tcpMaxDevices);
+      // The cap comes off the transport config, which is the single place it is
+      // declared: MultiTransportOptions used to carry its own copy, so this and
+      // the benchmark could disagree about the default while each looked right.
+      // resolveMaxFrontendDevices also clamps to what this host actually has.
+      const size_t maxDevices =
+          tcpConfig.resolveMaxFrontendDevices(options_.tcpDevicePrefix);
+      if (tcpConfig.bindToDevices.size() > maxDevices) {
+        tcpConfig.bindToDevices.resize(maxDevices);
       }
     } else {
       for (const auto& dev : tcpConfig.bindToDevices) {

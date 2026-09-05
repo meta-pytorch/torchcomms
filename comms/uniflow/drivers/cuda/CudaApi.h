@@ -76,6 +76,16 @@ class CudaApi {
 
   // --- Stream ---
 
+  /// Creates a stream that does NOT implicitly synchronize with the null
+  /// stream (`cudaStreamNonBlocking`). A copy issued on the null stream
+  /// serialises against every blocking stream on the device, so a thread that
+  /// synchronizes it ends up waiting for unrelated application GPU work. Where
+  /// that thread also holds a resource someone else waits on, that is a
+  /// deadlock rather than a delay.
+  virtual Status streamCreateNonBlocking(cudaStream_t* stream);
+
+  virtual Status streamDestroy(cudaStream_t stream);
+
   virtual Status streamSynchronize(cudaStream_t stream);
 
   // --- Event ---
@@ -87,6 +97,14 @@ class CudaApi {
   /// Query whether a recorded event has completed.
   /// Returns true if the event has completed, false if still in-flight.
   virtual Result<bool> eventQuery(cudaEvent_t event);
+
+  /// Block the calling thread until a recorded event completes. Waits on the
+  /// one event rather than the stream it was recorded on, so work queued after
+  /// it is not waited for -- which is what a caller pipelining several batches
+  /// on one stream needs. Prefer this over polling eventQuery on a thread that
+  /// has nothing else to do: the poll burns a core that the rest of the process
+  /// is contending for.
+  virtual Status eventSynchronize(cudaEvent_t event);
 
   virtual Status eventDestroy(cudaEvent_t event);
 

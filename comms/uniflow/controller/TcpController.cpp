@@ -13,8 +13,10 @@
 #include <cassert>
 #include <cerrno>
 #include <charconv>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -1270,6 +1272,28 @@ void SyncAccept::shutdown(std::atomic<int>& listenSock, const std::string& id) {
 // AsyncAccept
 // ---------------------------------------------------------------------------
 
+AsyncAccept::~AsyncAccept() {
+  std::queue<std::promise<std::unique_ptr<Conn>>> orphaned;
+  {
+    std::lock_guard<std::mutex> lock(alive_->mu);
+    alive_->alive = false;
+    // Taken under the guard, which is what makes touching loop-thread-only
+    // state safe here: every callback holds the same mutex for its whole body,
+    // so none is running now and none can start.
+    //
+    // A teardown callback that timed out and later bailed on the dead guard
+    // never settled these, and nothing else will, so a caller blocked on
+    // accept() would otherwise see broken_promise from the promise destructor
+    // rather than the null a closed listener is supposed to report. Settled
+    // outside the lock because set_value() can run a continuation.
+    orphaned.swap(pendingPromises_);
+  }
+  while (!orphaned.empty()) {
+    orphaned.front().set_value(nullptr);
+    orphaned.pop();
+  }
+}
+
 void AsyncAccept::teardown(int fd) {
   accepting_ = false;
   evb_.unregisterFd(fd);
@@ -1378,9 +1402,19 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   auto future = promise.get_future();
 
   evb_.dispatch([this,
+                 alive = alive_,
                  &listenSock,
                  cfg = config,
                  p = std::move(promise)]() mutable noexcept {
+    // Guarded for the same reason as runOnLoopBounded()'s callback, and it
+    // matters more here: besides this object, the body reads listenSock, which
+    // belongs to the owning server and dies with it. Nothing is salvageable
+    // once the guard is dead, so report the closed-listener answer and stop.
+    std::lock_guard<std::mutex> lock(alive->mu);
+    if (!alive->alive) {
+      p.set_value(nullptr);
+      return;
+    }
     int sock = listenSock.load();
     if (sock < 0) {
       p.set_value(nullptr);
@@ -1425,6 +1459,46 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   return future;
 }
 
+bool AsyncAccept::runOnLoopBounded(
+    std::function<void()> work,
+    std::chrono::milliseconds timeout) {
+  // Heap-allocated and shared with the queued callback, not a stack frame the
+  // callback captures by reference: this wait is allowed to give up, and a
+  // callback that runs afterwards must still have somewhere valid to signal.
+  // That is the difference between this and EventBase::dispatchAndWait(), which
+  // can only be safe because it never stops waiting.
+  struct Barrier {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done{false};
+  };
+  auto barrier = std::make_shared<Barrier>();
+
+  evb_.dispatch([work = std::move(work), barrier, alive = alive_]() noexcept {
+    {
+      // Held across work() so the destructor cannot retire the object midway
+      // through it. Skipped entirely on a dead guard: this callback may have
+      // been abandoned by a timed-out wait, and dispatch() offers no way to
+      // recall it.
+      std::lock_guard<std::mutex> lock(alive->mu);
+      if (alive->alive) {
+        work();
+      }
+    }
+    // Signalled either way, so a caller still waiting is never left to time out
+    // on work that has already been decided.
+    {
+      std::lock_guard<std::mutex> lock(barrier->mu);
+      barrier->done = true;
+    }
+    barrier->cv.notify_all();
+  });
+
+  std::unique_lock<std::mutex> lock(barrier->mu);
+  return barrier->cv.wait_for(
+      lock, timeout, [&barrier]() { return barrier->done; });
+}
+
 void AsyncAccept::shutdown(
     std::atomic<int>& listenSock,
     const std::string& id) {
@@ -1443,10 +1517,39 @@ void AsyncAccept::shutdown(
     teardown(fd);
     closeFd();
   } else if (evb_.isLoopRunning()) {
-    evb_.dispatchAndWait([this, fd]() noexcept { teardown(fd); });
-    // Drain: unregisterFd inside teardown is deferred —
-    // wait for it to complete before closing the fd.
-    evb_.dispatchAndWait([]() noexcept {});
+    // Bounded, and the fd is closed either way.
+    //
+    // dispatchAndWait() would be the natural call here and it is what this used
+    // to do, but it waits on the loop with no timeout, and neither condition it
+    // depends on is guaranteed. isLoopRunning() is only !stop_, so the loop can
+    // stop in the window between that check and the dispatch -- after which the
+    // callback is enqueued into a queue nobody drains and the wait never ends.
+    // The loop can also simply be busy: the TCP transport runs its staged-reply
+    // and H2D poll loops on this same EventBase and they re-dispatch themselves
+    // while a copy is outstanding, so teardown competes with the data path for
+    // the one loop thread. A responder was observed wedged here for 600s during
+    // an 8-GPU run, having logged the first of its two listener shutdowns and
+    // never reached the second.
+    //
+    // On timeout the loop-thread-only state teardown() touches is deliberately
+    // left alone rather than reached into from here. Closing the fd is what
+    // actually stops the listener, and a closed fd leaves epoll on its own, so
+    // giving up on the callback costs a stale registration the loop will fail
+    // to remove -- not a leaked listener.
+    const bool tornDown =
+        runOnLoopBounded([this, fd]() { teardown(fd); }, kLoopTeardownTimeout);
+    // Second round trip: unregisterFd() inside teardown() defers its own work,
+    // so draining past it is what makes the fd safe to close.
+    const bool drained =
+        tornDown && runOnLoopBounded([]() {}, kLoopTeardownTimeout);
+    if (!drained) {
+      UNIFLOW_LOG_WARN(
+          "TcpServer: event loop did not run listener teardown for {} within "
+          "{}ms (stopped or wedged in another callback); closing fd={} anyway",
+          id,
+          kLoopTeardownTimeout.count(),
+          fd);
+    }
     closeFd();
   } else {
     // Loop stopped — closing the fd auto-removes it from epoll.
