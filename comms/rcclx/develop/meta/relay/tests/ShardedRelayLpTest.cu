@@ -330,11 +330,17 @@ TEST(ShardedRelayLpGate, CountAlignmentRequirementIsPerCall) {
   EXPECT_FALSE(lpCountsAligned(threeBlocks, 1, 4 * kBlock));
   EXPECT_FALSE(lpCountsAligned(blockAligned, 1, 0));
 
-  // And it reaches lpEligible through LpGateInputs.
+  // And it reaches lpEligible through LpGateInputs. The shape here is the fused
+  // all-gather at A=4 rather than the defaulted allreduce, because lpMinBytes()
+  // is a measured per-shape policy and the allreduce is disabled at every size
+  // -- a baseline that is not eligible would decline on Size before reaching
+  // the alignment check this case is about.
+  const size_t threeBlocksPerGroup[] = {3 * kBlock, 3 * kBlock};
   LpGateInputs in;
+  in.coll = LpCollective::AllGather;
   in.datatype = ncclFloat32;
-  in.counts = threeBlocks;
-  in.nGroups = 1;
+  in.counts = threeBlocksPerGroup;
+  in.nGroups = 2;
   in.nActiveRanksPerGroup = 4;
   in.routeSizeBytes = static_cast<size_t>(64) << 20;
   in.relayRouteSelected = true;
@@ -350,16 +356,21 @@ TEST(ShardedRelayLpGate, EachDeclineReasonIsCountedSeparately) {
   // tested, because the gate declines SILENTLY -- an LP run that quietly fell
   // back looks exactly like a passing one. So the counters themselves need to
   // be trustworthy.
-  const size_t good[] = {4 * kBlock};
-  const size_t bad[] = {4 * kBlock + 3};
+  const size_t good[] = {4 * kBlock, 4 * kBlock};
+  const size_t bad[] = {4 * kBlock, 4 * kBlock + 3};
   const size_t big = static_cast<size_t>(64) << 20;
 
+  // An ENABLED shape, because the point of this case is to walk each decline
+  // reason from a baseline that is eligible. lpMinBytes() is a measured
+  // per-shape policy that declines most shapes outright, so a baseline picked
+  // without regard to it (the allreduce this used to use) would decline on Size
+  // before reaching any of the reasons under test.
   LpGateInputs in;
-  in.coll = LpCollective::AllReduce;
+  in.coll = LpCollective::AllGather;
   in.datatype = ncclFloat32;
   in.counts = good;
-  in.nGroups = 1;
-  in.nActiveRanksPerGroup = 2;
+  in.nGroups = 2;
+  in.nActiveRanksPerGroup = 4;
   in.routeSizeBytes = big;
   in.relayRouteSelected = true;
 
@@ -398,13 +409,68 @@ TEST(ShardedRelayLpGate, EachDeclineReasonIsCountedSeparately) {
 TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
   // Below ~576 KB the measured relay time is flat: that band is pure launch
   // cost, and low precision ADDS launches. A threshold inside it would make
-  // things slower.
-  for (int a : {2, 4}) {
-    for (int g : {1, 4}) {
-      EXPECT_GE(lpMinBytes(LpCollective::AllReduce, a, g), size_t{576} << 10);
-      EXPECT_GE(lpMinBytes(LpCollective::AllToAll, a, g), size_t{576} << 10);
+  // things slower. Holds for every shape, enabled or not.
+  for (const LpCollective coll :
+       {LpCollective::AllReduce,
+        LpCollective::ReduceScatter,
+        LpCollective::AllGather,
+        LpCollective::AllToAll}) {
+    for (int a : {2, 4}) {
+      for (int g : {1, 2, 4}) {
+        EXPECT_GE(lpMinBytes(coll, a, g), size_t{576} << 10)
+            << "coll=" << static_cast<int>(coll) << " A=" << a << " G=" << g;
+      }
     }
   }
+}
+
+// Pins the MEASURED policy, which is mostly "off". Without this, a refactor
+// that widened low precision back to every shape would look like an improvement
+// and pass every other test in this file -- while reintroducing the regressions
+// the sweep measured (down to 0.56x on single-group all-to-all A=4).
+//
+// The provenance for each entry is the table in sharded_relay_lp.h. Update both
+// together, and only from a measurement.
+TEST(ShardedRelayLpGate, EnabledShapesAreExactlyTheMeasuredWins) {
+  constexpr size_t kNever = std::numeric_limits<size_t>::max();
+
+  // Fused all-gather at A=4: 1.18x at 13.5 MB rising to a 1.22x-1.29x plateau.
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::AllGather, 4, 2), static_cast<size_t>(12) << 20);
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::AllGather, 4, 4), static_cast<size_t>(12) << 20);
+  // Fused reduce-scatter at A=2: 1.09x-1.12x from 27 MB.
+  EXPECT_EQ(
+      lpMinBytes(LpCollective::ReduceScatter, 2, 4),
+      static_cast<size_t>(27) << 20);
+
+  // A single group leaves the links uncontended, so there is no bandwidth term
+  // for halved wire bytes to shrink. Measured a regression almost everywhere.
+  for (const LpCollective coll :
+       {LpCollective::AllReduce,
+        LpCollective::ReduceScatter,
+        LpCollective::AllGather,
+        LpCollective::AllToAll}) {
+    for (int a : {2, 4}) {
+      EXPECT_EQ(lpMinBytes(coll, a, 1), kNever)
+          << "nGroups==1 must be disabled; coll=" << static_cast<int>(coll)
+          << " A=" << a;
+    }
+  }
+
+  // Never won at any width or grouping.
+  for (int a : {2, 4}) {
+    for (int g : {2, 4}) {
+      EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, a, g), kNever);
+    }
+  }
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 4, 2), kNever);
+  // Off despite a consistent small win, because 1.02x-1.06x does not pay for
+  // fp8 rounding plus the arena.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 4), kNever);
+  EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, 4), kNever);
+  // Wrong width for its enabled entry.
+  EXPECT_EQ(lpMinBytes(LpCollective::ReduceScatter, 4, 2), kNever);
 }
 
 TEST(ShardedRelayLpArena, CapacityFollowsTheMessageProvisioning) {

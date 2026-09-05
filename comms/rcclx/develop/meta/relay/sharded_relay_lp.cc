@@ -9,6 +9,7 @@
 #include "meta/relay/sharded_relay_lp.h"
 
 #include <atomic>
+#include <limits>
 
 #include "debug.h"
 #include "param.h"
@@ -105,17 +106,12 @@ bool lpCountsAligned(const size_t* counts, int nGroups, size_t alignElems) {
 }
 
 size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
-  (void)coll;
-  (void)nActiveRanksPerGroup;
-  (void)nGroups;
-
   // NCCL_SHARDED_RELAY_LP_MIN_KB overrides the crossover. This exists so the
-  // crossover can be MEASURED: the built-in value below refuses low precision
-  // under 4 MiB, which means a sweep cannot see whether low precision would
-  // have won at 1 MiB -- the gate declines before anything is timed, so the
-  // answer the sweep needs is the one value it cannot observe. Setting this to
-  // 0 in a bench pass makes every size eligible and turns the crossover into
-  // data.
+  // crossover can be MEASURED: the built-in values below refuse most shapes
+  // outright, and the gate declines before anything is timed, so without an
+  // override a sweep could never see whether low precision would have won. It
+  // is also what the collective test suites set, because they cover the
+  // MECHANISM and must not be coupled to this tuning policy.
   //
   // Tuning only, and it can only make low precision apply MORE widely or less
   // -- never change what the wire format does. Read through NCCL_PARAM, which
@@ -126,14 +122,43 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
     return static_cast<size_t>(minKb) << 10;
   }
 
-  // PROVISIONAL, pending the LP sweep. 4 MiB is above the entire flat
-  // launch-bound band (measured flat across 4 KB..576 KB) and at or above every
-  // relay-route crossover in sharded_relay_route.h, so low precision is only
-  // ever considered where a relay route is already active and there is a real
-  // bandwidth term for it to shrink. The signature carries the collective and
-  // the geometry so the measured per-shape crossovers can be filled in here
-  // without touching a single call site.
-  return static_cast<size_t>(4) << 20;
+  // MEASURED, and the honest answer is that low precision pays for TWO shapes.
+  // The full table is in the header. The short version:
+  //
+  //  - nGroups == 1 pays NOWHERE. One group leaves the XGMI links uncontended,
+  //  so
+  //    there is no bandwidth term for halved wire bytes to shrink, while the
+  //    quantize/dequantize passes still cost HBM traffic and two extra
+  //    launches. Measured 0.64x-1.09x, i.e. mostly a regression.
+  //  - all-gather A=4 fused is the strong case: 1.18x at 13.5 MB rising to a
+  //    stable 1.22x-1.29x plateau. Its flat offload stages more bytes through
+  //    helpers than any other schedule here, which is what the wire format acts
+  //    on.
+  //  - reduce-scatter A=2 fused is the modest case: 1.09x-1.12x from 27 MB.
+  //  - allreduce never wins at any width or grouping (0.89x-0.98x), and neither
+  //    does all-to-all A=4 (0.85x-0.98x).
+  //
+  // Shapes that measured 1.01x-1.06x -- all-gather A=2, all-to-all A=2 -- are
+  // OFF deliberately. The win is consistent but small, and not worth fp8
+  // rounding plus the arena's memory to collect. Enabling them is a one-line
+  // change here.
+  constexpr size_t kNever = std::numeric_limits<size_t>::max();
+
+  if (nGroups <= 1) {
+    return kNever;
+  }
+  switch (coll) {
+    case LpCollective::AllGather:
+      return nActiveRanksPerGroup == 4 ? (static_cast<size_t>(12) << 20)
+                                       : kNever;
+    case LpCollective::ReduceScatter:
+      return nActiveRanksPerGroup == 2 ? (static_cast<size_t>(27) << 20)
+                                       : kNever;
+    case LpCollective::AllReduce:
+    case LpCollective::AllToAll:
+      return kNever;
+  }
+  return kNever;
 }
 
 bool lpEligible(const LpGateInputs& in) {
