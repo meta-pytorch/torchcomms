@@ -205,6 +205,11 @@ Result<bool> CudaApi::eventQuery(cudaEvent_t event) {
   return false; // unreachable
 }
 
+Status CudaApi::eventSynchronize(cudaEvent_t event) {
+  CUDA_CHECK(cudaEventSynchronize(event), ErrCode::DriverError);
+  return Ok();
+}
+
 Status CudaApi::eventDestroy(cudaEvent_t event) {
   CUDA_CHECK(cudaEventDestroy(event), ErrCode::DriverError);
   return Ok();

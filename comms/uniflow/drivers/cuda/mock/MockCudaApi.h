@@ -77,6 +77,7 @@ class MockCudaApi : public CudaApi {
       (cudaEvent_t event, cudaStream_t stream),
       (override));
   MOCK_METHOD(Result<bool>, eventQuery, (cudaEvent_t event), (override));
+  MOCK_METHOD(Status, eventSynchronize, (cudaEvent_t event), (override));
   MOCK_METHOD(Status, eventDestroy, (cudaEvent_t event), (override));
 
   MOCK_METHOD(Result<std::string>, getDeviceArch, (int device), (override));
