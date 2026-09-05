@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -585,8 +586,24 @@ class TcpFrame {
   /* implicit */ TcpFrame(std::vector<uint8_t> bytes)
       : vec_(std::move(bytes)), len_(vec_.size()) {}
   /// `len` is the transmitted length, which may be shorter than the slab.
-  TcpFrame(TcpPinnedSlab slab, size_t len)
-      : slab_(std::move(slab)), len_(len) {}
+  ///
+  /// Asserted because this is the only place that holds both numbers, and the
+  /// failure it would otherwise admit is silent rather than fatal: slabs are
+  /// contiguous windows on one region, so a `len` past the slab's end transmits
+  /// the *next* slab's bytes -- another in-flight reply's staged payload --
+  /// behind a correct-looking header, and no downstream check can catch that.
+  /// The callers are bounded today (respondToVramRead() rejects a read above
+  /// kMaxChunkSize, and a put chunk is min(kMaxChunkSize, remaining)), but both
+  /// bounds live in other functions.
+  ///
+  /// assert() rather than a returned error because a constructor cannot fail
+  /// here and this matches the shape already used for bounds invariants in this
+  /// codebase (RdmaRegistrationHandle.h:65,71,137). Note it therefore compiles
+  /// out in opt builds: this catches a wrong `len` in dev and test, not in
+  /// production.
+  TcpFrame(TcpPinnedSlab slab, size_t len) : slab_(std::move(slab)), len_(len) {
+    assert(len_ <= slab_.capacity());
+  }
 
   ~TcpFrame() = default;
   TcpFrame(TcpFrame&&) = default;
