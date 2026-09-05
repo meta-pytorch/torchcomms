@@ -878,21 +878,37 @@ class TcpTransport : public Transport {
   // was not queued (transport closing, or the reader hit the cap and refused
   // the connection).
   [[nodiscard]] bool enqueueFrame(TcpFrame frame, bool mayBlock);
-  // Queues a run of frames as one indivisible step: either every frame is
-  // queued or none is. Enqueuing them one at a time would let a sender thread
-  // start transmitting a partially built group, which for a multi-chunk put
-  // means the peer applies a prefix of a transfer this side may still fail to
-  // finish staging.
+  // Queues a run of frames. A group small enough not to be worth parallelising
+  // goes on ONE lane as an indivisible step, either every frame queued or none:
+  // enqueuing one at a time would let a sender start transmitting a partially
+  // built group, which for a multi-chunk put means the peer applies a prefix of
+  // a transfer this side may still fail to finish staging.
   //
-  // The whole group therefore goes on ONE lane, so a single lock makes it
-  // atomic. Spreading a group across lanes would need every target lane's mutex
-  // held at once, and the room-waiting inside would then be a deadlock: a
-  // producer holding lanes 0..k-1 while waiting for room on lane k blocks the
-  // very senders that would free it.
+  // Groups whose frames are individually large are STRIPED instead, one frame
+  // per lane from a rotating base, because a full wave on one lane is a single
+  // socket's rate while the other lanes may have nothing to do. The size gate
+  // and the argument for why Write frames tolerate reordering (each is
+  // self-describing, and put() completes on a count of Acks rather than their
+  // order) are at the implementation. Two-sided Send is NOT reorderable and
+  // never comes through here; it pins to lane 0 in enqueueSendFrame.
   //
-  // `mayBlock` behaves as in enqueueFrame, and is judged against the group's
-  // total size, so a group larger than the queue cap still drains rather than
-  // waiting forever on room that will never appear.
+  // Striping deliberately does NOT hold every target lane's mutex at once. That
+  // would deadlock: a producer holding lanes 0..k-1 while waiting for room on
+  // lane k blocks the very senders that would free it. It takes one lane's
+  // mutex at a time and releases it before moving on.
+  //
+  // The price of that is real and worth knowing here rather than only at the
+  // call site: admission becomes per frame, so a striped group can queue some
+  // frames and then refuse. The all-or-nothing property above therefore holds
+  // only for the unstriped path. The implementation records why the
+  // consequences stay contained -- the caller fails the op and abandons its
+  // inflight entries, and an Ack for an abandoned reqId is ignored.
+  //
+  // `mayBlock` behaves as in enqueueFrame. It is judged against the group's
+  // total size on the unstriped path and against each frame on the striped one.
+  // Either way an empty queue always admits, so a group or a frame larger than
+  // the cap still drains rather than waiting forever on room that will never
+  // appear.
   [[nodiscard]] bool enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock);
   // Queues a framed message whose completion is reported via `onSent` once the
   // frame is flushed (two-sided send()).
@@ -1209,6 +1225,15 @@ class TcpTransport : public Transport {
   // and 1 MiB chunks measured the same, 256 KiB gave up part of the gain, and
   // 128 KiB was worse than not splitting at all.
   static constexpr size_t kMinAdaptiveChunkSize = 512UL * 1024;
+
+  /// Frames smaller than this are not worth striping across lanes: the extra
+  /// sender's wakeup costs more than the parallel socket buys. Only consulted
+  /// for multi-frame groups, where it is applied to the mean frame size.
+  ///
+  /// 256 KiB is well above the cost of a condvar wake and a socket write, and
+  /// well below kMaxChunkSize, so a full-size chunk always qualifies while an
+  /// Ack or a small control frame never does.
+  static constexpr size_t kMinStripeFrameBytes = 256UL * 1024;
 
   // Chunk size for one get request. A transfer no larger than kMaxChunkSize is
   // a single frame, and a frame goes to a single lane, so it uses one lane
