@@ -58,11 +58,33 @@ A default run does one forward per collective in that list, at each active width
 Helper ranks pass a single 1-element placeholder tensor -- the C++ kernel stages
 helpers into its own internal scratch and never reads/writes the placeholder.
 
-Each relay call in a forward gets its own buffers. Sharing one pair across the
-calls of a forward is a cross-rank write-after-read: a rank that finished call i
-races ahead and overwrites a send buffer a peer is still reading. A deployment
-gives every relay call its own tensor, so this is a property of the demo, not a
-constraint of the relay.
+Each relay call in this demo gets its own buffers so that a failed comparison
+names exactly one call. That is a convenience of the demo, NOT a lifetime
+requirement: sharing a buffer across the calls of a forward is safe, including
+reusing one in a write-after-read pattern.
+
+An earlier version of this comment claimed the opposite -- that sharing is a
+cross-rank write-after-read, because a rank could finish call i and overwrite a
+send buffer a peer is still reading. That is wrong, and the claim propagated:
+the 42B "RCCLX V3" evaluation cited this guidance as part of the justification
+for a per-forward `torch.cuda.current_stream().synchronize()` that measured
+104.7-114.1 ms of wait per relay-bearing forward and was a material part of why
+that experiment regressed end to end.
+
+Why sharing is safe. No rank can address another rank's caller buffers at all:
+the only cross-process mapping in the relay is the one-shot region's own
+hipExtMallocWithFlags allocation, and caller buffers cannot be registered on
+this build because ncclCommRegister is a no-op (see sharded_relay_oneshot.h).
+So every access to a caller buffer is either the owning rank's own kernel on its
+own stream, or one side of a matched ncclSend/ncclRecv issued on the owning
+rank's stream -- both ordered by that rank's stream, exactly as for a plain
+ncclAllReduce. Releasing a buffer therefore needs an event on the active stream,
+not a device-wide synchronize.
+
+Exercised by ShardedRelayGraphCaptureOtherCollectivesTest
+.MixedA2AThenAllReduceEager, which runs all-to-all followed by an in-place
+all-reduce on the very region the all-to-all just read, six times, with varying
+shapes and no synchronize between calls.
 
 **A communicator's active set is fixed.** This script creates one comm per active
 width rather than reusing a single comm for A=2 and A=4. The one-shot IPC region
