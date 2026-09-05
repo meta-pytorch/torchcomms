@@ -15,21 +15,16 @@ namespace uniflow::benchmark {
 /// buffers, or VRAM staged through host memory inside the transport.
 class TcpBandwidthBenchmark : public Benchmark {
  public:
-  /// @p sockBufSize is the SO_SNDBUF/SO_RCVBUF value for the data connection;
-  /// nullopt leaves the kernel's own sizing in place, which is what lets
-  /// receive autotuning grow the window past the bandwidth-delay product.
   /// @p bindDevs are the network devices to pin egress to via SO_BINDTODEVICE,
   /// one listener per device and lane i placed on device i % size(). Empty
   /// leaves egress to the routing table, in which case @p iface only selects a
   /// source address and routing still decides which NIC traffic leaves through.
   TcpBandwidthBenchmark(
       std::string iface,
-      std::optional<int> sockBufSize,
       bool asyncGetH2d = true,
       size_t socketsPerNic = 4,
       std::vector<std::string> bindDevs = {})
       : iface_(std::move(iface)),
-        sockBufSize_(sockBufSize),
         asyncGetH2d_(asyncGetH2d),
         socketsPerNic_(socketsPerNic),
         bindDevs_(std::move(bindDevs)) {}
@@ -45,7 +40,6 @@ class TcpBandwidthBenchmark : public Benchmark {
 
  private:
   std::string iface_;
-  std::optional<int> sockBufSize_;
   bool asyncGetH2d_{true};
   // Lanes per bound device; total is this times the device count.
   size_t socketsPerNic_{4};
