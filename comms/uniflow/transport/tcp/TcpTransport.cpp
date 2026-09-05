@@ -172,6 +172,29 @@ size_t TcpTransportConfig::resolveMaxFrontendDevices(
   return capacity;
 }
 
+controller::TcpSocketConfig TcpTransportConfig::dataSocketConfig(
+    const std::optional<std::string>& device) const {
+  auto cfg = socketConfig;
+  // Both assignments are unconditional, not "if the caller left it alone".
+  //
+  // socketBufSize: an explicit SO_RCVBUF turns off Linux receive-window
+  // autotuning, which pins a stream at window/RTT and measured worse than
+  // autotune at every size that was swept. This only ever reaches an accepted
+  // socket -- the listener consumes bindToDevice and nothing else -- so it is
+  // the accepted socket's buffer that this decides, which is the one carrying
+  // data.
+  //
+  // bindToDevice: `device` is derived from bindToDevices, which is the
+  // transport's own device model, so it is the only correct answer here. A
+  // nullopt device therefore has to *clear* an inherited binding rather than
+  // leave it: a caller-supplied bindToDevice would otherwise pin every lane to
+  // one device while the transport believed it was striping across several,
+  // leaking through the seam that exists to stop exactly that.
+  cfg.socketBufSize = std::nullopt;
+  cfg.bindToDevice = device;
+  return cfg;
+}
+
 namespace {
 // Fallback when TcpSocketConfig::connTimeout is unset.
 constexpr int kDefaultHandshakeTimeoutSeconds = 30;
@@ -409,10 +432,7 @@ TransportInfo TcpTransport::bind() {
   servers_.clear();
   localEndpoints_.clear();
   for (const auto& [addr, device] : targets) {
-    auto socketConfig = config_.socketConfig;
-    if (device) {
-      socketConfig.bindToDevice = device;
-    }
+    auto socketConfig = config_.dataSocketConfig(device);
     auto server = std::make_unique<controller::AsyncTcpServer>(
         addr + ":0", socketConfig, *evb_);
     auto status = server->init();
@@ -716,10 +736,10 @@ Status TcpTransport::establishLanes(
       const size_t deviceCount =
           config_.bindToDevices.empty() ? 1 : config_.bindToDevices.size();
       const size_t dev = i % deviceCount;
-      auto socketConfig = config_.socketConfig;
-      if (!config_.bindToDevices.empty()) {
-        socketConfig.bindToDevice = config_.bindToDevices[dev];
-      }
+      auto socketConfig = config_.dataSocketConfig(
+          config_.bindToDevices.empty()
+              ? std::nullopt
+              : std::optional<std::string>(config_.bindToDevices[dev]));
       const auto target = peer.endpointAt(dev);
       controller::AsyncTcpClient client(socketConfig, *evb_);
       auto future =

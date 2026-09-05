@@ -466,8 +466,6 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     return {};
   }
   const std::string asyncGetH2dMode = asyncGetH2d_ ? "on" : "off";
-  const std::string sockBufMode =
-      sockBufSize_ ? std::to_string(*sockBufSize_) : "os-default";
   // Recorded in the run log because the whole point of the flag is that an
   // interface label alone does not tell you which NIC carried the traffic.
   std::string bindDevMode;
@@ -481,18 +479,17 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       socketsPerNic_ * std::max<size_t>(bindDevs_.size(), 1);
   std::cerr << "TcpBandwidthBenchmark: rank=" << bootstrap.rank
             << " iface=" << iface_ << " async_get_h2d=" << asyncGetH2dMode
-            << " tcp_sockbuf=" << sockBufMode << " bind_dev=" << bindDevMode
+            << " bind_dev=" << bindDevMode
             << " sockets_per_nic=" << socketsPerNic_
             << " total_lanes=" << totalLanes << '\n';
   UNIFLOW_LOG_WARN(
       "TcpBandwidthBenchmark: rank {} using {} address {} "
-      "async_get_h2d={} tcp_sockbuf={} bind_dev={} sockets_per_nic={} "
+      "async_get_h2d={} bind_dev={} sockets_per_nic={} "
       "total_lanes={}",
       bootstrap.rank,
       addrDevice,
       host,
       asyncGetH2dMode,
-      sockBufMode,
       bindDevMode,
       socketsPerNic_,
       totalLanes);
@@ -505,7 +502,6 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
 
   ScopedEventBaseThread evbThread("bench-tcp-evb");
   TcpTransportConfig transportConfig;
-  transportConfig.socketConfig.socketBufSize = sockBufSize_;
   transportConfig.bindToDevices = bindDevs_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
   transportConfig.numSocketsPerDevice = socketsPerNic_;
