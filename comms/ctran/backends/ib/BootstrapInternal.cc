@@ -36,17 +36,27 @@ const std::string kCtranIbLogEventName{"CtranIb-QpExchange"};
 
 const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
 
+std::string errnoName(int errnoValue) {
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && defined(_GNU_SOURCE)
+#if __GLIBC_PREREQ(2, 32)
+  const char* name = ::strerrorname_np(errnoValue);
+  return name != nullptr ? name : "UNKNOWN";
+#endif
+#endif
+  return "UNKNOWN";
+}
+
 std::string socketErrorContext(int error) {
   const bool hasValidMagnitude = error != std::numeric_limits<int>::min();
   const int errnoValue = hasValidMagnitude && error < 0 ? -error : error;
-  const char* errorName =
-      hasValidMagnitude ? ::strerrorname_np(errnoValue) : nullptr;
+  const std::string errorName =
+      hasValidMagnitude ? errnoName(errnoValue) : "UNKNOWN";
   const std::string description =
       hasValidMagnitude ? folly::errnoStr(errnoValue) : "invalid errno value";
   return fmt::format(
       "origin=socket_error subsystem=ctran_ib error_code={} error_name={} error_description=\"{}\"",
       error,
-      errorName != nullptr ? errorName : "UNKNOWN",
+      errorName,
       folly::cEscape<std::string>(description));
 }
 } // namespace
