@@ -402,29 +402,50 @@ bool lpCountsAligned(
  * the eight pay in bf16 and seven in fp32. Contention still helps, since the
  * fused ratios are higher, but it is not the dividing line.
  *
- * BOTH DTYPES NOW ENABLE 15 OF 16 SHAPES, and the one exclusion is the same in
- * both. Two entries used to be listed here and neither survived contact with
- * more data: single-group allreduce A=2 was an unexplained "stall" that turned
- * out to be an alignment bug in this code, and fused reduce-scatter A=4 was a
- * plateau at the edge of a range that stopped at 72 MB.
+ * BOTH DTYPES NOW ENABLE ALL 16 SHAPES. Three entries used to be listed here as
+ * exclusions and none survived contact with more data: single-group allreduce
+ * A=2 was an unexplained "stall" that turned out to be an alignment bug in this
+ * code, fused reduce-scatter A=4 was a plateau at the edge of a range that
+ * stopped at 72 MB, and single-group all-to-all A=2 was called STRUCTURAL and
+ * was not.
  *
- * The one that stays off, in both dtypes:
+ * That last one is worth keeping, because the reasoning was wrong in an
+ * instructive way. The claim was: `foldDiagonalIntoGroup` is set exactly when
+ * nGroups == 1, the folded self-peer diagonal stays FULL PRECISION, and at A=2
+ * that diagonal is one of two segments -- so HALF the payload cannot shrink
+ * while the low-precision machinery is paid over all of it.
  *
- *   - single-group all-to-all A=2: 0.95x-0.97x small and 0.88x at 135-144 MB in
- *     bf16; fp32 peaks at 1.12x and falls back to ~1.00x. STRUCTURAL rather
- * than a threshold or a bug. `foldDiagonalIntoGroup` is set exactly when
- *     nGroups == 1, and the folded self-peer diagonal stays FULL PRECISION
- *     because RCCL services it as a local copy that never crosses a boundary.
- * At A=2 that diagonal is one of two segments, so HALF the payload cannot
- *     shrink while the low-precision machinery is paid over all of it. At A=4
- *     the diagonal is a quarter and the shape pays 1.25x; fused does not fold
- * at all and pays 1.38x. Fixing it means not folding under low precision, or
- *     quantizing the diagonal -- a schedule change, not a threshold.
+ * Every sentence of that is true and the conclusion does not follow. The
+ * 2-active ALL-GATHER has the same 50/50 split, the same three-region wire
+ * plan, the same quantize and dequantize element counts, and -- measured -- the
+ * same full-precision time to within 6% at matched boundary-crossing bytes. It
+ * paid 1.30x throughout. So the payload ratio cannot be what disqualifies the
+ * all-to-all, and the difference was never the diagonal's SIZE but its
+ * PLACEMENT: the all-gather issues it as a plain copy outside its comm groups,
+ * the all-to-all folded it in as a self P2P pair carrying the caller's dtype
+ * while every other op in that group carried wire bytes. Full precision hides
+ * it; low precision halves the wire ops and exposes it.
  *
- *     The co-resident measurement is the tell: the same shape reads 1.05x
- * (bf16) and 1.15x (fp32) under four parallel jobs. The gate declines a small
- * real win there because it cannot tell that case from the uncontended one --
- *     both are nGroups == 1.
+ * Two things made this hard to see. The fold is UNCONDITIONAL in the pipelined
+ * schedules -- there is no `foldDiagonalIntoGroup` variable there at all -- so
+ * an earlier experiment that gated the non-pipelined flag on `!lp` changed
+ * nothing at any size above 27 MB, which is the only size in the low-precision
+ * range that takes the non-pipelined path. That experiment's one improved size,
+ * 27 MB reading 1.29x, was written down as an outlier. It was the fix working
+ * at the only size where it ran. Second, cost per BYTE is not uniform: the
+ * diagonal moves at HBM speed and the exchange at link speed, so "half the
+ * payload" is about 6% of the time, and halving the wire bytes halves the
+ * dominant term.
+ *
+ * Unfolded under low precision, single-group all-to-all A=2 rises monotonically
+ * to 1.64x (bf16) and 2.53x (fp32) at 1 GB, the best all-to-all shape in either
+ * table. A=4 was measured both ways and KEEPS its fold: its self op is only
+ * ~3.2x the wire ops rather than ~11x, mild enough that RCCL's in-kernel copy
+ * still beats a serialized memcpy.
+ *
+ * LESSON, now four for four: when a shape does not improve monotonically with
+ * size, treat it as a bug report against the schedule. "Structural" needs a
+ * comparison shape that shares the structure and also fails.
  *
  * Fused all-to-all A=4 starts at 27 MiB in BOTH dtypes, which is also exactly
  * where its XOR-relay route starts when fused. That is not a coincidence to be
