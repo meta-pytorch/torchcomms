@@ -13,6 +13,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <thread>
 #include <type_traits>
@@ -801,6 +802,67 @@ class TcpTransportFrameTest : public ::testing::Test {
   size_t outQueueDepth() {
     std::lock_guard<std::mutex> lk(lane0().mu);
     return lane0().queue.size();
+  }
+
+  /// Replaces the lane vector with `count` empty lanes. The other helpers here
+  /// assume lane 0 is the whole queue, which is true single-lane; striping is
+  /// the one behaviour that cannot be observed that way.
+  void setLaneCount(size_t count) {
+    transport_->lanes_.clear();
+    for (size_t i = 0; i < count; ++i) {
+      transport_->lanes_.push_back(std::make_unique<TcpTransport::TcpLane>());
+    }
+  }
+
+  /// Queue depth of every lane, in lane order.
+  std::vector<size_t> perLaneDepth() {
+    std::vector<size_t> depths;
+    depths.reserve(transport_->lanes_.size());
+    for (auto& lane : transport_->lanes_) {
+      std::lock_guard<std::mutex> lk(lane->mu);
+      depths.push_back(lane->queue.size());
+    }
+    return depths;
+  }
+
+  /// The frame size at or above which a multi-frame group is striped. Exposed
+  /// as a function because TEST_F bodies are subclasses of this fixture rather
+  /// than the friend, so they cannot name TcpTransport's private constants.
+  static constexpr size_t stripeThreshold() {
+    return TcpTransport::kMinStripeFrameBytes;
+  }
+
+  /// Nulls one lane entry. No production path does this -- lanes_ is written
+  /// only by establishLanes() -- so this manufactures a state the transport
+  /// does not currently reach, purely to cover the defensive skip in
+  /// enqueueFrames.
+  void clearLane(size_t index) {
+    transport_->lanes_[index].reset();
+  }
+
+  /// Frames queued across every surviving lane.
+  size_t totalQueuedAcrossLanes() {
+    size_t queued = 0;
+    for (auto& lane : transport_->lanes_) {
+      if (lane == nullptr) {
+        continue;
+      }
+      std::lock_guard<std::mutex> lk(lane->mu);
+      queued += lane->queue.size();
+    }
+    return queued;
+  }
+
+  /// A frame of `bytes` total, carrying a real header so it can be identified,
+  /// padded to size. Striping keys off frame size, so the tests that exercise
+  /// it need frames above kMinStripeFrameBytes rather than bare headers.
+  static TcpFrame paddedFrame(uint64_t reqId, size_t bytes) {
+    TcpMsgHeader header;
+    header.op = static_cast<uint8_t>(TcpOp::Write);
+    header.reqId = reqId;
+    auto buf = serializeTcpHeader(header);
+    buf.resize(std::max(bytes, buf.size()));
+    return TcpFrame(std::move(buf));
   }
 
   /// send()/recv() are gated on the Connected state; these tests drive the
@@ -2165,6 +2227,81 @@ TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesTheWholeGroupInOrder) {
       << "the group must be queued whole and in order";
   EXPECT_EQ(outQueueBytes(), 3 * sizeof(TcpMsgHeader))
       << "every frame in the group must be accounted against the queue cap";
+}
+
+// A wave large enough to be worth parallelising is spread across lanes instead
+// of piling onto one. Without this, one sender pushes the whole ~28 MiB wave
+// through a single socket while the other lanes have nothing to do, and the
+// group's completion is bounded by one socket's rate.
+TEST_F(TcpTransportFrameTest, ALargeGroupIsStripedAcrossLanes) {
+  setConnected();
+  setLaneCount(4);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 51; reqId <= 54; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_THAT(perLaneDepth(), ::testing::ElementsAre(1u, 1u, 1u, 1u))
+      << "four frames over four lanes must be one each, not four on one lane";
+}
+
+// Small frames keep the old behaviour. Waking a second sender costs more than a
+// parallel socket returns when there is little to send, which is why striping
+// is gated on frame size rather than applied to every group.
+TEST_F(TcpTransportFrameTest, ASmallGroupStaysOnOneLane) {
+  setConnected();
+  setLaneCount(4);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 61; reqId <= 64; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold() / 4));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  const auto depths = perLaneDepth();
+  const size_t used = std::count_if(
+      depths.begin(), depths.end(), [](size_t d) { return d > 0; });
+  EXPECT_EQ(used, 1u) << "a group below the stripe threshold must not be split";
+  EXPECT_EQ(std::accumulate(depths.begin(), depths.end(), size_t{0}), 4u)
+      << "and all four frames must still be queued";
+}
+
+// Covers the defensive null skip in the striped path. This state is
+// manufactured: no production path nulls a lane entry, so the test pins the
+// branch rather than a reachable failure. Kept because the branch exists and an
+// unexercised branch is worse than an artificial one -- but it should not be
+// read as evidence that shutdown() clears lanes, which it does not.
+TEST_F(TcpTransportFrameTest, StripingSkipsClearedLanes) {
+  setConnected();
+  setLaneCount(4);
+  clearLane(1);
+  clearLane(3);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 71; reqId <= 74; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_EQ(totalQueuedAcrossLanes(), 4u)
+      << "every frame must land on one of the surviving lanes";
+}
+
+// Single-lane transports have nowhere to stripe to, and must not regress into
+// splitting a group they cannot spread.
+TEST_F(TcpTransportFrameTest, ASingleLaneTakesTheWholeGroupInOrder) {
+  setConnected();
+  setLaneCount(1);
+
+  std::vector<TcpFrame> frames;
+  for (uint64_t reqId = 81; reqId <= 83; ++reqId) {
+    frames.push_back(paddedFrame(reqId, stripeThreshold()));
+  }
+  ASSERT_TRUE(enqueueFrames(std::move(frames), /*mayBlock=*/false));
+
+  EXPECT_THAT(queuedReqIds(), ::testing::ElementsAre(81u, 82u, 83u));
 }
 
 // A closed queue must take none of the group. Half a wave queued and half
