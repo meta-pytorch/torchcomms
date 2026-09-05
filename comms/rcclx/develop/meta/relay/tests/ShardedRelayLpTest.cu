@@ -481,6 +481,13 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
     EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 4, g, ncclBfloat16), k12Mib);
     EXPECT_EQ(
         lpMinBytes(LpCollective::ReduceScatter, 2, g, ncclBfloat16), k12Mib);
+    // ENABLED once the range reached 1 GB. It was off when 1.32x at 63 MB was
+    // the top of the data, because a plateau at the edge is not a crossover;
+    // with eight sizes above it the step is unambiguous -- flat 0.96x-1.01x
+    // through 40 MB, then 1.36x-1.48x from 63 MB to 1 GB. Same 60 MiB as its
+    // single-group and fp32 counterparts, which cross at the same point.
+    EXPECT_EQ(
+        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), k60Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, g, ncclBfloat16), k12Mib);
     // Also exactly where the fused XOR-relay route starts, so the size gate and
     // the route gate agree by construction rather than by coincidence.
@@ -513,15 +520,8 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(
       lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k60Mib);
 
-  // ---- the two exclusions, each for its own reason ----
+  // ---- the one exclusion ----
 
-  // FUSED reduce-scatter A=4 reaches 1.32x only at 63 MB, the top of the fused
-  // range. Off for the reason the single-group one was until its sweep was
-  // extended: a plateau at the edge of the data is not a measured crossover.
-  for (int g : {2, 4}) {
-    EXPECT_EQ(
-        lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), kNever);
-  }
   // The only shape that never wins at any size, and the only one that gets
   // WORSE with size: 0.95x-0.97x small, 0.88x at 135-144 MB.
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclBfloat16), kNever);
