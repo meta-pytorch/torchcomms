@@ -559,6 +559,28 @@ struct PendingH2d {
   std::chrono::steady_clock::time_point launchedAt;
 };
 
+/// One wave of put frames whose D2H copies have been launched but not yet
+/// waited for. The frames own their staging slabs, so holding this record is
+/// what keeps the pinned destination alive while the DMA is still writing it.
+///
+/// `startIdx` is the wave's first index into put()'s chunk plan, so a failure
+/// here can abandon exactly the admissions from this wave onward.
+///
+/// Single-device by construction: put() breaks a wave at a device boundary, so
+/// one event recorded on `deviceId` covers every copy in it.
+struct PendingPutWave {
+  std::vector<TcpFrame> frames;
+  /// cudaEvent_t, kept opaque so this header does not need the CUDA runtime.
+  void* event{nullptr};
+  int deviceId{-1};
+  /// The caller's stream, so the fallback wait covers the stream the copies
+  /// were launched on rather than whatever the null stream happens to hold.
+  void* stream{nullptr};
+  size_t startIdx{0};
+  size_t bytes{0};
+  std::chrono::steady_clock::time_point launchedAt;
+};
+
 /// Shared independently of TcpTransport so queued EventBase callbacks never
 /// retain or dereference a transport that shutdown has already destroyed.
 struct H2dPollState {
@@ -674,9 +696,10 @@ class TcpTransport : public Transport {
   /// destination as undefined until a later put over it succeeds, and do not
   /// read it in between:
   ///
-  /// - Any put may partially apply. Work is staged and queued in waves of
-  ///   kMaxPutWaveChunks; a failure in wave N+1 leaves wave N queued, and
-  ///   queued frames are frames the peer applies.
+  /// - Any put may partially apply. Work is staged and queued in waves of at
+  ///   most kMaxPutWaveChunks chunks -- fewer where a wave meets a device
+  ///   boundary or a DRAM chunk -- and a failure in wave N+1 leaves wave N
+  ///   queued, and queued frames are frames the peer applies.
   /// - What did apply is not a prefix. Frames are striped across lanes, which
   ///   are independent sockets that fail independently, so a break leaves an
   ///   arbitrary subset with holes at offsets the caller cannot determine.
@@ -817,21 +840,38 @@ class TcpTransport : public Transport {
       const TcpMsgHeader& replyHeader,
       TcpSegmentRegistry::Lease lease,
       TcpPinnedSlab slab);
-  // Stages one wave of VRAM Write frames: takes a slab per chunk, issues every
-  // copy, then waits for all of them. Returns the frames only if every copy
-  // succeeded, so the caller can queue the wave as one step and a failure
-  // queues nothing.
+  // Stages one wave of VRAM Write frames in two halves, so a wave's copies can
+  // run while the previous wave is being queued and sent. A single call that
+  // launched and waited kept the copy engine idle for the whole
+  // queue-and-transmit gap, which measured as ~55% of a VRAM put's wall time
+  // spent staging against a D2H path twice as fast as the put itself.
   //
-  // Blocks until the pool can hand out the whole wave, so it must not be called
-  // holding outMu_ -- the thread that frees those slabs is the sender, and it
-  // needs that mutex to make progress.
+  // launchPutWave takes a slab per chunk, issues every copy, and records one
+  // event -- correct with one event because put() never forms a wave spanning
+  // devices. It blocks until the pool can hand out the whole wave, so it must
+  // not be called holding outMu_: the thread that frees those slabs is the
+  // sender, and it needs that mutex to make progress. That block is also the
+  // backpressure bounding how many waves can be in flight.
   //
-  // The wait covers every copy that was launched even when a later one fails. A
-  // slab handed back while the GPU is still writing into it goes straight to
-  // the next staging copy, and the two then race over the same bytes.
-  Result<std::vector<TcpFrame>> stagePutWave(
+  // The returned record owns the slabs, so the caller must either retire it or
+  // abandon it. Dropping one outright while its copies still run would hand a
+  // slab back under an active DMA, and the next staging copy would then race
+  // the GPU over the same bytes.
+  Result<PendingPutWave> launchPutWave(
       std::span<const PlannedPutFrame> wave,
-      void* stream);
+      void* stream,
+      size_t startIdx);
+  // Waits for one launched wave's copies to finish and destroys its event.
+  // Waits on the event rather than the stream, because the stream also carries
+  // later waves' copies and waiting for those would give back the overlap.
+  //
+  // Leaves the frames in place for the caller to queue, so a failure here can
+  // still drop them before any of them reaches a lane.
+  Status retirePutWave(PendingPutWave& wave);
+  // Waits out every launched wave without queueing any of it, for the unwind
+  // paths. The wait is not optional: the slabs cannot be released while the
+  // copies are still writing into them.
+  void abandonPutWaves(std::deque<PendingPutWave>& waves) noexcept;
   // Records a VRAM read to start once a slab frees up. Fails the request (the
   // caller answers with an Error frame) if the deferred queue is full: dropping
   // it silently would leave the peer waiting forever, and blocking here would
@@ -849,9 +889,12 @@ class TcpTransport : public Transport {
   // deferred.
   void scheduleDeferredReadReplies();
   // The staging pool, created on first use. Building it in the constructor
-  // would charge every peer ~64 MiB of pinned host memory -- there is one
-  // transport per peer -- including the DRAM-only peers that never stage at
-  // all.
+  // would charge every peer kStagingSlabCount slabs of pinned host memory --
+  // ~124 MiB, and there is one transport per peer -- including the DRAM-only
+  // peers that never stage at all.
+  //
+  // Named as the constant, not restated as a number: the previous wording
+  // hardcoded a figure and went stale when kStagingSlabCount was re-derived.
   Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool();
   // The independent inbound pool. It is created only for async-enabled,
   // non-zero VRAM get(), and is sized to the wire cap because recv(span)
@@ -1012,14 +1055,17 @@ class TcpTransport : public Transport {
   std::atomic<uint64_t> receiveSlabAttempts_{0};
   std::atomic<uint64_t> receiveSlabMisses_{0};
   std::atomic<uint64_t> vectorReceiveCount_{0};
-  // put-path D2H staging accounting. `stagingNs_` covers the whole span
-  // stagePutWave() spends getting a wave's payload into pinned host memory --
-  // the memcpyAsync launches plus the synchronize that waits for them -- so
-  // stagingBytes_/stagingNs_ is the effective device-to-host bandwidth this
-  // path achieves, launch overhead included. That number is the ceiling on VRAM
-  // put: no amount of queueing, lane count or CPU saving can move a transfer
-  // faster than its bytes reach the host. Written only by caller threads inside
-  // stagePutWave; relaxed because a torn read misreports one sample.
+  // put-path staging accounting. `stagingNs_` covers a wave's residency: from
+  // the memcpyAsync launches to the event wait that retires them. Because waves
+  // now overlap, that span includes time the next wave was being launched in,
+  // so the per-wave intervals overlap each other and their sum can exceed wall
+  // time. Read it as how long a wave stays in flight, NOT as D2H bandwidth --
+  // bytes/ns here is no longer a rate the device achieves. For the real D2H
+  // figure see the commit that added these counters, which measured it at 43-47
+  // GB/s while staging was still serialised against transmit.
+  //
+  // Written only by caller threads inside retirePutWave; relaxed because a torn
+  // read misreports one sample.
   std::atomic<uint64_t> stagingNs_{0};
   std::atomic<uint64_t> stagingBytes_{0};
   std::atomic<uint64_t> stagingWaves_{0};
@@ -1083,10 +1129,6 @@ class TcpTransport : public Transport {
   // request loop must derive their chunk from this same function or the reply
   // count will not match what the operation waits for.
   static size_t adaptiveGetChunk(size_t len, size_t laneCount);
-  // ~64 MiB of pinned host memory, sized against kMaxOutQueueBytes: the pool
-  // and the out queue bound the same pipeline, so a full set of staged frames
-  // fits in the queue rather than being refused by its cap.
-  static constexpr size_t kStagingSlabCount = 16;
   // Withheld from put(), so a saturated put cannot leave the get responder with
   // nothing to stage into. The responder is the side the peer is already
   // blocked on.
@@ -1094,15 +1136,44 @@ class TcpTransport : public Transport {
   // Chunks staged, and so queued, as one indivisible wave. Everything put()
   // promises about partial writes is bounded by this: a put of at most this
   // many chunks either reaches the queue whole or not at all.
-  // Half the usable pool, not all of it. A wave sized to the whole pool cannot
-  // begin staging until the previous one has drained completely, because its
-  // all-or-nothing acquire needs every slab back, so staging never overlaps
-  // transmit. Halving it keeps a wave's worth of slabs free for the next wave,
-  // which measured a large gain on GB-scale puts at no cost in pinned memory.
-  // The ratio is what matters, not the constant: this stays correct if the pool
-  // size changes.
-  static constexpr size_t kMaxPutWaveChunks =
-      (kStagingSlabCount - kStagingSlabsReservedForReader) / 2;
+  //
+  // 28 MiB, well under kMaxOutQueueBytes so a whole wave is admissible to the
+  // queue in one step rather than being refused by its cap. This is the primary
+  // knob of the three: the staging pool is sized from it below, not the other
+  // way round.
+  static constexpr size_t kMaxPutWaveChunks = 7;
+  // How many launched-but-unretired waves put() keeps. This is what buys the
+  // overlap: at 1 the caller waits for a wave's copies immediately after
+  // launching them, so the copy engine idles for the whole queue-and-transmit
+  // gap between waves. At 2 the next wave's copies are already running while
+  // the previous one is being waited for, queued and sent.
+  static constexpr size_t kMaxPutWavesInFlight = 2;
+  // Sized so acquire() does not block a caller that is holding a fully staged
+  // wave. At the moment put() acquires for a new wave, three things are already
+  // outstanding: the kMaxPutWavesInFlight - 1 waves it holds in its own deque,
+  // up to kMaxOutQueueBytes worth of frames it has queued but the sender has
+  // not drained yet, and the wave it is asking for -- plus the reader's
+  // reservation, which acquire() counts on top of the request.
+  //
+  // Getting this wrong is not a small loss, which is why it is derived rather
+  // than picked. At 16 slabs the arithmetic leaves acquire() 2 free against the
+  // 8 it needs, so every wave blocks -- and blocks while withholding a wave of
+  // already-copied frames from the sender, because they are only queued on the
+  // next trip round put()'s loop. Measured on two hosts at 1 GiB that was 16.9
+  // GB/s against 22.9 for waiting on each wave in turn: 26% worse than not
+  // overlapping at all. Sized from the invariant it measured 32.0.
+  //
+  // ~124 MiB of pinned host memory per peer that actually stages. The pool is
+  // created on first use, so DRAM-only peers still pay nothing for it.
+  static constexpr size_t kStagingSlabCount =
+      (kMaxPutWavesInFlight - 1) * kMaxPutWaveChunks +
+      kMaxOutQueueBytes / kMaxChunkSize + kMaxPutWaveChunks +
+      kStagingSlabsReservedForReader;
+  static_assert(
+      kStagingSlabCount >= kMaxPutWavesInFlight * kMaxPutWaveChunks +
+              kStagingSlabsReservedForReader,
+      "the pool must hold every wave the window keeps in flight at once, or "
+      "put() deadlocks against slabs only it can release");
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
   // exhaustion falls back to the reusable vector instead of blocking receive.
   static constexpr size_t kReceiveSlabCount = 2;
