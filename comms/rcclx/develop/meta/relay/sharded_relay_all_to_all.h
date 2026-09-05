@@ -71,11 +71,12 @@
  * Chunking:
  * =========
  * A==2 relay: chunkSize = segmentCounts[g] / (numHelpers + 2), rounded down to
- * 128 elements. One direct chunk rides with each relay group; if alignment
- * makes chunkSize zero, directA/directB cover the whole segment.
- * Routed A==4: directA = floor(segmentCounts[g] / 3), relayCount is directA
- * rounded down to 128 elements, and directB absorbs every alignment and
- * division tail. The three contiguous regions cover every element once.
+ * kRelayChunkAlignElements (512) elements. One direct chunk rides with each
+ * relay group; if alignment makes chunkSize zero, directA/directB cover the
+ * whole segment. Routed A==4: directA = floor(segmentCounts[g] / 3), relayCount
+ * is directA rounded down to kRelayChunkAlignElements (512) elements, and
+ * directB absorbs every alignment and division tail. The three contiguous
+ * regions cover every element once.
  *
  * Helper-Buffer Contract (passthrough-at-helper):
  * ===============================================

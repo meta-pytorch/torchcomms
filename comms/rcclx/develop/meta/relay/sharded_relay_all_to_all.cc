@@ -26,6 +26,11 @@
 // which is used for struct padding.
 static constexpr size_t CHUNK_ALIGN_ELEMENTS =
     rcclx::relay::kRelayChunkAlignElements;
+static_assert(
+    CHUNK_ALIGN_ELEMENTS % rcclx::relay::kLpBlockElems == 0 &&
+        (CHUNK_ALIGN_ELEMENTS / rcclx::relay::kLpBlockElems) % 4 == 0,
+    "every chunk boundary must be a multiple of 4 wire blocks so its offset in "
+    "wire bytes (132 per block) is 16-byte aligned");
 
 // The rank-config builder below is a deliberate copy of the file-local helper
 // in sharded_relay_allreduce.cc (also mirrored in

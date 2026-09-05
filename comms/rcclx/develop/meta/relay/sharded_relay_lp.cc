@@ -77,18 +77,23 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
     // otherwise idle.
     switch (coll) {
       case LpCollective::AllReduce:
-        // A=4: 0.97x at 9 MB, 1.08x at 13.5 MB, then 1.19x-1.29x to 144 MB, so
-        // the crossover really is between 9 and 13.5 and 12 MiB sits in it.
+        // RE-MEASURED after the allreduce chunk-alignment fix, which changed
+        // both entries and retired the "stall" this table used to describe. The
+        // old reading was that A=2 wins 1.09x-1.13x from 13.5 to 27 MB and then
+        // drops to 0.75x-0.92x out to 144 MB, and that it was a memory-system
+        // effect needing hardware counters. It was not: allreduce was rounding
+        // its chunks to 128 elements instead of the shared 512, so its wire
+        // offsets were 4-byte aligned wherever the pipeline reached four tiles.
         //
-        // A=2 is the one shape with a genuine STALL rather than a threshold. It
-        // wins 1.09x-1.13x from 13.5 to 27 MB and then drops to 0.75x-0.92x for
-        // every larger size out to 144 MB. Profiling localized it: the same
-        // three transfers, same grid, 1.85x slower for 1.167x more bytes --
-        // effective bandwidth falling from ~125 to ~78 GB/s. Not the kernels
-        // (they scale at 1.23x), not the tile count (1 at the size it breaks),
-        // not chunk alignment (that fix moved every other troughed shape and
-        // not this one). fp32 enables this shape; see lpMinBytesFp32.
-        return nActiveRanksPerGroup == 4 ? k12Mib : kNever;
+        // A=2 now rises monotonically with size, which is what every healthy
+        // shape here does: 1.08x at 9 MB, 1.16x at 13.5, 1.22x at 31.5 -- the
+        // size that used to collapse -- and 1.30x-1.35x from 67.5 MB to 1 GB.
+        //
+        // A=4: 0.95x at 4.5 MB, 1.04x at 9 MB, 1.14x at 13.5 MB, so the first
+        // clear win is at 13.5 and 12 MiB sits just under it. It also holds
+        // 1.29x-1.40x to 144 MB and 1.37x/1.34x at 256/512 MB, where before the
+        // fix it REGRESSED to 0.79x/0.74x.
+        return nActiveRanksPerGroup == 4 ? k12Mib : k8Mib;
       case LpCollective::AllGather:
         // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4)
         // and only A=4 loses at 4.5 MB. This is the earliest-paying collective
@@ -117,8 +122,12 @@ lpMinBytesBf16(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
 
   switch (coll) {
     case LpCollective::AllReduce:
-      // A=2: 1.20x at 13.5 MB, 1.26x-1.30x above. A=4: 1.15x then 1.23x-1.28x.
-      return k12Mib;
+      // Also re-measured after the allreduce chunk-alignment fix, which lifted
+      // the fused ratios by roughly 0.15-0.20 and moved A=2's crossover down a
+      // band. A=2: 1.10x at 9 MB, 1.21x at 13.5, then 1.35x-1.49x. A=4: 1.07x
+      // at 9 MB is break-even, 1.18x at 13.5 is the first clear win, rising to
+      // 1.49x.
+      return nActiveRanksPerGroup == 2 ? k8Mib : k12Mib;
     case LpCollective::AllGather:
       // A=2 pays earliest of anything measured, 1.14x already at 9 MB, so it
       // gets the lower threshold. A=4: 1.30x at 13.5 MB up to 1.45x, still the

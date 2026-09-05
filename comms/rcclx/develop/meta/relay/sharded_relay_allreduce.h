@@ -90,8 +90,10 @@
  *   nActiveRanksPerGroup x chunkSize_aligned
  * elements per helper group, where:
  *   chunkSize_aligned = (per_group_count / numChunks) rounded down to
- *                       CHUNK_ALIGN_ELEMENTS (128 elements).
- * Returns ncclInvalidArgument when per_group_count < numChunks x 128 (the
+ *                       CHUNK_ALIGN_ELEMENTS, which is
+ *                       kRelayChunkAlignElements (512 elements).
+ * Returns ncclInvalidArgument when per_group_count < numChunks x
+ * CHUNK_ALIGN_ELEMENTS (the
  * buffer is too small to scatter); callers should fall back to a regular
  * allreduce in that case.
  *

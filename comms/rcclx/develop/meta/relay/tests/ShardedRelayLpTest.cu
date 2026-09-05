@@ -472,7 +472,9 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
 
   // ---- fused ----
   for (int g : {2, 4}) {
-    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g, ncclBfloat16), k12Mib);
+    // A=2 moved down a band when allreduce picked up the shared chunk
+    // alignment: 1.10x at 9 MB where it used to need 13.5 MB.
+    EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, g, ncclBfloat16), k8Mib);
     EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, g, ncclBfloat16), k12Mib);
     // All-gather A=2 pays earliest of anything measured, 1.14x at 9 MB.
     EXPECT_EQ(lpMinBytes(LpCollective::AllGather, 2, g, ncclBfloat16), k8Mib);
@@ -489,6 +491,12 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   // Co-resident jobs get these too: a parallel relay job is nGroups == 1, so
   // this column is also the policy for several independent jobs sharing a node.
   EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 4, 1, ncclBfloat16), k12Mib);
+  // ENABLED, and it is the entry with the most history: it read as a hard stall
+  // until allreduce started using the shared 512-element chunk alignment
+  // instead of its own hard-coded 128. Now monotonic in size like every healthy
+  // shape -- 1.08x at 9 MB, 1.22x at 31.5 MB (the size that used to collapse to
+  // 0.78x), 1.35x at 135 MB.
+  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1, ncclBfloat16), k8Mib);
   // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4).
   // Measuring below 13.5 MB is what found this; the earlier threshold was a
   // band too high.
@@ -505,7 +513,7 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
   EXPECT_EQ(
       lpMinBytes(LpCollective::ReduceScatter, 4, 1, ncclBfloat16), k60Mib);
 
-  // ---- the three exclusions, each for its own reason ----
+  // ---- the two exclusions, each for its own reason ----
 
   // FUSED reduce-scatter A=4 reaches 1.32x only at 63 MB, the top of the fused
   // range. Off for the reason the single-group one was until its sweep was
@@ -514,12 +522,6 @@ TEST(ShardedRelayLpGate, EnabledBf16ShapesAreExactlyTheMeasuredWins) {
     EXPECT_EQ(
         lpMinBytes(LpCollective::ReduceScatter, 4, g, ncclBfloat16), kNever);
   }
-  // A STALL, not a threshold: wins 1.09x-1.13x from 13.5 to 27 MB, then
-  // 0.75x-0.92x at every larger size out to 144 MB. Profiling put it in the
-  // transfers -- same three, same grid, 1.85x slower for 1.167x more bytes --
-  // and the chunk-alignment fix, which recovered every other troughed shape,
-  // left this one untouched.
-  EXPECT_EQ(lpMinBytes(LpCollective::AllReduce, 2, 1, ncclBfloat16), kNever);
   // The only shape that never wins at any size, and the only one that gets
   // WORSE with size: 0.95x-0.97x small, 0.88x at 135-144 MB.
   EXPECT_EQ(lpMinBytes(LpCollective::AllToAll, 2, 1, ncclBfloat16), kNever);
