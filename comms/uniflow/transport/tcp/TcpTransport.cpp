@@ -1395,6 +1395,33 @@ Status TcpTransport::startReadReply(
   // deregister. drainPendingReadReplies() waits for exactly this reason; the
   // error paths here need the same barrier.
   bool copyIssued = false;
+  bool handedOff = false;
+  // "Every way out" has to include the ones that do not return. The push and
+  // the dispatch below sit outside this try, and both can throw -- deque
+  // growth, the EventBase's queue -- so an explicit wait on each error path is
+  // not enough: unwinding there destroys `frame`, returning its slab to the
+  // pool with the D2H still writing into it, and destroys `lease`, letting a
+  // blocked erase() deregister a source the copy is still reading. This runs on
+  // the reader, where handleFrame would catch it, and on the EventBase, where
+  // the callback is noexcept and it is std::terminate instead.
+  //
+  // Declared after `frame` so it destructs first, i.e. the wait happens while
+  // the slab and the lease are still alive. Cleared once the pending entry owns
+  // them, because drainPendingReadReplies() is the barrier from then on.
+  // waitForStagedCopy() is noexcept and idempotent, so overlapping with the
+  // explicit waits already on the error paths below costs a second
+  // streamSynchronize and nothing more.
+  struct CopyBarrier {
+    const std::shared_ptr<TcpReplyState>& state;
+    const bool& issued;
+    const bool& handedOff;
+    int deviceId;
+    ~CopyBarrier() {
+      if (issued && !handedOff) {
+        waitForStagedCopy(state, deviceId);
+      }
+    }
+  } copyBarrier{state, copyIssued, handedOff, deviceId};
   try {
     CudaDeviceGuard guard(*state->cudaApi, deviceId);
     // Into pinned memory, so this returns once the copy is enqueued. The same
@@ -1459,6 +1486,11 @@ Status TcpTransport::startReadReply(
         ErrCode::NotConnected,
         "tcp read: transport stopped while staging a VRAM read");
   }
+  // Past the stopping refusal means the push happened, so the pending entry
+  // owns the slab, the lease and the event, and the drain is the barrier from
+  // here. Set after that branch rather than beside the push so a throw from the
+  // push itself is still covered.
+  handedOff = true;
   schedulePendingReplyPoll(state);
   return Ok();
 }
@@ -1969,8 +2001,12 @@ void TcpTransport::waitForStagedCopy(
     return;
   }
   try {
-    // Per-device: a bare streamSynchronize would only cover whichever device
-    // happened to be current, leaving a copy on any other device still running.
+    // The device has to be made current first because this waits on the *null*
+    // stream, and the null stream is per-device: a bare streamSynchronize would
+    // cover whichever device happened to be current and leave this copy
+    // running. That reasoning is specific to the null stream. A
+    // caller-supplied stream is one stream regardless of which device is
+    // current, so selecting a device per copy would buy nothing there.
     CudaDeviceGuard guard(*state->cudaApi, deviceId);
     (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
   } catch (const std::exception&) {
