@@ -46,6 +46,15 @@ Buffer contract per active rank (count = per-group element count):
 A default run does one forward per collective in that list, at each active width;
 `--forwards` above that repeats the cycle and below it truncates the list.
 
+    --low-precision            request the fp8e4m3 wire format on every relay
+                               call. It is a per-call argument, so it composes
+                               with every other flag rather than being a mode.
+                               It also RAISES the per-call counts, because the
+                               internal gate declines below a size crossover and
+                               says nothing: at the default counts the flag would
+                               be a silent no-op and the demo would still report
+                               success. See LP_BASE_COUNT.
+
 Helper ranks pass a single 1-element placeholder tensor -- the C++ kernel stages
 helpers into its own internal scratch and never reads/writes the placeholder.
 
@@ -111,6 +120,47 @@ from torchcomms import new_comm, ReduceOp
 WORLD = 8  # examples assume an 8-GPU node
 ACTIVE_COUNTS = (2, 4)  # single-group sizes to demonstrate
 BASE_COUNT = 1024  # per-group element count for the first call of a forward
+
+# Per-group element count for the first call of a forward when --low-precision is
+# on. It has to be THIS much larger than BASE_COUNT, and the reason is the whole
+# trap this flag sets for a demo:
+#
+# Low precision is requested per call but GRANTED by an internal size-only gate,
+# which declines silently below a measured crossover. At BASE_COUNT the calls are
+# 4 KB / 2 KB / 1 KB, so `--low-precision` would run the entire demo in full
+# precision and report success -- a demo that lies about what it demonstrated.
+#
+# counts_for_forward divides the base by 1, 2 or 4, so it is the SMALLEST variant
+# that has to clear the crossover, not the base.
+#
+# THE SIZE GATE IS NOT THE ONLY GATE, and the binding constraint here is the other
+# one. Low precision also declines when the selected ROUTE is not a relay -- below
+# a route's own crossover the call is a direct exchange with the helpers idle, so
+# there is no staged boundary-crossing traffic for the wire format to shrink. The
+# highest of those crossovers is the A=4 reduce-scatter offload at ~48 MB, on a
+# metric of A * count * elementSize, so the smallest variant needs
+# 4 * count * 4 >= 48 MiB, i.e. count >= 3 Mi, i.e. LP_BASE_COUNT >= 12 Mi.
+#
+# 16 Mi clears it with margin: the smallest variant is 4 Mi elements = 64 MiB on
+# that metric. It is also a multiple of 4 * 128, which the flat 4-active allreduce
+# needs -- that schedule splits its direct region into A per-owner shards, and a
+# shard is a whole number of 128-element wire blocks only when the count is a
+# multiple of A * 128.
+#
+# _assert_low_precision_sizes() checks the size gate and the alignment at run time.
+# It deliberately does NOT re-implement the route crossovers: that would duplicate
+# eight thresholds from sharded_relay_route.h into a demo, and the C++ suites
+# already assert route selection per schedule. The number above is the reason the
+# route gate is satisfied; if a route threshold moves, the symptom is a decline
+# logged at INFO under NCCL_DEBUG_SUBSYS=COLL, not a wrong answer.
+LP_BASE_COUNT = 16 * 1024 * 1024
+
+# Mirrors lpMinBytes() in meta/relay/sharded_relay_lp.h. Duplicated on purpose:
+# there is no Python-visible accessor, and the alternative is a demo that cannot
+# tell whether the flag it advertises did anything. The C++ side is the source of
+# truth and sharded_relay_lp_test pins its value; if that value moves, the
+# assertion below fires with a message saying to update this.
+LP_MIN_BYTES = 4 << 20
 
 _MS = 1_000_000
 FORWARD_TIMEOUT_NS = 60_000 * _MS  # generous: a real forward's publish/consume
@@ -190,6 +240,7 @@ class Config:
     inject: str = "none"
     graph: bool = False
     active_counts: tuple[int, ...] = ACTIVE_COUNTS
+    low_precision: bool = False
 
 
 @dataclass
@@ -202,7 +253,13 @@ class _ShapeGraph:
 
 
 def _capture_shape(
-    rcclx, rank: int, active: list[int], dev: torch.device, op: int, count: int
+    rcclx,
+    rank: int,
+    active: list[int],
+    dev: torch.device,
+    op: int,
+    count: int,
+    low_precision: bool = False,
 ) -> _ShapeGraph:
     """Capture one (op, count) shape, after warming it up outside the capture.
 
@@ -211,16 +268,21 @@ def _capture_shape(
     memset. Neither is capturable, and the relay deliberately declines the
     one-shot path under capture unless the region already exists -- so capturing
     cold would silently record the slower route.
+
+    Low precision has the SAME property and the same fix: its arena is built on
+    the first call that asks for it, by a bootstrap all-gather, so a cold capture
+    would record a full-precision graph. The warm-up below is what makes the
+    captured graph a low-precision one.
     """
     inp, out = stage_call(op, rank, active, dev, count)
-    enqueue_call(rcclx, op, active, inp, out, count)
+    enqueue_call(rcclx, op, active, inp, out, count, low_precision)
     torch.cuda.current_stream().synchronize()
 
     graph = torch.cuda.CUDAGraph()
     # Relaxed matches the C++ suite's hipStreamCaptureModeRelaxed: the relay's
     # own scratch bookkeeping would otherwise trip the stricter global mode.
     with torch.cuda.graph(graph, capture_error_mode="relaxed"):
-        enqueue_call(rcclx, op, active, inp, out, count)
+        enqueue_call(rcclx, op, active, inp, out, count, low_precision)
     return _ShapeGraph(graph=graph, inp=inp, out=out)
 
 
@@ -240,13 +302,17 @@ def _capture_all(
         {
             count
             for forward in range(cfg.forwards)
-            for count in counts_for_forward(forward, cfg.calls_per_forward)
+            for count in counts_for_forward(
+                forward, cfg.calls_per_forward, base_count(cfg)
+            )
         }
     )
     graphs = {}
     for op in RELAY_OPS:
         for count in shapes:
-            graphs[(op, count)] = _capture_shape(rcclx, rank, active, dev, op, count)
+            graphs[(op, count)] = _capture_shape(
+                rcclx, rank, active, dev, op, count, cfg.low_precision
+            )
     return graphs
 
 
@@ -268,13 +334,57 @@ def _check(rank: int, name: str, actual: torch.Tensor, expected: torch.Tensor) -
         )
 
 
-def counts_for_forward(forward: int, calls: int) -> list[int]:
+def base_count(cfg: Config) -> int:
+    """The first call's per-group count, which low precision has to raise.
+
+    Not a module constant read directly, because mp.spawn re-imports this module
+    in every child: only what is pickled into Config reaches them.
+    """
+    return LP_BASE_COUNT if cfg.low_precision else BASE_COUNT
+
+
+def counts_for_forward(forward: int, calls: int, base: int = BASE_COUNT) -> list[int]:
     """Counts vary per forward and per call, mimicking a varying chunk count.
 
     A fixed shape would let a helper that ignored the plan still pass, which is
     the bug this example exists to make visible.
     """
-    return [BASE_COUNT // (1 << ((forward + i) % 3)) for i in range(calls)]
+    return [base // (1 << ((forward + i) % 3)) for i in range(calls)]
+
+
+def _assert_low_precision_sizes(cfg: Config) -> None:
+    """Fail loudly if --low-precision would be a silent no-op.
+
+    The gate declines below a size threshold and says nothing, so a demo that only
+    passed the flag would print success having exercised nothing. Checked here, on
+    the smallest count any forward will use, because that is the one that decides.
+
+    Engagement itself is asserted in the C++ suites, which can read the counters
+    directly; this is the part reachable from Python, and it is the part that
+    actually goes wrong.
+    """
+    if not cfg.low_precision:
+        return
+    counts = [
+        count
+        for forward in range(cfg.forwards)
+        for count in counts_for_forward(forward, cfg.calls_per_forward, LP_BASE_COUNT)
+    ]
+    smallest = min(counts)
+    smallest_bytes = smallest * 4  # fp32
+    if smallest_bytes < LP_MIN_BYTES:
+        raise AssertionError(
+            f"--low-precision would be a silent no-op: smallest count {smallest} "
+            f"is {smallest_bytes} B, below the {LP_MIN_BYTES} B gate. Raise "
+            f"LP_BASE_COUNT, or lower LP_MIN_BYTES if lpMinBytes() moved."
+        )
+    align = 4 * 128  # A * kLpBlockElems at the widest active count here
+    unaligned = [c for c in counts if c % align]
+    if unaligned:
+        raise AssertionError(
+            f"--low-precision counts must be multiples of {align} for the flat "
+            f"4-active allreduce; these are not: {sorted(set(unaligned))}"
+        )
 
 
 def stage_call(
@@ -315,20 +425,36 @@ def enqueue_call(
     inp: torch.Tensor,
     out: torch.Tensor,
     count: int,
+    low_precision: bool = False,
 ) -> None:
-    """One relay call. Every rank in the comm calls this, active or not."""
+    """One relay call. Every rank in the comm calls this, active or not.
+
+    low_precision is COLLECTIVE: it reaches here from Config, which is pickled
+    into every worker, so active ranks and helpers cannot disagree about it. They
+    must not -- ranks that disagree disagree on how many bytes cross each link, so
+    the call hangs rather than degrading.
+    """
     if op == OP_ALL_REDUCE:
         rcclx.sharded_relay_multi_group_all_reduce(
-            [inp], ReduceOp.SUM, [active], [count]
+            [inp], ReduceOp.SUM, [active], [count], low_precision=low_precision
         )
     elif op == OP_REDUCE_SCATTER:
         rcclx.sharded_relay_multi_group_reduce_scatter(
-            [inp], [out], ReduceOp.SUM, [active], [count]
+            [inp],
+            [out],
+            ReduceOp.SUM,
+            [active],
+            [count],
+            low_precision=low_precision,
         )
     elif op == OP_ALL_GATHER:
-        rcclx.sharded_relay_multi_group_all_gather([inp], [out], [active], [count])
+        rcclx.sharded_relay_multi_group_all_gather(
+            [inp], [out], [active], [count], low_precision=low_precision
+        )
     elif op == OP_ALL_TO_ALL:
-        rcclx.sharded_relay_multi_group_all_to_all([inp], [out], [active], [count])
+        rcclx.sharded_relay_multi_group_all_to_all(
+            [inp], [out], [active], [count], low_precision=low_precision
+        )
     else:
         raise ValueError(f"unsupported op code {op}")
 
@@ -438,7 +564,7 @@ def run_active(
         stats["publish_ns"].append(publish_plan(rcclx, epoch, op, counts))
 
     for count, out in _execute_calls(
-        rcclx, op, rank, active, dev, counts, graphs, stats
+        rcclx, op, rank, active, dev, counts, graphs, stats, cfg.low_precision
     ):
         verify_call(op, rank, active, dev, count, out)
 
@@ -452,6 +578,7 @@ def _execute_calls(
     counts: list[int],
     graphs: dict[tuple[int, int], _ShapeGraph] | None,
     stats: dict[str, list[int]],
+    low_precision: bool = False,
 ) -> list[tuple[int, torch.Tensor]]:
     """Run one forward's calls, eager or by graph replay.
 
@@ -493,7 +620,7 @@ def _execute_calls(
         else:
             inp, out = stage_call(op, rank, active, dev, count)
             t0 = time.perf_counter_ns()
-            enqueue_call(rcclx, op, active, inp, out, count)
+            enqueue_call(rcclx, op, active, inp, out, count, low_precision)
             stats["enqueue_ns"].append(time.perf_counter_ns() - t0)
             keepalive.extend((inp, out))
             results.append((count, out))
@@ -525,7 +652,9 @@ def run_helper(
     else:
         op, counts = fallback_op, fallback_counts
 
-    _execute_calls(rcclx, op, rank, active, dev, counts, graphs, stats)
+    _execute_calls(
+        rcclx, op, rank, active, dev, counts, graphs, stats, cfg.low_precision
+    )
 
 
 def _inject_timeout(rcclx, rank: int, is_active: bool) -> None:
@@ -679,6 +808,10 @@ def _worker(rank: int, world_size: int, port: int, cfg: Config) -> None:
     os.environ["TORCHCOMM_RANK"] = str(rank)
     os.environ["TORCHCOMM_SIZE"] = str(world_size)
 
+    # Before any comm exists, so a misconfigured run fails immediately on every
+    # rank rather than after a partial forward.
+    _assert_low_precision_sizes(cfg)
+
     stats: dict[str, list[int]] = {
         "publish_ns": [],
         "consume_ns": [],
@@ -733,7 +866,8 @@ def _run_phase(
     if rank == 0:
         print(
             f"\n=== single-group sharded relay, A={A} active {active}, "
-            f"control={cfg.control} ==="
+            f"control={cfg.control}"
+            f"{', low precision' if cfg.low_precision else ''} ==="
         )
 
     # Epochs are per communicator, because the control-plane segment is.
@@ -741,7 +875,7 @@ def _run_phase(
     graphs = _capture_all(rcclx, rank, active, dev, cfg) if cfg.graph else None
     for forward in range(cfg.forwards):
         op = RELAY_OPS[forward % len(RELAY_OPS)]
-        counts = counts_for_forward(forward, cfg.calls_per_forward)
+        counts = counts_for_forward(forward, cfg.calls_per_forward, base_count(cfg))
         if rank == 0:
             print(
                 f"  forward {forward}: {OP_NAMES[op]} "
@@ -816,6 +950,16 @@ class ShardedRelayCollectivesTest(unittest.TestCase):
             ("no_control_plane", Config(control="none")),
             ("dynamic_shape", Config(control="shm", forwards=5, calls_per_forward=3)),
             ("graph_capture", Config(control="shm", graph=True)),
+            # Low precision is a per-call argument, so it composes with every
+            # other configuration rather than needing its own mode. Eager and
+            # captured are both covered because the arena's bootstrap is not
+            # capturable: the captured case only carries the wire format because
+            # _capture_shape warms each shape up first.
+            ("low_precision", Config(control="shm", low_precision=True)),
+            (
+                "low_precision_graph",
+                Config(control="shm", graph=True, low_precision=True),
+            ),
         ]
         cases += [
             # Fault cases never reach a collective, so one width covers them.
@@ -853,6 +997,14 @@ def _parse_args(argv: list[str]) -> Config:
         action="store_true",
         help="capture each shape once and replay, instead of enqueueing eagerly",
     )
+    p.add_argument(
+        "--low-precision",
+        action="store_true",
+        help="request the fp8e4m3 wire format. Raises the per-call counts to "
+        f"LP_BASE_COUNT ({LP_BASE_COUNT}) because the internal gate declines "
+        "below a size crossover SILENTLY, so the small default counts would run "
+        "the whole demo in full precision and still report success.",
+    )
     a = p.parse_args(argv)
     return Config(
         control=a.control,
@@ -860,6 +1012,7 @@ def _parse_args(argv: list[str]) -> Config:
         calls_per_forward=a.calls_per_forward,
         inject=a.inject,
         graph=a.graph,
+        low_precision=a.low_precision,
     )
 
 
@@ -872,6 +1025,7 @@ if __name__ == "__main__":
         "--calls-per-forward",
         "--inject",
         "--graph",
+        "--low-precision",
     )
     if any(arg.split("=")[0] in flags for arg in sys.argv[1:]):
         _spawn(_parse_args(sys.argv[1:]))
