@@ -88,6 +88,14 @@ class CudaApi {
   /// Returns true if the event has completed, false if still in-flight.
   virtual Result<bool> eventQuery(cudaEvent_t event);
 
+  /// Block the calling thread until a recorded event completes. Waits on the
+  /// one event rather than the stream it was recorded on, so work queued after
+  /// it is not waited for -- which is what a caller pipelining several batches
+  /// on one stream needs. Prefer this over polling eventQuery on a thread that
+  /// has nothing else to do: the poll burns a core that the rest of the process
+  /// is contending for.
+  virtual Status eventSynchronize(cudaEvent_t event);
+
   virtual Status eventDestroy(cudaEvent_t event);
 
   // --- IPC (cross-process device memory sharing) ---
