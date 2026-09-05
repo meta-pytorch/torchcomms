@@ -1,5 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <limits>
+
 #include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
 
 #include <gmock/gmock.h>
@@ -168,6 +170,28 @@ TEST_F(TcpPinnedSlabPoolTest, CreateRejectsAnUnusableConfiguration) {
   EXPECT_TRUE(
       TcpPinnedSlabPool::create(nullptr, kSlabSize, kSlabCount, kReserved)
           .hasError());
+}
+
+// A geometry whose product wraps must be refused, not allocated. A wrapped
+// product asks the allocator for a short region and the pool then hands out
+// slabs pointing past its end -- and SlabsAreDistinctWindowsOntoTheRegion would
+// still pass for whichever slabs happen to land inside it, so nothing
+// downstream catches it. Unreachable while every caller passes compile-time
+// constants; asserted here because create() is the geometry's validation
+// boundary.
+TEST_F(TcpPinnedSlabPoolTest, CreateRejectsAGeometryWhoseProductOverflows) {
+  constexpr size_t kHuge = std::numeric_limits<size_t>::max() / 2 + 1;
+
+  EXPECT_TRUE(TcpPinnedSlabPool::create(cudaApi_, kHuge, 3, 1).hasError())
+      << "slabCount * slabSize wraps and must be refused before hostAlloc";
+  EXPECT_TRUE(TcpPinnedSlabPool::create(cudaApi_, 3, kHuge, 1).hasError())
+      << "and the same the other way round";
+
+  // The largest product that does not wrap is still accepted, so the check is a
+  // bound rather than a blanket refusal of large geometries.
+  EXPECT_TRUE(
+      TcpPinnedSlabPool::create(cudaApi_, kSlabSize, kSlabCount, kReserved)
+          .hasValue());
 }
 
 TEST_F(TcpPinnedSlabPoolTest, CreatePropagatesAnAllocationFailure) {

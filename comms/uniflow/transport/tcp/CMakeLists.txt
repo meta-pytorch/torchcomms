@@ -1,11 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 set(UNIFLOW_TCP_TRANSPORT_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/TcpPinnedSlabPool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TcpRegistrationHandle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TcpTransport.cpp
 )
 
 set(UNIFLOW_TCP_TRANSPORT_HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/TcpPinnedSlabPool.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TcpRegistrationHandle.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TcpTransport.h
     ${CMAKE_CURRENT_SOURCE_DIR}/TcpWireProtocol.h
