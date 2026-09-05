@@ -344,6 +344,9 @@ TcpTransport::TcpTransport(
   h2dState_ = std::make_shared<H2dPollState>();
   h2dState_->evb = evb_;
   h2dState_->cudaApi = cudaApi_;
+  reply_->evb = evb_;
+  reply_->cudaApi = cudaApi_;
+  reply_->lanes = laneSet_;
 }
 
 Status TcpTransport::hostFromDevice(
@@ -782,17 +785,25 @@ Status TcpTransport::establishLanes(
   return Ok();
 }
 
-size_t TcpTransport::laneCapBytes() const {
-  const size_t lanes = lanes_.empty() ? 1 : lanes_.size();
-  return kMaxOutQueueBytes / lanes;
+size_t TcpTransport::laneCapBytesOn(const TcpLaneSet& lanes) {
+  const size_t count = lanes.v.empty() ? 1 : lanes.v.size();
+  return kMaxOutQueueBytes / count;
 }
 
-size_t TcpTransport::pickLane() {
-  if (lanes_.size() <= 1) {
+size_t TcpTransport::laneCapBytes() const {
+  return laneCapBytesOn(*laneSet_);
+}
+
+size_t TcpTransport::pickLaneOn(TcpLaneSet& lanes) {
+  if (lanes.v.size() <= 1) {
     return 0;
   }
   return static_cast<size_t>(
-      nextLane_.fetch_add(1, std::memory_order_relaxed) % lanes_.size());
+      lanes.nextLane.fetch_add(1, std::memory_order_relaxed) % lanes.v.size());
+}
+
+size_t TcpTransport::pickLane() {
+  return pickLaneOn(*laneSet_);
 }
 
 controller::Conn* TcpTransport::primaryConn() const {
@@ -1028,7 +1039,7 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
     std::span<const PlannedPutFrame> wave,
     void* stream,
     size_t startIdx) {
-  auto pool = stagingPool();
+  auto pool = stagingPool(reply_);
   if (!pool) {
     return std::move(pool).error();
   }
@@ -1316,26 +1327,27 @@ std::shared_ptr<TcpPinnedSlabPool> TcpTransport::receivePoolIfCreated() {
       &receiveSlabPool_, std::memory_order_acquire);
 }
 
-Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool() {
-  std::lock_guard<std::mutex> lk(poolMu_);
-  if (slabPool_ != nullptr) {
-    return slabPool_;
+Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool(
+    const std::shared_ptr<TcpReplyState>& state) {
+  std::lock_guard<std::mutex> lk(state->poolMu);
+  if (state->pool != nullptr) {
+    return state->pool;
   }
-  if (cudaApi_ == nullptr) {
+  if (state->cudaApi == nullptr) {
     return Err(ErrCode::InvalidArgument, "tcp read: no CUDA API for VRAM");
   }
   // Header and payload contiguous in one slab, so a staged frame is still a
   // single buffer and the send path needs no scatter-gather.
   auto pool = TcpPinnedSlabPool::create(
-      cudaApi_,
+      state->cudaApi,
       sizeof(TcpMsgHeader) + kMaxChunkSize,
       kStagingSlabCount,
       kStagingSlabsReservedForReader);
   if (!pool) {
     return std::move(pool).error();
   }
-  slabPool_ = pool.value();
-  return slabPool_;
+  state->pool = pool.value();
+  return state->pool;
 }
 
 Status TcpTransport::respondToVramRead(
@@ -1352,7 +1364,7 @@ Status TcpTransport::respondToVramRead(
             " bytes exceeds the staging slab payload (" +
             std::to_string(kMaxChunkSize) + ")");
   }
-  auto pool = stagingPool();
+  auto pool = stagingPool(reply_);
   if (!pool) {
     return std::move(pool).error();
   }
@@ -1362,10 +1374,11 @@ Status TcpTransport::respondToVramRead(
   if (!slab) {
     return deferReadReply(replyHeader, std::move(lease));
   }
-  return startReadReply(replyHeader, std::move(lease), std::move(slab));
+  return startReadReply(reply_, replyHeader, std::move(lease), std::move(slab));
 }
 
 Status TcpTransport::startReadReply(
+    const std::shared_ptr<TcpReplyState>& state,
     const TcpMsgHeader& replyHeader,
     TcpSegmentRegistry::Lease lease,
     TcpPinnedSlab slab) {
@@ -1383,12 +1396,12 @@ Status TcpTransport::startReadReply(
   // error paths here need the same barrier.
   bool copyIssued = false;
   try {
-    CudaDeviceGuard guard(*cudaApi_, deviceId);
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
     // Into pinned memory, so this returns once the copy is enqueued. The same
     // call into a pageable destination -- a plain vector -- is specified to
     // complete synchronously, which parks whichever thread issued it for the
     // length of the transfer. On this path that thread is the reader.
-    if (auto st = cudaApi_->memcpyAsync(
+    if (auto st = state->cudaApi->memcpyAsync(
             frame.mutableData() + sizeof(TcpMsgHeader),
             src,
             replyHeader.len,
@@ -1402,35 +1415,51 @@ Status TcpTransport::startReadReply(
     copyIssued = true;
     // The guard already has deviceId current, so these wait on the right device
     // without nesting another guard.
-    if (auto st = cudaApi_->eventCreate(&event); !st) {
-      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    if (auto st = state->cudaApi->eventCreate(&event); !st) {
+      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
-    if (auto st = cudaApi_->eventRecord(event, /*stream=*/nullptr); !st) {
-      (void)cudaApi_->eventDestroy(event);
-      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    if (auto st = state->cudaApi->eventRecord(event, /*stream=*/nullptr); !st) {
+      (void)state->cudaApi->eventDestroy(event);
+      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
   } catch (const std::exception& e) {
     if (copyIssued) {
-      waitForStagedCopy(deviceId);
+      waitForStagedCopy(state, deviceId);
     }
     return Err(
         ErrCode::InvalidArgument,
         "tcp read: VRAM staging needs a selectable deviceId, got " +
             std::to_string(deviceId) + ": " + e.what());
   }
+  bool stopping = false;
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    pendingReplies_.push_back(
-        PendingReadReply{
-            std::move(frame),
-            std::move(lease),
-            event,
-            replyHeader.reqId,
-            deviceId});
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping) {
+      stopping = true;
+    } else {
+      state->pending.push_back(
+          PendingReadReply{
+              std::move(frame),
+              std::move(lease),
+              event,
+              replyHeader.reqId,
+              deviceId});
+    }
   }
-  schedulePendingReplyPoll();
+  if (stopping) {
+    // drainPendingReadReplies() has already swept the queue, so pushing here
+    // would leave a lease in a queue nothing drains again -- the same shape as
+    // the deferReadReply() refusal below. The copy is waited out first because
+    // it is still running into `frame`, which unwinds as this returns.
+    waitForStagedCopy(state, deviceId);
+    (void)state->cudaApi->eventDestroy(event);
+    return Err(
+        ErrCode::NotConnected,
+        "tcp read: transport stopped while staging a VRAM read");
+  }
+  schedulePendingReplyPoll(state);
   return Ok();
 }
 
@@ -1495,22 +1524,27 @@ Status TcpTransport::deferReadReply(
   // there is no next release: the read never starts and its lease keeps erase()
   // blocked. Redundant kicks are harmless -- startDeferredReadReplies()
   // re-tests both the pool and the queue under the lock.
-  scheduleDeferredReadReplies();
+  scheduleDeferredReadReplies(reply_);
   return Ok();
 }
 
-void TcpTransport::scheduleDeferredReadReplies() {
+void TcpTransport::scheduleDeferredReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    if (deferredReplies_.empty()) {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping || state->deferred.empty()) {
       return;
     }
   }
-  evb_->dispatch([this]() noexcept { startDeferredReadReplies(); });
+  // `state` rather than `this`: the callback may not run until after the
+  // transport is gone, and by then the senders are joined, so anything it
+  // queues simply sits in a queue that dies with the lane set.
+  state->evb->dispatch([state]() noexcept { startDeferredReadReplies(state); });
 }
 
-void TcpTransport::startDeferredReadReplies() {
-  auto pool = stagingPool();
+void TcpTransport::startDeferredReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
+  auto pool = stagingPool(state);
   if (!pool) {
     return;
   }
@@ -1524,8 +1558,8 @@ void TcpTransport::startDeferredReadReplies() {
     }
     DeferredReadReply deferred;
     {
-      std::lock_guard<std::mutex> lk(stagingMu_);
-      if (deferredReplies_.empty()) {
+      std::lock_guard<std::mutex> lk(state->mu);
+      if (state->stopping || state->deferred.empty()) {
         // Returning here releases the slab without using it, and deliberately
         // does not reschedule. An entry queued between this test and that
         // release is still covered, because deferReadReply() is the only
@@ -1535,8 +1569,8 @@ void TcpTransport::startDeferredReadReplies() {
         // that does not kick would reopen the window.
         return;
       }
-      deferred = std::move(deferredReplies_.front());
-      deferredReplies_.pop_front();
+      deferred = std::move(state->deferred.front());
+      state->deferred.pop_front();
     }
     TcpMsgHeader replyHeader{};
     replyHeader.op = static_cast<uint8_t>(TcpOp::ReadReply);
@@ -1545,12 +1579,14 @@ void TcpTransport::startDeferredReadReplies() {
     replyHeader.offset = deferred.offset;
     replyHeader.len = deferred.len;
     if (auto st = startReadReply(
-            replyHeader, std::move(deferred.lease), std::move(slab));
+            state, replyHeader, std::move(deferred.lease), std::move(slab));
         !st) {
       UNIFLOW_LOG_ERROR(
           "tcp read: deferred VRAM staging failed: {}", st.error().message());
-      (void)enqueueFrame(
-          makeHeaderFrame(TcpOp::Error, deferred.reqId), /*mayBlock=*/false);
+      (void)enqueueOn(
+          state,
+          makeHeaderFrame(TcpOp::Error, deferred.reqId),
+          /*mayBlock=*/false);
     }
   }
 }
@@ -1832,18 +1868,20 @@ void TcpTransport::drainPendingH2d() {
   }
 }
 
-void TcpTransport::schedulePendingReplyPoll() {
+void TcpTransport::schedulePendingReplyPoll(
+    const std::shared_ptr<TcpReplyState>& state) {
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    if (replyPollScheduled_ || pendingReplies_.empty()) {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping || state->pollScheduled || state->pending.empty()) {
       return;
     }
-    replyPollScheduled_ = true;
+    state->pollScheduled = true;
   }
-  evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+  state->evb->dispatch([state]() noexcept { pollPendingReadReplies(state); });
 }
 
-void TcpTransport::pollPendingReadReplies() {
+void TcpTransport::pollPendingReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
   while (true) {
     TcpFrame ready;
     PendingReadReply failed;
@@ -1853,17 +1891,21 @@ void TcpTransport::pollPendingReadReplies() {
     bool haveFailure = false;
     bool stillRunning = false;
     {
-      std::lock_guard<std::mutex> lk(stagingMu_);
-      if (pendingReplies_.empty()) {
-        replyPollScheduled_ = false;
+      std::lock_guard<std::mutex> lk(state->mu);
+      // Teardown has drained the queue and is not waiting on this callback to
+      // leave, so there is nothing left to retire and nothing to reschedule.
+      if (state->stopping || state->pending.empty()) {
+        state->pollScheduled = false;
         return;
       }
-      auto& front = pendingReplies_.front();
-      auto done = cudaApi_->eventQuery(static_cast<cudaEvent_t>(front.event));
+      auto& front = state->pending.front();
+      auto done =
+          state->cudaApi->eventQuery(static_cast<cudaEvent_t>(front.event));
       if (done.hasValue() && !done.value()) {
         stillRunning = true;
       } else {
-        (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(front.event));
+        (void)state->cudaApi->eventDestroy(
+            static_cast<cudaEvent_t>(front.event));
         if (done.hasError()) {
           failedReqId = front.reqId;
           failedDeviceId = front.deviceId;
@@ -1880,7 +1922,7 @@ void TcpTransport::pollPendingReadReplies() {
           haveReady = true;
         }
         // Releases the lease, which is what lets a waiting erase() proceed.
-        pendingReplies_.pop_front();
+        state->pending.pop_front();
       }
     }
     if (stillRunning) {
@@ -1893,39 +1935,44 @@ void TcpTransport::pollPendingReadReplies() {
       // takes stagingMu_ to enqueue, and it should never wait on the
       // EventBase's queue to do it.
       std::this_thread::yield();
-      evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+      state->evb->dispatch(
+          [state]() noexcept { pollPendingReadReplies(state); });
       return;
     }
     // Queued outside the lock: enqueueFrame takes a lane mutex, and holding two
     // of the transport's mutexes at once is how lock cycles start.
     if (haveReady) {
-      (void)enqueueFrame(std::move(ready), /*mayBlock=*/false);
+      (void)enqueueOn(state, std::move(ready), /*mayBlock=*/false);
     } else if (haveFailure) {
       // Wait before `failed` goes out of scope, for the same reason
       // drainPendingReadReplies() waits: a copy that may still be running would
       // otherwise be left writing into a slab the pool is about to hand to the
       // next staging copy.
-      waitForStagedCopy(failedDeviceId);
+      waitForStagedCopy(state, failedDeviceId);
       // Dropping it here releases the slab, so a deferred read may now be
       // startable -- which is why this happens before the scheduling call
       // below.
       failed = PendingReadReply{};
-      (void)enqueueFrame(
-          makeHeaderFrame(TcpOp::Error, failedReqId), /*mayBlock=*/false);
-      scheduleDeferredReadReplies();
+      (void)enqueueOn(
+          state,
+          makeHeaderFrame(TcpOp::Error, failedReqId),
+          /*mayBlock=*/false);
+      scheduleDeferredReadReplies(state);
     }
   }
 }
 
-void TcpTransport::waitForStagedCopy(int deviceId) noexcept {
-  if (cudaApi_ == nullptr) {
+void TcpTransport::waitForStagedCopy(
+    const std::shared_ptr<TcpReplyState>& state,
+    int deviceId) noexcept {
+  if (state->cudaApi == nullptr) {
     return;
   }
   try {
     // Per-device: a bare streamSynchronize would only cover whichever device
     // happened to be current, leaving a copy on any other device still running.
-    CudaDeviceGuard guard(*cudaApi_, deviceId);
-    (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
+    (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
   } catch (const std::exception&) {
     // The device is already unusable, so there is nothing left to wait for.
   }
@@ -1949,7 +1996,7 @@ void TcpTransport::drainPendingReadReplies() {
   // first even though the replies themselves are being abandoned.
   if (cudaApi_ != nullptr) {
     for (auto& reply : pending) {
-      waitForStagedCopy(reply.deviceId);
+      waitForStagedCopy(reply_, reply.deviceId);
       (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(reply.event));
     }
   }
@@ -2018,10 +2065,20 @@ Status TcpTransport::admitInflight(uint64_t reqId, TcpInflight entry) {
 }
 
 bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
+  return enqueueOn(reply_, std::move(frame), mayBlock);
+}
+
+bool TcpTransport::enqueueOn(
+    const std::shared_ptr<TcpReplyState>& state,
+    TcpFrame frame,
+    bool mayBlock) {
+  // Copied out so the lane set stays alive for this call even if the transport
+  // is torn down concurrently.
+  const std::shared_ptr<TcpLaneSet> lanes = state->lanes;
   // No lanes means connect() never ran (or teardown already cleared them).
   // Indexing here would be undefined; refusing matches the documented contract
   // that a frame may simply not be queued.
-  if (lanes_.empty()) {
+  if (lanes == nullptr || lanes->v.empty()) {
     return false;
   }
   const size_t bytes = frame.size();
@@ -2029,8 +2086,8 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
   // carries its own reqId/segId/offset, so the peer places it without needing
   // arrival order and any lane is equivalent. Only Send is order-sensitive, and
   // it does not come through here (see enqueueSendFrame).
-  auto& lane = *lanes_[pickLane()];
-  const size_t cap = laneCapBytes();
+  auto& lane = *lanes->v[pickLaneOn(*lanes)];
+  const size_t cap = laneCapBytesOn(*lanes);
   {
     std::unique_lock<std::mutex> lk(lane.mu);
     if (mayBlock) {
@@ -2039,8 +2096,9 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
       // drains slows down instead of growing the queue. An empty queue always
       // admits, however large the frame, or a payload bigger than the cap could
       // never drain and would wedge here forever.
-      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
-        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
+      lane.cv.wait(lk, [&lanes, &lane, bytes, cap]() {
+        return lane.outClosed ||
+            lanes->broken.load(std::memory_order_acquire) ||
             lane.queue.empty() || lane.bytes + bytes <= cap;
       });
     }
@@ -2060,7 +2118,7 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
     // outClosed alone therefore lets a frame admitted before the sweep land in
     // the cleared queue and go out on the wire for an op whose caller has
     // already been told it failed.
-    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+    if (lane.outClosed || lanes->broken.load(std::memory_order_acquire)) {
       return false;
     }
     lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
@@ -2317,7 +2375,7 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
     // slab; dispatching the restart rather than running it here keeps device
     // work off the thread whose only job is to keep the socket draining.
     item = TcpOutItem{};
-    scheduleDeferredReadReplies();
+    scheduleDeferredReadReplies(reply_);
   }
 }
 
@@ -3097,6 +3155,16 @@ void TcpTransport::shutdown() {
   // in-progress send on the sender thread. A no-op for a lane a reader already
   // refused, in which case it is on its way out anyway.
   closeLanesOnce();
+
+  // Before the pool close and the drains below, not after: a reply callback
+  // admitted after drainPendingReadReplies() has swept would push a lease back
+  // into a queue nothing drains again. Every reply-path entry point re-tests
+  // this under the same mutex, so setting it here is what makes the sweep
+  // final.
+  {
+    std::lock_guard<std::mutex> lk(reply_->mu);
+    reply_->stopping = true;
+  }
 
   // Closed before the joins: this is the one pool with a *blocking* acquire,
   // and the thread parked in it is not one we own. acquire() waits on `freed_`
