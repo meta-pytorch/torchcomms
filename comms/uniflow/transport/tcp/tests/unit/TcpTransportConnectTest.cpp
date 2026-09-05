@@ -4,6 +4,10 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -50,6 +54,26 @@ class TcpTransportConnectTest : public ::testing::Test {
       transport_.reset();
     }
     evbThread_.reset();
+  }
+
+  /// True if something accepts a TCP connection on 127.0.0.1:port right now.
+  /// The kernel completes the handshake into the accept queue whether or not
+  /// userspace has called accept(), so this reports whether the listening
+  /// socket is still open -- which is exactly what shutdown() is meant to
+  /// change.
+  static bool canConnectTo(uint16_t port) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+      return false;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    const bool connected =
+        ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+    ::close(fd);
+    return connected;
   }
 
   std::unique_ptr<ScopedEventBaseThread> evbThread_;
@@ -112,6 +136,39 @@ TEST_F(TcpTransportConnectTest, ListenerTimesOutWhenNoPeerDials) {
       << "s; the handshake wait is not bounded by connTimeout";
 
   listener->shutdown();
+}
+
+// shutdown() must close the listeners bind() opened, rather than leaving them
+// to the destructor.
+//
+// servers_ is a member, so leaving it untouched means the listener fds stay
+// open until the transport object is destroyed -- which in a real process is
+// during teardown, concurrent with the EventBase thread stopping.
+// AsyncAccept::shutdown() reaches the loop through an unbounded
+// dispatchAndWait(), so that overlap is precisely the window where teardown
+// wedges (see TcpAsyncAcceptMiscTest.ShutdownDoesNotBlockOnABusyEventBase).
+// Closing the listeners while shutdown() still owns a loop it knows is running
+// removes the window instead of narrowing it.
+//
+// Observed from outside the transport: once shutdown() returns, nothing is
+// listening on the port bind() published.
+TEST_F(TcpTransportConnectTest, ShutdownClosesTheListener) {
+  const TransportInfo self = transport_->bind();
+  ASSERT_FALSE(self.empty()) << "bind() must publish a routable endpoint";
+  auto info = TcpTransportInfo::deserialize(self);
+  ASSERT_TRUE(info.hasValue()) << info.error().message();
+  const uint16_t port = info.value().port;
+
+  // Sanity first, so a refusal below is shutdown()'s doing rather than a port
+  // that was never listening.
+  ASSERT_TRUE(canConnectTo(port)) << "bind() left no listening socket";
+
+  transport_->shutdown();
+
+  EXPECT_FALSE(canConnectTo(port))
+      << "the listener outlived shutdown(): it closes only when the transport is "
+         "destroyed, which in a real process races the EventBase thread stopping "
+         "and is where teardown wedges";
 }
 
 TEST_F(TcpTransportConnectTest, RejectsMalformedPeerInfo) {
