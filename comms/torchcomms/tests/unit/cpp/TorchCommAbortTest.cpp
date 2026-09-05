@@ -64,6 +64,62 @@ TEST_F(TorchCommAbortTest, AbortSetsAbortedStateWhenEnabled) {
 
   comm_->abort();
   EXPECT_TRUE(comm_->isAborted());
+  EXPECT_EQ(comm_->getAbortInfo(), AbortInfo{});
+}
+
+TEST_F(TorchCommAbortTest, ContextualAbortFallsBackForLegacyBackend) {
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm_->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->enableAbort();
+
+  comm_->abort(
+      AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "ignored by legacy backend",
+      });
+
+  EXPECT_TRUE(comm_->isAborted());
+  EXPECT_EQ(comm_->getAbortInfo(), (AbortInfo{.reason = AbortReason::ABORTED}));
+}
+
+TEST_F(TorchCommAbortTest, ConcreteBackendExposesContextualAbortFallback) {
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm_->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->enableAbort();
+
+  backend->abort(
+      AbortInfo{
+          .reason = AbortReason::NETWORK_ERROR,
+          .context = "ignored by legacy backend",
+      });
+
+  EXPECT_TRUE(backend->isAborted());
+  EXPECT_EQ(
+      backend->getAbortInfo(), (AbortInfo{.reason = AbortReason::ABORTED}));
+}
+
+TEST_F(TorchCommAbortTest, ConcreteBackendRejectsNonTerminalReason) {
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommFake>(comm_->getBackendImpl());
+  ASSERT_NE(backend, nullptr);
+  backend->enableAbort();
+
+  EXPECT_THROW(
+      backend->abort(AbortInfo{.reason = AbortReason::NONE}),
+      std::invalid_argument);
+  EXPECT_FALSE(backend->isAborted());
+}
+
+TEST_F(TorchCommAbortTest, ContextualAbortRejectsNonTerminalReason) {
+  EXPECT_THROW(
+      comm_->abort(AbortInfo{.reason = AbortReason::NONE}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      comm_->abort(AbortInfo{.reason = static_cast<AbortReason>(99)}),
+      std::invalid_argument);
+  EXPECT_FALSE(comm_->isAborted());
 }
 
 TEST_F(TorchCommAbortTest, SetTimeoutDelegatesToBackend) {

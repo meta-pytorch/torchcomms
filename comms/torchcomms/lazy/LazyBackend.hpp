@@ -454,6 +454,23 @@ class LazyBackend : public TorchCommBackend {
     return false;
   }
 
+  std::optional<AbortInfo> getAbortInfo() const override {
+    if (primary_) {
+      if (auto info = primary_->getAbortInfo()) {
+        return info;
+      }
+    }
+    std::lock_guard<std::mutex> lk(p2p_mu_);
+    // There is no shared chronology across sibling communicators. Prefer the
+    // primary above; if only P2P state aborted, return any available report.
+    for (const auto& [_, channel] : p2p_comms_) {
+      if (auto info = channel->getAbortInfo()) {
+        return info;
+      }
+    }
+    return std::nullopt;
+  }
+
   bool isInitialized() const override {
     if (!initialized_ || !primary_) {
       return false;
@@ -480,12 +497,19 @@ class LazyBackend : public TorchCommBackend {
   // abort() is itself non-blocking per the base contract, so the lock
   // is released quickly.
   void abort() override {
+    abort(AbortInfo{});
+  }
+
+  void abort(const AbortInfo& info) override {
+    if (!::comms::fault_tolerance::isTerminalAbortReason(info.reason)) {
+      throw std::invalid_argument("Invalid terminal abort reason");
+    }
     if (primary_) {
-      primary_->abort();
+      primary_->abort(info);
     }
     std::lock_guard<std::mutex> lk(p2p_mu_);
     for (auto& [_, channel] : p2p_comms_) {
-      channel->abort();
+      channel->abort(info);
     }
   }
 
@@ -601,9 +625,8 @@ class LazyBackend : public TorchCommBackend {
   }
 
   std::shared_ptr<T> primary_;
-  // Mutex protects p2p_comms_ against background-thread access from
-  // abort() and isAborted() (the only two TorchCommBackend methods
-  // permitted to fire from outside the main thread).
+  // Protects p2p_comms_ when abort(), isAborted(), or getAbortInfo() is called
+  // from a background watchdog thread.
   mutable std::mutex p2p_mu_;
   std::unordered_map<int, std::shared_ptr<T>> p2p_comms_;
   CommOptions options_;
