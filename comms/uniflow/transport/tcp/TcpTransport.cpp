@@ -8,13 +8,16 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -127,6 +130,69 @@ std::vector<std::string> enumerateFrontendDevices(
     }
   }
   return devices;
+}
+
+size_t frontendDeviceCapacity(const std::string& prefix) {
+  // Cached per prefix: the answer is a property of the host's hardware, and
+  // re-walking /sys/class/net on every transport that asks would be wasted
+  // work. Ports do not appear and disappear under a running job; if that ever
+  // changes, this is the thing to revisit.
+  static std::mutex mu;
+  static std::map<std::string, size_t> cache;
+  std::lock_guard<std::mutex> lk(mu);
+  auto it = cache.find(prefix);
+  if (it != cache.end()) {
+    return it->second;
+  }
+  const size_t count =
+      enumerateFrontendDevices(prefix, std::numeric_limits<size_t>::max())
+          .size();
+  cache.emplace(prefix, count);
+  return count;
+}
+
+size_t TcpTransportConfig::resolveMaxFrontendDevices(
+    const std::string& prefix) const {
+  const size_t requested =
+      maxFrontendDevices == 0 ? kDefaultMaxFrontendDevices : maxFrontendDevices;
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  // Capacity 0 means nothing usable was found. Return the request untouched so
+  // the caller's own "no devices" handling reports that, rather than having
+  // this silently hand back 0 and look like a cap of none.
+  if (capacity == 0 || requested <= capacity) {
+    return requested;
+  }
+  UNIFLOW_LOG_WARN(
+      "tcp: asked to stripe across {} '{}' devices but this host has {}; "
+      "using {}",
+      requested,
+      prefix,
+      capacity,
+      capacity);
+  return capacity;
+}
+
+controller::TcpSocketConfig TcpTransportConfig::dataSocketConfig(
+    const std::optional<std::string>& device) const {
+  auto cfg = socketConfig;
+  // Both assignments are unconditional, not "if the caller left it alone".
+  //
+  // socketBufSize: an explicit SO_RCVBUF turns off Linux receive-window
+  // autotuning, which pins a stream at window/RTT and measured worse than
+  // autotune at every size that was swept. This only ever reaches an accepted
+  // socket -- the listener consumes bindToDevice and nothing else -- so it is
+  // the accepted socket's buffer that this decides, which is the one carrying
+  // data.
+  //
+  // bindToDevice: `device` is derived from bindToDevices, which is the
+  // transport's own device model, so it is the only correct answer here. A
+  // nullopt device therefore has to *clear* an inherited binding rather than
+  // leave it: a caller-supplied bindToDevice would otherwise pin every lane to
+  // one device while the transport believed it was striping across several,
+  // leaking through the seam that exists to stop exactly that.
+  cfg.socketBufSize = std::nullopt;
+  cfg.bindToDevice = device;
+  return cfg;
 }
 
 namespace {
@@ -366,10 +432,7 @@ TransportInfo TcpTransport::bind() {
   servers_.clear();
   localEndpoints_.clear();
   for (const auto& [addr, device] : targets) {
-    auto socketConfig = config_.socketConfig;
-    if (device) {
-      socketConfig.bindToDevice = device;
-    }
+    auto socketConfig = config_.dataSocketConfig(device);
     auto server = std::make_unique<controller::AsyncTcpServer>(
         addr + ":0", socketConfig, *evb_);
     auto status = server->init();
@@ -673,10 +736,10 @@ Status TcpTransport::establishLanes(
       const size_t deviceCount =
           config_.bindToDevices.empty() ? 1 : config_.bindToDevices.size();
       const size_t dev = i % deviceCount;
-      auto socketConfig = config_.socketConfig;
-      if (!config_.bindToDevices.empty()) {
-        socketConfig.bindToDevice = config_.bindToDevices[dev];
-      }
+      auto socketConfig = config_.dataSocketConfig(
+          config_.bindToDevices.empty()
+              ? std::nullopt
+              : std::optional<std::string>(config_.bindToDevices[dev]));
       const auto target = peer.endpointAt(dev);
       controller::AsyncTcpClient client(socketConfig, *evb_);
       auto future =
@@ -841,10 +904,52 @@ std::future<Status> TcpTransport::put(
   void* stream = options.stream.has_value()
       ? static_cast<void*>(options.stream.value())
       : nullptr;
+  // Waves whose copies are launched but not yet waited for. Keeping more than
+  // one here is what overlaps staging with transmission: the copy engine stays
+  // busy through the gap where the previous wave is waited for, queued and
+  // sent. Every exit path below either retires or abandons these, because
+  // dropping one with a copy still running would return its slab under an
+  // active DMA.
+  std::deque<PendingPutWave> inFlight;
+  // Retires and queues launched waves, oldest first, until at most `keep`
+  // remain. Returns false once it has already failed the operation, so callers
+  // just return. Everything before the wave it failed on stays
+  // queued-or-failed, which is the invariant abandonInflight() relies on.
+  const auto drainWaves = [&](size_t keep) -> bool {
+    while (inFlight.size() > keep) {
+      auto& oldest = inFlight.front();
+      const size_t failFrom = oldest.startIdx;
+      if (auto st = retirePutWave(oldest); !st) {
+        inFlight.pop_front();
+        abandonPutWaves(inFlight);
+        abandonInflight(chunks, failFrom);
+        state->fail(std::move(st));
+        return false;
+      }
+      auto frames = std::move(oldest.frames);
+      inFlight.pop_front();
+      if (!enqueueFrames(std::move(frames), /*mayBlock=*/true)) {
+        abandonPutWaves(inFlight);
+        abandonInflight(chunks, failFrom);
+        state->fail(
+            Err(ErrCode::NotConnected,
+                "tcp put: transport closed before the write was queued"));
+        return false;
+      }
+    }
+    return true;
+  };
   size_t idx = 0;
   while (idx < planned.size()) {
     const auto& first = planned[idx];
     if (!first.vram || first.len == 0) {
+      // Drain first: a DRAM chunk queued ahead of an earlier VRAM wave that is
+      // still in flight would break the "everything before idx is queued"
+      // invariant, and a later staging failure would then abandon an admission
+      // whose frame is already on its way to the peer.
+      if (!drainWaves(0)) {
+        return future;
+      }
       // A host memcpy cannot fail and cannot park this thread, so there is
       // nothing to stage and nothing a wave would protect.
       std::vector<uint8_t> frame(sizeof(TcpMsgHeader) + first.len);
@@ -869,58 +974,86 @@ std::future<Status> TcpTransport::put(
       continue;
     }
 
+    // Breaking on deviceId is what makes one event per wave correct: a wave
+    // spanning devices would leave the other device's copies unwaited and
+    // return their slabs under live DMA. Waves are therefore at most
+    // kMaxPutWaveChunks chunks, not exactly that many.
     size_t waveEnd = idx;
     while (waveEnd < planned.size() && planned[waveEnd].vram &&
-           planned[waveEnd].len > 0 && waveEnd - idx < kMaxPutWaveChunks) {
+           planned[waveEnd].len > 0 &&
+           planned[waveEnd].deviceId == first.deviceId &&
+           waveEnd - idx < kMaxPutWaveChunks) {
       ++waveEnd;
     }
-    auto staged = stagePutWave(
+    // Drain before launching, not after. This is what bounds the window to
+    // kMaxPutWavesInFlight - 1 waves held at the moment of acquire, which is
+    // the assumption kStagingSlabCount is sized against. Launching first would
+    // hold a whole extra wave's slabs across the acquire, and with a tight pool
+    // that acquire could only be satisfied by this same thread -- the frames
+    // holding those slabs are still sitting unqueued in `inFlight`.
+    if (!drainWaves(kMaxPutWavesInFlight - 1)) {
+      return future;
+    }
+    auto launched = launchPutWave(
         std::span<const PlannedPutFrame>(planned).subspan(idx, waveEnd - idx),
-        stream);
-    if (!staged) {
-      abandonInflight(chunks, idx);
-      state->fail(std::move(staged).error());
+        stream,
+        idx);
+    if (!launched) {
+      // Abandon from the oldest wave still held, not from this one: the waves
+      // in `inFlight` are earlier than idx and are about to be dropped
+      // unqueued, so their admissions have to go too or nothing ever retires
+      // them.
+      const size_t failFrom =
+          inFlight.empty() ? idx : inFlight.front().startIdx;
+      abandonPutWaves(inFlight);
+      abandonInflight(chunks, failFrom);
+      state->fail(std::move(launched).error());
       return future;
     }
-    if (!enqueueFrames(std::move(staged).value(), /*mayBlock=*/true)) {
-      abandonInflight(chunks, idx);
-      state->fail(
-          Err(ErrCode::NotConnected,
-              "tcp put: transport closed before the write was queued"));
-      return future;
-    }
+    inFlight.push_back(std::move(launched).value());
     idx = waveEnd;
+  }
+
+  // put() returns only once every frame is queued, so the trailing waves are
+  // retired here. Launch order matches queue order, so the wire sees what a
+  // synchronous stage would have produced.
+  if (!drainWaves(0)) {
+    return future;
   }
 
   return future;
 }
 
-Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
+Result<PendingPutWave> TcpTransport::launchPutWave(
     std::span<const PlannedPutFrame> wave,
-    void* stream) {
+    void* stream,
+    size_t startIdx) {
   auto pool = stagingPool();
   if (!pool) {
     return std::move(pool).error();
   }
   // All-or-nothing, and this thread holds no slab while it waits: a caller that
   // took what was free and waited for the rest would deadlock against another
-  // doing the same.
+  // doing the same. This acquire is also the backpressure that bounds how many
+  // waves can be in flight -- the pool is sized so it does not block a healthy
+  // sender, so when it does block the sender has genuinely fallen behind.
   auto leases = pool.value()->acquire(wave.size());
   if (!leases) {
     return std::move(leases).error();
   }
 
   auto s = static_cast<cudaStream_t>(stream);
-  // Spans the launches and the synchronize below, so bytes/this is the D2H
-  // bandwidth the put path actually gets, not the device's peak.
-  const auto tStageStart = std::chrono::steady_clock::now();
-  size_t waveBytes = 0;
-  std::vector<TcpFrame> frames;
-  frames.reserve(wave.size());
-  // Devices whose copies were launched, so the wait below covers each of them
-  // once. A bare synchronize would only cover whichever device happened to be
-  // current, leaving copies on any other still running.
-  std::vector<int> launchedDevices;
+  PendingPutWave pending;
+  pending.startIdx = startIdx;
+  pending.stream = stream;
+  // Starts before the launches, so a wave's residency covers issuing its copies
+  // as well as waiting for them.
+  pending.launchedAt = std::chrono::steady_clock::now();
+  pending.frames.reserve(wave.size());
+  // Every chunk in a wave is on one device and one stream, so they retire in
+  // order and a single event at the end covers the whole wave. put() guarantees
+  // the single device by breaking each wave at a device boundary.
+  pending.deviceId = wave.empty() ? -1 : wave[0].deviceId;
   Status staging = Ok();
   for (size_t i = 0; i < wave.size(); ++i) {
     const auto& chunk = wave[i];
@@ -932,13 +1065,13 @@ Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
     header.len = static_cast<uint64_t>(chunk.len);
     // The frame owns the slab from here on, so every path out of this function
     // returns it exactly once.
-    frames.emplace_back(
+    pending.frames.emplace_back(
         std::move(leases.value()[i]), sizeof(TcpMsgHeader) + chunk.len);
-    std::memcpy(frames.back().mutableData(), &header, sizeof(header));
+    std::memcpy(pending.frames.back().mutableData(), &header, sizeof(header));
     try {
       CudaDeviceGuard guard(*cudaApi_, chunk.deviceId);
       staging = cudaApi_->memcpyAsync(
-          frames.back().mutableData() + sizeof(TcpMsgHeader),
+          pending.frames.back().mutableData() + sizeof(TcpMsgHeader),
           chunk.src,
           chunk.len,
           cudaMemcpyDeviceToHost,
@@ -952,42 +1085,102 @@ Result<std::vector<TcpFrame>> TcpTransport::stagePutWave(
     if (!staging) {
       break;
     }
-    waveBytes += chunk.len;
-    if (std::find(
-            launchedDevices.begin(), launchedDevices.end(), chunk.deviceId) ==
-        launchedDevices.end()) {
-      launchedDevices.push_back(chunk.deviceId);
+    pending.bytes += chunk.len;
+  }
+
+  if (staging) {
+    try {
+      CudaDeviceGuard guard(*cudaApi_, pending.deviceId);
+      cudaEvent_t event{};
+      staging = cudaApi_->eventCreate(&event);
+      if (staging) {
+        pending.event = event;
+        staging = cudaApi_->eventRecord(event, s);
+      }
+    } catch (const std::exception& e) {
+      staging = Err(ErrCode::DriverError, e.what());
     }
   }
-  // One wait per wave rather than one per chunk: the copies are already in
-  // flight together, and waiting on each in turn is what serialised staging
-  // against itself.
-  for (auto deviceId : launchedDevices) {
+
+  if (!staging) {
+    // Copies may already be running against these slabs, and a wave that never
+    // got its event recorded has nothing to wait on. Quiesce the caller's
+    // stream before the frames -- and so the leases -- are destroyed on return.
     try {
-      CudaDeviceGuard guard(*cudaApi_, deviceId);
-      if (auto st = cudaApi_->streamSynchronize(s); !st && staging) {
-        staging = std::move(st);
-      }
+      CudaDeviceGuard guard(*cudaApi_, pending.deviceId);
+      (void)cudaApi_->streamSynchronize(s);
     } catch (const std::exception&) {
       // The device is already unusable; there is nothing left to wait for.
     }
-  }
-  if (!staging) {
+    if (pending.event != nullptr) {
+      try {
+        CudaDeviceGuard guard(*cudaApi_, pending.deviceId);
+        (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(pending.event));
+      } catch (const std::exception&) {
+        // Leaking an event is preferable to throwing out of a failure path.
+      }
+      pending.event = nullptr;
+    }
     return std::move(staging).error();
   }
-  // Recorded after the synchronize, so it covers the full wait for the copies.
-  // Only successful waves are counted: a failed one abandons partway and its
-  // timing would not describe the copy path.
+  return pending;
+}
+
+Status TcpTransport::retirePutWave(PendingPutWave& wave) {
+  Status result = Ok();
+  if (wave.event != nullptr) {
+    try {
+      CudaDeviceGuard guard(*cudaApi_, wave.deviceId);
+      result = cudaApi_->eventSynchronize(static_cast<cudaEvent_t>(wave.event));
+    } catch (const std::exception& e) {
+      result = Err(ErrCode::DriverError, e.what());
+    }
+    if (!result) {
+      // The event is unusable, so the wait it was meant to provide did not
+      // happen. Fall back to quiescing the stream the copies were launched on:
+      // over-waiting is the safe direction, because these slabs cannot be
+      // released while any copy might still be writing into them.
+      try {
+        CudaDeviceGuard guard(*cudaApi_, wave.deviceId);
+        (void)cudaApi_->streamSynchronize(
+            static_cast<cudaStream_t>(wave.stream));
+      } catch (const std::exception&) {
+        // The device is already unusable; there is nothing left to wait for.
+      }
+    }
+    try {
+      CudaDeviceGuard guard(*cudaApi_, wave.deviceId);
+      (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(wave.event));
+    } catch (const std::exception&) {
+      // Leaking an event is preferable to throwing out of a teardown path.
+    }
+    wave.event = nullptr;
+  }
+  // Only successful waves are counted: a failed one gives up partway and its
+  // timing would not describe a wave's residency.
+  if (!result) {
+    return result;
+  }
   stagingNs_.fetch_add(
       static_cast<uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - tStageStart)
+              std::chrono::steady_clock::now() - wave.launchedAt)
               .count()),
       std::memory_order_relaxed);
-  stagingBytes_.fetch_add(waveBytes, std::memory_order_relaxed);
+  stagingBytes_.fetch_add(wave.bytes, std::memory_order_relaxed);
   stagingWaves_.fetch_add(1, std::memory_order_relaxed);
-  stagingChunks_.fetch_add(wave.size(), std::memory_order_relaxed);
-  return frames;
+  stagingChunks_.fetch_add(wave.frames.size(), std::memory_order_relaxed);
+  return result;
+}
+
+void TcpTransport::abandonPutWaves(std::deque<PendingPutWave>& waves) noexcept {
+  // Wait before dropping: a slab returned to the pool while its copy is still
+  // running goes straight to the next staging copy, and the two then race over
+  // the same bytes.
+  for (auto& wave : waves) {
+    (void)retirePutWave(wave);
+  }
+  waves.clear();
 }
 
 std::future<Status> TcpTransport::get(
@@ -1881,9 +2074,20 @@ bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
   if (frames.empty()) {
     return true;
   }
-  // No lanes means connect() never ran (or teardown already cleared them).
-  // Indexing here would be undefined; refusing matches the documented contract
-  // that a frame may simply not be queued.
+  // No lanes means connect() never ran: establishLanes() is the only thing that
+  // fills lanes_ and nothing empties it afterwards. Indexing here would be
+  // undefined; refusing matches the documented contract that a frame may simply
+  // not be queued.
+  //
+  // Note this reads lanes_ directly rather than pinning the lane set with a
+  // shared_ptr copy the way enqueueOn does, and the striped path below goes
+  // further and holds raw TcpLane* across lock boundaries. Both are safe for
+  // the same reason, recorded here because the asymmetry with enqueueOn
+  // otherwise looks like an oversight: this runs on the application's own
+  // thread via put(), which cannot outlive the transport without the caller
+  // already holding a dangling pointer to it. enqueueOn needs the copy because
+  // it is also reached from deferred EventBase callbacks, which deliberately
+  // can outlive the transport -- that is what TcpReplyState exists for.
   if (lanes_.empty()) {
     return false;
   }
@@ -1891,29 +2095,115 @@ bool TcpTransport::enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock) {
   for (const auto& frame : frames) {
     bytes += frame.size();
   }
-  // One lane for the whole group, so a single mutex makes the insert atomic and
-  // no sender can transmit a partial group. Judged against the group total, as
-  // before.
-  auto& lane = *lanes_[pickLane()];
-  const size_t cap = laneCapBytes();
-  {
-    std::unique_lock<std::mutex> lk(lane.mu);
-    if (mayBlock) {
-      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
-        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
-            lane.queue.empty() || lane.bytes + bytes <= cap;
-      });
+
+  // Striping decision. A wave is up to kMaxPutWaveChunks frames of
+  // kMaxChunkSize, so on one lane it is one sender pushing ~28 MiB through one
+  // socket while the other lanes may have nothing to do -- the whole group's
+  // completion is bounded by a single socket's rate. Spreading the frames
+  // across lanes divides that.
+  //
+  // Safe because a Write frame is self-describing: the receiver places it at
+  // header.offset within header.segId (see the TcpOp::Write case), matches its
+  // Ack by header.reqId, and put() completes on a count of Acks rather than on
+  // their order. Two-sided send() *is* order-sensitive and does not come
+  // through here -- it pins to lanes_[0] via enqueueSendFrame.
+  //
+  // Only for groups whose frames are individually large enough to be worth a
+  // second sender's wakeup; below that the handoff costs more than the
+  // parallelism wins.
+  const size_t laneCount = lanes_.size();
+  const bool stripe = laneCount > 1 && frames.size() > 1 &&
+      bytes / frames.size() >= kMinStripeFrameBytes;
+
+  if (!stripe) {
+    // One lane for the whole group, so a single mutex makes the insert atomic
+    // and no sender can transmit a partial group. Judged against the group
+    // total.
+    auto& lane = *lanes_[pickLane()];
+    const size_t cap = laneCapBytes();
+    {
+      std::unique_lock<std::mutex> lk(lane.mu);
+      if (mayBlock) {
+        lane.cv.wait(lk, [this, &lane, bytes, cap]() {
+          return lane.outClosed ||
+              connBroken_.load(std::memory_order_acquire) ||
+              lane.queue.empty() || lane.bytes + bytes <= cap;
+        });
+      }
+      if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+        return false;
+      }
+      for (auto& frame : frames) {
+        const size_t frameBytes = frame.size();
+        lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
+        lane.bytes += frameBytes;
+      }
     }
-    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
-      return false;
-    }
-    for (auto& frame : frames) {
-      const size_t frameBytes = frame.size();
-      lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
-      lane.bytes += frameBytes;
+    lane.cv.notify_all();
+    return true;
+  }
+
+  // Striped: consecutive frames onto consecutive lanes, from a rotating base so
+  // successive groups do not all start on the same one.
+  //
+  // The null skip is defensive only. Nothing nulls a lane entry today: lanes_
+  // is written solely by establishLanes() (clear + push_back) from connect()
+  // under lifecycleMu_, and every reader runs after connect() has installed the
+  // whole set, which is the invariant recorded on TcpLaneSet::v. Note also what
+  // the skip does NOT buy -- if that invariant were ever broken,
+  // establishLanes() invalidates the vector's buffer along with every TcpLane*
+  // collected below, so a null test would not make concurrent mutation safe.
+  // Keeping the set immutable after connect() is what makes this loop sound.
+  std::vector<TcpLane*> targets;
+  targets.reserve(laneCount);
+  const size_t base = pickLane();
+  for (size_t i = 0; i < laneCount; ++i) {
+    if (auto* lane = lanes_[(base + i) % laneCount].get()) {
+      targets.push_back(lane);
     }
   }
-  lane.cv.notify_all();
+  if (targets.empty()) {
+    return false;
+  }
+
+  // Admission is per frame against its own lane, so unlike the group path this
+  // can enqueue some frames and then refuse. That widens an existing window
+  // rather than opening a new one: even the atomic group insert only guarantees
+  // the *queue* is all-or-nothing, and a connection lost mid-transmission
+  // already leaves some frames sent and some not, so a failed put has never
+  // implied an untouched remote segment.
+  //
+  // What it costs is that EnqueueFramesQueuesNothingWhenTheQueueIsClosed's
+  // stated intent -- "half a wave queued and half refused is the partial write
+  // the batch enqueue exists to prevent" -- now holds only for the unstriped
+  // path. A striped group refused partway leaves the earlier frames queued.
+  // The consequences are contained: the caller fails the operation and abandons
+  // its inflight entries, closeAllLaneQueues() drops whatever is still queued,
+  // and an Ack arriving for an abandoned reqId finds no entry and is ignored.
+  // Making it truly atomic would mean holding every target lane's mutex at once
+  // (deadlock against the senders) or a two-phase reservation, neither of which
+  // is worth it for a window that only opens while the connection is closing.
+  const size_t cap = laneCapBytes();
+  for (size_t i = 0; i < frames.size(); ++i) {
+    auto& lane = *targets[i % targets.size()];
+    const size_t frameBytes = frames[i].size();
+    {
+      std::unique_lock<std::mutex> lk(lane.mu);
+      if (mayBlock) {
+        lane.cv.wait(lk, [this, &lane, frameBytes, cap]() {
+          return lane.outClosed ||
+              connBroken_.load(std::memory_order_acquire) ||
+              lane.queue.empty() || lane.bytes + frameBytes <= cap;
+        });
+      }
+      if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+        return false;
+      }
+      lane.queue.push_back(TcpOutItem{std::move(frames[i]), nullptr});
+      lane.bytes += frameBytes;
+    }
+    lane.cv.notify_all();
+  }
   return true;
 }
 
@@ -1923,6 +2213,10 @@ void TcpTransport::enqueueSendFrame(
   if (lanes_.empty()) {
     // Same reasoning as enqueueFrame's guard, but this path owns a promise, so
     // it must be failed rather than dropped or the caller waits forever.
+    //
+    // Reads lanes_ directly for the same reason as enqueueFrames: send() runs
+    // on the application's thread, which cannot outlive the transport.
+    // enqueueOn's shared_ptr copy exists for the EventBase callbacks that can.
     if (onSent) {
       onSent->fail(
           Err(ErrCode::NotConnected, "tcp send: transport not connected"));
@@ -2116,18 +2410,13 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
   const uint64_t stgWaves = stagingWaves_.load(std::memory_order_relaxed);
   const uint64_t stgChunks = stagingChunks_.load(std::memory_order_relaxed);
   if (stgWaves > 0) {
-    // bytes/ns is GB/s directly (1e9 bytes per second per byte-per-ns).
-    const double stgGBps = stgNs > 0
-        ? static_cast<double>(stgBytes) / static_cast<double>(stgNs)
-        : 0.0;
     UNIFLOW_LOG_INFO(
-        "tcp d2h staging [{}]: waves={} chunks={} bytes={} | {:.2f} GB/s | "
+        "tcp put wave residency [{}]: waves={} chunks={} bytes={} | "
         "{:.1f}us/wave {:.1f}us/chunk",
         label,
         stgWaves,
         stgChunks,
         stgBytes,
-        stgGBps,
         static_cast<double>(stgNs) / static_cast<double>(stgWaves) / 1000.0,
         stgChunks > 0 ? static_cast<double>(stgNs) /
                 static_cast<double>(stgChunks) / 1000.0
@@ -2789,6 +3078,18 @@ void TcpTransport::shutdown() {
     return;
   }
   running_.store(false, std::memory_order_release);
+
+  // Listeners first: stop accepting before tearing down what is already
+  // connected. Doing it here rather than leaving it to ~TcpTransport is the
+  // point -- the destructor runs during process teardown, concurrent with the
+  // EventBase thread stopping, and AsyncAccept::shutdown() has to reach that
+  // loop to unregister the fd. Closing the listeners while shutdown() still has
+  // a running loop removes that race instead of narrowing it.
+  for (auto& server : servers_) {
+    if (server != nullptr) {
+      server->shutdown();
+    }
+  }
 
   closeAllLaneQueues();
 

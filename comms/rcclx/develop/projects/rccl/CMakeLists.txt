@@ -971,6 +971,12 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.h
   comms/rcclx/develop/meta/relay/sharded_relay_graph_scratch.cc
   comms/rcclx/develop/meta/relay/sharded_relay_graph_scratch.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_lp.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_arena.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_arena.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.cu
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.h
   comms/rcclx/develop/meta/relay/sharded_relay_oneshot.cc
   comms/rcclx/develop/meta/relay/sharded_relay_oneshot.h
   comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.cc

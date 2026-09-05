@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
@@ -91,9 +92,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + 1 + peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::RECEIVE,
+          kStaggerChannels);
       const char* local_input = !args.in_place && step == 0
           ? reinterpret_cast<const char*>(own_src)
           : output_bytes;
@@ -121,9 +126,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + W - 1 - peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::SEND,
+          kStaggerChannels);
       TiledBuffer<const T> send_tile(
           input_base + static_cast<std::size_t>(peer) * args.chunk_elements,
           args.chunk_elements,

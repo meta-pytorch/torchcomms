@@ -333,6 +333,11 @@ struct MultipeerIbTransportConfig {
   // auto-detects NIC support, true requires support, and false disables it.
   std::optional<bool> enableReliableDoorbell;
 
+  // IBGDA-only collapsed-CQ policy; ignored by IBRC and AMD. nullopt probes
+  // every selected NIC and enables the format only when all accept it, true
+  // requires every NIC to accept it, and false forces ordinary ring CQs.
+  std::optional<bool> enableCollapsedCq;
+
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
       throw std::invalid_argument(
@@ -596,6 +601,21 @@ inline bool reliableDoorbellActiveForNic(
 inline bool reliableDoorbellNeedsCapabilityQuery(
     const MultipeerIbTransportConfig& config) {
   return config.enableReliableDoorbell.value_or(true);
+}
+
+inline bool collapsedCqActiveForTransport(
+    const MultipeerIbTransportConfig& config,
+    bool allNicsAcceptCollapsedCq) {
+  if (config.enableCollapsedCq.value_or(false) && !allNicsAcceptCollapsedCq) {
+    throw std::invalid_argument(
+        "enableCollapsedCq requires collapsed-CQ support on every selected NIC");
+  }
+  return config.enableCollapsedCq.value_or(allNicsAcceptCollapsedCq);
+}
+
+inline bool collapsedCqNeedsCapabilityProbe(
+    const MultipeerIbTransportConfig& config) {
+  return config.enableCollapsedCq.value_or(true);
 }
 
 // Whether MultipeerIbTransportConfig::maxRdAtomic is programmable as-is.

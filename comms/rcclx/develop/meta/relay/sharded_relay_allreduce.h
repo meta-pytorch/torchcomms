@@ -90,8 +90,10 @@
  *   nActiveRanksPerGroup x chunkSize_aligned
  * elements per helper group, where:
  *   chunkSize_aligned = (per_group_count / numChunks) rounded down to
- *                       CHUNK_ALIGN_ELEMENTS (128 elements).
- * Returns ncclInvalidArgument when per_group_count < numChunks x 128 (the
+ *                       CHUNK_ALIGN_ELEMENTS, which is
+ *                       kRelayChunkAlignElements (512 elements).
+ * Returns ncclInvalidArgument when per_group_count < numChunks x
+ * CHUNK_ALIGN_ELEMENTS (the
  * buffer is too small to scatter); callers should fall back to a regular
  * allreduce in that case.
  *
@@ -136,6 +138,14 @@
  * [nGroups][nActiveRanksPerGroup]
  * @param nActiveRanksPerGroup Number of active ranks per group (2 or 4)
  * @param nGroups Number of groups (typically 4 for 8-GPU node)
+ * @param lowPrecision Non-zero to use the low-precision (fp8e4m3) wire format
+ *        where it pays; an internal size-only gate declines to full precision
+ *        silently otherwise (see sharded_relay_lp.h). COLLECTIVE -- it must be
+ *        identical on every rank of the call, like datatype, op and the counts.
+ *        Ranks that disagree disagree on how many bytes cross each link, so the
+ *        call hangs or corrupts rather than degrading. Documented rather than
+ *        validated, because a per-call check would cost an allreduce; datatype
+ *        is already treated the same way.
  * @return ncclResult_t Success or error code
  */
 ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
@@ -148,4 +158,5 @@ ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
     cudaStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups);
+    int nGroups,
+    int lowPrecision = 0);

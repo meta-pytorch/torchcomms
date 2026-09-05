@@ -50,6 +50,14 @@ using doca_gpu_dev_verbs_wqe = ::prims_amd_gda_gpu_dev_verbs_wqe;
 using doca_gpu_dev_verbs_cq = ::prims_amd_gda_gpu_dev_verbs_cq;
 using doca_gpu_dev_verbs_ticket_t = uint64_t;
 using doca_gpu_dev_verbs_wqe_ctrl_flags = uint8_t;
+using doca_gpu_dev_verbs_resource_sharing_mode = int;
+
+// The shims below all carry the `ACQ` acquire-scope template parameter, so
+// declare the same capability the vendored DOCA header declares. Without this
+// the AMD build silently takes the fallback arm of the feature-detect in
+// `P2pIbgdaTransportDevice.cuh` -- harmless, since ACQ is inert here, but it
+// would mean the two platforms compile different call shapes for no reason.
+#define DOCA_GPUNETIO_VERBS_META_HAS_ACQUIRE_SCOPE 1
 
 // =============================================================================
 // Constant aliases
@@ -70,6 +78,11 @@ constexpr int DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE = 0;
 constexpr int DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO = 0;
 constexpr int DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU = 0;
 constexpr int DOCA_GPUNETIO_VERBS_SYNC_SCOPE_THREAD = 0;
+// Inert like the rest: the CQ-poll acquire scope is an NVIDIA/Blackwell
+// concern (there it selects CCTL.IVALL vs NOP). Spelled here because
+// `kCqAcquireScope` names it and is compiled on both platforms.
+constexpr int DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA = 0;
+constexpr int DOCA_GPUNETIO_VERBS_QP_SQ = 0;
 constexpr int DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD = 0;
 constexpr int DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD = 0;
 
@@ -86,7 +99,9 @@ constexpr uint8_t DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE =
 // Function shims — pure name-prefix forwarders
 // =============================================================================
 
-template <int MODE = 0>
+// QPT and ACQ mirror the NVIDIA qp_type / acquire-scope parameters and are
+// ignored here.
+template <int MODE = 0, int QPT = 0, int ACQ = 0>
 __device__ __forceinline__ uint64_t doca_gpu_dev_verbs_reserve_wq_slots(
     doca_gpu_dev_verbs_qp* qp,
     uint32_t numSlots) {
@@ -179,7 +194,8 @@ __device__ __forceinline__ void doca_gpu_dev_verbs_submit(
       qp, nextWqeIdx);
 }
 
-template <int MODE = 0, int HANDLER = 0>
+// ACQ mirrors the NVIDIA acquire-scope parameter and is ignored here.
+template <int MODE = 0, int HANDLER = 0, int ACQ = 0>
 __device__ __forceinline__ void doca_gpu_dev_verbs_wait(
     doca_gpu_dev_verbs_qp* qp,
     uint64_t ticket) {
@@ -223,7 +239,9 @@ doca_gpu_dev_verbs_qp_get_cq_sq(doca_gpu_dev_verbs_qp* qp) {
   return prims_amd_gda::prims_amd_gda_gpu_dev_verbs_qp_get_cq_sq(qp);
 }
 
-template <int MODE = 0>
+// QPT and ACQ mirror the NVIDIA qp_type / acquire-scope parameters and are
+// ignored here.
+template <int MODE = 0, int QPT = 0, int ACQ = 0>
 __device__ __forceinline__ int doca_gpu_dev_verbs_poll_one_cq_at(
     doca_gpu_dev_verbs_cq* cq,
     uint64_t consIndex) {

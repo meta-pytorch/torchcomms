@@ -47,6 +47,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         << "All peers must have the same qpsPerConnection";
     CHECK_EQ(params[i].qpDirectionCount, params[0].qpDirectionCount)
         << "All peers must have the same qpDirectionCount";
+    CHECK_EQ(params[i].collapsedCq, params[0].collapsedCq)
+        << "All local device transports must use the resolved CQ format";
     CHECK_EQ(
         static_cast<int>(params[i].h_nicDeviceIbgdaResources.size()), numNics)
         << "All peers must have the same numNics";
@@ -223,7 +225,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         DeviceSpan<IbLocalChannel>(
             d_allLocalChannels + i * params[i].maxChannels,
             params[i].maxChannels),
-        params[i].channelLayout);
+        params[i].channelLayout,
+        params[i].collapsedCq);
   }
 
   // 4. Allocate and copy transport objects to GPU.
@@ -373,7 +376,8 @@ void writeDeviceTransportSlot(
       params.qpsPerConnection,
       params.qpDirectionCount,
       DeviceSpan<IbLocalChannel>(d_localChannels, params.maxChannels),
-      params.channelLayout);
+      params.channelLayout,
+      params.collapsedCq);
 
   err = cudaMemcpy(
       deviceArray + peerIndex,

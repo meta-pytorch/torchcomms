@@ -92,6 +92,26 @@ void runTestPutCooperativePartitioningBlock(bool* d_success);
 // Test trace_ibgda_event writes the expected trace payload.
 void runTestTraceIbgdaEvent(PipesTraceHandle trace);
 
+#ifndef __HIP_PLATFORM_AMD__
+struct CollapsedCqPollCase {
+  uint64_t initialConsumerIndex;
+  uint64_t ticket;
+  uint32_t cqeCount;
+  uint16_t wqeCounter;
+  uint8_t opcode;
+  bool blocking;
+};
+
+struct CollapsedCqPollResult {
+  int status;
+  uint64_t finalConsumerIndex;
+};
+
+cudaError_t runTestCollapsedCqPoll(
+    const CollapsedCqPollCase& testCase,
+    CollapsedCqPollResult* result);
+#endif
+
 // =============================================================================
 // wait_signal timeout tests
 // =============================================================================

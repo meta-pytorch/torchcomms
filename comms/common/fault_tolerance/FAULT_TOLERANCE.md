@@ -573,7 +573,7 @@ Two things this audit turned up that are worth keeping written down:
 ### What the caller sees
 
 - The collective completes; **output buffers are undefined** after an abort.
-- Check `IComm::isAborted()`, `getAbortReason()` and `getAbortReasonStr()`.
+- Check `IComm::isAborted()` and `getAbortInfo()`.
 - Where the host can determine it cheaply, the work handle also reports a
   non-success result — but a `commSuccess` after an abort is contract-legal and
   its data must still be ignored.

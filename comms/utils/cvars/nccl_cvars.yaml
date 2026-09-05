@@ -3460,6 +3460,19 @@ cvars:
      capability query and forces VALID_DBR. Host-only loopback QPs always use
      VALID_DBR. This policy is NVIDIA-only and ignored on AMD.
 
+ - name        : MCCL_IBGDA_COLLAPSED_CQ_MODE
+   type        : enum
+   default     : auto
+   choices     : auto, on, off
+   description : |-
+     Select the completion-queue format for the Prims IBGDA transport. auto
+     probes every selected NIC and uses collapsed CQs only when all of them
+     accept the firmware CREATE_CQ request; otherwise it falls back to ordinary
+     ring CQs. on requires every selected NIC to accept collapsed CQ creation
+     and fails transport initialization otherwise. off skips the probe and
+     forces ring CQs. Host-only loopback QPs always use ring CQs. This policy is
+     NVIDIA-only and ignored on AMD.
+
  - name        : MCCL_IBGDA_WARP_PROXY_ENABLE
    type        : bool
    default     : false

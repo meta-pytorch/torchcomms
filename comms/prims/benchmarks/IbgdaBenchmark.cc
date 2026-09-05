@@ -685,6 +685,123 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
   printResultsTable(backendTitle("Put+Signal+Flush (RDMA Write)"), results);
 }
 
+TEST_P(IbgdaBenchmarkFixture, PutSignalWaitLocalFlush) {
+  if (numRanks != 2) {
+    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const int peerRank = globalRank == 0 ? 1 : 0;
+  constexpr int kSignalId = 0;
+  constexpr uint8_t kDataPattern = 0xA7;
+  auto configs = getFullConfigs();
+  std::size_t maxBufferSize = 0;
+  for (const auto& config : configs) {
+    maxBufferSize = std::max(maxBufferSize, config.nBytes);
+  }
+
+  std::vector<IbgdaBenchmarkResult> results;
+  try {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+    };
+    transportConfig.ibHca = benchIbHca();
+    transportConfig.enableDataDirect = benchDataDirect();
+    transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    BenchIbTransport transport(
+        backend(), globalRank, numRanks, bootstrap, transportConfig);
+    transport.exchange();
+
+    DeviceBuffer dataBuffer(maxBufferSize);
+    CUDA_CHECK_VOID(cudaMemset(
+        dataBuffer.get(), globalRank == 0 ? kDataPattern : 0, maxBufferSize));
+    auto localDataBuf =
+        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
+    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    const int peerIndex = peerRank < globalRank ? peerRank : peerRank - 1;
+    auto remoteDataBuf = remoteDataBufs.at(peerIndex);
+
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs.at(peerIndex);
+    auto deviceTransport = transport.getP2pTransportDevice(peerRank);
+
+    unsigned long long* d_totalCycles;
+    CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    if (globalRank == 0) {
+      launchIbgdaPutSignalWaitLocalFlushBatch(
+          deviceTransport,
+          localDataBuf,
+          remoteDataBuf,
+          remoteSignalBuf,
+          maxBufferSize,
+          kSignalId,
+          1,
+          d_totalCycles,
+          stream_);
+      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    if (globalRank == 1) {
+      std::vector<uint8_t> actual(maxBufferSize);
+      CUDA_CHECK_VOID(cudaMemcpy(
+          actual.data(),
+          dataBuffer.get(),
+          actual.size(),
+          cudaMemcpyDeviceToHost));
+      EXPECT_TRUE(std::all_of(actual.begin(), actual.end(), [](uint8_t value) {
+        return value == kDataPattern;
+      }));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    for (const auto& config : configs) {
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+      if (globalRank == 0) {
+        launchIbgdaPutSignalWaitLocalFlushBatch(
+            deviceTransport,
+            localDataBuf,
+            remoteDataBuf,
+            remoteSignalBuf,
+            config.nBytes,
+            kSignalId,
+            kIbgdaBatchIters,
+            d_totalCycles,
+            stream_);
+        CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+
+        unsigned long long totalCycles;
+        CUDA_CHECK_VOID(cudaMemcpy(
+            &totalCycles,
+            d_totalCycles,
+            sizeof(totalCycles),
+            cudaMemcpyDeviceToHost));
+        IbgdaBenchmarkResult result;
+        result.testName = config.name;
+        result.messageSize = config.nBytes;
+        result.latency = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+        result.bandwidth = (config.nBytes / 1e9f) / (result.latency / 1e6f);
+        results.push_back(result);
+      }
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    CUDA_CHECK_VOID(cudaFree(d_totalCycles));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IB transport not available: " << e.what();
+  }
+
+  printResultsTable(
+      backendTitle("Put+Signal+WaitLocal+Flush (RDMA Write)"), results);
+}
+
 TEST_P(IbgdaBenchmarkFixture, ThreadScopeMultiBlockPutFlush) {
   // One thread per block uses the no-ThreadGroup put()+flush() API on a
   // block-private slice. This checks that thread-scope wrappers inherit the

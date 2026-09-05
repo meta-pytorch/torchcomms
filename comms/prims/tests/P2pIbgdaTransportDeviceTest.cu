@@ -492,4 +492,89 @@ void runTestWaitSignalNoTimeout(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void testCollapsedCqPoll(
+    doca_gpu_dev_verbs_cq* cq,
+    uint64_t ticket,
+    bool blocking,
+    CollapsedCqPollResult* result) {
+  if (blocking) {
+    result->status = prims_ibgda_wait_collapsed_cq<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+  } else {
+    result->status = prims_ibgda_poll_collapsed_cq_once<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+  }
+  result->finalConsumerIndex = cq->cqe_ci;
+}
+
+cudaError_t runTestCollapsedCqPoll(
+    const CollapsedCqPollCase& testCase,
+    CollapsedCqPollResult* result) {
+  doca_gpunetio_ib_mlx5_cqe64 hostCqe{};
+  hostCqe.wqe_counter = static_cast<__be16>(
+      (testCase.wqeCounter >> 8) | (testCase.wqeCounter << 8));
+  hostCqe.op_own = static_cast<uint8_t>(
+      testCase.opcode << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT);
+
+  doca_gpunetio_ib_mlx5_cqe64* deviceCqe = nullptr;
+  doca_gpu_dev_verbs_cq* deviceCq = nullptr;
+  CollapsedCqPollResult* deviceResult = nullptr;
+  cudaError_t status = cudaMalloc(&deviceCqe, sizeof(hostCqe));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMalloc(&deviceCq, sizeof(doca_gpu_dev_verbs_cq));
+  if (status != cudaSuccess) {
+    cudaFree(deviceCqe);
+    return status;
+  }
+  status = cudaMalloc(&deviceResult, sizeof(CollapsedCqPollResult));
+  if (status != cudaSuccess) {
+    cudaFree(deviceCq);
+    cudaFree(deviceCqe);
+    return status;
+  }
+
+  doca_gpu_dev_verbs_cq hostCq{};
+  hostCq.cqe_daddr = reinterpret_cast<uint8_t*>(deviceCqe);
+  hostCq.cqe_num = testCase.cqeCount;
+  hostCq.cqe_ci = testCase.initialConsumerIndex;
+  status =
+      cudaMemcpy(deviceCqe, &hostCqe, sizeof(hostCqe), cudaMemcpyHostToDevice);
+  if (status == cudaSuccess) {
+    status =
+        cudaMemcpy(deviceCq, &hostCq, sizeof(hostCq), cudaMemcpyHostToDevice);
+  }
+  if (status == cudaSuccess) {
+    testCollapsedCqPoll<<<1, 1>>>(
+        deviceCq, testCase.ticket, testCase.blocking, deviceResult);
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result,
+        deviceResult,
+        sizeof(CollapsedCqPollResult),
+        cudaMemcpyDeviceToHost);
+  }
+
+  const cudaError_t resultFreeStatus = cudaFree(deviceResult);
+  const cudaError_t cqFreeStatus = cudaFree(deviceCq);
+  const cudaError_t cqeFreeStatus = cudaFree(deviceCqe);
+  if (status != cudaSuccess) {
+    return status;
+  }
+  if (resultFreeStatus != cudaSuccess) {
+    return resultFreeStatus;
+  }
+  if (cqFreeStatus != cudaSuccess) {
+    return cqFreeStatus;
+  }
+  return cqeFreeStatus;
+}
+#endif
+
 } // namespace comms::prims::tests

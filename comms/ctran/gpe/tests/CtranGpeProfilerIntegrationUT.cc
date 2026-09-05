@@ -8,6 +8,29 @@
 
 namespace ctran::fttesting {
 
+namespace {
+
+struct CapturedGpeProfilerReport {
+  ::ctran::GpeTracePoint tracePoint;
+  uint64_t iterUs;
+  uint64_t durationUs;
+  bool aborted;
+  std::string message;
+};
+
+CapturedGpeProfilerReport captureReport(
+    const ::ctran::GpeProfilerReport& report) {
+  return {
+      .tracePoint = report.tracePoint,
+      .iterUs = report.iterUs,
+      .durationUs = report.durationUs,
+      .aborted = report.aborted,
+      .message = std::string{report.message},
+  };
+}
+
+} // namespace
+
 // ---------------------------------------------------------------------------
 // GpeProfiler integration tests (T270778705).
 //
@@ -50,15 +73,18 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_RecordsAlgoAbortedOnAbort) {
   auto mockReporter = std::make_unique<::ctran::MockGpeProfilerReporter>();
   auto* mockPtr = mockReporter.get();
 
-  std::vector<::ctran::GpeProfilerReport> rows;
+  std::vector<CapturedGpeProfilerReport> rows;
   EXPECT_CALL(*mockPtr, report(::testing::_))
-      .WillRepeatedly(
-          [&](const ::ctran::GpeProfilerReport& r) { rows.push_back(r); });
+      .WillRepeatedly([&](const ::ctran::GpeProfilerReport& r) {
+        rows.push_back(captureReport(r));
+      });
 
+  // Keep synchronization state alive until after the GPE thread is joined,
+  // including when an ASSERT below returns early.
+  FtTestSync sync;
   auto gpe = std::make_unique<CtranGpe>(
       cudaDev, ctranComm.get(), std::move(mockReporter));
 
-  FtTestSync sync;
   sync.setTimeout();
   this->launchKernelFn(
       gpe.get(),
@@ -70,6 +96,9 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_RecordsAlgoAbortedOnAbort) {
   // Wait for kernel + abort handling to complete.
   tryQueryStreamFor(stream, kHostAlgoFnWait + std::chrono::milliseconds(2000));
   ASSERT_TRUE(ctranComm->testAbort());
+  const auto abortInfo = ctranComm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, comms::fault_tolerance::AbortReason::TIMED_OUT);
 
   // Tear down gpe — ~Impl joins the GPE thread.
   gpe.reset();
@@ -92,7 +121,7 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_RecordsAlgoAbortedOnAbort) {
     } else if (r.tracePoint == ::ctran::GpeTracePoint::ALGO_ABORTED) {
       sawAlgoAborted = true;
       EXPECT_TRUE(r.aborted);
-      EXPECT_EQ(r.message, std::string_view{"timeout"});
+      EXPECT_EQ(r.message, "reason=timed_out context=\"timeout expired\"");
     }
   }
   EXPECT_TRUE(sawIterStart);
@@ -115,16 +144,19 @@ TEST_F(
   auto mockReporter = std::make_unique<::ctran::MockGpeProfilerReporter>();
   auto* mockPtr = mockReporter.get();
 
-  std::vector<::ctran::GpeProfilerReport> rows;
+  std::vector<CapturedGpeProfilerReport> rows;
   EXPECT_CALL(*mockPtr, report(::testing::_))
-      .WillRepeatedly(
-          [&](const ::ctran::GpeProfilerReport& r) { rows.push_back(r); });
+      .WillRepeatedly([&](const ::ctran::GpeProfilerReport& r) {
+        rows.push_back(captureReport(r));
+      });
 
+  // Keep synchronization state alive until after the GPE thread is joined,
+  // including when an ASSERT below returns early.
+  FtTestSync sync;
   auto gpe = std::make_unique<CtranGpe>(
       cudaDev, ctranComm.get(), std::move(mockReporter));
 
   // Run a happy-path iteration (no abort).
-  FtTestSync sync;
   this->launchKernelFn(
       gpe.get(), (void*)CtranGpeTestFtEnabledOobTerminateKernel, stream, &sync);
   *oobKernelTerminateFlag = true;
@@ -165,10 +197,11 @@ TEST_F(GpeProfilerIntegrationTest, GpeProfiler_TerminateIterEmitsAnchorPair) {
   auto mockReporter = std::make_unique<::ctran::MockGpeProfilerReporter>();
   auto* mockPtr = mockReporter.get();
 
-  std::vector<::ctran::GpeProfilerReport> rows;
+  std::vector<CapturedGpeProfilerReport> rows;
   EXPECT_CALL(*mockPtr, report(::testing::_))
-      .WillRepeatedly(
-          [&](const ::ctran::GpeProfilerReport& r) { rows.push_back(r); });
+      .WillRepeatedly([&](const ::ctran::GpeProfilerReport& r) {
+        rows.push_back(captureReport(r));
+      });
 
   auto gpe = std::make_unique<CtranGpe>(
       cudaDev, ctranComm.get(), std::move(mockReporter));
@@ -202,10 +235,11 @@ TEST_F(
   auto mockReporter = std::make_unique<::ctran::MockGpeProfilerReporter>();
   auto* mockPtr = mockReporter.get();
 
-  std::vector<::ctran::GpeProfilerReport> rows;
+  std::vector<CapturedGpeProfilerReport> rows;
   EXPECT_CALL(*mockPtr, report(::testing::_))
-      .WillRepeatedly(
-          [&](const ::ctran::GpeProfilerReport& r) { rows.push_back(r); });
+      .WillRepeatedly([&](const ::ctran::GpeProfilerReport& r) {
+        rows.push_back(captureReport(r));
+      });
 
   auto gpe = std::make_unique<CtranGpe>(
       cudaDev, ctranComm.get(), std::move(mockReporter));
@@ -214,11 +248,15 @@ TEST_F(
   // only cmd the GPE thread sees.
   ctranComm->setAbort();
   ASSERT_TRUE(ctranComm->testAbort());
+  const auto abortInfo = ctranComm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, comms::fault_tolerance::AbortReason::ABORTED);
 
   gpe.reset();
 
   // Abort state must persist across cancelTimeout().
   EXPECT_TRUE(ctranComm->testAbort());
+  EXPECT_EQ(ctranComm->getAbortInfo(), abortInfo);
 
   // No ALGO_ABORTED row — TERMINATE branch skips the marker.
   bool sawAlgoAborted = false;

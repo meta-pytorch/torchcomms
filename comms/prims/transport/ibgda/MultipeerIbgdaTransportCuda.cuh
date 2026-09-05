@@ -74,6 +74,7 @@ struct P2pIbgdaTransportBuildParams {
   int qpsPerConnection{1};
   int qpDirectionCount{1};
   IbChannelLayout channelLayout{};
+  bool collapsedCq{false};
 };
 
 /**

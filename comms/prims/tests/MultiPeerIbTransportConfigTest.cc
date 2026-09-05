@@ -167,6 +167,37 @@ TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
       config, /*nicReliableDoorbellCapable=*/false));
 }
 
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqAutoUsesAllNicResult) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_FALSE(config.enableCollapsedCq.has_value());
+  EXPECT_TRUE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_TRUE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_FALSE(collapsedCqActiveForTransport(
+      config, /*allNicsAcceptCollapsedCq=*/false));
+}
+
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqOnRequiresEveryNic) {
+  MultipeerIbTransportConfig config;
+  config.enableCollapsedCq = true;
+  EXPECT_TRUE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_TRUE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_THROW(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/false),
+      std::invalid_argument);
+}
+
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqOffForcesRingAndSkipsProbe) {
+  MultipeerIbTransportConfig config;
+  config.enableCollapsedCq = false;
+  EXPECT_FALSE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_FALSE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_FALSE(collapsedCqActiveForTransport(
+      config, /*allNicsAcceptCollapsedCq=*/false));
+}
+
 // -----------------------------------------------------------------------------
 // max_rd_atomic (MCCL_IBGDA_MAX_RD_ATOMIC / config.maxRdAtomic)
 // -----------------------------------------------------------------------------

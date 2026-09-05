@@ -9,7 +9,12 @@
 #include "sharded_relay_all_to_all.h"
 #include "comm.h"
 #include "sharded_relay_graph_scratch.h"
+#include "sharded_relay_lp.h"
+#include "sharded_relay_lp_arena.h"
+#include "sharded_relay_lp_kernels.h"
 #include "sharded_relay_route.h"
+
+#include <hip/hip_bfloat16.h>
 
 #include <cstdint>
 #include <map>
@@ -21,6 +26,11 @@
 // which is used for struct padding.
 static constexpr size_t CHUNK_ALIGN_ELEMENTS =
     rcclx::relay::kRelayChunkAlignElements;
+static_assert(
+    CHUNK_ALIGN_ELEMENTS % rcclx::relay::kLpBlockElems == 0 &&
+        (CHUNK_ALIGN_ELEMENTS / rcclx::relay::kLpBlockElems) % 4 == 0,
+    "every chunk boundary must be a multiple of 4 wire blocks so its offset in "
+    "wire bytes (132 per block) is 16-byte aligned");
 
 // The rank-config builder below is a deliberate copy of the file-local helper
 // in sharded_relay_allreduce.cc (also mirrored in
@@ -311,6 +321,489 @@ bool isSupportedRelayDataType(ncclDataType_t datatype) {
 
 } // namespace
 
+// =========================================================================
+// LOW-PRECISION DISPATCH
+// =========================================================================
+// Only bf16 and fp32 appear here, because lpDtypeSupported() admits only those
+// and the gate declines everything else back to full precision. The `default:`
+// arm is therefore unreachable rather than a silent fallthrough; it aborts the
+// call instead of returning ncclSuccess having quantized nothing.
+//
+// Only QUANTIZE and DEQUANTIZE, because all-to-all has no reduction anywhere in
+// it -- no divisor, no fused reduce, and a helper that never interprets what it
+// carries.
+#define DISPATCH_LP(datatype, CALL, ...)                                                                      \
+  do {                                                                                                        \
+    switch (datatype) {                                                                                       \
+      case ncclFloat32:                                                                                       \
+        CALL<float>(__VA_ARGS__);                                                                             \
+        break;                                                                                                \
+      case ncclBfloat16:                                                                                      \
+        CALL<__nv_bfloat16>(__VA_ARGS__);                                                                     \
+        break;                                                                                                \
+      default:                                                                                                \
+        WARN(                                                                                                 \
+            "Sharded relay: low precision reached an unsupported datatype %d; the eligibility gate is wrong", \
+            static_cast<int>(datatype));                                                                      \
+        return ncclInternalError;                                                                             \
+    }                                                                                                         \
+  } while (0)
+
+#define DISPATCH_LP_QUANTIZE(datatype, wireOut, in, count, stream) \
+  DISPATCH_LP(datatype, launchLpQuantizeKernel, wireOut, in, count, stream)
+
+#define DISPATCH_LP_DEQUANTIZE(datatype, out, wireIn, count, stream) \
+  DISPATCH_LP(datatype, launchLpDequantizeKernel, out, wireIn, count, stream)
+
+namespace {
+
+/**
+ * The wire buffers one 2-active all-to-all call needs.
+ *
+ * Three regions, the same shape the 2-active all-gather uses, because the two
+ * schedules move the same bytes over the same links -- all-to-all just reads
+ * its send data from one segment of a larger buffer instead of from a whole
+ * shard.
+ *
+ * As in all-gather, arrivals cannot land in recvBuff directly under low
+ * precision, so `exchangeRecv` stages them laid out to mirror the exchange
+ * segment and ONE dequantize writes the segment out afterwards. The DIAGONAL
+ * segment is never in range: it is a local copy of this rank's own data, and it
+ * stays full precision on both paths -- including the nGroups == 1 case where
+ * it rides along in group 1 as a self P2P pair, which keeps the caller's dtype
+ * while every other transfer in that same group carries wire bytes.
+ *
+ * Carved unconditionally at the worst case over groups, so the partition is
+ * byte-identical on every rank and the capacity check is a pure function of the
+ * counts.
+ */
+struct A2aA2LpPlan {
+  char* sendShadow{nullptr}; // wire(segmentCount): the exchange segment
+  char* exchangeRecv{nullptr}; // wire(segmentCount): mirrors the recv segment
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{};
+  bool valid{false};
+};
+
+// The size-and-dtype half of the gate, in one place so the dispatcher cannot
+// accidentally feed it a different size metric than the route selector uses.
+rcclx::relay::LpGateInputs allToAllLpGate(
+    ncclDataType_t datatype,
+    const size_t* segmentCounts,
+    int nGroups,
+    int nActiveRanksPerGroup,
+    size_t elementSize,
+    bool relayRouteSelected,
+    size_t countAlignElems) {
+  rcclx::relay::LpGateInputs in;
+  in.coll = rcclx::relay::LpCollective::AllToAll;
+  in.datatype = datatype;
+  in.counts = segmentCounts;
+  in.nGroups = nGroups;
+  in.nActiveRanksPerGroup = nActiveRanksPerGroup;
+  // nActiveRanksPerGroup * max(segmentCounts) * elementSize is exactly
+  // selectAllToAllRoute()'s metric -- the per-rank buffer, not the per-segment
+  // shard -- so the low-precision threshold and the route threshold are
+  // directly comparable. The active-rank factor matters: without it the two
+  // thresholds differ by A and lpMinBytes() would silently mean something A
+  // times larger than sharded_relay_route.h's numbers.
+  in.routeSizeBytes = static_cast<size_t>(nActiveRanksPerGroup) *
+      rcclx::relay::relayMaxCount(segmentCounts, nGroups) * elementSize;
+  in.relayRouteSelected = relayRouteSelected;
+  in.countAlignElems = countAlignElems;
+  return in;
+}
+
+size_t a2aLpAlign(size_t bytes) {
+  return ((bytes + rcclx::relay::LpArenaCarver::kAlign - 1) /
+          rcclx::relay::LpArenaCarver::kAlign) *
+      rcclx::relay::LpArenaCarver::kAlign;
+}
+
+/**
+ * The capture and arena preconditions every all-to-all LP prepare shares.
+ *
+ * Creating the arena is not capturable: it runs a bootstrap all-gather. Using
+ * one that already exists is fine, so under capture take the path only if the
+ * arena is already up. Same precedent as the one-shot region.
+ *
+ * COLLECTIVE: lpArenaAcquire() runs a bootstrap unanimity vote on first use, so
+ * every rank must reach this whenever the dispatcher's size-only gate said yes
+ * -- including the helper ranks. Every reason it can return false is derived
+ * from the counts or is already agreed across the communicator, so all ranks
+ * decline together.
+ */
+bool a2aLpAcquireArena(
+    ncclComm_t comm,
+    cudaStream_t stream,
+    rcclx::relay::LpArenaLease* lease) {
+  struct ncclCudaGraph graph;
+  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::lpArenaReady(comm)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+  if (!rcclx::relay::lpArenaAcquire(comm, lease)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  return true;
+}
+
+size_t a2aA2LpRequiredBytes(
+    const size_t* segmentCounts,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(segmentCounts, nGroups);
+  const size_t maxChunk = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+  size_t total = 2 * a2aLpAlign(rcclx::relay::lpWireBytes(maxCount));
+  total += static_cast<size_t>(nGroups) *
+      a2aLpAlign(
+               static_cast<size_t>(nActiveRanks) *
+               rcclx::relay::lpWireBytes(maxChunk));
+  return total;
+}
+
+A2aA2LpPlan a2aA2LpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    const size_t* segmentCounts,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(segmentCounts, nGroups);
+  const size_t maxChunk = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+
+  A2aA2LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  p.exchangeRecv = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  for (int g = 0; g < nGroups; g++) {
+    p.helper[g] = carver.take(
+        static_cast<size_t>(nActiveRanks) *
+        rcclx::relay::lpWireBytes(maxChunk));
+  }
+  p.valid = carver.ok();
+  return p;
+}
+
+/**
+ * Every region boundary this schedule sends or receives at is a whole number of
+ * wire blocks.
+ *
+ * 128-aligned per-group counts make the segment offsets, the relay chunks and
+ * both direct chunks aligned -- but ONLY when the aligned chunk size is
+ * non-zero. In the chunkSize == 0 degenerate case the geometry falls back to
+ * splitting the segment in half, and count / 2 is a multiple of 64, not of 128.
+ * Today's crossover keeps low precision far above that regime; checked rather
+ * than assumed so that lowering lpMinBytes() during tuning cannot silently
+ * produce unaligned wire offsets. Pure function of the counts, so every rank
+ * declines together.
+ */
+bool a2aA2LpGeometryOk(
+    const size_t* segmentCounts,
+    const size_t* chunkSizes,
+    int nGroups) {
+  for (int g = 0; g < nGroups; g++) {
+    if (segmentCounts[g] > 0 && chunkSizes[g] == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool a2aA2LpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const size_t* segmentCounts,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks,
+    A2aA2LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  if (!a2aA2LpGeometryOk(segmentCounts, chunkSizes, nGroups)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Alignment);
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!a2aLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (a2aA2LpRequiredBytes(segmentCounts, chunkSizes, nGroups, nActiveRanks) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = a2aA2LpCarve(lease, segmentCounts, chunkSizes, nGroups, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+// The same three regions as a2aA2LpCarve(), at the pipelined schedule's
+// geometry. Only the helper region differs in shape: two ping-pong units per
+// active source rather than one chunk per source, and nGroups is always 1
+// because that is the only shape that pipelines.
+//
+// No geometry predicate is needed. The schedule already rejects u == 0
+// outright, and u is a non-zero multiple of the chunk alignment, so every
+// offset it derives is a whole number of wire blocks once the count is. The
+// diagonal's own chunking is irrelevant here: those pieces stay full precision.
+size_t
+a2aA2PipeLpRequiredBytes(size_t segmentCount, size_t u, int nActiveRanks) {
+  return 2 * a2aLpAlign(rcclx::relay::lpWireBytes(segmentCount)) +
+      a2aLpAlign(
+             static_cast<size_t>(nActiveRanks) * 2 *
+             rcclx::relay::lpWireBytes(u));
+}
+
+A2aA2LpPlan a2aA2PipeLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks) {
+  A2aA2LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(segmentCount));
+  p.exchangeRecv = carver.take(rcclx::relay::lpWireBytes(segmentCount));
+  p.helper[0] = carver.take(
+      static_cast<size_t>(nActiveRanks) * 2 * rcclx::relay::lpWireBytes(u));
+  p.valid = carver.ok();
+  return p;
+}
+
+bool a2aA2PipeLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    A2aA2LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!a2aLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (a2aA2PipeLpRequiredBytes(segmentCount, u, nActiveRanks) > lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = a2aA2PipeLpCarve(lease, segmentCount, u, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+/**
+ * The wire buffers one A=4 XOR/Latin relay all-to-all call needs.
+ *
+ * `sendShadow` covers the WHOLE send buffer, all A segments, not just the A-1
+ * off-diagonal ones. The diagonal segment is never read from it, so that is 1/A
+ * of the quantize wasted; in exchange a shadow offset is the same `destIndex *
+ * sc` expression it already is in the caller's buffer. Same trade the flat
+ * reduce-scatter and flat all-gather make, for the same reason.
+ *
+ * `gatherRecv` IS packed to A-1 slots, source s at index `s < m ? s : s - 1`,
+ * because there the packing is what makes the diagonal unrepresentable rather
+ * than merely skipped -- and it saves a whole segment of arena. One dequantize
+ * per foreign segment lands it.
+ *
+ * The helper region is bounded by the segment count, exactly as the
+ * full-precision staging is: this helper's compact slots are `relay` elements
+ * each and there are at most three of them, with relay = align(sc / 3).
+ *
+ * Carved unconditionally at the worst case over groups, so the partition is
+ * byte-identical on every rank and the capacity check is a pure function of the
+ * counts.
+ */
+struct A2aA4LpPlan {
+  char* sendShadow{nullptr}; // wire(A * segmentCount): the whole send buffer
+  char* gatherRecv{nullptr}; // (A-1) packed slots of wire(segmentCount)
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{}; // wire(segmentCount) of slots
+  bool valid{false};
+};
+
+size_t a2aA4LpRequiredBytes(
+    const size_t* segmentCounts,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(segmentCounts, nGroups);
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  size_t total = a2aLpAlign(rcclx::relay::lpWireBytes(A * maxCount)) +
+      a2aLpAlign((A - 1) * rcclx::relay::lpWireBytes(maxCount));
+  total += static_cast<size_t>(nGroups) *
+      a2aLpAlign(rcclx::relay::lpWireBytes(maxCount));
+  return total;
+}
+
+A2aA4LpPlan a2aA4LpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    const size_t* segmentCounts,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(segmentCounts, nGroups);
+  const size_t A = static_cast<size_t>(nActiveRanks);
+
+  A2aA4LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(A * maxCount));
+  p.gatherRecv = carver.take((A - 1) * rcclx::relay::lpWireBytes(maxCount));
+  for (int g = 0; g < nGroups; g++) {
+    p.helper[g] = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  }
+  p.valid = carver.ok();
+  return p;
+}
+
+/**
+ * The relay third has to be non-empty for low precision to mean anything here.
+ *
+ * relay = align(sc / 3) is what carries the alignment argument: directA ==
+ * relay and directB == sc - 2 * relay are whole numbers of wire blocks only
+ * when relay is. With relay == 0 the schedule degenerates to a pure direct
+ * exchange, which is the regime the route gate already excludes. Pure function
+ * of the counts, so all ranks decline together.
+ */
+bool a2aA4LpGeometryOk(const size_t* segmentCounts, int nGroups) {
+  for (int g = 0; g < nGroups; g++) {
+    if (segmentCounts[g] > 0 &&
+        rcclx::relay::allToAllA4RelayCount(segmentCounts[g]) == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool a2aA4LpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const size_t* segmentCounts,
+    int nGroups,
+    int nActiveRanks,
+    A2aA4LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  if (!a2aA4LpGeometryOk(segmentCounts, nGroups)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Alignment);
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!a2aLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (a2aA4LpRequiredBytes(segmentCounts, nGroups, nActiveRanks) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = a2aA4LpCarve(lease, segmentCounts, nGroups, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+// The same three regions as a2aA4LpCarve(), at the pipelined schedule's
+// geometry. Only the helper region differs in shape: two ping-pong units per
+// relay TASK rather than a segment's worth of compact slots, and nGroups is
+// always 1 because that is the only shape that pipelines.
+//
+// No geometry predicate is needed. The schedule already rejects u == 0
+// outright, and u is a non-zero multiple of the chunk alignment, so the relay
+// tiles, the direct chunks and the tail are all whole numbers of wire blocks
+// once the count is. The diagonal's own chunking is irrelevant: those pieces
+// stay full precision.
+size_t a2aA4PipeLpRequiredBytes(
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+  return a2aLpAlign(rcclx::relay::lpWireBytes(A * segmentCount)) +
+      a2aLpAlign((A - 1) * rcclx::relay::lpWireBytes(segmentCount)) +
+      a2aLpAlign(
+             static_cast<size_t>(tasksPerHelper) * 2 *
+             rcclx::relay::lpWireBytes(u));
+}
+
+A2aA4LpPlan a2aA4PipeLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper) {
+  const size_t A = static_cast<size_t>(nActiveRanks);
+
+  A2aA4LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(A * segmentCount));
+  p.gatherRecv = carver.take((A - 1) * rcclx::relay::lpWireBytes(segmentCount));
+  p.helper[0] = carver.take(
+      static_cast<size_t>(tasksPerHelper) * 2 * rcclx::relay::lpWireBytes(u));
+  p.valid = carver.ok();
+  return p;
+}
+
+bool a2aA4PipeLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    size_t segmentCount,
+    size_t u,
+    int nActiveRanks,
+    int tasksPerHelper,
+    A2aA4LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!a2aLpAcquireArena(comm, stream, &lease)) {
+    return false;
+  }
+  if (a2aA4PipeLpRequiredBytes(segmentCount, u, nActiveRanks, tasksPerHelper) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out = a2aA4PipeLpCarve(lease, segmentCount, u, nActiveRanks, tasksPerHelper);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+} // namespace
+
 /**
  * Two-active sharded relay all-to-all (original path).
  *
@@ -342,7 +835,8 @@ static ncclResult_t shardedRelayAllToAll2Active(
     int myActiveGroup,
     int numHelpers,
     int nGroups,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   // =========================================================================
   // CHUNK GEOMETRY: numHelpers relayed chunks + TWO direct chunks
   // =========================================================================
@@ -400,6 +894,61 @@ static ncclResult_t shardedRelayAllToAll2Active(
   }
 
   // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the exchange segment
+  // =========================================================================
+  // Collective: every rank reaches a2aA2LpPrepare() when the dispatcher's
+  // size-only gate said yes, and every way it can decline is agreed across the
+  // communicator, so all ranks run the same wire format or none do.
+  A2aA2LpPlan lpPlan{};
+  const bool lp = a2aA2LpPrepare(
+      wantLp,
+      comm,
+      stream,
+      segmentCounts,
+      chunkSizes,
+      nGroups,
+      configs[0].nActiveRanks,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the ENTIRE exchange segment, before the first
+  // ncclGroupStart. Every byte of that segment crosses a rank boundary -- the
+  // relayed chunks cover [0, relayTotal) and the two direct chunks cover the
+  // rest
+  // -- and nothing produces a send source mid-call. The DIAGONAL segment is
+  // deliberately not quantized: it never crosses a boundary.
+  if (lp && myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        static_cast<const char*>(sendBuffs[myActiveGroup]) +
+            exchangeSegOffset * elementSize,
+        segmentCounts[myActiveGroup],
+        stream);
+  }
+
+  // Where a boundary-crossing send reads from, and where its counterpart lands.
+  // Offsets are in ELEMENTS of the caller's dtype and relative to the EXCHANGE
+  // SEGMENT on both paths, which is what keeps every call site below unchanged
+  // in shape.
+  auto sendFrom = [&](int g, size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[g]) +
+        (exchangeSegOffset + offsetElems) * elementSize;
+  };
+
+  auto exchangeAt = [&](int g, size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.exchangeRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[g]) +
+        (exchangeSegOffset + offsetElems) * elementSize;
+  };
+
+  // =========================================================================
   // DIAGONAL COPY: recvSeg[m] = sendSeg[m]
   // =========================================================================
   // For nGroups == 1 the diagonal rides along in group 1 below as a self P2P
@@ -407,7 +956,14 @@ static ncclResult_t shardedRelayAllToAll2Active(
   // transfer, and no second launch. Same gate as shardedRelayAllToAllFlat --
   // in the fused case all eight ranks would issue a self pair, which made a
   // fused all-gather routing test fail intermittently.
-  const bool foldDiagonalIntoGroup = (nGroups == 1);
+  //
+  // NOT under low precision, for the reason the pipelined sibling documents at
+  // length: the self op keeps the caller's dtype while every other op in its
+  // group carries wire bytes, and here it is the WHOLE segment against
+  // chunkSize = sc/(numHelpers + 2), so it is ~8x the wire ops in elements and
+  // ~15x in bytes -- the largest outlier of any relay schedule. Once low
+  // precision halves the transfers it dominates the group.
+  const bool foldDiagonalIntoGroup = (nGroups == 1) && !lp;
 
   if (!foldDiagonalIntoGroup && myActiveGroup >= 0 &&
       segmentCounts[myActiveGroup] > 0) {
@@ -427,6 +983,12 @@ static ncclResult_t shardedRelayAllToAll2Active(
   for (int g = 0; g < nGroups; g++) {
     const ShardedRelayRankConfig& cfg = configs[g];
     if (!cfg.isActiveRank && segmentCounts[g] > 0 && chunkSizes[g] > 0) {
+      if (lp) {
+        // Already carved, and in wire bytes: this helper is a pure passthrough,
+        // so it forwards wire blocks without ever learning the caller's dtype.
+        helperScratch[g] = lpPlan.helper[g];
+        continue;
+      }
       size_t needBytes =
           static_cast<size_t>(cfg.nActiveRanks) * chunkSizes[g] * elementSize;
       helperScratch[g] = ScratchBufferCache::getInstance().get(
@@ -450,12 +1012,12 @@ static ncclResult_t shardedRelayAllToAll2Active(
     size_t chunkSize = chunkSizes[g];
 
     if (cfg.isActiveRank) {
-      const char* sendSeg = static_cast<const char*>(sendBuffs[g]) +
-          exchangeSegOffset * elementSize;
-      char* recvSeg =
-          static_cast<char*>(recvBuffs[g]) + exchangeSegOffset * elementSize;
-
       if (foldDiagonalIntoGroup) {
+        // FULL PRECISION even under low precision: this is a self pair that
+        // RCCL services as a local copy of the rank's own segment, so it never
+        // crosses a boundary and there is nothing to gain by shrinking it. It
+        // sits in the same group as wire-format transfers, which is fine --
+        // count and dtype are per operation.
         const int me = cfg.activeRanks[cfg.myActiveIndex];
         NCCLCHECK(ncclSend(
             static_cast<const char*>(sendBuffs[g]) + diagOffset * elementSize,
@@ -477,9 +1039,9 @@ static ncclResult_t shardedRelayAllToAll2Active(
       if (chunkSize > 0) {
         for (int h = 0; h < cfg.numHelpers; h++) {
           NCCLCHECK(ncclSend(
-              sendSeg + static_cast<size_t>(h) * chunkSize * elementSize,
-              chunkSize,
-              datatype,
+              sendFrom(g, static_cast<size_t>(h) * chunkSize),
+              wire.count(chunkSize),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -489,16 +1051,16 @@ static ncclResult_t shardedRelayAllToAll2Active(
       // Direct chunk A over the otherwise-idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       NCCLCHECK(ncclSend(
-          sendSeg + relayTotals[g] * elementSize,
-          dirASizes[g],
-          datatype,
+          sendFrom(g, relayTotals[g]),
+          wire.count(dirASizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
       NCCLCHECK(ncclRecv(
-          recvSeg + relayTotals[g] * elementSize,
-          dirASizes[g],
-          datatype,
+          exchangeAt(g, relayTotals[g]),
+          wire.count(dirASizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
@@ -507,9 +1069,9 @@ static ncclResult_t shardedRelayAllToAll2Active(
       char* helperBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclRecv(
-            helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
+            helperBuf + wire.bytes(static_cast<size_t>(a) * chunkSize),
+            wire.count(chunkSize),
+            wire.dtype,
             cfg.activeRanks[a],
             comm,
             stream));
@@ -534,17 +1096,12 @@ static ncclResult_t shardedRelayAllToAll2Active(
     size_t chunkSize = chunkSizes[g];
 
     if (cfg.isActiveRank) {
-      const char* sendSeg = static_cast<const char*>(sendBuffs[g]) +
-          exchangeSegOffset * elementSize;
-      char* recvSeg =
-          static_cast<char*>(recvBuffs[g]) + exchangeSegOffset * elementSize;
-
       if (chunkSize > 0) {
         for (int h = 0; h < cfg.numHelpers; h++) {
           NCCLCHECK(ncclRecv(
-              recvSeg + static_cast<size_t>(h) * chunkSize * elementSize,
-              chunkSize,
-              datatype,
+              exchangeAt(g, static_cast<size_t>(h) * chunkSize),
+              wire.count(chunkSize),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -554,16 +1111,16 @@ static ncclResult_t shardedRelayAllToAll2Active(
       // Direct chunk B, again over the idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       NCCLCHECK(ncclSend(
-          sendSeg + dirBOffsets[g] * elementSize,
-          dirBSizes[g],
-          datatype,
+          sendFrom(g, dirBOffsets[g]),
+          wire.count(dirBSizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
       NCCLCHECK(ncclRecv(
-          recvSeg + dirBOffsets[g] * elementSize,
-          dirBSizes[g],
-          datatype,
+          exchangeAt(g, dirBOffsets[g]),
+          wire.count(dirBSizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
@@ -571,9 +1128,9 @@ static ncclResult_t shardedRelayAllToAll2Active(
       const char* helperBuf = static_cast<const char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(
-            helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
+            helperBuf + wire.bytes(static_cast<size_t>(a) * chunkSize),
+            wire.count(chunkSize),
+            wire.dtype,
             cfg.activeRanks[1 - a],
             comm,
             stream));
@@ -582,6 +1139,23 @@ static ncclResult_t shardedRelayAllToAll2Active(
   }
 
   NCCLCHECK(ncclGroupEnd());
+
+  // =========================================================================
+  // LOW PRECISION: land the exchange segment
+  // =========================================================================
+  // ONE launch for the whole segment. exchangeRecv mirrors it exactly -- the
+  // relayed chunks and both direct chunks together cover [0, segmentCount) --
+  // and the diagonal segment is deliberately not in range: it is a local copy
+  // of this rank's own data, already final and already full precision.
+  if (lp && myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+    DISPATCH_LP_DEQUANTIZE(
+        datatype,
+        static_cast<char*>(recvBuffs[myActiveGroup]) +
+            exchangeSegOffset * elementSize,
+        lpPlan.exchangeRecv,
+        segmentCounts[myActiveGroup],
+        stream);
+  }
 
   return ncclSuccess;
 }
@@ -625,7 +1199,8 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
     int myActiveGroup,
     int numHelpers,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t sc = segmentCounts[0];
   const int H = numHelpers;
@@ -640,12 +1215,18 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
   const size_t directBase = static_cast<size_t>(H) * tileStride;
   const size_t lastDirect = sc - directBase - tileStride;
 
-  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
-  // which RCCL services as a local copy inside the same kernel: no transfer,
-  // and no second launch. It is split one chunk per group so the self op stays
-  // the same order of size as the u-sized ops sharing its group -- RCCL budgets
-  // channels per operation, so a single sc-sized self op would be the outlier
-  // in whichever group it landed in.
+  // AT FULL PRECISION the diagonal rides along in the T+1 comm groups below as
+  // a self P2P pair, which RCCL services as a local copy inside the same
+  // kernel: no transfer, and no second launch. It is split one chunk per group
+  // to keep any single self op from being the whole segment.
+  //
+  // UNDER LOW PRECISION it must NOT ride along; see the copy below. The split
+  // does not make the self op comparable to the ops it shares a group with:
+  // diagChunk is sc/(T+1) while every wire op is u = sc/((H+1)T+1), so at T=4,
+  // H=6 the self op is 5.8x larger in ELEMENTS, and because it keeps the
+  // caller's dtype while the others carry wire bytes it is ~11x larger in
+  // BYTES. RCCL budgets channels per operation, so it cannot borrow the
+  // bandwidth the wire format freed.
   size_t exchangeSegOffset = 0;
   size_t diagOffset = 0;
   if (myActiveGroup == 0) {
@@ -656,88 +1237,159 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       ((sc / static_cast<size_t>(T + 1)) / CHUNK_ALIGN_ELEMENTS) *
       CHUNK_ALIGN_ELEMENTS;
 
-  // Helper staging: two ping-pong units per active source.
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the exchange segment
+  // =========================================================================
+  // Reached by every rank -- the u == 0 rejection above is the only earlier
+  // exit and it is a pure function of the count, so the ranks agree on it.
+  A2aA2LpPlan lpPlan{};
+  const bool lp = a2aA2PipeLpPrepare(
+      wantLp, comm, stream, sc, u, cfg.nActiveRanks, &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // DIAGONAL, LOW PRECISION ONLY: a plain copy outside the comm groups, which
+  // is what the 2-active all-gather has always done.
+  //
+  // The diagonal is full precision on both paths -- it never crosses a rank
+  // boundary, so the wire format buys it nothing. Folding it into the groups is
+  // free while the wire ops are large enough to hide it, which is why full
+  // precision keeps doing that. Low precision halves them, the self copy does
+  // not shrink at all, and it becomes the per-group critical path: measured
+  // 0.94x-0.97x LP-vs-FP across 31.5-144 MB, degrading as T rises, against the
+  // all-gather's 1.30x at the same boundary-crossing bytes with the same
+  // quantize and dequantize.
+  if (lp && myActiveGroup == 0 && sc > 0) {
+    cudaMemcpyAsync(
+        static_cast<char*>(recvBuffs[0]) + diagOffset * elementSize,
+        static_cast<const char*>(sendBuffs[0]) + diagOffset * elementSize,
+        sc * elementSize,
+        cudaMemcpyDeviceToDevice,
+        stream);
+  }
+
+  // One quantize over the whole exchange segment, before the first group. Every
+  // send in the pipeline reads it and nothing is produced mid-call. The
+  // DIAGONAL segment is deliberately not quantized: its pieces are local
+  // copies.
+  if (lp && myActiveGroup == 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        static_cast<const char*>(sendBuffs[0]) +
+            exchangeSegOffset * elementSize,
+        sc,
+        stream);
+  }
+
+  // Offsets stay in ELEMENTS, relative to the exchange segment, on both paths.
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) +
+        (exchangeSegOffset + offsetElems) * elementSize;
+  };
+
+  auto exchangeAt = [&](size_t offsetElems) -> char* {
+    if (lp) {
+      return lpPlan.exchangeRecv + wire.bytes(offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (exchangeSegOffset + offsetElems) * elementSize;
+  };
+
+  // Helper staging: two ping-pong units per active source. Under low precision
+  // it comes from the arena in wire bytes; this helper is a pure passthrough
+  // and needs no relayout.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
+  auto helperSlot = [&](int a, int k) -> char* {
+    return hbuff +
+        wire.bytes(
+            (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) * u);
+  };
 
   for (int k = 0; k <= T; k++) {
     NCCLCHECK(ncclGroupStart());
     if (cfg.isActiveRank) {
-      const char* sendSeg = static_cast<const char*>(sendBuffs[0]) +
-          exchangeSegOffset * elementSize;
-      char* recvSeg =
-          static_cast<char*>(recvBuffs[0]) + exchangeSegOffset * elementSize;
       const int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       const size_t directOffset = directBase + static_cast<size_t>(k) * u;
       const size_t directSize = (k < T) ? u : lastDirect;
 
-      const size_t diagPieceOffset =
-          diagOffset + static_cast<size_t>(k) * diagChunk;
-      const size_t diagPieceSize =
-          (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
-      NCCLCHECK(ncclSend(
-          static_cast<const char*>(sendBuffs[0]) +
-              diagPieceOffset * elementSize,
-          diagPieceSize,
-          datatype,
-          cfg.activeRanks[cfg.myActiveIndex],
-          comm,
-          stream));
-      NCCLCHECK(ncclRecv(
-          static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
-          diagPieceSize,
-          datatype,
-          cfg.activeRanks[cfg.myActiveIndex],
-          comm,
-          stream));
+      // Full precision only: under low precision the whole diagonal was copied
+      // once before the loop, so posting it here would double-write it.
+      if (!lp) {
+        const size_t diagPieceOffset =
+            diagOffset + static_cast<size_t>(k) * diagChunk;
+        const size_t diagPieceSize =
+            (k < T) ? diagChunk : sc - static_cast<size_t>(T) * diagChunk;
+        NCCLCHECK(ncclSend(
+            static_cast<const char*>(sendBuffs[0]) +
+                diagPieceOffset * elementSize,
+            diagPieceSize,
+            datatype,
+            cfg.activeRanks[cfg.myActiveIndex],
+            comm,
+            stream));
+        NCCLCHECK(ncclRecv(
+            static_cast<char*>(recvBuffs[0]) + diagPieceOffset * elementSize,
+            diagPieceSize,
+            datatype,
+            cfg.activeRanks[cfg.myActiveIndex],
+            comm,
+            stream));
+      }
 
       if (k < T) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclSend(
-              sendSeg +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k) * u) *
-                      elementSize,
-              u,
-              datatype,
+              sendFrom(
+                  static_cast<size_t>(h) * tileStride +
+                  static_cast<size_t>(k) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
         }
       }
       NCCLCHECK(ncclSend(
-          sendSeg + directOffset * elementSize,
-          directSize,
-          datatype,
+          sendFrom(directOffset),
+          wire.count(directSize),
+          wire.dtype,
           partner,
           comm,
           stream));
       if (k > 0) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclRecv(
-              recvSeg +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k - 1) * u) *
-                      elementSize,
-              u,
-              datatype,
+              exchangeAt(
+                  static_cast<size_t>(h) * tileStride +
+                  static_cast<size_t>(k - 1) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
         }
       }
       NCCLCHECK(ncclRecv(
-          recvSeg + directOffset * elementSize,
-          directSize,
-          datatype,
+          exchangeAt(directOffset),
+          wire.count(directSize),
+          wire.dtype,
           partner,
           comm,
           stream));
@@ -745,11 +1397,9 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       if (k < T) {
         for (int a = 0; a < cfg.nActiveRanks; a++) {
           NCCLCHECK(ncclRecv(
-              hbuff +
-                  (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) *
-                      u * elementSize,
-              u,
-              datatype,
+              helperSlot(a, k),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[a],
               comm,
               stream));
@@ -758,12 +1408,9 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       if (k > 0) {
         for (int a = 0; a < cfg.nActiveRanks; a++) {
           NCCLCHECK(ncclSend(
-              hbuff +
-                  (static_cast<size_t>(a) * 2 +
-                   static_cast<size_t>((k - 1) % 2)) *
-                      u * elementSize,
-              u,
-              datatype,
+              helperSlot(a, k - 1),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[1 - a],
               comm,
               stream));
@@ -771,6 +1418,22 @@ static ncclResult_t shardedRelayAllToAll2ActivePipelined(
       }
     }
     NCCLCHECK(ncclGroupEnd());
+  }
+
+  // =========================================================================
+  // LOW PRECISION: land the exchange segment
+  // =========================================================================
+  // ONE launch for the whole segment, after the last group rather than per
+  // tile: the regions a tile lands are disjoint, so T+1 launches would buy
+  // nothing. The diagonal segment is deliberately not in range -- its pieces
+  // were local copies and are already final.
+  if (lp && myActiveGroup == 0) {
+    DISPATCH_LP_DEQUANTIZE(
+        datatype,
+        static_cast<char*>(recvBuffs[0]) + exchangeSegOffset * elementSize,
+        lpPlan.exchangeRecv,
+        sc,
+        stream);
   }
 
   return ncclSuccess;
@@ -794,7 +1457,8 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
     const ShardedRelayRankConfig* configs,
     int myActiveGroup,
     int nGroups,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   size_t directACounts[SHARDED_RELAY_MAX_GROUPS];
   size_t relayCounts[SHARDED_RELAY_MAX_GROUPS];
   size_t directBCounts[SHARDED_RELAY_MAX_GROUPS];
@@ -818,6 +1482,62 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
   // would, which made a fused all-gather routing test fail intermittently.
   const bool foldDiagonalIntoGroup = (nGroups == 1);
 
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Reached by every rank whenever the dispatcher's size-only gate said yes,
+  // helpers included, and every way it can decline is agreed across the
+  // communicator, so all ranks run the same wire format or none do.
+  A2aA4LpPlan lpPlan{};
+  const bool lp = a2aA4LpPrepare(
+      wantLp,
+      comm,
+      stream,
+      segmentCounts,
+      nGroups,
+      configs[0].nActiveRanks,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  const int nActive = configs[0].nActiveRanks;
+
+  // One quantize over the whole send buffer, before the first ncclGroupStart.
+  // Every off-diagonal segment is read from it across the two phases and
+  // nothing is produced mid-call. The diagonal segment is included so a shadow
+  // offset is the same number as the caller-buffer offset; see A2aA4LpPlan.
+  if (lp && myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[myActiveGroup],
+        static_cast<size_t>(nActive) * segmentCounts[myActiveGroup],
+        stream);
+  }
+
+  // Where an off-diagonal send reads from, and where an arrival for SOURCE s
+  // lands. Offsets stay in ELEMENTS of the caller's dtype on both paths; under
+  // low precision the destination is the packed staging slot for s rather than
+  // recvBuff's segment s, and one dequantize per foreign segment moves it
+  // across at the end.
+  auto sendFrom = [&](int g, size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[g]) + offsetElems * elementSize;
+  };
+
+  auto recvAt = [&](int g, int s, size_t offsetElems) -> char* {
+    const size_t sc = segmentCounts[g];
+    if (lp) {
+      const int m = configs[g].myActiveIndex;
+      const size_t packed = static_cast<size_t>((s < m) ? s : s - 1);
+      return lpPlan.gatherRecv + wire.bytes(packed * sc + offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[g]) +
+        (static_cast<size_t>(s) * sc + offsetElems) * elementSize;
+  };
+
   if (!foldDiagonalIntoGroup && myActiveGroup >= 0) {
     const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
     const size_t sc = segmentCounts[myActiveGroup];
@@ -838,6 +1558,12 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
   for (int g = 0; g < nGroups; g++) {
     const ShardedRelayRankConfig& cfg = configs[g];
     if (!cfg.isActiveRank && relayCounts[g] > 0) {
+      if (lp) {
+        // Already carved, and in wire bytes: this helper is a pure passthrough,
+        // so it forwards wire blocks without ever learning the caller's dtype.
+        helperScratch[g] = lpPlan.helper[g];
+        continue;
+      }
       size_t needBytes = segmentCounts[g] * elementSize;
       helperScratch[g] = ScratchBufferCache::getInstance().get(
           kHelperScratchKeyBase + g, needBytes, stream);
@@ -877,35 +1603,32 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
       if (cfg.isActiveRank) {
         const int myIndex = cfg.myActiveIndex;
         if (task.sourceIndex == myIndex) {
-          const char* sendSegment = static_cast<const char*>(sendBuffs[g]) +
-              static_cast<size_t>(task.destIndex) * sc * elementSize;
+          const size_t segBase = static_cast<size_t>(task.destIndex) * sc;
           if (directA > 0) {
             NCCLCHECK(ncclSend(
-                sendSegment,
-                directA,
-                datatype,
+                sendFrom(g, segBase),
+                wire.count(directA),
+                wire.dtype,
                 cfg.activeRanks[task.destIndex],
                 comm,
                 stream));
           }
           if (relay > 0) {
             NCCLCHECK(ncclSend(
-                sendSegment + directA * elementSize,
-                relay,
-                datatype,
+                sendFrom(g, segBase + directA),
+                wire.count(relay),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
           }
         }
         if (task.destIndex == myIndex) {
-          char* recvSegment = static_cast<char*>(recvBuffs[g]) +
-              static_cast<size_t>(task.sourceIndex) * sc * elementSize;
           if (directA > 0) {
             NCCLCHECK(ncclRecv(
-                recvSegment,
-                directA,
-                datatype,
+                recvAt(g, task.sourceIndex, 0),
+                wire.count(directA),
+                wire.dtype,
                 cfg.activeRanks[task.sourceIndex],
                 comm,
                 stream));
@@ -913,11 +1636,11 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
         }
       } else if (relay > 0 && task.helperIndex == cfg.myHelperIndex) {
         char* helperSlot = static_cast<char*>(helperScratch[g]) +
-            static_cast<size_t>(task.helperSlot) * relay * elementSize;
+            wire.bytes(static_cast<size_t>(task.helperSlot) * relay);
         NCCLCHECK(ncclRecv(
             helperSlot,
-            relay,
-            datatype,
+            wire.count(relay),
+            wire.dtype,
             cfg.activeRanks[task.sourceIndex],
             comm,
             stream));
@@ -941,31 +1664,28 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
       if (cfg.isActiveRank) {
         const int myIndex = cfg.myActiveIndex;
         if (task.sourceIndex == myIndex) {
-          const char* sendSegment = static_cast<const char*>(sendBuffs[g]) +
-              static_cast<size_t>(task.destIndex) * sc * elementSize;
+          const size_t segBase = static_cast<size_t>(task.destIndex) * sc;
           NCCLCHECK(ncclSend(
-              sendSegment + (directA + relay) * elementSize,
-              directB,
-              datatype,
+              sendFrom(g, segBase + directA + relay),
+              wire.count(directB),
+              wire.dtype,
               cfg.activeRanks[task.destIndex],
               comm,
               stream));
         }
         if (task.destIndex == myIndex) {
-          char* recvSegment = static_cast<char*>(recvBuffs[g]) +
-              static_cast<size_t>(task.sourceIndex) * sc * elementSize;
           NCCLCHECK(ncclRecv(
-              recvSegment + (directA + relay) * elementSize,
-              directB,
-              datatype,
+              recvAt(g, task.sourceIndex, directA + relay),
+              wire.count(directB),
+              wire.dtype,
               cfg.activeRanks[task.sourceIndex],
               comm,
               stream));
           if (relay > 0) {
             NCCLCHECK(ncclRecv(
-                recvSegment + directA * elementSize,
-                relay,
-                datatype,
+                recvAt(g, task.sourceIndex, directA),
+                wire.count(relay),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
@@ -973,11 +1693,11 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
         }
       } else if (relay > 0 && task.helperIndex == cfg.myHelperIndex) {
         const char* helperSlot = static_cast<const char*>(helperScratch[g]) +
-            static_cast<size_t>(task.helperSlot) * relay * elementSize;
+            wire.bytes(static_cast<size_t>(task.helperSlot) * relay);
         NCCLCHECK(ncclSend(
             helperSlot,
-            relay,
-            datatype,
+            wire.count(relay),
+            wire.dtype,
             cfg.activeRanks[task.destIndex],
             comm,
             stream));
@@ -985,6 +1705,31 @@ static ncclResult_t shardedRelayAllToAllA4XorRelay(
     }
   }
   NCCLCHECK(ncclGroupEnd());
+
+  // =========================================================================
+  // LOW PRECISION: land the A-1 foreign segments
+  // =========================================================================
+  // One launch per foreign segment, reading its PACKED staging slot. The three
+  // regions a segment arrives in -- directA, relay, directB -- are adjacent and
+  // together cover it, so one launch per segment is enough. The diagonal has no
+  // staging slot and keeps the local copy made above.
+  if (lp && myActiveGroup >= 0 && segmentCounts[myActiveGroup] > 0) {
+    const int m = configs[myActiveGroup].myActiveIndex;
+    const size_t sc = segmentCounts[myActiveGroup];
+    for (int s = 0; s < nActive; s++) {
+      if (s == m) {
+        continue;
+      }
+      const size_t packed = static_cast<size_t>((s < m) ? s : s - 1);
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          static_cast<char*>(recvBuffs[myActiveGroup]) +
+              static_cast<size_t>(s) * sc * elementSize,
+          lpPlan.gatherRecv + wire.bytes(packed * sc),
+          sc,
+          stream);
+    }
+  }
 
   return ncclSuccess;
 }
@@ -1028,7 +1773,8 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     const ShardedRelayRankConfig* configs,
     int myActiveGroup,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t sc = segmentCounts[0];
   const int T = nTiles;
@@ -1046,27 +1792,91 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     return ncclInvalidArgument;
   }
 
-  // The diagonal rides along in the T+1 comm groups below as a self P2P pair,
-  // which RCCL services as a local copy inside the same kernel: no transfer,
-  // and no second launch. It is split one chunk per group so the self op stays
-  // the same order of size as the relay and direct ops sharing its group --
-  // RCCL budgets channels per operation, so a single sc-sized self op alongside
-  // u-sized transfers would be the outlier in the group it landed in.
+  // AT FULL PRECISION the diagonal rides along in the T+1 comm groups below as
+  // a self P2P pair, which RCCL services as a local copy inside the same
+  // kernel: no transfer, and no second launch. It is split one chunk per group
+  // to keep any single self op from being the whole segment.
+  //
+  // It stays folded UNDER LOW PRECISION TOO, unlike the 2-active path. Here
+  // diagChunk is sc/(T+1) against u = sc/(2T+1), so at T=2 the self op is 1.67x
+  // the wire ops in elements and ~3.2x in bytes -- a mild enough outlier that
+  // the fold is still the cheaper option. MEASURED both ways at 63-144 MB,
+  // bf16, forced LP: folded 1.24x-1.31x, unfolded 1.24x-1.27x, i.e. unfolding
+  // costs a consistent ~0.03 because it trades a hidden in-kernel copy for a
+  // serialized memcpy. The 2-active path's ratio is ~11x and there the trade
+  // goes the other way by a wide margin.
   const size_t diagOffset =
       cfg.isActiveRank ? static_cast<size_t>(cfg.myActiveIndex) * sc : 0;
   const size_t diagChunk =
       ((sc / static_cast<size_t>(T + 1)) / CHUNK_ALIGN_ELEMENTS) *
       CHUNK_ALIGN_ELEMENTS;
 
-  // Helper staging: two ping-pong units per task.
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Reached by every rank -- the u == 0 and task-build rejections above are the
+  // only earlier exits and both are pure functions of the geometry, so the
+  // ranks agree on them.
+  A2aA4LpPlan lpPlan{};
+  const bool lp = a2aA4PipeLpPrepare(
+      wantLp,
+      comm,
+      stream,
+      sc,
+      u,
+      cfg.nActiveRanks,
+      A4_RELAY_TASKS_PER_HELPER,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the whole send buffer, before the first group. Every
+  // off-diagonal segment is read from it across the T+1 groups and nothing is
+  // produced mid-call. The diagonal segment is included so a shadow offset is
+  // the same number as the caller-buffer offset; see A2aA4LpPlan.
+  if (lp && cfg.isActiveRank) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[0],
+        static_cast<size_t>(cfg.nActiveRanks) * sc,
+        stream);
+  }
+
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) + offsetElems * elementSize;
+  };
+
+  // Arrivals for SOURCE s go to its PACKED staging slot under low precision,
+  // and straight to recvBuff's segment s otherwise.
+  auto recvAt = [&](int s, size_t offsetElems) -> char* {
+    if (lp) {
+      const int mine = cfg.myActiveIndex;
+      const size_t packed = static_cast<size_t>((s < mine) ? s : s - 1);
+      return lpPlan.gatherRecv + wire.bytes(packed * sc + offsetElems);
+    }
+    return static_cast<char*>(recvBuffs[0]) +
+        (static_cast<size_t>(s) * sc + offsetElems) * elementSize;
+  };
+
+  // Helper staging: two ping-pong units per task. Under low precision it comes
+  // from the arena in wire bytes; this helper is a pure passthrough and needs
+  // no relayout.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        static_cast<size_t>(A4_RELAY_TASKS_PER_HELPER) * 2 * u * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          static_cast<size_t>(A4_RELAY_TASKS_PER_HELPER) * 2 * u * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
 
@@ -1101,62 +1911,59 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
     for (const A4RelayTask& task : tasks) {
       if (cfg.isActiveRank) {
         if (task.sourceIndex == m) {
-          const char* sendSegment = static_cast<const char*>(sendBuffs[0]) +
-              static_cast<size_t>(task.destIndex) * sc * elementSize;
+          const size_t segBase = static_cast<size_t>(task.destIndex) * sc;
           if (k < T) {
             NCCLCHECK(ncclSend(
-                sendSegment + static_cast<size_t>(k) * u * elementSize,
-                u,
-                datatype,
+                sendFrom(segBase + static_cast<size_t>(k) * u),
+                wire.count(u),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
           }
           NCCLCHECK(ncclSend(
-              sendSegment + directOffset * elementSize,
-              directSize,
-              datatype,
+              sendFrom(segBase + directOffset),
+              wire.count(directSize),
+              wire.dtype,
               cfg.activeRanks[task.destIndex],
               comm,
               stream));
         }
         if (task.destIndex == m) {
-          char* recvSegment = static_cast<char*>(recvBuffs[0]) +
-              static_cast<size_t>(task.sourceIndex) * sc * elementSize;
           if (k > 0) {
             NCCLCHECK(ncclRecv(
-                recvSegment + static_cast<size_t>(k - 1) * u * elementSize,
-                u,
-                datatype,
+                recvAt(task.sourceIndex, static_cast<size_t>(k - 1) * u),
+                wire.count(u),
+                wire.dtype,
                 cfg.helperRanks[task.helperIndex],
                 comm,
                 stream));
           }
           NCCLCHECK(ncclRecv(
-              recvSegment + directOffset * elementSize,
-              directSize,
-              datatype,
+              recvAt(task.sourceIndex, directOffset),
+              wire.count(directSize),
+              wire.dtype,
               cfg.activeRanks[task.sourceIndex],
               comm,
               stream));
         }
       } else if (task.helperIndex == cfg.myHelperIndex) {
         char* slotBase =
-            hbuff + static_cast<size_t>(task.helperSlot) * 2 * u * elementSize;
+            hbuff + wire.bytes(static_cast<size_t>(task.helperSlot) * 2 * u);
         if (k < T) {
           NCCLCHECK(ncclRecv(
-              slotBase + static_cast<size_t>(k % 2) * u * elementSize,
-              u,
-              datatype,
+              slotBase + wire.bytes(static_cast<size_t>(k % 2) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[task.sourceIndex],
               comm,
               stream));
         }
         if (k > 0) {
           NCCLCHECK(ncclSend(
-              slotBase + static_cast<size_t>((k - 1) % 2) * u * elementSize,
-              u,
-              datatype,
+              slotBase + wire.bytes(static_cast<size_t>((k - 1) % 2) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[task.destIndex],
               comm,
               stream));
@@ -1164,6 +1971,30 @@ static ncclResult_t shardedRelayAllToAllA4XorRelayPipelined(
       }
     }
     NCCLCHECK(ncclGroupEnd());
+  }
+
+  // =========================================================================
+  // LOW PRECISION: land the A-1 foreign segments
+  // =========================================================================
+  // One launch per foreign segment, after the last group rather than per tile:
+  // the relay tiles and the direct chunks a segment receives are disjoint and
+  // together cover it. The diagonal has no staging slot and keeps its self-pair
+  // copies.
+  if (lp && cfg.isActiveRank) {
+    const int mine = cfg.myActiveIndex;
+    for (int s = 0; s < cfg.nActiveRanks; s++) {
+      if (s == mine) {
+        continue;
+      }
+      const size_t packed = static_cast<size_t>((s < mine) ? s : s - 1);
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          static_cast<char*>(recvBuffs[0]) +
+              static_cast<size_t>(s) * sc * elementSize,
+          lpPlan.gatherRecv + wire.bytes(packed * sc),
+          sc,
+          stream);
+    }
   }
 
   return ncclSuccess;
@@ -1277,7 +2108,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
     cudaStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   int nRanks, rank;
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));
@@ -1380,6 +2212,23 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
         rcclx::relay::relayShapeA2(numHelpers),
         rcclx::relay::relayMaxCount(segmentCounts, nGroups),
         elementSize);
+
+    // The caller's request narrowed by the size-only gate, so every rank
+    // reaches the same answer without communicating. Both 2-active schedules
+    // carry the wire format; the A=4 and flat routes still decline, identically
+    // on every rank since that condition is the selected route.
+    bool wantLp = false;
+    if (lowPrecision != 0) {
+      wantLp = rcclx::relay::lpEligible(allToAllLpGate(
+          datatype,
+          segmentCounts,
+          nGroups,
+          nActiveRanksPerGroup,
+          elementSize,
+          /*relayRouteSelected=*/true,
+          rcclx::relay::kLpBlockElems));
+    }
+
     r = (nTiles > 1) ? shardedRelayAllToAll2ActivePipelined(
                            sendBuffs2,
                            recvBuffs2,
@@ -1391,7 +2240,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
                            myActiveGroup,
                            numHelpers,
                            nTiles,
-                           elementSize)
+                           elementSize,
+                           wantLp)
                      : shardedRelayAllToAll2Active(
                            sendBuffs2,
                            recvBuffs2,
@@ -1403,7 +2253,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
                            myActiveGroup,
                            numHelpers,
                            nGroups,
-                           elementSize);
+                           elementSize,
+                           wantLp);
   } else if (route == rcclx::relay::AllToAllRoute::A4XorRelay) {
     // A single-group call has the helpers to itself, so the relay's two hops
     // run on opposite directions of each cross link and can be
@@ -1413,6 +2264,23 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
         rcclx::relay::kRelayShapeA4AllToAll,
         rcclx::relay::relayMaxCount(segmentCounts, nGroups),
         elementSize);
+
+    // Both A=4 relay schedules carry the wire format. The remaining route,
+    // PureDirect, is excluded by the gate on purpose: it stages nothing through
+    // a helper, so there is no boundary-crossing volume for the wire format to
+    // shrink.
+    bool wantLpA4 = false;
+    if (lowPrecision != 0) {
+      wantLpA4 = rcclx::relay::lpEligible(allToAllLpGate(
+          datatype,
+          segmentCounts,
+          nGroups,
+          nActiveRanksPerGroup,
+          elementSize,
+          /*relayRouteSelected=*/true,
+          rcclx::relay::kLpBlockElems));
+    }
+
     r = (nTiles > 1) ? shardedRelayAllToAllA4XorRelayPipelined(
                            sendBuffs2,
                            recvBuffs2,
@@ -1423,7 +2291,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
                            configs,
                            myActiveGroup,
                            nTiles,
-                           elementSize)
+                           elementSize,
+                           wantLpA4)
                      : shardedRelayAllToAllA4XorRelay(
                            sendBuffs2,
                            recvBuffs2,
@@ -1434,7 +2303,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
                            configs,
                            myActiveGroup,
                            nGroups,
-                           elementSize);
+                           elementSize,
+                           wantLpA4);
   } else {
     // A==4 outside the routed window, or small A==2: exact direct all-to-all.
     r = shardedRelayAllToAllFlat(

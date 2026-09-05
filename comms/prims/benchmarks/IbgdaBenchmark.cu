@@ -145,6 +145,40 @@ __global__ void ibgdaPutSignalFlushBatchKernel(
   }
 }
 
+__global__ void ibgdaPutSignalWaitLocalFlushBatchKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    auto solo = make_thread_solo();
+    const auto resolvedSignalBuf =
+        remoteSignalBuf.subBuffer(signalId * sizeof(uint64_t));
+
+    for (int i = 0; i < 10; ++i) {
+      const auto ticket =
+          transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
+      transport.wait_local(solo, ticket);
+      transport.flush();
+    }
+
+    const unsigned long long startCycle = BENCHMARK_CLOCK64();
+    for (int i = 0; i < numIters; ++i) {
+      const auto ticket =
+          transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
+      transport.wait_local(solo, ticket);
+      transport.flush();
+    }
+    const unsigned long long endCycle = BENCHMARK_CLOCK64();
+    *totalCycles = endCycle - startCycle;
+  }
+}
+
 __global__ void ibgdaPutFlushBatchKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
@@ -471,6 +505,32 @@ void launchIbgdaPutSignalFlushBatch(
     unsigned long long* totalCycles,
     cudaStream_t stream) {
   ibgdaPutSignalFlushBatchKernel<<<1, 32, 0, stream>>>(
+      transport,
+      localBuf,
+      remoteBuf,
+      remoteSignalBuf,
+      nbytes,
+      signalId,
+      numIters,
+      totalCycles);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void launchIbgdaPutSignalWaitLocalFlushBatch(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream) {
+  ibgdaPutSignalWaitLocalFlushBatchKernel<<<1, 32, 0, stream>>>(
       transport,
       localBuf,
       remoteBuf,

@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -36,7 +38,41 @@ class TcpRemoteRegistrationHandle;
 /// them so MultiTransport and anything building a TcpTransportFactory directly
 /// stripe across the same NICs.
 inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
+/// How many frontend NICs to stripe across by default.
+///
+/// Two, and deliberately not more, because the right number depends on how many
+/// transports share the host and it is the small transfers that pay for extra
+/// lanes. Measured on two MI350 hosts (8 lanes at 2 NICs against 16 at 4, VRAM,
+/// three alternated reps, aggregate GB/s at 1 GiB):
+///
+///   put    1 GPU   2 GPU   4 GPU   8 GPU        get    1 GPU   2 GPU   4 GPU
+///   8 GPU 2 NIC  32.13   46.20   49.09   51.36        2
+///   NIC  35.26   47.57   55.40   56.77 4 NIC  32.28   51.50   61.75   70.58 4
+///   NIC  35.17   53.98   64.94   72.12
+///
+/// So two NICs saturate at about two concurrent transports -- 2 to 8 GPUs buys
+/// 11% for four times the instances -- while four keep scaling, and by 8 GPUs
+/// four NICs is 35% ahead on put. A single transport gains nothing either way.
+///
+/// The cost lands below 1 MiB, at every GPU count: 16 lanes divide
+/// kMaxOutQueueBytes into per-lane caps too small to admit a whole wave, so a
+/// latency-bound transfer pays for lanes it cannot fill (1 GPU put at 128 KiB:
+/// 1.13 against 0.89 GB/s). Raising this default would trade that band away for
+/// a gain only a multi-transport host sees, so callers that know they are
+/// running several transports raise it themselves via
+/// TcpTransportConfig::maxFrontendDevices.
 inline constexpr size_t kDefaultMaxFrontendDevices = 2;
+
+/// How many frontend NICs this host actually has -- the hardware ceiling, not a
+/// policy. Enumerates on first call and caches, so it is 0 only when the host
+/// has no usable frontend port at all (none up, or none with a live global
+/// address). Callers cannot set this; it is what it is.
+///
+/// Discovery already refuses to invent ports it cannot find, so a cap above
+/// this is harmless rather than dangerous -- enumerateFrontendDevices() stops
+/// when it runs out. This exists so a caller asking for more than exists can be
+/// told, instead of quietly receiving fewer than it asked for.
+size_t frontendDeviceCapacity(const std::string& prefix);
 
 /// Frontend data NICs to stripe lanes across, lowest name first and one port
 /// per PCI card before taking a second port from any card. Only devices that
@@ -51,6 +87,22 @@ std::vector<std::string> enumerateFrontendDevices(
     size_t maxDevices);
 
 struct TcpTransportConfig {
+  /// Socket options for this transport's *data* connections, which is all the
+  /// connections it makes.
+  ///
+  /// Two of its fields are deliberately NOT honoured, because
+  /// dataSocketConfig() overrides them for every data connection:
+  ///
+  /// socketBufSize -- SO_SNDBUF/SO_RCVBUF are always left to the kernel.
+  /// Setting them explicitly disables Linux receive-window autotuning, which
+  /// pins a stream below the bandwidth-delay product of a 200G link, and there
+  /// is no measured case where a fixed size beat autotune. The field stays on
+  /// TcpSocketConfig because the control connection is a different workload and
+  /// does still use it.
+  ///
+  /// bindToDevice -- the egress device comes from bindToDevices below, which is
+  /// this transport's own per-lane device model. A binding set here instead
+  /// would apply to every lane at once and contradict that mapping.
   controller::TcpSocketConfig socketConfig{};
   bool asyncGetH2d{true};
   // Number of parallel data sockets ("lanes") per bound device, not per peer.
@@ -99,6 +151,50 @@ struct TcpTransportConfig {
   /// Device names are per-host and need not match between peers: the same
   /// physical port is eth3 on one MI350 host and eth0 on the next.
   std::vector<std::string> bindToDevices;
+
+  /// How many frontend NICs to stripe across when bindToDevices is left empty.
+  /// This is the caller's *request*; the host's port count is the ceiling, and
+  /// frontendDeviceCapacity() reports that. 0 means "no opinion" and takes the
+  /// default -- not "no devices", which would bind a transport to no NIC at
+  /// all.
+  ///
+  /// This lives here rather than on MultiTransportOptions because it is the one
+  /// place both callers can reach. MultiTransport.h cannot include this header
+  /// (TCP is AMD-only, so the config is forward-declared and held by pointer),
+  /// which is why the device *prefix* is still duplicated over there -- but
+  /// MultiTransport.cpp does include it, so anything carried on the config
+  /// itself is shared rather than copied. Keeping the cap in two structs meant
+  /// the benchmark and MultiTransport could disagree about the default while
+  /// both looked correct in isolation.
+  size_t maxFrontendDevices{kDefaultMaxFrontendDevices};
+
+  /// The cap discovery should use: applies the 0-means-default rule, then
+  /// clamps to the `prefix` ports the host actually has. Warns rather than
+  /// clamping quietly -- a request silently honoured as something smaller is
+  /// how
+  /// --num-nics went unnoticed as a no-op on this path.
+  size_t resolveMaxFrontendDevices(const std::string& prefix) const;
+
+  /// Socket options for one data connection: `socketConfig`, with egress pinned
+  /// to `device` and SO_SNDBUF/SO_RCVBUF always left to the kernel.
+  ///
+  /// Every data connection is built through here so neither decision can be
+  /// reopened by a caller. A default on `socketConfig` was not enough: the
+  /// implicit TcpTransportConfig(TcpSocketConfig) conversion below means any
+  /// caller handing over a bare TcpSocketConfig -- the benchmark, the
+  /// cross-host tests, anything reaching this through MultiTransport --
+  /// silently reinstated that type's own values. Clearing at the point of use
+  /// is the only version that holds for every construction path.
+  ///
+  /// The buffer size lands on the *accepted* socket, which is the one carrying
+  /// data: a listener consumes only bindToDevice, so the size reaches a socket
+  /// solely through configureAcceptedSocket() on the accept path and
+  /// configureClientSocket() on the dial path. Leaving it unset on the listener
+  /// matters in its own right too, since an accepted socket inherits the
+  /// listener's buffer sizes along with the autotuning lock that comes with
+  /// setting them.
+  controller::TcpSocketConfig dataSocketConfig(
+      const std::optional<std::string>& device) const;
 
   TcpTransportConfig() = default;
   /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
@@ -490,8 +586,24 @@ class TcpFrame {
   /* implicit */ TcpFrame(std::vector<uint8_t> bytes)
       : vec_(std::move(bytes)), len_(vec_.size()) {}
   /// `len` is the transmitted length, which may be shorter than the slab.
-  TcpFrame(TcpPinnedSlab slab, size_t len)
-      : slab_(std::move(slab)), len_(len) {}
+  ///
+  /// Asserted because this is the only place that holds both numbers, and the
+  /// failure it would otherwise admit is silent rather than fatal: slabs are
+  /// contiguous windows on one region, so a `len` past the slab's end transmits
+  /// the *next* slab's bytes -- another in-flight reply's staged payload --
+  /// behind a correct-looking header, and no downstream check can catch that.
+  /// The callers are bounded today (respondToVramRead() rejects a read above
+  /// kMaxChunkSize, and a put chunk is min(kMaxChunkSize, remaining)), but both
+  /// bounds live in other functions.
+  ///
+  /// assert() rather than a returned error because a constructor cannot fail
+  /// here and this matches the shape already used for bounds invariants in this
+  /// codebase (RdmaRegistrationHandle.h:65,71,137). Note it therefore compiles
+  /// out in opt builds: this catches a wrong `len` in dev and test, not in
+  /// production.
+  TcpFrame(TcpPinnedSlab slab, size_t len) : slab_(std::move(slab)), len_(len) {
+    assert(len_ <= slab_.capacity());
+  }
 
   ~TcpFrame() = default;
   TcpFrame(TcpFrame&&) = default;
@@ -559,6 +671,28 @@ struct PendingH2d {
   std::chrono::steady_clock::time_point launchedAt;
 };
 
+/// One wave of put frames whose D2H copies have been launched but not yet
+/// waited for. The frames own their staging slabs, so holding this record is
+/// what keeps the pinned destination alive while the DMA is still writing it.
+///
+/// `startIdx` is the wave's first index into put()'s chunk plan, so a failure
+/// here can abandon exactly the admissions from this wave onward.
+///
+/// Single-device by construction: put() breaks a wave at a device boundary, so
+/// one event recorded on `deviceId` covers every copy in it.
+struct PendingPutWave {
+  std::vector<TcpFrame> frames;
+  /// cudaEvent_t, kept opaque so this header does not need the CUDA runtime.
+  void* event{nullptr};
+  int deviceId{-1};
+  /// The caller's stream, so the fallback wait covers the stream the copies
+  /// were launched on rather than whatever the null stream happens to hold.
+  void* stream{nullptr};
+  size_t startIdx{0};
+  size_t bytes{0};
+  std::chrono::steady_clock::time_point launchedAt;
+};
+
 /// Shared independently of TcpTransport so queued EventBase callbacks never
 /// retain or dereference a transport that shutdown has already destroyed.
 struct H2dPollState {
@@ -620,12 +754,12 @@ struct TcpPendingRecv {
 ///  - reader, one per lane: blocking recv + demultiplex; never blocks on a
 ///  send,
 ///    so it always drains inbound (avoids the mutual-READ deadlock).
-///  - sender, one per transport: drains an outbound frame queue and performs
-///  all
-///    socket sends (requests, ACKs, READ replies), serialized by construction.
-///    Sends every frame on lane 0 -- the extra lanes are established and
-///    drained but not yet used outbound, so throughput is unchanged until
-///    striping schedules across them.
+///  - sender, one per lane: drains that lane's own outbound queue and performs
+///    its socket sends, which is what keeps TcpConn's single-writer requirement
+///    satisfied. Frames are striped across lanes by pickLane(); every frame
+///    carries its own reqId/segId/offset, so the peer reassembles without
+///    needing arrival order. Only two-sided Send is order-sensitive, and it
+///    bypasses striping (see enqueueSendFrame).
 ///
 /// put() copies a local buffer into a peer segment (WRITE + ACK). get() is
 /// emulated as a pull: READ_REQUEST -> peer replies READ_REPLY with the data.
@@ -674,9 +808,10 @@ class TcpTransport : public Transport {
   /// destination as undefined until a later put over it succeeds, and do not
   /// read it in between:
   ///
-  /// - Any put may partially apply. Work is staged and queued in waves of
-  ///   kMaxPutWaveChunks; a failure in wave N+1 leaves wave N queued, and
-  ///   queued frames are frames the peer applies.
+  /// - Any put may partially apply. Work is staged and queued in waves of at
+  ///   most kMaxPutWaveChunks chunks -- fewer where a wave meets a device
+  ///   boundary or a DRAM chunk -- and a failure in wave N+1 leaves wave N
+  ///   queued, and queued frames are frames the peer applies.
   /// - What did apply is not a prefix. Frames are striped across lanes, which
   ///   are independent sockets that fail independently, so a break leaves an
   ///   arbitrary subset with holes at offsets the caller cannot determine.
@@ -760,21 +895,37 @@ class TcpTransport : public Transport {
   // was not queued (transport closing, or the reader hit the cap and refused
   // the connection).
   [[nodiscard]] bool enqueueFrame(TcpFrame frame, bool mayBlock);
-  // Queues a run of frames as one indivisible step: either every frame is
-  // queued or none is. Enqueuing them one at a time would let a sender thread
-  // start transmitting a partially built group, which for a multi-chunk put
-  // means the peer applies a prefix of a transfer this side may still fail to
-  // finish staging.
+  // Queues a run of frames. A group small enough not to be worth parallelising
+  // goes on ONE lane as an indivisible step, either every frame queued or none:
+  // enqueuing one at a time would let a sender start transmitting a partially
+  // built group, which for a multi-chunk put means the peer applies a prefix of
+  // a transfer this side may still fail to finish staging.
   //
-  // The whole group therefore goes on ONE lane, so a single lock makes it
-  // atomic. Spreading a group across lanes would need every target lane's mutex
-  // held at once, and the room-waiting inside would then be a deadlock: a
-  // producer holding lanes 0..k-1 while waiting for room on lane k blocks the
-  // very senders that would free it.
+  // Groups whose frames are individually large are STRIPED instead, one frame
+  // per lane from a rotating base, because a full wave on one lane is a single
+  // socket's rate while the other lanes may have nothing to do. The size gate
+  // and the argument for why Write frames tolerate reordering (each is
+  // self-describing, and put() completes on a count of Acks rather than their
+  // order) are at the implementation. Two-sided Send is NOT reorderable and
+  // never comes through here; it pins to lane 0 in enqueueSendFrame.
   //
-  // `mayBlock` behaves as in enqueueFrame, and is judged against the group's
-  // total size, so a group larger than the queue cap still drains rather than
-  // waiting forever on room that will never appear.
+  // Striping deliberately does NOT hold every target lane's mutex at once. That
+  // would deadlock: a producer holding lanes 0..k-1 while waiting for room on
+  // lane k blocks the very senders that would free it. It takes one lane's
+  // mutex at a time and releases it before moving on.
+  //
+  // The price of that is real and worth knowing here rather than only at the
+  // call site: admission becomes per frame, so a striped group can queue some
+  // frames and then refuse. The all-or-nothing property above therefore holds
+  // only for the unstriped path. The implementation records why the
+  // consequences stay contained -- the caller fails the op and abandons its
+  // inflight entries, and an Ack for an abandoned reqId is ignored.
+  //
+  // `mayBlock` behaves as in enqueueFrame. It is judged against the group's
+  // total size on the unstriped path and against each frame on the striped one.
+  // Either way an empty queue always admits, so a group or a frame larger than
+  // the cap still drains rather than waiting forever on room that will never
+  // appear.
   [[nodiscard]] bool enqueueFrames(std::vector<TcpFrame> frames, bool mayBlock);
   // Queues a framed message whose completion is reported via `onSent` once the
   // frame is flushed (two-sided send()).
@@ -817,21 +968,38 @@ class TcpTransport : public Transport {
       const TcpMsgHeader& replyHeader,
       TcpSegmentRegistry::Lease lease,
       TcpPinnedSlab slab);
-  // Stages one wave of VRAM Write frames: takes a slab per chunk, issues every
-  // copy, then waits for all of them. Returns the frames only if every copy
-  // succeeded, so the caller can queue the wave as one step and a failure
-  // queues nothing.
+  // Stages one wave of VRAM Write frames in two halves, so a wave's copies can
+  // run while the previous wave is being queued and sent. A single call that
+  // launched and waited kept the copy engine idle for the whole
+  // queue-and-transmit gap, which measured as ~55% of a VRAM put's wall time
+  // spent staging against a D2H path twice as fast as the put itself.
   //
-  // Blocks until the pool can hand out the whole wave, so it must not be called
-  // holding outMu_ -- the thread that frees those slabs is the sender, and it
-  // needs that mutex to make progress.
+  // launchPutWave takes a slab per chunk, issues every copy, and records one
+  // event -- correct with one event because put() never forms a wave spanning
+  // devices. It blocks until the pool can hand out the whole wave, so it must
+  // not be called holding outMu_: the thread that frees those slabs is the
+  // sender, and it needs that mutex to make progress. That block is also the
+  // backpressure bounding how many waves can be in flight.
   //
-  // The wait covers every copy that was launched even when a later one fails. A
-  // slab handed back while the GPU is still writing into it goes straight to
-  // the next staging copy, and the two then race over the same bytes.
-  Result<std::vector<TcpFrame>> stagePutWave(
+  // The returned record owns the slabs, so the caller must either retire it or
+  // abandon it. Dropping one outright while its copies still run would hand a
+  // slab back under an active DMA, and the next staging copy would then race
+  // the GPU over the same bytes.
+  Result<PendingPutWave> launchPutWave(
       std::span<const PlannedPutFrame> wave,
-      void* stream);
+      void* stream,
+      size_t startIdx);
+  // Waits for one launched wave's copies to finish and destroys its event.
+  // Waits on the event rather than the stream, because the stream also carries
+  // later waves' copies and waiting for those would give back the overlap.
+  //
+  // Leaves the frames in place for the caller to queue, so a failure here can
+  // still drop them before any of them reaches a lane.
+  Status retirePutWave(PendingPutWave& wave);
+  // Waits out every launched wave without queueing any of it, for the unwind
+  // paths. The wait is not optional: the slabs cannot be released while the
+  // copies are still writing into them.
+  void abandonPutWaves(std::deque<PendingPutWave>& waves) noexcept;
   // Records a VRAM read to start once a slab frees up. Fails the request (the
   // caller answers with an Error frame) if the deferred queue is full: dropping
   // it silently would leave the peer waiting forever, and blocking here would
@@ -849,9 +1017,12 @@ class TcpTransport : public Transport {
   // deferred.
   void scheduleDeferredReadReplies();
   // The staging pool, created on first use. Building it in the constructor
-  // would charge every peer ~64 MiB of pinned host memory -- there is one
-  // transport per peer -- including the DRAM-only peers that never stage at
-  // all.
+  // would charge every peer kStagingSlabCount slabs of pinned host memory --
+  // ~124 MiB, and there is one transport per peer -- including the DRAM-only
+  // peers that never stage at all.
+  //
+  // Named as the constant, not restated as a number: the previous wording
+  // hardcoded a figure and went stale when kStagingSlabCount was re-derived.
   Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool();
   // The independent inbound pool. It is created only for async-enabled,
   // non-zero VRAM get(), and is sized to the wire cap because recv(span)
@@ -1012,14 +1183,17 @@ class TcpTransport : public Transport {
   std::atomic<uint64_t> receiveSlabAttempts_{0};
   std::atomic<uint64_t> receiveSlabMisses_{0};
   std::atomic<uint64_t> vectorReceiveCount_{0};
-  // put-path D2H staging accounting. `stagingNs_` covers the whole span
-  // stagePutWave() spends getting a wave's payload into pinned host memory --
-  // the memcpyAsync launches plus the synchronize that waits for them -- so
-  // stagingBytes_/stagingNs_ is the effective device-to-host bandwidth this
-  // path achieves, launch overhead included. That number is the ceiling on VRAM
-  // put: no amount of queueing, lane count or CPU saving can move a transfer
-  // faster than its bytes reach the host. Written only by caller threads inside
-  // stagePutWave; relaxed because a torn read misreports one sample.
+  // put-path staging accounting. `stagingNs_` covers a wave's residency: from
+  // the memcpyAsync launches to the event wait that retires them. Because waves
+  // now overlap, that span includes time the next wave was being launched in,
+  // so the per-wave intervals overlap each other and their sum can exceed wall
+  // time. Read it as how long a wave stays in flight, NOT as D2H bandwidth --
+  // bytes/ns here is no longer a rate the device achieves. For the real D2H
+  // figure see the commit that added these counters, which measured it at 43-47
+  // GB/s while staging was still serialised against transmit.
+  //
+  // Written only by caller threads inside retirePutWave; relaxed because a torn
+  // read misreports one sample.
   std::atomic<uint64_t> stagingNs_{0};
   std::atomic<uint64_t> stagingBytes_{0};
   std::atomic<uint64_t> stagingWaves_{0};
@@ -1069,6 +1243,15 @@ class TcpTransport : public Transport {
   // 128 KiB was worse than not splitting at all.
   static constexpr size_t kMinAdaptiveChunkSize = 512UL * 1024;
 
+  /// Frames smaller than this are not worth striping across lanes: the extra
+  /// sender's wakeup costs more than the parallel socket buys. Only consulted
+  /// for multi-frame groups, where it is applied to the mean frame size.
+  ///
+  /// 256 KiB is well above the cost of a condvar wake and a socket write, and
+  /// well below kMaxChunkSize, so a full-size chunk always qualifies while an
+  /// Ack or a small control frame never does.
+  static constexpr size_t kMinStripeFrameBytes = 256UL * 1024;
+
   // Chunk size for one get request. A transfer no larger than kMaxChunkSize is
   // a single frame, and a frame goes to a single lane, so it uses one lane
   // however many are configured. Splitting it across lanes is worth up to 1.44x
@@ -1083,10 +1266,6 @@ class TcpTransport : public Transport {
   // request loop must derive their chunk from this same function or the reply
   // count will not match what the operation waits for.
   static size_t adaptiveGetChunk(size_t len, size_t laneCount);
-  // ~64 MiB of pinned host memory, sized against kMaxOutQueueBytes: the pool
-  // and the out queue bound the same pipeline, so a full set of staged frames
-  // fits in the queue rather than being refused by its cap.
-  static constexpr size_t kStagingSlabCount = 16;
   // Withheld from put(), so a saturated put cannot leave the get responder with
   // nothing to stage into. The responder is the side the peer is already
   // blocked on.
@@ -1094,15 +1273,44 @@ class TcpTransport : public Transport {
   // Chunks staged, and so queued, as one indivisible wave. Everything put()
   // promises about partial writes is bounded by this: a put of at most this
   // many chunks either reaches the queue whole or not at all.
-  // Half the usable pool, not all of it. A wave sized to the whole pool cannot
-  // begin staging until the previous one has drained completely, because its
-  // all-or-nothing acquire needs every slab back, so staging never overlaps
-  // transmit. Halving it keeps a wave's worth of slabs free for the next wave,
-  // which measured a large gain on GB-scale puts at no cost in pinned memory.
-  // The ratio is what matters, not the constant: this stays correct if the pool
-  // size changes.
-  static constexpr size_t kMaxPutWaveChunks =
-      (kStagingSlabCount - kStagingSlabsReservedForReader) / 2;
+  //
+  // 28 MiB, well under kMaxOutQueueBytes so a whole wave is admissible to the
+  // queue in one step rather than being refused by its cap. This is the primary
+  // knob of the three: the staging pool is sized from it below, not the other
+  // way round.
+  static constexpr size_t kMaxPutWaveChunks = 7;
+  // How many launched-but-unretired waves put() keeps. This is what buys the
+  // overlap: at 1 the caller waits for a wave's copies immediately after
+  // launching them, so the copy engine idles for the whole queue-and-transmit
+  // gap between waves. At 2 the next wave's copies are already running while
+  // the previous one is being waited for, queued and sent.
+  static constexpr size_t kMaxPutWavesInFlight = 2;
+  // Sized so acquire() does not block a caller that is holding a fully staged
+  // wave. At the moment put() acquires for a new wave, three things are already
+  // outstanding: the kMaxPutWavesInFlight - 1 waves it holds in its own deque,
+  // up to kMaxOutQueueBytes worth of frames it has queued but the sender has
+  // not drained yet, and the wave it is asking for -- plus the reader's
+  // reservation, which acquire() counts on top of the request.
+  //
+  // Getting this wrong is not a small loss, which is why it is derived rather
+  // than picked. At 16 slabs the arithmetic leaves acquire() 2 free against the
+  // 8 it needs, so every wave blocks -- and blocks while withholding a wave of
+  // already-copied frames from the sender, because they are only queued on the
+  // next trip round put()'s loop. Measured on two hosts at 1 GiB that was 16.9
+  // GB/s against 22.9 for waiting on each wave in turn: 26% worse than not
+  // overlapping at all. Sized from the invariant it measured 32.0.
+  //
+  // ~124 MiB of pinned host memory per peer that actually stages. The pool is
+  // created on first use, so DRAM-only peers still pay nothing for it.
+  static constexpr size_t kStagingSlabCount =
+      (kMaxPutWavesInFlight - 1) * kMaxPutWaveChunks +
+      kMaxOutQueueBytes / kMaxChunkSize + kMaxPutWaveChunks +
+      kStagingSlabsReservedForReader;
+  static_assert(
+      kStagingSlabCount >= kMaxPutWavesInFlight * kMaxPutWaveChunks +
+              kStagingSlabsReservedForReader,
+      "the pool must hold every wave the window keeps in flight at once, or "
+      "put() deadlocks against slabs only it can release");
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
   // exhaustion falls back to the reusable vector instead of blocking receive.
   static constexpr size_t kReceiveSlabCount = 2;
