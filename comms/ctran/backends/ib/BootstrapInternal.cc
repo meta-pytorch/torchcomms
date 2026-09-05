@@ -27,6 +27,7 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ScubaLogger.h"
@@ -39,14 +40,14 @@ const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
 std::string socketErrorContext(int error) {
   const bool hasValidMagnitude = error != std::numeric_limits<int>::min();
   const int errnoValue = hasValidMagnitude && error < 0 ? -error : error;
-  const char* errorName =
-      hasValidMagnitude ? ::strerrorname_np(errnoValue) : nullptr;
+  const std::string errorName =
+      hasValidMagnitude ? errnoToNameStr(errnoValue) : "UNKNOWN";
   const std::string description =
       hasValidMagnitude ? folly::errnoStr(errnoValue) : "invalid errno value";
   return fmt::format(
       "origin=socket_error subsystem=ctran_ib error_code={} error_name={} error_description=\"{}\"",
       error,
-      errorName != nullptr ? errorName : "UNKNOWN",
+      errorName,
       folly::cEscape<std::string>(description));
 }
 } // namespace
