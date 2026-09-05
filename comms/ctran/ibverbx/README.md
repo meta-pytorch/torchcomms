@@ -26,16 +26,20 @@ This builds the library with the `-DIBVERBX_BUILD_RDMA_CORE` compiler flag, whic
 
 When the `-DIBVERBX_BUILD_RDMA_CORE` flag is set:
 
-1. **Header files** (`Ibverbx.h` and `Ibvcore.h`):
-   - Include `<infiniband/verbs.h>` directly
-
-2. **Implementation** (`Ibverbx.cc`):
+1. **Implementation and symbol initialization** (`IbverbxSymbols.cc`):
+   - Includes `<infiniband/verbs.h>` and `<infiniband/mlx5dv.h>` directly
    - The `buildIbvSymbols()` function assigns function pointers directly to the real InfiniBand functions
    - Skips the dynamic loading code path entirely
 
-3. **Build configuration** (`BUCK`):
+2. **Build configuration** (`BUCK` or CMake):
    - Links against the `rdma-core` external dependency
    - Adds the compiler flag to enable conditional compilation
+
+For CMake builds, enable direct linking by setting
+`CTRAN_IBVERBX_RDMA_CORE_ROOT` to a prefix containing `include/infiniband` and
+the provider libraries under `lib` or `lib64`. Leaving it empty preserves the
+default dynamic-loading mode. CMake exposes the selected headers and libraries
+through the shared `mccl_rdma_core` interface target.
 
 ## Usage
 
@@ -49,7 +53,7 @@ Both build variants provide the same API and can be used interchangeably. Choose
 The library always uses `ibverbx::` struct definitions that are identical to the real InfiniBand types, regardless of build configuration. All types are defined in the `ibverbx` namespace (e.g., `ibverbx::ibv_device`, `ibverbx::ibv_context`, `ibverbx::ibv_qp`, etc.) to avoid namespace conflicts with system InfiniBand headers.
 
 The conditional compilation (`#ifdef IBVERBX_BUILD_RDMA_CORE`) only affects:
-- Whether to include `<infiniband/verbs.h>` directly or use dynamic loading
+- Whether `IbverbxSymbols.cc` includes the RDMA headers directly
 - Function pointer assignment in `buildIbvSymbols()` (direct assignment vs dlsym)
 - Build dependencies and linking against rdma-core libraries
 

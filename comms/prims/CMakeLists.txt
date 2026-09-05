@@ -79,10 +79,11 @@ target_compile_definitions(prims PRIVATE
 
 # Third-party link deps every consumer of the prims transports needs, declared
 # here so they propagate automatically to any target that links the `prims`
-# OBJECT library (PUBLIC = usage requirement). Resolved from CONDA_LIB (and
-# THIRD_PARTY_LIB when set). doca_gpunetio: IBGDA; ibverbs/mlx5: IB verbs;
-# dl: NVML dlopen. The CUDA driver (libcuda) is deliberately NOT linked: prims
-# (platform/CudaDriverLazy.cc) and ctran (CudaWrap.cc) resolve driver entry
+# OBJECT library (PUBLIC = usage requirement). Direct-link builds use the
+# coherent ibverbs/mlx5 contract from `mccl_rdma_core`; other builds retain the
+# existing linker-name lookup. doca_gpunetio provides IBGDA; dl supports NVML
+# dlopen. The CUDA driver is deliberately NOT linked:
+# prims (platform/CudaDriverLazy.cc) and ctran (CudaWrap.cc) resolve driver entry
 # points lazily via cudaGetDriverEntryPoint, so only CUDA::cudart is a link-time
 # dep. Hard-linking cuda_driver would add a libcuda.so.1 NEEDED that breaks
 # import on driverless build/verify hosts.
@@ -92,10 +93,13 @@ if(DEFINED THIRD_PARTY_LIB)
 endif()
 target_link_libraries(prims PUBLIC
     "-ldoca_gpunetio"
-    "-libverbs"
-    "-lmlx5"
     "-ldl"
 )
+if(TARGET mccl_rdma_core)
+    target_link_libraries(prims PUBLIC mccl_rdma_core)
+else()
+    target_link_libraries(prims PUBLIC "-libverbs" "-lmlx5")
+endif()
 
 # Install prims' public headers (ctran's installed headers #include
 # "comms/prims/..." under ENABLE_PRIMS, so these must ship for the exported
