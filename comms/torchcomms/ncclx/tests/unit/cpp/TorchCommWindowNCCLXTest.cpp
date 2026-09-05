@@ -86,6 +86,62 @@ TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
   EXPECT_NO_THROW(comm->finalize());
 }
 
+TEST_F(TorchCommWindowNCCLXTest, windowRegisterThrowsOnSuccessWithNullWindow) {
+  // Verifies: tensor_register() throws at registration time when
+  // commWindowRegister returns ncclSuccess but leaves the window handle null
+  // (NCCLX takes the upstream symmetric path once CTRAN is bypassed, and that
+  // path returns success without a window when the comm lacks symmetric
+  // support). Without this check the null only surfaced on first use as an
+  // opaque "NCCLX window is null" error far from the cause.
+  setupRankAndSize(0, 2);
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+  // Only the first registration yields a null window: later calls fall back to
+  // a valid handle so the device-API window registration (a second call on
+  // builds with NCCL_GIN_ENABLE) and the retry below are both unconstrained.
+  EXPECT_CALL(*nccl_mock_, commWindowRegister(_, _, _, _, _))
+      .WillOnce(DoAll(
+          SetArgPointee<3>(static_cast<NcclxWindow>(nullptr)),
+          Return(ncclSuccess)))
+      .WillRepeatedly(DoAll(
+          SetArgPointee<3>(reinterpret_cast<NcclxWindow>(0x5000)),
+          Return(ncclSuccess)));
+
+  EXPECT_NO_THROW(comm->init(*device_, "test_name", default_options_));
+
+  auto tensor = createTestTensor({10, 10});
+  auto win = comm->new_window();
+  EXPECT_THROW(
+      {
+        try {
+          win->tensor_register(tensor);
+        } catch (const std::runtime_error& e) {
+          EXPECT_TRUE(
+              std::string(e.what()).find("produced no window") !=
+              std::string::npos)
+              << "unexpected error: " << e.what();
+          throw;
+        }
+      },
+      std::runtime_error);
+
+  // The failed attempt must not publish any window state, so that a retry
+  // starts from scratch instead of inheriting the failed buffer.
+  EXPECT_EQ(win->get_size(), 0u);
+  EXPECT_FALSE(win->get_tensor().has_value());
+  EXPECT_TRUE(win->getShape().empty());
+
+  EXPECT_NO_THROW(win->tensor_register(tensor));
+  EXPECT_EQ(
+      win->get_size(),
+      static_cast<size_t>(tensor.numel()) * tensor.element_size());
+  EXPECT_TRUE(win->get_tensor().has_value());
+
+  EXPECT_NO_THROW(comm->finalize());
+}
+
 TEST_F(
     TorchCommNCCLXTest,
     WindowOperationsWithoutInitializationThrowException) {
