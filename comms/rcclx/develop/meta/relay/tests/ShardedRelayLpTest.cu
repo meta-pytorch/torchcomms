@@ -11,15 +11,38 @@
  * bytes() is additive, that a reduction accumulates in fp32. If one of these is
  * wrong, every collective is wrong in the same way, and a failure in this suite
  * says which property broke instead of "the allreduce answer is off by 3%".
+ *
+ * HOW CORRECTNESS IS ASSERTED WITHOUT A HOST fp8 MODEL
+ *
+ * rccl_float8 is __hip_fp8_e4m3_fnuz on gfx942 and OCP __hip_fp8_e4m3
+ * elsewhere, and the two encode the same value to different bytes. A host-side
+ * reference implementation would therefore have to know which device it is
+ * talking to, and would silently be testing itself on the arch it guessed
+ * wrong. So nothing here models fp8:
+ *
+ *  - Round-trip cases assert PROPERTIES that hold for both flavours: a block
+ *    whose elements are equal comes back bit-exact (the power-of-two
+ *    normalization target is what buys that, see sharded_relay_lp.h), and
+ *    anything else comes back inside e4m3's relative band.
+ *  - Reduce cases build their reference from the DEQUANTIZED inputs, read back
+ *    from the device. That takes input quantization out of the comparison
+ *    entirely, so what is left under test is the reduction arithmetic and the
+ * one rounding of its result -- which is the part these kernels actually own.
  */
 
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
+#include <hip/hip_runtime.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <random>
 #include <vector>
 
 #include "meta/relay/sharded_relay_lp.h"
+#include "meta/relay/sharded_relay_lp_kernels.h"
 #include "nccl.h"
 
 using namespace rcclx::relay;
@@ -27,6 +50,178 @@ using namespace rcclx::relay;
 namespace {
 
 constexpr size_t kBlock = kLpBlockElems;
+
+// e4m3 has 3 explicit mantissa bits, so its half-ULP is 2^-4 = 6.25% relative.
+constexpr float kE4m3RelBand = 0.0625f;
+
+// RMS relative error of one e4m3 round-to-nearest, which is the floor the
+// global L2 check can possibly sit at. Within a binade the relative ULP runs
+// from 2^-3 at the bottom to 2^-4 at the top, and round-to-nearest error is
+// uniform on
+// +/- ULP/2, so the relative RMS is about 2^-4.5 / sqrt(3) = 0.026. Measured on
+// normal data this suite reads 0.0247-0.0257, i.e. exactly that -- which is
+// itself the strongest evidence the scale arithmetic is right, and the reason
+// an earlier 0.02 limit here was unsatisfiable rather than strict.
+//
+// 0.035 leaves ~35% headroom over the floor while still being nowhere near what
+// a real defect produces: a systematically wrong scale, a scale read from the
+// neighbouring block, or a dropped scale all land at 0.5 or above.
+constexpr float kL2LimitOneRounding = 0.035f;
+
+// Absolute floor for elements far below their block's maximum. With the absmax
+// normalized to 128, the smallest representable normalized magnitude is 2^-9
+// (OCP) or 2^-10 (fnuz) so the true floor is blockAbsMax * 2^-16 at worst;
+// /1024 leaves 64x of margin, which is the difference between a meaningful
+// bound and a flaky one.
+constexpr float kAbsBandFraction = 1.0f / 1024.0f;
+
+class DeviceBuf {
+ public:
+  explicit DeviceBuf(size_t bytes) {
+    if (bytes > 0 && hipMalloc(&p_, bytes) != hipSuccess) {
+      p_ = nullptr;
+    }
+  }
+  ~DeviceBuf() {
+    if (p_ != nullptr) {
+      hipFree(p_);
+    }
+  }
+  DeviceBuf(const DeviceBuf&) = delete;
+  DeviceBuf& operator=(const DeviceBuf&) = delete;
+
+  void* get() const {
+    return p_;
+  }
+
+ private:
+  void* p_{nullptr};
+};
+
+void toDevice(void* dst, const std::vector<float>& src) {
+  ASSERT_EQ(
+      hipMemcpy(
+          dst, src.data(), src.size() * sizeof(float), hipMemcpyHostToDevice),
+      hipSuccess);
+}
+
+std::vector<float> fromDevice(const void* src, size_t count) {
+  std::vector<float> out(count, 0.0f);
+  EXPECT_EQ(
+      hipMemcpy(out.data(), src, count * sizeof(float), hipMemcpyDeviceToHost),
+      hipSuccess);
+  return out;
+}
+
+// Quantize `in`, then dequantize it back. Returns what the wire round-trip
+// produced -- which is also, for every reduce test below, the ground truth for
+// what the wire actually holds.
+std::vector<float> roundTrip(const std::vector<float>& in) {
+  const size_t n = in.size();
+  DeviceBuf dIn(n * sizeof(float));
+  DeviceBuf dWire(lpWireBytes(n));
+  DeviceBuf dOut(n * sizeof(float));
+  toDevice(dIn.get(), in);
+  launchLpQuantizeKernel<float>(dWire.get(), dIn.get(), n, nullptr);
+  launchLpDequantizeKernel<float>(dOut.get(), dWire.get(), n, nullptr);
+  EXPECT_EQ(hipDeviceSynchronize(), hipSuccess);
+  return fromDevice(dOut.get(), n);
+}
+
+// Quantize `in` into an owned wire buffer, and report what that wire decodes
+// to.
+struct WireAndTruth {
+  std::vector<float> truth;
+};
+
+WireAndTruth quantizeInto(void* wire, const std::vector<float>& in) {
+  const size_t n = in.size();
+  DeviceBuf dIn(n * sizeof(float));
+  DeviceBuf dBack(n * sizeof(float));
+  toDevice(dIn.get(), in);
+  launchLpQuantizeKernel<float>(wire, dIn.get(), n, nullptr);
+  launchLpDequantizeKernel<float>(dBack.get(), wire, n, nullptr);
+  EXPECT_EQ(hipDeviceSynchronize(), hipSuccess);
+  return WireAndTruth{fromDevice(dBack.get(), n)};
+}
+
+std::vector<float> blockAbsMaxPerElement(const std::vector<float>& v) {
+  std::vector<float> out(v.size(), 0.0f);
+  for (size_t b = 0; b * kBlock < v.size(); b++) {
+    float m = 0.0f;
+    for (size_t i = 0; i < kBlock; i++) {
+      m = std::max(m, std::fabs(v[b * kBlock + i]));
+    }
+    for (size_t i = 0; i < kBlock; i++) {
+      out[b * kBlock + i] = m;
+    }
+  }
+  return out;
+}
+
+// |got - want| <= 6.25%*|want| + absMax/1024, plus a global relative L2 bound.
+// The L2 check is not redundant: a 6.25% per-element band would otherwise pass
+// a block whose scale is systematically wrong on smooth data.
+void expectWithinE4m3Band(
+    const std::vector<float>& got,
+    const std::vector<float>& want,
+    float l2Limit = kL2LimitOneRounding) {
+  ASSERT_EQ(got.size(), want.size());
+  const std::vector<float> absMax = blockAbsMaxPerElement(want);
+  double num = 0.0;
+  double den = 0.0;
+  size_t reported = 0;
+  for (size_t i = 0; i < want.size(); i++) {
+    const float tol =
+        kE4m3RelBand * std::fabs(want[i]) + kAbsBandFraction * absMax[i];
+    const float err = std::fabs(got[i] - want[i]);
+    if (err > tol && reported < 8) {
+      reported++;
+      ADD_FAILURE() << "element " << i << " (block " << i / kBlock << "): got "
+                    << got[i] << ", want " << want[i] << ", tolerance " << tol;
+    }
+    num += static_cast<double>(err) * err;
+    den += static_cast<double>(want[i]) * want[i];
+  }
+  if (den > 0.0) {
+    EXPECT_LT(std::sqrt(num / den), l2Limit);
+  }
+}
+
+void expectExact(
+    const std::vector<float>& got,
+    const std::vector<float>& want) {
+  ASSERT_EQ(got.size(), want.size());
+  for (size_t i = 0; i < want.size(); i++) {
+    ASSERT_FLOAT_EQ(got[i], want[i])
+        << "at element " << i << " (block " << i / kBlock << ")";
+  }
+}
+
+// A distinct constant per block, including a zero block and negatives. These
+// are the values that must survive BIT-EXACTLY, which is what lets the
+// collectives' existing constant-fill assertions stay exact under low
+// precision.
+std::vector<float> constantBlocks(size_t nBlocks) {
+  static const float kConstants[] = {
+      1.0f, -3.5f, 0.0f, 1024.0f, 7.25e-3f, -1.0f, 12345.0f, 0.125f};
+  std::vector<float> v(nBlocks * kBlock, 0.0f);
+  for (size_t b = 0; b < nBlocks; b++) {
+    const float c = kConstants[b % (sizeof(kConstants) / sizeof(float))];
+    std::fill(v.begin() + b * kBlock, v.begin() + (b + 1) * kBlock, c);
+  }
+  return v;
+}
+
+std::vector<float> randomValues(size_t n, uint32_t seed, float scale = 1.0f) {
+  std::mt19937 rng(seed);
+  std::normal_distribution<float> dist(0.0f, scale);
+  std::vector<float> v(n);
+  for (size_t i = 0; i < n; i++) {
+    v[i] = dist(rng);
+  }
+  return v;
+}
 
 } // namespace
 
@@ -178,6 +373,303 @@ TEST(ShardedRelayLpGate, SizeThresholdIsAboveTheLaunchBoundBand) {
       EXPECT_GE(lpMinBytes(LpCollective::AllReduce, a, g), size_t{576} << 10);
       EXPECT_GE(lpMinBytes(LpCollective::AllToAll, a, g), size_t{576} << 10);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Quantize / dequantize
+// ---------------------------------------------------------------------------
+
+TEST(ShardedRelayLpKernels, ConstantBlocksRoundTripBitExactly) {
+  // The property the whole test story rests on: with the absmax normalized to a
+  // POWER OF TWO, a block of equal values comes back unchanged. That is why the
+  // collectives' existing constant-fill assertions stay exact under low
+  // precision and become detectors for a wrong scale, a wrong block boundary or
+  // a dropped scale. If this fails, do not loosen it.
+  const std::vector<float> in = constantBlocks(16);
+  expectExact(roundTrip(in), in);
+}
+
+TEST(ShardedRelayLpKernels, RandomValuesRoundTripInsideTheE4m3Band) {
+  const std::vector<float> in = randomValues(64 * kBlock, 12345);
+  expectWithinE4m3Band(roundTrip(in), in);
+}
+
+TEST(ShardedRelayLpKernels, ScalesArePerBlockNotPerBuffer) {
+  // Block 0 is enormous, block 1 is tiny. Under a single buffer-wide scale
+  // every element of block 1 would quantize to zero; under per-block scales
+  // block 1 is as accurate as if it were alone. This is the test that a scale
+  // is being read from the right block.
+  std::vector<float> in(2 * kBlock, 0.0f);
+  for (size_t i = 0; i < kBlock; i++) {
+    in[i] = 1.0e6f;
+    in[kBlock + i] = 1.0e-6f * static_cast<float>(i + 1);
+  }
+  const std::vector<float> got = roundTrip(in);
+  expectWithinE4m3Band(got, in);
+  for (size_t i = 0; i < kBlock; i++) {
+    EXPECT_GT(got[kBlock + i], 0.0f)
+        << "small block element " << i << " was flattened to zero";
+  }
+}
+
+TEST(ShardedRelayLpKernels, AllZeroBlockRoundTripsToZero) {
+  // scale == 0 is the one case the encode has to special-case, or it divides by
+  // zero and the block comes back NaN.
+  std::vector<float> in(4 * kBlock, 0.0f);
+  for (size_t i = 0; i < kBlock; i++) {
+    in[kBlock + i] = 2.0f; // a non-zero neighbour, so a shared scale would show
+  }
+  const std::vector<float> got = roundTrip(in);
+  expectExact(got, in);
+}
+
+TEST(ShardedRelayLpKernels, ANonFiniteElementDoesNotRoundTripToZero) {
+  // The counterpart of the case above, and the reason the absmax fold is not
+  // fmaxf: fmaxf returns the non-NaN operand, so a block holding a NaN would
+  // take the absmax of its FINITE elements and an all-NaN block would take 0 --
+  // which is the all-zero block's absmax, so the block would be written as 128
+  // zero codes and come back as clean 0.0. A diverged gradient must not arrive
+  // looking converged, or a post-collective isfinite() check stops firing on
+  // exactly the runs that need it.
+  std::vector<float> in = constantBlocks(4);
+  in[0 * kBlock + 5] = std::numeric_limits<float>::quiet_NaN();
+  in[2 * kBlock + 7] = std::numeric_limits<float>::infinity();
+  const std::vector<float> got = roundTrip(in);
+
+  // Asserted per BLOCK, not per element: a non-finite scale is a property of
+  // the whole block, so its 127 finite neighbours are lost too. That is not a
+  // regression -- an inf absmax already flattened them to zero -- and it is the
+  // conservative direction, because non-finite never decodes back to finite.
+  for (size_t i = 0; i < kBlock; i++) {
+    EXPECT_FALSE(std::isfinite(got[0 * kBlock + i]))
+        << "element " << i << " of the NaN-bearing block came back finite";
+    EXPECT_FALSE(std::isfinite(got[2 * kBlock + i]))
+        << "element " << i << " of the inf-bearing block came back finite";
+  }
+  // Blocks 1 and 3 are constant and untouched, so they still round-trip
+  // bit-exactly: the fold is per block and a bad neighbour does not leak in.
+  for (size_t i = 0; i < kBlock; i++) {
+    EXPECT_FLOAT_EQ(got[1 * kBlock + i], in[1 * kBlock + i]) << "at " << i;
+    EXPECT_FLOAT_EQ(got[3 * kBlock + i], in[3 * kBlock + i]) << "at " << i;
+  }
+}
+
+TEST(
+    ShardedRelayLpKernels,
+    ReduceRequantizeKeepsANonFiniteContributionVisible) {
+  // The path that matters most in practice: a region a HELPER reduces lands
+  // straight in the caller's receive buffer, so if the requantize swallowed a
+  // NaN there is no later kernel to notice. One contribution diverges; the sum
+  // must not come back finite.
+  constexpr int kContribs = 3;
+  const size_t n = 4 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dOut(lpWireBytes(n));
+  DeviceBuf dBack(n * sizeof(float));
+
+  for (int p = 0; p < kContribs; p++) {
+    std::vector<float> in = constantBlocks(4);
+    if (p == 1) {
+      in[kBlock + 3] = std::numeric_limits<float>::quiet_NaN();
+    }
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    (void)quantizeInto(slot, in);
+  }
+
+  launchLpReduceRequantizeKernel(
+      dOut.get(), dContribs.get(), kContribs, n, /*divisor=*/1, nullptr);
+  launchLpDequantizeKernel<float>(dBack.get(), dOut.get(), n, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+
+  const std::vector<float> got = fromDevice(dBack.get(), n);
+  for (size_t i = 0; i < kBlock; i++) {
+    EXPECT_FALSE(std::isfinite(got[kBlock + i]))
+        << "element " << i << " of the diverged block survived the helper hop "
+        << "as a finite value";
+  }
+}
+
+TEST(ShardedRelayLpKernels, TailBlockIsQuantizedAndNeighboursAreUntouched) {
+  // A count that is a whole number of blocks but not a power of two, so the
+  // grid-stride loop's last iteration is partial.
+  const size_t nBlocks = 8191;
+  std::vector<float> in = randomValues(nBlocks * kBlock, 777);
+  // Make the very last block constant, so the tail is checked exactly.
+  std::fill(in.end() - kBlock, in.end(), -2.75f);
+  const std::vector<float> got = roundTrip(in);
+  for (size_t i = 0; i < kBlock; i++) {
+    ASSERT_FLOAT_EQ(got[in.size() - kBlock + i], -2.75f)
+        << "tail element " << i;
+  }
+  expectWithinE4m3Band(got, in);
+}
+
+// ---------------------------------------------------------------------------
+// Reductions
+// ---------------------------------------------------------------------------
+
+TEST(ShardedRelayLpKernels, ReduceRequantizeSumsWireContributionsInFp32) {
+  constexpr int kContribs = 4;
+  const size_t n = 32 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dOut(lpWireBytes(n));
+  DeviceBuf dBack(n * sizeof(float));
+
+  std::vector<float> want(n, 0.0f);
+  for (int p = 0; p < kContribs; p++) {
+    const std::vector<float> in = randomValues(n, 100 + p);
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    // Reference is what the WIRE holds, not what we handed in, so input
+    // quantization is out of the comparison.
+    const WireAndTruth w = quantizeInto(slot, in);
+    for (size_t i = 0; i < n; i++) {
+      want[i] += w.truth[i];
+    }
+  }
+
+  launchLpReduceRequantizeKernel(
+      dOut.get(), dContribs.get(), kContribs, n, /*divisor=*/1, nullptr);
+  launchLpDequantizeKernel<float>(dBack.get(), dOut.get(), n, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+  expectWithinE4m3Band(fromDevice(dBack.get(), n), want);
+}
+
+TEST(ShardedRelayLpKernels, ReduceRequantizeIsExactForEqualConstantBlocks) {
+  // A sum of equal values has block absmax equal to that sum, so the
+  // power-of-two normalization makes the requantized result exact too. This is
+  // what keeps the collectives' constant-fill reduce assertions exact across
+  // the helper hop.
+  constexpr int kContribs = 3;
+  const size_t n = 8 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dOut(lpWireBytes(n));
+  DeviceBuf dBack(n * sizeof(float));
+
+  const std::vector<float> in = constantBlocks(8);
+  for (int p = 0; p < kContribs; p++) {
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    const WireAndTruth w = quantizeInto(slot, in);
+    expectExact(w.truth, in);
+  }
+  std::vector<float> want(n);
+  for (size_t i = 0; i < n; i++) {
+    want[i] = static_cast<float>(kContribs) * in[i];
+  }
+
+  launchLpReduceRequantizeKernel(
+      dOut.get(), dContribs.get(), kContribs, n, /*divisor=*/1, nullptr);
+  launchLpDequantizeKernel<float>(dBack.get(), dOut.get(), n, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+  expectExact(fromDevice(dBack.get(), n), want);
+}
+
+TEST(ShardedRelayLpKernels, ReduceRequantizeDivisorIsExactAndAppliedOnce) {
+  // The divisor is always nActiveRanks, which the dispatchers require to be a
+  // power of two. Scaling before the requantize therefore moves the block
+  // absmax by the same exact power of two and leaves every fp8 code unchanged,
+  // so dividing here is bit-identical to dividing after the dequantize. Checked
+  // directly, because it is the reason the helper may own the divisor at all --
+  // the regions a helper reduces have no active-side closing kernel to defer it
+  // to.
+  constexpr int kContribs = 4;
+  constexpr int kDivisor = 4;
+  const size_t n = 8 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dPlain(lpWireBytes(n));
+  DeviceBuf dDivided(lpWireBytes(n));
+  DeviceBuf dPlainBack(n * sizeof(float));
+  DeviceBuf dDividedBack(n * sizeof(float));
+
+  for (int p = 0; p < kContribs; p++) {
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    (void)quantizeInto(slot, randomValues(n, 900 + p));
+  }
+
+  launchLpReduceRequantizeKernel(
+      dPlain.get(), dContribs.get(), kContribs, n, /*divisor=*/1, nullptr);
+  launchLpReduceRequantizeKernel(
+      dDivided.get(), dContribs.get(), kContribs, n, kDivisor, nullptr);
+  launchLpDequantizeKernel<float>(dPlainBack.get(), dPlain.get(), n, nullptr);
+  launchLpDequantizeKernel<float>(
+      dDividedBack.get(), dDivided.get(), n, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+
+  const std::vector<float> plain = fromDevice(dPlainBack.get(), n);
+  const std::vector<float> divided = fromDevice(dDividedBack.get(), n);
+  for (size_t i = 0; i < n; i++) {
+    // Bit-exact, not approximate: no extra rounding may creep in.
+    ASSERT_FLOAT_EQ(divided[i], plain[i] / static_cast<float>(kDivisor))
+        << "at element " << i;
+  }
+}
+
+TEST(ShardedRelayLpKernels, MultiReduceAccumulatesIntoDstAndDividesOnce) {
+  constexpr int kContribs = 3;
+  constexpr int kDivisor = 4; // == 1 seed + 3 contributions, i.e. ncclAvg
+  const size_t n = 16 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dDst(n * sizeof(float));
+
+  const std::vector<float> dstIn = randomValues(n, 42);
+  std::vector<float> want = dstIn;
+  for (int p = 0; p < kContribs; p++) {
+    const std::vector<float> in = randomValues(n, 200 + p);
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    const WireAndTruth w = quantizeInto(slot, in);
+    for (size_t i = 0; i < n; i++) {
+      want[i] += w.truth[i];
+    }
+  }
+  for (size_t i = 0; i < n; i++) {
+    want[i] /= static_cast<float>(kDivisor);
+  }
+
+  toDevice(dDst.get(), dstIn);
+  launchLpMultiReduceKernel<float>(
+      dDst.get(), dContribs.get(), kContribs, n, kDivisor, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+  // dst and the contributions are exact here (dst is never quantized, the
+  // contributions were read back from the wire), so the only slack is fp32
+  // summation order.
+  const std::vector<float> got = fromDevice(dDst.get(), n);
+  for (size_t i = 0; i < n; i++) {
+    ASSERT_NEAR(got[i], want[i], 1e-4f * std::fabs(want[i]) + 1e-6f)
+        << "at element " << i;
+  }
+}
+
+TEST(ShardedRelayLpKernels, SeededMultiReduceReadsSeedNotDst) {
+  constexpr int kContribs = 2;
+  const size_t n = 8 * kBlock;
+  DeviceBuf dContribs(kContribs * lpWireBytes(n));
+  DeviceBuf dSeed(n * sizeof(float));
+  DeviceBuf dDst(n * sizeof(float));
+
+  const std::vector<float> seed = randomValues(n, 7);
+  // Poison dst: if the kernel reads it instead of the seed, the answer is wrong
+  // by a large, obvious amount rather than subtly.
+  const std::vector<float> poison(n, 1.0e9f);
+
+  std::vector<float> want = seed;
+  for (int p = 0; p < kContribs; p++) {
+    const std::vector<float> in = randomValues(n, 300 + p);
+    char* slot = static_cast<char*>(dContribs.get()) + p * lpWireBytes(n);
+    const WireAndTruth w = quantizeInto(slot, in);
+    for (size_t i = 0; i < n; i++) {
+      want[i] += w.truth[i];
+    }
+  }
+
+  toDevice(dSeed.get(), seed);
+  toDevice(dDst.get(), poison);
+  launchLpSeededMultiReduceKernel<float>(
+      dDst.get(), dSeed.get(), dContribs.get(), kContribs, n, 1, nullptr);
+  ASSERT_EQ(hipDeviceSynchronize(), hipSuccess);
+  const std::vector<float> got = fromDevice(dDst.get(), n);
+  for (size_t i = 0; i < n; i++) {
+    ASSERT_NEAR(got[i], want[i], 1e-4f * std::fabs(want[i]) + 1e-6f)
+        << "at element " << i;
   }
 }
 
