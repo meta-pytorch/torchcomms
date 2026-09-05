@@ -147,27 +147,56 @@ size_t lpMinBytes(LpCollective coll, int nActiveRanksPerGroup, int nGroups) {
   constexpr size_t k12Mib = static_cast<size_t>(12) << 20;
   constexpr size_t k24Mib = static_cast<size_t>(24) << 20;
   constexpr size_t k27Mib = static_cast<size_t>(27) << 20;
+  constexpr size_t k60Mib = static_cast<size_t>(60) << 20;
 
   if (nGroups <= 1) {
-    // Uncontended. Still wins for most shapes, which is itself a change: before
-    // the alignment fix nearly every single-group shape was troughed, and that
-    // looked like "there is no bandwidth term to win when the links are slack".
-    // It was a stall.
+    // Uncontended, and now measured across the FULL size range (4.5 MB to 144
+    // MB) rather than from 13.5 MB up. That mattered: two thresholds were a
+    // size band too high, and one shape was off only because 72 MB had been the
+    // edge of the data.
+    //
+    // NOTE FOR ANYONE RETUNING: co-resident jobs land here too. A parallel
+    // relay job is nGroups == 1, so these thresholds are what several
+    // independent jobs sharing a node get, and they were measured with the node
+    // otherwise idle.
     switch (coll) {
       case LpCollective::AllReduce:
-        // A=4: 1.09x at 13.5 MB rising to 1.29x. A=2 is the profiling target
-        // above -- it wins 13.5-27 MB and troughs from 31.5 MB.
+        // A=4: 0.97x at 9 MB, 1.08x at 13.5 MB, then 1.19x-1.29x to 144 MB, so
+        // the crossover really is between 9 and 13.5 and 12 MiB sits in it.
+        //
+        // A=2 is the one shape with a genuine STALL rather than a threshold. It
+        // wins 1.09x-1.13x from 13.5 to 27 MB and then drops to 0.75x-0.92x for
+        // every larger size out to 144 MB. Profiling localized it: the same
+        // three transfers, same grid, 1.85x slower for 1.167x more bytes --
+        // effective bandwidth falling from ~125 to ~78 GB/s. Not the kernels
+        // (they scale at 1.23x), not the tile count (1 at the size it breaks),
+        // not chunk alignment (that fix moved every other troughed shape and
+        // not this one).
         return nActiveRanksPerGroup == 4 ? k12Mib : kNever;
       case LpCollective::AllGather:
-        // A=2: 1.17x at 13.5 MB, 1.19x-1.23x above. A=4: 1.20x
-        // then 1.24x-1.30x.
-        return k12Mib;
+        // 8 MiB, not 12: BOTH widths win at 9 MB (1.10x at A=2, 1.11x at A=4)
+        // and only A=4 loses at 4.5 MB. This is the earliest-paying collective
+        // here, same as in the fused table.
+        return k8Mib;
       case LpCollective::ReduceScatter:
-        // A=2: 1.11x at 13.5 MB rising to 1.28x.
-        return nActiveRanksPerGroup == 2 ? k12Mib : kNever;
+        // A=2: 1.05x at 9 MB, 1.13x at 13.5 MB, up to 1.30x. 12 MiB.
+        //
+        // A=4 is ENABLED NOW, and only because the range was extended. It sits
+        // at 0.90x-1.07x through 40 MB and then holds 1.18x-1.27x across FIVE
+        // consecutive sizes from 63 MB to 144 MB. Previously 72 MB was the top
+        // of the sweep, so that plateau was two points at the edge of the data
+        // and declining it was the honest call; 135 and 144 MB confirm it. 60
+        // MiB rather than 48: there is no data between 40 and 63 MB, and 31.5
+        // MB reads 0.90x, so the threshold goes just below the first measured
+        // win instead of into the unmeasured gap.
+        return nActiveRanksPerGroup == 2 ? k12Mib : k60Mib;
       case LpCollective::AllToAll:
-        // A=4: 1.08x at 27 MB rising to 1.16x, and flat 0.97x-1.00x below, so
-        // the crossover sits between 13.5 and 27 MB.
+        // A=4: flat 0.96x-0.97x through 13.5 MB, then 1.07x-1.17x from 27 MB.
+        //
+        // A=2 is the only shape that never wins at any size in either grouping,
+        // and it gets WORSE with size (0.95x-0.97x small, 0.88x at 135-144 MB),
+        // which is the opposite of every other shape here. Whatever it is, it
+        // is not a threshold.
         return nActiveRanksPerGroup == 4 ? k24Mib : kNever;
     }
     return kNever;
