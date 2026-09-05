@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -36,7 +37,41 @@ class TcpRemoteRegistrationHandle;
 /// them so MultiTransport and anything building a TcpTransportFactory directly
 /// stripe across the same NICs.
 inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
+/// How many frontend NICs to stripe across by default.
+///
+/// Two, and deliberately not more, because the right number depends on how many
+/// transports share the host and it is the small transfers that pay for extra
+/// lanes. Measured on two MI350 hosts (8 lanes at 2 NICs against 16 at 4, VRAM,
+/// three alternated reps, aggregate GB/s at 1 GiB):
+///
+///   put    1 GPU   2 GPU   4 GPU   8 GPU        get    1 GPU   2 GPU   4 GPU
+///   8 GPU 2 NIC  32.13   46.20   49.09   51.36        2
+///   NIC  35.26   47.57   55.40   56.77 4 NIC  32.28   51.50   61.75   70.58 4
+///   NIC  35.17   53.98   64.94   72.12
+///
+/// So two NICs saturate at about two concurrent transports -- 2 to 8 GPUs buys
+/// 11% for four times the instances -- while four keep scaling, and by 8 GPUs
+/// four NICs is 35% ahead on put. A single transport gains nothing either way.
+///
+/// The cost lands below 1 MiB, at every GPU count: 16 lanes divide
+/// kMaxOutQueueBytes into per-lane caps too small to admit a whole wave, so a
+/// latency-bound transfer pays for lanes it cannot fill (1 GPU put at 128 KiB:
+/// 1.13 against 0.89 GB/s). Raising this default would trade that band away for
+/// a gain only a multi-transport host sees, so callers that know they are
+/// running several transports raise it themselves via
+/// TcpTransportConfig::maxFrontendDevices.
 inline constexpr size_t kDefaultMaxFrontendDevices = 2;
+
+/// How many frontend NICs this host actually has -- the hardware ceiling, not a
+/// policy. Enumerates on first call and caches, so it is 0 only when the host
+/// has no usable frontend port at all (none up, or none with a live global
+/// address). Callers cannot set this; it is what it is.
+///
+/// Discovery already refuses to invent ports it cannot find, so a cap above
+/// this is harmless rather than dangerous -- enumerateFrontendDevices() stops
+/// when it runs out. This exists so a caller asking for more than exists can be
+/// told, instead of quietly receiving fewer than it asked for.
+size_t frontendDeviceCapacity(const std::string& prefix);
 
 /// Frontend data NICs to stripe lanes across, lowest name first and one port
 /// per PCI card before taking a second port from any card. Only devices that
@@ -99,6 +134,29 @@ struct TcpTransportConfig {
   /// Device names are per-host and need not match between peers: the same
   /// physical port is eth3 on one MI350 host and eth0 on the next.
   std::vector<std::string> bindToDevices;
+
+  /// How many frontend NICs to stripe across when bindToDevices is left empty.
+  /// This is the caller's *request*; the host's port count is the ceiling, and
+  /// frontendDeviceCapacity() reports that. 0 means "no opinion" and takes the
+  /// default -- not "no devices", which would bind a transport to no NIC at
+  /// all.
+  ///
+  /// This lives here rather than on MultiTransportOptions because it is the one
+  /// place both callers can reach. MultiTransport.h cannot include this header
+  /// (TCP is AMD-only, so the config is forward-declared and held by pointer),
+  /// which is why the device *prefix* is still duplicated over there -- but
+  /// MultiTransport.cpp does include it, so anything carried on the config
+  /// itself is shared rather than copied. Keeping the cap in two structs meant
+  /// the benchmark and MultiTransport could disagree about the default while
+  /// both looked correct in isolation.
+  size_t maxFrontendDevices{kDefaultMaxFrontendDevices};
+
+  /// The cap discovery should use: applies the 0-means-default rule, then
+  /// clamps to the `prefix` ports the host actually has. Warns rather than
+  /// clamping quietly -- a request silently honoured as something smaller is
+  /// how
+  /// --num-nics went unnoticed as a no-op on this path.
+  size_t resolveMaxFrontendDevices(const std::string& prefix) const;
 
   TcpTransportConfig() = default;
   /* implicit */ TcpTransportConfig(controller::TcpSocketConfig config)
