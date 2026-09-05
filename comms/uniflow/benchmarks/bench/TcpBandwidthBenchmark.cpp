@@ -436,10 +436,19 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   // measures one routing-chosen NIC and reports it as what the default
   // configuration delivers, which is not what any caller going through
   // MultiTransport actually gets.
+  // --num-nics caps the device count here as well as on the RDMA path, where it
+  // used to be honoured only there: the flag reached BenchmarkConfig and then
+  // nothing on the TCP side read it, so asking for 4 NICs over TCP silently
+  // measured 2. 0 keeps the transport's own default.
+  TcpTransportConfig discoveryConfig;
+  if (config.numNics > 0) {
+    discoveryConfig.maxFrontendDevices = static_cast<size_t>(config.numNics);
+  }
+  const size_t maxDevices = discoveryConfig.resolveMaxFrontendDevices(
+      std::string(::uniflow::kDefaultFrontendDevicePrefix));
   if (bindDevs_.empty()) {
     bindDevs_ = enumerateFrontendDevices(
-        std::string(::uniflow::kDefaultFrontendDevicePrefix),
-        ::uniflow::kDefaultMaxFrontendDevices);
+        std::string(::uniflow::kDefaultFrontendDevicePrefix), maxDevices);
     if (bindDevs_.empty()) {
       UNIFLOW_LOG_WARN(
           "TcpBandwidthBenchmark: no usable '{}' device found; leaving egress "
@@ -500,6 +509,9 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   transportConfig.bindToDevices = bindDevs_;
   transportConfig.asyncGetH2d = asyncGetH2d_;
   transportConfig.numSocketsPerDevice = socketsPerNic_;
+  // Carried through even though bindToDevices is already resolved above, so the
+  // transport reports the cap it was asked for rather than its own default.
+  transportConfig.maxFrontendDevices = maxDevices;
   auto factory = std::make_unique<TcpTransportFactory>(
       dev, evbThread.getEventBase(), transportConfig, host);
 
