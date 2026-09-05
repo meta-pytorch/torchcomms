@@ -172,6 +172,11 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   CTRAN_PROFILER_IF(
       profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
   FB_COMMCHECK(progressSteps(ctx, nodeId));
+  // Puts read recvbuff. Release the end kernel now that they have drained.
+  // Do not move into a scope guard. It fires after waitPipeEnd and deadlocks.
+  if (nLocalRanks > 1 && resource->pipeSync != nullptr) {
+    resource->pipeSync->post(recvPlan.nSteps());
+  }
   waitPipeEnd(*resource, comm);
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
@@ -375,6 +380,7 @@ commResult_t AlgoImpl::execStreamedRecursiveDoubling(
 
     PipeEndKernArgs endArgs = {
         .pipeSync = resource_.pipeSync,
+        .endSyncStep = nNodes > 1 ? recvPlan.nSteps() : -1,
     };
     config.algoArgs = reinterpret_cast<void*>(&endArgs);
     if (colltraceGroupOpen) {

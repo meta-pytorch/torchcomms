@@ -5,6 +5,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +23,43 @@
 #include "comms/testinfra/TestsCuUtils.h"
 
 using namespace ctran;
+
+namespace {
+
+// Defaults for the back-to-back reuse case. kDefaultB2bIters is the burst
+// length: collectives enqueued with no host sync in between. Each needs its own
+// device snapshot slot. Rounds repeat the burst without growing that memory.
+constexpr int kDefaultB2bIters = 32;
+constexpr int kDefaultB2bRounds = 4;
+constexpr size_t kDefaultB2bSendCount = 64 * 1024;
+
+constexpr const char* kB2bItersEnv = "CTRAN_CTWIN_B2B_ITERS";
+constexpr const char* kB2bRoundsEnv = "CTRAN_CTWIN_B2B_ROUNDS";
+constexpr const char* kB2bSendCountEnv = "CTRAN_CTWIN_B2B_SEND_COUNT";
+
+// Reads a positive integer override; falls back when unset, empty, or not a
+// positive integer.
+long long envPositiveOr(const char* name, long long fallback) {
+  const char* const raw = std::getenv(name);
+  if (raw == nullptr || raw[0] == '\0') {
+    return fallback;
+  }
+  const long long parsed = std::atoll(raw);
+  return parsed > 0 ? parsed : fallback;
+}
+
+// Value peer `peer` contributes at element `index` on iteration `iter`. Every
+// element is distinct across peers, iterations and offsets. A partially written
+// chunk then differs from the reference at every offset in the stale region. A
+// constant per-chunk fill, as the functional cases use, would hide it.
+int stressPattern(int peer, int iter, size_t index) {
+  const uint32_t mixed = 0x9E3779B9u * static_cast<uint32_t>(peer + 1) +
+      0x85EBCA6Bu * static_cast<uint32_t>(iter + 1) +
+      static_cast<uint32_t>(index);
+  return static_cast<int>(mixed);
+}
+
+} // namespace
 
 // Window-based persistent allgather (ctwin). Registers a symmetric ipc_only
 // window over a cumem recvbuf, runs allgather with algo=ctwin (in-place, so the
@@ -640,6 +680,197 @@ TEST_F(CtranAllgatherCtwinTest, ForceVariants) {
   oobBarrier();
   freeSymmetricWindow(win, winBase, windowBytes);
 }
+
+// Back-to-back reuse of recvbuff across collectives. Both AGP pipeline variants
+// put from recvbuff. The drain that proves the NIC finished reading runs after
+// the stream was already released. The next collective can then overwrite a
+// buffer a put is still reading. The end kernel's wait on endSyncStep is the
+// fence.
+//
+// Three things are needed to see it. Every iteration sends different values. A
+// constant fill writes the same bytes and hides the overwrite. The collectives
+// run back-to-back on one stream. A per-iteration sync drains the puts and
+// hides it too. Every element is checked. The corruption is a partial region
+// inside one chunk.
+class CtranAllgatherCtwinBackToBackTest
+    : public CtranAllgatherCtwinTest,
+      public ::testing::WithParamInterface<enum NCCL_ALLGATHER_ALGO> {};
+
+TEST_P(CtranAllgatherCtwinBackToBackTest, SourceBufferReuse) {
+  const enum NCCL_ALLGATHER_ALGO algo = GetParam();
+  const char* const algoName = algo == NCCL_ALLGATHER_ALGO::ctwin_rdpipeline
+      ? "ctwin_rdpipeline"
+      : "ctwin_pipeline";
+
+  if (!ncclIsCuMemSupported()) {
+    GTEST_SKIP() << "CuMem not supported, skipping ctwin test";
+  }
+  if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  }
+  const int nNodes = ctranComm->statex_->nNodes();
+  const int nLocalRanks = ctranComm->statex_->nLocalRanks();
+  // The reader is a GPE put, which needs nNodes > 1. The fence is the end
+  // kernel, which is only submitted at nLocalRanks > 1.
+  if (nNodes < 2 || nLocalRanks < 2) {
+    GTEST_SKIP() << "the put/recvbuff WAR needs nNodes>1 and nLocalRanks>1 to "
+                 << "be reached; got nNodes=" << nNodes
+                 << " nLocalRanks=" << nLocalRanks;
+  }
+  if (algo == NCCL_ALLGATHER_ALGO::ctwin_rdpipeline &&
+      (nNodes & (nNodes - 1)) != 0) {
+    GTEST_SKIP() << "ctwin_rdpipeline requires power-of-2 nNodes, got "
+                 << nNodes;
+  }
+
+  const int itersPerRound =
+      static_cast<int>(envPositiveOr(kB2bItersEnv, kDefaultB2bIters));
+  const int numRounds =
+      static_cast<int>(envPositiveOr(kB2bRoundsEnv, kDefaultB2bRounds));
+  const size_t sendCount = static_cast<size_t>(
+      envPositiveOr(kB2bSendCountEnv, kDefaultB2bSendCount));
+
+  const size_t typeSize = commTypeSize(dt);
+  const size_t chunkBytes = sendCount * typeSize;
+  const size_t windowElems = sendCount * numRanks;
+  const size_t windowBytes = windowElems * typeSize;
+
+  if (globalRank == 0) {
+    LOG(WARNING) << "ctwin back-to-back reuse: algo=" << algoName
+                 << " itersPerRound=" << itersPerRound
+                 << " rounds=" << numRounds << " sendCount=" << sendCount
+                 << " nRanks=" << numRanks << " nNodes=" << nNodes
+                 << " nLocalRanks=" << nLocalRanks;
+  }
+
+  CtranWin* win = nullptr;
+  void* winBase = createSymmetricWindow(windowBytes, &win);
+  ASSERT_NE(win, nullptr);
+  void* const recvbuf = winBase;
+
+  // A distinct sendbuf per iteration, all staged before the burst. During the
+  // burst the only writer to recvbuf is the collective itself.
+  void* sendPool = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&sendPool, chunkBytes * itersPerRound));
+  // Snapshots stay on the device during the burst. A D2H copy here would be as
+  // long as the race window and would hide it. One D2H after the burst.
+  void* snapPool = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&snapPool, windowBytes * itersPerRound));
+
+  std::vector<int> observed(windowElems * itersPerRound);
+  std::vector<int> stage(sendCount * itersPerRound);
+  std::vector<int> expected(windowElems);
+
+  // Every rank runs every round even after a mismatch. Returning early would
+  // desync the per-round barrier.
+  int corruptedIters = 0;
+  int firstBadIter = -1;
+  int firstBadPeer = -1;
+  size_t firstBadElement = 0;
+  int firstBadObserved = 0;
+  int firstBadExpected = 0;
+
+  for (int round = 0; round < numRounds; round++) {
+    for (int k = 0; k < itersPerRound; k++) {
+      const int globalIter = round * itersPerRound + k;
+      for (size_t i = 0; i < sendCount; i++) {
+        stage[k * sendCount + i] = stressPattern(globalRank, globalIter, i);
+      }
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        sendPool, stage.data(), chunkBytes * itersPerRound, cudaMemcpyDefault));
+    // Poisoned once per round. Poisoning inside the burst would need a
+    // barrier, and no barrier may run there.
+    CUDACHECK_TEST(cudaMemset(recvbuf, 0xEE, windowBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    oobBarrier();
+
+    // The burst. No sync and no barrier until every collective is enqueued.
+    // Iteration k+1 writes recvbuf while iteration k's puts may still read it.
+    for (int k = 0; k < itersPerRound; k++) {
+      ASSERT_EQ(
+          ctranAllGather(
+              static_cast<char*>(sendPool) + k * chunkBytes,
+              recvbuf,
+              sendCount,
+              dt,
+              ctranComm.get(),
+              stream,
+              algo),
+          commSuccess);
+      CUDACHECK_TEST(cudaMemcpyAsync(
+          static_cast<char*>(snapPool) + k * windowBytes,
+          recvbuf,
+          windowBytes,
+          cudaMemcpyDeviceToDevice,
+          stream));
+    }
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaMemcpy(
+        observed.data(),
+        snapPool,
+        windowBytes * itersPerRound,
+        cudaMemcpyDefault));
+
+    for (int k = 0; k < itersPerRound; k++) {
+      const int globalIter = round * itersPerRound + k;
+      for (int peer = 0; peer < numRanks; peer++) {
+        const size_t base = static_cast<size_t>(peer) * sendCount;
+        for (size_t i = 0; i < sendCount; i++) {
+          expected[base + i] = stressPattern(peer, globalIter, i);
+        }
+      }
+      const int* const got = observed.data() + k * windowElems;
+      const auto diff = std::mismatch(expected.begin(), expected.end(), got);
+      if (diff.first != expected.end()) {
+        corruptedIters++;
+        if (firstBadIter < 0) {
+          const size_t index =
+              static_cast<size_t>(std::distance(expected.begin(), diff.first));
+          firstBadIter = globalIter;
+          firstBadPeer = static_cast<int>(index / sendCount);
+          firstBadElement = index % sendCount;
+          firstBadObserved = *diff.second;
+          firstBadExpected = *diff.first;
+        }
+      }
+    }
+    oobBarrier();
+  }
+
+  // Report the rate even on success. A zero only means something next to the
+  // rate the same config gives without the fence.
+  std::cout << "ctwin back-to-back reuse result: algo=" << algoName
+            << " rank=" << globalRank << " corruptedIters=" << corruptedIters
+            << " of " << (numRounds * itersPerRound)
+            << " sendCount=" << sendCount << std::endl;
+
+  EXPECT_EQ(corruptedIters, 0)
+      << algoName << " returned wrong data on " << corruptedIters << " of "
+      << (numRounds * itersPerRound) << " back-to-back iterations at rank "
+      << globalRank << " (nNodes=" << nNodes << " nLocalRanks=" << nLocalRanks
+      << "); first mismatch at iteration " << firstBadIter
+      << ", chunk from peer " << firstBadPeer << ", element " << firstBadElement
+      << " (byte offset " << firstBadElement * typeSize
+      << " within that chunk): observed " << firstBadObserved << ", expected "
+      << firstBadExpected;
+
+  CUDACHECK_TEST(cudaFree(snapPool));
+  CUDACHECK_TEST(cudaFree(sendPool));
+  oobBarrier();
+  freeSymmetricWindow(win, winBase, windowBytes);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllgatherCtwinBackToBackTest,
+    ::testing::Values(
+        NCCL_ALLGATHER_ALGO::ctwin_rdpipeline,
+        NCCL_ALLGATHER_ALGO::ctwin_pipeline),
+    [](const ::testing::TestParamInfo<enum NCCL_ALLGATHER_ALGO>& info) {
+      return info.param == NCCL_ALLGATHER_ALGO::ctwin_rdpipeline ? "SrdPipeline"
+                                                                 : "Pipeline";
+    });
 
 // A/B for NCCL_CTRAN_AGP_SKIP_MC_INTRA_BARRIER, both settings in one job so a
 // single launch covers the knob on and off.
