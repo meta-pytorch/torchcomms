@@ -371,6 +371,31 @@ TEST_F(CtranIbBootstrapCommonTest, EmptySocketIfnameFailsNoInterfaces) {
   }
 }
 
+// CtranMapper only allocates a request when the caller wants to track the
+// flush, so both skip paths of iflush have to tolerate a null request.
+TEST_F(CtranIbBootstrapCommonTest, IflushSkipPathsAcceptNullRequest) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  auto ctranIb = createCtranIb(
+      /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
+
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+
+  // createCtranIb disables local flush, so the registration handle is never
+  // dereferenced and a non-null placeholder selects the disabled-flush path.
+  int placeholderRegHdl = 0;
+  EXPECT_EQ(
+      ctranIb->iflush(
+          /*dbuf=*/nullptr,
+          /*localRegHdl=*/&placeholderRegHdl,
+          /*req=*/nullptr),
+      commSuccess);
+
+  EXPECT_EQ(
+      ctranIb->iflush(
+          /*dbuf=*/nullptr, /*localRegHdl=*/nullptr, /*req=*/nullptr),
+      commSuccess);
+}
+
 // Test bootstrapStart with specified server address
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
   SocketServerAddr serverAddr = getSocketServerAddress();
