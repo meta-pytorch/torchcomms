@@ -1,0 +1,279 @@
+=======================================================
+Sharded Relay ALLREDUCE — 4x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 4 co-resident jobs, each a separate 8-rank comm issuing one 2-rank relay (max across jobs)
+  NCCL baseline = 4 concurrent 2-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (4 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.048      0.040     1.20x
+      9 KB |      0.051      0.040     1.28x
+     18 KB |      0.053      0.039     1.38x
+     36 KB |      0.060      0.040     1.51x
+     72 KB |      0.059      0.040     1.50x
+    144 KB |      0.060      0.039     1.53x
+    288 KB |      0.057      0.044     1.30x
+    576 KB |      0.064      0.049     1.29x
+    4.5 MB |      0.140      0.105     1.34x
+      9 MB |      0.230      0.133     1.73x
+   13.5 MB |      0.319      0.165     1.93x
+     27 MB |      0.584      0.260     2.24x
+   31.5 MB |      0.674      0.289     2.33x
+     32 MB |      0.683      0.286     2.39x
+     36 MB |      0.756      0.330     2.29x
+     40 MB |      0.832      0.334     2.49x
+     63 MB |      1.277      0.527     2.42x
+   67.5 MB |      1.358      0.586     2.32x
+     72 MB |      1.444      0.580     2.49x
+    135 MB |      2.645      1.040     2.54x
+    144 MB |      2.821      1.088     2.59x
+    256 MB |      4.956      1.926     2.57x
+    512 MB |      9.839      3.671     2.68x
+      1 GB |     19.646      7.288     2.70x
+=======================================================
+
+=======================================================
+Sharded Relay ALLREDUCE — 2x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 2 co-resident jobs, each a separate 8-rank comm issuing one 4-rank relay (max across jobs)
+  NCCL baseline = 2 concurrent 4-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (2 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.047      0.040     1.17x
+      9 KB |      0.050      0.041     1.24x
+     18 KB |      0.052      0.041     1.28x
+     36 KB |      0.053      0.042     1.26x
+     72 KB |      0.055      0.042     1.31x
+    144 KB |      0.061      0.045     1.36x
+    288 KB |      0.064      0.051     1.25x
+    576 KB |      0.067      0.063     1.05x
+    4.5 MB |      0.103      0.098     1.06x
+      9 MB |      0.149      0.129     1.15x
+   13.5 MB |      0.193      0.149     1.29x
+     27 MB |      0.327      0.238     1.38x
+   31.5 MB |      0.372      0.268     1.39x
+     32 MB |      0.376      0.269     1.40x
+     36 MB |      0.417      0.293     1.42x
+     40 MB |      0.460      0.311     1.48x
+     63 MB |      0.694      0.463     1.50x
+   67.5 MB |      0.741      0.489     1.52x
+     72 MB |      0.787      0.526     1.50x
+    135 MB |      1.421      0.994     1.43x
+    144 MB |      1.512      1.110     1.36x
+    256 MB |      2.646      2.059     1.28x
+    512 MB |      5.274      4.036     1.31x
+      1 GB |     10.537      7.987     1.32x
+=======================================================
+
+=======================================================
+Sharded Relay REDUCE-SCATTER — 4x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 4 co-resident jobs, each a separate 8-rank comm issuing one 2-rank relay (max across jobs)
+  NCCL baseline = 4 concurrent 2-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (4 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.035      0.037     0.95x
+      9 KB |      0.036      0.038     0.95x
+     18 KB |      0.038      0.038     1.00x
+     36 KB |      0.039      0.039     1.01x
+     72 KB |      0.045      0.039     1.14x
+    144 KB |      0.037      0.039     0.95x
+    288 KB |      0.043      0.042     1.03x
+    576 KB |      0.049      0.044     1.11x
+    4.5 MB |      0.089      0.085     1.05x
+      9 MB |      0.140      0.100     1.41x
+   13.5 MB |      0.193      0.121     1.60x
+     27 MB |      0.352      0.161     2.18x
+   31.5 MB |      0.408      0.188     2.16x
+     32 MB |      0.410      0.195     2.11x
+     36 MB |      0.457      0.203     2.26x
+     40 MB |      0.507      0.220     2.30x
+     63 MB |      0.775      0.296     2.62x
+   67.5 MB |      0.828      0.299     2.77x
+     72 MB |      0.880      0.322     2.73x
+    135 MB |      1.595      0.604     2.64x
+    144 MB |      1.674      0.626     2.68x
+    256 MB |      2.749      1.046     2.63x
+    512 MB |      5.250      2.087     2.52x
+      1 GB |     10.098      3.912     2.58x
+=======================================================
+
+=======================================================
+Sharded Relay REDUCE-SCATTER — 2x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 2 co-resident jobs, each a separate 8-rank comm issuing one 4-rank relay (max across jobs)
+  NCCL baseline = 2 concurrent 4-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (2 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.039      0.040     0.98x
+      9 KB |      0.042      0.040     1.05x
+     18 KB |      0.043      0.041     1.05x
+     36 KB |      0.043      0.041     1.06x
+     72 KB |      0.041      0.041     0.98x
+    144 KB |      0.042      0.042     1.00x
+    288 KB |      0.043      0.043     1.00x
+    576 KB |      0.047      0.045     1.04x
+    4.5 MB |      0.071      0.071     1.00x
+      9 MB |      0.093      0.096     0.97x
+   13.5 MB |      0.121      0.120     1.01x
+     27 MB |      0.199      0.184     1.08x
+   31.5 MB |      0.222      0.220     1.01x
+     32 MB |      0.227      0.213     1.07x
+     36 MB |      0.246      0.241     1.02x
+     40 MB |      0.271      0.257     1.06x
+     63 MB |      0.402      0.369     1.09x
+   67.5 MB |      0.426      0.395     1.08x
+     72 MB |      0.451      0.395     1.14x
+    135 MB |      0.809      0.612     1.32x
+    144 MB |      0.859      0.652     1.32x
+    256 MB |      1.496      1.102     1.36x
+    512 MB |      2.837      2.146     1.32x
+      1 GB |      5.547      4.071     1.36x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-TO-ALL — 4x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 4 co-resident jobs, each a separate 8-rank comm issuing one 2-rank relay (max across jobs)
+  NCCL baseline = 4 concurrent 2-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (4 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.050      0.041     1.23x
+      9 KB |      0.051      0.041     1.24x
+     18 KB |      0.052      0.041     1.26x
+     36 KB |      0.053      0.041     1.27x
+     72 KB |      0.055      0.045     1.23x
+    144 KB |      0.056      0.044     1.28x
+    288 KB |      0.056      0.045     1.24x
+    576 KB |      0.063      0.048     1.31x
+    4.5 MB |      0.101      0.080     1.26x
+      9 MB |      0.148      0.093     1.59x
+   13.5 MB |      0.193      0.110     1.76x
+     27 MB |      0.321      0.162     1.98x
+   31.5 MB |      0.358      0.172     2.08x
+     32 MB |      0.371      0.164     2.27x
+     36 MB |      0.410      0.181     2.27x
+     40 MB |      0.447      0.200     2.23x
+     63 MB |      0.667      0.268     2.49x
+   67.5 MB |      0.713      0.283     2.52x
+     72 MB |      0.754      0.293     2.58x
+    135 MB |      1.357      0.546     2.49x
+    144 MB |      1.442      0.581     2.48x
+    256 MB |      2.513      1.003     2.50x
+    512 MB |      4.955      1.970     2.52x
+      1 GB |      9.844      3.762     2.62x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-TO-ALL — 2x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 2 co-resident jobs, each a separate 8-rank comm issuing one 4-rank relay (max across jobs)
+  NCCL baseline = 2 concurrent 4-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (2 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.055      0.042     1.32x
+      9 KB |      0.055      0.042     1.30x
+     18 KB |      0.058      0.041     1.43x
+     36 KB |      0.060      0.041     1.45x
+     72 KB |      0.059      0.042     1.42x
+    144 KB |      0.061      0.045     1.36x
+    288 KB |      0.061      0.045     1.37x
+    576 KB |      0.064      0.046     1.38x
+    4.5 MB |      0.082      0.066     1.25x
+      9 MB |      0.107      0.089     1.20x
+   13.5 MB |      0.136      0.112     1.21x
+     27 MB |      0.208      0.166     1.25x
+   31.5 MB |      0.220      0.184     1.19x
+     32 MB |      0.214      0.190     1.13x
+     36 MB |      0.245      0.202     1.21x
+     40 MB |      0.261      0.222     1.18x
+     63 MB |      0.388      0.317     1.22x
+   67.5 MB |      0.417      0.347     1.20x
+     72 MB |      0.428      0.356     1.20x
+    135 MB |      0.757      0.630     1.20x
+    144 MB |      0.808      0.709     1.14x
+    256 MB |      1.394      1.202     1.16x
+    512 MB |      2.727      2.634     1.04x
+      1 GB |      5.403      5.271     1.03x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-GATHER — 4x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 4 co-resident jobs, each a separate 8-rank comm issuing one 2-rank relay (max across jobs)
+  NCCL baseline = 4 concurrent 2-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (4 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.046      0.040     1.14x
+      9 KB |      0.046      0.040     1.14x
+     18 KB |      0.045      0.041     1.10x
+     36 KB |      0.047      0.044     1.07x
+     72 KB |      0.046      0.044     1.04x
+    144 KB |      0.050      0.044     1.13x
+    288 KB |      0.054      0.047     1.15x
+    576 KB |      0.060      0.052     1.14x
+    4.5 MB |      0.138      0.098     1.42x
+      9 MB |      0.233      0.126     1.84x
+   13.5 MB |      0.324      0.154     2.10x
+     27 MB |      0.601      0.247     2.43x
+   31.5 MB |      0.695      0.278     2.50x
+     32 MB |      0.704      0.268     2.63x
+     36 MB |      0.785      0.307     2.56x
+     40 MB |      0.867      0.331     2.62x
+     63 MB |      1.335      0.508     2.63x
+   67.5 MB |      1.419      0.551     2.57x
+     72 MB |      1.494      0.577     2.59x
+    135 MB |      2.704      1.013     2.67x
+    144 MB |      2.842      1.070     2.65x
+    256 MB |      5.039      1.913     2.63x
+    512 MB |     10.011      3.661     2.73x
+      1 GB |     19.792      7.393     2.68x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-GATHER — 2x Parallel Separate-Job Sweep (MI350X, 8 GPUs, torch.bfloat16)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed; max across jobs
+  PARALLEL = 2 co-resident jobs, each a separate 8-rank comm issuing one 4-rank relay (max across jobs)
+  NCCL baseline = 2 concurrent 4-rank NCCL collectives as separate processes (max across jobs)
+=======================================================
+           |         PARALLEL (2 jobs)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.046      0.042     1.11x
+      9 KB |      0.048      0.042     1.15x
+     18 KB |      0.047      0.042     1.11x
+     36 KB |      0.047      0.044     1.06x
+     72 KB |      0.047      0.045     1.04x
+    144 KB |      0.055      0.046     1.20x
+    288 KB |      0.057      0.050     1.14x
+    576 KB |      0.064      0.054     1.18x
+    4.5 MB |      0.142      0.128     1.11x
+      9 MB |      0.230      0.177     1.30x
+   13.5 MB |      0.325      0.232     1.40x
+     27 MB |      0.599      0.401     1.49x
+   31.5 MB |      0.691      0.444     1.55x
+     32 MB |      0.700      0.456     1.54x
+     36 MB |      0.782      0.502     1.56x
+     40 MB |      0.863      0.549     1.57x
+     63 MB |      1.328      0.906     1.47x
+   67.5 MB |      1.422      0.978     1.45x
+     72 MB |      1.512      1.014     1.49x
+    135 MB |      2.743      1.930     1.42x
+    144 MB |      2.923      2.067     1.41x
+    256 MB |      5.117      3.720     1.38x
+    512 MB |     10.091      7.734     1.30x
+      1 GB |     20.124     15.265     1.32x
+=======================================================
