@@ -681,16 +681,24 @@ ncclResult_t pncclAllReduceWithBias(const void* sendbuff, void* recvbuff, size_t
     @param[in]  stream              HIP stream to execute collective on
     @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
     @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
-    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node)
+    @param[in]  lowPrecision        Non-zero to use the low-precision (fp8e4m3) wire format where
+                                    it pays; an internal size-only gate declines to full precision
+                                    silently otherwise. COLLECTIVE -- it must be identical on every
+                                    rank of the call, like datatype, op and the counts. Ranks that
+                                    disagree disagree on how many bytes cross each link, so the
+                                    call hangs or corrupts rather than degrading. */
 ncclResult_t  ncclShardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @cond       include_hidden */
 ncclResult_t pncclShardedRelayMultiGroupAllReduce(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* counts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @endcond */
 
 /*! @brief      Fused Multi-Group Sharded Relay Reduce-Scatter for 2D Sparse Parallelism
@@ -729,16 +737,21 @@ ncclResult_t pncclShardedRelayMultiGroupAllReduce(
     @param[in]  stream              HIP stream to execute collective on
     @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
     @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
-    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node)
+    @param[in]  lowPrecision        Non-zero to use the low-precision (fp8e4m3) wire format where
+                                    it pays. COLLECTIVE; see
+                                    @ref ncclShardedRelayMultiGroupAllReduce. */
 ncclResult_t  ncclShardedRelayMultiGroupReduceScatter(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @cond       include_hidden */
 ncclResult_t pncclShardedRelayMultiGroupReduceScatter(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* recvCounts,
     ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @endcond */
 
 /*! @brief      Fused Multi-Group Sharded Relay All-to-All for 2D Sparse Parallelism
@@ -780,16 +793,21 @@ ncclResult_t pncclShardedRelayMultiGroupReduceScatter(
     @param[in]  stream              HIP stream to execute collective on
     @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
     @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
-    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node)
+    @param[in]  lowPrecision        Non-zero to use the low-precision (fp8e4m3) wire format where
+                                    it pays. COLLECTIVE; see
+                                    @ref ncclShardedRelayMultiGroupAllReduce. */
 ncclResult_t  ncclShardedRelayMultiGroupAllToAll(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @cond       include_hidden */
 ncclResult_t pncclShardedRelayMultiGroupAllToAll(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* segmentCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @endcond */
 
 /*! @brief      Relay operation codes used by @ref ncclRelayPlanInfo */
@@ -954,16 +972,47 @@ ncclResult_t pncclRelayControlConsume(
     @param[in]  stream              HIP stream to execute collective on
     @param[in]  allActiveRanks      2D array of active ranks [nGroups][nActiveRanksPerGroup]
     @param[in]  nActiveRanksPerGroup Number of active ranks per group (typically 2)
-    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node) */
+    @param[in]  nGroups             Number of groups (typically 4 for 8-GPU node)
+    @param[in]  lowPrecision        Non-zero to use the low-precision (fp8e4m3) wire format where
+                                    it pays. COLLECTIVE; see
+                                    @ref ncclShardedRelayMultiGroupAllReduce. */
 ncclResult_t  ncclShardedRelayMultiGroupAllGather(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
 /*! @cond       include_hidden */
 ncclResult_t pncclShardedRelayMultiGroupAllGather(
     const void* const* sendBuffs, void* const* recvBuffs, const size_t* sendCounts,
     ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream,
-    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups);
+    const int* const* allActiveRanks, int nActiveRanksPerGroup, int nGroups,
+    int lowPrecision);
+/*! @endcond */
+
+/*! @brief ABI revision of the four sharded-relay entry points. 2 = they carry lowPrecision. */
+#define NCCL_SHARDED_RELAY_ABI_VERSION 2
+
+/*! @brief      ABI revision of the sharded-relay entry points, as built into this library.
+    @details    Exists for consumers that bind those symbols with NO compiler and NO linker in the
+                chain -- notably the pynccl / sglang path, where `install_rcclx_libs.sh` points a
+                serving venv's `torch/lib` at an rcclx `librccl.so` and a hand-transcribed
+                `ctypes` `argtypes` table supplies the signature.
+
+                C has no name mangling, so a signature change there is undetectable at link time:
+                a venv still carrying a ten-argument table against an eleven-parameter function
+                would pass ten arguments and let the callee read register or stack garbage for
+                `lowPrecision`, so low precision would switch itself on or off at random,
+                silently, in a serving path. `hasattr` probing cannot see an argument-count change.
+                It CAN see this symbol, precisely because the symbol itself is new -- which turns
+                one silent failure into three distinguishable states: ABSENT means a librccl
+                predating low precision, i.e. the old ten-parameter signature; PRESENT AND EQUAL to
+                @ref NCCL_SHARDED_RELAY_ABI_VERSION means safe to bind; PRESENT AND DIFFERENT means
+                a future incompatible change. The macro is the single source of truth, so a C++
+                consumer can compare against it too, though the compiled paths do not need to.
+    @return     The value of @ref NCCL_SHARDED_RELAY_ABI_VERSION this library was built with. */
+int  ncclShardedRelayAbiVersion(void);
+/*! @cond       include_hidden */
+int pncclShardedRelayAbiVersion(void);
 /*! @endcond */
 
 /*! @brief      Reduce-Scatter

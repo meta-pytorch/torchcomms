@@ -397,7 +397,8 @@ class ShardedRelayGraphCaptureReduceScatterTest
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   }
 
   // Run one uncaptured reduce-scatter and verify it, with a barrier either
@@ -664,7 +665,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllReduceMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {
@@ -725,7 +727,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllGatherMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {
@@ -798,7 +801,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {

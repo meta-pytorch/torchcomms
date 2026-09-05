@@ -182,7 +182,8 @@ static ncclResult_t callAllReduceCompat(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision = 0) {
   return ncclShardedRelayMultiGroupAllReduce(
       sendPtrs,
       recvPtrs,
@@ -193,7 +194,8 @@ static ncclResult_t callAllReduceCompat(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 class ShardedRelayMultiGroupAllReduceTest : public ::testing::Test {
