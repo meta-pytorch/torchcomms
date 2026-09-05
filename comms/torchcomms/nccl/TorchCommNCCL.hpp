@@ -225,6 +225,7 @@ class TorchCommNCCL : public TorchCommBackend,
   InitHandle getInitHandle() const override;
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
+  using TorchCommBackend::abort;
   void abort() override;
   bool isAbortSupported() const override;
   bool isAborted() const override;

@@ -193,6 +193,44 @@ initialized and collective operations are permitted.
           &ReconfigureOptions::hints,
           "Additional configuration key-value pairs");
 
+  py::enum_<AbortReason>(m, "AbortReason", "Communicator abort reason.")
+      .value("NONE", AbortReason::NONE)
+      .value("ABORTED", AbortReason::ABORTED)
+      .value("TIMED_OUT", AbortReason::TIMED_OUT)
+      .value("BOOTSTRAP_POLL", AbortReason::BOOTSTRAP_POLL)
+      .value("NETWORK_ERROR", AbortReason::NETWORK_ERROR)
+      .value("INTERNAL_ERROR", AbortReason::INTERNAL_ERROR)
+      .value("IBRC_PROXY_TIMEOUT", AbortReason::IBRC_PROXY_TIMEOUT);
+
+  py::class_<AbortInfo>(m, "AbortInfo", "Immutable communicator abort status.")
+      .def(
+          py::init([](AbortReason reason, std::string context) {
+            return AbortInfo{.reason = reason, .context = std::move(context)};
+          }),
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "")
+      .def_readonly("reason", &AbortInfo::reason)
+      .def_property_readonly(
+          "reason_str",
+          [](const AbortInfo& info) {
+            return std::string{info.reasonString()};
+          })
+      .def_readonly("context", &AbortInfo::context)
+      .def(
+          "__eq__",
+          [](const AbortInfo& lhs, const AbortInfo& rhs) { return lhs == rhs; },
+          py::is_operator())
+      .def(
+          "__hash__",
+          [](const AbortInfo& info) {
+            return py::hash(py::make_tuple(info.reason, info.context));
+          })
+      .def("__repr__", [](const AbortInfo& info) {
+        return "AbortInfo(reason=" + std::string{info.reasonString()} +
+            ", context=" + py::repr(py::str(info.context)).cast<std::string>() +
+            ")";
+      });
+
   // Bind TorchWork class
   intrusive_ptr_class_<TorchWork>(
       m,
@@ -1387,7 +1425,9 @@ Example:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "abort",
-          &TorchComm::abort,
+          [](TorchComm& self, AbortReason reason, const std::string& context) {
+            self.abort(AbortInfo{.reason = reason, .context = context});
+          },
           R"(
 Abort the communicator, stopping all in-flight operations.
 
@@ -1398,9 +1438,15 @@ can then be recovered via reconfigure().
 In non-reconfigurable mode, this performs a destructive abort of the NCCL
 communicator.
 
-Does not raise exceptions. After calling abort(), subsequent collective
-operations will fail until reconfigure() is called (in reconfigurable mode).
+After calling abort(), subsequent collective operations will fail until
+reconfigure() is called (in reconfigurable mode).
+
+Raises:
+    ValueError: If reason is NONE or is not a recognized terminal reason.
+    RuntimeError: If the communicator state or backend rejects the operation.
           )",
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "is_abort_supported",
@@ -1424,6 +1470,13 @@ detect failures.
 
 Returns:
     bool: True if the communicator has been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_abort_info",
+          &TorchComm::getAbortInfo,
+          R"(
+Return the communicator's first abort reason and diagnostic context.
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(

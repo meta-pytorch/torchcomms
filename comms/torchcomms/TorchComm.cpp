@@ -9,6 +9,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <atomic>
 #include <limits>
+#include <stdexcept>
 
 namespace torch::comms {
 
@@ -516,12 +517,23 @@ void TorchComm::abort() {
   impl_->abort();
 }
 
+void TorchComm::abort(const AbortInfo& info) {
+  if (!::comms::fault_tolerance::isTerminalAbortReason(info.reason)) {
+    throw std::invalid_argument("Invalid terminal abort reason");
+  }
+  impl_->abort(info);
+}
+
 bool TorchComm::isAbortSupported() const {
   return impl_->isAbortSupported();
 }
 
 bool TorchComm::isAborted() const {
   return impl_->isAborted();
+}
+
+std::optional<AbortInfo> TorchComm::getAbortInfo() const {
+  return impl_->getAbortInfo();
 }
 
 void TorchComm::setTimeout(std::chrono::milliseconds timeout) {
