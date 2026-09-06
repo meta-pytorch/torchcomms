@@ -139,7 +139,7 @@ TEST_P(TcpConnTest, SpanRecvRecordsPhaseStats) {
   EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), sent.size());
 
   stats.reset();
-  EXPECT_EQ(stats.headerWaitNs.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.interFrameStallNs.load(std::memory_order_relaxed), 0);
   EXPECT_EQ(stats.payloadDrainNs.load(std::memory_order_relaxed), 0);
   EXPECT_EQ(stats.frames.load(std::memory_order_relaxed), 0);
   EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), 0);
