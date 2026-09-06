@@ -70,3 +70,14 @@ target_include_directories(ctran PRIVATE
 if(MCCL_ENABLE_PRIMS)
     target_compile_definitions(ctran PRIVATE ENABLE_PRIMS=1)
 endif()
+
+if(TARGET mccl_rdma_core)
+    # This directory's ctran target is the sole CMake owner of this source.
+    # Keep this source-local define and the provider link together if that
+    # ownership changes; other ibverbx translation units use wrapper types.
+    set_property(SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ibverbx/IbverbxSymbols.cc"
+        APPEND PROPERTY COMPILE_DEFINITIONS IBVERBX_BUILD_RDMA_CORE=1
+    )
+    target_link_libraries(ctran PRIVATE mccl_rdma_core)
+endif()
