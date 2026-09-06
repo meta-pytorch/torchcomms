@@ -401,7 +401,7 @@ inline void progressRecvPostFlush(
   char* tmpRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
-  CtranMapperRequest* req;
+  CtranMapperRequest* req = nullptr;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
