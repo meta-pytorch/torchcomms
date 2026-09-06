@@ -204,7 +204,8 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
-        build_args = ["--", "-j"]
+        build_jobs = os.environ.get("NCCL_BUILD_JOBS")
+        build_args = ["--", "-j", build_jobs] if build_jobs else ["--", "-j"]
 
         os.chdir(str(build_temp))
         self.spawn(["cmake", str(cwd)] + cmake_args)
