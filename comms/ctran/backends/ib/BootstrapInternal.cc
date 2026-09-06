@@ -27,18 +27,10 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
+#include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ScubaLogger.h"
-
-// strerrorname_np() is a glibc >= 2.32 GNU extension. Guard its use so builds
-// against older glibc (e.g. the OSS almalinux toolchain) still compile; the
-// error name simply falls back to "UNKNOWN" there.
-#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
-#if __GLIBC_PREREQ(2, 32)
-#define IBVERBX_HAS_STRERRORNAME_NP 1
-#endif
-#endif
 
 namespace {
 const std::string kCtranIbLogEventName{"CtranIb-QpExchange"};
@@ -48,18 +40,14 @@ const uint64_t kBootstrapMagic = 0xfaceb00cdeadbeef;
 std::string socketErrorContext(int error) {
   const bool hasValidMagnitude = error != std::numeric_limits<int>::min();
   const int errnoValue = hasValidMagnitude && error < 0 ? -error : error;
-  const char* errorName = nullptr;
-#ifdef IBVERBX_HAS_STRERRORNAME_NP
-  if (hasValidMagnitude) {
-    errorName = ::strerrorname_np(errnoValue);
-  }
-#endif
+  const std::string errorName =
+      hasValidMagnitude ? errnoToNameStr(errnoValue) : "UNKNOWN";
   const std::string description =
       hasValidMagnitude ? folly::errnoStr(errnoValue) : "invalid errno value";
   return fmt::format(
       "origin=socket_error subsystem=ctran_ib error_code={} error_name={} error_description=\"{}\"",
       error,
-      errorName != nullptr ? errorName : "UNKNOWN",
+      errorName,
       folly::cEscape<std::string>(description));
 }
 } // namespace
