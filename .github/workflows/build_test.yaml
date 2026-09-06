@@ -84,6 +84,9 @@ jobs:
 
         export DISABLED_TESTS="${{ vars.DISABLED_TESTS }}"
 
+        # NCCLX is ON by default and cmake configure no longer builds it.
+        bash build_ncclx.sh
+
         # Build and run C++ tests
         cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
         cmake --build build_tests
