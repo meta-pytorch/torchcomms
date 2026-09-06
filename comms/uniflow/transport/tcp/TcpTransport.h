@@ -879,6 +879,22 @@ class TcpTransport : public Transport {
   // Reader thread, one per lane: blocking recv + demultiplex on that lane's
   // socket until it closes. Takes the lane index rather than reading a single
   // member, because each reader owns exactly one socket.
+  /// True when something other than the read timeout can notice a dead peer.
+  ///
+  /// Tolerating an idle SO_RCVTIMEO is only safe if death is detected some
+  /// other way. Keepalive and TCP_USER_TIMEOUT are those ways, and the default
+  /// config sets both. TcpSocketConfig::osDefaults() sets neither -- every
+  /// field is nullopt -- and Linux's own keepalive default is off, so on that
+  /// config the read timeout is the only liveness signal there is, and the
+  /// reader has to keep treating it as one.
+  ///
+  /// enableKeepalive is read with value_or(false), not has_value(): nullopt
+  /// means "leave it to the OS", and the OS answer is off.
+  bool hasPeerLivenessDetection() const {
+    return config_.socketConfig.enableKeepalive.value_or(false) ||
+        config_.socketConfig.userTimeout.has_value();
+  }
+
   void readerLoop(size_t laneIdx) noexcept;
 
   // Sender thread, one per lane: drains that lane's queue and performs its

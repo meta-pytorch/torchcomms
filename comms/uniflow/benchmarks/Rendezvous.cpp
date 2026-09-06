@@ -3,7 +3,6 @@
 #include "comms/uniflow/benchmarks/Rendezvous.h"
 
 #include <algorithm>
-#include <cerrno>
 #include <cstring>
 
 #include "comms/uniflow/controller/TcpController.h"
@@ -119,7 +118,7 @@ Result<std::vector<PeerConnection>> Rendezvous::establish(
   return peers;
 }
 
-/// Retry recv on EAGAIN — the peer may be slow to reach the barrier during
+/// Retry recv on a timeout — the peer may be slow to reach the barrier during
 /// long benchmark runs, causing SO_RCVTIMEO to fire.
 ///
 /// The bound is 300 retries x the connection's SO_RCVTIMEO. The rendezvous is
@@ -138,19 +137,31 @@ static Result<size_t> recvRetryEagain(
     if (result) {
       return result;
     }
-    if ((errno == EAGAIN || errno == EWOULDBLOCK) && retries < kMaxRetries) {
+    // Tested on the error code, not the global errno. errno is unreliable by
+    // the time it is readable here: recv() returns through a promise/future,
+    // and the failure path builds its message with
+    // std::system_category().message() and a concatenation first -- four
+    // allocation sites between the syscall and this line, any of which may set
+    // errno. syncRecv now reports a timeout as ErrCode::Timeout, which survives
+    // the round trip intact.
+    const bool timedOut = result.error().code() == ErrCode::Timeout;
+    if (timedOut && retries < kMaxRetries) {
       ++retries;
       UNIFLOW_LOG_INFO(
-          "barrier: recv got EAGAIN, retrying ({}/{})...",
-          retries,
-          kMaxRetries);
+          "barrier: recv timed out, retrying ({}/{})...", retries, kMaxRetries);
       continue;
     }
-    if (retries >= kMaxRetries) {
+    if (timedOut) {
+      // Only a genuine timeout is reported as one. The previous form keyed this
+      // branch on the retry count alone, so a connection error arriving after
+      // the retries happened to be exhausted was reported as an EAGAIN timeout
+      // -- the wrong cause, in the message an operator reads while diagnosing a
+      // stall.
       return Err(
-          ErrCode::ConnectionFailed,
+          ErrCode::Timeout,
           "barrier: recv timed out after " + std::to_string(kMaxRetries) +
-              " EAGAIN retries (~5 minutes)");
+              " retries of the connection's SO_RCVTIMEO (~2.5 hours at the "
+              "default 30s)");
     }
     return result;
   }
