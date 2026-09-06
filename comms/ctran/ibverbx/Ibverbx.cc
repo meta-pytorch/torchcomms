@@ -3,11 +3,6 @@
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
-#ifdef IBVERBX_BUILD_RDMA_CORE
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-#endif
-
 #include <dlfcn.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Singleton.h>

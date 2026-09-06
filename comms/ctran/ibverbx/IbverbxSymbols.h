@@ -4,11 +4,6 @@
 
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
-#ifdef IBVERBX_BUILD_RDMA_CORE
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-#endif
-
 namespace ibverbx {
 
 struct IbvSymbols {
