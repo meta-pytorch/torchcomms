@@ -293,6 +293,19 @@ Result<TcpTransportInfo> TcpTransportInfo::deserialize(
   // keeps the old exact-size guarantee: trailing junk is still rejected.
   size_t offset = sizeof(header) + header.hostLen;
   while (offset < data.size()) {
+    // Bounded before an Endpoint is built, not after. connect() does compare
+    // the count against the local device count, but only once the whole vector
+    // exists, and a record whose host is empty is a bare 4-byte Header -- so an
+    // uncapped parse turns peer-supplied bytes into ~16.7M Endpoint objects at
+    // the control channel's 64 MiB limit, and more on the paths that reach
+    // connect() without passing through the controller.
+    if (info.endpointCount() >= kMaxLanes) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp transport info advertises more than " +
+              std::to_string(kMaxLanes) +
+              " endpoints, which is above the lane cap");
+    }
     if (data.size() - offset < sizeof(Header)) {
       return Err(
           ErrCode::InvalidArgument,
@@ -589,8 +602,9 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
 
   // Lanes are configured per device, so every device gets a full complement and
   // no device can end up without a lane. It is the product that has to fit the
-  // uint16_t the hello addresses lanes with.
-  constexpr size_t kMaxLanes = 1024;
+  // uint16_t the hello addresses lanes with. kMaxLanes lives in the header
+  // because deserialize() bounds the peer's endpoint count against the same
+  // number.
   const size_t lanesPerDevice =
       std::max<size_t>(config_.numSocketsPerDevice, 1);
   const size_t laneCount = lanesPerDevice * localDevices;

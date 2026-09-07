@@ -620,6 +620,43 @@ TEST(TcpTransportInfoTest, RejectsTrailingGarbage) {
   EXPECT_EQ(parsed.error().code(), ErrCode::InvalidArgument);
 }
 
+// The record count is peer-supplied, and connect() only compares it against the
+// local device count once the whole vector exists. An endpoint whose host is
+// empty is a bare 4-byte Header, so without a cap the 64 MiB the control
+// channel admits parses into ~16.7M Endpoint objects before being rejected --
+// and the callers that reach connect() without going through the controller are
+// bounded only by the uint32_t child length, which is far larger.
+TEST(TcpTransportInfoTest, RejectsMoreEndpointsThanLanesCanAddress) {
+  TcpTransportInfo info;
+  info.host = "2401:db00::1";
+  info.port = 100;
+  // One past the cap, since the primary endpoint counts toward it.
+  info.extraEndpoints.resize(kMaxLanes);
+
+  auto parsed = TcpTransportInfo::deserialize(info.serialize());
+
+  ASSERT_TRUE(parsed.hasError())
+      << "an endpoint count above the lane cap has to be refused while parsing,"
+         " not after the vector has been built";
+  EXPECT_EQ(parsed.error().code(), ErrCode::InvalidArgument);
+}
+
+// The complement, and the one that matters more: the cap must not refuse a
+// count connect() would have accepted. kMaxLanes endpoints is reachable with
+// numSocketsPerDevice == 1, so this is a legal configuration and not a boundary
+// curiosity.
+TEST(TcpTransportInfoTest, AcceptsTheLargestAddressableEndpointCount) {
+  TcpTransportInfo info;
+  info.host = "2401:db00::1";
+  info.port = 100;
+  info.extraEndpoints.resize(kMaxLanes - 1);
+
+  auto parsed = TcpTransportInfo::deserialize(info.serialize());
+
+  ASSERT_TRUE(parsed.hasValue()) << parsed.error().message();
+  EXPECT_EQ(parsed.value().endpointCount(), kMaxLanes);
+}
+
 // Placement is derived from the lane index on both sides rather than
 // negotiated, so a device-count mismatch has to be caught up front. Left
 // undetected it would put lanes on the wrong NIC, which is the exact class of
