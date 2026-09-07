@@ -68,6 +68,14 @@ class MockCudaApi : public CudaApi {
        cudaStream_t stream),
       (override));
 
+  MOCK_METHOD(
+      Status,
+      streamCreateNonBlocking,
+      (cudaStream_t * stream),
+      (override));
+
+  MOCK_METHOD(Status, streamDestroy, (cudaStream_t stream), (override));
+
   MOCK_METHOD(Status, streamSynchronize, (cudaStream_t stream), (override));
 
   MOCK_METHOD(Status, eventCreate, (cudaEvent_t * event), (override));
