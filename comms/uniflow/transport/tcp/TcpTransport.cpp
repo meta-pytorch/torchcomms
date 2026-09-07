@@ -1852,9 +1852,15 @@ Status TcpTransport::startAsyncH2d(
     if (event != nullptr) {
       destroyH2dEvent(h2dState_, entry.deviceId, event);
     }
+    // Deliberately broad, so the message reports what happened rather than
+    // diagnosing why. Today the only throw source is CudaDeviceGuard's
+    // setDevice, but the guarded region also runs the copy, so naming
+    // device selection as the cause would mislabel anything else that threw --
+    // a bad_alloc while building this very string, for instance. e.what()
+    // carries the real cause.
     status =
         Err(ErrCode::InvalidArgument,
-            "tcp get: VRAM destination needs a selectable deviceId, got " +
+            "tcp get: VRAM destination copy threw for deviceId " +
                 std::to_string(entry.deviceId) + ": " + e.what());
     entry.state->endWrite(status);
     return status;
@@ -3075,12 +3081,35 @@ void TcpTransport::handleFrameImpl(
           const auto tCopyStart = std::chrono::steady_clock::now();
           Status st = Ok();
           if (entry.memType == MemoryType::VRAM) {
-            st = deviceFromHost(
-                entry.dst,
-                payload.data(),
-                header.len,
-                entry.deviceId,
-                entry.stream);
+            // Returned as a Status rather than allowed to throw. This lambda
+            // runs under writeAndComplete, which rethrows after recording the
+            // failure, and its caller is handleFrameImpl -- so an escaping
+            // exception reaches handleFrame's noexcept boundary, which stops
+            // the reader and fails every other inflight op on the connection.
+            //
+            // That escalation is right where protocol state is in doubt, which
+            // is what the inbound-staging path does. It is wrong here: this
+            // op's admission was already erased above, endWrite records its
+            // failure, and the only thing left half-written is this caller's
+            // own destination, which a failed op already leaves undefined. The
+            // throw comes from CudaDeviceGuard on a locally-registered
+            // deviceId, so a caller's own misconfiguration would otherwise take
+            // down transfers belonging to everyone else on the connection.
+            try {
+              st = deviceFromHost(
+                  entry.dst,
+                  payload.data(),
+                  header.len,
+                  entry.deviceId,
+                  entry.stream);
+            } catch (const std::exception& e) {
+              // Broad on purpose; see the retirement path's note. The message
+              // says the copy threw, not what it presumes threw it.
+              st =
+                  Err(ErrCode::InvalidArgument,
+                      "tcp get: VRAM destination copy threw for deviceId " +
+                          std::to_string(entry.deviceId) + ": " + e.what());
+            }
           } else {
             std::memcpy(entry.dst, payload.data(), header.len);
           }
