@@ -563,7 +563,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// The transport's own staging pool, created on the first call exactly as a
   /// VRAM read would create it.
   std::shared_ptr<TcpPinnedSlabPool> transportStagingPool() {
-    auto pool = transport_->stagingPool();
+    auto pool = TcpTransport::stagingPool(transport_->reply_);
     EXPECT_TRUE(pool.hasValue());
     return pool.hasValue() ? pool.value() : nullptr;
   }
