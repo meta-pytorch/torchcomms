@@ -508,6 +508,29 @@ bool TcpConn<IOPolicy>::sendAllVec(std::span<iovec> iov) {
   return true;
 }
 
+// Classifies a failed recvAll() while errno is still the one recvAll saw.
+//
+// recvAll restores errno before returning false precisely so a caller can read
+// it, but only until the next call that can overwrite it -- and formatting the
+// message allocates. So this captures first and formats second. Callers must
+// not read the global errno after the Result has travelled anywhere; that was
+// the defect this replaces, where a retry loop tested errno after a
+// promise/future round trip and several string constructions.
+//
+// A timeout is reported as ErrCode::Timeout rather than ConnectionFailed
+// because the two mean different things on a connected socket. SO_RCVTIMEO is
+// set on every connected socket to bound the handshake against a peer that
+// accepts and then stops responding; on a socket that is merely idle between
+// transfers the same timeout fires with EAGAIN, and a caller that cannot tell
+// those apart has to treat normal idleness as a dead peer.
+Err classifyRecvFailure(const char* what) {
+  const int savedErrno = errno;
+  const bool timedOut = savedErrno == EAGAIN || savedErrno == EWOULDBLOCK;
+  return Err(
+      timedOut ? ErrCode::Timeout : ErrCode::ConnectionFailed,
+      std::string(what) + ": " + std::system_category().message(savedErrno));
+}
+
 template <typename IOPolicy>
 bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
@@ -519,6 +542,28 @@ bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
         continue;
       }
       int savedErrno = errno;
+      // A timeout that lands MID-FRAME is not idleness, and must not be
+      // reported as one. recvAll holds no cross-call reassembly state, so the
+      // bytes already taken off the socket cannot be resumed: a caller that
+      // treats ErrCode::Timeout as an idle gap and retries would read the
+      // remainder of this frame as a fresh length prefix, desynchronising the
+      // stream and most likely producing a garbage length. `remaining != len`
+      // catches progress made WITHIN this call only -- it cannot see that a
+      // previous recvAll already took the header off the socket, which is why
+      // syncRecv treats any failure of its payload read as fatal too. Reported
+      // as EPROTO so
+      // classifyRecvFailure() maps it to ConnectionFailed and the connection is
+      // torn down, which is what happened before timeouts became retryable.
+      if ((savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) &&
+          remaining != len) {
+        UNIFLOW_LOG_ERROR(
+            "recvAll timed out mid-frame, tearing down: fd={} received={} "
+            "expected={}",
+            sock_,
+            len - remaining,
+            len);
+        savedErrno = EPROTO;
+      }
       UNIFLOW_LOG_ERROR(
           "recvAll failed: fd={} errno={} ({})",
           sock_,
@@ -659,9 +704,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
   const auto tFirstByte = std::chrono::steady_clock::now();
 
@@ -676,9 +719,25 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   data.resize(len);
   if (len != 0 && !recvAll(data.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    // Never reported as a retryable Timeout, whatever errno says. The header is
+    // already off the socket, so this frame is half-consumed and recvAll
+    // exposes no offset to resume from -- a caller that treated this as an idle
+    // gap and retried would read the payload as the next length prefix and
+    // desynchronise the stream. recvAll's own mid-frame guard cannot catch this
+    // case: the payload read starts with remaining == len, so a timeout that
+    // fires before the first payload byte arrives looks like zero progress to
+    // it, even though progress was made by the PREVIOUS recvAll call for the
+    // header.
+    auto failure = classifyRecvFailure("recv payload failed");
+    if (failure.code() == ErrCode::Timeout) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          std::string(
+              "recv payload failed mid-frame after the header was "
+              "consumed: ") +
+              failure.message());
+    }
+    return failure;
   }
 
   const auto tDone = std::chrono::steady_clock::now();
@@ -707,9 +766,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
 
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
   const auto tFirstByte = std::chrono::steady_clock::now();
 
@@ -730,9 +787,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
   }
 
   if (len != 0 && !recvAll(buf.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv payload failed");
   }
 
   const auto tDone = std::chrono::steady_clock::now();

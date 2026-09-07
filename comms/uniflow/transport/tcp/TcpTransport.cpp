@@ -519,6 +519,19 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
     return Err(
         ErrCode::InvalidArgument, "tcp connect: transport must be bound first");
   }
+  if (!hasPeerLivenessDetection()) {
+    // Said once per connect rather than left to be rediscovered. With neither
+    // keepalive nor TCP_USER_TIMEOUT, the read timeout is the only thing that
+    // can notice a dead peer -- so the reader must keep treating an idle
+    // timeout as fatal, and an idle gap longer than it will close a healthy
+    // connection. That is the pre-existing behaviour, not a new one, but it is
+    // a choice this config is making silently.
+    UNIFLOW_LOG_WARN(
+        "tcp connect: socket config sets neither keepalive nor "
+        "TCP_USER_TIMEOUT, so an idle gap longer than the recv timeout will "
+        "close the connection; set enableKeepalive or userTimeout to tolerate "
+        "idle peers");
+  }
 
   auto peerResult = TcpTransportInfo::deserialize(remoteInfo);
   if (!peerResult) {
@@ -2803,6 +2816,24 @@ void TcpTransport::readerLoop(size_t laneIdx) noexcept {
                                 receiveSlab.data(), receiveSlab.capacity()})
                         .get();
       if (!result) {
+        if (result.error().code() == ErrCode::Timeout &&
+            hasPeerLivenessDetection()) {
+          // Idle, not dead. SO_RCVTIMEO is set on every connected socket to
+          // bound the *handshake* against a peer that accepts and then stops
+          // responding; it is not a steady-state read deadline. An idle gap
+          // between transfers -- the normal state of a prefill/decode
+          // connection between bursts -- fires the same timeout, and breaking
+          // here tore the connection down and failed every in-flight op for it.
+          //
+          // Dead peers are detected by SO_KEEPALIVE and TCP_USER_TIMEOUT, which
+          // this transport's own socket config already plumbs, and which is the
+          // mechanism actually designed for it. Guarded on that being true: a
+          // config with neither -- osDefaults() sets every field nullopt, and
+          // Linux defaults keepalive off -- has no other liveness signal, so
+          // tolerating the timeout there would trade a wrongly-closed
+          // connection for one that never notices a dead peer at all.
+          continue;
+        }
         break;
       }
       const auto* receiveData = receiveSlab.data();
@@ -2816,7 +2847,12 @@ void TcpTransport::readerLoop(size_t laneIdx) noexcept {
     vectorReceiveCount_.fetch_add(1, std::memory_order_relaxed);
     auto result = conn->recv(msg).get();
     if (!result) {
-      // Connection closed, errored, or idle-timed-out; stop reading.
+      if (result.error().code() == ErrCode::Timeout &&
+          hasPeerLivenessDetection()) {
+        // Idle rather than closed or errored -- see the slab path above.
+        continue;
+      }
+      // Connection closed or errored; stop reading.
       break;
     }
     handleFrame(msg);
