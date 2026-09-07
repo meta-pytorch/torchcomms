@@ -80,6 +80,42 @@ class FailingConn : public controller::Conn {
   int closeCount{0};
 };
 
+/// A connection whose recv() reports ErrCode::Timeout a fixed number of times
+/// and then fails for real. Models an idle data socket: SO_RCVTIMEO fires while
+/// the peer is simply between transfers, and only afterwards does the
+/// connection actually break.
+class IdleThenFailConn : public controller::Conn {
+ public:
+  explicit IdleThenFailConn(int timeouts) : remaining_(timeouts) {}
+
+  std::future<Result<size_t>> send(std::span<const uint8_t> data) override {
+    return make_ready_future<Result<size_t>>(Result<size_t>(data.size()));
+  }
+  std::future<Result<size_t>> recv(std::vector<uint8_t>&) override {
+    return make_ready_future<Result<size_t>>(next());
+  }
+  std::future<Result<size_t>> recv(std::span<uint8_t>) override {
+    return make_ready_future<Result<size_t>>(next());
+  }
+  void close() override {}
+
+  int timeoutsDelivered() const {
+    return delivered_.load(std::memory_order_acquire);
+  }
+
+ private:
+  Result<size_t> next() {
+    if (remaining_.fetch_sub(1, std::memory_order_acq_rel) > 0) {
+      delivered_.fetch_add(1, std::memory_order_release);
+      return Err(ErrCode::Timeout, "test: recv timed out while idle");
+    }
+    return Err(ErrCode::ConnectionFailed, "test: connection really failed");
+  }
+
+  std::atomic<int> remaining_;
+  std::atomic<int> delivered_{0};
+};
+
 /// A connection that accepts every send and counts them, for the tests that
 /// need the sender to actually drain the queue.
 class CountingConn : public controller::Conn {
@@ -508,6 +544,26 @@ class TcpTransportFrameTest : public ::testing::Test {
 
   void runSenderLoop() {
     transport_->senderLoop(0);
+  }
+
+  /// Runs lane 0's reader loop on the calling thread. It returns when the loop
+  /// exits, so a test can assert on *whether* it exited rather than polling.
+  void runReaderLoop() {
+    transport_->readerLoop(0);
+  }
+
+  /// Drops both liveness mechanisms, the way TcpSocketConfig::osDefaults()
+  /// does.
+  void clearPeerLivenessConfig() {
+    transport_->config_.socketConfig.enableKeepalive = std::nullopt;
+    transport_->config_.socketConfig.userTimeout = std::nullopt;
+  }
+
+  IdleThenFailConn& installIdleThenFailConn(int timeouts) {
+    auto conn = std::make_unique<IdleThenFailConn>(timeouts);
+    auto& ref = *conn;
+    installLaneConn(std::move(conn));
+    return ref;
   }
 
   /// Installs a connection whose send() parks until released, so the sender
@@ -1214,6 +1270,58 @@ TEST_F(
       std::string::npos)
       << "the failure must be attributed to this op's own copy, not to a "
          "connection error";
+}
+
+// SO_RCVTIMEO is set on every connected socket to bound the *handshake* against
+// a peer that accepts and then stops responding. It is not a read deadline, but
+// it applies for the connection's whole life, so an idle gap between transfers
+// -- the normal state of a prefill/decode connection between bursts -- fires
+// exactly the same EAGAIN. Treating that as a dead peer tore the connection
+// down every 30s of quiet and failed every in-flight op with it.
+//
+// The reader must consume timeouts and keep serving, and still exit on a real
+// failure. Dead peers are detected by SO_KEEPALIVE / TCP_USER_TIMEOUT, which
+// the socket config already plumbs.
+TEST_F(TcpTransportFrameTest, AnIdleRecvTimeoutDoesNotEndTheReader) {
+  setConnected();
+  setReaderRunning();
+  // Three idle timeouts, then the connection genuinely breaks. Without the fix
+  // the loop exits on the first one and only one is ever delivered.
+  auto& conn = installIdleThenFailConn(/*timeouts=*/3);
+
+  // Returns when the loop exits, which the real failure guarantees it will.
+  runReaderLoop();
+
+  // That runReaderLoop() returned at all is the proof it still exits on a real
+  // failure -- a reader that treated every error as idleness would spin here
+  // and the test would time out rather than fail. running_ is deliberately not
+  // asserted: readerLoop does not clear it on the way out, shutdown() does, so
+  // EXPECT_FALSE(readerRunning()) would be asserting something this code never
+  // promised.
+  EXPECT_EQ(conn.timeoutsDelivered(), 3)
+      << "the reader stopped on an idle timeout instead of continuing; a "
+         "prefill/decode connection would be torn down between bursts";
+}
+
+// The other half of the contract. Tolerating an idle timeout is only safe when
+// something else can notice a dead peer; osDefaults() sets neither keepalive
+// nor TCP_USER_TIMEOUT, and Linux defaults keepalive off, so there the read
+// timeout is the only liveness signal there is. Continuing on it would trade a
+// wrongly-closed connection for one that never notices the peer is gone.
+TEST_F(
+    TcpTransportFrameTest,
+    AnIdleTimeoutStillEndsTheReaderWithNoLivenessConfig) {
+  setConnected();
+  setReaderRunning();
+  clearPeerLivenessConfig();
+  // Offers three timeouts; only the first should ever be taken.
+  auto& conn = installIdleThenFailConn(/*timeouts=*/3);
+
+  runReaderLoop();
+
+  EXPECT_EQ(conn.timeoutsDelivered(), 1)
+      << "with no keepalive and no TCP_USER_TIMEOUT the read timeout is the only "
+         "way a dead peer is ever noticed, so the reader must still stop on it";
 }
 
 // A vector-backed READ_REPLY still copies synchronously. Resolving the op's
