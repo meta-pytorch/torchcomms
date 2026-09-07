@@ -864,6 +864,13 @@ class TcpTransport : public Transport {
 
   void shutdown() override;
 
+  /// Logs the get-path phase split (inter-frame stall / drain / destination
+  /// copy) and clears it, so a caller can bracket one measurement. Reads lanes_
+  /// without a lock: callable only between a completed connect() and
+  /// shutdown(). See the definition for why that is a contract rather than a
+  /// mutex.
+  void logAndResetPhaseStats(std::string_view label);
+
  private:
   // Needs handleFrame() plus the outbound queue to drive peer-supplied frames
   // directly and assert the bounds checks reject them. Those checks are the
@@ -879,12 +886,6 @@ class TcpTransport : public Transport {
   // member, because each reader owns exactly one socket.
   void readerLoop(size_t laneIdx) noexcept;
 
- public:
-  /// Logs the get-path phase split (first-byte / drain / destination copy) and
-  /// zeroes it so callers can bracket a single measurement.
-  void logAndResetPhaseStats(std::string_view label);
-
- private:
   // Sender thread, one per lane: drains that lane's queue and performs its
   // socket sends. One writer per socket, which is what keeps TcpConn's
   // single-writer requirement satisfied.

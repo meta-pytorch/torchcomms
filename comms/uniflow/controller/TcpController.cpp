@@ -651,7 +651,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
-  // Split the wait: blocking on the length prefix is first-byte latency,
+  // Split the wait: blocking on the next length prefix is inter-frame stall,
   // blocking on the payload is drain time. Two clock reads per frame (~20ns
   // each) against a frame that takes hundreds of microseconds.
   auto& stats = recvPhaseStats();
@@ -683,7 +683,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   const auto tDone = std::chrono::steady_clock::now();
   using ns = std::chrono::nanoseconds;
-  stats.headerWaitNs.fetch_add(
+  stats.interFrameStallNs.fetch_add(
       std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
       std::memory_order_relaxed);
   stats.payloadDrainNs.fetch_add(
@@ -737,7 +737,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
 
   const auto tDone = std::chrono::steady_clock::now();
   using ns = std::chrono::nanoseconds;
-  stats.headerWaitNs.fetch_add(
+  stats.interFrameStallNs.fetch_add(
       std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
       std::memory_order_relaxed);
   stats.payloadDrainNs.fetch_add(
