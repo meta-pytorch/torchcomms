@@ -2067,14 +2067,30 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable bidirectional Ring reduce-scatter and all-gather for non-LL
      collectives with more than two nodes on both staged-copy and registered
      zero-copy paths. Out-of-place ranks stage their input before running the
      same peer schedule. Fine-grained tracing is suppressed without changing
      that schedule. A divergent value across ranks fails communicator
-     initialization.
+     initialization. Enabled by default; set false to use the unidirectional
+     Ring path.
+
+ - name        : MCCL_ALLREDUCE_RING_BIDIR_MAX_BYTES
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Total message bytes strictly below which MCCL fused Ring AllReduce uses
+     the bidirectional schedule when
+     MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE is enabled. This threshold is
+     resolved for every collective call rather than communicator creation.
+     Set it identically on every rank; like the collective's count and
+     datatype, a divergent value can select incompatible peer schedules.
+
+       0  (default) apply no size gate; preserve the enabled setting at every
+          message size.
+      >0  use bidirectional strictly below this many total message bytes.
 
  - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
    type        : bool
@@ -3427,7 +3443,19 @@ cvars:
    description : |-
      Number of independent Phase-2 IB progress groups per physical CUDA block
      in MCCL fused AllReduce. Ring and Tree support 1, 2, 4, and 10. The
-     default preserves the existing full-block protocol.
+     generated cvar default is 1. When MCCL fused Ring is selected and this
+     cvar is not explicitly configured, communicator initialization instead
+     selects 10 stripes for block caps 1 through 3, 4 stripes at block cap 4,
+     2 stripes for caps 5 through 16, and 1 stripe above 16 on GB300. This
+     keeps the implicit geometry at or below the validated 32-group budget.
+     Other GPU architectures, an enabled warp proxy, and platforms without
+     virtual-stripe support retain one implicit stripe. Tree retains the
+     generated default. An
+     explicit value always wins and Ring retains its existing per-call read and
+     validation. If stripes or MCCL_MAX_NBLOCKS change after communicator
+     initialization, the stored channel budget retains the existing block
+     clamp and emits a once-per-communicator WARN when it reduces the requested
+     block count.
 
  - name        : MCCL_MAX_NCHANNELS
    type        : int
@@ -3436,7 +3464,14 @@ cvars:
      Maximum number of fixed prims IB channels per peer. Channels index
      staging, signal, and QP resources through ThreadGroup::group_id and do
      not necessarily map one-to-one to CUDA blocks; for example, ctree uses
-     two channels per block.
+     two channels per block. When MCCL fused Ring is selected and this cvar is
+     not explicitly configured, communicator initialization derives the Ring
+     budget from requested blocks * virtual stripes and caps it at the
+     transport limit of 64. Because the IB transport is shared by collectives,
+     transport provisioning is never reduced below this cvar's default even
+     when Ring's launch bound is smaller. An explicit value always wins. Ring
+     snapshots both counts so launch validation cannot desynchronize from the
+     provisioned transport.
 
  - name        : MCCL_IB_MODE
    type        : enum
