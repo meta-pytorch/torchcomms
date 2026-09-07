@@ -955,6 +955,58 @@ TEST_F(TcpTransportFrameTest, InBoundsWriteIsApplied) {
   EXPECT_FALSE(queuedErrorFrame());
 }
 
+// The reader holds a registry lease across an inbound Write's H2D copy, and
+// erase() waits on that lease. On the null stream the copy also waits on every
+// blocking stream on the device, so the reader could be parked on application
+// GPU work that only the reader itself could unblock -- a deadlock, not a
+// delay. The copy therefore has to go on a stream of the transport's own.
+TEST_F(TcpTransportFrameTest, AVramWriteCopyDoesNotUseTheNullStream) {
+  constexpr uint64_t kVramSegId = kSegId + 220;
+  constexpr size_t kLen = 8;
+  std::vector<std::byte> vram(kLen, std::byte{0});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  MockStream created{};
+  EXPECT_CALL(*cudaApi_, streamCreateNonBlocking(::testing::_))
+      .WillOnce([&](MockStream* out) -> Status {
+        // MockStream, not cudaStream_t: this TU is not hipified, so under ROCm
+        // the cuda name does not exist here while the alias -- declared in the
+        // hipified MockCudaApi.h -- resolves in both builds. Same reason the
+        // event stubs above spell their parameter `auto`.
+        //
+        // A distinct non-null handle, so the assertion below cannot pass by
+        // accident on a null stream.
+        created = reinterpret_cast<MockStream>(0xB0B0);
+        *out = created;
+        return Ok();
+      });
+
+  MockStream copyStream = reinterpret_cast<MockStream>(0);
+  bool copied = false;
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          ::testing::_, ::testing::_, kLen, kMockMemcpyH2D, ::testing::_))
+      .WillOnce(
+          [&](void* d, const void* src, size_t n, auto, auto stream) -> Status {
+            copyStream = static_cast<MockStream>(stream);
+            std::memcpy(d, src, n);
+            copied = true;
+            return Ok();
+          });
+
+  feed(makeFrame(TcpOp::Write, kVramSegId, /*offset=*/0, /*len=*/kLen, kLen));
+
+  ASSERT_TRUE(copied) << "the VRAM write should have issued an H2D copy";
+  EXPECT_NE(copyStream, reinterpret_cast<MockStream>(0))
+      << "an inbound VRAM write must not copy on the null stream: the reader "
+         "waits for this copy while holding a lease erase() waits on";
+  EXPECT_EQ(copyStream, created)
+      << "it must be the transport's own non-blocking stream";
+  EXPECT_FALSE(queuedErrorFrame());
+}
+
 TEST(TcpOpStateTest, FailureWaitsForReservedWriteToRetire) {
   TcpOpState state;
   state.remaining = 1;
