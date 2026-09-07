@@ -126,15 +126,34 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
         "[TorchCommWindowNCCLX][register]: contiguous tensor required.");
   }
 
-  buf_dtype_ = tensor.scalar_type();
-  win_size_ = tensor.numel() * tensor.element_size();
+  // Member state is published only once a window handle exists, so a failed
+  // registration leaves the window exactly as it was.
+  const size_t win_size = tensor.numel() * tensor.element_size();
 
-  auto buf_shape = tensor.sizes();
-  buf_shape_.clear();
-  buf_shape_.reserve(buf_shape.size());
-  for (size_t i = 0; i < buf_shape.size(); ++i) {
-    buf_shape_.push_back(buf_shape[i]);
-  }
+  // ncclCommWindowRegister can return ncclSuccess without producing a window:
+  // its CTRAN fast path always yields a handle, but once CTRAN is bypassed it
+  // falls through to the upstream symmetric path, which returns success with
+  // *win left null when comm->symmetricSupport is false (ncclx v2_30
+  // dev_runtime.cc). v2_31 drops the CTRAN path entirely, so revisit the advice
+  // below when the ncclx stable tag moves past 2.30.
+  //
+  // This must run before register_extra_window(), which CHECK_EQ-aborts on
+  // failure and would replace this message with a generic one.
+  const auto throwIfWindowMissing = [this]() {
+    if (win_ == nullptr) {
+      throw std::runtime_error(
+          "[TorchCommWindowNCCLX][register]: ncclCommWindowRegister returned "
+          "success but produced no window: CTRAN registration was bypassed and "
+          "the communicator also lacks symmetric-memory support. Set "
+          "NCCL_CTRAN_ENABLE=1 and leave NCCL_RMA_ALGO=ctran (a per-comm "
+          "useCtran hint overrides the env var) — on ncclx stable the whole "
+          "window API is CTRAN-backed, so map_remote_tensor/put/signal need it "
+          "even where symmetric support is available. To see which "
+          "symmetric-support prerequisite failed, rerun with NCCL_DEBUG=INFO "
+          "NCCL_DEBUG_SUBSYS=INIT and read the \"Symmetric memory is not "
+          "supported\" line.");
+    }
+  };
 
   if (torch_comm_->getGraphCaptureMode()) {
     {
@@ -142,10 +161,11 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
           torch_comm_->getCudaApi(), cudaStreamCaptureModeRelaxed};
       CHECK_EQ(
           nccl_api_->commWindowRegister(
-              tensor.data_ptr(), win_size_, nccl_comm_, &win_),
+              tensor.data_ptr(), win_size, nccl_comm_, &win_),
           ncclSuccess)
           << "[TorchCommWindowNCCLX]: NCCLX window registration failed "
           << "(graph capture).";
+      throwIfWindowMissing();
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
       // Register the extra device-API window (sets nccl_orig_win_) so that
@@ -166,7 +186,7 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
               nccl_comm_,
               &nccl_orig_win_,
               tensor.data_ptr(),
-              win_size_);
+              win_size);
         }
       }
 #endif
@@ -174,16 +194,27 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
   } else {
     CHECK_EQ(
         nccl_api_->commWindowRegister(
-            tensor.data_ptr(), win_size_, nccl_comm_, &win_),
+            tensor.data_ptr(), win_size, nccl_comm_, &win_),
         ncclSuccess)
         << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
+    throwIfWindowMissing();
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
     // GIN: register a second window with NCCL_WIN_DEVICE_API flag.
     // Pipes: no-op (device window creation deferred to get_device_window).
     Backend::register_extra_window(
-        nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
+        nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size);
 #endif
+  }
+
+  buf_dtype_ = tensor.scalar_type();
+  win_size_ = win_size;
+
+  auto buf_shape = tensor.sizes();
+  buf_shape_.clear();
+  buf_shape_.reserve(buf_shape.size());
+  for (size_t i = 0; i < buf_shape.size(); ++i) {
+    buf_shape_.push_back(buf_shape[i]);
   }
 
   // Store raw data pointer for get_device_window() fallback when
