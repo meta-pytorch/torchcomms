@@ -17,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -402,6 +403,22 @@ Result<std::string> deviceGlobalIpv6(const std::string& device) {
         "cannot open /proc/net/if_inet6 to resolve device " + device);
   }
 
+  // Non-throwing, because every other failure path in this function yields an
+  // Err and an exception escaping past a Result-returning contract is
+  // inconsistent with it. The columns are kernel-generated at fixed width, so a
+  // parse failure means the file is not the format this was written against --
+  // skip the row rather than defensively rewriting the loop. Same pattern as
+  // the port parse above.
+  auto parseHex = [](const std::string& s) -> std::optional<unsigned long> {
+    unsigned long value = 0;
+    const char* const end = s.data() + s.size();
+    const auto [ptr, ec] = std::from_chars(s.data(), end, value, 16);
+    if (ec != std::errc{} || ptr != end) {
+      return std::nullopt;
+    }
+    return value;
+  };
+
   // Columns: address(32 hex, no colons) ifindex prefixlen scope flags name
   std::string hex, ifindex, prefixLen, scope, flags, name;
   while (f >> hex >> ifindex >> prefixLen >> scope >> flags >> name) {
@@ -409,17 +426,30 @@ Result<std::string> deviceGlobalIpv6(const std::string& device) {
       continue;
     }
     // Scope 0 is global; this skips link-local (0x20) and host (0x10).
-    if (std::stoul(scope, nullptr, 16) != 0) {
+    const auto scopeValue = parseHex(scope);
+    if (!scopeValue || *scopeValue != 0) {
       continue;
     }
+    // An unreadable flags column is treated as unusable rather than as "not
+    // deprecated": the whole point of reading this file is the flags, so a row
+    // whose deprecation bit cannot be established must not be bound.
     constexpr unsigned long kIfaFDeprecated = 0x20;
-    if ((std::stoul(flags, nullptr, 16) & kIfaFDeprecated) != 0) {
+    const auto flagsValue = parseHex(flags);
+    if (!flagsValue || (*flagsValue & kIfaFDeprecated) != 0) {
       continue;
     }
     in6_addr addr{};
+    bool parsed = true;
     for (size_t i = 0; i < sizeof(addr.s6_addr); ++i) {
-      addr.s6_addr[i] =
-          static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
+      const auto byte = parseHex(hex.substr(i * 2, 2));
+      if (!byte) {
+        parsed = false;
+        break;
+      }
+      addr.s6_addr[i] = static_cast<uint8_t>(*byte);
+    }
+    if (!parsed) {
+      continue;
     }
     char buf[INET6_ADDRSTRLEN] = {};
     if (inet_ntop(AF_INET6, &addr, buf, sizeof(buf)) == nullptr) {
