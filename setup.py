@@ -168,6 +168,24 @@ class build_ext(build_ext_orig):
     def build_cmake(self, ext):
         cwd = pathlib.Path().absolute()
 
+        # Build NCCLX third-party deps + lib before CMake configure, mirroring
+        # the old configure-time hook's guard for this path (NCCLX on, build
+        # dir absent; setup.py never opts into USE_SYSTEM_LIBS itself).
+        # build_ncclx.sh derives NCCL_HOME/BASE_DIR from PWD, so it must run
+        # with cwd=ROOT; self.spawn takes no cwd, hence chdir + restore.
+        # Failures raise as today with the script's own diagnostics.
+        if USE_NCCLX:
+            ncclx_build_dir = os.environ.get("BUILDDIR") or os.path.join(
+                ROOT, "build", "ncclx"
+            )
+            if not os.path.exists(ncclx_build_dir):
+                prev_cwd = pathlib.Path().absolute()
+                os.chdir(ROOT)
+                try:
+                    self.spawn([os.path.join(ROOT, "build_ncclx.sh")])
+                finally:
+                    os.chdir(str(prev_cwd))
+
         # these dirs will be created in build_py, so if you don't have
         # any python sources to bundle, the dirs will be missing
         build_temp = pathlib.Path(self.build_temp).absolute()
@@ -204,7 +222,8 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
-        build_args = ["--", "-j"]
+        build_jobs = os.environ.get("NCCL_BUILD_JOBS")
+        build_args = ["--", "-j", build_jobs] if build_jobs else ["--", "-j"]
 
         os.chdir(str(build_temp))
         self.spawn(["cmake", str(cwd)] + cmake_args)

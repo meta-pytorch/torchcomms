@@ -179,6 +179,8 @@ lintrunner --take CLANGFORMAT
 
 Enabled via `-DBUILD_TESTS=ON` cmake flag. Tests are in `comms/torchcomms/tests/unit/cpp/`.
 
+Direct `cmake` configure no longer builds NCCLX. With NCCLX enabled (the default), run `./build_ncclx.sh` first (or pass `-DUSE_NCCLX=OFF`).
+
 ```bash
 # Full build-and-test from repo root
 ctest --build-and-test ./ ./build --build-generator "Ninja" \
