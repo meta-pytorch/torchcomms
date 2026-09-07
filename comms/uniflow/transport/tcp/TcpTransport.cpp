@@ -1825,7 +1825,7 @@ Status TcpTransport::startAsyncH2d(
       const auto syncStatus =
           waitForH2dCopy(h2dState_, uncertain.deviceId, uncertain.stream);
       if (syncStatus.hasError()) {
-        quarantineH2d(h2dState_, std::move(uncertain));
+        abortOnUnquiescedH2d(std::move(uncertain));
         return syncStatus;
       }
       destroyH2dEvent(h2dState_, uncertain.deviceId, uncertain.event);
@@ -1835,8 +1835,7 @@ Status TcpTransport::startAsyncH2d(
   } catch (const std::exception& e) {
     if (copyIssued &&
         waitForH2dCopy(h2dState_, entry.deviceId, entry.stream).hasError()) {
-      quarantineH2d(
-          h2dState_,
+      abortOnUnquiescedH2d(
           PendingH2d{
               entry.state,
               std::move(slab),
@@ -1892,7 +1891,7 @@ Status TcpTransport::startAsyncH2d(
 
   if (auto syncStatus = waitForH2dCopy(h2dState_, entry.deviceId, entry.stream);
       syncStatus.hasError()) {
-    quarantineH2d(h2dState_, std::move(pending));
+    abortOnUnquiescedH2d(std::move(pending));
     return syncStatus;
   }
   destroyH2dEvent(h2dState_, entry.deviceId, event);
@@ -1970,7 +1969,7 @@ void TcpTransport::pollPendingH2d(
 
     if (queryFailed) {
       if (waitForH2dCopy(state, retired.deviceId, retired.stream).hasError()) {
-        quarantineH2d(state, std::move(retired));
+        abortOnUnquiescedH2d(std::move(retired));
         std::lock_guard<std::mutex> lk(state->mu);
         state->retiringState.reset();
         --state->activeRetirements;
@@ -2023,23 +2022,50 @@ void TcpTransport::destroyH2dEvent(
   }
 }
 
-void TcpTransport::quarantineH2d(
-    const std::shared_ptr<H2dPollState>& state,
-    PendingH2d copy) noexcept {
-  // Neither the event nor stream established quiescence. Deliberately retain
-  // the write reservation and slab: resolving or recycling either could let
-  // the caller or pool free memory still touched by DMA.
-  copy.state->fail(
-      Err(ErrCode::DriverError,
-          "tcp get: destination copy could not be safely quiesced"));
-  std::lock_guard<std::mutex> lk(state->mu);
-  for (auto& slot : state->quarantined) {
-    if (!slot.has_value()) {
-      slot.emplace(std::move(copy));
-      state->quarantineKeepalive = state;
-      return;
-    }
-  }
+// Does not return. Code after a call to this is unreachable; the name says so
+// because the call sites' trailing cleanup is left in place rather than
+// deleted, so it stays correct if this is ever downgraded to something
+// recoverable.
+[[noreturn]] void TcpTransport::abortOnUnquiescedH2d(PendingH2d copy) noexcept {
+  // Neither the event nor a stream synchronize could establish that the device
+  // had finished writing into the caller's destination. Nothing here is
+  // recoverable, and the two obvious options are both wrong:
+  //
+  //  - resolving the op releases the caller to free memory the DMA may still be
+  //    writing;
+  //  - retaining it quietly -- what this did before -- leaves the caller's
+  //    future permanently unresolved. tryBeginWrite() already counted the write
+  //    and only endWrite() retires it, so fail() latches without settling the
+  //    promise. Worse, a retained copy keeps its receive slab: after two such
+  //    events both slabs are gone, `receiveSlab` is always null, and the async
+  //    path silently stops being taken at all. The old std::terminate() below
+  //    the slot loop was therefore unreachable -- a third copy needs a third
+  //    slab, and there are only two.
+  //
+  // So this dies instead, loudly and at the point of detection. What gets us
+  // here is a sticky CUDA error -- illegal address, launch failure, device lost
+  // -- after which every later call on this device fails too. A transport
+  // factory owns exactly one deviceId and one CudaApi and hands both to every
+  // transport it creates, so no other transport in this process has a working
+  // device left to protect. Consumers run one GPU per process under a
+  // supervisor, so this is a restart rather than an outage.
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - copy.launchedAt);
+  UNIFLOW_LOG_ERROR(
+      "tcp get: destination copy could not be quiesced; aborting. device={} "
+      "stream={} reqId={} launched {}ms ago. The device is no longer usable, so "
+      "the caller's destination cannot be released safely and no later copy on "
+      "this device would succeed.",
+      copy.deviceId,
+      reinterpret_cast<uintptr_t>(copy.stream),
+      copy.reqId,
+      elapsed.count());
+  // Flushed explicitly, because the whole point of this path is to die loudly.
+  // The logger is spdlog's async non-blocking one (create_async_nb with
+  // overrun_oldest, drained by a background thread), so without this the
+  // message is still in the ring buffer when std::terminate() runs and the
+  // process dies silently -- the one outcome this function exists to prevent.
+  ::uniflow::logging::getLogger()->flush();
   std::terminate();
 }
 
@@ -2052,8 +2078,17 @@ void TcpTransport::drainPendingH2d() {
     state->drained.wait(lk, [&]() { return state->activeRetirements == 0; });
   }
   for (auto& copy : pending) {
+    // Aborting here, on the shutdown path, is deliberate. shutdown() is a
+    // public method and not the same thing as process exit -- a caller may shut
+    // one transport down and carry on -- so an unquiesceable copy means the
+    // same thing it means anywhere else: the device may still be writing into
+    // the caller's destination, and endWrite() below would release them to free
+    // it. Completing shutdown "successfully" would also leave a process holding
+    // a device that no later copy can use, since what gets us here is a sticky
+    // CUDA error. The `continue` is unreachable; it documents that the loop
+    // does not fall through to the endWrite() below.
     if (waitForH2dCopy(state, copy.deviceId, copy.stream).hasError()) {
-      quarantineH2d(state, std::move(copy));
+      abortOnUnquiescedH2d(std::move(copy));
       continue;
     }
     destroyH2dEvent(state, copy.deviceId, copy.event);
