@@ -3,7 +3,6 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -711,10 +710,6 @@ struct H2dPollState {
   std::condition_variable drained;
   std::deque<PendingH2d> pending;
   std::shared_ptr<TcpOpState> retiringState;
-  // There are exactly two receive slabs, so at most two copies can become
-  // unquiesceable. Fixed slots avoid allocating on this driver-failure path.
-  std::array<std::optional<PendingH2d>, 2> quarantined;
-  std::shared_ptr<H2dPollState> quarantineKeepalive;
   bool pollScheduled{false};
   bool stopping{false};
   size_t activeRetirements{0};
@@ -1082,9 +1077,10 @@ class TcpTransport : public Transport {
       const std::shared_ptr<H2dPollState>& state,
       int deviceId,
       void* event) noexcept;
-  static void quarantineH2d(
-      const std::shared_ptr<H2dPollState>& state,
-      PendingH2d copy) noexcept;
+  // Terminal: never returns. Everything it reports comes from `copy`, so it
+  // deliberately takes no H2dPollState -- the decision to die does not depend
+  // on poll state.
+  [[noreturn]] static void abortOnUnquiescedH2d(PendingH2d copy) noexcept;
   void drainPendingH2d();
   // Retires staged replies whose copy has finished, oldest first. Runs on the
   // EventBase, never on the reader thread: polling from the reader would put
