@@ -365,6 +365,13 @@ class TcpTransportFrameTest : public ::testing::Test {
     return transport_->running_.load(std::memory_order_acquire);
   }
 
+  /// Arms the reader flag. The fixture never starts a reader loop, so running_
+  /// is false by default -- a test asserting the reader SURVIVES something has
+  /// to set it first, or the assertion passes for the wrong reason.
+  void setReaderRunning() {
+    transport_->running_.store(true, std::memory_order_release);
+  }
+
   /// Registers `chunks` in-flight READ chunks sharing one op state, the way a
   /// multi-chunk get() does. Chunk reqId 1 targets `dst`; the rest stand in for
   /// siblings whose replies have not arrived yet. VRAM so the copy runs through
@@ -1154,6 +1161,59 @@ TEST_F(TcpTransportFrameTest, AsyncReadReplyFailureWaitsForEventRetirement) {
       future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
   EXPECT_TRUE(future.get().hasError());
   EXPECT_EQ(dst, std::vector<uint8_t>(kLen, uint8_t{0xCD}));
+}
+
+// The sibling test below asserts that a throw during *inbound staging* fails
+// the connection, and that is right: protocol state is in doubt there. This is
+// the other direction -- the get destination copy -- where it is not, and one
+// op's local misconfiguration must not take the connection with it.
+//
+// The throw comes from CudaDeviceGuard on a deviceId the *caller* registered,
+// so without this the caller's own mistake fails every unrelated transfer on
+// the connection and stops the reader. Its admission is already erased and its
+// future already failed, and the only half-written buffer is the caller's own
+// destination, which a failed op leaves undefined anyway.
+TEST_F(
+    TcpTransportFrameTest,
+    AThrowingGetDestinationCopyKeepsTheConnectionAndReaderAlive) {
+  constexpr size_t kLen = 64;
+  std::vector<uint8_t> dst(kLen, 0);
+  // Two chunks so that a connection failure would be distinguishable: it would
+  // resolve this op with a connection error instead of the copy's own. Note
+  // postReadChunks returns ONE future for the whole op, so there is no separate
+  // sibling operation here whose survival could be asserted -- what is checked
+  // below is that the connection and reader stay live and that the failure
+  // keeps its own cause.
+  auto future = postReadChunks(dst.data(), kLen, /*chunks=*/2);
+  setReaderRunning();
+
+  // postReadChunks registers deviceId 0, so this is the guard the copy builds.
+  EXPECT_CALL(*cudaApi_, setDevice(0))
+      .WillRepeatedly(
+          ::testing::Return(
+              Err(ErrCode::InvalidArgument, "test: no such device")));
+
+  feed(makeFrame(TcpOp::ReadReply, kSegId, /*offset=*/0, kLen, kLen));
+
+  EXPECT_FALSE(connBroken())
+      << "one op's destination-copy throw must not fail the connection: its "
+         "admission is already erased and nothing transport-internal is left "
+         "inconsistent";
+  EXPECT_TRUE(readerRunning())
+      << "the reader must keep serving the other transfers on this connection";
+
+  // The op itself is still failed, and with the reason rather than a generic
+  // one.
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(1)), std::future_status::ready)
+      << "the op whose copy threw must be resolved, not left hanging";
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+  EXPECT_NE(
+      status.error().message().find("destination copy threw"),
+      std::string::npos)
+      << "the failure must be attributed to this op's own copy, not to a "
+         "connection error";
 }
 
 // A vector-backed READ_REPLY still copies synchronously. Resolving the op's
