@@ -45,9 +45,14 @@
     }                                                                    \
   } while (false)
 
+#define CTRAN_TRACE(subsys, format, ...) \
+  CTRAN_LOG_TRACE(subsys, format, ##__VA_ARGS__)
+
 #define CTRAN_ERR(code, ...)                                                  \
   do {                                                                        \
     const auto _ctran_error_message = fmt::format(__VA_ARGS__);               \
     CTRAN_LOG(ERR, "{}", _ctran_error_message);                               \
     ::meta::comms::logger::logCommErrorToScuba((code), _ctran_error_message); \
   } while (false)
+
+#define CTRAN_REPORT_ERROR(code, ...) CTRAN_ERR(code, __VA_ARGS__)

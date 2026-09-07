@@ -33,22 +33,23 @@ inline ::meta::comms::CommsError getCommsErrorFromCudaError(
 
 } // namespace ncclx::logging::detail
 
-#define NCCLX_CUDA_CHECK_EXPECTED(command)                               \
-  do {                                                                   \
-    const auto _ncclx_cuda_error = (command);                            \
-    if (_ncclx_cuda_error != cudaSuccess) {                              \
-      NCCLX_ERR(commUnhandledCudaError, "Call for {} failed", #command); \
-      return folly::makeUnexpected(                                      \
-          ::ncclx::logging::detail::getCommsErrorFromCudaError(          \
-              _ncclx_cuda_error, __FILE__, __LINE__, #command));         \
-    }                                                                    \
+#define NCCLX_CUDA_CHECK_EXPECTED(command)                         \
+  do {                                                             \
+    const auto _ncclx_cuda_error = (command);                      \
+    if (_ncclx_cuda_error != cudaSuccess) {                        \
+      NCCLX_REPORT_ERROR(                                          \
+          commUnhandledCudaError, "Call for {} failed", #command); \
+      return folly::makeUnexpected(                                \
+          ::ncclx::logging::detail::getCommsErrorFromCudaError(    \
+              _ncclx_cuda_error, __FILE__, __LINE__, #command));   \
+    }                                                              \
   } while (false)
 
 #define NCCLX_CUDACHECKTHROW(command)             \
   do {                                            \
     const auto _ncclx_cuda_error = (command);     \
     if (_ncclx_cuda_error != cudaSuccess) {       \
-      NCCLX_ERR(                                  \
+      NCCLX_REPORT_ERROR(                         \
           commUnhandledCudaError,                 \
           "{}:{} Cuda failure {}",                \
           __FILE__,                               \

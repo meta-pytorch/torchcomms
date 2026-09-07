@@ -80,13 +80,13 @@ TEST_F(CtranUtilsLogTest, TestCtranLoggerPreservesLastError) {
       testing::HasSubstr("Spdlog CTRAN error 42"));
 }
 
-TEST_F(CtranUtilsLogTest, TestCtranErrEvaluatesArgumentsOnce) {
+TEST_F(CtranUtilsLogTest, TestCtranReportErrorEvaluatesArgumentsOnce) {
   auto& logger =
       meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
   logger.set_level(spdlog::level::err);
 
   int evaluated = 0;
-  CTRAN_ERR(commInternalError, "CTRAN error {}", ++evaluated);
+  CTRAN_REPORT_ERROR(commInternalError, "CTRAN error {}", ++evaluated);
 
   EXPECT_EQ(evaluated, 1);
   EXPECT_THAT(
@@ -243,7 +243,7 @@ TEST_F(CtranUtilsLogTest, TestCtranTraceFormat) {
   meta::comms::logger::setSubSystemMask(meta::comms::logger::SubSystem::COLL);
 
   testing::internal::CaptureStdout();
-  CTRAN_LOG_TRACE(COLL, "trace value {}", 42);
+  CTRAN_TRACE(COLL, "trace value {}", 42);
   logger.flush();
   const auto output = testing::internal::GetCapturedStdout();
 

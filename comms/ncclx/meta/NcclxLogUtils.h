@@ -27,3 +27,5 @@
     NCCLX_LOG(ERR, "{}", _ncclx_error_message);                               \
     ::meta::comms::logger::logCommErrorToScuba((code), _ncclx_error_message); \
   } while (false)
+
+#define NCCLX_REPORT_ERROR(code, ...) NCCLX_ERR(code, __VA_ARGS__)
