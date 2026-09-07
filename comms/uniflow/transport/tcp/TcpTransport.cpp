@@ -1409,13 +1409,10 @@ Status TcpTransport::startReadReply(
       static_cast<const uint8_t*>(lease->ptr) + replyHeader.offset;
   TcpFrame frame(std::move(slab), sizeof(TcpMsgHeader) + replyHeader.len);
   std::memcpy(frame.mutableData(), &replyHeader, sizeof(replyHeader));
+  // Stays a local until eventRecord() succeeds: the two failure paths below own
+  // the handle they created, and publishing it to `pending` earlier would let
+  // the barrier destroy it a second time.
   cudaEvent_t event{};
-  // Once the copy is enqueued, every way out of this function has to wait for
-  // it. Returning an error unwinds `frame` and `lease`, and the copy is
-  // asynchronous: the GPU would be left writing into a buffer the allocator has
-  // taken back, and reading from a segment a waiting erase() is now free to
-  // deregister. drainPendingReadReplies() waits for exactly this reason; the
-  // error paths here need the same barrier.
   // Best-effort refusal BEFORE any device work. The post-copy check below is
   // the authoritative one -- it holds `mu` and closes the race -- but reaching
   // only that one means every ReadRequest the reader picks up between
@@ -1435,7 +1432,69 @@ Status TcpTransport::startReadReply(
           "tcp read: transport stopped before staging a VRAM read");
     }
   }
+
+  // The entry owns the slab, the lease and the event from HERE, not from the
+  // push. Built early because push_back materialises its argument before it
+  // allocates: with a temporary there, deque growth that throws destroys that
+  // temporary at the end of the full-expression -- returning the slab to the
+  // pool while the D2H is still writing into it -- and does so INSIDE the
+  // locked scope, whereas the barrier below only runs at function exit. The
+  // wait would then come after the slab was already reusable, which is the one
+  // ordering this whole mechanism exists to prevent.
+  PendingReadReply pending{
+      std::move(frame),
+      std::move(lease),
+      /*event=*/nullptr,
+      replyHeader.reqId,
+      deviceId};
+
   bool copyIssued = false;
+  bool handedOff = false;
+  // Waits out an issued copy on every exit that is not a hand-off, and destroys
+  // the event it would otherwise leak. Declared after `pending` so it destructs
+  // FIRST -- the wait has to happen while the slab and the lease are still
+  // alive. Covers the paths that do not return: the push and the dispatch below
+  // are outside the try and both can throw (deque growth, the EventBase queue).
+  //
+  // Copy and move are deleted because a second barrier would wait and destroy
+  // the same event twice; that makes this a non-aggregate, hence the ctor.
+  class CopyBarrier {
+   public:
+    CopyBarrier(
+        const std::shared_ptr<TcpReplyState>& state,
+        const bool& issued,
+        const bool& handedOff,
+        void*& event,
+        int deviceId)
+        : state_(state),
+          issued_(issued),
+          handedOff_(handedOff),
+          event_(event),
+          deviceId_(deviceId) {}
+    CopyBarrier(const CopyBarrier&) = delete;
+    CopyBarrier& operator=(const CopyBarrier&) = delete;
+    CopyBarrier(CopyBarrier&&) = delete;
+    CopyBarrier& operator=(CopyBarrier&&) = delete;
+    ~CopyBarrier() {
+      if (handedOff_ || !issued_) {
+        return;
+      }
+      waitForStagedCopy(state_, deviceId_);
+      // An entry that was never pushed is one drainPendingReadReplies() will
+      // never see, so nothing else would ever destroy this.
+      if (event_ != nullptr) {
+        (void)state_->cudaApi->eventDestroy(static_cast<cudaEvent_t>(event_));
+        event_ = nullptr;
+      }
+    }
+
+   private:
+    const std::shared_ptr<TcpReplyState>& state_;
+    const bool& issued_;
+    const bool& handedOff_;
+    void*& event_;
+    int deviceId_;
+  } copyBarrier{state, copyIssued, handedOff, pending.event, deviceId};
   try {
     CudaDeviceGuard guard(*state->cudaApi, deviceId);
     // Into pinned memory, so this returns once the copy is enqueued. The same
@@ -1443,7 +1502,7 @@ Status TcpTransport::startReadReply(
     // complete synchronously, which parks whichever thread issued it for the
     // length of the transfer. On this path that thread is the reader.
     if (auto st = state->cudaApi->memcpyAsync(
-            frame.mutableData() + sizeof(TcpMsgHeader),
+            pending.frame.mutableData() + sizeof(TcpMsgHeader),
             src,
             replyHeader.len,
             cudaMemcpyDeviceToHost,
@@ -1465,6 +1524,9 @@ Status TcpTransport::startReadReply(
       (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
+    // Only now, so the two failure paths above stay solely responsible for the
+    // handle they created and the barrier cannot double-destroy it.
+    pending.event = event;
   } catch (const std::exception& e) {
     if (copyIssued) {
       waitForStagedCopy(state, deviceId);
@@ -1480,26 +1542,36 @@ Status TcpTransport::startReadReply(
     if (state->stopping) {
       stopping = true;
     } else {
-      state->pending.push_back(
-          PendingReadReply{
-              std::move(frame),
-              std::move(lease),
-              event,
-              replyHeader.reqId,
-              deviceId});
+      state->pending.push_back(std::move(pending));
     }
   }
   if (stopping) {
     // drainPendingReadReplies() has already swept the queue, so pushing here
     // would leave a lease in a queue nothing drains again -- the same shape as
-    // the deferReadReply() refusal below. The copy is waited out first because
-    // it is still running into `frame`, which unwinds as this returns.
-    waitForStagedCopy(state, deviceId);
-    (void)state->cudaApi->eventDestroy(event);
+    // the deferReadReply() refusal below. The wait and the eventDestroy are the
+    // barrier's, since `pending` still owns both.
     return Err(
         ErrCode::NotConnected,
         "tcp read: transport stopped while staging a VRAM read");
   }
+  // Past the stopping refusal means the push happened, so the deque entry owns
+  // the slab, the lease and the event, and the drain is the barrier from here.
+  // Set after that branch rather than beside the push so a throw from the push
+  // itself is still covered.
+  handedOff = true;
+  // A throw out of the dispatch below therefore does NOT wait or destroy -- the
+  // entry owns both and doing either would race the drain. The entry is then on
+  // `pending`, and drainPendingReadReplies() at teardown waits for the copy,
+  // destroys the event and releases the lease, so nothing leaks. Accepted
+  // rather than popped back off: unwinding a push to re-take a lock we just
+  // released would add a failure mode worse than the delay.
+  //
+  // That cost is bounded ONLY because schedulePendingReplyPoll() clears
+  // pollScheduled on the throwing path. If it did not, this would not be one
+  // delayed lease: the flag gates every later call, so the poll loop would be
+  // dead for the connection's life, nothing would retire a staged reply again,
+  // and an exhausted pool would push every VRAM read down deferReadReply() with
+  // nothing to drain it.
   schedulePendingReplyPoll(state);
   return Ok();
 }
@@ -1958,7 +2030,22 @@ void TcpTransport::schedulePendingReplyPoll(
     }
     state->pollScheduled = true;
   }
-  state->evb->dispatch([state]() noexcept { pollPendingReadReplies(state); });
+  // pollScheduled is cleared again if the dispatch throws. dispatch() is a
+  // queue push that allocates, so it can; and the flag is the gate every later
+  // call checks first, so leaving it set would not delay one poll -- it would
+  // kill the poll loop for the life of the connection. Nothing would retire a
+  // staged reply again, each would keep its lease and its pinned slab, and once
+  // the pool is exhausted every VRAM read would degrade into deferReadReply()
+  // with nothing left to drain it.
+  try {
+    state->evb->dispatch([state]() noexcept { pollPendingReadReplies(state); });
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lk(state->mu);
+      state->pollScheduled = false;
+    }
+    throw;
+  }
 }
 
 void TcpTransport::pollPendingReadReplies(
@@ -2050,8 +2137,12 @@ void TcpTransport::waitForStagedCopy(
     return;
   }
   try {
-    // Per-device: a bare streamSynchronize would only cover whichever device
-    // happened to be current, leaving a copy on any other device still running.
+    // The device has to be made current first because this waits on the *null*
+    // stream, and the null stream is per-device: a bare streamSynchronize would
+    // cover whichever device happened to be current and leave this copy
+    // running. That reasoning is specific to the null stream. A
+    // caller-supplied stream is one stream regardless of which device is
+    // current, so selecting a device per copy would buy nothing there.
     CudaDeviceGuard guard(*state->cudaApi, deviceId);
     (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
   } catch (const std::exception&) {
