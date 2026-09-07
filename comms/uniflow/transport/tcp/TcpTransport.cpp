@@ -2588,49 +2588,93 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
 }
 
 // Logs the get-path phase split and zeroes it, so a caller can bracket one
-// measurement. Reports the reader's own view: time blocked waiting for a frame
-// to start (first-byte latency -- network plus whatever the peer did before
-// replying), time draining a frame once started, and time in the copy to the
-// caller's destination. Anything unaccounted for is reader-thread work between
-// those points.
+// measurement. Reports the reader's own view: the inter-frame stall (blocked on
+// a length prefix with nothing arriving), time draining a frame once started,
+// and time in the copy to the caller's destination. Anything unaccounted for is
+// reader-thread work between those points.
+//
+// The stall is NOT the round trip plus the peer's work. A get responder stages
+// asynchronously, so its staging and the round trip overlap our own drain and
+// cannot show up in our block on the prefix -- see RecvPhaseStats for the
+// measurement that settles it.
 void TcpTransport::logAndResetPhaseStats(std::string_view label) {
+  // lanes_ is read without a lock, so this may only be called between a
+  // completed connect() and shutdown(). establishLanes() fills it during
+  // connect(), and the reader and sender threads read it unlocked only because
+  // they are created after that, which supplies the happens-before. This is a
+  // public method reachable from any thread and the emptiness check below
+  // supplies no such ordering, so the contract is the caller's to keep. Stated
+  // rather than locked because no caller needs the lock: the only callers
+  // bracket a measurement from the thread that ran connect().
   if (lanes_.empty()) {
+    // Nothing to report, but the transport-level counters are cleared anyway.
+    // They are not lane-scoped, so anything already accounted here would
+    // otherwise carry into the next measurement window. Clearing
+    // unconditionally makes the bracketing a property of this function rather
+    // than of the connect()/shutdown() contract holding -- one less thing that
+    // has to be true for a measurement to mean what it says.
+    (void)dstCopyNs_.exchange(0, std::memory_order_relaxed);
+    (void)dstCopyCount_.exchange(0, std::memory_order_relaxed);
+    (void)receiveSlabAttempts_.exchange(0, std::memory_order_relaxed);
+    (void)receiveSlabMisses_.exchange(0, std::memory_order_relaxed);
+    (void)vectorReceiveCount_.exchange(0, std::memory_order_relaxed);
+    (void)stagingNs_.exchange(0, std::memory_order_relaxed);
+    (void)stagingBytes_.exchange(0, std::memory_order_relaxed);
+    (void)stagingWaves_.exchange(0, std::memory_order_relaxed);
+    (void)stagingChunks_.exchange(0, std::memory_order_relaxed);
+    // Unconditional, like the reporting path below: h2dState_ is assigned once
+    // in the constructor and never reset, so it is non-null for the whole
+    // lifetime a caller can reach this from. Guarding it here while the
+    // reporting path dereferences it freely would imply an invariant that does
+    // not exist, and send the next reader looking for the null case that makes
+    // the other path a crash.
+    (void)h2dState_->copyNs.exchange(0, std::memory_order_relaxed);
+    (void)h2dState_->copyCount.exchange(0, std::memory_order_relaxed);
     return;
   }
   // Summed over every lane: each lane has its own reader and its own stats, so
   // reading lane 0 alone would report 1/N of the traffic and hide any imbalance
   // between lanes. Per-lane frame counts are logged too, since an uneven split
   // is itself a finding.
-  uint64_t frames = 0, hdrNs = 0, drainNs = 0, bytes = 0;
+  //
+  // exchange, not load-then-reset: each counter is read and cleared in one
+  // step, so a sample the reader records mid-sweep is carried into the next
+  // window rather than dropped. That is the whole guarantee, and it is worth
+  // not overstating -- the 4N lane counters and the transport counters are
+  // still exchanged at distinct instants, so a frame whose stall was already
+  // taken but whose count lands just after still straddles two windows.
+  // Load-then-clear would be strictly worse: 4N loads then 4N stores, with
+  // every sample recorded in between lost outright rather than deferred.
+  uint64_t frames = 0, stallNs = 0, drainNs = 0, bytes = 0;
   std::string perLaneFrames;
   for (size_t i = 0; i < lanes_.size(); ++i) {
     if (lanes_[i] == nullptr || lanes_[i]->conn == nullptr) {
       continue;
     }
     auto& lrs = lanes_[i]->conn->recvPhaseStats();
-    const uint64_t lf = lrs.frames.load(std::memory_order_relaxed);
+    const uint64_t lf = lrs.frames.exchange(0, std::memory_order_relaxed);
     frames += lf;
-    hdrNs += lrs.headerWaitNs.load(std::memory_order_relaxed);
-    drainNs += lrs.payloadDrainNs.load(std::memory_order_relaxed);
-    bytes += lrs.payloadBytes.load(std::memory_order_relaxed);
+    stallNs += lrs.interFrameStallNs.exchange(0, std::memory_order_relaxed);
+    drainNs += lrs.payloadDrainNs.exchange(0, std::memory_order_relaxed);
+    bytes += lrs.payloadBytes.exchange(0, std::memory_order_relaxed);
     perLaneFrames += (i == 0 ? "" : ",") + std::to_string(lf);
   }
-  const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed) +
-      h2dState_->copyNs.load(std::memory_order_relaxed);
-  const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed) +
-      h2dState_->copyCount.load(std::memory_order_relaxed);
+  const uint64_t copyNs = dstCopyNs_.exchange(0, std::memory_order_relaxed) +
+      h2dState_->copyNs.exchange(0, std::memory_order_relaxed);
+  const uint64_t copies = dstCopyCount_.exchange(0, std::memory_order_relaxed) +
+      h2dState_->copyCount.exchange(0, std::memory_order_relaxed);
   const uint64_t slabAttempts =
-      receiveSlabAttempts_.load(std::memory_order_relaxed);
+      receiveSlabAttempts_.exchange(0, std::memory_order_relaxed);
   const uint64_t slabMisses =
-      receiveSlabMisses_.load(std::memory_order_relaxed);
+      receiveSlabMisses_.exchange(0, std::memory_order_relaxed);
   const uint64_t vectorReceives =
-      vectorReceiveCount_.load(std::memory_order_relaxed);
+      vectorReceiveCount_.exchange(0, std::memory_order_relaxed);
 
   if (frames == 0) {
     UNIFLOW_LOG_INFO("tcp phases [{}]: no frames", label);
   } else {
     const double totalNs =
-        static_cast<double>(hdrNs) + static_cast<double>(drainNs);
+        static_cast<double>(stallNs) + static_cast<double>(drainNs);
     const auto pct = [totalNs](uint64_t v) {
       return totalNs > 0.0 ? 100.0 * static_cast<double>(v) / totalNs : 0.0;
     };
@@ -2642,15 +2686,16 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         ? static_cast<double>(bytes) / static_cast<double>(drainNs)
         : 0.0;
     UNIFLOW_LOG_INFO(
-        "tcp phases [{}]: frames={} bytes={} | first-byte {:.1f}us/frame "
+        "tcp phases [{}]: frames={} bytes={} | interframe_stall "
+        "{:.1f}us/frame "
         "({:.1f}%) | drain {:.1f}us/frame ({:.1f}%, {:.2f} GB/s) | dstcopy "
         "{:.1f}us x{} ({:.1f}% of wire) | receive_slabs attempts={} misses={} "
         "vector_recvs={} | lanes={} frames_per_lane=[{}]",
         label,
         frames,
         bytes,
-        static_cast<double>(hdrNs) / frames / 1000.0,
-        pct(hdrNs),
+        static_cast<double>(stallNs) / frames / 1000.0,
+        pct(stallNs),
         static_cast<double>(drainNs) / frames / 1000.0,
         pct(drainNs),
         drainGBps,
@@ -2663,18 +2708,16 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         lanes_.size(),
         perLaneFrames);
   }
-  for (auto& lane : lanes_) {
-    if (lane != nullptr && lane->conn != nullptr) {
-      lane->conn->recvPhaseStats().reset();
-    }
-  }
   // Reported separately from the frame block above: on a put run this side
   // receives only Acks, so gating the staging numbers on receive frames would
   // hide them exactly where they matter.
-  const uint64_t stgNs = stagingNs_.load(std::memory_order_relaxed);
-  const uint64_t stgBytes = stagingBytes_.load(std::memory_order_relaxed);
-  const uint64_t stgWaves = stagingWaves_.load(std::memory_order_relaxed);
-  const uint64_t stgChunks = stagingChunks_.load(std::memory_order_relaxed);
+  const uint64_t stgNs = stagingNs_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgBytes =
+      stagingBytes_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgWaves =
+      stagingWaves_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgChunks =
+      stagingChunks_.exchange(0, std::memory_order_relaxed);
   if (stgWaves > 0) {
     UNIFLOW_LOG_INFO(
         "tcp put wave residency [{}]: waves={} chunks={} bytes={} | "
@@ -2688,17 +2731,6 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
                 static_cast<double>(stgChunks) / 1000.0
                       : 0.0);
   }
-  stagingNs_.store(0, std::memory_order_relaxed);
-  stagingBytes_.store(0, std::memory_order_relaxed);
-  stagingWaves_.store(0, std::memory_order_relaxed);
-  stagingChunks_.store(0, std::memory_order_relaxed);
-  dstCopyNs_.store(0, std::memory_order_relaxed);
-  dstCopyCount_.store(0, std::memory_order_relaxed);
-  h2dState_->copyNs.store(0, std::memory_order_relaxed);
-  h2dState_->copyCount.store(0, std::memory_order_relaxed);
-  receiveSlabAttempts_.store(0, std::memory_order_relaxed);
-  receiveSlabMisses_.store(0, std::memory_order_relaxed);
-  vectorReceiveCount_.store(0, std::memory_order_relaxed);
 }
 
 void TcpTransport::readerLoop(size_t laneIdx) noexcept {
