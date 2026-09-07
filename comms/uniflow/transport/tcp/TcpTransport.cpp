@@ -2623,6 +2623,22 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
       // down, so leaving the other lanes admitting work would queue frames for
       // a connection that is already gone.
       closeAllLaneQueues();
+      // The sockets too, not just the queues. Closing a queue stops new work
+      // being admitted; it does not wake a reader already parked in a blocking
+      // recv on a lane whose own socket is still healthy. With one socket the
+      // failing lane's reader errored out on its next recv, so this was
+      // invisible. With N lanes the other N-1 readers stay parked on sockets
+      // that are fine, on a transport that is already failed.
+      //
+      // A recv timeout no longer bounds that wait: readerLoop treats
+      // ErrCode::Timeout as idleness and continues, because an idle gap between
+      // transfers is not a dead peer. That is right for the get path, and it is
+      // what makes closing the sockets here necessary rather than merely
+      // tidier -- without it those readers wait for shutdown().
+      //
+      // closeLanesOnce() is idempotent per lane, so overlapping with a reader
+      // that refused its own connection, or with shutdown(), is safe.
+      closeLanesOnce();
       if (item.onSent) {
         item.onSent->fail(Err(ErrCode::ConnectionFailed, "tcp: send failed"));
       }
