@@ -653,6 +653,8 @@ def populateHFile(allcvars, outputFilename):
     file.write("\n")
     file.write("namespace ncclx {\n")
 
+    file.write("bool isCvarExplicitlySet(std::string_view name);\n\n")
+
     file.write(
         "constexpr std::array<std::string_view, <@numCvars>> cvarNames = {<@cvarNames>};\n"
     )
