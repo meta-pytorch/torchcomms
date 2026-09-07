@@ -17,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -402,6 +403,22 @@ Result<std::string> deviceGlobalIpv6(const std::string& device) {
         "cannot open /proc/net/if_inet6 to resolve device " + device);
   }
 
+  // Non-throwing, because every other failure path in this function yields an
+  // Err and an exception escaping past a Result-returning contract is
+  // inconsistent with it. The columns are kernel-generated at fixed width, so a
+  // parse failure means the file is not the format this was written against --
+  // skip the row rather than defensively rewriting the loop. Same pattern as
+  // the port parse above.
+  auto parseHex = [](const std::string& s) -> std::optional<unsigned long> {
+    unsigned long value = 0;
+    const char* const end = s.data() + s.size();
+    const auto [ptr, ec] = std::from_chars(s.data(), end, value, 16);
+    if (ec != std::errc{} || ptr != end) {
+      return std::nullopt;
+    }
+    return value;
+  };
+
   // Columns: address(32 hex, no colons) ifindex prefixlen scope flags name
   std::string hex, ifindex, prefixLen, scope, flags, name;
   while (f >> hex >> ifindex >> prefixLen >> scope >> flags >> name) {
@@ -409,17 +426,30 @@ Result<std::string> deviceGlobalIpv6(const std::string& device) {
       continue;
     }
     // Scope 0 is global; this skips link-local (0x20) and host (0x10).
-    if (std::stoul(scope, nullptr, 16) != 0) {
+    const auto scopeValue = parseHex(scope);
+    if (!scopeValue || *scopeValue != 0) {
       continue;
     }
+    // An unreadable flags column is treated as unusable rather than as "not
+    // deprecated": the whole point of reading this file is the flags, so a row
+    // whose deprecation bit cannot be established must not be bound.
     constexpr unsigned long kIfaFDeprecated = 0x20;
-    if ((std::stoul(flags, nullptr, 16) & kIfaFDeprecated) != 0) {
+    const auto flagsValue = parseHex(flags);
+    if (!flagsValue || (*flagsValue & kIfaFDeprecated) != 0) {
       continue;
     }
     in6_addr addr{};
+    bool parsed = true;
     for (size_t i = 0; i < sizeof(addr.s6_addr); ++i) {
-      addr.s6_addr[i] =
-          static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
+      const auto byte = parseHex(hex.substr(i * 2, 2));
+      if (!byte) {
+        parsed = false;
+        break;
+      }
+      addr.s6_addr[i] = static_cast<uint8_t>(*byte);
+    }
+    if (!parsed) {
+      continue;
     }
     char buf[INET6_ADDRSTRLEN] = {};
     if (inet_ntop(AF_INET6, &addr, buf, sizeof(buf)) == nullptr) {
@@ -508,6 +538,29 @@ bool TcpConn<IOPolicy>::sendAllVec(std::span<iovec> iov) {
   return true;
 }
 
+// Classifies a failed recvAll() while errno is still the one recvAll saw.
+//
+// recvAll restores errno before returning false precisely so a caller can read
+// it, but only until the next call that can overwrite it -- and formatting the
+// message allocates. So this captures first and formats second. Callers must
+// not read the global errno after the Result has travelled anywhere; that was
+// the defect this replaces, where a retry loop tested errno after a
+// promise/future round trip and several string constructions.
+//
+// A timeout is reported as ErrCode::Timeout rather than ConnectionFailed
+// because the two mean different things on a connected socket. SO_RCVTIMEO is
+// set on every connected socket to bound the handshake against a peer that
+// accepts and then stops responding; on a socket that is merely idle between
+// transfers the same timeout fires with EAGAIN, and a caller that cannot tell
+// those apart has to treat normal idleness as a dead peer.
+Err classifyRecvFailure(const char* what) {
+  const int savedErrno = errno;
+  const bool timedOut = savedErrno == EAGAIN || savedErrno == EWOULDBLOCK;
+  return Err(
+      timedOut ? ErrCode::Timeout : ErrCode::ConnectionFailed,
+      std::string(what) + ": " + std::system_category().message(savedErrno));
+}
+
 template <typename IOPolicy>
 bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
@@ -519,6 +572,28 @@ bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
         continue;
       }
       int savedErrno = errno;
+      // A timeout that lands MID-FRAME is not idleness, and must not be
+      // reported as one. recvAll holds no cross-call reassembly state, so the
+      // bytes already taken off the socket cannot be resumed: a caller that
+      // treats ErrCode::Timeout as an idle gap and retries would read the
+      // remainder of this frame as a fresh length prefix, desynchronising the
+      // stream and most likely producing a garbage length. `remaining != len`
+      // catches progress made WITHIN this call only -- it cannot see that a
+      // previous recvAll already took the header off the socket, which is why
+      // syncRecv treats any failure of its payload read as fatal too. Reported
+      // as EPROTO so
+      // classifyRecvFailure() maps it to ConnectionFailed and the connection is
+      // torn down, which is what happened before timeouts became retryable.
+      if ((savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) &&
+          remaining != len) {
+        UNIFLOW_LOG_ERROR(
+            "recvAll timed out mid-frame, tearing down: fd={} received={} "
+            "expected={}",
+            sock_,
+            len - remaining,
+            len);
+        savedErrno = EPROTO;
+      }
       UNIFLOW_LOG_ERROR(
           "recvAll failed: fd={} errno={} ({})",
           sock_,
@@ -651,7 +726,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
-  // Split the wait: blocking on the length prefix is first-byte latency,
+  // Split the wait: blocking on the next length prefix is inter-frame stall,
   // blocking on the payload is drain time. Two clock reads per frame (~20ns
   // each) against a frame that takes hundreds of microseconds.
   auto& stats = recvPhaseStats();
@@ -659,9 +734,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
   const auto tFirstByte = std::chrono::steady_clock::now();
 
@@ -676,14 +749,30 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   data.resize(len);
   if (len != 0 && !recvAll(data.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    // Never reported as a retryable Timeout, whatever errno says. The header is
+    // already off the socket, so this frame is half-consumed and recvAll
+    // exposes no offset to resume from -- a caller that treated this as an idle
+    // gap and retried would read the payload as the next length prefix and
+    // desynchronise the stream. recvAll's own mid-frame guard cannot catch this
+    // case: the payload read starts with remaining == len, so a timeout that
+    // fires before the first payload byte arrives looks like zero progress to
+    // it, even though progress was made by the PREVIOUS recvAll call for the
+    // header.
+    auto failure = classifyRecvFailure("recv payload failed");
+    if (failure.code() == ErrCode::Timeout) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          std::string(
+              "recv payload failed mid-frame after the header was "
+              "consumed: ") +
+              failure.message());
+    }
+    return failure;
   }
 
   const auto tDone = std::chrono::steady_clock::now();
   using ns = std::chrono::nanoseconds;
-  stats.headerWaitNs.fetch_add(
+  stats.interFrameStallNs.fetch_add(
       std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
       std::memory_order_relaxed);
   stats.payloadDrainNs.fetch_add(
@@ -707,9 +796,7 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
 
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
   const auto tFirstByte = std::chrono::steady_clock::now();
 
@@ -730,14 +817,12 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
   }
 
   if (len != 0 && !recvAll(buf.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv payload failed");
   }
 
   const auto tDone = std::chrono::steady_clock::now();
   using ns = std::chrono::nanoseconds;
-  stats.headerWaitNs.fetch_add(
+  stats.interFrameStallNs.fetch_add(
       std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
       std::memory_order_relaxed);
   stats.payloadDrainNs.fetch_add(

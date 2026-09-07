@@ -3,7 +3,6 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -62,6 +61,21 @@ inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
 /// running several transports raise it themselves via
 /// TcpTransportConfig::maxFrontendDevices.
 inline constexpr size_t kDefaultMaxFrontendDevices = 2;
+
+/// Ceiling on lanes per connection, and so on the endpoints a peer may
+/// advertise. The lane hello addresses lanes with a uint16_t, and lanes are
+/// configured per device as numSocketsPerDevice * devices, so this bounds the
+/// product.
+///
+/// It bounds the wire parser for the same reason: endpoints are one per device,
+/// connect() requires a peer's endpoint count to equal the local device count,
+/// and numSocketsPerDevice is at least 1 -- so a peer advertising more
+/// endpoints than this could never connect, and refusing them while parsing
+/// rejects nothing that would otherwise have worked. Shared rather than
+/// restated at both sites: two independent copies of this number could drift
+/// apart while each looked right on its own, which is the mistake
+/// maxFrontendDevices already records.
+inline constexpr size_t kMaxLanes = 1024;
 
 /// How many frontend NICs this host actually has -- the hardware ceiling, not a
 /// policy. Enumerates on first call and caches, so it is 0 only when the host
@@ -483,12 +497,23 @@ class TcpSegmentRegistry {
   /// for longer still: its copy has not been issued yet and starts only once a
   /// slab frees up.
   ///
-  /// What this can no longer do is deadlock. The reader thread does not wait
-  /// for any of it -- staging is asynchronous and exhaustion defers rather than
-  /// blocks -- so it keeps delivering inbound frames, including whatever the
-  /// application's GPU work is itself waiting on. Giving the staging copies a
-  /// dedicated non-blocking stream would remove the remaining wait on unrelated
-  /// device work.
+  /// **On the read-reply path** this can no longer deadlock. The reader thread
+  /// does not wait for any of that staging -- the copy is asynchronous and
+  /// exhaustion defers rather than blocks -- so it keeps delivering inbound
+  /// frames, including whatever the application's GPU work is itself waiting
+  /// on. Giving the staging copies a dedicated non-blocking stream would remove
+  /// the remaining wait on unrelated device work.
+  ///
+  /// The claim is scoped deliberately: it is about the read-reply path, not
+  /// about erase() in general. An inbound `TcpOp::Write` into a VRAM segment
+  /// also holds a lease across its H2D copy, and that copy the reader *does*
+  /// wait for. It runs on a dedicated non-blocking stream, so the wait is
+  /// bounded by that one copy and not by unrelated application GPU work --
+  /// which is what keeps it a delay rather than a deadlock. On the null stream
+  /// it was the latter: the reader would wait on every blocking stream on the
+  /// device, including work that could only be unblocked by a frame the parked
+  /// reader was itself supposed to deliver. A DRAM-only deployment never had
+  /// that exposure, because there the copy under lease is a plain memcpy.
   void erase(uint64_t segId) {
     std::unique_lock<std::mutex> lk(mu_);
     auto it = segs_.find(segId);
@@ -700,10 +725,6 @@ struct H2dPollState {
   std::condition_variable drained;
   std::deque<PendingH2d> pending;
   std::shared_ptr<TcpOpState> retiringState;
-  // There are exactly two receive slabs, so at most two copies can become
-  // unquiesceable. Fixed slots avoid allocating on this driver-failure path.
-  std::array<std::optional<PendingH2d>, 2> quarantined;
-  std::shared_ptr<H2dPollState> quarantineKeepalive;
   bool pollScheduled{false};
   bool stopping{false};
   size_t activeRetirements{0};
@@ -853,6 +874,13 @@ class TcpTransport : public Transport {
 
   void shutdown() override;
 
+  /// Logs the get-path phase split (inter-frame stall / drain / destination
+  /// copy) and clears it, so a caller can bracket one measurement. Reads lanes_
+  /// without a lock: callable only between a completed connect() and
+  /// shutdown(). See the definition for why that is a contract rather than a
+  /// mutex.
+  void logAndResetPhaseStats(std::string_view label);
+
  private:
   // Needs handleFrame() plus the outbound queue to drive peer-supplied frames
   // directly and assert the bounds checks reject them. Those checks are the
@@ -866,14 +894,24 @@ class TcpTransport : public Transport {
   // Reader thread, one per lane: blocking recv + demultiplex on that lane's
   // socket until it closes. Takes the lane index rather than reading a single
   // member, because each reader owns exactly one socket.
+  /// True when something other than the read timeout can notice a dead peer.
+  ///
+  /// Tolerating an idle SO_RCVTIMEO is only safe if death is detected some
+  /// other way. Keepalive and TCP_USER_TIMEOUT are those ways, and the default
+  /// config sets both. TcpSocketConfig::osDefaults() sets neither -- every
+  /// field is nullopt -- and Linux's own keepalive default is off, so on that
+  /// config the read timeout is the only liveness signal there is, and the
+  /// reader has to keep treating it as one.
+  ///
+  /// enableKeepalive is read with value_or(false), not has_value(): nullopt
+  /// means "leave it to the OS", and the OS answer is off.
+  bool hasPeerLivenessDetection() const {
+    return config_.socketConfig.enableKeepalive.value_or(false) ||
+        config_.socketConfig.userTimeout.has_value();
+  }
+
   void readerLoop(size_t laneIdx) noexcept;
 
- public:
-  /// Logs the get-path phase split (first-byte / drain / destination copy) and
-  /// zeroes it so callers can bracket a single measurement.
-  void logAndResetPhaseStats(std::string_view label);
-
- private:
   // Sender thread, one per lane: drains that lane's queue and performs its
   // socket sends. One writer per socket, which is what keeps TcpConn's
   // single-writer requirement satisfied.
@@ -890,11 +928,25 @@ class TcpTransport : public Transport {
   void handleFrameImpl(
       std::span<const uint8_t> frame,
       TcpPinnedSlab receiveSlab);
+  // Both defined below, after TcpLane. Declared up here so the static
+  // reply-path helpers can take them by shared_ptr.
+  struct TcpLaneSet;
+  struct TcpReplyState;
+
   // Queues one fire-and-forget framed message for the sender thread.
   // `mayBlock` must be true only for caller threads. Returns false if the frame
   // was not queued (transport closing, or the reader hit the cap and refused
   // the connection).
   [[nodiscard]] bool enqueueFrame(TcpFrame frame, bool mayBlock);
+  // enqueueFrame without a `this`. The reply callbacks queue through this, so
+  // none of them needs the transport to still exist. enqueueFrame() delegates
+  // here, so there is one implementation of the admission rules.
+  [[nodiscard]] static bool enqueueOn(
+      const std::shared_ptr<TcpReplyState>& state,
+      TcpFrame frame,
+      bool mayBlock);
+  static size_t pickLaneOn(TcpLaneSet& lanes);
+  static size_t laneCapBytesOn(const TcpLaneSet& lanes);
   // Queues a run of frames. A group small enough not to be worth parallelising
   // goes on ONE lane as an indivisible step, either every frame queued or none:
   // enqueuing one at a time would let a sender start transmitting a partially
@@ -962,9 +1014,15 @@ class TcpTransport : public Transport {
       TcpSegmentRegistry::Lease lease);
   // Builds the reply in `slab` and starts its D2H copy, handing the frame to
   // the staging queue so the reader can go back to draining the socket instead
-  // of waiting on the device. Consumes the lease and the slab. Returns an error
-  // only if the copy could not be started, in which case nothing was queued.
-  Status startReadReply(
+  // of waiting on the device. Consumes the lease and the slab.
+  //
+  // An error does NOT imply that no device work happened. Two shapes:
+  // the copy could not be started, in which case nothing was queued; or the
+  // reply path was already stopping, in which case the copy WAS issued and then
+  // waited out before this returned NotConnected. Callers must therefore not
+  // read an error as "the device is untouched" -- only as "nothing was queued".
+  static Status startReadReply(
+      const std::shared_ptr<TcpReplyState>& state,
       const TcpMsgHeader& replyHeader,
       TcpSegmentRegistry::Lease lease,
       TcpPinnedSlab slab);
@@ -1011,11 +1069,13 @@ class TcpTransport : public Transport {
   // on the EventBase, never inline at the point a slab is released: that point
   // is the sender thread, and launching copies there would block the drain that
   // frees the next slab.
-  void startDeferredReadReplies();
+  static void startDeferredReadReplies(
+      const std::shared_ptr<TcpReplyState>& state);
   // Kicks startDeferredReadReplies() on the EventBase. Called wherever a
   // staging slab goes back to the pool. Cheap and safe when nothing is
   // deferred.
-  void scheduleDeferredReadReplies();
+  static void scheduleDeferredReadReplies(
+      const std::shared_ptr<TcpReplyState>& state);
   // The staging pool, created on first use. Building it in the constructor
   // would charge every peer kStagingSlabCount slabs of pinned host memory --
   // ~124 MiB, and there is one transport per peer -- including the DRAM-only
@@ -1023,7 +1083,8 @@ class TcpTransport : public Transport {
   //
   // Named as the constant, not restated as a number: the previous wording
   // hardcoded a figure and went stale when kStagingSlabCount was re-derived.
-  Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool();
+  static Result<std::shared_ptr<TcpPinnedSlabPool>> stagingPool(
+      const std::shared_ptr<TcpReplyState>& state);
   // The independent inbound pool. It is created only for async-enabled,
   // non-zero VRAM get(), and is sized to the wire cap because recv(span)
   // consumes the length prefix before it can reject an undersized buffer.
@@ -1047,20 +1108,25 @@ class TcpTransport : public Transport {
       const std::shared_ptr<H2dPollState>& state,
       int deviceId,
       void* event) noexcept;
-  static void quarantineH2d(
-      const std::shared_ptr<H2dPollState>& state,
-      PendingH2d copy) noexcept;
+  // Terminal: never returns. Everything it reports comes from `copy`, so it
+  // deliberately takes no H2dPollState -- the decision to die does not depend
+  // on poll state.
+  [[noreturn]] static void abortOnUnquiescedH2d(PendingH2d copy) noexcept;
   void drainPendingH2d();
   // Retires staged replies whose copy has finished, oldest first. Runs on the
   // EventBase, never on the reader thread: polling from the reader would put
   // the head-of-line block straight back.
-  void pollPendingReadReplies();
+  static void pollPendingReadReplies(
+      const std::shared_ptr<TcpReplyState>& state);
   // Kicks the poll loop if it is not already running. Safe from any thread.
-  void schedulePendingReplyPoll();
+  static void schedulePendingReplyPoll(
+      const std::shared_ptr<TcpReplyState>& state);
   /// Waits for a staged D2H copy on `deviceId` whose completion is otherwise
   /// unknown, so the frame it targets can be released. Used on the paths where
   /// a copy was issued but the event never became a usable completion signal.
-  void waitForStagedCopy(int deviceId) noexcept;
+  static void waitForStagedCopy(
+      const std::shared_ptr<TcpReplyState>& state,
+      int deviceId) noexcept;
 
   /// Waits for outstanding staging copies and drops the frames, then discards
   /// whatever was still deferred. Called during teardown, because the GPU may
@@ -1168,12 +1234,88 @@ class TcpTransport : public Transport {
     size_t bytes{0};
     bool outClosed{false};
   };
-  // Indirected because TcpLane holds an atomic and a thread, so it is neither
-  // copyable nor movable and the vector must never have to relocate it. Written
-  // only by connect() under lifecycleMu_, and read by the reader threads, the
-  // sender thread and shutdown() -- all of which run only after connect() has
-  // installed every lane.
-  std::vector<std::unique_ptr<TcpLane>> lanes_;
+  /// The lane set, owned separately from the transport.
+  ///
+  /// Held by shared_ptr so an EventBase callback that outlives the transport
+  /// can still enqueue into it harmlessly: by then the senders are joined, so
+  /// the frame simply sits in a queue that dies with this object. That is what
+  /// lets the reply callbacks below drop their `this` capture entirely.
+  struct TcpLaneSet {
+    // Indirected because TcpLane holds an atomic and a thread, so it is neither
+    // copyable nor movable and the vector must never have to relocate it.
+    // Written only by connect() under lifecycleMu_, and read by the reader
+    // threads, the sender thread and shutdown() -- all of which run only after
+    // connect() has installed every lane.
+    std::vector<std::unique_ptr<TcpLane>> v;
+    std::atomic<bool> broken{false};
+    // Round-robin cursor. Relaxed: an occasional duplicate or skipped index
+    // only perturbs balance, and nothing reads it for correctness.
+    std::atomic<uint64_t> nextLane{0};
+  };
+
+  /// Everything the EventBase-dispatched reply callbacks touch, owned
+  /// separately from the transport for the same reason.
+  ///
+  /// This is the H2dPollState pattern already used on the H2D path
+  /// (pollPendingH2d is static and takes its state), applied to the reply path.
+  /// The callbacks are static and take this state, so none of them can hold a
+  /// `this` that the destructor has already freed -- the bug is impossible
+  /// rather than guarded, and teardown never has to block waiting for a
+  /// callback to leave a critical section.
+  struct TcpReplyState {
+    // MEMBER ORDER IS LOAD-BEARING. Members are destroyed in reverse
+    // declaration order, so this reads bottom-up as the destruction sequence:
+    //
+    //   1. `pending` / `deferred` go first, releasing the Leases and slabs they
+    //      hold WHILE the objects those releases reach into are still alive.
+    //   2. then `registry` / `cudaApi` / `pool` / `lanes`, which those releases
+    //      needed.
+    //   3. the mutexes last, so nothing is destroyed while notionally guarded.
+    //
+    // Getting this backwards is not theoretical: `registry` used to be declared
+    // last, which destroyed it FIRST, so a Lease still sitting in `pending`
+    // would have called releaseLease() through a raw pointer to a destroyed
+    // registry -- defeating the entire reason the member exists.
+    std::mutex mu;
+    /// Its own mutex rather than `mu`: acquiring a slab can wait (put(), from a
+    /// caller thread), and the staging queue must stay available to the reader
+    /// while it does.
+    std::mutex poolMu;
+    /// Set by shutdown() under `mu`. A callback that wakes after teardown sees
+    /// it and returns without touching anything.
+    bool stopping{false};
+    bool pollScheduled{false};
+    /// Keeps the registry alive for as long as any lease might outlive the
+    /// transport. TcpSegmentRegistry::Lease holds a RAW registry pointer and
+    /// dereferences it in ~Lease to release, while leases travel this path --
+    /// startReadReply's parameter, `pending`, `deferred`. The transport is
+    /// normally the registry's only owner, so a callback still in flight when
+    /// ~TcpTransport() finishes -- say one that popped a deferred entry, then
+    /// saw `stopping` and is waiting out its copy -- would release into freed
+    /// memory. Held here for the same reason as cudaApi and lanes: a callback
+    /// must not reach through a transport that may already be gone.
+    ///
+    /// Declared BEFORE the queues below so it outlives the leases they hold.
+    std::shared_ptr<TcpSegmentRegistry> registry;
+    /// Copies, so a callback never reaches through the transport for them.
+    std::shared_ptr<CudaApi> cudaApi;
+    std::shared_ptr<TcpPinnedSlabPool> pool;
+    std::shared_ptr<TcpLaneSet> lanes;
+    EventBase* evb{nullptr};
+    /// Declared LAST so these are destroyed FIRST: emptying them releases
+    /// leases into the still-live registry above, and slabs into the still-live
+    /// pool.
+    std::deque<PendingReadReply> pending;
+    std::deque<DeferredReadReply> deferred;
+  };
+
+  std::shared_ptr<TcpLaneSet> laneSet_{std::make_shared<TcpLaneSet>()};
+  std::shared_ptr<TcpReplyState> reply_{std::make_shared<TcpReplyState>()};
+
+  // Aliases onto the two objects above, so the rest of this class keeps naming
+  // these the way it always has. Declared after them: reference members are
+  // bound in declaration order.
+  std::vector<std::unique_ptr<TcpLane>>& lanes_{laneSet_->v};
 
   // get-path copy accounting, paired with Conn::RecvPhaseStats. Reader thread
   // only; relaxed because a torn read across a reset misattributes a sample and
@@ -1341,34 +1483,50 @@ class TcpTransport : public Transport {
   // first to finish rather than returning while teardown is still running.
   std::atomic<bool> shutdown_{false};
 
-  // Round-robin cursor for lane selection. Relaxed: an occasional duplicate or
-  // skipped index only perturbs balance, and nothing reads it for correctness.
-  std::atomic<uint64_t> nextLane_{0};
   std::atomic<bool> running_{false};
-  std::atomic<bool> connBroken_{false};
+  std::atomic<bool>& connBroken_{laneSet_->broken};
 
   // Guards the staging queue, which the reader thread appends to and the
   // EventBase drains.
-  std::mutex stagingMu_;
-  std::deque<PendingReadReply> pendingReplies_;
+  std::mutex& stagingMu_{reply_->mu};
+  std::deque<PendingReadReply>& pendingReplies_{reply_->pending};
   // Retired strictly front-first. Copies for one device go on that device's
   // stream and so signal in issue order; across devices they are independent,
   // so a reply that is ready can wait behind an older one still running.
   // Ordered retirement is still correct -- offsets make out-of-order replies
   // safe on the wire, this only costs latency -- and a transport serves one
   // peer, which in practice means one device.
-  bool replyPollScheduled_{false};
+  bool& replyPollScheduled_{reply_->pollScheduled};
   // VRAM reads that arrived with the pool exhausted, oldest first. Bounded by
   // kMaxInflightRequests for the same reason inflight_ is: it grows on
   // peer-supplied frames, and the reader will not stop reading them.
-  std::deque<DeferredReadReply> deferredReplies_;
+  std::deque<DeferredReadReply>& deferredReplies_{reply_->deferred};
 
   // Created on first VRAM staging need, then never replaced. Its own mutex
   // rather than stagingMu_: acquiring a slab can wait (put(), from a caller
   // thread), and the staging queue must stay available to the reader while it
   // does.
-  std::mutex poolMu_;
-  std::shared_ptr<TcpPinnedSlabPool> slabPool_;
+  std::mutex& poolMu_{reply_->poolMu};
+  std::shared_ptr<TcpPinnedSlabPool>& slabPool_{reply_->pool};
+
+  /// Non-blocking streams for inbound `TcpOp::Write` H2D copies, one per
+  /// device, created on first use for that device. Per-device because a stream
+  /// belongs to the device it was created on and registered segments may sit on
+  /// different devices -- one transport-wide stream would be used with the
+  /// wrong device current.
+  ///
+  /// The point of them is the lease. The Write handler holds a registry lease
+  /// across its copy, and erase() waits on that lease; on the null stream the
+  /// copy also waits on every blocking stream on the device, so the reader
+  /// could be parked on application GPU work that only the reader could
+  /// unblock. A non-blocking stream bounds the wait by the copy itself.
+  std::mutex writeStreamMu_;
+  std::unordered_map<int, void*> writeStreams_;
+
+  /// The non-blocking stream for `deviceId`, creating it on first use. Returns
+  /// an error rather than falling back to the null stream: the fallback is the
+  /// deadlock this exists to remove, so a Write is failed loudly instead.
+  Result<void*> writeStreamFor(int deviceId);
 
   // Separate from the outbound/responder staging pool: receive slabs must hold
   // any legal wire frame, not just one kMaxChunkSize payload.

@@ -80,6 +80,42 @@ class FailingConn : public controller::Conn {
   int closeCount{0};
 };
 
+/// A connection whose recv() reports ErrCode::Timeout a fixed number of times
+/// and then fails for real. Models an idle data socket: SO_RCVTIMEO fires while
+/// the peer is simply between transfers, and only afterwards does the
+/// connection actually break.
+class IdleThenFailConn : public controller::Conn {
+ public:
+  explicit IdleThenFailConn(int timeouts) : remaining_(timeouts) {}
+
+  std::future<Result<size_t>> send(std::span<const uint8_t> data) override {
+    return make_ready_future<Result<size_t>>(Result<size_t>(data.size()));
+  }
+  std::future<Result<size_t>> recv(std::vector<uint8_t>&) override {
+    return make_ready_future<Result<size_t>>(next());
+  }
+  std::future<Result<size_t>> recv(std::span<uint8_t>) override {
+    return make_ready_future<Result<size_t>>(next());
+  }
+  void close() override {}
+
+  int timeoutsDelivered() const {
+    return delivered_.load(std::memory_order_acquire);
+  }
+
+ private:
+  Result<size_t> next() {
+    if (remaining_.fetch_sub(1, std::memory_order_acq_rel) > 0) {
+      delivered_.fetch_add(1, std::memory_order_release);
+      return Err(ErrCode::Timeout, "test: recv timed out while idle");
+    }
+    return Err(ErrCode::ConnectionFailed, "test: connection really failed");
+  }
+
+  std::atomic<int> remaining_;
+  std::atomic<int> delivered_{0};
+};
+
 /// A connection that accepts every send and counts them, for the tests that
 /// need the sender to actually drain the queue.
 class CountingConn : public controller::Conn {
@@ -365,6 +401,13 @@ class TcpTransportFrameTest : public ::testing::Test {
     return transport_->running_.load(std::memory_order_acquire);
   }
 
+  /// Arms the reader flag. The fixture never starts a reader loop, so running_
+  /// is false by default -- a test asserting the reader SURVIVES something has
+  /// to set it first, or the assertion passes for the wrong reason.
+  void setReaderRunning() {
+    transport_->running_.store(true, std::memory_order_release);
+  }
+
   /// Registers `chunks` in-flight READ chunks sharing one op state, the way a
   /// multi-chunk get() does. Chunk reqId 1 targets `dst`; the rest stand in for
   /// siblings whose replies have not arrived yet. VRAM so the copy runs through
@@ -503,6 +546,26 @@ class TcpTransportFrameTest : public ::testing::Test {
     transport_->senderLoop(0);
   }
 
+  /// Runs lane 0's reader loop on the calling thread. It returns when the loop
+  /// exits, so a test can assert on *whether* it exited rather than polling.
+  void runReaderLoop() {
+    transport_->readerLoop(0);
+  }
+
+  /// Drops both liveness mechanisms, the way TcpSocketConfig::osDefaults()
+  /// does.
+  void clearPeerLivenessConfig() {
+    transport_->config_.socketConfig.enableKeepalive = std::nullopt;
+    transport_->config_.socketConfig.userTimeout = std::nullopt;
+  }
+
+  IdleThenFailConn& installIdleThenFailConn(int timeouts) {
+    auto conn = std::make_unique<IdleThenFailConn>(timeouts);
+    auto& ref = *conn;
+    installLaneConn(std::move(conn));
+    return ref;
+  }
+
   /// Installs a connection whose send() parks until released, so the sender
   /// thread can be caught mid-send.
   GatedConn* installGatedConn() {
@@ -563,7 +626,7 @@ class TcpTransportFrameTest : public ::testing::Test {
   /// The transport's own staging pool, created on the first call exactly as a
   /// VRAM read would create it.
   std::shared_ptr<TcpPinnedSlabPool> transportStagingPool() {
-    auto pool = transport_->stagingPool();
+    auto pool = TcpTransport::stagingPool(transport_->reply_);
     EXPECT_TRUE(pool.hasValue());
     return pool.hasValue() ? pool.value() : nullptr;
   }
@@ -955,6 +1018,58 @@ TEST_F(TcpTransportFrameTest, InBoundsWriteIsApplied) {
   EXPECT_FALSE(queuedErrorFrame());
 }
 
+// The reader holds a registry lease across an inbound Write's H2D copy, and
+// erase() waits on that lease. On the null stream the copy also waits on every
+// blocking stream on the device, so the reader could be parked on application
+// GPU work that only the reader itself could unblock -- a deadlock, not a
+// delay. The copy therefore has to go on a stream of the transport's own.
+TEST_F(TcpTransportFrameTest, AVramWriteCopyDoesNotUseTheNullStream) {
+  constexpr uint64_t kVramSegId = kSegId + 220;
+  constexpr size_t kLen = 8;
+  std::vector<std::byte> vram(kLen, std::byte{0});
+  registry_->add(
+      kVramSegId, vram.data(), kLen, MemoryType::VRAM, /*deviceId=*/0);
+
+  MockStream created{};
+  EXPECT_CALL(*cudaApi_, streamCreateNonBlocking(::testing::_))
+      .WillOnce([&](MockStream* out) -> Status {
+        // MockStream, not cudaStream_t: this TU is not hipified, so under ROCm
+        // the cuda name does not exist here while the alias -- declared in the
+        // hipified MockCudaApi.h -- resolves in both builds. Same reason the
+        // event stubs above spell their parameter `auto`.
+        //
+        // A distinct non-null handle, so the assertion below cannot pass by
+        // accident on a null stream.
+        created = reinterpret_cast<MockStream>(0xB0B0);
+        *out = created;
+        return Ok();
+      });
+
+  MockStream copyStream = reinterpret_cast<MockStream>(0);
+  bool copied = false;
+  EXPECT_CALL(
+      *cudaApi_,
+      memcpyAsync(
+          ::testing::_, ::testing::_, kLen, kMockMemcpyH2D, ::testing::_))
+      .WillOnce(
+          [&](void* d, const void* src, size_t n, auto, auto stream) -> Status {
+            copyStream = static_cast<MockStream>(stream);
+            std::memcpy(d, src, n);
+            copied = true;
+            return Ok();
+          });
+
+  feed(makeFrame(TcpOp::Write, kVramSegId, /*offset=*/0, /*len=*/kLen, kLen));
+
+  ASSERT_TRUE(copied) << "the VRAM write should have issued an H2D copy";
+  EXPECT_NE(copyStream, reinterpret_cast<MockStream>(0))
+      << "an inbound VRAM write must not copy on the null stream: the reader "
+         "waits for this copy while holding a lease erase() waits on";
+  EXPECT_EQ(copyStream, created)
+      << "it must be the transport's own non-blocking stream";
+  EXPECT_FALSE(queuedErrorFrame());
+}
+
 TEST(TcpOpStateTest, FailureWaitsForReservedWriteToRetire) {
   TcpOpState state;
   state.remaining = 1;
@@ -1102,6 +1217,138 @@ TEST_F(TcpTransportFrameTest, AsyncReadReplyFailureWaitsForEventRetirement) {
       future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
   EXPECT_TRUE(future.get().hasError());
   EXPECT_EQ(dst, std::vector<uint8_t>(kLen, uint8_t{0xCD}));
+}
+
+// The sibling test below asserts that a throw during *inbound staging* fails
+// the connection, and that is right: protocol state is in doubt there. This is
+// the other direction -- the get destination copy -- where it is not, and one
+// op's local misconfiguration must not take the connection with it.
+//
+// The throw comes from CudaDeviceGuard on a deviceId the *caller* registered,
+// so without this the caller's own mistake fails every unrelated transfer on
+// the connection and stops the reader. Its admission is already erased and its
+// future already failed, and the only half-written buffer is the caller's own
+// destination, which a failed op leaves undefined anyway.
+TEST_F(
+    TcpTransportFrameTest,
+    AThrowingGetDestinationCopyKeepsTheConnectionAndReaderAlive) {
+  constexpr size_t kLen = 64;
+  std::vector<uint8_t> dst(kLen, 0);
+  // Two chunks so that a connection failure would be distinguishable: it would
+  // resolve this op with a connection error instead of the copy's own. Note
+  // postReadChunks returns ONE future for the whole op, so there is no separate
+  // sibling operation here whose survival could be asserted -- what is checked
+  // below is that the connection and reader stay live and that the failure
+  // keeps its own cause.
+  auto future = postReadChunks(dst.data(), kLen, /*chunks=*/2);
+  setReaderRunning();
+
+  // postReadChunks registers deviceId 0, so this is the guard the copy builds.
+  EXPECT_CALL(*cudaApi_, setDevice(0))
+      .WillRepeatedly(
+          ::testing::Return(
+              Err(ErrCode::InvalidArgument, "test: no such device")));
+
+  feed(makeFrame(TcpOp::ReadReply, kSegId, /*offset=*/0, kLen, kLen));
+
+  EXPECT_FALSE(connBroken())
+      << "one op's destination-copy throw must not fail the connection: its "
+         "admission is already erased and nothing transport-internal is left "
+         "inconsistent";
+  EXPECT_TRUE(readerRunning())
+      << "the reader must keep serving the other transfers on this connection";
+
+  // The op itself is still failed, and with the reason rather than a generic
+  // one.
+  ASSERT_EQ(future.wait_for(std::chrono::seconds(1)), std::future_status::ready)
+      << "the op whose copy threw must be resolved, not left hanging";
+  const Status status = future.get();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+  EXPECT_NE(
+      status.error().message().find("destination copy threw"),
+      std::string::npos)
+      << "the failure must be attributed to this op's own copy, not to a "
+         "connection error";
+}
+
+// SO_RCVTIMEO is set on every connected socket to bound the *handshake* against
+// a peer that accepts and then stops responding. It is not a read deadline, but
+// it applies for the connection's whole life, so an idle gap between transfers
+// -- the normal state of a prefill/decode connection between bursts -- fires
+// exactly the same EAGAIN. Treating that as a dead peer tore the connection
+// down every 30s of quiet and failed every in-flight op with it.
+//
+// The reader must consume timeouts and keep serving, and still exit on a real
+// failure. Dead peers are detected by SO_KEEPALIVE / TCP_USER_TIMEOUT, which
+// the socket config already plumbs.
+TEST_F(TcpTransportFrameTest, AnIdleRecvTimeoutDoesNotEndTheReader) {
+  setConnected();
+  setReaderRunning();
+  // Three idle timeouts, then the connection genuinely breaks. Without the fix
+  // the loop exits on the first one and only one is ever delivered.
+  auto& conn = installIdleThenFailConn(/*timeouts=*/3);
+
+  // Returns when the loop exits, which the real failure guarantees it will.
+  runReaderLoop();
+
+  // That runReaderLoop() returned at all is the proof it still exits on a real
+  // failure -- a reader that treated every error as idleness would spin here
+  // and the test would time out rather than fail. running_ is deliberately not
+  // asserted: readerLoop does not clear it on the way out, shutdown() does, so
+  // EXPECT_FALSE(readerRunning()) would be asserting something this code never
+  // promised.
+  EXPECT_EQ(conn.timeoutsDelivered(), 3)
+      << "the reader stopped on an idle timeout instead of continuing; a "
+         "prefill/decode connection would be torn down between bursts";
+}
+
+// The other half of the contract. Tolerating an idle timeout is only safe when
+// something else can notice a dead peer; osDefaults() sets neither keepalive
+// nor TCP_USER_TIMEOUT, and Linux defaults keepalive off, so there the read
+// timeout is the only liveness signal there is. Continuing on it would trade a
+// wrongly-closed connection for one that never notices the peer is gone.
+TEST_F(
+    TcpTransportFrameTest,
+    AnIdleTimeoutStillEndsTheReaderWithNoLivenessConfig) {
+  setConnected();
+  setReaderRunning();
+  clearPeerLivenessConfig();
+  // Offers three timeouts; only the first should ever be taken.
+  auto& conn = installIdleThenFailConn(/*timeouts=*/3);
+
+  runReaderLoop();
+
+  EXPECT_EQ(conn.timeoutsDelivered(), 1)
+      << "with no keepalive and no TCP_USER_TIMEOUT the read timeout is the only "
+         "way a dead peer is ever noticed, so the reader must still stop on it";
+}
+
+// establishLanes() skips the hello exchange when this side has one lane, so the
+// wire stays byte-identical for a peer built before lanes existed. The cost is
+// that a peer configured for more lanes sends a hello this side never reads: it
+// is shorter than a TcpMsgHeader, so it used to be dropped as malformed while
+// the peer went on striping onto sockets nobody accepted -- a silent stall, and
+// the opposite of the clean handshake error the design promises.
+//
+// One configuration normally drives both sides, so this cannot happen in
+// practice. That is the reason it must be loud if it does.
+TEST_F(
+    TcpTransportFrameTest,
+    ALaneHelloOnASingleLaneTransportFailsTheConnection) {
+  setConnected();
+  setReaderRunning();
+
+  TcpLaneHello hello{};
+  hello.laneIndex = 0;
+  hello.laneCount = 4;
+  hello.sessionId = 0xABCDEF;
+  feed(hello.serialize());
+
+  EXPECT_TRUE(connBroken())
+      << "a lane hello arriving as a data frame means the peer is striping onto "
+         "sockets this side never accepted; dropping it strands the peer "
+         "silently";
 }
 
 // A vector-backed READ_REPLY still copies synchronously. Resolving the op's

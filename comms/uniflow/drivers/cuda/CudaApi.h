@@ -76,6 +76,16 @@ class CudaApi {
 
   // --- Stream ---
 
+  /// Creates a stream that does NOT implicitly synchronize with the null
+  /// stream (`cudaStreamNonBlocking`). A copy issued on the null stream
+  /// serialises against every blocking stream on the device, so a thread that
+  /// synchronizes it ends up waiting for unrelated application GPU work. Where
+  /// that thread also holds a resource someone else waits on, that is a
+  /// deadlock rather than a delay.
+  virtual Status streamCreateNonBlocking(cudaStream_t* stream);
+
+  virtual Status streamDestroy(cudaStream_t stream);
+
   virtual Status streamSynchronize(cudaStream_t stream);
 
   // --- Event ---

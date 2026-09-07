@@ -93,6 +93,14 @@ __global__ void ncclKernelAllGatherPPipeEnd(
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args) {
   ctran::device::ColltraceEventScope colltraceScope(f);
+  int* const flag = f ? const_cast<int*>(f->flag_) : nullptr;
+  // waitPost reads device globals that only this sets.
+  ctran::device::devLoadAbortFlags(flag, devState);
+
+  // Must run before reset. Reset clears postFlag, so the value would be lost.
+  if (args.endSyncStep >= 0) {
+    GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.endSyncStep);
+  }
 
   // Reset sync flag for next GPE->kernel pipeline sync to use
   GpeKernelSyncDev::reset(args.pipeSync, 0);
@@ -142,6 +150,15 @@ __global__ void ncclKernelAllGatherPSrdPipeEnd(
     CtranAlgoDeviceState* devState,
     PipeEndKernArgs args) {
   ctran::device::ColltraceEventScope colltraceScope(flag);
+  int* const abortFlag = flag ? const_cast<int*>(flag->flag_) : nullptr;
+  // waitPost reads device globals that only this sets.
+  ctran::device::devLoadAbortFlags(abortFlag, devState);
+
+  // Must run before reset. Reset clears postFlag, so the value would be lost.
+  if (args.endSyncStep >= 0) {
+    GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.endSyncStep);
+  }
+
   // Reset sync flag for next GPE->kernel pipeline sync to use
   GpeKernelSyncDev::reset(args.pipeSync, 0);
 

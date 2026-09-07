@@ -955,6 +955,91 @@ TEST_F(CtranMapperTest, icopyNoReq) {
   CUDACHECK_TEST(cudaFree(srcBuf));
 }
 
+TEST_F(CtranMapperTest, iflushRejectsNullReq) {
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+
+  EXPECT_EQ(mapper->iflush(buf, hdl, nullptr), commInternalError);
+}
+
+TEST_F(CtranMapperTest, iflushUnregisteredBufReturnsCompletedReq) {
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  const auto rank = dummyComm_->statex_->rank();
+  ASSERT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+
+  // No IB registration for the buffer, so no flush is posted.
+  CtranMapperRequest* rawReq = nullptr;
+  ASSERT_EQ(mapper->iflush(buf, nullptr, &rawReq), commSuccess);
+  const std::unique_ptr<CtranMapperRequest> req(rawReq);
+  ASSERT_THAT(req, testing::NotNull());
+
+  bool isComplete = false;
+  EXPECT_EQ(mapper->testRequest(req.get(), &isComplete), commSuccess);
+  EXPECT_TRUE(isComplete);
+}
+
+TEST_F(CtranMapperTest, iflushWithoutIbBackendReturnsCompletedReq) {
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "nvl, socket");
+  ncclCvarInit();
+
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  const auto rank = dummyComm_->statex_->rank();
+  ASSERT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+  ASSERT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::TCPDM));
+
+  // The buffer is registered, so only the missing IB backend can skip the
+  // flush.
+  void* regHdl = nullptr;
+  bool dynamicRegist = false;
+  ASSERT_EQ(
+      mapper->searchRegHandle(buf, bufSize, &regHdl, &dynamicRegist),
+      commSuccess);
+  ASSERT_THAT(regHdl, testing::NotNull());
+
+  CtranMapperRequest* rawReq = nullptr;
+  ASSERT_EQ(mapper->iflush(buf, regHdl, &rawReq), commSuccess);
+  const std::unique_ptr<CtranMapperRequest> req(rawReq);
+  ASSERT_THAT(req, testing::NotNull());
+
+  bool isComplete = false;
+  EXPECT_EQ(mapper->testRequest(req.get(), &isComplete), commSuccess);
+  EXPECT_TRUE(isComplete);
+
+  if (dynamicRegist) {
+    EXPECT_EQ(mapper->deregDynamic(regHdl), commSuccess);
+  }
+}
+
+TEST_F(CtranMapperTest, iflushBackendErrorLeavesReqUntouched) {
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  const auto rank = dummyComm_->statex_->rank();
+  ASSERT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+
+  void* regHdl = nullptr;
+  bool dynamicRegist = false;
+  ASSERT_EQ(
+      mapper->searchRegHandle(buf, bufSize, &regHdl, &dynamicRegist),
+      commSuccess);
+  ASSERT_THAT(regHdl, testing::NotNull());
+
+  {
+    // Calling into the IB backend without holding the epoch lock is the only
+    // error CtranIb::iflush can report without a fake device.
+    EnvRAII epochLockEnv(NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE, true);
+    EnvRAII epochCheckEnv(NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK, true);
+
+    // A sentinel proves the error path never writes to the caller's pointer,
+    // rather than merely leaving it null.
+    auto* const sentinel = reinterpret_cast<CtranMapperRequest*>(0xdeadbeef);
+    CtranMapperRequest* req = sentinel;
+    EXPECT_EQ(mapper->iflush(buf, regHdl, &req), commInternalError);
+    EXPECT_EQ(req, sentinel);
+  }
+
+  if (dynamicRegist) {
+    EXPECT_EQ(mapper->deregDynamic(regHdl), commSuccess);
+  }
+}
+
 TEST_F(CtranMapperTest, ReqInit) {
   mapper = std::make_unique<CtranMapper>(dummyComm_);
   const auto rank = this->dummyComm_->statex_->rank();

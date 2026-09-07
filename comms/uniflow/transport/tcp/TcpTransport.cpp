@@ -293,6 +293,19 @@ Result<TcpTransportInfo> TcpTransportInfo::deserialize(
   // keeps the old exact-size guarantee: trailing junk is still rejected.
   size_t offset = sizeof(header) + header.hostLen;
   while (offset < data.size()) {
+    // Bounded before an Endpoint is built, not after. connect() does compare
+    // the count against the local device count, but only once the whole vector
+    // exists, and a record whose host is empty is a bare 4-byte Header -- so an
+    // uncapped parse turns peer-supplied bytes into ~16.7M Endpoint objects at
+    // the control channel's 64 MiB limit, and more on the paths that reach
+    // connect() without passing through the controller.
+    if (info.endpointCount() >= kMaxLanes) {
+      return Err(
+          ErrCode::InvalidArgument,
+          "tcp transport info advertises more than " +
+              std::to_string(kMaxLanes) +
+              " endpoints, which is above the lane cap");
+    }
     if (data.size() - offset < sizeof(Header)) {
       return Err(
           ErrCode::InvalidArgument,
@@ -344,6 +357,10 @@ TcpTransport::TcpTransport(
   h2dState_ = std::make_shared<H2dPollState>();
   h2dState_->evb = evb_;
   h2dState_->cudaApi = cudaApi_;
+  reply_->evb = evb_;
+  reply_->cudaApi = cudaApi_;
+  reply_->lanes = laneSet_;
+  reply_->registry = registry_;
 }
 
 Status TcpTransport::hostFromDevice(
@@ -363,6 +380,42 @@ Status TcpTransport::hostFromDevice(
     return st;
   }
   return cudaApi_->streamSynchronize(s);
+}
+
+Result<void*> TcpTransport::writeStreamFor(int deviceId) {
+  std::lock_guard<std::mutex> lk(writeStreamMu_);
+  auto it = writeStreams_.find(deviceId);
+  if (it != writeStreams_.end()) {
+    return it->second;
+  }
+  if (cudaApi_ == nullptr) {
+    return Err(
+        ErrCode::InvalidArgument, "tcp write: no CUDA API for a VRAM segment");
+  }
+  cudaStream_t stream{};
+  // CudaDeviceGuard throws when setDevice fails, and it is deliberately NOT
+  // caught here. Before this stream existed the first guard on this path was
+  // the one inside deviceFromHost, and its throw is what handleFrame's catch
+  // turns into a failed connection -- see
+  // VramStagingThrowDoesNotAbortTheReader. Swallowing it here would silently
+  // narrow that behaviour, which is a separate decision from removing the null
+  // stream (see C-049).
+  CudaDeviceGuard guard(*cudaApi_, deviceId);
+  if (auto st = cudaApi_->streamCreateNonBlocking(&stream); !st) {
+    return std::move(st).error();
+  }
+  // Destroyed here if publishing it throws. shutdown() only destroys streams it
+  // finds in writeStreams_, so a stream created but never inserted is
+  // unreachable: handleFrame() catches the exception and keeps the process
+  // alive, and the stream then leaks for the transport's lifetime. The
+  // CudaDeviceGuard above is still in scope, so this runs on the right device.
+  try {
+    writeStreams_.emplace(deviceId, static_cast<void*>(stream));
+  } catch (...) {
+    (void)cudaApi_->streamDestroy(stream);
+    throw;
+  }
+  return static_cast<void*>(stream);
 }
 
 Status TcpTransport::deviceFromHost(
@@ -479,6 +532,19 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
     return Err(
         ErrCode::InvalidArgument, "tcp connect: transport must be bound first");
   }
+  if (!hasPeerLivenessDetection()) {
+    // Said once per connect rather than left to be rediscovered. With neither
+    // keepalive nor TCP_USER_TIMEOUT, the read timeout is the only thing that
+    // can notice a dead peer -- so the reader must keep treating an idle
+    // timeout as fatal, and an idle gap longer than it will close a healthy
+    // connection. That is the pre-existing behaviour, not a new one, but it is
+    // a choice this config is making silently.
+    UNIFLOW_LOG_WARN(
+        "tcp connect: socket config sets neither keepalive nor "
+        "TCP_USER_TIMEOUT, so an idle gap longer than the recv timeout will "
+        "close the connection; set enableKeepalive or userTimeout to tolerate "
+        "idle peers");
+  }
 
   auto peerResult = TcpTransportInfo::deserialize(remoteInfo);
   if (!peerResult) {
@@ -536,8 +602,9 @@ Status TcpTransport::connect(std::span<const uint8_t> remoteInfo) {
 
   // Lanes are configured per device, so every device gets a full complement and
   // no device can end up without a lane. It is the product that has to fit the
-  // uint16_t the hello addresses lanes with.
-  constexpr size_t kMaxLanes = 1024;
+  // uint16_t the hello addresses lanes with. kMaxLanes lives in the header
+  // because deserialize() bounds the peer's endpoint count against the same
+  // number.
   const size_t lanesPerDevice =
       std::max<size_t>(config_.numSocketsPerDevice, 1);
   const size_t laneCount = lanesPerDevice * localDevices;
@@ -782,17 +849,25 @@ Status TcpTransport::establishLanes(
   return Ok();
 }
 
-size_t TcpTransport::laneCapBytes() const {
-  const size_t lanes = lanes_.empty() ? 1 : lanes_.size();
-  return kMaxOutQueueBytes / lanes;
+size_t TcpTransport::laneCapBytesOn(const TcpLaneSet& lanes) {
+  const size_t count = lanes.v.empty() ? 1 : lanes.v.size();
+  return kMaxOutQueueBytes / count;
 }
 
-size_t TcpTransport::pickLane() {
-  if (lanes_.size() <= 1) {
+size_t TcpTransport::laneCapBytes() const {
+  return laneCapBytesOn(*laneSet_);
+}
+
+size_t TcpTransport::pickLaneOn(TcpLaneSet& lanes) {
+  if (lanes.v.size() <= 1) {
     return 0;
   }
   return static_cast<size_t>(
-      nextLane_.fetch_add(1, std::memory_order_relaxed) % lanes_.size());
+      lanes.nextLane.fetch_add(1, std::memory_order_relaxed) % lanes.v.size());
+}
+
+size_t TcpTransport::pickLane() {
+  return pickLaneOn(*laneSet_);
 }
 
 controller::Conn* TcpTransport::primaryConn() const {
@@ -1028,7 +1103,7 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
     std::span<const PlannedPutFrame> wave,
     void* stream,
     size_t startIdx) {
-  auto pool = stagingPool();
+  auto pool = stagingPool(reply_);
   if (!pool) {
     return std::move(pool).error();
   }
@@ -1316,26 +1391,48 @@ std::shared_ptr<TcpPinnedSlabPool> TcpTransport::receivePoolIfCreated() {
       &receiveSlabPool_, std::memory_order_acquire);
 }
 
-Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool() {
-  std::lock_guard<std::mutex> lk(poolMu_);
-  if (slabPool_ != nullptr) {
-    return slabPool_;
+Result<std::shared_ptr<TcpPinnedSlabPool>> TcpTransport::stagingPool(
+    const std::shared_ptr<TcpReplyState>& state) {
+  std::lock_guard<std::mutex> lk(state->poolMu);
+  if (state->pool != nullptr) {
+    return state->pool;
   }
-  if (cudaApi_ == nullptr) {
+  // Refuse to CREATE one once teardown has begun. shutdown() sets `stopping`,
+  // then snapshots and closes the pool under poolMu, and only then joins the
+  // readers -- so a reader reaching here in that last window would allocate a
+  // fresh kStagingSlabCount of pinned slabs that shutdown() has already walked
+  // past. Nothing would ever close it: the memory would live until the last
+  // TcpReplyState reference drops, and a thread blocking in acquire() on it
+  // would have no `closed_` escape. Checking here rather than at each call site
+  // covers every caller, including respondToVramRead() on the reader thread.
+  //
+  // Lock order is poolMu -> mu, established here and nowhere reversed: no code
+  // takes poolMu while holding mu. Holding mu only for the flag read keeps it
+  // off the cudaHostAlloc below, which is ~124 MiB of page-locked memory and
+  // would otherwise stall every admission point for its duration.
+  {
+    std::lock_guard<std::mutex> stateLk(state->mu);
+    if (state->stopping) {
+      return Err(
+          ErrCode::NotConnected,
+          "tcp read: reply path stopped before the staging pool existed");
+    }
+  }
+  if (state->cudaApi == nullptr) {
     return Err(ErrCode::InvalidArgument, "tcp read: no CUDA API for VRAM");
   }
   // Header and payload contiguous in one slab, so a staged frame is still a
   // single buffer and the send path needs no scatter-gather.
   auto pool = TcpPinnedSlabPool::create(
-      cudaApi_,
+      state->cudaApi,
       sizeof(TcpMsgHeader) + kMaxChunkSize,
       kStagingSlabCount,
       kStagingSlabsReservedForReader);
   if (!pool) {
     return std::move(pool).error();
   }
-  slabPool_ = pool.value();
-  return slabPool_;
+  state->pool = pool.value();
+  return state->pool;
 }
 
 Status TcpTransport::respondToVramRead(
@@ -1352,7 +1449,7 @@ Status TcpTransport::respondToVramRead(
             " bytes exceeds the staging slab payload (" +
             std::to_string(kMaxChunkSize) + ")");
   }
-  auto pool = stagingPool();
+  auto pool = stagingPool(reply_);
   if (!pool) {
     return std::move(pool).error();
   }
@@ -1362,10 +1459,11 @@ Status TcpTransport::respondToVramRead(
   if (!slab) {
     return deferReadReply(replyHeader, std::move(lease));
   }
-  return startReadReply(replyHeader, std::move(lease), std::move(slab));
+  return startReadReply(reply_, replyHeader, std::move(lease), std::move(slab));
 }
 
 Status TcpTransport::startReadReply(
+    const std::shared_ptr<TcpReplyState>& state,
     const TcpMsgHeader& replyHeader,
     TcpSegmentRegistry::Lease lease,
     TcpPinnedSlab slab) {
@@ -1374,22 +1472,100 @@ Status TcpTransport::startReadReply(
       static_cast<const uint8_t*>(lease->ptr) + replyHeader.offset;
   TcpFrame frame(std::move(slab), sizeof(TcpMsgHeader) + replyHeader.len);
   std::memcpy(frame.mutableData(), &replyHeader, sizeof(replyHeader));
+  // Stays a local until eventRecord() succeeds: the two failure paths below own
+  // the handle they created, and publishing it to `pending` earlier would let
+  // the barrier destroy it a second time.
   cudaEvent_t event{};
-  // Once the copy is enqueued, every way out of this function has to wait for
-  // it. Returning an error unwinds `frame` and `lease`, and the copy is
-  // asynchronous: the GPU would be left writing into a buffer the allocator has
-  // taken back, and reading from a segment a waiting erase() is now free to
-  // deregister. drainPendingReadReplies() waits for exactly this reason; the
-  // error paths here need the same barrier.
+  // Best-effort refusal BEFORE any device work. The post-copy check below is
+  // the authoritative one -- it holds `mu` and closes the race -- but reaching
+  // only that one means every ReadRequest the reader picks up between
+  // shutdown() setting `stopping` and the reader join issues a D2H copy plus an
+  // event that are guaranteed to be discarded, and then pays a full
+  // cudaStreamSynchronize on the reader thread to wait the copy out. That
+  // synchronize delays the lane->reader.join() shutdown() is already blocked
+  // on, and on the startDeferredReadReplies() path it blocks the event loop
+  // instead. Checking here skips both. A stale read is harmless: it can only
+  // mean doing the work we would have done anyway, and the post-copy check
+  // still catches it.
+  {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping) {
+      return Err(
+          ErrCode::NotConnected,
+          "tcp read: transport stopped before staging a VRAM read");
+    }
+  }
+
+  // The entry owns the slab, the lease and the event from HERE, not from the
+  // push. Built early because push_back materialises its argument before it
+  // allocates: with a temporary there, deque growth that throws destroys that
+  // temporary at the end of the full-expression -- returning the slab to the
+  // pool while the D2H is still writing into it -- and does so INSIDE the
+  // locked scope, whereas the barrier below only runs at function exit. The
+  // wait would then come after the slab was already reusable, which is the one
+  // ordering this whole mechanism exists to prevent.
+  PendingReadReply pending{
+      std::move(frame),
+      std::move(lease),
+      /*event=*/nullptr,
+      replyHeader.reqId,
+      deviceId};
+
   bool copyIssued = false;
+  bool handedOff = false;
+  // Waits out an issued copy on every exit that is not a hand-off, and destroys
+  // the event it would otherwise leak. Declared after `pending` so it destructs
+  // FIRST -- the wait has to happen while the slab and the lease are still
+  // alive. Covers the paths that do not return: the push and the dispatch below
+  // are outside the try and both can throw (deque growth, the EventBase queue).
+  //
+  // Copy and move are deleted because a second barrier would wait and destroy
+  // the same event twice; that makes this a non-aggregate, hence the ctor.
+  class CopyBarrier {
+   public:
+    CopyBarrier(
+        const std::shared_ptr<TcpReplyState>& state,
+        const bool& issued,
+        const bool& handedOff,
+        void*& event,
+        int deviceId)
+        : state_(state),
+          issued_(issued),
+          handedOff_(handedOff),
+          event_(event),
+          deviceId_(deviceId) {}
+    CopyBarrier(const CopyBarrier&) = delete;
+    CopyBarrier& operator=(const CopyBarrier&) = delete;
+    CopyBarrier(CopyBarrier&&) = delete;
+    CopyBarrier& operator=(CopyBarrier&&) = delete;
+    ~CopyBarrier() {
+      if (handedOff_ || !issued_) {
+        return;
+      }
+      waitForStagedCopy(state_, deviceId_);
+      // An entry that was never pushed is one drainPendingReadReplies() will
+      // never see, so nothing else would ever destroy this.
+      if (event_ != nullptr) {
+        (void)state_->cudaApi->eventDestroy(static_cast<cudaEvent_t>(event_));
+        event_ = nullptr;
+      }
+    }
+
+   private:
+    const std::shared_ptr<TcpReplyState>& state_;
+    const bool& issued_;
+    const bool& handedOff_;
+    void*& event_;
+    int deviceId_;
+  } copyBarrier{state, copyIssued, handedOff, pending.event, deviceId};
   try {
-    CudaDeviceGuard guard(*cudaApi_, deviceId);
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
     // Into pinned memory, so this returns once the copy is enqueued. The same
     // call into a pageable destination -- a plain vector -- is specified to
     // complete synchronously, which parks whichever thread issued it for the
     // length of the transfer. On this path that thread is the reader.
-    if (auto st = cudaApi_->memcpyAsync(
-            frame.mutableData() + sizeof(TcpMsgHeader),
+    if (auto st = state->cudaApi->memcpyAsync(
+            pending.frame.mutableData() + sizeof(TcpMsgHeader),
             src,
             replyHeader.len,
             cudaMemcpyDeviceToHost,
@@ -1402,35 +1578,64 @@ Status TcpTransport::startReadReply(
     copyIssued = true;
     // The guard already has deviceId current, so these wait on the right device
     // without nesting another guard.
-    if (auto st = cudaApi_->eventCreate(&event); !st) {
-      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    if (auto st = state->cudaApi->eventCreate(&event); !st) {
+      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
-    if (auto st = cudaApi_->eventRecord(event, /*stream=*/nullptr); !st) {
-      (void)cudaApi_->eventDestroy(event);
-      (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    if (auto st = state->cudaApi->eventRecord(event, /*stream=*/nullptr); !st) {
+      (void)state->cudaApi->eventDestroy(event);
+      (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
       return st;
     }
+    // Only now, so the two failure paths above stay solely responsible for the
+    // handle they created and the barrier cannot double-destroy it.
+    pending.event = event;
   } catch (const std::exception& e) {
     if (copyIssued) {
-      waitForStagedCopy(deviceId);
+      waitForStagedCopy(state, deviceId);
     }
     return Err(
         ErrCode::InvalidArgument,
         "tcp read: VRAM staging needs a selectable deviceId, got " +
             std::to_string(deviceId) + ": " + e.what());
   }
+  bool stopping = false;
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    pendingReplies_.push_back(
-        PendingReadReply{
-            std::move(frame),
-            std::move(lease),
-            event,
-            replyHeader.reqId,
-            deviceId});
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping) {
+      stopping = true;
+    } else {
+      state->pending.push_back(std::move(pending));
+    }
   }
-  schedulePendingReplyPoll();
+  if (stopping) {
+    // drainPendingReadReplies() has already swept the queue, so pushing here
+    // would leave a lease in a queue nothing drains again -- the same shape as
+    // the deferReadReply() refusal below. The wait and the eventDestroy are the
+    // barrier's, since `pending` still owns both.
+    return Err(
+        ErrCode::NotConnected,
+        "tcp read: transport stopped while staging a VRAM read");
+  }
+  // Past the stopping refusal means the push happened, so the deque entry owns
+  // the slab, the lease and the event, and the drain is the barrier from here.
+  // Set after that branch rather than beside the push so a throw from the push
+  // itself is still covered.
+  handedOff = true;
+  // A throw out of the dispatch below therefore does NOT wait or destroy -- the
+  // entry owns both and doing either would race the drain. The entry is then on
+  // `pending`, and drainPendingReadReplies() at teardown waits for the copy,
+  // destroys the event and releases the lease, so nothing leaks. Accepted
+  // rather than popped back off: unwinding a push to re-take a lock we just
+  // released would add a failure mode worse than the delay.
+  //
+  // That cost is bounded ONLY because schedulePendingReplyPoll() clears
+  // pollScheduled on the throwing path. If it did not, this would not be one
+  // delayed lease: the flag gates every later call, so the poll loop would be
+  // dead for the connection's life, nothing would retire a staged reply again,
+  // and an exhausted pool would push every VRAM read down deferReadReply() with
+  // nothing to drain it.
+  schedulePendingReplyPoll(state);
   return Ok();
 }
 
@@ -1465,6 +1670,21 @@ Status TcpTransport::deferReadReply(
   // admitInflightBulk() take their mutex first for the same reason.
   {
     std::lock_guard<std::mutex> lk(stagingMu_);
+    // `stopping` as well as connBroken_, in the same critical section as the
+    // push. shutdown() sets stopping before the reader join, while connBroken_
+    // is only set later by failAllPending(), so between those two points this
+    // was the one admission point that would still grow a queue -- the entry
+    // then never starts (scheduleDeferredReadReplies() returns early on
+    // stopping) and is discarded by drainPendingReadReplies(). Harmless today
+    // because that drain runs after the joins, but the asymmetry with the other
+    // four admission points reads as a guarantee that no queue grows once
+    // stopping is set, and that guarantee is what a future caller would rely
+    // on.
+    if (reply_->stopping) {
+      return Err(
+          ErrCode::NotConnected,
+          "tcp read: reply path stopped while deferring a VRAM read");
+    }
     if (connBroken_.load(std::memory_order_acquire)) {
       return Err(
           ErrCode::NotConnected,
@@ -1495,22 +1715,38 @@ Status TcpTransport::deferReadReply(
   // there is no next release: the read never starts and its lease keeps erase()
   // blocked. Redundant kicks are harmless -- startDeferredReadReplies()
   // re-tests both the pool and the queue under the lock.
-  scheduleDeferredReadReplies();
+  scheduleDeferredReadReplies(reply_);
   return Ok();
 }
 
-void TcpTransport::scheduleDeferredReadReplies() {
+void TcpTransport::scheduleDeferredReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    if (deferredReplies_.empty()) {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping || state->deferred.empty()) {
       return;
     }
   }
-  evb_->dispatch([this]() noexcept { startDeferredReadReplies(); });
+  // `state` rather than `this`: the callback may not run until after the
+  // transport is gone, and by then the senders are joined, so anything it
+  // queues simply sits in a queue that dies with the lane set.
+  state->evb->dispatch([state]() noexcept { startDeferredReadReplies(state); });
 }
 
-void TcpTransport::startDeferredReadReplies() {
-  auto pool = stagingPool();
+void TcpTransport::startDeferredReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
+  // Cheap early refusal: this runs from an evb_->dispatch() that may have been
+  // queued just before shutdown() set `stopping`, so there is no point taking a
+  // slab and popping an entry for work that will be refused. stagingPool()
+  // makes the same test authoritatively for every caller, so this is an
+  // optimisation rather than the guarantee -- see the lock-order note there.
+  {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping) {
+      return;
+    }
+  }
+  auto pool = stagingPool(state);
   if (!pool) {
     return;
   }
@@ -1524,8 +1760,8 @@ void TcpTransport::startDeferredReadReplies() {
     }
     DeferredReadReply deferred;
     {
-      std::lock_guard<std::mutex> lk(stagingMu_);
-      if (deferredReplies_.empty()) {
+      std::lock_guard<std::mutex> lk(state->mu);
+      if (state->stopping || state->deferred.empty()) {
         // Returning here releases the slab without using it, and deliberately
         // does not reschedule. An entry queued between this test and that
         // release is still covered, because deferReadReply() is the only
@@ -1535,8 +1771,8 @@ void TcpTransport::startDeferredReadReplies() {
         // that does not kick would reopen the window.
         return;
       }
-      deferred = std::move(deferredReplies_.front());
-      deferredReplies_.pop_front();
+      deferred = std::move(state->deferred.front());
+      state->deferred.pop_front();
     }
     TcpMsgHeader replyHeader{};
     replyHeader.op = static_cast<uint8_t>(TcpOp::ReadReply);
@@ -1545,12 +1781,28 @@ void TcpTransport::startDeferredReadReplies() {
     replyHeader.offset = deferred.offset;
     replyHeader.len = deferred.len;
     if (auto st = startReadReply(
-            replyHeader, std::move(deferred.lease), std::move(slab));
+            state, replyHeader, std::move(deferred.lease), std::move(slab));
         !st) {
+      // A `stopping` refusal is an ordinary part of teardown, not a failure:
+      // startReadReply() returns NotConnected once shutdown() has swept the
+      // queues. Logging it at ERROR made every clean shutdown look like a
+      // staging fault, and the Error frame it enqueued goes onto lanes that are
+      // already closed, so nothing observes it either. Genuine staging failures
+      // still get both.
+      bool stopping = false;
+      {
+        std::lock_guard<std::mutex> lk(state->mu);
+        stopping = state->stopping;
+      }
+      if (stopping) {
+        return;
+      }
       UNIFLOW_LOG_ERROR(
           "tcp read: deferred VRAM staging failed: {}", st.error().message());
-      (void)enqueueFrame(
-          makeHeaderFrame(TcpOp::Error, deferred.reqId), /*mayBlock=*/false);
+      (void)enqueueOn(
+          state,
+          makeHeaderFrame(TcpOp::Error, deferred.reqId),
+          /*mayBlock=*/false);
     }
   }
 }
@@ -1600,7 +1852,7 @@ Status TcpTransport::startAsyncH2d(
       const auto syncStatus =
           waitForH2dCopy(h2dState_, uncertain.deviceId, uncertain.stream);
       if (syncStatus.hasError()) {
-        quarantineH2d(h2dState_, std::move(uncertain));
+        abortOnUnquiescedH2d(std::move(uncertain));
         return syncStatus;
       }
       destroyH2dEvent(h2dState_, uncertain.deviceId, uncertain.event);
@@ -1610,8 +1862,7 @@ Status TcpTransport::startAsyncH2d(
   } catch (const std::exception& e) {
     if (copyIssued &&
         waitForH2dCopy(h2dState_, entry.deviceId, entry.stream).hasError()) {
-      quarantineH2d(
-          h2dState_,
+      abortOnUnquiescedH2d(
           PendingH2d{
               entry.state,
               std::move(slab),
@@ -1627,9 +1878,15 @@ Status TcpTransport::startAsyncH2d(
     if (event != nullptr) {
       destroyH2dEvent(h2dState_, entry.deviceId, event);
     }
+    // Deliberately broad, so the message reports what happened rather than
+    // diagnosing why. Today the only throw source is CudaDeviceGuard's
+    // setDevice, but the guarded region also runs the copy, so naming
+    // device selection as the cause would mislabel anything else that threw --
+    // a bad_alloc while building this very string, for instance. e.what()
+    // carries the real cause.
     status =
         Err(ErrCode::InvalidArgument,
-            "tcp get: VRAM destination needs a selectable deviceId, got " +
+            "tcp get: VRAM destination copy threw for deviceId " +
                 std::to_string(entry.deviceId) + ": " + e.what());
     entry.state->endWrite(status);
     return status;
@@ -1661,7 +1918,7 @@ Status TcpTransport::startAsyncH2d(
 
   if (auto syncStatus = waitForH2dCopy(h2dState_, entry.deviceId, entry.stream);
       syncStatus.hasError()) {
-    quarantineH2d(h2dState_, std::move(pending));
+    abortOnUnquiescedH2d(std::move(pending));
     return syncStatus;
   }
   destroyH2dEvent(h2dState_, entry.deviceId, event);
@@ -1739,7 +1996,7 @@ void TcpTransport::pollPendingH2d(
 
     if (queryFailed) {
       if (waitForH2dCopy(state, retired.deviceId, retired.stream).hasError()) {
-        quarantineH2d(state, std::move(retired));
+        abortOnUnquiescedH2d(std::move(retired));
         std::lock_guard<std::mutex> lk(state->mu);
         state->retiringState.reset();
         --state->activeRetirements;
@@ -1792,23 +2049,50 @@ void TcpTransport::destroyH2dEvent(
   }
 }
 
-void TcpTransport::quarantineH2d(
-    const std::shared_ptr<H2dPollState>& state,
-    PendingH2d copy) noexcept {
-  // Neither the event nor stream established quiescence. Deliberately retain
-  // the write reservation and slab: resolving or recycling either could let
-  // the caller or pool free memory still touched by DMA.
-  copy.state->fail(
-      Err(ErrCode::DriverError,
-          "tcp get: destination copy could not be safely quiesced"));
-  std::lock_guard<std::mutex> lk(state->mu);
-  for (auto& slot : state->quarantined) {
-    if (!slot.has_value()) {
-      slot.emplace(std::move(copy));
-      state->quarantineKeepalive = state;
-      return;
-    }
-  }
+// Does not return. Code after a call to this is unreachable; the name says so
+// because the call sites' trailing cleanup is left in place rather than
+// deleted, so it stays correct if this is ever downgraded to something
+// recoverable.
+[[noreturn]] void TcpTransport::abortOnUnquiescedH2d(PendingH2d copy) noexcept {
+  // Neither the event nor a stream synchronize could establish that the device
+  // had finished writing into the caller's destination. Nothing here is
+  // recoverable, and the two obvious options are both wrong:
+  //
+  //  - resolving the op releases the caller to free memory the DMA may still be
+  //    writing;
+  //  - retaining it quietly -- what this did before -- leaves the caller's
+  //    future permanently unresolved. tryBeginWrite() already counted the write
+  //    and only endWrite() retires it, so fail() latches without settling the
+  //    promise. Worse, a retained copy keeps its receive slab: after two such
+  //    events both slabs are gone, `receiveSlab` is always null, and the async
+  //    path silently stops being taken at all. The old std::terminate() below
+  //    the slot loop was therefore unreachable -- a third copy needs a third
+  //    slab, and there are only two.
+  //
+  // So this dies instead, loudly and at the point of detection. What gets us
+  // here is a sticky CUDA error -- illegal address, launch failure, device lost
+  // -- after which every later call on this device fails too. A transport
+  // factory owns exactly one deviceId and one CudaApi and hands both to every
+  // transport it creates, so no other transport in this process has a working
+  // device left to protect. Consumers run one GPU per process under a
+  // supervisor, so this is a restart rather than an outage.
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - copy.launchedAt);
+  UNIFLOW_LOG_ERROR(
+      "tcp get: destination copy could not be quiesced; aborting. device={} "
+      "stream={} reqId={} launched {}ms ago. The device is no longer usable, so "
+      "the caller's destination cannot be released safely and no later copy on "
+      "this device would succeed.",
+      copy.deviceId,
+      reinterpret_cast<uintptr_t>(copy.stream),
+      copy.reqId,
+      elapsed.count());
+  // Flushed explicitly, because the whole point of this path is to die loudly.
+  // The logger is spdlog's async non-blocking one (create_async_nb with
+  // overrun_oldest, drained by a background thread), so without this the
+  // message is still in the ring buffer when std::terminate() runs and the
+  // process dies silently -- the one outcome this function exists to prevent.
+  ::uniflow::logging::getLogger()->flush();
   std::terminate();
 }
 
@@ -1821,8 +2105,17 @@ void TcpTransport::drainPendingH2d() {
     state->drained.wait(lk, [&]() { return state->activeRetirements == 0; });
   }
   for (auto& copy : pending) {
+    // Aborting here, on the shutdown path, is deliberate. shutdown() is a
+    // public method and not the same thing as process exit -- a caller may shut
+    // one transport down and carry on -- so an unquiesceable copy means the
+    // same thing it means anywhere else: the device may still be writing into
+    // the caller's destination, and endWrite() below would release them to free
+    // it. Completing shutdown "successfully" would also leave a process holding
+    // a device that no later copy can use, since what gets us here is a sticky
+    // CUDA error. The `continue` is unreachable; it documents that the loop
+    // does not fall through to the endWrite() below.
     if (waitForH2dCopy(state, copy.deviceId, copy.stream).hasError()) {
-      quarantineH2d(state, std::move(copy));
+      abortOnUnquiescedH2d(std::move(copy));
       continue;
     }
     destroyH2dEvent(state, copy.deviceId, copy.event);
@@ -1832,18 +2125,35 @@ void TcpTransport::drainPendingH2d() {
   }
 }
 
-void TcpTransport::schedulePendingReplyPoll() {
+void TcpTransport::schedulePendingReplyPoll(
+    const std::shared_ptr<TcpReplyState>& state) {
   {
-    std::lock_guard<std::mutex> lk(stagingMu_);
-    if (replyPollScheduled_ || pendingReplies_.empty()) {
+    std::lock_guard<std::mutex> lk(state->mu);
+    if (state->stopping || state->pollScheduled || state->pending.empty()) {
       return;
     }
-    replyPollScheduled_ = true;
+    state->pollScheduled = true;
   }
-  evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+  // pollScheduled is cleared again if the dispatch throws. dispatch() is a
+  // queue push that allocates, so it can; and the flag is the gate every later
+  // call checks first, so leaving it set would not delay one poll -- it would
+  // kill the poll loop for the life of the connection. Nothing would retire a
+  // staged reply again, each would keep its lease and its pinned slab, and once
+  // the pool is exhausted every VRAM read would degrade into deferReadReply()
+  // with nothing left to drain it.
+  try {
+    state->evb->dispatch([state]() noexcept { pollPendingReadReplies(state); });
+  } catch (...) {
+    {
+      std::lock_guard<std::mutex> lk(state->mu);
+      state->pollScheduled = false;
+    }
+    throw;
+  }
 }
 
-void TcpTransport::pollPendingReadReplies() {
+void TcpTransport::pollPendingReadReplies(
+    const std::shared_ptr<TcpReplyState>& state) {
   while (true) {
     TcpFrame ready;
     PendingReadReply failed;
@@ -1853,17 +2163,21 @@ void TcpTransport::pollPendingReadReplies() {
     bool haveFailure = false;
     bool stillRunning = false;
     {
-      std::lock_guard<std::mutex> lk(stagingMu_);
-      if (pendingReplies_.empty()) {
-        replyPollScheduled_ = false;
+      std::lock_guard<std::mutex> lk(state->mu);
+      // Teardown has drained the queue and is not waiting on this callback to
+      // leave, so there is nothing left to retire and nothing to reschedule.
+      if (state->stopping || state->pending.empty()) {
+        state->pollScheduled = false;
         return;
       }
-      auto& front = pendingReplies_.front();
-      auto done = cudaApi_->eventQuery(static_cast<cudaEvent_t>(front.event));
+      auto& front = state->pending.front();
+      auto done =
+          state->cudaApi->eventQuery(static_cast<cudaEvent_t>(front.event));
       if (done.hasValue() && !done.value()) {
         stillRunning = true;
       } else {
-        (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(front.event));
+        (void)state->cudaApi->eventDestroy(
+            static_cast<cudaEvent_t>(front.event));
         if (done.hasError()) {
           failedReqId = front.reqId;
           failedDeviceId = front.deviceId;
@@ -1880,7 +2194,7 @@ void TcpTransport::pollPendingReadReplies() {
           haveReady = true;
         }
         // Releases the lease, which is what lets a waiting erase() proceed.
-        pendingReplies_.pop_front();
+        state->pending.pop_front();
       }
     }
     if (stillRunning) {
@@ -1893,39 +2207,48 @@ void TcpTransport::pollPendingReadReplies() {
       // takes stagingMu_ to enqueue, and it should never wait on the
       // EventBase's queue to do it.
       std::this_thread::yield();
-      evb_->dispatch([this]() noexcept { pollPendingReadReplies(); });
+      state->evb->dispatch(
+          [state]() noexcept { pollPendingReadReplies(state); });
       return;
     }
     // Queued outside the lock: enqueueFrame takes a lane mutex, and holding two
     // of the transport's mutexes at once is how lock cycles start.
     if (haveReady) {
-      (void)enqueueFrame(std::move(ready), /*mayBlock=*/false);
+      (void)enqueueOn(state, std::move(ready), /*mayBlock=*/false);
     } else if (haveFailure) {
       // Wait before `failed` goes out of scope, for the same reason
       // drainPendingReadReplies() waits: a copy that may still be running would
       // otherwise be left writing into a slab the pool is about to hand to the
       // next staging copy.
-      waitForStagedCopy(failedDeviceId);
+      waitForStagedCopy(state, failedDeviceId);
       // Dropping it here releases the slab, so a deferred read may now be
       // startable -- which is why this happens before the scheduling call
       // below.
       failed = PendingReadReply{};
-      (void)enqueueFrame(
-          makeHeaderFrame(TcpOp::Error, failedReqId), /*mayBlock=*/false);
-      scheduleDeferredReadReplies();
+      (void)enqueueOn(
+          state,
+          makeHeaderFrame(TcpOp::Error, failedReqId),
+          /*mayBlock=*/false);
+      scheduleDeferredReadReplies(state);
     }
   }
 }
 
-void TcpTransport::waitForStagedCopy(int deviceId) noexcept {
-  if (cudaApi_ == nullptr) {
+void TcpTransport::waitForStagedCopy(
+    const std::shared_ptr<TcpReplyState>& state,
+    int deviceId) noexcept {
+  if (state->cudaApi == nullptr) {
     return;
   }
   try {
-    // Per-device: a bare streamSynchronize would only cover whichever device
-    // happened to be current, leaving a copy on any other device still running.
-    CudaDeviceGuard guard(*cudaApi_, deviceId);
-    (void)cudaApi_->streamSynchronize(/*stream=*/nullptr);
+    // The device has to be made current first because this waits on the *null*
+    // stream, and the null stream is per-device: a bare streamSynchronize would
+    // cover whichever device happened to be current and leave this copy
+    // running. That reasoning is specific to the null stream. A
+    // caller-supplied stream is one stream regardless of which device is
+    // current, so selecting a device per copy would buy nothing there.
+    CudaDeviceGuard guard(*state->cudaApi, deviceId);
+    (void)state->cudaApi->streamSynchronize(/*stream=*/nullptr);
   } catch (const std::exception&) {
     // The device is already unusable, so there is nothing left to wait for.
   }
@@ -1949,7 +2272,7 @@ void TcpTransport::drainPendingReadReplies() {
   // first even though the replies themselves are being abandoned.
   if (cudaApi_ != nullptr) {
     for (auto& reply : pending) {
-      waitForStagedCopy(reply.deviceId);
+      waitForStagedCopy(reply_, reply.deviceId);
       (void)cudaApi_->eventDestroy(static_cast<cudaEvent_t>(reply.event));
     }
   }
@@ -2018,10 +2341,20 @@ Status TcpTransport::admitInflight(uint64_t reqId, TcpInflight entry) {
 }
 
 bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
+  return enqueueOn(reply_, std::move(frame), mayBlock);
+}
+
+bool TcpTransport::enqueueOn(
+    const std::shared_ptr<TcpReplyState>& state,
+    TcpFrame frame,
+    bool mayBlock) {
+  // Copied out so the lane set stays alive for this call even if the transport
+  // is torn down concurrently.
+  const std::shared_ptr<TcpLaneSet> lanes = state->lanes;
   // No lanes means connect() never ran (or teardown already cleared them).
   // Indexing here would be undefined; refusing matches the documented contract
   // that a frame may simply not be queued.
-  if (lanes_.empty()) {
+  if (lanes == nullptr || lanes->v.empty()) {
     return false;
   }
   const size_t bytes = frame.size();
@@ -2029,8 +2362,8 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
   // carries its own reqId/segId/offset, so the peer places it without needing
   // arrival order and any lane is equivalent. Only Send is order-sensitive, and
   // it does not come through here (see enqueueSendFrame).
-  auto& lane = *lanes_[pickLane()];
-  const size_t cap = laneCapBytes();
+  auto& lane = *lanes->v[pickLaneOn(*lanes)];
+  const size_t cap = laneCapBytesOn(*lanes);
   {
     std::unique_lock<std::mutex> lk(lane.mu);
     if (mayBlock) {
@@ -2039,8 +2372,9 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
       // drains slows down instead of growing the queue. An empty queue always
       // admits, however large the frame, or a payload bigger than the cap could
       // never drain and would wedge here forever.
-      lane.cv.wait(lk, [this, &lane, bytes, cap]() {
-        return lane.outClosed || connBroken_.load(std::memory_order_acquire) ||
+      lane.cv.wait(lk, [&lanes, &lane, bytes, cap]() {
+        return lane.outClosed ||
+            lanes->broken.load(std::memory_order_acquire) ||
             lane.queue.empty() || lane.bytes + bytes <= cap;
       });
     }
@@ -2060,7 +2394,7 @@ bool TcpTransport::enqueueFrame(TcpFrame frame, bool mayBlock) {
     // outClosed alone therefore lets a frame admitted before the sweep land in
     // the cleared queue and go out on the wire for an op whose caller has
     // already been told it failed.
-    if (lane.outClosed || connBroken_.load(std::memory_order_acquire)) {
+    if (lane.outClosed || lanes->broken.load(std::memory_order_acquire)) {
       return false;
     }
     lane.queue.push_back(TcpOutItem{std::move(frame), nullptr});
@@ -2303,6 +2637,22 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
       // down, so leaving the other lanes admitting work would queue frames for
       // a connection that is already gone.
       closeAllLaneQueues();
+      // The sockets too, not just the queues. Closing a queue stops new work
+      // being admitted; it does not wake a reader already parked in a blocking
+      // recv on a lane whose own socket is still healthy. With one socket the
+      // failing lane's reader errored out on its next recv, so this was
+      // invisible. With N lanes the other N-1 readers stay parked on sockets
+      // that are fine, on a transport that is already failed.
+      //
+      // A recv timeout no longer bounds that wait: readerLoop treats
+      // ErrCode::Timeout as idleness and continues, because an idle gap between
+      // transfers is not a dead peer. That is right for the get path, and it is
+      // what makes closing the sockets here necessary rather than merely
+      // tidier -- without it those readers wait for shutdown().
+      //
+      // closeLanesOnce() is idempotent per lane, so overlapping with a reader
+      // that refused its own connection, or with shutdown(), is safe.
+      closeLanesOnce();
       if (item.onSent) {
         item.onSent->fail(Err(ErrCode::ConnectionFailed, "tcp: send failed"));
       }
@@ -2317,54 +2667,98 @@ void TcpTransport::senderLoop(size_t laneIdx) noexcept {
     // slab; dispatching the restart rather than running it here keeps device
     // work off the thread whose only job is to keep the socket draining.
     item = TcpOutItem{};
-    scheduleDeferredReadReplies();
+    scheduleDeferredReadReplies(reply_);
   }
 }
 
 // Logs the get-path phase split and zeroes it, so a caller can bracket one
-// measurement. Reports the reader's own view: time blocked waiting for a frame
-// to start (first-byte latency -- network plus whatever the peer did before
-// replying), time draining a frame once started, and time in the copy to the
-// caller's destination. Anything unaccounted for is reader-thread work between
-// those points.
+// measurement. Reports the reader's own view: the inter-frame stall (blocked on
+// a length prefix with nothing arriving), time draining a frame once started,
+// and time in the copy to the caller's destination. Anything unaccounted for is
+// reader-thread work between those points.
+//
+// The stall is NOT the round trip plus the peer's work. A get responder stages
+// asynchronously, so its staging and the round trip overlap our own drain and
+// cannot show up in our block on the prefix -- see RecvPhaseStats for the
+// measurement that settles it.
 void TcpTransport::logAndResetPhaseStats(std::string_view label) {
+  // lanes_ is read without a lock, so this may only be called between a
+  // completed connect() and shutdown(). establishLanes() fills it during
+  // connect(), and the reader and sender threads read it unlocked only because
+  // they are created after that, which supplies the happens-before. This is a
+  // public method reachable from any thread and the emptiness check below
+  // supplies no such ordering, so the contract is the caller's to keep. Stated
+  // rather than locked because no caller needs the lock: the only callers
+  // bracket a measurement from the thread that ran connect().
   if (lanes_.empty()) {
+    // Nothing to report, but the transport-level counters are cleared anyway.
+    // They are not lane-scoped, so anything already accounted here would
+    // otherwise carry into the next measurement window. Clearing
+    // unconditionally makes the bracketing a property of this function rather
+    // than of the connect()/shutdown() contract holding -- one less thing that
+    // has to be true for a measurement to mean what it says.
+    (void)dstCopyNs_.exchange(0, std::memory_order_relaxed);
+    (void)dstCopyCount_.exchange(0, std::memory_order_relaxed);
+    (void)receiveSlabAttempts_.exchange(0, std::memory_order_relaxed);
+    (void)receiveSlabMisses_.exchange(0, std::memory_order_relaxed);
+    (void)vectorReceiveCount_.exchange(0, std::memory_order_relaxed);
+    (void)stagingNs_.exchange(0, std::memory_order_relaxed);
+    (void)stagingBytes_.exchange(0, std::memory_order_relaxed);
+    (void)stagingWaves_.exchange(0, std::memory_order_relaxed);
+    (void)stagingChunks_.exchange(0, std::memory_order_relaxed);
+    // Unconditional, like the reporting path below: h2dState_ is assigned once
+    // in the constructor and never reset, so it is non-null for the whole
+    // lifetime a caller can reach this from. Guarding it here while the
+    // reporting path dereferences it freely would imply an invariant that does
+    // not exist, and send the next reader looking for the null case that makes
+    // the other path a crash.
+    (void)h2dState_->copyNs.exchange(0, std::memory_order_relaxed);
+    (void)h2dState_->copyCount.exchange(0, std::memory_order_relaxed);
     return;
   }
   // Summed over every lane: each lane has its own reader and its own stats, so
   // reading lane 0 alone would report 1/N of the traffic and hide any imbalance
   // between lanes. Per-lane frame counts are logged too, since an uneven split
   // is itself a finding.
-  uint64_t frames = 0, hdrNs = 0, drainNs = 0, bytes = 0;
+  //
+  // exchange, not load-then-reset: each counter is read and cleared in one
+  // step, so a sample the reader records mid-sweep is carried into the next
+  // window rather than dropped. That is the whole guarantee, and it is worth
+  // not overstating -- the 4N lane counters and the transport counters are
+  // still exchanged at distinct instants, so a frame whose stall was already
+  // taken but whose count lands just after still straddles two windows.
+  // Load-then-clear would be strictly worse: 4N loads then 4N stores, with
+  // every sample recorded in between lost outright rather than deferred.
+  uint64_t frames = 0, stallNs = 0, drainNs = 0, bytes = 0;
   std::string perLaneFrames;
   for (size_t i = 0; i < lanes_.size(); ++i) {
     if (lanes_[i] == nullptr || lanes_[i]->conn == nullptr) {
       continue;
     }
     auto& lrs = lanes_[i]->conn->recvPhaseStats();
-    const uint64_t lf = lrs.frames.load(std::memory_order_relaxed);
+    const uint64_t lf = lrs.frames.exchange(0, std::memory_order_relaxed);
     frames += lf;
-    hdrNs += lrs.headerWaitNs.load(std::memory_order_relaxed);
-    drainNs += lrs.payloadDrainNs.load(std::memory_order_relaxed);
-    bytes += lrs.payloadBytes.load(std::memory_order_relaxed);
+    stallNs += lrs.interFrameStallNs.exchange(0, std::memory_order_relaxed);
+    drainNs += lrs.payloadDrainNs.exchange(0, std::memory_order_relaxed);
+    bytes += lrs.payloadBytes.exchange(0, std::memory_order_relaxed);
     perLaneFrames += (i == 0 ? "" : ",") + std::to_string(lf);
   }
-  const uint64_t copyNs = dstCopyNs_.load(std::memory_order_relaxed) +
-      h2dState_->copyNs.load(std::memory_order_relaxed);
-  const uint64_t copies = dstCopyCount_.load(std::memory_order_relaxed) +
-      h2dState_->copyCount.load(std::memory_order_relaxed);
+  const uint64_t copyNs = dstCopyNs_.exchange(0, std::memory_order_relaxed) +
+      h2dState_->copyNs.exchange(0, std::memory_order_relaxed);
+  const uint64_t copies = dstCopyCount_.exchange(0, std::memory_order_relaxed) +
+      h2dState_->copyCount.exchange(0, std::memory_order_relaxed);
   const uint64_t slabAttempts =
-      receiveSlabAttempts_.load(std::memory_order_relaxed);
+      receiveSlabAttempts_.exchange(0, std::memory_order_relaxed);
   const uint64_t slabMisses =
-      receiveSlabMisses_.load(std::memory_order_relaxed);
+      receiveSlabMisses_.exchange(0, std::memory_order_relaxed);
   const uint64_t vectorReceives =
-      vectorReceiveCount_.load(std::memory_order_relaxed);
+      vectorReceiveCount_.exchange(0, std::memory_order_relaxed);
 
   if (frames == 0) {
     UNIFLOW_LOG_INFO("tcp phases [{}]: no frames", label);
   } else {
     const double totalNs =
-        static_cast<double>(hdrNs) + static_cast<double>(drainNs);
+        static_cast<double>(stallNs) + static_cast<double>(drainNs);
     const auto pct = [totalNs](uint64_t v) {
       return totalNs > 0.0 ? 100.0 * static_cast<double>(v) / totalNs : 0.0;
     };
@@ -2376,15 +2770,16 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         ? static_cast<double>(bytes) / static_cast<double>(drainNs)
         : 0.0;
     UNIFLOW_LOG_INFO(
-        "tcp phases [{}]: frames={} bytes={} | first-byte {:.1f}us/frame "
+        "tcp phases [{}]: frames={} bytes={} | interframe_stall "
+        "{:.1f}us/frame "
         "({:.1f}%) | drain {:.1f}us/frame ({:.1f}%, {:.2f} GB/s) | dstcopy "
         "{:.1f}us x{} ({:.1f}% of wire) | receive_slabs attempts={} misses={} "
         "vector_recvs={} | lanes={} frames_per_lane=[{}]",
         label,
         frames,
         bytes,
-        static_cast<double>(hdrNs) / frames / 1000.0,
-        pct(hdrNs),
+        static_cast<double>(stallNs) / frames / 1000.0,
+        pct(stallNs),
         static_cast<double>(drainNs) / frames / 1000.0,
         pct(drainNs),
         drainGBps,
@@ -2397,18 +2792,16 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
         lanes_.size(),
         perLaneFrames);
   }
-  for (auto& lane : lanes_) {
-    if (lane != nullptr && lane->conn != nullptr) {
-      lane->conn->recvPhaseStats().reset();
-    }
-  }
   // Reported separately from the frame block above: on a put run this side
   // receives only Acks, so gating the staging numbers on receive frames would
   // hide them exactly where they matter.
-  const uint64_t stgNs = stagingNs_.load(std::memory_order_relaxed);
-  const uint64_t stgBytes = stagingBytes_.load(std::memory_order_relaxed);
-  const uint64_t stgWaves = stagingWaves_.load(std::memory_order_relaxed);
-  const uint64_t stgChunks = stagingChunks_.load(std::memory_order_relaxed);
+  const uint64_t stgNs = stagingNs_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgBytes =
+      stagingBytes_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgWaves =
+      stagingWaves_.exchange(0, std::memory_order_relaxed);
+  const uint64_t stgChunks =
+      stagingChunks_.exchange(0, std::memory_order_relaxed);
   if (stgWaves > 0) {
     UNIFLOW_LOG_INFO(
         "tcp put wave residency [{}]: waves={} chunks={} bytes={} | "
@@ -2422,17 +2815,6 @@ void TcpTransport::logAndResetPhaseStats(std::string_view label) {
                 static_cast<double>(stgChunks) / 1000.0
                       : 0.0);
   }
-  stagingNs_.store(0, std::memory_order_relaxed);
-  stagingBytes_.store(0, std::memory_order_relaxed);
-  stagingWaves_.store(0, std::memory_order_relaxed);
-  stagingChunks_.store(0, std::memory_order_relaxed);
-  dstCopyNs_.store(0, std::memory_order_relaxed);
-  dstCopyCount_.store(0, std::memory_order_relaxed);
-  h2dState_->copyNs.store(0, std::memory_order_relaxed);
-  h2dState_->copyCount.store(0, std::memory_order_relaxed);
-  receiveSlabAttempts_.store(0, std::memory_order_relaxed);
-  receiveSlabMisses_.store(0, std::memory_order_relaxed);
-  vectorReceiveCount_.store(0, std::memory_order_relaxed);
 }
 
 void TcpTransport::readerLoop(size_t laneIdx) noexcept {
@@ -2464,6 +2846,24 @@ void TcpTransport::readerLoop(size_t laneIdx) noexcept {
                                 receiveSlab.data(), receiveSlab.capacity()})
                         .get();
       if (!result) {
+        if (result.error().code() == ErrCode::Timeout &&
+            hasPeerLivenessDetection()) {
+          // Idle, not dead. SO_RCVTIMEO is set on every connected socket to
+          // bound the *handshake* against a peer that accepts and then stops
+          // responding; it is not a steady-state read deadline. An idle gap
+          // between transfers -- the normal state of a prefill/decode
+          // connection between bursts -- fires the same timeout, and breaking
+          // here tore the connection down and failed every in-flight op for it.
+          //
+          // Dead peers are detected by SO_KEEPALIVE and TCP_USER_TIMEOUT, which
+          // this transport's own socket config already plumbs, and which is the
+          // mechanism actually designed for it. Guarded on that being true: a
+          // config with neither -- osDefaults() sets every field nullopt, and
+          // Linux defaults keepalive off -- has no other liveness signal, so
+          // tolerating the timeout there would trade a wrongly-closed
+          // connection for one that never notices a dead peer at all.
+          continue;
+        }
         break;
       }
       const auto* receiveData = receiveSlab.data();
@@ -2477,7 +2877,12 @@ void TcpTransport::readerLoop(size_t laneIdx) noexcept {
     vectorReceiveCount_.fetch_add(1, std::memory_order_relaxed);
     auto result = conn->recv(msg).get();
     if (!result) {
-      // Connection closed, errored, or idle-timed-out; stop reading.
+      if (result.error().code() == ErrCode::Timeout &&
+          hasPeerLivenessDetection()) {
+        // Idle rather than closed or errored -- see the slab path above.
+        continue;
+      }
+      // Connection closed or errored; stop reading.
       break;
     }
     handleFrame(msg);
@@ -2523,6 +2928,27 @@ void TcpTransport::handleFrameImpl(
     TcpPinnedSlab receiveSlab) {
   auto headerResult = deserializeTcpHeader(frame);
   if (!headerResult) {
+    // A lane hello arriving as a data frame is not a malformed peer, it is a
+    // lane-count mismatch. This side has one lane, so establishLanes() skipped
+    // the hello exchange -- that skip exists so the wire stays byte-identical
+    // for a peer built before lanes existed -- and a peer configured for more
+    // than one lane sent a hello anyway. It is shorter than a TcpMsgHeader, so
+    // without this it is dropped as malformed while the peer goes on to stripe
+    // onto sockets nobody ever accepted: a silent stall, not the clean
+    // handshake error the design intends.
+    //
+    // Both sides normally come from one configuration, so this cannot happen in
+    // practice -- which is exactly why it must not be silent if it does. Thrown
+    // rather than logged and dropped: handleFrame is noexcept and fails the
+    // connection, and a connection whose peer is striping onto sockets this
+    // side never accepted cannot carry traffic.
+    if (auto hello = TcpLaneHello::deserialize(frame); hello) {
+      throw std::runtime_error(
+          "tcp: peer sent a lane hello for " +
+          std::to_string(hello.value().laneCount) +
+          " lanes, but this side established 1 and skipped the hello "
+          "exchange; the lane counts must match");
+    }
     UNIFLOW_LOG_ERROR(
         "tcp: dropping malformed frame: {}", headerResult.error().message());
     return;
@@ -2545,8 +2971,23 @@ void TcpTransport::handleFrameImpl(
         if (header.len > 0) {
           void* dst = static_cast<uint8_t*>(entry->ptr) + header.offset;
           if (entry->memType == MemoryType::VRAM) {
-            st = deviceFromHost(
-                dst, payload.data(), header.len, entry->deviceId);
+            // On a dedicated non-blocking stream, never the null stream. The
+            // lease above is held across this copy and erase() waits on it, so
+            // a null-stream copy -- which serialises against every blocking
+            // stream on the device -- would park the reader on unrelated
+            // application GPU work that only the reader could unblock. Bounded
+            // here by this copy alone.
+            auto stream = writeStreamFor(entry->deviceId);
+            if (stream.hasError()) {
+              st = std::move(stream).error();
+            } else {
+              st = deviceFromHost(
+                  dst,
+                  payload.data(),
+                  header.len,
+                  entry->deviceId,
+                  stream.value());
+            }
           } else {
             std::memcpy(dst, payload.data(), header.len);
           }
@@ -2762,12 +3203,35 @@ void TcpTransport::handleFrameImpl(
           const auto tCopyStart = std::chrono::steady_clock::now();
           Status st = Ok();
           if (entry.memType == MemoryType::VRAM) {
-            st = deviceFromHost(
-                entry.dst,
-                payload.data(),
-                header.len,
-                entry.deviceId,
-                entry.stream);
+            // Returned as a Status rather than allowed to throw. This lambda
+            // runs under writeAndComplete, which rethrows after recording the
+            // failure, and its caller is handleFrameImpl -- so an escaping
+            // exception reaches handleFrame's noexcept boundary, which stops
+            // the reader and fails every other inflight op on the connection.
+            //
+            // That escalation is right where protocol state is in doubt, which
+            // is what the inbound-staging path does. It is wrong here: this
+            // op's admission was already erased above, endWrite records its
+            // failure, and the only thing left half-written is this caller's
+            // own destination, which a failed op already leaves undefined. The
+            // throw comes from CudaDeviceGuard on a locally-registered
+            // deviceId, so a caller's own misconfiguration would otherwise take
+            // down transfers belonging to everyone else on the connection.
+            try {
+              st = deviceFromHost(
+                  entry.dst,
+                  payload.data(),
+                  header.len,
+                  entry.deviceId,
+                  entry.stream);
+            } catch (const std::exception& e) {
+              // Broad on purpose; see the retirement path's note. The message
+              // says the copy threw, not what it presumes threw it.
+              st =
+                  Err(ErrCode::InvalidArgument,
+                      "tcp get: VRAM destination copy threw for deviceId " +
+                          std::to_string(entry.deviceId) + ": " + e.what());
+            }
           } else {
             std::memcpy(entry.dst, payload.data(), header.len);
           }
@@ -3098,6 +3562,16 @@ void TcpTransport::shutdown() {
   // refused, in which case it is on its way out anyway.
   closeLanesOnce();
 
+  // Before the pool close and the drains below, not after: a reply callback
+  // admitted after drainPendingReadReplies() has swept would push a lease back
+  // into a queue nothing drains again. Every reply-path entry point re-tests
+  // this under the same mutex, so setting it here is what makes the sweep
+  // final.
+  {
+    std::lock_guard<std::mutex> lk(reply_->mu);
+    reply_->stopping = true;
+  }
+
   // Closed before the joins: this is the one pool with a *blocking* acquire,
   // and the thread parked in it is not one we own. acquire() waits on `freed_`
   // with no deadline and `closed_` as its only escape, and the put path calls
@@ -3146,6 +3620,25 @@ void TcpTransport::shutdown() {
   // transport goes away: a staged reply's frame is memory the device may still
   // be writing into.
   drainPendingReadReplies();
+
+  // After the reader is joined, so no Write copy can still be using one. Every
+  // such copy was synchronized before its handler returned, so none has pending
+  // work at this point.
+  {
+    std::lock_guard<std::mutex> lk(writeStreamMu_);
+    for (auto& [deviceId, stream] : writeStreams_) {
+      if (stream == nullptr || cudaApi_ == nullptr) {
+        continue;
+      }
+      try {
+        CudaDeviceGuard guard(*cudaApi_, deviceId);
+        (void)cudaApi_->streamDestroy(static_cast<cudaStream_t>(stream));
+      } catch (const std::exception&) {
+        // The device is already unusable; the stream goes with it.
+      }
+    }
+    writeStreams_.clear();
+  }
 
   // Compare-exchange, not load-then-store: a concurrent bind() failure setting
   // Error in the gap between a load and a store would be clobbered back to

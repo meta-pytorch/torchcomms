@@ -2,10 +2,10 @@
 
 #pragma once
 
-#include <deque>
 #include <string>
 
 #include "comms/ctran/backends/ib/CtranIbBase.h"
+#include "comms/ctran/backends/ib/FlushCompletionTracker.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 
 #include "comms/utils/commSpecs.h"
@@ -21,7 +21,9 @@ class LocalVirtualConn {
   commResult_t
   iflush(const void* dbuf, const void* ibRegElem, CtranIbRequest* req);
 
-  commResult_t processCqe(const enum ibverbx::ibv_wc_opcode opcode);
+  commResult_t processCqe(
+      const enum ibverbx::ibv_wc_opcode opcode,
+      const int device);
 
   uint32_t qpNum(int device = 0) const;
 
@@ -38,6 +40,6 @@ class LocalVirtualConn {
   CommLogData commLogData_;
 
   // Track completion of outstanding flushes
-  std::deque<CtranIbRequest*> outstandingReqs_;
+  FlushCompletionTracker tracker_;
 };
 } // namespace ctran::ib

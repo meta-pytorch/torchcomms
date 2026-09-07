@@ -396,11 +396,11 @@ RocJpegStatus RocJpegVappiDecoder::InitializeDecoder(std::string device_name, in
     GetGpuUuids();
 
     int offset = 0;
-    ComputePartition current_compute_partition = (gpu_uuids_to_compute_partition_map_.find(gpu_uuid) != gpu_uuids_to_compute_partition_map_.end()) ? gpu_uuids_to_compute_partition_map_[gpu_uuid] : kSpx;
+    ComputePartition current_compute_partition = gpu_uuids_to_compute_partition_map_.contains(gpu_uuid) ? gpu_uuids_to_compute_partition_map_[gpu_uuid] : kSpx;
     GetDrmNodeOffset(device_name, device_id_, visible_devices, current_compute_partition, offset);
 
     std::string drm_node = "/dev/dri/renderD";
-    int render_node_id = (gpu_uuids_to_render_nodes_map_.find(gpu_uuid) != gpu_uuids_to_render_nodes_map_.end()) ? gpu_uuids_to_render_nodes_map_[gpu_uuid] : 128;
+    int render_node_id = gpu_uuids_to_render_nodes_map_.contains(gpu_uuid) ? gpu_uuids_to_render_nodes_map_[gpu_uuid] : 128;
     drm_node += std::to_string(render_node_id + offset);
 
     CHECK_ROCJPEG(InitVAAPI(drm_node));
