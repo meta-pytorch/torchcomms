@@ -217,9 +217,14 @@ static commResult_t impl(
     // Wait for first step notification from srcPeer, at which point we have
     // first half of all blocks for next step
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
-
+    // Flush the received blocks before forwarding them as next-step sends;
+    // the notify CQE does not order the NIC's payload writes into HBM. On the
+    // final step, the second-half flush below orders both halves.
     // Post first half of messages for next step, if there is a next step
     if (i < (nSteps - 1)) {
+      if (notifyVec[i]->backend == CtranMapperBackend::IB) {
+        FB_COMMCHECK(comm->ctran_->mapper->flush(recvbuff, memHdl));
+      }
       dstPeer = dstAtStep(nRanks, rank, i + 1);
       sends = sendsAtStep(nRanks, rank, i + 1);
 
@@ -265,6 +270,11 @@ static commResult_t impl(
 
     // Wait for second step notification from srcPeer
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec.at(i).get()));
+    // Same flush as above: these blocks are forwarded at step i+1 (or read by
+    // the user after the last step).
+    if (notifyVec[i]->backend == CtranMapperBackend::IB) {
+      FB_COMMCHECK(comm->ctran_->mapper->flush(recvbuff, memHdl));
+    }
   }
 
   // // Wait for signal from all receives

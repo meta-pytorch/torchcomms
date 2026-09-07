@@ -320,6 +320,37 @@ inline commResult_t sendRecvImpl(
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
   }
 
+  // Flush received RDMA writes into each recvbuff before the stream is
+  // released; the notify CQE does not order payload writes into HBM. Keep all
+  // requests alive and wait for the complete batch before using the buffers or
+  // deregistering the handles below.
+  constexpr size_t kMaxFlushBatchSize =
+      MAX_SEND_WR / CTRAN_MAX_IB_DEVICES_PER_RANK;
+  static_assert(kMaxFlushBatchSize > 0);
+  std::vector<std::unique_ptr<CtranMapperRequest>> flushReqs;
+  flushReqs.reserve(kMaxFlushBatchSize);
+  auto waitFlushes = [&]() -> commResult_t {
+    for (const auto& req : flushReqs) {
+      FB_COMMCHECK(mapper->waitRequest(req.get()));
+    }
+    flushReqs.clear();
+    return commSuccess;
+  };
+  for (auto i = 0; i < recvOpGroup.size(); i++) {
+    auto op = recvOpGroup[i];
+    if (notifyVec[i]->backend == CtranMapperBackend::IB) {
+      CtranMapperRequest* req = nullptr;
+      FB_COMMCHECK(mapper->iflush(op->recv.recvbuff, recvMemHdl[i], &req));
+      if (req != nullptr) {
+        flushReqs.emplace_back(req);
+        if (flushReqs.size() == kMaxFlushBatchSize) {
+          FB_COMMCHECK(waitFlushes());
+        }
+      }
+    }
+  }
+  FB_COMMCHECK(waitFlushes());
+
   // Deregister temporary registrations
   for (auto hdl : tmpRegHdls) {
     FB_COMMCHECK(mapper->deregDynamic(hdl));

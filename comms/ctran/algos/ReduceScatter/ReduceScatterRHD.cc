@@ -149,6 +149,11 @@ static commResult_t impl(
 
     // make sure send from peer is completed
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[i].get()));
+    // Drain the peer's RDMA WRITE into tmpRecvBuf before the reduce kernel
+    // reads it; the notify CQE does not order payload writes into HBM.
+    if (notifyVec[i]->backend == CtranMapperBackend::IB) {
+      FB_COMMCHECK(comm->ctran_->mapper->flush(tmpRecvBuf, tmpHdl));
+    }
 
     // Local reduce
     for (size_t j = 0; j < (nRanks >> (i + 1)); j++) {

@@ -72,6 +72,11 @@ static commResult_t getImpl(
   auto getReq = std::unique_ptr<CtranMapperRequest>(req);
   FB_COMMCHECK(comm->ctran_->mapper->waitRequest(getReq.get()));
 
+  // Flush the RDMA READ payload into recvbuff before returning; the
+  // requester-side CQE does not order the NIC's writes into HBM. Must run
+  // before the handle is deregistered below.
+  FB_COMMCHECK(comm->ctran_->mapper->flush(op->get.recvbuff, localMemHdl));
+
   // Deregister the sendbuffer if it is automatically registered by the
   // mapper->searchRegHandle()
   if (localReg) {

@@ -142,6 +142,12 @@ commResult_t gpnFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& notify : notifyVec) {
     FB_COMMCHECK(mapper->waitNotify(notify.get()));
   }
+  // Flush received RDMA writes into recvbuff before the stream is released,
+  // matching the other AllGatherP variants; the notify CQE does not order
+  // payload writes into HBM.
+  if (!notifyVec.empty()) {
+    FB_COMMCHECK(mapper->flush(pArgs->recvbuff, pArgs->recvHdl));
+  }
   // Wait for all local PUTs to complete
   for (auto& req : pReqs) {
     FB_COMMCHECK(mapper->waitRequest(req.get()));

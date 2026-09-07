@@ -185,7 +185,7 @@ static commResult_t impl(
       const void* putSrc = (i == 0) ? sendBuf + putPos * recvSize : redBuf;
       void* putHdl = (i == 0) ? sendHdl : tmpRegHdl;
 
-      CtranMapperRequest* iputReq = nullptr;
+      CtranMapperRequest* iputReqPtr = nullptr;
       FB_COMMCHECK(mapper->iput(
           putSrc,
           remoteTmpBuf, // use first half of tmpbuf to receive data
@@ -195,14 +195,21 @@ static commResult_t impl(
               .memHdl_ = putHdl,
               .remoteAccessKey_ = remoteTmpAccessKey,
               .notify_ = true},
-          &iputReq));
+          &iputReqPtr));
+      auto iputReq = std::unique_ptr<CtranMapperRequest>(iputReqPtr);
 
       FB_COMMCHECK(mapper->waitNotify(notifyLeft.get()));
+      // Drain the peer's RDMA WRITE into tmpBuf before the reduce kernel
+      // reads it. The notify CQE does not order the NIC's payload writes
+      // into HBM. No-op unless local flush is enabled (e.g. GB300,
+      // pre-H100 arch, or NCCL_CTRAN_NET_FORCE_FLUSH).
+      if (notifyLeft->backend == CtranMapperBackend::IB) {
+        FB_COMMCHECK(mapper->flush(recvBuf, tmpRegHdl));
+      }
 
       // Local reduce will update redBuf, let's ensure the previous put has
       // finished so redBuf can be updated
-      FB_COMMCHECK(mapper->waitRequest(iputReq));
-      delete iputReq;
+      FB_COMMCHECK(mapper->waitRequest(iputReq.get()));
 
       kElem->reduce.ndsts = 1;
       kElem->reduce.nsrcs = 2; // Always reduce from 2 srcs (tmpBuf, srcbuf)

@@ -169,6 +169,7 @@ static commResult_t impl(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   // Wait for all PUTs to complete
+  bool hasIbRecv = false;
   for (int p = 1; p < nRanks; p++) {
     int peer = (rank + p) % nRanks;
 
@@ -184,6 +185,15 @@ static commResult_t impl(
       timestamp->putComplete.push_back(CtranMapperTimestampPoint(peer));
     }
     FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notifyVec[peer].get()));
+    hasIbRecv |= notifyVec[peer]->backend == CtranMapperBackend::IB;
+  }
+
+  // Flush inter-node RDMA writes into recvbuff before the stream is released;
+  // the notify CQE does not order payload writes into HBM. No-op unless local
+  // flush is enabled (e.g. GB300, pre-H100 arch, or
+  // NCCL_CTRAN_NET_FORCE_FLUSH).
+  if (hasIbRecv) {
+    FB_COMMCHECK(comm->ctran_->mapper->flush(op->allgather.recvbuff, memHdl));
   }
 
   // Wait for intranode bcast to complete

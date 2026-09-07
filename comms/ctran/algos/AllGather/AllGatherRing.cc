@@ -122,6 +122,14 @@ static commResult_t impl(
       if (!notifyRcvd) {
         break;
       }
+      // Flush the just-received chunk before it is forwarded (or read by the
+      // user after the final step); the notify CQE does not order the NIC's
+      // payload writes, and the forwarding NIC may otherwise read stale HBM.
+      // No-op unless local flush is enabled. TODO(perf): switch to an
+      // iflush-gated forward (StreamedRd pattern) to keep the ring pipelined.
+      if (notifyLeft->backend == CtranMapperBackend::IB) {
+        FB_COMMCHECK(mapper->flush(op->allgather.recvbuff, memHdl));
+      }
       // Don't queue send for final step
       if (blockNum < nRanks - 2) {
         int blockId = (rank - blockNum - 1 + nRanks) % nRanks;

@@ -287,6 +287,12 @@ static commResult_t impl(
     FB_COMMCHECK(mapper->waitRequest(sendReq));
     // Wait for the put from the sender to complete
     FB_COMMCHECK(mapper->waitNotify(notifyParent.get()));
+    // Flush the received data before it is forwarded to children (or read by
+    // the user on a leaf); the notify CQE does not order the NIC's payload
+    // writes into HBM.
+    if (notifyParent->backend == CtranMapperBackend::IB) {
+      FB_COMMCHECK(mapper->flush(op->broadcast.recvbuff, recvHdl));
+    }
   }
 
   // 4. Send data to all children in order
