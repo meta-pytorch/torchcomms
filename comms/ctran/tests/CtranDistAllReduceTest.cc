@@ -117,7 +117,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       } else if (op == commMin) {
         exp = (TYPE)(baseVal);
       } else if (op == commAvg) {
-        exp = (TYPE)(baseVal + TYPE(TYPE(this->numRanks - 1) / 2));
+        exp = static_cast<TYPE>(
+            static_cast<float>(baseVal) +
+            static_cast<float>(this->numRanks - 1) / 2.0f);
       }
       // log the first 3 errors
       if (error_count < 3) {
@@ -130,7 +132,8 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
         if (error_count < 20) {
           CTRAN_LOG_STREAM(WARN)
               << "error[" << error_count << "]: " << " data[" << i << "] "
-              << observedVals[i] << " vs exp " << exp;
+              << static_cast<float>(observedVals[i]) << " vs exp "
+              << static_cast<float>(exp);
         }
         error_count++;
       }
@@ -391,6 +394,32 @@ TEST_P(CtranAllReduceRingTestParamFp32, AllReduceRingFp32) {
       memType);
 }
 
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+class CtranAllReduceRingTestParamBfloat16
+    : public CtranAllReduceTest<__nv_bfloat16>,
+      public ::testing::WithParamInterface<
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingTestParamBfloat16, AllReduceRingBfloat16) {
+  const auto& [count, inplace, op, memType] = GetParam();
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      count,
+      inplace,
+      op,
+      memType);
+}
+#endif
+
 auto testingValuesRing = ::testing::Values(
     std::make_tuple(16, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(17, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
@@ -447,6 +476,18 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllReduceRingTestParamFp32,
     testingValuesRing,
     getTestName);
+
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+auto testingValuesRingBfloat16 = ::testing::Values(
+    std::make_tuple(16, kTestOutOfPlace, commAvg, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commAvg, kMemNcclMemAlloc));
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllReduceRingTestParamBfloat16,
+    testingValuesRingBfloat16,
+    getTestName);
+#endif
 
 // =============================================================================
 // Bi-directional AllGather tests for Ring algorithm
