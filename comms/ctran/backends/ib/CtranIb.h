@@ -144,10 +144,14 @@ class CtranIb {
   // Input arguments:
   //   - ibRegElem: the ibRegElem of the local buffer that stores the
   //                registration handle.
+  // Throws ctran::utils::Exception if the registration metadata is invalid.
   static CtranIbRemoteAccessKey getRemoteAccessKey(void* ibRegElem) {
     CtranIbRemoteAccessKey key;
-    key.nKeys = NCCL_CTRAN_IB_DEVICES_PER_RANK;
-    ctran::ib::getRemoteKeysImpl(ibRegElem, key.rkeys);
+    const int configuredDeviceCount = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    FB_COMMCHECKTHROW_EX_NOCOMM(
+        ctran::ib::getRemoteKeysImpl(
+            ibRegElem, configuredDeviceCount, key.rkeys));
+    key.nKeys = configuredDeviceCount;
     return key;
   }
 
@@ -742,10 +746,15 @@ class CtranIb {
 
   static inline commResult_t
   exportMemImpl(const void* buf, void* ibRegElem, ControlMsg& msg) {
+    const int configuredDeviceCount = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK> rkeys{};
+    FB_COMMCHECK(
+        ctran::ib::getRemoteKeysImpl(ibRegElem, configuredDeviceCount, rkeys));
+
     msg.setType(ControlMsgType::IB_EXPORT_MEM);
     msg.ibDesc.remoteAddr = reinterpret_cast<uint64_t>(buf);
-    msg.ibDesc.nKeys = NCCL_CTRAN_IB_DEVICES_PER_RANK;
-    ctran::ib::getRemoteKeysImpl(ibRegElem, msg.ibDesc.rkeys);
+    msg.ibDesc.nKeys = configuredDeviceCount;
+    msg.ibDesc.rkeys = rkeys;
 
     return commSuccess;
   }
@@ -754,8 +763,31 @@ class CtranIb {
       void** buf,
       CtranIbRemoteAccessKey* key,
       const ControlMsg& msg) {
+    if (buf == nullptr || key == nullptr) {
+      CTRAN_ERR(
+          commInvalidArgument,
+          "CTRAN-IB: importMem called with a null output pointer");
+      return commInvalidArgument;
+    }
+
+    const int configuredDeviceCount = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    FB_COMMCHECK(
+        ctran::ib::validateConfiguredDeviceCount(
+            configuredDeviceCount, key->rkeys.size()));
+    // IB device indices are rank-symmetric, so every peer must export the same
+    // number of keys configured locally.
+    if (msg.ibDesc.nKeys != configuredDeviceCount) {
+      CTRAN_ERR(
+          commInvalidArgument,
+          "CTRAN-IB: received {} rkeys but {} devices are configured; "
+          "NCCL_CTRAN_IB_DEVICES_PER_RANK must match across ranks",
+          msg.ibDesc.nKeys,
+          configuredDeviceCount);
+      return commInvalidArgument;
+    }
+
     (*buf) = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
-    for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
+    for (int device = 0; device < configuredDeviceCount; device++) {
       key->rkeys[device] = msg.ibDesc.rkeys[device];
     }
     key->nKeys = msg.ibDesc.nKeys;
