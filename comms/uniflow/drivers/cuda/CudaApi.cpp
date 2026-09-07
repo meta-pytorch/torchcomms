@@ -171,6 +171,18 @@ Status CudaApi::memcpyPeerAsync(
 
 // --- Stream ---
 
+Status CudaApi::streamCreateNonBlocking(cudaStream_t* stream) {
+  CUDA_CHECK(
+      cudaStreamCreateWithFlags(stream, cudaStreamNonBlocking),
+      ErrCode::DriverError);
+  return Ok();
+}
+
+Status CudaApi::streamDestroy(cudaStream_t stream) {
+  CUDA_CHECK(cudaStreamDestroy(stream), ErrCode::DriverError);
+  return Ok();
+}
+
 Status CudaApi::streamSynchronize(cudaStream_t stream) {
   CUDA_CHECK(cudaStreamSynchronize(stream), ErrCode::DriverError);
   return Ok();
