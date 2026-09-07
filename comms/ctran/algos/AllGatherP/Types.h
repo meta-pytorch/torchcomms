@@ -79,6 +79,9 @@ constexpr int kPipeEndDone = 0;
 
 struct PipeEndKernArgs {
   GpeKernelSync* pipeSync;
+  // Step the GPE worker posts once its puts drain. One past the last real step.
+  // Negative means no GPE worker runs, so nobody posts. Do not wait then.
+  int endSyncStep;
 };
 
 struct PipeSyncKernArgs {
