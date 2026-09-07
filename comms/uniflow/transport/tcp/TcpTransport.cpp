@@ -2914,6 +2914,27 @@ void TcpTransport::handleFrameImpl(
     TcpPinnedSlab receiveSlab) {
   auto headerResult = deserializeTcpHeader(frame);
   if (!headerResult) {
+    // A lane hello arriving as a data frame is not a malformed peer, it is a
+    // lane-count mismatch. This side has one lane, so establishLanes() skipped
+    // the hello exchange -- that skip exists so the wire stays byte-identical
+    // for a peer built before lanes existed -- and a peer configured for more
+    // than one lane sent a hello anyway. It is shorter than a TcpMsgHeader, so
+    // without this it is dropped as malformed while the peer goes on to stripe
+    // onto sockets nobody ever accepted: a silent stall, not the clean
+    // handshake error the design intends.
+    //
+    // Both sides normally come from one configuration, so this cannot happen in
+    // practice -- which is exactly why it must not be silent if it does. Thrown
+    // rather than logged and dropped: handleFrame is noexcept and fails the
+    // connection, and a connection whose peer is striping onto sockets this
+    // side never accepted cannot carry traffic.
+    if (auto hello = TcpLaneHello::deserialize(frame); hello) {
+      throw std::runtime_error(
+          "tcp: peer sent a lane hello for " +
+          std::to_string(hello.value().laneCount) +
+          " lanes, but this side established 1 and skipped the hello "
+          "exchange; the lane counts must match");
+    }
     UNIFLOW_LOG_ERROR(
         "tcp: dropping malformed frame: {}", headerResult.error().message());
     return;
