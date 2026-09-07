@@ -62,6 +62,21 @@ inline constexpr std::string_view kDefaultFrontendDevicePrefix = "eth";
 /// TcpTransportConfig::maxFrontendDevices.
 inline constexpr size_t kDefaultMaxFrontendDevices = 2;
 
+/// Ceiling on lanes per connection, and so on the endpoints a peer may
+/// advertise. The lane hello addresses lanes with a uint16_t, and lanes are
+/// configured per device as numSocketsPerDevice * devices, so this bounds the
+/// product.
+///
+/// It bounds the wire parser for the same reason: endpoints are one per device,
+/// connect() requires a peer's endpoint count to equal the local device count,
+/// and numSocketsPerDevice is at least 1 -- so a peer advertising more
+/// endpoints than this could never connect, and refusing them while parsing
+/// rejects nothing that would otherwise have worked. Shared rather than
+/// restated at both sites: two independent copies of this number could drift
+/// apart while each looked right on its own, which is the mistake
+/// maxFrontendDevices already records.
+inline constexpr size_t kMaxLanes = 1024;
+
 /// How many frontend NICs this host actually has -- the hardware ceiling, not a
 /// policy. Enumerates on first call and caches, so it is 0 only when the host
 /// has no usable frontend port at all (none up, or none with a live global
