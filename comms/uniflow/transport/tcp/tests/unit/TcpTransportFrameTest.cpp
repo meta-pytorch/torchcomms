@@ -1324,6 +1324,33 @@ TEST_F(
          "way a dead peer is ever noticed, so the reader must still stop on it";
 }
 
+// establishLanes() skips the hello exchange when this side has one lane, so the
+// wire stays byte-identical for a peer built before lanes existed. The cost is
+// that a peer configured for more lanes sends a hello this side never reads: it
+// is shorter than a TcpMsgHeader, so it used to be dropped as malformed while
+// the peer went on striping onto sockets nobody accepted -- a silent stall, and
+// the opposite of the clean handshake error the design promises.
+//
+// One configuration normally drives both sides, so this cannot happen in
+// practice. That is the reason it must be loud if it does.
+TEST_F(
+    TcpTransportFrameTest,
+    ALaneHelloOnASingleLaneTransportFailsTheConnection) {
+  setConnected();
+  setReaderRunning();
+
+  TcpLaneHello hello{};
+  hello.laneIndex = 0;
+  hello.laneCount = 4;
+  hello.sessionId = 0xABCDEF;
+  feed(hello.serialize());
+
+  EXPECT_TRUE(connBroken())
+      << "a lane hello arriving as a data frame means the peer is striping onto "
+         "sockets this side never accepted; dropping it strands the peer "
+         "silently";
+}
+
 // A vector-backed READ_REPLY still copies synchronously. Resolving the op's
 // future is what releases the caller to free its destination, so that fallback
 // copy and completion remain one atomic lifetime reservation.
