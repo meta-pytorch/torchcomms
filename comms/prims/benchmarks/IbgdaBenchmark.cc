@@ -687,7 +687,8 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalFlush) {
 
 TEST_P(IbgdaBenchmarkFixture, PutSignalWaitLocalFlush) {
   if (numRanks != 2) {
-    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    COMMS_LOG(
+        INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
   }
 
