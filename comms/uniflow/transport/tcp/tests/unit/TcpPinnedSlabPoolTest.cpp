@@ -159,6 +159,94 @@ TEST_F(TcpPinnedSlabPoolTest, CloseWakesWaitersAndRefusesNewLeases) {
   EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)));
 }
 
+// The wait is bounded. Without a deadline this call parks until close(), and
+// close() runs only from shutdown() -- so an exhausted pool turns an
+// application thread in put() into a permanent hang rather than a failed
+// operation. That is reachable with concurrent puts: the pool is sized for one
+// put() in flight, so four of them each hold a wave and none can release
+// without returning from the acquire it is parked in.
+//
+// This test has a real negative control, which most of this fix class does not:
+// with the deadline removed the call never returns and the test times out
+// rather than passing. Elapsed time is asserted so a deadline that is silently
+// ignored
+// -- wait_for with a predicate already true, say -- cannot pass either.
+TEST_F(TcpPinnedSlabPoolTest, ABulkAcquireGivesUpRatherThanParkingForever) {
+  auto pool = makePool();
+  const size_t bulkCount = kSlabCount - kReserved;
+  auto held = pool->acquire(bulkCount);
+  ASSERT_TRUE(held.hasValue());
+
+  const auto t0 = std::chrono::steady_clock::now();
+  auto blocked = pool->acquire(bulkCount, std::chrono::milliseconds(150));
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  ASSERT_TRUE(blocked.hasError())
+      << "an exhausted pool must refuse rather than park";
+  EXPECT_EQ(blocked.error().code(), ErrCode::Timeout);
+  EXPECT_LT(elapsed, std::chrono::seconds(10))
+      << "the deadline must actually bound the wait";
+  EXPECT_GE(elapsed, std::chrono::milliseconds(100))
+      << "it must wait for the deadline rather than failing immediately, or a "
+         "briefly-busy pool would fail a healthy put()";
+
+  // The lease is still good and the pool still works: a timeout is a refusal,
+  // not a teardown.
+  held.value().clear();
+  EXPECT_TRUE(
+      pool->acquire(bulkCount, std::chrono::milliseconds(150)).hasValue());
+}
+
+// close() must still win over the deadline: a shutdown should be reported as a
+// shutdown, not as a timeout that happens to coincide with one.
+TEST_F(TcpPinnedSlabPoolTest, CloseBeatsTheDeadline) {
+  auto pool = makePool();
+  auto held = pool->acquire(kSlabCount - kReserved);
+  ASSERT_TRUE(held.hasValue());
+
+  const auto start = std::chrono::steady_clock::now();
+  ErrCode observed{ErrCode::Timeout};
+  // Signalled immediately before the blocking call, so close() cannot run while
+  // the waiter has not even reached acquire(). Without it the main thread does
+  // nothing between spawn and close, so close() almost always wins, acquire()
+  // sees closed_ on its first predicate evaluation and returns without ever
+  // waiting -- the test then passes while never exercising the "close beats a
+  // pending deadline" interleaving it is named for.
+  //
+  // This narrows the window rather than closing it: being parked inside
+  // condition_variable::wait_for is not observable from outside. The elapsed
+  // check after the join is what makes the coverage real -- a deadline expiry
+  // would take 30s, so a prompt NotConnected can only mean close() ended it.
+  std::promise<void> atAcquire;
+  auto atAcquireFuture = atAcquire.get_future();
+  std::thread waiter([&]() {
+    atAcquire.set_value();
+    auto blocked =
+        pool->acquire(kSlabCount - kReserved, std::chrono::seconds(30));
+    EXPECT_TRUE(blocked.hasError());
+    if (blocked.hasError()) {
+      observed = blocked.error().code();
+    }
+  });
+
+  ASSERT_EQ(
+      atAcquireFuture.wait_for(std::chrono::seconds{5}),
+      std::future_status::ready)
+      << "the waiter thread never reached acquire()";
+
+  pool->close();
+  // No flag asserted after the join: join() already guarantees the lambda ran,
+  // so such an assertion could only fail if the threading guarantees themselves
+  // were broken. `observed` is the whole point of the test.
+  waiter.join();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{25})
+      << "acquire() returned only after its 30s deadline, so the deadline ended "
+         "the wait rather than close() -- the test would then prove nothing "
+         "about close() winning";
+  EXPECT_EQ(observed, ErrCode::NotConnected)
+      << "a closed pool reports closure, not a deadline expiry";
+}
+
 TEST_F(TcpPinnedSlabPoolTest, CreateRejectsAnUnusableConfiguration) {
   EXPECT_TRUE(
       TcpPinnedSlabPool::create(cudaApi_, 0, kSlabCount, kReserved).hasError());

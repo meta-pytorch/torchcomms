@@ -1112,6 +1112,11 @@ Result<PendingPutWave> TcpTransport::launchPutWave(
   // doing the same. This acquire is also the backpressure that bounds how many
   // waves can be in flight -- the pool is sized so it does not block a healthy
   // sender, so when it does block the sender has genuinely fallen behind.
+  //
+  // The wait is BOUNDED, and exceeding the bound fails this transfer rather
+  // than parking the caller's thread until teardown. This uses the default
+  // deadline: nothing threads a value in from a transport config, so in
+  // practice it is fixed at kDefaultAcquireTimeout for every deployment.
   auto leases = pool.value()->acquire(wave.size());
   if (!leases) {
     return std::move(leases).error();
@@ -3573,11 +3578,14 @@ void TcpTransport::shutdown() {
   }
 
   // Closed before the joins: this is the one pool with a *blocking* acquire,
-  // and the thread parked in it is not one we own. acquire() waits on `freed_`
-  // with no deadline and `closed_` as its only escape, and the put path calls
-  // it on the application's own thread, which shutdown() never joins. Without
-  // this a put() in flight across shutdown() parks forever, because the senders
-  // that would have freed a staging slab are about to be joined away.
+  // and the thread parked in it is not one we own. acquire() now has a
+  // deadline, so a caller can no longer be stranded indefinitely, but closing
+  // here is still what makes a shutdown prompt rather than something a put()
+  // discovers 30 seconds later -- and it reports the accurate reason, since a
+  // pool closed while a caller waits answers "closed" rather than "timed out".
+  // The put path calls acquire() on the application's own thread, which
+  // shutdown() never joins, and the senders that would have freed a staging
+  // slab are about to be joined away.
   //
   // close() only sets the flag and notifies, so outstanding leases stay valid
   // and doing this early costs nothing. The receive pool needs no equivalent --
