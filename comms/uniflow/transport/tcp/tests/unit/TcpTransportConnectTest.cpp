@@ -12,7 +12,14 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -697,5 +704,119 @@ TEST_F(TcpTransportConnectTest, RejectsPeerWithDifferentDeviceCount) {
 // There is no longer a guard for "fewer lanes than devices": lanes are counted
 // per device, so the product is always at least the device count and that state
 // is unreachable by construction.
+
+// --- NUMA-affine frontend selection ---------------------------------------
+//
+// Derived from the host's own topology, not hardcoded port names: the property
+// is "chosen by locality", which must hold on any machine.
+
+namespace {
+
+int numaOf(const std::string& dev) {
+  std::ifstream in("/sys/class/net/" + dev + "/device/numa_node");
+  int node = -1;
+  if (!in.is_open() || !(in >> node)) {
+    return -1;
+  }
+  return node;
+}
+
+// Ports grouped by NUMA node, counting only what discovery would accept.
+std::map<int, std::set<std::string>> usablePortsByNuma(
+    const std::string& prefix) {
+  std::map<int, std::set<std::string>> byNuma;
+  for (const auto& dev :
+       enumerateFrontendDevices(prefix, std::numeric_limits<size_t>::max())) {
+    byNuma[numaOf(dev)].insert(dev);
+  }
+  return byNuma;
+}
+
+// A node with >= 2 usable ports: the default cap, and where stacking and
+// spreading differ.
+std::optional<int> nodeWithTwoPorts(const std::string& prefix) {
+  for (const auto& [node, ports] : usablePortsByNuma(prefix)) {
+    if (node >= 0 && ports.size() >= 2) {
+      return node;
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+// The point of the change: two NICs with a preference must both be local.
+TEST(TcpTransportConfigTest, NumaAffineSelectionStaysOnTheLocalNode) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const auto node = nodeWithTwoPorts(prefix);
+  if (!node.has_value()) {
+    GTEST_SKIP() << "no NUMA node with two usable '" << prefix << "' ports";
+  }
+  const auto devices = enumerateFrontendDevices(prefix, 2, *node);
+  ASSERT_EQ(devices.size(), 2UL);
+  for (const auto& dev : devices) {
+    EXPECT_EQ(numaOf(dev), *node) << dev << " is off-node; selection spread";
+  }
+}
+
+// A preference, not a filter: a cap above the local supply is still filled, or
+// an affine caller would get fewer lanes than a non-affine one -- and peers
+// derive lane count from this list.
+TEST(TcpTransportConfigTest, NumaAffineSelectionFillsTheCapAcrossNodes) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const auto node = nodeWithTwoPorts(prefix);
+  if (!node.has_value()) {
+    GTEST_SKIP() << "no NUMA node with two usable '" << prefix << "' ports";
+  }
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  const size_t localPorts = usablePortsByNuma(prefix)[*node].size();
+  if (capacity <= localPorts) {
+    GTEST_SKIP() << "host has no port outside the local node to fall back to";
+  }
+  const auto devices = enumerateFrontendDevices(prefix, capacity, *node);
+  EXPECT_EQ(devices.size(), capacity)
+      << "a NUMA preference must not shrink the returned count";
+  EXPECT_EQ(
+      std::set<std::string>(devices.begin(), devices.end()).size(),
+      devices.size())
+      << "a port must not be returned twice when falling back";
+  for (size_t i = 0; i < localPorts; ++i) {
+    EXPECT_EQ(numaOf(devices[i]), *node) << "locals must be drained first";
+  }
+}
+
+// The compatibility path: anything not passing a node keeps the old order.
+TEST(TcpTransportConfigTest, AnyNumaNodeReproducesTheOldOrder) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  if (capacity == 0) {
+    GTEST_SKIP() << "no usable '" << prefix << "' device on this host";
+  }
+  EXPECT_EQ(
+      enumerateFrontendDevices(prefix, capacity),
+      enumerateFrontendDevices(prefix, capacity, kAnyNumaNode))
+      << "the default argument must be the no-preference path";
+}
+
+// Re-check under a preference: lane i is the same port whatever the cap.
+TEST(TcpTransportConfigTest, NumaAffineSelectionKeepsTheCapPrefixInvariant) {
+  const std::string prefix{kDefaultFrontendDevicePrefix};
+  const auto node = nodeWithTwoPorts(prefix);
+  if (!node.has_value()) {
+    GTEST_SKIP() << "no NUMA node with two usable '" << prefix << "' ports";
+  }
+  const size_t capacity = frontendDeviceCapacity(prefix);
+  const auto atTwo = enumerateFrontendDevices(prefix, 2, *node);
+  const auto atCapacity = enumerateFrontendDevices(prefix, capacity, *node);
+  ASSERT_LE(atTwo.size(), atCapacity.size());
+  EXPECT_TRUE(std::equal(atTwo.begin(), atTwo.end(), atCapacity.begin()))
+      << "device order must not depend on the cap";
+}
+
+// An absent GPU must not read as node 0: that would stack onto the first card.
+TEST(TcpTransportConfigTest, GpuNumaNodeIsUnknownForANonDevice) {
+  EXPECT_EQ(gpuNumaNode(-1), kAnyNumaNode)
+      << "the host-memory case has no GPU locality to follow";
+}
 
 } // namespace uniflow

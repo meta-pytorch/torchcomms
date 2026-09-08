@@ -88,9 +88,29 @@ inline constexpr size_t kMaxLanes = 1024;
 /// told, instead of quietly receiving fewer than it asked for.
 size_t frontendDeviceCapacity(const std::string& prefix);
 
-/// Frontend data NICs to stripe lanes across, lowest name first and one port
-/// per PCI card before taking a second port from any card. Only devices that
-/// are up and carry a usable global address are returned.
+/// No NUMA preference: keep the old spread-first order. Also what an unknown
+/// node resolves to.
+inline constexpr int kAnyNumaNode = -1;
+
+/// NUMA node of a GPU, or kAnyNumaNode if undeterminable. Read through the
+/// device's PCI address, the same sysfs path the NICs are read from, so both
+/// sides of the affinity check come from one source. Shared rather than
+/// re-derived per caller so the two cannot disagree.
+int gpuNumaNode(int deviceId);
+
+/// Frontend data NICs to stripe lanes across. Only devices that are up and
+/// carry a usable global address are returned.
+///
+/// NUMA-affine when preferredNumaNode names a node: local cards are drained
+/// first -- one port per card before any card gives up a second -- and only
+/// then does it reach across. At the default cap of two that is both ports of
+/// the local card, stacking on purpose: spreading a job over every card beats
+/// stacking for that job alone, but two such jobs then congest each other. A
+/// job that wants every card raises the cap. Measured cost is on bindToDevices.
+///
+/// kAnyNumaNode keeps the old spread-first order exactly. In both modes a
+/// smaller cap yields a prefix of a larger one, so lane i is the same port
+/// whatever the cap.
 ///
 /// Leaving TcpTransportConfig::bindToDevices empty means no binding at all, so
 /// egress falls to the routing table and lands on one NIC. MultiTransport calls
@@ -98,7 +118,8 @@ size_t frontendDeviceCapacity(const std::string& prefix);
 /// MultiTransport shares the selection instead of re-deriving and drifting.
 std::vector<std::string> enumerateFrontendDevices(
     const std::string& prefix,
-    size_t maxDevices);
+    size_t maxDevices,
+    int preferredNumaNode = kAnyNumaNode);
 
 struct TcpTransportConfig {
   /// Socket options for this transport's *data* connections, which is all the
@@ -156,11 +177,12 @@ struct TcpTransportConfig {
   /// rather than bandwidth-bound, where striping is neutral to slightly
   /// negative; the gain grows with transfer size.
   ///
-  /// Pairing two ports on one PCI card measured no worse than two ports on
-  /// separate cards, even though raw iperf3 on this hardware shows a clear card
-  /// limit: this path does not yet reach what a single card sustains, so the
-  /// card is not the binding constraint. The receive-side H2D copy is, and card
-  /// affinity starts to matter once that is fixed.
+  /// Two ports on one card used to measure no worse than two on separate
+  /// cards, while the receive-side H2D copy -- not the card -- was binding.
+  /// Fixing that flipped it, as the old note here predicted: MI350X 2026-09-01,
+  /// 1 GPU put, tx-depth 8, n=3, separate cards peak 42.91 GB/s against 28.72.
+  /// So NUMA-affine selection trades ~1.5x of a solo job's bandwidth for
+  /// isolation between concurrent jobs; it is a choice, not a free win.
   ///
   /// Device names are per-host and need not match between peers: the same
   /// physical port is eth3 on one MI350 host and eth0 on the next.

@@ -581,8 +581,12 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   const size_t maxDevices = discoveryConfig.resolveMaxFrontendDevices(
       std::string(::uniflow::kDefaultFrontendDevicePrefix));
   if (bindDevs_.empty()) {
+    // Per-GPU NUMA locality: instances on one host then stay off each other's
+    // uplinks, so a multi-instance number is not measuring self-contention.
     bindDevs_ = enumerateFrontendDevices(
-        std::string(::uniflow::kDefaultFrontendDevicePrefix), maxDevices);
+        std::string(::uniflow::kDefaultFrontendDevicePrefix),
+        maxDevices,
+        gpuNumaNode(config.cudaDevice));
     if (bindDevs_.empty()) {
       UNIFLOW_LOG_WARN(
           "TcpBandwidthBenchmark: no usable '{}' device found; leaving egress "
