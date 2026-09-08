@@ -595,15 +595,20 @@ document.write(`
  | <a href="#S"><strong>S</strong></a>
  | <a href="#T"><strong>T</strong></a>
  | <a href="#U"><strong>U</strong></a>
+ | <a href="#V"><strong>V</strong></a>
  | <a href="#W"><strong>W</strong></a>
  
 </div>
 <h2 id="_">_</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api.html#torchcomms.BatchP2POptions.__init__">__init__() (torchcomms.BatchP2POptions method)</a>
+      <li><a href="api.html#torchcomms.AbortInfo.__init__">__init__() (torchcomms.AbortInfo method)</a>
 
       <ul>
+        <li><a href="api.html#torchcomms.AbortReason.__init__">(torchcomms.AbortReason method)</a>
+</li>
+        <li><a href="api.html#torchcomms.BatchP2POptions.__init__">(torchcomms.BatchP2POptions method)</a>
+</li>
         <li><a href="api.html#torchcomms.BatchSendRecv.__init__">(torchcomms.BatchSendRecv method)</a>
 </li>
         <li><a href="api.html#torchcomms.CommOptions.__init__">(torchcomms.CommOptions method)</a>
@@ -637,18 +642,24 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.CommOptions.abort_process_on_timeout_or_error">abort_process_on_timeout_or_error (torchcomms.CommOptions property)</a>
 </li>
+      <li><a href="api.html#torchcomms.AbortReason.ABORTED">ABORTED (torchcomms.AbortReason attribute)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortInfo">AbortInfo (class in torchcomms)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortReason">AbortReason (class in torchcomms)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchComm.all_gather">all_gather() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.objcol.all_gather_object">all_gather_object() (in module torchcomms.objcol)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.all_gather_p_exec">all_gather_p_exec() (torchcomms.TorchComm method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.all_gather_p_free">all_gather_p_free() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.all_gather_p_init">all_gather_p_init() (torchcomms.TorchComm method)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.all_gather_single">all_gather_single() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.all_gather_v">all_gather_v() (torchcomms.TorchComm method)</a>
@@ -677,9 +688,11 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.BatchP2POptions">BatchP2POptions (class in torchcomms)</a>
 </li>
+      <li><a href="api.html#torchcomms.BatchSendRecv">BatchSendRecv (class in torchcomms)</a>
+</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api.html#torchcomms.BatchSendRecv">BatchSendRecv (class in torchcomms)</a>
+      <li><a href="api.html#torchcomms.AbortReason.BOOTSTRAP_POLL">BOOTSTRAP_POLL (torchcomms.AbortReason attribute)</a>
 </li>
       <li><a href="api.html#torchcomms.ReduceOp.BOR">BOR (torchcomms.ReduceOp attribute)</a>
 </li>
@@ -700,6 +713,8 @@ document.write(`
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.CommOptions">CommOptions (class in torchcomms)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortInfo.context">context (torchcomms.AbortInfo property)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -751,6 +766,8 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.TorchComm.gather_single">gather_single() (torchcomms.TorchComm method)</a>
 </li>
+      <li><a href="api.html#torchcomms.TorchComm.get_abort_info">get_abort_info() (torchcomms.TorchComm method)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchCommWindow.get_attr">get_attr() (torchcomms.TorchCommWindow method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.get_backend">get_backend() (torchcomms.TorchComm method)</a>
@@ -761,10 +778,10 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.TorchComm.get_device">get_device() (torchcomms.TorchComm method)</a>
 </li>
-      <li><a href="api.html#torchcomms.TorchComm.get_device_transport">get_device_transport() (torchcomms.TorchComm method)</a>
-</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.TorchComm.get_device_transport">get_device_transport() (torchcomms.TorchComm method)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchCommWindow.get_device_window">get_device_window() (torchcomms.TorchCommWindow method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.get_init_handle">get_init_handle() (torchcomms.TorchComm method)</a>
@@ -803,14 +820,18 @@ document.write(`
 <h2 id="I">I</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.AbortReason.IBRC_PROXY_TIMEOUT">IBRC_PROXY_TIMEOUT (torchcomms.AbortReason attribute)</a>
+</li>
       <li><a href="api.html#torchcomms.device_mesh.init_device_mesh">init_device_mesh() (in module torchcomms.device_mesh)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortReason.INTERNAL_ERROR">INTERNAL_ERROR (torchcomms.AbortReason attribute)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.is_abort_supported">is_abort_supported() (torchcomms.TorchComm method)</a>
 </li>
-      <li><a href="api.html#torchcomms.TorchComm.is_aborted">is_aborted() (torchcomms.TorchComm method)</a>
-</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.TorchComm.is_aborted">is_aborted() (torchcomms.TorchComm method)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchWork.is_completed">is_completed() (torchcomms.TorchWork method)</a>
 </li>
       <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.is_enabled">is_enabled() (torchcomms.hooks.FlightRecorderHook method)</a>
@@ -856,13 +877,19 @@ document.write(`
 <h2 id="N">N</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.AbortReason.name">name (torchcomms.AbortReason property)</a>
+</li>
       <li><a href="hooks.html#torchcomms.hooks.NanCheckHook">NanCheckHook (class in torchcomms.hooks)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortReason.NETWORK_ERROR">NETWORK_ERROR (torchcomms.AbortReason attribute)</a>
 </li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.new_comm">new_comm() (in module torchcomms)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.new_window">new_window() (torchcomms.TorchComm method)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortReason.NONE">NONE (torchcomms.AbortReason attribute)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -896,6 +923,10 @@ document.write(`
 <h2 id="R">R</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.AbortInfo.reason">reason (torchcomms.AbortInfo property)</a>
+</li>
+      <li><a href="api.html#torchcomms.AbortInfo.reason_str">reason_str (torchcomms.AbortInfo property)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchComm.reconfigure">reconfigure() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.BatchSendRecv.recv">recv() (torchcomms.BatchSendRecv method)</a>
@@ -914,10 +945,10 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.TorchComm.reduce_scatter_v">reduce_scatter_v() (torchcomms.TorchComm method)</a>
 </li>
-      <li><a href="api.html#torchcomms.ReduceOp">ReduceOp (class in torchcomms)</a>
-</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.ReduceOp">ReduceOp (class in torchcomms)</a>
+</li>
       <li><a href="api.html#torchcomms.TorchComm.register_abort_hook">register_abort_hook() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.register_backend">register_backend() (in module torchcomms)</a>
@@ -998,6 +1029,8 @@ document.write(`
         <li><a href="api.html#torchcomms.TorchCommWindow.tensor_register">(torchcomms.TorchCommWindow method)</a>
 </li>
       </ul></li>
+      <li><a href="api.html#torchcomms.AbortReason.TIMED_OUT">TIMED_OUT (torchcomms.AbortReason attribute)</a>
+</li>
       <li><a href="api.html#torchcomms.Timeout">Timeout (class in torchcomms)</a>
 </li>
       <li><a href="api.html#torchcomms.BatchP2POptions.timeout">timeout (torchcomms.BatchP2POptions property)</a>
@@ -1010,6 +1043,8 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.TorchCommBackend">TorchCommBackend (class in torchcomms)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li>
     torchcomms
 
@@ -1017,8 +1052,6 @@ document.write(`
         <li><a href="api.html#module-torchcomms">module</a>
 </li>
       </ul></li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li>
     torchcomms.device_mesh
 
@@ -1057,6 +1090,14 @@ document.write(`
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.unsafe_get_backend">unsafe_get_backend() (torchcomms.TorchComm method)</a>
+</li>
+  </ul></td>
+</tr></table>
+
+<h2 id="V">V</h2>
+<table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="api.html#torchcomms.AbortReason.value">value (torchcomms.AbortReason property)</a>
 </li>
   </ul></td>
 </tr></table>
