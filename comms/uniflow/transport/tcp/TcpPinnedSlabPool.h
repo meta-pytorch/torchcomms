@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -108,8 +109,37 @@ class TcpPinnedSlabPool
   /// waiter here holds nothing.
   ///
   /// Fails if `count` exceeds the unreserved capacity (it could never be
-  /// satisfied) or if the pool has been closed.
-  Result<std::vector<TcpPinnedSlab>> acquire(size_t count);
+  /// satisfied), if the pool has been closed, or if `timeout` elapses first.
+  ///
+  /// The deadline is what keeps an exhausted pool from turning a caller into a
+  /// permanent hang. This is the only blocking entry point on the pool, put()
+  /// calls it on the application's own thread, and shutdown() never joins that
+  /// thread -- so before the deadline existed, `closed_` was the sole escape
+  /// and close() runs only from shutdown(). Concurrent puts reach that state
+  /// without anything going wrong on the wire: the pool is sized for one put()
+  /// in flight, so several of them each hold a wave and none can release
+  /// without returning from the acquire it is parked in. A timeout converts
+  /// that from a wedged application thread into a failed transfer the caller
+  /// can see.
+  ///
+  /// The default is deliberately far above any legitimate wait. One wave is at
+  /// most `kMaxPutWaveChunks * kMaxChunkSize`, which drains in milliseconds on
+  /// a healthy link, so a wait measured in tens of seconds already means the
+  /// sender has stopped making progress rather than fallen behind. It happens
+  /// to equal the DEFAULT connected-socket read timeout, and for the same
+  /// reason -- both answer "the peer has stopped" -- but they are two
+  /// independent numbers, not one: TcpSocketConfig::connTimeout is
+  /// configurable, so a caller that changes it makes them diverge. Do not read
+  /// this as a derived value.
+  ///
+  /// It is a defaulted parameter, but no production path passes anything else
+  /// -- launchPutWave() takes the default and nothing threads a value in from a
+  /// transport config. Treat 30s as fixed in deployment; the parameter exists
+  /// for tests, which do pass their own.
+  static constexpr std::chrono::seconds kDefaultAcquireTimeout{30};
+  Result<std::vector<TcpPinnedSlab>> acquire(
+      size_t count,
+      std::chrono::milliseconds timeout = kDefaultAcquireTimeout);
 
   /// Wakes every waiter and refuses further acquisition. Outstanding leases
   /// stay valid; this only stops new ones, so a shutdown does not pull memory
