@@ -3764,8 +3764,9 @@ TEST_P(MultipeerIbTransportTestFixture, MultiQpConstructAndExchange) {
 
     // Verify each peer has a valid transport pointer
     for (int r = 0; r < numRanks; r++) {
-      if (r == globalRank)
+      if (r == globalRank) {
         continue;
+      }
       EXPECT_TRUE(transport->hasP2pTransportDevice(r))
           << "getP2pTransportDevice(" << r << ") returned null";
     }
