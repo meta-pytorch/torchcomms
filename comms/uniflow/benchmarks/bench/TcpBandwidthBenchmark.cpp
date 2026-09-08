@@ -13,6 +13,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <random>
@@ -249,7 +250,8 @@ TransferResult runTransfer(
     size_t size,
     const std::string& dir,
     const BenchmarkConfig& config,
-    int rank) {
+    int rank,
+    const std::function<bool()>& peerAck) {
   using Clock = std::chrono::steady_clock;
   const int batchSize = std::max(1, config.batchSize);
   const int txDepth = std::max(1, config.txDepth);
@@ -336,6 +338,15 @@ TransferResult runTransfer(
     if (!completeOne()) {
       return out;
     }
+  }
+  /*
+   * Stop the clock only after the peer confirms. A resolved local future means
+   * this side handed the transfer off, not that the peer has it.
+   */
+  if (peerAck && !peerAck()) {
+    UNIFLOW_LOG_ERROR(
+        "TcpBandwidthBenchmark: peer ack failed at {} size {}", dir, size);
+    return out;
   }
   auto end = Clock::now();
 
@@ -753,7 +764,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     }
   }
 
-  auto runDirection = [&](const std::string& dir) {
+  auto runDirection = [&](const std::string& dir) -> bool {
     // Seeded from the verify result: a failed correctness sweep still walks the
     // whole size sweep, meeting every barrier and reporting nothing.
     //
@@ -764,9 +775,15 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     for (auto size : sizes) {
       if (!barrier(peers, bootstrap)) {
         UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: barrier failed");
-        return;
+        return false;
       }
       if (aborted || !isActiveRank) {
+        // Match the active rank's peer-ack barrier, or the two sides drift
+        // by one barrier per size and the final size hangs.
+        if (!barrier(peers, bootstrap)) {
+          UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: peer-ack barrier failed");
+          return false;
+        }
         continue;
       }
       // Bracket the timed loop so the phase split covers the same frames the
@@ -777,6 +794,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       if (tcpTransport != nullptr) {
         tcpTransport->logAndResetPhaseStats("reset");
       }
+      bool peerAckFailed = false;
       auto r = runTransfer(
           *transport,
           localReg,
@@ -784,7 +802,15 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
           size,
           dir,
           config,
-          config.cudaDevice);
+          config.cudaDevice,
+          [&]() {
+            const bool ok = static_cast<bool>(barrier(peers, bootstrap));
+            peerAckFailed = !ok;
+            return ok;
+          });
+      if (peerAckFailed) {
+        return false;
+      }
       if (!r.ok) {
         // Latched rather than returned: every remaining size has a barrier the
         // peer is going to execute.
@@ -824,13 +850,20 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
           stats.avg,
           config.bidirectional ? "(bidirectional)" : "(unidirectional)");
     }
+    return true;
   };
 
   if (config.direction == "put" || config.direction == "both") {
-    runDirection("put");
+    if (!runDirection("put")) {
+      transport->shutdown();
+      return results;
+    }
   }
   if (config.direction == "get" || config.direction == "both") {
-    runDirection("get");
+    if (!runDirection("get")) {
+      transport->shutdown();
+      return results;
+    }
   }
 
   if (!barrier(peers, bootstrap)) {
