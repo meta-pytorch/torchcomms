@@ -1,0 +1,210 @@
+digraph uniflow {
+  rankdir=TB;
+  compound=true;
+  newrank=true;
+  bgcolor="white";
+  fontname="Helvetica";
+  labelloc="t";
+  label=<<B>UniFlow — Unified Transport for Heterogeneous LLM Systems</B><BR/>
+         <FONT POINT-SIZE="11">high-level architecture</FONT><BR/> >;
+  fontsize=20;
+  nodesep=0.45;
+  ranksep=0.55;
+  node [shape=box style="filled,rounded" fontname="Helvetica" fontsize=11 penwidth=1.2];
+  edge [fontname="Helvetica" fontsize=9 color="#555555"];
+
+  /* ============ SPINE ============ */
+
+  subgraph cluster_consumers {
+    label="Consumers";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#F4F4F5"; color="#B4B4B8";
+    consumers [fillcolor="#E4E4E7" color="#9F9FA6" label=<
+      <TABLE BORDER="0" CELLBORDER="0" CELLSPACING="6">
+        <TR>
+          <TD BGCOLOR="#FFFFFF"><B>vLLM</B><BR/><FONT POINT-SIZE="9">UniflowConnector<BR/>decode pulls · get()</FONT></TD>
+          <TD BGCOLOR="#FFFFFF"><B>SGLang</B><BR/><FONT POINT-SIZE="9">uniflow backend<BR/>prefill pushes · put()</FONT></TD>
+          <TD BGCOLOR="#FFFFFF"><B>TorchStore</B><BR/><FONT POINT-SIZE="9">uniflow_buffer</FONT></TD>
+          <TD BGCOLOR="#FFFFFF"><B>Benchmarks</B><BR/><FONT POINT-SIZE="9">uniflow_bench<BR/>kv_transfer_bench</FONT></TD>
+        </TR>
+      </TABLE>>];
+  }
+
+  subgraph cluster_agent {
+    label="Orchestration  ·  agent.md";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#EFF6FF"; color="#93B4F0";
+    agent [fillcolor="#DBEAFE" color="#6098E8" label=<
+      <B>UniflowAgent</B>  <FONT POINT-SIZE="9">(one per process)</FONT><BR/>
+      <FONT POINT-SIZE="10">getUniqueId() · registerSegment() · importSegment() · accept() · connect()</FONT><BR/>
+      <FONT POINT-SIZE="9" COLOR="#444444">config: deviceId · listenAddress · connectRetries · connectTimeoutMs</FONT>>];
+  }
+
+  subgraph cluster_planes {
+    label="";
+    style=invis;
+
+    subgraph cluster_control {
+      label="Control plane";
+      fontsize=12; fontname="Helvetica-Bold";
+      style="rounded,filled"; fillcolor="#FFFBEB"; color="#E8C270";
+      control [fillcolor="#FEF3C7" color="#D9A441" label=<
+        <B>controller::Server / Client / Conn</B><BR/>
+        <FONT POINT-SIZE="10">TcpController (default)</FONT><BR/>
+        <FONT POINT-SIZE="9" COLOR="#444444">out-of-band rendezvous only<BR/>
+        topology + TransportInfo + segment handles<BR/>
+        <B>never carries payload bytes</B></FONT>>];
+    }
+
+    subgraph cluster_data {
+      label="Data plane  ·  transport.md";
+      fontsize=12; fontname="Helvetica-Bold";
+      style="rounded,filled"; fillcolor="#F0FDF4"; color="#86C99B";
+      conn [fillcolor="#DCFCE7" color="#4FA96C" label=<
+        <B>Connection</B><BR/>
+        <FONT POINT-SIZE="10">put() · get() · send() · recv()<BR/>sendCtrlMsg() · recvCtrlMsg()</FONT>>];
+      multi [fillcolor="#DCFCE7" color="#4FA96C" label=<
+        <B>MultiTransport</B> — <FONT POINT-SIZE="10">selectTransport()</FONT><BR/>
+        <FONT POINT-SIZE="9" COLOR="#444444">batch eligible only if every request has a matching<BR/>
+        handle on both sides · intra-node VRAM↔VRAM → NVLink/P2P</FONT>>];
+      conn -> multi [color="#4FA96C" penwidth=1.4];
+    }
+  }
+
+
+  subgraph cluster_factory {
+    label="Factories + pools  ·  transport.md";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#FFF7ED"; color="#E8B07A";
+    factory [fillcolor="#FFEDD5" color="#D98A45" label=<
+      <B>MultiTransportFactory</B> <FONT POINT-SIZE="9">(one per process)</FONT><BR/>
+      <FONT POINT-SIZE="10">registerSegment() · importSegment()<BR/>
+      createTransport() · getTopology() · canConnect()</FONT><BR/>
+      <FONT POINT-SIZE="9" COLOR="#444444">delegates to a TransportFactory per backend</FONT>>];
+    pool [fillcolor="#FFEDD5" color="#D98A45" label=<
+      <B>RdmaSlabPool</B> — <FONT POINT-SIZE="10">MEMORY POOL</FONT><BR/>
+      <FONT POINT-SIZE="9" COLOR="#444444"><B>factory-level, shared across ALL connections</B><BR/>
+      PinnedBuffer (cudaHostAlloc) + one ibv_mr per NIC<BR/>
+      SlabAllocator — atomic bitmap ≤128 slabs, else mutex free-list<BR/>
+      default 128 × 512 KB = 64 MB · RAII RdmaSlab handles<BR/>
+      exhaustion → back-pressure, not failure</FONT>>];
+    { rank=same; factory; pool; }
+  }
+
+  subgraph cluster_backends {
+    label="Transport backends  ·  transport.md / rdma-transport.md / rdma-copy-send-recv.md";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#FAF5FF"; color="#C4A2E8";
+    nvlink [fillcolor="#F3E8FF" color="#A472D8" label=<
+      <B>NVLinkTransport</B><BR/>
+      <FONT POINT-SIZE="9">intra-node / MNNVL<BR/>NVLinkTopology<BR/>CopyOp on a CUDA stream</FONT>>];
+    rdma [fillcolor="#F3E8FF" color="#A472D8" label=<
+      <B>RdmaTransport</B><BR/>
+      <FONT POINT-SIZE="9">RC queue pairs · multi-NIC<BR/>
+      QP i → NIC (i % numNics), one CQ per NIC<BR/>
+      CopyEngine (D2H/H2D + stream flag)<BR/>
+      1 CQ per connection · 1 PD per agent</FONT>>];
+    tcp [fillcolor="#F3E8FF" color="#A472D8" style="filled,rounded,dashed" label=<
+      <B>TCP</B><BR/><FONT POINT-SIZE="9">fallback<BR/>least developed</FONT>>];
+    { rank=same; nvlink; rdma; tcp; }
+  }
+
+  subgraph cluster_drivers {
+    label="Drivers + topology";
+    fontsize=13; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#F4F4F5"; color="#B4B4B8";
+    drivers [fillcolor="#E4E4E7" color="#9F9FA6" label=<
+      <B>Driver HAL</B> <FONT POINT-SIZE="9">(all mockable)</FONT><BR/>
+      <FONT POINT-SIZE="10">CudaApi · CudaDriverApi · IbvApi · NvmlApi · SysfsApi</FONT>>];
+    topo [fillcolor="#E4E4E7" color="#9F9FA6" label=<
+      <B>Topology</B><BR/>
+      <FONT POINT-SIZE="9">sysfs PCIe walk + BFS shortest path · NicFilter<BR/>
+      NVL &gt; C2C &gt; PIX &gt; PXB &gt; PXN &gt; PHB &gt; SYS &gt; DIS</FONT>>];
+    { rank=same; drivers; topo; }
+  }
+
+  /* ============ CROSS-CUTTING (right column) ============ */
+
+  subgraph cluster_memory {
+    label="Memory model  ·  segment.md";
+    fontsize=12; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#FEF2F2"; color="#E8A0A0";
+    mem [fillcolor="#FEE2E2" color="#D46A6A" label=<
+      <B>SegmentBase&lt;Derived&gt;</B> <FONT POINT-SIZE="9">(CRTP)</FONT><BR/>
+      <FONT POINT-SIZE="10">Segment — raw [ptr, len]<BR/>
+      RegisteredSegment — local handles<BR/>
+      RemoteRegisteredSegment — from peer exportId</FONT><BR/>
+      <FONT POINT-SIZE="9" COLOR="#444444">Span — bounds-checked non-owning view<BR/>
+      MemoryType = DRAM | VRAM | NVME<BR/>
+      <B>span type selects the data path</B></FONT>>];
+  }
+
+  subgraph cluster_exec {
+    label="Execution  ·  executor.md / core.md";
+    fontsize=12; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#F0F9FF"; color="#8FC5E8";
+    exec [fillcolor="#E0F2FE" color="#4E9FD1" label=<
+      <B>ScopedEventBaseThread</B><BR/>
+      <FONT POINT-SIZE="10">EventBase — single-threaded epoll loop<BR/>
+      dispatch / dispatchInline / dispatchAndWait<BR/>
+      Func — move-only one-shot callable<BR/>
+      MpscQueue — lock-free or mutex policy</FONT><BR/>
+      <FONT POINT-SIZE="9" COLOR="#444444"><B>all mutable transport state lives here</B><BR/>→ lock-free data path<BR/><BR/><B>ONE thread per MultiTransport — not a pool.</B><BR/>RFC's EventBase thread pool + request sharding: <B>not implemented</B><BR/>optional ThreadPool for DRAM staging copies: <B>not implemented</B></FONT>>];
+  }
+
+  subgraph cluster_obs {
+    label="Observability  ·  telemetry.md";
+    fontsize=12; fontname="Helvetica-Bold";
+    style="rounded,filled"; fillcolor="#F7FEE7"; color="#B5D46A";
+    obs [fillcolor="#ECFCCB" color="#94B833" label=<
+      <B>Telemetry</B><BR/>
+      <FONT POINT-SIZE="9">pluggable exporter · latency histograms<BR/>
+      spdlog UNIFLOW_LOG_* (compile-time gated)</FONT><BR/><FONT POINT-SIZE="9" COLOR="#444444"><B>only real thread pool in the system:</B><BR/>spdlog async — queue 8192, <B>1 thread</B></FONT>>];
+  }
+
+  /* ============ LEGEND ============ */
+
+  subgraph cluster_paths {
+    label="";
+    style=invis;
+    paths [shape=box style="filled" fillcolor="#FFFFFF" color="#333333" penwidth=1.5 label=<
+      <TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="5">
+        <TR><TD COLSPAN="3" BGCOLOR="#333333"><FONT COLOR="white" POINT-SIZE="12"><B>The two data paths</B></FONT></TD></TR>
+        <TR><TD BGCOLOR="#F4F4F5"></TD>
+            <TD BGCOLOR="#F4F4F5"><B>put / get</B></TD>
+            <TD BGCOLOR="#F4F4F5"><B>send / recv</B></TD></TR>
+        <TR><TD ALIGN="LEFT">mode</TD><TD>zero-copy, one-sided</TD><TD>copy-based, two-sided</TD></TR>
+        <TR><TD ALIGN="LEFT">argument</TD><TD>RegisteredSegment::Span +<BR/>RemoteRegisteredSegment::Span</TD><TD>Segment::Span</TD></TR>
+        <TR><TD ALIGN="LEFT">registration</TD><TD>required, both sides</TD><TD>not required</TD></TR>
+        <TR><TD ALIGN="LEFT">staging</TD><TD>none — NIC DMAs from user memory</TD><TD>host-pinned slab pool, both sides</TD></TR>
+        <TR><TD ALIGN="LEFT">CUDA on data path</TD><TD><B>none</B></TD><TD>present (the copy)</TD></TR>
+        <TR><TD ALIGN="LEFT">flow control</TD><TD>send-queue capacity</TD><TD>CTS ring (implicit credit)</TD></TR>
+        <TR><TD ALIGN="LEFT">chunking</TD><TD>512 KB</TD><TD>slab-sized · pipelineDepth = 2</TD></TR>
+        <TR><TD COLSPAN="3" ALIGN="LEFT"><FONT POINT-SIZE="9">Chosen by the static type of the span — no runtime negotiation.<BR/>
+            Asymmetric (one side zero-copy, the other staged) is <B>not</B> supported.</FONT></TD></TR>
+      </TABLE>>];
+  }
+
+  /* ============ EDGES ============ */
+  /* spine: constraint=true, defines vertical order */
+  consumers -> agent [ltail=cluster_consumers lhead=cluster_agent label="  C++ API / Python _core  " penwidth=1.7 color="#333333"];
+  agent -> control   [lhead=cluster_control label="  bootstrap  " color="#D9A441" penwidth=1.5];
+  agent -> factory   [constraint=false style=dashed label="  owns  " color="#D98A45"];
+  agent -> conn      [lhead=cluster_data label="  accept() / connect()  " color="#4FA96C" penwidth=1.5];
+  multi -> factory   [lhead=cluster_factory label="  routes to optimal backend  " color="#A472D8" penwidth=1.6];
+  factory -> rdma    [ltail=cluster_factory lhead=cluster_backends label="  creates transports  " color="#D98A45" penwidth=1.5];
+  rdma  -> drivers   [ltail=cluster_backends lhead=cluster_drivers color="#9F9FA6" penwidth=1.4];
+  drivers -> paths   [style=invis];
+
+  /* cross-cutting: constraint=false so they never distort the spine */
+  control -> conn [constraint=false style=dashed label="  peer metadata  " color="#B08828"];
+  mem  -> conn  [constraint=false style=dashed label="  spans  " color="#D46A6A"];
+  exec -> multi [constraint=false style=dashed label="  dispatch → ioLooper()  " color="#4E9FD1"];
+  topo -> multi [constraint=false style=dashed label="  path ranking  " color="#9F9FA6"];
+  obs  -> rdma  [constraint=false style=dashed color="#94B833"];
+  pool -> rdma  [constraint=false style=dashed label="  slabs (shared_ptr)  " color="#D98A45" penwidth=1.3];
+
+  /* keep the right column stacked beside the spine */
+  mem -> exec [style=invis];
+  exec -> obs [style=invis];
+}
