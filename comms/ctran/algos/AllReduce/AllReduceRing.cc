@@ -1162,6 +1162,9 @@ static commResult_t impl(
           op->allreduce.datatype == commUint64 ||
           op->allreduce.datatype == commFloat16 ||
           op->allreduce.datatype == commHalf ||
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+          op->allreduce.datatype == commBfloat16 ||
+#endif
           op->allreduce.datatype == commFloat32 ||
           op->allreduce.datatype == commFloat ||
           op->allreduce.datatype == commFloat64 ||
