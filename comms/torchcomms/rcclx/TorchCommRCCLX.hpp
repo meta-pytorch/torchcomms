@@ -99,6 +99,7 @@ class TorchCommRCCLX : public TorchCommBackend,
   InitHandle getInitHandle() const override;
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
+  using TorchCommBackend::abort;
   void abort() override;
 
   // Point-to-Point Operations
