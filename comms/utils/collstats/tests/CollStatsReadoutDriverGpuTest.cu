@@ -308,6 +308,175 @@ TEST(CollStatsReadoutDriverGpuTest, ThrowingSinkIsCountedNotPropagated) {
 // both. Something in the issue path still serializes with the stream on some
 // hardware; identify it before asserting the invariant here.
 
+TEST(CollStatsReadoutDriverGpuTest, FlushOnErrorExportsReadyWindow) {
+  int deviceCount = 0;
+  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
+    GTEST_SKIP() << "no CUDA device";
+  }
+
+  const uint32_t capacity = 64;
+  CollStatsDeviceBlockHandle h =
+      collStatsAllocDeviceBlock(capacity, /*numSlots=*/4);
+  ASSERT_NE(h.dev, nullptr);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+
+  CollStatsKeyRegistry keys(capacity);
+  const uint32_t key = keys.resolve(
+      CollStatKey{
+          CollStatOp::AllReduce,
+          CollStatAlgo::Direct,
+          CollStatProto::Unknown,
+          7u,
+          3u});
+
+  std::vector<uint64_t> exportedCounts;
+  const uint32_t cadence = 4;
+  CollStatsReadoutDriver driver(
+      h,
+      cadence,
+      [&](const CollStatSnapshot& snap) {
+        exportedCounts.push_back(totalCount(snap.values));
+      },
+      keys);
+
+  for (uint32_t i = 0; i < cadence; ++i) {
+    runCollective(driver, h, stream, key);
+  }
+  ASSERT_TRUE(exportedCounts.empty()); // issued, still pending
+
+  // Copy has landed by the time the error arrives — the window is recoverable.
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  driver.flushOnError();
+
+  ASSERT_EQ(exportedCounts.size(), 1u);
+  EXPECT_EQ(exportedCounts[0], cadence);
+  EXPECT_EQ(driver.windowsExported(), 1u);
+  EXPECT_EQ(driver.windowsDropped(), 0u);
+  EXPECT_FALSE(driver.disabled());
+
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  cudaStreamDestroy(stream);
+  collStatsFreeDeviceBlock(h);
+}
+
+TEST(CollStatsReadoutDriverGpuTest, FlushOnErrorIsNoOpWithNothingPending) {
+  int deviceCount = 0;
+  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
+    GTEST_SKIP() << "no CUDA device";
+  }
+
+  const uint32_t capacity = 64;
+  CollStatsDeviceBlockHandle h =
+      collStatsAllocDeviceBlock(capacity, /*numSlots=*/4);
+  ASSERT_NE(h.dev, nullptr);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+
+  CollStatsKeyRegistry keys(capacity);
+  const uint32_t key = keys.resolve(
+      CollStatKey{
+          CollStatOp::AllReduce,
+          CollStatAlgo::Direct,
+          CollStatProto::Unknown,
+          7u,
+          3u});
+
+  int exports = 0;
+  // Scoped so the driver's own teardown runs before the block is freed.
+  {
+    CollStatsReadoutDriver driver(
+        h, /*cadence=*/8, [&](const CollStatSnapshot&) { ++exports; }, keys);
+
+    // Never reached cadence, so no copy was ever issued.
+    for (int i = 0; i < 3; ++i) {
+      runCollective(driver, h, stream, key);
+    }
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+    driver.flushOnError();
+    EXPECT_EQ(exports, 0);
+    EXPECT_EQ(driver.windowsExported(), 0u);
+    EXPECT_EQ(driver.windowsDropped(), 0u);
+    EXPECT_FALSE(driver.disabled());
+  }
+  // Teardown after an error does not go after the trailing window: flushFinal
+  // would have to synchronize the whole device, and on a real error path that
+  // is a wait on whatever wedged the GPU.
+  EXPECT_EQ(exports, 0);
+
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  cudaStreamDestroy(stream);
+  collStatsFreeDeviceBlock(h);
+}
+
+// TODO(T282705070): the timeout branch of flushOnError has no test. It needs a
+// window whose copy is still unsignaled when the error arrives, and holding a
+// stream in that state is not reproducible across machines: parking it behind a
+// spin kernel keeps the copy pending on a devgpu H100, but under remote
+// execution collStatsIssueReadWindow blocks until the stream drains, so the
+// copy is always complete by the time flushOnError runs. A host-callback or
+// cudaStreamWaitValue gate would make the state deterministic.
+
+// flushOnError arrives from the watchdog thread while the enqueue thread is
+// still ticking. Under TSAN this is the test that fails if the driver's lock
+// is removed.
+TEST(CollStatsReadoutDriverGpuTest, FlushOnErrorRacesOnCollective) {
+  int deviceCount = 0;
+  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
+    GTEST_SKIP() << "no CUDA device";
+  }
+
+  const uint32_t capacity = 64;
+  CollStatsDeviceBlockHandle h =
+      collStatsAllocDeviceBlock(capacity, /*numSlots=*/4);
+  ASSERT_NE(h.dev, nullptr);
+
+  cudaStream_t stream;
+  ASSERT_EQ(cudaStreamCreate(&stream), cudaSuccess);
+
+  CollStatsKeyRegistry keys(capacity);
+  const uint32_t key = keys.resolve(
+      CollStatKey{
+          CollStatOp::AllReduce,
+          CollStatAlgo::Direct,
+          CollStatProto::Unknown,
+          7u,
+          3u});
+
+  std::atomic<uint64_t> exports{0};
+  CollStatsReadoutDriver driver(
+      h, /*cadence=*/2, [&](const CollStatSnapshot&) { ++exports; }, keys);
+
+  std::atomic<bool> stop{false};
+  std::thread watchdog([&] {
+    while (!stop.load(std::memory_order_relaxed)) {
+      driver.flushOnError();
+      std::this_thread::yield();
+    }
+  });
+
+  for (int i = 0; i < 200; ++i) {
+    runCollective(driver, h, stream, key);
+  }
+  stop.store(true, std::memory_order_relaxed);
+  watchdog.join();
+
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  driver.flush();
+
+  // Every window is either exported or counted as dropped; none vanish and no
+  // snapshot is torn.
+  EXPECT_GT(driver.windowsExported(), 0u);
+  EXPECT_EQ(driver.windowsExported(), exports.load());
+
+  ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+  cudaStreamDestroy(stream);
+  collStatsFreeDeviceBlock(h);
+}
+
 } // namespace
 
 } // namespace meta::comms::collstats
