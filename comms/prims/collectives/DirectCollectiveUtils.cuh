@@ -27,10 +27,11 @@ struct MemcpyAndSelfCopy {
   }
 };
 
-__device__ __forceinline__ std::size_t direct_pipeline_window(
-    const P2pNvlTransportDevice* peers,
-    int my_rank,
-    int num_ranks) {
+// PeerArray may be a dense transport pointer or a lightweight view that maps a
+// phase-local rank into a global unified transport table.
+template <typename PeerArray>
+__device__ __forceinline__ std::size_t
+direct_pipeline_window(const PeerArray& peers, int my_rank, int num_ranks) {
   std::size_t window = 0;
   for (int peer = 0; peer < num_ranks; ++peer) {
     if (peer == my_rank) {
