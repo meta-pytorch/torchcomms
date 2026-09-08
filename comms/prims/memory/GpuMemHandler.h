@@ -21,11 +21,13 @@
 #endif
 
 #include <memory>
+#include <optional>
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/memory/CuMemMapping.h"
 #include "comms/prims/memory/NvlMemExchange.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 namespace comms::prims {
 
@@ -98,6 +100,13 @@ union IpcHandle {
  */
 class GpuMemHandler {
  public:
+  struct Options {
+    std::optional<MemSharingMode> mode;
+    std::size_t alignFloor{0};
+    meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType{
+        meta::comms::memtrace::GpuMemoryResourceType::kUnclassified};
+  };
+
   /**
    * Constructor - Allocates shareable GPU memory.
    *
@@ -143,6 +152,13 @@ class GpuMemHandler {
       size_t size,
       MemSharingMode mode,
       std::size_t alignFloor = 0);
+
+  GpuMemHandler(
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      int32_t selfRank,
+      int32_t nRanks,
+      size_t size,
+      Options options);
 
   ~GpuMemHandler();
 
@@ -280,17 +296,25 @@ class GpuMemHandler {
   static std::size_t backingGranularity(int cudaDevice, int nvlRanks);
 
  private:
-  void init(size_t size, std::size_t alignFloor);
+  void init(
+      size_t size,
+      std::size_t alignFloor,
+      meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType);
 
   // VMM mode methods (shared by kFabric and kPosixFd). The physical allocation
   // requests both handle types when the device allows it; the actual exported
   // shareable-handle type is chosen at exchange time via supportsFabric().
-  void allocateVmmMemory(size_t size, std::size_t alignFloor);
+  void allocateVmmMemory(
+      size_t size,
+      std::size_t alignFloor,
+      meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType);
   void exchangeVmmHandles();
   void cleanupVmm();
 
   // CudaIpc mode methods
-  void allocateCudaIpcMemory(size_t size);
+  void allocateCudaIpcMemory(
+      size_t size,
+      meta::comms::memtrace::GpuMemoryResourceType gpuMemoryResourceType);
   void exchangeCudaIpcHandles();
   void cleanupCudaIpc();
 

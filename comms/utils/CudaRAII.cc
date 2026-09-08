@@ -3,9 +3,11 @@
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/logger/SpdlogLogger.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace meta::comms {
 
@@ -13,10 +15,15 @@ DeviceBuffer::DeviceBuffer(std::size_t size) : size_(size) {
   CUDA_CHECK(cudaMalloc(&ptr_, size));
 }
 
+DeviceBuffer::DeviceBuffer(
+    std::size_t size,
+    const memtrace::GpuMemoryAllocationMetadata& metadata)
+    : size_(size) {
+  FB_CUDACHECKTHROW(memtrace::mcclCudaMalloc(&ptr_, size, metadata));
+}
+
 DeviceBuffer::~DeviceBuffer() {
-  if (ptr_) {
-    CUDA_CHECK(cudaFree(ptr_));
-  }
+  reset();
 }
 
 void* DeviceBuffer::get() const {
@@ -24,17 +31,26 @@ void* DeviceBuffer::get() const {
 }
 
 DeviceBuffer::DeviceBuffer(DeviceBuffer&& other) noexcept
-    : ptr_(other.ptr_), size_(other.size_) {
-  other.size_ = 0;
-  other.ptr_ = nullptr;
-}
+    : ptr_(std::exchange(other.ptr_, nullptr)),
+      size_(std::exchange(other.size_, 0)) {}
 
 DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
-  ptr_ = other.ptr_;
-  size_ = other.size_;
-  other.ptr_ = nullptr;
-  other.size_ = 0;
+  if (this == &other) {
+    return *this;
+  }
+  reset();
+  ptr_ = std::exchange(other.ptr_, nullptr);
+  size_ = std::exchange(other.size_, 0);
   return *this;
+}
+
+void DeviceBuffer::reset() noexcept {
+  if (ptr_ == nullptr) {
+    return;
+  }
+  CUDA_CHECK(memtrace::mcclCudaFree(ptr_));
+  ptr_ = nullptr;
+  size_ = 0;
 }
 
 CudaStream::CudaStream(unsigned int flags) {

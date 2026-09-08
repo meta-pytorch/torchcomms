@@ -13,8 +13,6 @@
 // paths in this file are guarded by `#ifndef __HIP_PLATFORM_AMD__`.
 #include <hip/hip_runtime.h>
 #else
-#include <cuda_runtime.h>
-
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
@@ -26,6 +24,7 @@
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 namespace comms::prims {
 
@@ -705,7 +704,15 @@ void MultiPeerTransport::build_device_handle() {
   // Allocate GPU memory and raw-copy the Transport array.
   // Transport union members are standard-layout + trivially destructible,
   // so raw byte copy via cudaMemcpy produces valid device-side objects.
-  CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
+  CUDA_CHECK(
+      meta::comms::memtrace::mcclCudaMalloc(
+          &transportsGpu_,
+          arrayBytes,
+          {
+              .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                  kCommonTransportDispatchTable,
+              .logicalBytes = arrayBytes,
+          }));
   CUDA_CHECK(cudaMemcpy(
       transportsGpu_, transportsHost, arrayBytes, cudaMemcpyHostToDevice));
 
@@ -720,7 +727,7 @@ void MultiPeerTransport::build_device_handle() {
 
 void MultiPeerTransport::free_device_handle() {
   if (transportsGpu_) {
-    (void)cudaFree(transportsGpu_);
+    (void)meta::comms::memtrace::mcclCudaFree(transportsGpu_);
     transportsGpu_ = nullptr;
   }
   deviceHandleBuilt_ = false;
