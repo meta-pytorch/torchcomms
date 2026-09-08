@@ -50,6 +50,17 @@ namespace comms::fault_tolerance {
  */
 inline constexpr uint64_t kAbortPollsPerMs = 1;
 
+/*
+ * `context` the deadline path passes when it records `TIMED_OUT`.
+ *
+ * Named rather than spelled at the call site so the test that asserts the line
+ * cannot drift from the line itself. Unlike `FT_ABORT_FIRST_WRITER_`, this is
+ * not a grep contract anyone outside the code depends on -- it is one writer's
+ * description of itself -- so sharing the constant is the right coupling.
+ */
+inline constexpr const char* kDeadlineExpiredContext =
+    "device deadline expired";
+
 namespace detail {
 
 inline int hostCurrentDevice() {
@@ -146,6 +157,76 @@ deviceCompareExchangeSystem(int* value, int* expected, int desired) {
 __device__ __forceinline__ void publishContextReady(AbortState* state) {
   int expected = 0;
   (void)deviceCompareExchangeSystem(&state->contextReady, &expected, 1);
+}
+
+/**
+ * Emits the device first-writer line for a transition this call just won.
+ *
+ * Every device path that takes `AbortState::abort` from `NONE` to a terminal
+ * reason ends here -- `AbortDevice::setAbort`, `AbortFlag::setAbort`, and the
+ * deadline CAS in `markTimedOutIfExpired`, all of which reach it through
+ * `deviceTrySetAbort`. There is no second emitter, so the marker has one
+ * spelling and one field list, and counting it counts transitions.
+ *
+ * `FT_ABORT_CHECK` adds a separate `FT_ABORT_SITE_` line carrying the caller's
+ * message and source location. That is an observation, not a transition, so it
+ * deliberately does not reuse this marker.
+ */
+__device__ __forceinline__ void deviceLogFirstWriter(
+    AbortReason reason,
+    const char* context) {
+  // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+  printf(
+      FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
+      static_cast<int>(reason),
+      context == nullptr ? "" : context);
+}
+
+/**
+ * Records a terminal reason from device code, first-writer-wins, and emits the
+ * common first-writer marker if this call is the winner.
+ *
+ * Shared by both device writers of `AbortState::abort` -- `AbortDevice` and
+ * `AbortFlag`. They differ in what else they carry (a poll throttle, a
+ * per-operation identity), but the transition itself and the line that reports
+ * it are the same event, and a writer that transitions without logging leaves
+ * an abort with no greppable origin.
+ *
+ * Takes the raw `AbortState*` rather than either handle type so it can be
+ * defined once, before both, without a forward declaration dance.
+ *
+ * `observed` reports the reason already in place when the CAS loses. A caller
+ * that needs to distinguish "someone else recorded the reason I wanted" from
+ * "someone else recorded a different one" would otherwise have to re-read
+ * mapped pinned state, which is the one read this whole path exists to avoid.
+ */
+__device__ __forceinline__ bool deviceTrySetAbort(
+    AbortState* state,
+    AbortReason newReason,
+    const char* context,
+    AbortReason* observed = nullptr) {
+  if (state == nullptr) {
+    return false;
+  }
+  const bool validReason = deviceIsValidTerminalReason(newReason);
+  assert(validReason);
+  if (!validReason) {
+    return false;
+  }
+
+  int expected = static_cast<int>(AbortReason::NONE);
+  const bool won = deviceCompareExchangeSystem(
+      &state->abort, &expected, static_cast<int>(newReason));
+  if (won) {
+    // Device context is intentionally not persisted in mapped host state, so
+    // the winner completes the readiness protocol immediately.
+    publishContextReady(state);
+    deviceLogFirstWriter(newReason, context);
+  } else if (observed != nullptr) {
+    // The CAS wrote back what it found, so this costs no extra read.
+    *observed = static_cast<AbortReason>(expected);
+  }
+  return won;
 }
 
 } // namespace detail
@@ -297,6 +378,9 @@ struct AbortDevice final {
    * the caller should preserve legacy Prims trap behavior; the trap itself is
    * performed by Prims helpers so common fault-tolerance code stays transport
    * agnostic.
+   *
+   * `flippedHere`, when passed, reports whether this call won the deadline CAS.
+   * It is safe to pass anywhere: the transition logs itself either way.
    */
   __device__ AbortCheckResult check(bool* flippedHere = nullptr) const {
     if (!checkExpired(flippedHere)) {
@@ -312,6 +396,8 @@ struct AbortDevice final {
    * Returns true for either an explicit abort or an expired local device
    * timeout. If this handle's local deadline has expired, this records
    * `AbortReason::TIMED_OUT` in the shared state.
+   *
+   * `flippedHere`, when passed, reports whether this call won the deadline CAS.
    */
   __device__ bool checkExpired(bool* flippedHere = nullptr) const {
     if (flippedHere != nullptr) {
@@ -403,28 +489,7 @@ struct AbortDevice final {
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
       const char* context = nullptr) const {
-    if (!isEnabled()) {
-      return false;
-    }
-    const bool validReason = detail::deviceIsValidTerminalReason(newReason);
-    assert(validReason);
-    if (!validReason) {
-      return false;
-    }
-
-    int expected = static_cast<int>(AbortReason::NONE);
-    const bool won = detail::deviceCompareExchangeSystem(
-        &state_->abort, &expected, static_cast<int>(newReason));
-    if (won) {
-      // Device context is intentionally not persisted in mapped host state.
-      detail::publishContextReady(state_);
-      // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
-      printf(
-          FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
-          static_cast<int>(newReason),
-          context == nullptr ? "" : context);
-    }
-    return won;
+    return detail::deviceTrySetAbort(state_, newReason, context);
   }
 
  private:
@@ -490,23 +555,41 @@ struct AbortDevice final {
     return deadlineCycles_ != 0 && detail::deviceClock() >= deadlineCycles_;
   }
 
+  /**
+   * Records `TIMED_OUT` when this handle's deadline has lapsed.
+   *
+   * Goes through `detail::deviceTrySetAbort` rather than running its own CAS,
+   * so the deadline transitions and logs on exactly the same terms as
+   * `setAbort()` does. This used to be the one device writer that could take
+   * the shared reason silently: most production waits observe their own
+   * deadline through `groupAborted()` or a bare `isAborted()`, and every later
+   * observer takes the `reason() != NONE` early return without transitioning,
+   * so nobody was left who could report the origin.
+   *
+   * `flippedHere` is a plain out-param -- "this call won the CAS" -- and has no
+   * bearing on whether the line is emitted. `FT_ABORT_CHECK` reads it to decide
+   * whether to add its own site line, not to decide whether anything logs.
+   *
+   * Returns true for a CAS loss to another `TIMED_OUT` writer as well as for a
+   * win, because either way the deadline is recorded by the time this returns.
+   */
   __device__ bool markTimedOutIfExpired(bool* flippedHere = nullptr) const {
     if (!isEnabled() || !deadlineExpired()) {
       return false;
     }
 
-    int expected = static_cast<int>(AbortReason::NONE);
-    if (detail::deviceCompareExchangeSystem(
-            &state_->abort,
-            &expected,
-            static_cast<int>(AbortReason::TIMED_OUT))) {
-      detail::publishContextReady(state_);
+    AbortReason observed = AbortReason::NONE;
+    if (detail::deviceTrySetAbort(
+            state_,
+            AbortReason::TIMED_OUT,
+            kDeadlineExpiredContext,
+            &observed)) {
       if (flippedHere != nullptr) {
         *flippedHere = true;
       }
       return true;
     }
-    return expected == static_cast<int>(AbortReason::TIMED_OUT);
+    return observed == AbortReason::TIMED_OUT;
   }
 
   /**
@@ -604,28 +687,20 @@ struct AbortFlag final {
    * Writing shared state is safe to do from a shared handle -- it is a
    * system-scope CAS, which is exactly what the shared state is for. Only
    * *polling* needs per-thread throttle state, and this type has none.
-   * Device context is not persisted, so a winning writer publishes
-   * `contextReady` immediately after the reason.
+   *
+   * The winner emits the same first-writer marker `AbortDevice` does, and
+   * publishes `contextReady` on the same terms, through the same helper. That
+   * costs this type nothing it was built to avoid: the `printf` is gated on the
+   * CAS win, so it happens at most once per communicator, and it adds no
+   * mutable state and no poll. Without it the IBRC proxy watchdogs -- which
+   * reach the shared reason only through this type -- can leave a communicator
+   * aborted with no greppable origin at all, and the `context` they pass
+   * describing which watchdog fired is discarded.
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
       const char* context = nullptr) const {
-    if (!isEnabled()) {
-      return false;
-    }
-    (void)context;
-    const bool validReason = detail::deviceIsValidTerminalReason(newReason);
-    assert(validReason);
-    if (!validReason) {
-      return false;
-    }
-    int expected = static_cast<int>(AbortReason::NONE);
-    const bool won = detail::deviceCompareExchangeSystem(
-        &state_->abort, &expected, static_cast<int>(newReason));
-    if (won) {
-      detail::publishContextReady(state_);
-    }
-    return won;
+    return detail::deviceTrySetAbort(state_, newReason, context);
   }
 
   /**
