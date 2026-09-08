@@ -62,10 +62,14 @@
 #ifdef __HIP_PLATFORM_AMD__
 
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <hip/hip_runtime_api.h>
+
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 // When comms/utils/CudaRAII.h is on the include path (e.g. via ctran deps),
 // HIPify translates its CUDA calls to HIP, so the real DeviceBuffer/CudaEvent
@@ -81,30 +85,33 @@ class DeviceBuffer {
     (void)hipMalloc(&ptr_, size);
   }
 
-  ~DeviceBuffer() {
-    if (ptr_ != nullptr) {
-      (void)hipFree(ptr_);
+  DeviceBuffer(
+      std::size_t size,
+      const memtrace::GpuMemoryAllocationMetadata& metadata)
+      : size_(size) {
+    const auto status = memtrace::mcclCudaMalloc(&ptr_, size, metadata);
+    if (status != hipSuccess) {
+      throw std::runtime_error(
+          std::string{"hipMalloc failed: "} + hipGetErrorString(status));
     }
+  }
+
+  ~DeviceBuffer() {
+    reset();
   }
 
   DeviceBuffer(const DeviceBuffer&) = delete;
   DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 
   DeviceBuffer(DeviceBuffer&& other) noexcept
-      : ptr_(other.ptr_), size_(other.size_) {
-    other.ptr_ = nullptr;
-    other.size_ = 0;
-  }
+      : ptr_(std::exchange(other.ptr_, nullptr)),
+        size_(std::exchange(other.size_, 0)) {}
 
   DeviceBuffer& operator=(DeviceBuffer&& other) noexcept {
     if (this != &other) {
-      if (ptr_ != nullptr) {
-        (void)hipFree(ptr_);
-      }
-      ptr_ = other.ptr_;
-      size_ = other.size_;
-      other.ptr_ = nullptr;
-      other.size_ = 0;
+      reset();
+      ptr_ = std::exchange(other.ptr_, nullptr);
+      size_ = std::exchange(other.size_, 0);
     }
     return *this;
   }
@@ -118,6 +125,15 @@ class DeviceBuffer {
   }
 
  private:
+  void reset() noexcept {
+    if (ptr_ == nullptr) {
+      return;
+    }
+    (void)memtrace::mcclCudaFree(ptr_);
+    ptr_ = nullptr;
+    size_ = 0;
+  }
+
   void* ptr_{nullptr};
   std::size_t size_{0};
 };

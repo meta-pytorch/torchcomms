@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/prims/memory/GpuMemHandler.h"
@@ -16,9 +17,6 @@
 #include "comms/prims/transport/nvl/MultimemNvlTransport.h"
 #include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
-// On AMD, `meta::comms::DeviceBuffer` is provided by
-// `comms/prims/transport/amd/HipHostCompat.h`; the NVIDIA `CudaRAII.h` (which
-// includes `<cuda_runtime.h>` directly) is unavailable under hipcc.
 #ifdef __HIP_PLATFORM_AMD__
 #include "comms/prims/transport/amd/HipHostCompat.h"
 #else
@@ -484,14 +482,7 @@ class MultiPeerNvlTransport {
   // first, recv at progressDirectionStride_. Plain device memory rather than a
   // GpuMemHandler because, unlike the channel state, this is never
   // IPC-exchanged.
-  struct CudaFreeDeleter {
-    void operator()(void* ptr) const noexcept {
-      if (ptr != nullptr) {
-        static_cast<void>(cudaFree(ptr));
-      }
-    }
-  };
-  std::unique_ptr<void, CudaFreeDeleter> progressBase_;
+  std::unique_ptr<meta::comms::DeviceBuffer> progressBase_;
   std::size_t perPeerChannelProgressSize_{0};
   std::size_t progressDirectionStride_{0};
   std::size_t perPeerLlBufferSize_{0};

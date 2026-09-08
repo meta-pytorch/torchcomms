@@ -20,6 +20,7 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5core.h"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 // GPU DMA-BUF export for MR registration. Generic (no DOCA context): on NVIDIA
 // it is cuMemGetHandleForAddressRange via DocaHostUtils (with the CUDA driver
 // address-range lookup from CudaDriverLazy); on AMD it is the HSA path provided
@@ -162,14 +163,6 @@ const char* slotGpuGetErrorString(SlotGpuError err) {
   return hipGetErrorString(err);
 }
 
-SlotGpuError slotGpuMalloc(void** ptr, std::size_t bytes) {
-  return hipMalloc(ptr, bytes);
-}
-
-SlotGpuError slotGpuFree(void* ptr) {
-  return hipFree(ptr);
-}
-
 SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
   return hipMemset(ptr, value, bytes);
 }
@@ -191,14 +184,6 @@ constexpr SlotGpuError kSlotGpuSuccess = cudaSuccess;
 
 const char* slotGpuGetErrorString(SlotGpuError err) {
   return cudaGetErrorString(err);
-}
-
-SlotGpuError slotGpuMalloc(void** ptr, std::size_t bytes) {
-  return cudaMalloc(ptr, bytes);
-}
-
-SlotGpuError slotGpuFree(void* ptr) {
-  return cudaFree(ptr);
 }
 
 SlotGpuError slotGpuMemset(void* ptr, int value, std::size_t bytes) {
@@ -514,20 +499,38 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
     }
   }
 #endif
-  auto allocateBulk = [&](std::size_t perPeer, const char* label) {
-    const std::size_t used = perPeer * numPeers;
-    const std::size_t allocBytes = ((used + ddAlign - 1) / ddAlign) * ddAlign;
-    auto buf = std::make_unique<meta::comms::DeviceBuffer>(allocBytes);
-    checkSlotGpu(
-        slotGpuMemset(buf->get(), 0, allocBytes),
-        fmt::format("MultiPeerIbTransport: zero send/recv {}", label));
-    return buf;
-  };
+  auto allocateBuffer =
+      [&](std::size_t logicalBytes,
+          std::size_t accountedBytes,
+          const char* label,
+          meta::comms::memtrace::GpuMemoryResourceType resource) {
+        auto allocation = std::make_unique<meta::comms::DeviceBuffer>(
+            accountedBytes,
+            meta::comms::memtrace::GpuMemoryAllocationMetadata{
+                .resourceType = resource,
+                .logicalBytes = logicalBytes,
+            });
+        checkSlotGpu(
+            slotGpuMemset(allocation->get(), 0, accountedBytes),
+            fmt::format("MultiPeerIbTransport: zero send/recv {}", label));
+        return allocation;
+      };
 
   sendRecvPeerBuffers_.resize(numPeers);
 
-  sendRecvSendStagingBulk_ = allocateBulk(stagingPerPeer, "send staging bulk");
-  sendRecvRecvStagingBulk_ = allocateBulk(stagingPerPeer, "recv staging bulk");
+  const std::size_t stagingBytes = stagingPerPeer * numPeers;
+  const std::size_t stagingAllocationBytes =
+      ((stagingBytes + ddAlign - 1) / ddAlign) * ddAlign;
+  sendRecvSendStagingBulk_ = allocateBuffer(
+      stagingBytes,
+      stagingAllocationBytes,
+      "send staging bulk",
+      meta::comms::memtrace::GpuMemoryResourceType::kIbEagerSendBuffer);
+  sendRecvRecvStagingBulk_ = allocateBuffer(
+      stagingBytes,
+      stagingAllocationBytes,
+      "recv staging bulk",
+      meta::comms::memtrace::GpuMemoryResourceType::kIbEagerRecvBuffer);
 
   // Signal and the device counter are the small RDMA-registered control
   // buffers; pack them into ONE granularity-aligned allocation so they cost a
@@ -541,11 +544,11 @@ void MultiPeerIbTransportBase::allocateSendRecvBuffersEager(
       deviceCounter ? counterPerPeer * numPeers : 0;
   const std::size_t counterOff = alignUp(signalTotal, alignof(SignalState));
   const std::size_t controlBytes = alignUp(counterOff + counterTotal, ddAlign);
-  sendRecvControlBulk_ =
-      std::make_unique<meta::comms::DeviceBuffer>(controlBytes);
-  checkSlotGpu(
-      slotGpuMemset(sendRecvControlBulk_->get(), 0, controlBytes),
-      "MultiPeerIbTransport: zero send/recv control bulk");
+  sendRecvControlBulk_ = allocateBuffer(
+      signalTotal + counterTotal,
+      controlBytes,
+      "control bulk",
+      meta::comms::memtrace::GpuMemoryResourceType::kIbEagerControlBuffer);
   char* controlBase = static_cast<char*>(sendRecvControlBulk_->get());
   checkSendRecvSignalAlignment(
       controlBase, "MultiPeerIbTransport: send/recv signal base");
@@ -674,9 +677,9 @@ void MultiPeerIbTransportBase::cleanupSendRecvBuffers() noexcept {
   sendRecvSignalBulkReg_ = IbgdaLocalBuffer{};
   sendRecvCounterBulkReg_ = IbgdaLocalBuffer{};
   // Lazy per-peer allocations (empty in eager mode).
-  for (auto& buf : lazyPeerBufs_) {
-    deregisterNoexcept(buf ? buf->get() : nullptr);
-    buf.reset();
+  for (auto& allocation : lazyPeerBufs_) {
+    deregisterNoexcept(allocation ? allocation->get() : nullptr);
+    allocation.reset();
   }
   lazyPeerBufs_.clear();
   for (auto& counter : lazySendRecvHostCounters_) {
@@ -731,13 +734,20 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
     off += counterPerPeer;
   }
   const std::size_t total = off;
-  auto buf = std::make_unique<meta::comms::DeviceBuffer>(total);
+  auto allocation = std::make_unique<meta::comms::DeviceBuffer>(
+      total,
+      meta::comms::memtrace::GpuMemoryAllocationMetadata{
+          .resourceType =
+              meta::comms::memtrace::GpuMemoryResourceType::kIbSendRecvPeerBulk,
+          .logicalBytes = 2 * stagingPerPeer + signalPerPeer +
+              (deviceCounter ? counterPerPeer : 0),
+      });
   checkSlotGpu(
-      slotGpuMemset(buf->get(), 0, total),
+      slotGpuMemset(allocation->get(), 0, total),
       "MultiPeerIbTransport: zero per-peer send/recv buffer");
-  auto reg = registerBuffer(buf->get(), total);
+  auto reg = registerBuffer(allocation->get(), total);
 
-  char* p = static_cast<char*>(buf->get());
+  char* p = static_cast<char*>(allocation->get());
   auto& pb = sendRecvPeerBuffers_[peerIndex];
   pb.sendStaging = IbgdaLocalBuffer(p + sendStagingOff, reg.lkey_per_device);
   void* recvStagingPtr = p + recvStagingOff;
@@ -771,7 +781,7 @@ void MultiPeerIbTransportBase::allocateSendRecvBufferForPeer(
   // their addr + per-NIC rkeys (whole per-peer regions, no slicing).
   payload.recvStaging = registeredSlotMemoryExchInfo(recvStagingPtr);
   payload.srSignal = registeredSlotMemoryExchInfo(signalPtr);
-  lazyPeerBufs_[peerIndex] = std::move(buf);
+  lazyPeerBufs_[peerIndex] = std::move(allocation);
 }
 
 void MultiPeerIbTransportBase::applyRemoteSendRecvBuffer(
@@ -794,14 +804,15 @@ void MultiPeerIbTransportBase::cleanupSendRecvBufferForPeer(
   }
   if (peerIndex < static_cast<int>(lazyPeerBufs_.size()) &&
       lazyPeerBufs_[peerIndex]) {
+    auto& allocation = lazyPeerBufs_[peerIndex];
     try {
-      deregisterBuffer(lazyPeerBufs_[peerIndex]->get());
+      deregisterBuffer(allocation->get());
     } catch (const std::exception& ex) {
       LOG(ERROR) << "MultiPeerIbTransport: failed to deregister per-peer "
                     "send/recv buffer: "
                  << ex.what();
     }
-    lazyPeerBufs_[peerIndex].reset();
+    allocation.reset();
   }
   if (peerIndex < static_cast<int>(lazySendRecvHostCounters_.size())) {
     freeCounterSlotAllocation(lazySendRecvHostCounters_[peerIndex]);
@@ -1607,7 +1618,8 @@ std::vector<IbgdaRemoteBuffer> MultiPeerIbTransportBase::exchangeBuffer(
 MultiPeerIbTransportBase::DeviceSlotAllocation
 MultiPeerIbTransportBase::allocateDeviceSlotAllocation(
     std::size_t bytes,
-    const char* label) {
+    const char* label,
+    meta::comms::memtrace::GpuMemoryResourceType resource) {
   if (bytes == 0) {
     throw std::invalid_argument(
         fmt::format("MultiPeerIbTransport: {} size must be non-zero", label));
@@ -1630,9 +1642,14 @@ MultiPeerIbTransportBase::allocateDeviceSlotAllocation(
   allocation.isHostPinned = true;
   std::memset(allocation.ptr, 0, bytes);
 #else
-  allocation.ptr = checkedSlotAlloc(
-      slotGpuMalloc,
-      bytes,
+  checkSlotGpu(
+      meta::comms::memtrace::mcclCudaMalloc(
+          &allocation.ptr,
+          bytes,
+          {
+              .resourceType = resource,
+              .logicalBytes = bytes,
+          }),
       fmt::format("MultiPeerIbTransport: device allocation for {}", label));
   checkSlotGpu(
       slotGpuMemset(allocation.ptr, 0, bytes),
@@ -1660,9 +1677,15 @@ MultiPeerIbTransportBase::allocateCounterSlotAllocation(
   switch (storage) {
     case IbCounterStorage::Device:
       // NIC loopback atomic target: device memory, zeroed.
-      allocation.devicePtr = checkedSlotAlloc(
-          slotGpuMalloc,
-          bytes,
+      checkSlotGpu(
+          meta::comms::memtrace::mcclCudaMalloc(
+              &allocation.devicePtr,
+              bytes,
+              {
+                  .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                      kIbSlotCounter,
+                  .logicalBytes = bytes,
+              }),
           fmt::format("MultiPeerIbTransport: device allocation for {}", label));
       checkSlotGpu(
           slotGpuMemset(allocation.devicePtr, 0, bytes),
@@ -1757,8 +1780,9 @@ void MultiPeerIbTransportBase::freeDeviceSlotAllocation(
     allocation.registered = false;
   }
 
-  SlotGpuError err = allocation.isHostPinned ? slotHostFree(allocation.ptr)
-                                             : slotGpuFree(allocation.ptr);
+  SlotGpuError err = allocation.isHostPinned
+      ? slotHostFree(allocation.ptr)
+      : meta::comms::memtrace::mcclCudaFree(allocation.ptr);
   if (err != kSlotGpuSuccess) {
     LOG(WARNING) << "MultiPeerIbTransport: failed to free device slot "
                  << "allocation: " << slotGpuGetErrorString(err);
@@ -1788,7 +1812,7 @@ void MultiPeerIbTransportBase::freeCounterSlotAllocation(
   if (allocation.hostPtr != nullptr) {
     err = slotHostFree(allocation.hostPtr);
   } else if (allocation.devicePtr != nullptr) {
-    err = slotGpuFree(allocation.devicePtr);
+    err = meta::comms::memtrace::mcclCudaFree(allocation.devicePtr);
   }
   if (err != kSlotGpuSuccess) {
     LOG(WARNING) << "MultiPeerIbTransport: failed to free counter slot "
@@ -1813,8 +1837,10 @@ void MultiPeerIbTransportBase::allocateSignalCounterResources(
     const auto slotsPerPeer = static_cast<std::size_t>(config_.numSignalSlots);
     const std::size_t totalSignalBytes =
         static_cast<std::size_t>(numPeers) * slotsPerPeer * sizeof(uint64_t);
-    slotSignalAllocation_ =
-        allocateDeviceSlotAllocation(totalSignalBytes, "slot signal buffer");
+    slotSignalAllocation_ = allocateDeviceSlotAllocation(
+        totalSignalBytes,
+        "slot signal buffer",
+        meta::comms::memtrace::GpuMemoryResourceType::kIbSlotSignalInbox);
     auto localSignalBuf = registerSlotMemory(
         slotSignalAllocation_.ptr,
         slotSignalAllocation_.ptr,
@@ -1870,7 +1896,9 @@ void MultiPeerIbTransportBase::allocateSignalCounterResources(
     const std::size_t totalDiscardBytes =
         static_cast<std::size_t>(numPeers) * sizeof(uint64_t);
     slotDiscardSignalAllocation_ = allocateDeviceSlotAllocation(
-        totalDiscardBytes, "slot discard-signal buffer");
+        totalDiscardBytes,
+        "slot discard-signal buffer",
+        meta::comms::memtrace::GpuMemoryResourceType::kIbSlotDiscardSignal);
     auto localDiscardBuf = registerSlotMemory(
         slotDiscardSignalAllocation_.ptr,
         slotDiscardSignalAllocation_.ptr,
@@ -1968,8 +1996,10 @@ void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
     const std::size_t signalBytes =
         static_cast<std::size_t>(config_.numSignalSlots) * sizeof(uint64_t);
     freeDeviceSlotAllocation(lazySlotSignalAllocations_[peerIndex]);
-    auto allocation =
-        allocateDeviceSlotAllocation(signalBytes, "lazy slot signal buffer");
+    auto allocation = allocateDeviceSlotAllocation(
+        signalBytes,
+        "lazy slot signal buffer",
+        meta::comms::memtrace::GpuMemoryResourceType::kIbSlotSignalInbox);
     auto localSignalBuf = registerSlotMemory(
         allocation.ptr,
         allocation.ptr,
@@ -2007,7 +2037,9 @@ void MultiPeerIbTransportBase::allocatePeerSignalCounterResources(
   if (allocateDiscardSignal && config_.numCounterSlots > 0) {
     freeDeviceSlotAllocation(lazySlotDiscardSignalAllocations_[peerIndex]);
     auto allocation = allocateDeviceSlotAllocation(
-        sizeof(uint64_t), "lazy slot discard-signal buffer");
+        sizeof(uint64_t),
+        "lazy slot discard-signal buffer",
+        meta::comms::memtrace::GpuMemoryResourceType::kIbSlotDiscardSignal);
     (void)registerSlotMemory(
         allocation.ptr,
         allocation.ptr,

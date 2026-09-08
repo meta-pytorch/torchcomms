@@ -9,6 +9,8 @@
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
+#include <glog/logging.h>
+
 #include <algorithm>
 #include <stdexcept>
 
@@ -62,12 +64,14 @@ std::unique_ptr<CuMemAllocation> CuMemAllocation::create(
     CUdevice cuDev,
     std::size_t size,
     unsigned int requestedHandleTypesMask,
-    std::size_t alignFloor) {
+    std::size_t alignFloor,
+    const meta::comms::memtrace::GpuMemoryAllocationMetadata& metadata) {
 #if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
   (void)cuDev;
   (void)size;
   (void)requestedHandleTypesMask;
   (void)alignFloor;
+  (void)metadata;
   throw std::runtime_error("CuMemAllocation::create requires CUDA 12.3+");
 #else
   if (cuda_driver_lazy_init() != 0) {
@@ -101,7 +105,8 @@ std::unique_ptr<CuMemAllocation> CuMemAllocation::create(
   const std::size_t allocatedSize = comms::bitops::roundUp(size, effGran);
 
   CUmemGenericAllocationHandle handle = 0;
-  CUresult createResult = pfn_cuMemCreate(&handle, allocatedSize, &prop, 0);
+  CUresult createResult = meta::comms::memtrace::mcclCuMemCreate(
+      pfn_cuMemCreate, &handle, allocatedSize, &prop, 0, metadata);
   if ((createResult == CUDA_ERROR_NOT_PERMITTED ||
        createResult == CUDA_ERROR_NOT_SUPPORTED) &&
       (mask & CU_MEM_HANDLE_TYPE_FABRIC)) {
@@ -110,7 +115,8 @@ std::unique_ptr<CuMemAllocation> CuMemAllocation::create(
     // allocator.cc).
     mask &= ~static_cast<unsigned int>(CU_MEM_HANDLE_TYPE_FABRIC);
     prop = makeVmmAllocationProp(cuDev, mask);
-    createResult = pfn_cuMemCreate(&handle, allocatedSize, &prop, 0);
+    createResult = meta::comms::memtrace::mcclCuMemCreate(
+        pfn_cuMemCreate, &handle, allocatedSize, &prop, 0, metadata);
   }
   checkCuError(createResult, "cuMemCreate failed");
 
@@ -120,7 +126,7 @@ std::unique_ptr<CuMemAllocation> CuMemAllocation::create(
     return std::unique_ptr<CuMemAllocation>(
         new CuMemAllocation(handle, cuDev, allocatedSize, effGran, mask));
   } catch (...) {
-    pfn_cuMemRelease(handle);
+    meta::comms::memtrace::mcclCuMemRelease(pfn_cuMemRelease, handle);
     throw;
   }
 #endif
@@ -261,14 +267,29 @@ void CuMemAllocation::release() noexcept {
     return;
   }
   if (cuda_driver_lazy_init() != 0) {
+    LOG(ERROR)
+        << "CuMemAllocation::release: CUDA driver lazy init failed; leaking "
+           "allocation handle="
+        << handle_;
+    handle_ = 0;
     return;
   }
   CUcontext ctx = nullptr;
   if (pfn_cuCtxGetCurrent == nullptr ||
       pfn_cuCtxGetCurrent(&ctx) != CUDA_SUCCESS || ctx == nullptr) {
+    LOG(ERROR) << "CuMemAllocation::release: no current CUDA context; leaking "
+                  "allocation handle="
+               << handle_;
+    handle_ = 0;
     return;
   }
-  pfn_cuMemRelease(handle_);
+  const CUresult status =
+      meta::comms::memtrace::mcclCuMemRelease(pfn_cuMemRelease, handle_);
+  if (status != CUDA_SUCCESS) {
+    LOG(ERROR) << "CuMemAllocation::release: cuMemRelease failed (CUresult="
+               << static_cast<int>(status) << ", handle=" << handle_
+               << "); leaking allocation handle";
+  }
   handle_ = 0;
 #endif
 }
