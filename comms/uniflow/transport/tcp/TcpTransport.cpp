@@ -6,6 +6,8 @@
 #include <netinet/in.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -68,10 +70,51 @@ size_t TcpTransport::adaptiveGetChunk(size_t len, size_t laneCount) {
   return std::max(perLane, kMinAdaptiveChunkSize);
 }
 
+namespace {
+
+/// NUMA node behind a sysfs device dir, or kAnyNumaNode if unreadable -- an
+/// unknown topology must not silently exclude a port.
+int readNumaNodeFile(const std::filesystem::path& deviceDir) {
+  std::ifstream in(deviceDir / "numa_node");
+  int node = kAnyNumaNode;
+  if (!in.is_open() || !(in >> node)) {
+    return kAnyNumaNode;
+  }
+  return node < 0 ? kAnyNumaNode : node;
+}
+
+} // namespace
+
+int gpuNumaNode(int deviceId) {
+  // The benchmark's "host memory, no GPU" case: no locality to follow.
+  if (deviceId < 0) {
+    return kAnyNumaNode;
+  }
+  std::array<char, 64> busId{};
+  CudaApi cudaApi;
+  if (!cudaApi.getDevicePCIBusId(busId.data(), busId.size() - 1, deviceId)
+           .hasValue()) {
+    return kAnyNumaNode;
+  }
+  // The runtime spells the BDF uppercase; sysfs directories are lowercase.
+  std::string addr(busId.data());
+  std::transform(addr.begin(), addr.end(), addr.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  if (addr.empty()) {
+    return kAnyNumaNode;
+  }
+  return readNumaNodeFile(std::filesystem::path("/sys/bus/pci/devices") / addr);
+}
+
 std::vector<std::string> enumerateFrontendDevices(
     const std::string& prefix,
-    size_t maxDevices) {
+    size_t maxDevices,
+    int preferredNumaNode) {
   std::map<std::string, std::set<std::string>> byCard;
+  // Per card, not per port: ports of one card share its uplink, so they share
+  // its locality. First port seen decides.
+  std::map<std::string, int> cardNuma;
   std::error_code ec;
   std::filesystem::directory_iterator it("/sys/class/net", ec);
   if (ec) {
@@ -107,26 +150,55 @@ std::vector<std::string> enumerateFrontendDevices(
       // stacks, which is the safer guess.
       card = dev;
     }
+    if (byCard[card].empty()) {
+      // Through the PCI symlink, so this is the node the GPU side reads too.
+      cardNuma[card] = readNumaNodeFile(
+          std::filesystem::path("/sys/class/net") / dev / "device");
+    }
     byCard[card].insert(dev);
   }
 
-  std::vector<std::string> devices;
-  for (size_t round = 0; devices.size() < maxDevices; ++round) {
-    bool tookAny = false;
+  // Groups, not a sort: local must be drained to exhaustion before remote is
+  // touched, or the round-robin below would spread again. kAnyNumaNode gives
+  // one group of every card, reproducing the old order.
+  std::vector<std::vector<const std::string*>> groups;
+  if (preferredNumaNode == kAnyNumaNode) {
+    auto& all = groups.emplace_back();
     for (const auto& [card, ports] : byCard) {
-      if (ports.size() <= round) {
-        continue;
+      all.push_back(&card);
+    }
+  } else {
+    std::vector<const std::string*> local;
+    std::vector<const std::string*> remote;
+    for (const auto& [card, ports] : byCard) {
+      // Unreadable goes to remote: never stack onto a card we cannot show is
+      // this GPU's.
+      (cardNuma[card] == preferredNumaNode ? local : remote).push_back(&card);
+    }
+    groups.push_back(std::move(local));
+    groups.push_back(std::move(remote));
+  }
+
+  std::vector<std::string> devices;
+  for (const auto& group : groups) {
+    for (size_t round = 0; devices.size() < maxDevices; ++round) {
+      bool tookAny = false;
+      for (const auto* card : group) {
+        const auto& ports = byCard[*card];
+        if (ports.size() <= round) {
+          continue;
+        }
+        auto port = ports.begin();
+        std::advance(port, round);
+        devices.push_back(*port);
+        tookAny = true;
+        if (devices.size() == maxDevices) {
+          break;
+        }
       }
-      auto port = ports.begin();
-      std::advance(port, round);
-      devices.push_back(*port);
-      tookAny = true;
-      if (devices.size() == maxDevices) {
+      if (!tookAny) {
         break;
       }
-    }
-    if (!tookAny) {
-      break;
     }
   }
   return devices;

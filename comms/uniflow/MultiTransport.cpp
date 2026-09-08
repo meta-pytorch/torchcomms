@@ -333,8 +333,12 @@ MultiTransportFactory::MultiTransportFactory(
     // would otherwise bind a lane to a NIC that cannot serve it. Rejecting
     // rather than substituting is deliberate -- quietly swapping in a different
     // NIC would hide that the requested one went away.
+    // NUMA-ordered so this rank binds the ports its GPU is attached to. The
+    // membership check below is unaffected: unbounded returns every usable
+    // port whatever the order.
+    const int numaNode = gpuNumaNode(deviceId_);
     const auto usable = enumerateFrontendDevices(
-        options_.tcpDevicePrefix, std::numeric_limits<size_t>::max());
+        options_.tcpDevicePrefix, std::numeric_limits<size_t>::max(), numaNode);
     if (tcpConfig.bindToDevices.empty()) {
       tcpConfig.bindToDevices = usable;
       // The cap comes off the transport config, which is the single place it is
