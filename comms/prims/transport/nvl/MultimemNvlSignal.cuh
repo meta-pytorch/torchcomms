@@ -379,7 +379,8 @@ __device__ __forceinline__ void wait_per_peer_serial(
       if (!complete) {
         if (FT_ABORT_CHECK(
                 abortDevice,
-                "NVL serial per-peer wait for round=%llu",
+                "NVL serial per-peer wait: rank=%d round=%llu",
+                transport.nvlRank,
                 static_cast<unsigned long long>(round.value))) {
           FT_DEVICE_TRAP();
         }
@@ -421,7 +422,8 @@ __device__ __forceinline__ void wait_per_peer_tree(
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
               abortDevice,
-              "NVL tree per-peer wait for round=%llu",
+              "NVL tree per-peer wait: rank=%d round=%llu",
+              transport.nvlRank,
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
       }
@@ -469,7 +471,8 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
               abortDevice,
-              "NVL butterfly per-peer wait for round=%llu",
+              "NVL butterfly per-peer wait: rank=%d round=%llu",
+              transport.nvlRank,
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
       }
