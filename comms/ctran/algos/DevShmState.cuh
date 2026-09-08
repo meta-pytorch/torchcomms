@@ -31,10 +31,23 @@ __device__ __forceinline__ CtranAlgoDeviceState& getShmDevState() {
 // Use dynamic shared memory because on GB200 shemDevState may exceeed the
 // static shared memory limit 48KB - declare as char array and cast to struct
 extern __shared__ char dynamicSharedMem[];
-// statex needs to be extern and will be defined in DevCommon.cu
-extern __shared__ ctran::CommStateXDev* statex;
-extern __shared__ int* kernelFlag;
-extern __shared__ bool kernelDoAbort;
+/* statex/kernelFlag/kernelDoAbort must keep internal linkage.
+ *
+ * nvlink gives every externally-linked __shared__ variable in a device-link
+ * unit one address in a single flat module-wide block. CTRAN is device-linked
+ * together with ncclx's src/device objects, whose common.cu defines
+ * __shared__ ncclShmemData ncclShmem (~36.8KB). As extern, these three land
+ * above ncclShmem in that block, so every kernel touching one of them reserves
+ * ~36.8KB of static shared memory it never reads - enough to keep a CTRAN
+ * kernel from being co-resident with a large GEMM.
+ *
+ * Consequence: every function that reads or writes them must be inlined into
+ * the kernel. A non-inlined __device__ function in another TU would silently
+ * bind to a different copy.
+ */
+static __shared__ ctran::CommStateXDev* statex;
+static __shared__ int* kernelFlag;
+static __shared__ bool kernelDoAbort;
 // TODO: remove once all kernels migrated to populate kernelFlag
 extern __constant__ int placeHolderKernelFlag;
 
