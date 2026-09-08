@@ -180,6 +180,7 @@ class TorchCommFake : public TorchCommBackend {
   }
 
   // Full abort path: sets aborted state + fires hooks.
+  using TorchCommBackend::abort;
   void abort() override {
     if (!abortEnabled_) {
       return;
