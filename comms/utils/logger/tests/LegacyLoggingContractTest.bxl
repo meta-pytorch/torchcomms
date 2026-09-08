@@ -9,6 +9,11 @@ _SCOPE_CONFIGS = (
 )
 _SCOPE_LABEL_PREFIX = "fbcode//"
 _SCOPE_LABEL_SUFFIX = "/..."
+COMMS_LOGGING_TARGET = "fbcode//comms/utils/logger:comms_logging"
+COMMS_LOGGING_SOURCE_PATHS = (
+    "fbcode//comms/utils/logger/CommsLogging.cc",
+    "fbcode//comms/utils/logger/CommsLogging.h",
+)
 
 def _scope_source_fragment(scope: str) -> str:
     if not scope.startswith(_SCOPE_LABEL_PREFIX) or not scope.endswith(_SCOPE_LABEL_SUFFIX):
@@ -17,7 +22,7 @@ def _scope_source_fragment(scope: str) -> str:
     return "//{}/".format(relative_path)
 
 _SCOPES = [scope for scope, _ in _SCOPE_CONFIGS] + [
-    "fbcode//comms/utils/logger:comms_logging",
+    COMMS_LOGGING_TARGET,
 ]
 _SCOPE_SOURCE_FRAGMENTS = [fragment for _, fragment in _SCOPE_CONFIGS]
 _EXCLUDED_TARGET_SCOPES = ("fbcode//comms/mccl/coordinator/zelos/...",)
@@ -35,6 +40,7 @@ _SOURCE_EXTENSIONS = (
     ".hpp",
     ".hxx",
     ".inl",
+    ".tcc",
 )
 
 _LEGACY_IDENTIFIERS = (
@@ -235,7 +241,19 @@ def _is_scoped_source(path: str) -> bool:
     for source_fragment in _SCOPE_SOURCE_FRAGMENTS:
         if source_fragment in path:
             return True
-    return path.endswith("/comms/utils/logger/CommsLogging.cc") or path.endswith("/comms/utils/logger/CommsLogging.h")
+    return path in COMMS_LOGGING_SOURCE_PATHS
+
+def check_comms_logging_scope(ctx: bxl.Context) -> None:
+    actual_sources = sorted([str(source) for source in ctx.uquery().inputs(ctx.uquery().eval(COMMS_LOGGING_TARGET))])
+    expected_sources = sorted(COMMS_LOGGING_SOURCE_PATHS)
+    if actual_sources != expected_sources:
+        fail(
+            "Update the legacy logging lint scope when {} sources change. Expected: {}; actual: {}".format(
+                COMMS_LOGGING_TARGET,
+                expected_sources,
+                actual_sources,
+            ),
+        )
 
 def _migrated_targets(ctx: bxl.Context):
     targets = ctx.uquery().eval(" + ".join(_SCOPES))
@@ -352,15 +370,30 @@ def _validate_detector() -> None:
         if not _is_scoped_source(source_path):
             fail("Migrated scope detector missed: {}".format(source_path))
     for source_path in (
+        "//comms/common/Source.cc",
         "//comms/utils/logger/Source.cc",
         "//comms/ctran/README.md",
         "//comms/mccl/coordinator/zelos/Source.cc",
+        "//comms/tcp_devmem/Source.cc",
         "//comms/torchcomms/source.cc",
     ):
         if _is_scoped_source(source_path):
             fail("Migrated scope detector accepted: {}".format(source_path))
     if not _is_scoped_source("//comms/mccl/utils/Source.cc"):
         fail("Migrated scope detector missed MCCL runtime source")
+    for source_path in (
+        "fbcode//comms/utils/logger/CommsLogging.cc",
+        "fbcode//comms/utils/logger/CommsLogging.h",
+    ):
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
+    for source_path in (
+        "//comms/ctran/utils/Source.cuh",
+        "//comms/ctran/utils/Source.inl",
+        "//comms/prims/utils/Source.tcc",
+    ):
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
 
     for source in (
         "XLOG(ERR)",
@@ -368,6 +401,9 @@ def _validate_detector() -> None:
         "XCHECK_EQ(left, right)",
         'CLOGF_SUBSYS(INFO, COLL, "message")',
         "#define PROJECT_LOG XLOG",
+        "#define CHECK_AND_RETURN(x) do { XCHECK(x); } while (false)",
+        '#define LOG_BEFORE_RAW() XLOG(INFO); log(R"tag(value)tag")',
+        '#define LOG_AFTER_RAW() log(R"tag(value)tag"); XLOG(INFO)',
         "XLOG/* preserve token boundary */CLOGF(INFO)",
         'const char* text = R"(ignored XLOG)"; XCHECK(true)',
         "constexpr auto count = 1'000; XLOG(ERR)",
@@ -388,6 +424,9 @@ def _validate_detector() -> None:
         'const char* example = "folly::LogMessage";',
         'const char* example = R"tag(XLOG(ERR) "quoted")tag";',
         'const char* example = u8R"(CLOGF(INFO))";',
+        '#define DOCUMENTED_LOG "use XLOG instead"',
+        '#define DOCUMENTED_RAW R"tag("quoted XLOG")tag"',
+        "#define CALL_HELPER(x) helper(x) // replaces XCHECK",
     ):
         _, source_code, _, _, _, _ = _strip_non_code_line(source)
         if _LEGACY_IDENTIFIER.match(source_code) or _FOLLY_LOGGING_SYMBOL.match(source_code):
@@ -471,6 +510,7 @@ def _validate_detector() -> None:
 
 def _audit_legacy_logging(ctx: bxl.Context) -> None:
     _validate_detector()
+    check_comms_logging_scope(ctx)
     migrated_targets = _migrated_targets(ctx)
     _check_direct_dependencies(ctx, migrated_targets)
     _check_source_content(ctx, migrated_targets)
