@@ -55,6 +55,18 @@ __global__ void devicePublishReasonWithoutContextKernel(
   }
 }
 
+__global__ void flagSetAbortWithContextKernel(
+    AbortDevice abort,
+    AbortReason reason,
+    bool useContext,
+    int* observedWinner) {
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    const char* context = useContext ? "AbortFlagTest callsite" : nullptr;
+    const AbortFlag flag{abort};
+    *observedWinner = flag.setAbort(reason, context) ? 1 : 0;
+  }
+}
+
 __global__ void
 deviceReadAbortKernel(AbortDevice abort, int* observed, int* observedMode) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -169,6 +181,23 @@ __global__ void deviceWaitForTimeoutStartAliasKernel(
   *observedCheckExpired = 0;
 }
 
+__global__ void deviceReadArmedClockStateKernel(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+  *observedStartCycles = abort.startCycles();
+  *observedDeadlineCycles = abort.deadlineCycles();
+  *observedCyclesPerMs = abort.cyclesPerMs();
+  *observedOpId = abort.opId();
+}
+
 __global__ void deviceCancelAndRestartTimeoutKernel(
     AbortDevice abort,
     int* observedAfterCancel,
@@ -241,6 +270,17 @@ cudaError_t launchDevicePublishReasonWithoutContext(
     cudaStream_t stream) {
   devicePublishReasonWithoutContextKernel<<<1, 1, 0, stream>>>(
       abort, reason, observedWinner);
+  return cudaGetLastError();
+}
+
+cudaError_t launchFlagSetAbortWithContext(
+    AbortDevice abort,
+    AbortReason reason,
+    bool useContext,
+    int* observedWinner,
+    cudaStream_t stream) {
+  flagSetAbortWithContextKernel<<<1, 1, 0, stream>>>(
+      abort, reason, useContext, observedWinner);
   return cudaGetLastError();
 }
 
@@ -331,6 +371,22 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     cudaStream_t stream) {
   deviceCancelAndRestartTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedAfterCancel, observedMode, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
+    cudaStream_t stream) {
+  deviceReadArmedClockStateKernel<<<1, 1, 0, stream>>>(
+      abort,
+      observedStartCycles,
+      observedDeadlineCycles,
+      observedCyclesPerMs,
+      observedOpId);
   return cudaGetLastError();
 }
 

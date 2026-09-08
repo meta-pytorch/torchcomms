@@ -34,7 +34,9 @@ void writeIbrcDeviceSlot(
     int numSignalSlots,
     int numCounterSlots,
     IbChannelLayout channelLayout,
-    comms::fault_tolerance::AbortDevice abort) {
+    comms::fault_tolerance::AbortDevice abort,
+    int myRank,
+    int peerRank) {
   auto* slots = static_cast<P2pIbrcTransportDevice*>(slotsHost);
   new (&slots[peerIndex]) P2pIbrcTransportDevice(
       queues,
@@ -49,7 +51,9 @@ void writeIbrcDeviceSlot(
       numSignalSlots,
       numCounterSlots,
       channelLayout,
-      abort);
+      abort,
+      myRank,
+      peerRank);
 }
 
 } // namespace comms::prims
