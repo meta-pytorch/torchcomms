@@ -6,7 +6,10 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 #include <stdlib.h>
+#include <algorithm>
+#include <cmath>
 #include <thread>
+#include <type_traits>
 #include "comms/ctran/utils/CtranLogger.h"
 
 #include "CtranUtUtils.h"
@@ -23,10 +26,64 @@ constexpr size_t VAL_RANGE = 1024;
 // numerical difference between CPU and GPU for floating points
 constexpr size_t VAL_RANGE_PROD = 8;
 
+namespace {
+
+template <typename T>
+float roundToLowPrecision(float value) {
+  return static_cast<float>(static_cast<T>(value));
+}
+
+template <typename T>
+inline constexpr bool kAcceptWidenedPreMulResult = false;
+
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+template <>
+inline constexpr bool kAcceptWidenedPreMulResult<__nv_bfloat16> = true;
+#endif
+
+template <typename T>
+std::vector<float> preMulSumCyclicResults(const std::vector<float>& inputs) {
+  const float preMul =
+      roundToLowPrecision<T>(static_cast<float>(1.0 / inputs.size()));
+  std::vector<float> results;
+  results.reserve((kAcceptWidenedPreMulResult<T> ? 2 : 1) * inputs.size());
+  const auto addResult = [&](float result) {
+    if (std::find(results.begin(), results.end(), result) == results.end()) {
+      results.push_back(result);
+    }
+  };
+  for (size_t start = 0; start < inputs.size(); ++start) {
+    float roundedProductSum = 0.0f;
+    float widenedProductSum = 0.0f;
+    for (size_t offset = 0; offset < inputs.size(); ++offset) {
+      const float input =
+          roundToLowPrecision<T>(inputs[(start + offset) % inputs.size()]);
+      const float scaled = roundToLowPrecision<T>(input * preMul);
+      roundedProductSum = roundToLowPrecision<T>(roundedProductSum + scaled);
+      widenedProductSum =
+          roundToLowPrecision<T>(widenedProductSum + input * preMul);
+    }
+    addResult(roundedProductSum);
+    if constexpr (kAcceptWidenedPreMulResult<T>) {
+      addResult(widenedProductSum);
+    }
+  }
+  return results;
+}
+
+} // namespace
+
 template <typename TYPE>
 class CtranAllReduceTest : public ctran::CtranDistTestFixture,
                            public CtranBaseTest {
  public:
+  struct AllReduceTestOptions {
+    std::vector<CtranMapperBackend> excludedBackends{CtranMapperBackend::NVL};
+    std::optional<float> constantInput;
+    std::vector<float> expectedConstantResults;
+    double constantResultTolerance{0.05};
+  };
+
   CtranAllReduceTest() = default;
   commDataType_t dt = ctran::getCommDataType<TYPE>();
   size_t bytes;
@@ -52,7 +109,8 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       size_t count,
       TestInPlaceType inplace,
       commRedOp_t op,
-      MemAllocType memType) {
+      MemAllocType memType,
+      std::optional<float> constantInput = std::nullopt) {
     sendbuf = recvbuf = nullptr;
     bytes = count * commTypeSize(dt);
     if (bytes < CTRAN_MIN_REGISTRATION_SIZE) {
@@ -63,7 +121,9 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
     CUDACHECK_TEST(cudaHostAlloc(&hostbuf, bytes, 0));
     for (size_t i = 0; i < count; i++) {
       auto val = i % VAL_RANGE + globalRank;
-      if (op == commProd) {
+      if (constantInput.has_value()) {
+        hostbuf[i] = static_cast<TYPE>(*constantInput);
+      } else if (op == commProd) {
         // use smaller value range to avoid overflow or accumulated precision
         // loss for floating points
         hostbuf[i] = (TYPE)(val % VAL_RANGE_PROD);
@@ -121,25 +181,101 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
             static_cast<float>(baseVal) +
             static_cast<float>(this->numRanks - 1) / 2.0f);
       }
+      bool matches = observedVals[i] == exp;
+      float expectedForLog = static_cast<float>(exp);
+      if constexpr (
+          std::is_same_v<TYPE, half>
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+          || std::is_same_v<TYPE, __nv_bfloat16>
+#endif
+      ) {
+        if (op == commAvg) {
+          std::vector<float> inputs(this->numRanks);
+          for (int rank = 0; rank < this->numRanks; ++rank) {
+            inputs[rank] = static_cast<float>(baseVal + rank);
+          }
+          const auto expectedValues = preMulSumCyclicResults<TYPE>(inputs);
+          expectedForLog = expectedValues.front();
+          matches =
+              std::find(
+                  expectedValues.begin(),
+                  expectedValues.end(),
+                  static_cast<float>(observedVals[i])) != expectedValues.end();
+        }
+      }
       // log the first 3 errors
       if (error_count < 3) {
-        EXPECT_EQ(observedVals[i], exp) << "  i=" << i << std::endl
-                                        << "  count=" << count << " on rank "
-                                        << this->globalRank << std::endl;
+        EXPECT_TRUE(matches)
+            << "  i=" << i << std::endl
+            << "  observed=" << static_cast<float>(observedVals[i])
+            << " expected=" << expectedForLog << std::endl
+            << "  count=" << count << " on rank " << this->globalRank
+            << std::endl;
       }
       // count errors
-      if (observedVals[i] != exp) {
+      if (!matches) {
         if (error_count < 20) {
           CTRAN_LOG_STREAM(WARN)
               << "error[" << error_count << "]: " << " data[" << i << "] "
               << static_cast<float>(observedVals[i]) << " vs exp "
-              << static_cast<float>(exp);
+              << expectedForLog;
         }
         error_count++;
       }
     }
     ASSERT_EQ(error_count, 0) << "  error count=" << count << " on rank "
                               << this->globalRank << std::endl;
+  }
+
+  void verifyConstantResult(
+      size_t count,
+      const std::vector<float>& expectedValues,
+      double relativeTolerance = 0.05) {
+    ASSERT_FALSE(expectedValues.empty());
+    std::vector<TYPE> observedVals(count, 117);
+    FB_CUDACHECKIGNORE(cudaMemcpy(
+        observedVals.data(),
+        recvbuf,
+        count * commTypeSize(dt),
+        cudaMemcpyDefault));
+
+    std::vector<double> roundedExpectedValues;
+    roundedExpectedValues.reserve(expectedValues.size());
+    for (const float expectedValue : expectedValues) {
+      roundedExpectedValues.push_back(
+          static_cast<float>(static_cast<TYPE>(expectedValue)));
+    }
+    int errorCount = 0;
+    for (size_t i = 0; i < count; i++) {
+      const double observed = static_cast<float>(observedVals[i]);
+      const bool matches = std::isfinite(observed) &&
+          std::any_of(roundedExpectedValues.begin(),
+                      roundedExpectedValues.end(),
+                      [&](double expected) {
+                        const double tolerance =
+                            std::max(std::abs(expected), 1.0) *
+                            relativeTolerance;
+                        return relativeTolerance == 0.0
+                            ? observed == expected
+                            : std::abs(observed - expected) <= tolerance;
+                      });
+      if (!matches) {
+        if (errorCount < 3) {
+          EXPECT_TRUE(std::isfinite(observed)) << "  i=" << i;
+          EXPECT_TRUE(matches)
+              << "  i=" << i << " observed=" << observed
+              << " first expected=" << roundedExpectedValues.front();
+        }
+        if (errorCount < 20) {
+          CTRAN_LOG_STREAM(WARN)
+              << "error[" << errorCount << "]: " << " data[" << i << "] "
+              << observed << " vs first exp " << roundedExpectedValues.front();
+        }
+        errorCount++;
+      }
+    }
+    ASSERT_EQ(errorCount, 0) << "  error count=" << errorCount << " on rank "
+                             << this->globalRank << std::endl;
   }
 
   /* test given Allreduce function */
@@ -158,13 +294,12 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
       TestInPlaceType inplace,
       commRedOp_t op,
       MemAllocType memType,
-      std::vector<CtranMapperBackend> excludedBackends = {
-          CtranMapperBackend::NVL}) {
+      const AllReduceTestOptions& options = {}) {
     if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
       GTEST_SKIP() << "dmabuf is not supported, skip disjoint test";
     }
 
-    memorySetUp(count, inplace, op, memType);
+    memorySetUp(count, inplace, op, memType, options.constantInput);
 
     if (!ctranAllReduceSupport(ctranComm.get(), algo)) {
       GTEST_SKIP() << "ctranAllReduceSupport returns fails, skip test";
@@ -203,7 +338,15 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
 
     FB_CUDACHECKIGNORE(cudaStreamSynchronize(testStream));
 
-    verifyResult(count, op);
+    if (options.constantInput.has_value()) {
+      const auto expectedValues = options.expectedConstantResults.empty()
+          ? std::vector<float>{*options.constantInput}
+          : options.expectedConstantResults;
+      verifyConstantResult(
+          count, expectedValues, options.constantResultTolerance);
+    } else {
+      verifyResult(count, op);
+    }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
     // Sleep for a while to make sure all the colls are finished
@@ -231,7 +374,7 @@ class CtranAllReduceTest : public ctran::CtranDistTestFixture,
         ctranComm->ctran_.get(),
         ctranComm->statex_.get(),
         kMemNcclMemAlloc,
-        excludedBackends);
+        options.excludedBackends);
     verifyGpeLeak(ctranComm->ctran_.get());
 
     for (auto& segment : segments) {
@@ -394,6 +537,122 @@ TEST_P(CtranAllReduceRingTestParamFp32, AllReduceRingFp32) {
       memType);
 }
 
+class CtranAllReduceRingTestParamFloat16
+    : public CtranAllReduceTest<half>,
+      public ::testing::WithParamInterface<
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingTestParamFloat16, AllReduceRingFloat16) {
+  const auto& [count, inplace, op, memType] = GetParam();
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      count,
+      inplace,
+      op,
+      memType);
+}
+
+class CtranAllReduceRingFloat16AvgOverflowTest
+    : public CtranAllReduceTest<half>,
+      public ::testing::WithParamInterface<TestInPlaceType> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingFloat16AvgOverflowTest, PreMultiplyStaysFinite) {
+  ASSERT_GT(this->numRanks, 1);
+  constexpr float kFloat16Max = 65504.0f;
+  std::vector<float> inputs(this->numRanks);
+  for (int rank = 0; rank < this->numRanks; ++rank) {
+    const float fraction = 0.5f +
+        0.25f * static_cast<float>(rank) /
+            static_cast<float>(this->numRanks - 1);
+    inputs[rank] = fraction * kFloat16Max;
+  }
+  const auto expectedValues = preMulSumCyclicResults<half>(inputs);
+  ASSERT_TRUE(
+      std::all_of(
+          expectedValues.begin(), expectedValues.end(), [](float value) {
+            return std::isfinite(value);
+          }));
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      1024 * 1024 + 17,
+      GetParam(),
+      commAvg,
+      kMemNcclMemAlloc,
+      {
+          .constantInput = inputs.at(this->globalRank),
+          .expectedConstantResults = expectedValues,
+          .constantResultTolerance = 0.0,
+      });
+}
+
+TEST(CtranAllReduceRingFloat16NcclReferenceTest, TenRankMaximumCanOverflow) {
+  constexpr float kFloat16Max = 65504.0f;
+  const auto expectedValues =
+      preMulSumCyclicResults<half>(std::vector<float>(10, kFloat16Max));
+  ASSERT_EQ(expectedValues.size(), 1);
+  EXPECT_TRUE(std::isinf(expectedValues.front()));
+  EXPECT_GT(expectedValues.front(), 0.0f);
+}
+
+class CtranAllReduceRingFloat16NcclSemanticsTest
+    : public CtranAllReduceTest<half> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_F(
+    CtranAllReduceRingFloat16NcclSemanticsTest,
+    UsesFloat16RoundedPreMulSemantics) {
+  if (this->numRanks != 3) {
+    GTEST_SKIP() << "This test requires exactly three ranks";
+  }
+  const std::vector<float> inputs = {0.0625f, 0.125f, 0.4375f};
+  const auto expectedValues = preMulSumCyclicResults<half>(inputs);
+  ASSERT_EQ(expectedValues.size(), 1);
+  float inputSum = 0.0f;
+  for (const float input : inputs) {
+    inputSum += input;
+  }
+  const float postDivideResult =
+      roundToLowPrecision<half>(inputSum / this->numRanks);
+  ASSERT_NE(expectedValues.front(), postDivideResult);
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      16,
+      kTestOutOfPlace,
+      commAvg,
+      kMemNcclMemAlloc,
+      {
+          .constantInput = inputs.at(this->globalRank),
+          .expectedConstantResults = expectedValues,
+          .constantResultTolerance = 0.0,
+      });
+}
+
 #if defined(__CUDA_BF16_TYPES_EXIST__)
 class CtranAllReduceRingTestParamBfloat16
     : public CtranAllReduceTest<__nv_bfloat16>,
@@ -417,6 +676,92 @@ TEST_P(CtranAllReduceRingTestParamBfloat16, AllReduceRingBfloat16) {
       inplace,
       op,
       memType);
+}
+
+class CtranAllReduceRingBfloat16AvgOverflowTest
+    : public CtranAllReduceTest<__nv_bfloat16>,
+      public ::testing::WithParamInterface<TestInPlaceType> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingBfloat16AvgOverflowTest, PreMultiplyStaysFinite) {
+  ASSERT_GT(this->numRanks, 1);
+  constexpr float kBfloat16Max = 3.38953139e38f;
+  std::vector<float> inputs(this->numRanks);
+  for (int rank = 0; rank < this->numRanks; ++rank) {
+    const float fraction = 0.5f +
+        0.25f * static_cast<float>(rank) /
+            static_cast<float>(this->numRanks - 1);
+    inputs[rank] = fraction * kBfloat16Max;
+  }
+  const auto expectedValues = preMulSumCyclicResults<__nv_bfloat16>(inputs);
+  ASSERT_TRUE(
+      std::all_of(
+          expectedValues.begin(), expectedValues.end(), [](float value) {
+            return std::isfinite(value);
+          }));
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      1024 * 1024 + 17,
+      GetParam(),
+      commAvg,
+      kMemNcclMemAlloc,
+      {
+          .constantInput = inputs.at(this->globalRank),
+          .expectedConstantResults = expectedValues,
+          .constantResultTolerance = 0.0,
+      });
+}
+
+TEST(CtranAllReduceRingBfloat16NcclReferenceTest, TenRankMaximumCanOverflow) {
+  constexpr float kBfloat16Max = 3.38953139e38f;
+  const auto expectedValues = preMulSumCyclicResults<__nv_bfloat16>(
+      std::vector<float>(10, kBfloat16Max));
+  ASSERT_EQ(expectedValues.size(), 1);
+  EXPECT_TRUE(std::isinf(expectedValues.front()));
+  EXPECT_GT(expectedValues.front(), 0.0f);
+}
+
+class CtranAllReduceRingBfloat16NcclSemanticsTest
+    : public CtranAllReduceTest<__nv_bfloat16> {
+ public:
+  void SetUp() override {
+    if (!ctran::isNolocalTopo()) {
+      GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+    }
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_F(
+    CtranAllReduceRingBfloat16NcclSemanticsTest,
+    UsesBfloat16RoundedReciprocal) {
+  if (this->numRanks != 3) {
+    GTEST_SKIP() << "This test requires exactly three ranks";
+  }
+  constexpr float kInput = 0.4375f;
+  const std::vector<float> inputs(this->numRanks, kInput);
+  const auto expectedValues = preMulSumCyclicResults<__nv_bfloat16>(inputs);
+  ASSERT_EQ(expectedValues.size(), 1);
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      16,
+      kTestOutOfPlace,
+      commAvg,
+      kMemNcclMemAlloc,
+      {
+          .constantInput = kInput,
+          .expectedConstantResults = expectedValues,
+          .constantResultTolerance = 0.0,
+      });
 }
 #endif
 
@@ -477,8 +822,39 @@ INSTANTIATE_TEST_SUITE_P(
     testingValuesRing,
     getTestName);
 
+auto testingValuesRingFloat16 = ::testing::Values(
+    std::make_tuple(16, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commProd, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commMin, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commMin, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commAvg, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commAvg, kMemNcclMemAlloc));
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllReduceRingTestParamFloat16,
+    testingValuesRingFloat16,
+    getTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllReduceRingFloat16AvgOverflowTest,
+    ::testing::Values(kTestOutOfPlace, kTestInPlace));
+
 #if defined(__CUDA_BF16_TYPES_EXIST__)
 auto testingValuesRingBfloat16 = ::testing::Values(
+    std::make_tuple(16, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commProd, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestOutOfPlace, commMin, kMemNcclMemAlloc),
+    std::make_tuple(16, kTestInPlace, commMin, kMemNcclMemAlloc),
     std::make_tuple(16, kTestOutOfPlace, commAvg, kMemNcclMemAlloc),
     std::make_tuple(16, kTestInPlace, commAvg, kMemNcclMemAlloc));
 
@@ -487,6 +863,11 @@ INSTANTIATE_TEST_SUITE_P(
     CtranAllReduceRingTestParamBfloat16,
     testingValuesRingBfloat16,
     getTestName);
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllReduceRingBfloat16AvgOverflowTest,
+    ::testing::Values(kTestOutOfPlace, kTestInPlace));
 #endif
 
 // =============================================================================
@@ -655,7 +1036,7 @@ TEST_P(CtranAllReduceRingTcpDmTestFp32, AllReduceRingTcpDmFp32) {
       inplace,
       op,
       memType,
-      {CtranMapperBackend::NVL, CtranMapperBackend::IB});
+      {.excludedBackends = {CtranMapperBackend::NVL, CtranMapperBackend::IB}});
 }
 // Only add one test case as the current TCPDM backend does not support
 // consecutive ctrantcpdm create and destroy in the single process.

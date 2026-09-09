@@ -130,6 +130,17 @@ __device__ __forceinline__ T reduceNcclOp1(const T& a, const T& b) {
   }
 }
 
+template <typename T>
+__device__ __forceinline__ T applyPreMul(const T& value, const T& preMul) {
+  return reduceNcclOp1<T, commProd>(value, preMul);
+}
+
+// The explicit conversion preserves NCCL's FP16 rounding before summation.
+__device__ __forceinline__ __half
+applyPreMul(const __half& value, const __half& preMul) {
+  return __float2half(__half2float(value) * __half2float(preMul));
+}
+
 template <typename T, int N = 16>
 struct __align__(16) T_NBytes {
   static constexpr int kWords = N / sizeof(T);
@@ -172,14 +183,20 @@ struct __align__(16) T_NBytes {
 };
 
 // Specialization for a fixed nvector count
-template <typename T, commRedOp_t RedOp, int NSrcs, int NDsts>
+template <
+    typename T,
+    commRedOp_t RedOp,
+    int NSrcs,
+    int NDsts,
+    bool PreMulSrc0 = false>
 __device__ __forceinline__ void localReduceVectorized(
     const T** srcs,
     T** dsts,
     size_t count,
     int workerId,
     int numWorkers,
-    size_t nRanks = 1) {
+    size_t nRanks = 1,
+    T preMul = T{}) {
   using TVec = T_NBytes<T, 16>;
   constexpr uint32_t kWordsPerVectorLoad = TVec::kWords;
   constexpr uint32_t kUnroll = 4;
@@ -225,6 +242,17 @@ __device__ __forceinline__ void localReduceVectorized(
       }
     }
 
+    if constexpr (PreMulSrc0) {
+#pragma unroll
+      for (int unrollIdx = 0; unrollIdx < kUnroll; ++unrollIdx) {
+#pragma unroll
+        for (int wordIdx = 0; wordIdx < kWordsPerVectorLoad; ++wordIdx) {
+          s[unrollIdx][0].v[wordIdx] =
+              applyPreMul(s[unrollIdx][0].v[wordIdx], preMul);
+        }
+      }
+    }
+
     // Reduce vertically along the vectors
     // However, here, the original kUnroll then NVectors loop order is faster
 #pragma unroll
@@ -255,6 +283,9 @@ __device__ __forceinline__ void localReduceVectorized(
   if (p.ownsTail) {
     for (uint32_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
+      if constexpr (PreMulSrc0) {
+        s = applyPreMul(s, preMul);
+      }
 #pragma unroll
       for (int j = 1; j < NSrcs; ++j) {
         s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
@@ -285,7 +316,7 @@ __device__ __forceinline__ void localReduceVectorized(
 }
 
 // Specialization for a fixed nvector count
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, bool PreMulSrc0 = false>
 __device__ __forceinline__ void localReduceFallback(
     uint32_t nsrcs,
     const T** srcs,
@@ -294,7 +325,8 @@ __device__ __forceinline__ void localReduceFallback(
     size_t count,
     int workerId,
     int numWorkers,
-    size_t nRanks = 1) {
+    size_t nRanks = 1,
+    T preMul = T{}) {
   constexpr int kVectors = CTRAN_MAX_NVL_PEERS;
   assert(nsrcs <= kVectors);
 
@@ -353,6 +385,9 @@ __device__ __forceinline__ void localReduceFallback(
       // reduce vertically along the vectors
 #pragma unroll
       for (int j = 0; j < kUnroll; ++j) {
+        if constexpr (PreMulSrc0) {
+          s[j][0] = applyPreMul(s[j][0], preMul);
+        }
         for (uint32_t k = 1; k < nsrcs; ++k) {
           s[j][0] = reduceNcclOp1<T, RedOp>(s[j][0], s[j][k]);
         }
@@ -372,6 +407,9 @@ __device__ __forceinline__ void localReduceFallback(
   if (p.ownsTail) {
     for (size_t i = p.limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
+      if constexpr (PreMulSrc0) {
+        s = applyPreMul(s, preMul);
+      }
 #pragma unroll
       for (int j = 1; j < nsrcs; ++j) {
         s = reduceNcclOp1<T, RedOp>(s, srcs[j][i]);
@@ -398,8 +436,8 @@ constexpr uint32_t kMax_uint32_t = std::numeric_limits<uint32_t>::max();
 // If commAvg is passed, it will apply element-wise average with nRanks
 // following the same partition as the reduce computation. It avoids expensive
 // cross-thread-block sync.
-template <typename T, commRedOp_t RedOp>
-__device__ __forceinline__ void localReduce(
+template <typename T, commRedOp_t RedOp, bool PreMulSrc0>
+__device__ __forceinline__ void localReduceImpl(
     size_t nsrcs,
     const T** srcs,
     size_t ndsts,
@@ -407,7 +445,8 @@ __device__ __forceinline__ void localReduce(
     size_t count,
     int workerId,
     int numWorkers,
-    size_t nRanks = 1) {
+    size_t nRanks,
+    T preMul) {
   // In order to use the optimized implementation:
   // -the src and dst pointers must be aligned to 16 bytes
   // -count must be sufficiently large, but under max uint32_t
@@ -424,43 +463,113 @@ __device__ __forceinline__ void localReduce(
 
   if (isAligned && isCountInBounds) {
     if (nsrcs == 8 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/1>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/8,
+          /*NDsts=*/1,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 4 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/4, /*NDsts=*/1>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/4,
+          /*NDsts=*/1,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 2 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/1>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/2,
+          /*NDsts=*/1,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 8 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/2>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/8,
+          /*NDsts=*/2,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 2 && ndsts == 2) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/2, /*NDsts=*/2>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/2,
+          /*NDsts=*/2,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 1 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/8>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/1,
+          /*NDsts=*/8,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 8 && ndsts == 8) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/8, /*NDsts=*/8>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/8,
+          /*NDsts=*/8,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     } else if (nsrcs == 1 && ndsts == 1) {
-      localReduceVectorized<T, RedOp, /*NSrcs=*/1, /*NDsts=*/1>(
-          srcs, dsts, count, workerId, numWorkers, nRanks);
+      localReduceVectorized<
+          T,
+          RedOp,
+          /*NSrcs=*/1,
+          /*NDsts=*/1,
+          PreMulSrc0>(srcs, dsts, count, workerId, numWorkers, nRanks, preMul);
       return;
     }
   }
 
   // Fallback slow implementation
-  localReduceFallback<T, RedOp>(
-      nsrcs, srcs, ndsts, dsts, count, workerId, numWorkers, nRanks);
+  localReduceFallback<T, RedOp, PreMulSrc0>(
+      nsrcs, srcs, ndsts, dsts, count, workerId, numWorkers, nRanks, preMul);
+}
+
+template <typename T, commRedOp_t RedOp>
+__device__ __forceinline__ void localReduce(
+    size_t nsrcs,
+    const T** srcs,
+    size_t ndsts,
+    T** dsts,
+    size_t count,
+    int workerId,
+    int numWorkers,
+    size_t nRanks = 1) {
+  localReduceImpl<T, RedOp, /*PreMulSrc0=*/false>(
+      nsrcs, srcs, ndsts, dsts, count, workerId, numWorkers, nRanks, T{});
+}
+
+// Callers must ensure every original contribution reaches source 0 exactly
+// once before using this reduction variant.
+template <typename T>
+__device__ __forceinline__ void localReducePreMulSumSrc0(
+    size_t nsrcs,
+    const T** srcs,
+    size_t ndsts,
+    T** dsts,
+    size_t count,
+    int workerId,
+    int numWorkers,
+    T preMul) {
+  localReduceImpl<T, commSum, /*PreMulSrc0=*/true>(
+      nsrcs,
+      srcs,
+      ndsts,
+      dsts,
+      count,
+      workerId,
+      numWorkers,
+      /*nRanks=*/1,
+      preMul);
 }
 
 template <typename T, commRedOp_t RedOp>
