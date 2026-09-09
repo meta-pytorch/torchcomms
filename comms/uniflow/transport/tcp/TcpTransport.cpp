@@ -3139,7 +3139,26 @@ void TcpTransport::handleFrameImpl(
         std::lock_guard<std::mutex> lk(inflightMu_);
         auto it = inflight_.find(header.reqId);
         if (it != inflight_.end()) {
-          entry = it->second;
+          // reqId is peer-supplied and there is one reader per lane, so
+          // claiming the entry here is what makes a duplicate miss. Copying it
+          // and erasing further down lets two Acks naming one reqId pass this
+          // check on different lanes and both reach completeOne(), which
+          // decrements `remaining` twice and settles a multi-chunk put at its
+          // first chunk -- the caller is told Ok with a chunk still
+          // outstanding. This was the original shape; it was given up when the
+          // entry had to outlive the lock for the async H2D handoff.
+          //
+          // ReadReply keeps the copy, because only that path hands off: its
+          // record has to stay in inflight_ until startAsyncH2d publishes into
+          // the H2D queue, or a concurrent failAllPending() finds it in neither
+          // and the caller's promise never resolves. Claiming it for every kind
+          // would trade a silent wrong success for a silent hang.
+          if (op == TcpOp::ReadReply) {
+            entry = it->second;
+          } else {
+            entry = std::move(it->second);
+            inflight_.erase(it);
+          }
           found = true;
         }
       }
@@ -3147,6 +3166,13 @@ void TcpTransport::handleFrameImpl(
         break;
       }
 
+      // Meaningful on the ReadReply path ONLY. Every other kind was claimed and
+      // erased above, under the same lock, so on those branches this erases an
+      // absent key and does nothing. It is called from them anyway rather than
+      // hoisted into the ReadReply branch, so that no branch can reach
+      // completeOne() with the entry still present if the claim above ever
+      // grows another kind that keeps its copy -- but do not read the calls as
+      // each branch owning the erase, because only one of them does.
       const auto eraseInflight = [&]() {
         std::lock_guard<std::mutex> lk(inflightMu_);
         inflight_.erase(header.reqId);
