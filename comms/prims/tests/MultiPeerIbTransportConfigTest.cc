@@ -243,6 +243,54 @@ TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   EXPECT_TRUE(config.ibLazyConnect);
 }
 
+TEST(MultiPeerIbTransportConfigTest, RawPutGeometryUsesLegacyFields) {
+  MultipeerIbTransportConfig config;
+  config.dataBufferSize = 4096;
+  config.maxGroups = 17;
+  config.qpsPerBlockPerNic = 3;
+  config.max_num_channels = 29;
+  config.qpsPerConnection = 5;
+
+  const auto normalized = config.normalizedChannelGeometry();
+  EXPECT_EQ(normalized.dataBufferSize, 4096);
+  EXPECT_EQ(normalized.maxGroups, 17);
+  EXPECT_EQ(normalized.max_num_channels, 17);
+  EXPECT_EQ(normalized.qpsPerBlockPerNic, 3);
+  EXPECT_EQ(normalized.qpsPerConnection, 3);
+}
+
+TEST(MultiPeerIbTransportConfigTest, FixedChannelGeometryUsesFixedFields) {
+  MultipeerIbTransportConfig config;
+  config.dataBufferSize = 4096;
+  config.maxGroups = 29;
+  config.qpsPerBlockPerNic = 5;
+  config.perChannelSize = 256;
+  config.max_num_channels = 17;
+  config.qpsPerConnection = 3;
+
+  const auto normalized = config.normalizedChannelGeometry();
+  EXPECT_EQ(normalized.dataBufferSize, 256 * 17 * kNumProtoSlots);
+  EXPECT_EQ(normalized.maxGroups, 17);
+  EXPECT_EQ(normalized.max_num_channels, 17);
+  EXPECT_EQ(normalized.qpsPerBlockPerNic, 3);
+  EXPECT_EQ(normalized.qpsPerConnection, 3);
+  EXPECT_EQ(normalized.totalChannelSlots(), 17 * kNumProtoSlots);
+}
+
+TEST(MultiPeerIbTransportConfigTest, RejectsInvalidFixedChannelGeometry) {
+  MultipeerIbTransportConfig config;
+  config.perChannelSize = 16;
+  config.max_num_channels = 0;
+  EXPECT_THROW(config.normalizedChannelGeometry(), std::invalid_argument);
+
+  config.max_num_channels = 1;
+  config.perChannelSize = 8;
+  EXPECT_THROW(config.normalizedChannelGeometry(), std::invalid_argument);
+
+  config.perChannelSize = 24;
+  EXPECT_THROW(config.normalizedChannelGeometry(), std::invalid_argument);
+}
+
 // connectPeers() walks each rank's pending peers in peerMaterializationKey
 // order and materializes them one at a time against a peer that must be doing
 // the same. The checks below cover the two properties that buys: the schedule

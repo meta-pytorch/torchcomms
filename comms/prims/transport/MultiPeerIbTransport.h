@@ -280,13 +280,13 @@ struct MultipeerIbTransportConfig {
   // Per-peer data buffer size in bytes for raw put()/signal() users. When
   // perChannelSize is set for send()/recv(), the transport derives this as the
   // total fixed-channel staging size:
-  //   perChannelSize * max_num_channels
+  //   perChannelSize * totalChannelSlots()
   std::size_t dataBufferSize{0};
 
-  // Fixed-channel send/recv staging window size in bytes for one channel. When
-  // this is nonzero, pipelineDepth is the number of chunks within this channel
-  // window and dataBufferSize is derived as the total staging size across all
-  // channels.
+  // Fixed-channel send/recv staging window size in bytes for one
+  // (protocol, channel) resource slot. When this is nonzero, pipelineDepth is
+  // the number of chunks within this window and dataBufferSize is derived as
+  // the total staging size across all resource slots.
   std::size_t perChannelSize{0};
 
   // Maximum number of logical IB channels per peer in the fixed-channel model.
@@ -305,14 +305,12 @@ struct MultipeerIbTransportConfig {
   // slot-index API. Independent of send/recv's private counter buffers.
   int numCounterSlots{0};
 
-  // Maximum number of physical block groups that may own IB QP resources.
-  // Device-side IB QP selection uses ThreadGroup::block_id and requires
-  // block_id < maxGroups.
+  // Legacy raw put() channel count. When perChannelSize is zero, the transport
+  // uses this value as max_num_channels.
   int maxGroups{64};
 
-  // Legacy block-owned QP count for IBRC. IBGDA send/recv uses
-  // qpsPerConnection with the fixed-channel helpers below; IBRC moves to the
-  // fixed-channel shape in the following stack diff.
+  // Legacy raw put() QPs per channel and NIC. When perChannelSize is zero, the
+  // transport uses this value as qpsPerConnection.
   int qpsPerBlockPerNic{1};
 
   // Queue pair depth (outstanding WQEs per peer). BNXT bumps the default
@@ -337,6 +335,8 @@ struct MultipeerIbTransportConfig {
   // every selected NIC and enables the format only when all accept it, true
   // requires every NIC to accept it, and false forces ordinary ring CQs.
   std::optional<bool> enableCollapsedCq;
+
+  MultipeerIbTransportConfig normalizedChannelGeometry() const;
 
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
@@ -735,7 +735,7 @@ struct IbTransportExchInfoAll {
   // Number of QPs per (peer, NIC) used by this rank.
   int numQpsPerPeerPerNic{1};
 
-  // Block-owned QP shape.
+  // Legacy wire names for logical channel capacity and QP lanes per channel.
   int maxGroups{64};
   int qpsPerBlockPerNic{1};
 };
@@ -812,7 +812,7 @@ struct IbSendRecvPeerBuffers {
 
 /**
  * MultiPeerIbTransportBase - backend-agnostic host control plane shared by the
- * multi-peer IB transports (IBGDA today, IBRC next).
+ * multi-peer IB transports (IBGDA and IBRC).
  *
  * This is a NON-template base so its (heavy) method bodies live in
  * MultiPeerIbTransport.cc and are compiled exactly once, reused by every
@@ -992,10 +992,10 @@ class MultiPeerIbTransportBase {
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
   // counter, NIC loopback atomic) and IBRC (Host counter, CPU proxy). Staging
-  // = max_num_channels * perChannelSize per direction; signal is sized
-  // off max_num_channels. Per-peer staging + signal are device-registered;
-  // recvStaging + signal are collectively exchanged so peers can RDMA into our
-  // ring.
+  // = totalChannelSlots() * perChannelSize per direction; signal storage is
+  // sized from the same protocol-slot capacity. Per-peer staging + signal are
+  // device-registered; recvStaging + signal are collectively exchanged so
+  // peers can RDMA into our ring.
   bool sendRecvBuffersEnabled() const {
     return config_.perChannelSize > 0;
   }
