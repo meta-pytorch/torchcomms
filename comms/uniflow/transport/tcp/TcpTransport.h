@@ -89,9 +89,17 @@ inline constexpr size_t kMaxLanes = 1024;
 /// told, instead of quietly receiving fewer than it asked for.
 size_t frontendDeviceCapacity(const std::string& prefix);
 
-/// Frontend data NICs to stripe lanes across, lowest name first and one port
-/// per PCI card before taking a second port from any card. Only devices that
-/// are up and carry a usable global address are returned.
+/// Frontend data NICs to stripe lanes across: one port per PCI card before
+/// taking a second port from any card. Only devices that are up and carry a
+/// usable global address are returned.
+///
+/// The spread across cards is the contract, not any particular sort order: eth0
+/// and eth1 are functions .0 and .1 of one card, so ordering by interface name
+/// would pair them and defeat it. The order is also deterministic, which peers
+/// depend on because lane i maps to device i at both ends. How that order is
+/// derived is the definition's business -- see the definition in
+/// TcpTransport.cpp, which documents the keying and why determinism matters,
+/// rather than restating it here where the two copies could drift.
 ///
 /// Leaving TcpTransportConfig::bindToDevices empty means no binding at all, so
 /// egress falls to the routing table and lands on one NIC. MultiTransport calls
@@ -1343,9 +1351,30 @@ class TcpTransport : public Transport {
   // bound in declaration order.
   std::vector<std::unique_ptr<TcpLane>>& lanes_{laneSet_->v};
 
-  // get-path copy accounting, paired with Conn::RecvPhaseStats. Reader thread
-  // only; relaxed because a torn read across a reset misattributes a sample and
-  // nothing more.
+  // get-path copy accounting, paired with Conn::RecvPhaseStats. Accumulated on
+  // the reader thread, RESET from whichever thread brackets a measurement --
+  // the exchange(0) is in logAndResetPhaseStats in TcpTransport.cpp. Two
+  // threads touch these, which is why they are atomic at all. That is NOT why
+  // the reset is an exchange: a relaxed store on an atomic is already atomic,
+  // so a store would have sufficed for two threads. The exchange earns its keep
+  // by reading and clearing in ONE operation, a separate property argued below.
+  //
+  // That function documents a connect()/shutdown() calling window, but do not
+  // rely on it for these counters. It is an unenforced caller contract covering
+  // its unlocked lanes_ read, not a property of the function -- and its
+  // empty-lanes path clears these unconditionally precisely so their bracketing
+  // does not depend on the contract holding.
+  //
+  // Relaxed is sound because nothing orders against them: they are aggregated
+  // for reporting and nothing branches on them. Each counter is read and
+  // cleared in one exchange(0), so no single counter loses a sample to a
+  // load-then-reset gap. That is per counter and no stronger -- dstCopyNs_ and
+  // dstCopyCount_ are separate atomics, incremented separately and exchanged
+  // separately, so a copy finishing between the two exchanges still lands its
+  // nanoseconds in one window and its count in the next. Misattribution across
+  // a reset is reduced, not eliminated. Do not restate the old "a torn read
+  // across a reset" rationale either: it named a hazard relaxed atomics never
+  // had, since an atomic load does not tear.
   std::atomic<uint64_t> dstCopyNs_{0};
   std::atomic<uint64_t> dstCopyCount_{0};
   std::atomic<uint64_t> receiveSlabAttempts_{0};

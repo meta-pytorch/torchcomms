@@ -60,14 +60,6 @@ namespace uniflow {
 // Usability is delegated to deviceGlobalIpv6 rather than re-derived: it already
 // applies the address-flag rules, and it is what bind() will call for the
 // address, so discovery cannot disagree with what actually gets bound.
-size_t TcpTransport::adaptiveGetChunk(size_t len, size_t laneCount) {
-  if (len == 0 || len > kMaxChunkSize || laneCount <= 1) {
-    return kMaxChunkSize;
-  }
-  const size_t perLane = (len + laneCount - 1) / laneCount;
-  return std::max(perLane, kMinAdaptiveChunkSize);
-}
-
 std::vector<std::string> enumerateFrontendDevices(
     const std::string& prefix,
     size_t maxDevices) {
@@ -130,6 +122,14 @@ std::vector<std::string> enumerateFrontendDevices(
     }
   }
   return devices;
+}
+
+size_t TcpTransport::adaptiveGetChunk(size_t len, size_t laneCount) {
+  if (len == 0 || len > kMaxChunkSize || laneCount <= 1) {
+    return kMaxChunkSize;
+  }
+  const size_t perLane = (len + laneCount - 1) / laneCount;
+  return std::max(perLane, kMinAdaptiveChunkSize);
 }
 
 size_t frontendDeviceCapacity(const std::string& prefix) {
