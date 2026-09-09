@@ -89,6 +89,15 @@ class AbortTest(unittest.TestCase):
 
         comm.finalize()
 
+    def test_abort_rejects_nonterminal_reason(self):
+        comm = self._create_reconfigurable_comm("abort_invalid_reason", 2)
+
+        with self.assertRaises(ValueError):
+            comm.abort(torchcomms.AbortReason.NONE)
+
+        self.assertFalse(comm.is_aborted())
+        comm.finalize()
+
 
 if __name__ == "__main__":
     unittest.main()
