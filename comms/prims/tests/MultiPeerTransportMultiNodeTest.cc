@@ -201,7 +201,14 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
   auto states = create_transport_states();
   states->exchange();
 
-  auto handle = states->get_device_handle(states->ib_peer_ranks());
+  std::vector<PeerChannelDemand> demands;
+  for (const int peer : states->ib_peer_ranks()) {
+    demands.push_back({
+        .peerRank = peer,
+        .ibChannels = states->ib_channel_capacity(),
+    });
+  }
+  auto handle = states->get_device_handle(demands);
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
@@ -243,7 +250,15 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleAcrossPeerRounds) {
   std::vector<int> ringPeers;
   addIbPeer(ringPeers, (globalRank + numRanks - 1) % numRanks);
   addIbPeer(ringPeers, (globalRank + 1) % numRanks);
-  auto ringHandle = states->get_device_handle(ringPeers);
+  std::vector<PeerChannelDemand> ringDemands;
+  ringDemands.reserve(ringPeers.size());
+  for (const int peer : ringPeers) {
+    ringDemands.push_back({
+        .peerRank = peer,
+        .ibChannels = states->ib_channel_capacity(),
+    });
+  }
+  auto ringHandle = states->get_device_handle(ringDemands);
 
   std::vector<int> treePeers;
   if (globalRank > 0) {
@@ -252,7 +267,15 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleAcrossPeerRounds) {
   addIbPeer(treePeers, globalRank * 2 + 1);
   addIbPeer(treePeers, globalRank * 2 + 2);
   std::reverse(treePeers.begin(), treePeers.end());
-  auto handle = states->get_device_handle(treePeers);
+  std::vector<PeerChannelDemand> treeDemands;
+  treeDemands.reserve(treePeers.size());
+  for (const int peer : treePeers) {
+    treeDemands.push_back({
+        .peerRank = peer,
+        .ibChannels = states->ib_channel_capacity(),
+    });
+  }
+  auto handle = states->get_device_handle(treeDemands);
 
   EXPECT_EQ(ringHandle.transports.data(), handle.transports.data());
   EXPECT_EQ(handle.myRank, globalRank);
@@ -271,6 +294,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   }
 
   auto states = create_transport_states();
+  EXPECT_EQ(states->ib_channel_capacity(), kIbgdaMaxGroups);
   states->exchange();
 
   // NVL peer accessor — always has at least same-node peers.
@@ -288,30 +312,34 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   if (!states->has_ibgda(probePeer)) {
     GTEST_SKIP() << "Communicator has no underlying IBGDA transport";
   }
-  EXPECT_EQ(states->ibgda_max_groups(), kIbgdaMaxGroups);
 
   // Once constructed, the underlying IBGDA transport can serve every
   // non-self peer, including NVL-preferred peers.
-  std::vector<int> fallbackPeers;
-  fallbackPeers.reserve(numRanks - 1);
+  std::vector<PeerChannelDemand> demands;
+  demands.reserve(numRanks - 1);
   for (int peer = 0; peer < numRanks; ++peer) {
     if (peer == globalRank) {
       continue;
     }
-    fallbackPeers.push_back(peer);
+    demands.push_back({
+        .peerRank = peer,
+        .ibChannels = states->ib_channel_capacity(),
+    });
   }
-  (void)states->get_device_handle(fallbackPeers);
-  for (int peer : fallbackPeers) {
-    auto* p2p = states->get_p2p_ibgda_transport_device(peer);
-    EXPECT_NE(p2p, nullptr) << "IBGDA transport device null for peer " << peer;
+  (void)states->get_device_handle(demands);
+  for (const auto& demand : demands) {
+    auto* p2p = states->get_p2p_ibgda_transport_device(demand.peerRank);
+    EXPECT_NE(p2p, nullptr)
+        << "IBGDA transport device null for peer " << demand.peerRank;
   }
 
   COMMS_LOG(
       INFO,
-      "Rank {}: isMnnvl={}, validated {} NVL peers and IBGDA fallback",
+      "Rank {}: isMnnvl={}, validated {} NVL peers, {} underlying IBGDA peers",
       globalRank,
       isMnnvl_,
-      states->nvl_peer_ranks().size());
+      states->nvl_peer_ranks().size(),
+      demands.size());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }

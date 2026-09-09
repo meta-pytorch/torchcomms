@@ -168,6 +168,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     const auto& pc = comm->config_.primsConfig;
     comms::prims::MultiPeerTransportConfig config{};
+    config.ibConfig.lazyChannels = pc.lazyChannels;
 
     config.nvlConfig.pipelineDepth =
         static_cast<size_t>(NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH);
@@ -435,7 +436,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CTRAN_LOG(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} lazyChannels={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
@@ -459,7 +460,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         static_cast<int>(config.topoConfig.mnnvlMode),
         config.ibConfig.dataBufferSize,
         config.ibConfig.qpDepth,
-        config.ibConfig.ibLazyConnect);
+        config.ibConfig.ibLazyConnect,
+        config.ibConfig.lazyChannels);
 
     CTRAN_LOG(
         INFO,
