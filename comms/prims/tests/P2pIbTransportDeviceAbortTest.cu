@@ -43,6 +43,7 @@ __device__ P2pIbrcTransportDevice makeLocalIbrcTransport(
       /*nics=*/1,
       /*maxChannels=*/1,
       /*qpsPerConnection=*/1,
+      /*qpDirectionCount=*/kIbDirections,
       DeviceSpan<IbLocalChannel>{scratch.channels, 1},
       /*ownedRemoteSignalBuf=*/{},
       /*ownedLocalSignalBuf=*/{},
