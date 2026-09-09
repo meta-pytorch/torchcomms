@@ -136,6 +136,16 @@ class CollTrace : public ICollTrace {
   void waitFlush(uint64_t gen) noexcept override;
 
  private:
+  /*
+   * Terminal notifications may run on the caller thread for events that were
+   * never published, on the poll thread for tracked events, or on the
+   * destroying thread after the poll thread is joined. Each event remains
+   * owned by exactly one of those threads when its terminalReason is written.
+   */
+  void terminateEvent(
+      CollTraceEvent& event,
+      CollTraceTerminalReason reason) noexcept;
+
   // Internal impl for graph-captured collectives, called when
   // recordCollective detects a GraphCudaWaitEvent.
   CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordGraphCollectiveImpl(

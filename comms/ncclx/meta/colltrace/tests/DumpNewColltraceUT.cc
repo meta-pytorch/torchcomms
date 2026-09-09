@@ -42,15 +42,24 @@ TEST(DumpNewCollTraceUT, dumpNewCollTraceEmptyState) {
 
   // Verify the map has the expected keys and values for an empty state
   ASSERT_FALSE(dumpMap.empty());
-  EXPECT_EQ(dumpMap.size(), 3);
+  EXPECT_EQ(dumpMap.size(), 9);
   EXPECT_TRUE(dumpMap.find("CT_pastColls") != dumpMap.end());
   EXPECT_TRUE(dumpMap.find("CT_pendingColls") != dumpMap.end());
   EXPECT_TRUE(dumpMap.find("CT_currentColls") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_terminalColls") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_terminalReasonCounts") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_terminalTransitionDrops") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_pollLockTimeouts") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_currentIteration") != dumpMap.end());
+  EXPECT_TRUE(dumpMap.find("CT_currentIterationCommTimeUs") != dumpMap.end());
 
   // Empty state should have empty arrays
   EXPECT_EQ(dumpMap["CT_pastColls"], "[]");
   EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
   EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_terminalColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_terminalTransitionDrops"], "0");
+  EXPECT_EQ(dumpMap["CT_pollLockTimeouts"], "0");
 }
 
 TEST(DumpNewCollTraceUT, dumpNewCollTraceWithCollectives) {

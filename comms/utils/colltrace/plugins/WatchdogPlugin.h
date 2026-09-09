@@ -4,6 +4,7 @@
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
+#include <chrono>
 #include <string>
 #include <unordered_map>
 
@@ -28,6 +29,13 @@ struct WatchdogPluginConfig {
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
   std::function<void(CollTraceEvent&)> funcTriggerOnError;
+  /*
+   * The default fatal handler is deferred so its diagnostic grace period never
+   * blocks CollTrace. Custom callbacks remain synchronous unless explicitly
+   * configured otherwise.
+   */
+  std::chrono::milliseconds asyncErrorDelay{std::chrono::seconds{60}};
+  bool deferErrorTrigger{false};
 
   // Timeout config
   bool checkTimeout{false};
@@ -55,6 +63,10 @@ class WatchdogPlugin : public ICollTracePlugin {
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
 
+  CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& curEvent,
+      CollTraceTerminalReason reason) noexcept override;
+
   static constexpr std::string_view kWatchdogPluginName = "WatchdogPlugin";
 
  private:
@@ -69,8 +81,12 @@ class WatchdogPlugin : public ICollTracePlugin {
   struct EventTimer {
     folly::stop_watch<> timer;
     ICollWaitEvent::system_clock_time_point startTs{};
+    bool timeoutTriggered{false};
   };
   std::unordered_map<CollTraceEvent*, EventTimer> eventTimers_;
+  bool asyncErrorTriggered_{false};
+
+  CommsMaybeVoid dispatchAsyncError(CollTraceEvent& curEvent) noexcept;
 };
 
 } // namespace meta::comms::colltrace

@@ -2,8 +2,11 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <atomic>
+#include <future>
 
 #include <folly/Unit.h>
+#include <limits>
 #include <thread>
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
@@ -27,9 +30,9 @@ class WatchdogPluginTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Reset call counters
-    errorCheckCallCount = 0;
-    triggerCallCount = 0;
-    lastTriggeredEvent = nullptr;
+    errorCheckCallCount.store(0);
+    triggerCallCount.store(0);
+    lastTriggeredCollId.store(kNoCollId);
   }
 
   void TearDown() override {
@@ -47,32 +50,33 @@ class WatchdogPluginTest : public ::testing::Test {
   }
 
   // Mock functions for testing
-  static int errorCheckCallCount;
-  static int triggerCallCount;
-  static CollTraceEvent* lastTriggeredEvent;
+  static std::atomic<int> errorCheckCallCount;
+  static std::atomic<int> triggerCallCount;
+  static std::atomic<uint64_t> lastTriggeredCollId;
+  static constexpr uint64_t kNoCollId = std::numeric_limits<uint64_t>::max();
 
   static bool mockErrorCheck() {
-    errorCheckCallCount++;
+    errorCheckCallCount.fetch_add(1);
     return false; // Default: no error
   }
 
   static bool mockErrorCheckTrue() {
-    errorCheckCallCount++;
+    errorCheckCallCount.fetch_add(1);
     return true; // Simulate error condition
   }
 
   static void mockTriggerOnError(CollTraceEvent& event) {
-    triggerCallCount++;
-    lastTriggeredEvent = &event;
+    triggerCallCount.fetch_add(1);
+    lastTriggeredCollId.store(event.collRecord->getCollId());
   }
 
   std::unique_ptr<WatchdogPlugin> plugin;
 };
 
 // Static member definitions
-int WatchdogPluginTest::errorCheckCallCount = 0;
-int WatchdogPluginTest::triggerCallCount = 0;
-CollTraceEvent* WatchdogPluginTest::lastTriggeredEvent = nullptr;
+std::atomic<int> WatchdogPluginTest::errorCheckCallCount{0};
+std::atomic<int> WatchdogPluginTest::triggerCallCount{0};
+std::atomic<uint64_t> WatchdogPluginTest::lastTriggeredCollId{kNoCollId};
 
 // Test constructor with default config
 TEST_F(WatchdogPluginTest, ConstructorWithDefaultConfig) {
@@ -117,9 +121,9 @@ TEST_F(WatchdogPluginTest, CollEventProgressingNoError) {
   auto result = plugin->collEventProgressing(event);
 
   EXPECT_VALUE(result);
-  EXPECT_EQ(errorCheckCallCount, 1);
-  EXPECT_EQ(triggerCallCount, 0);
-  EXPECT_EQ(lastTriggeredEvent, nullptr);
+  EXPECT_EQ(errorCheckCallCount.load(), 1);
+  EXPECT_EQ(triggerCallCount.load(), 0);
+  EXPECT_EQ(lastTriggeredCollId.load(), kNoCollId);
 }
 
 // Test collEventProgressing with error condition
@@ -133,9 +137,9 @@ TEST_F(WatchdogPluginTest, CollEventProgressingWithError) {
   auto result = plugin->collEventProgressing(event);
 
   EXPECT_VALUE(result);
-  EXPECT_EQ(errorCheckCallCount, 1);
-  EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event);
+  EXPECT_EQ(errorCheckCallCount.load(), 1);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event.collRecord->getCollId());
 }
 
 // Test collEventProgressing multiple calls with mixed error conditions
@@ -158,13 +162,13 @@ TEST_F(WatchdogPluginTest, CollEventProgressingMultipleCalls) {
   // First call - no error
   auto result1 = plugin->collEventProgressing(event1);
   EXPECT_VALUE(result1);
-  EXPECT_EQ(triggerCallCount, 0);
+  EXPECT_EQ(triggerCallCount.load(), 0);
 
   // Second call - error condition
   auto result2 = plugin->collEventProgressing(event2);
   EXPECT_VALUE(result2);
-  EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event2);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event2.collRecord->getCollId());
 }
 
 // Test with default config functions
@@ -200,6 +204,8 @@ TEST_F(WatchdogPluginTest, PluginInterfaceCompliance) {
   EXPECT_VALUE(pluginInterface->afterCollKernelStart(event));
   EXPECT_VALUE(pluginInterface->collEventProgressing(event));
   EXPECT_VALUE(pluginInterface->afterCollKernelEnd(event));
+  EXPECT_VALUE(pluginInterface->afterCollTerminated(
+      event, CollTraceTerminalReason::TraceDestroyed));
 
   // Test getName
   EXPECT_EQ(pluginInterface->getName(), "WatchdogPlugin");
@@ -209,14 +215,14 @@ TEST_F(WatchdogPluginTest, PluginInterfaceCompliance) {
 TEST_F(WatchdogPluginTest, LambdaFunctionsInConfig) {
   bool errorCondition = false;
   bool triggerCalled = false;
-  CollTraceEvent* triggeredEvent = nullptr;
+  uint64_t triggeredCollId = kNoCollId;
 
   WatchdogPluginConfig config{
       .funcIfError = [&errorCondition]() { return errorCondition; },
       .funcTriggerOnError =
-          [&triggerCalled, &triggeredEvent](CollTraceEvent& event) {
+          [&triggerCalled, &triggeredCollId](CollTraceEvent& event) {
             triggerCalled = true;
-            triggeredEvent = &event;
+            triggeredCollId = event.collRecord->getCollId();
           },
   };
 
@@ -229,14 +235,60 @@ TEST_F(WatchdogPluginTest, LambdaFunctionsInConfig) {
   auto result1 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result1);
   EXPECT_FALSE(triggerCalled);
-  EXPECT_EQ(triggeredEvent, nullptr);
 
   // Second call with error
   errorCondition = true;
   auto result2 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result2);
   EXPECT_TRUE(triggerCalled);
-  EXPECT_EQ(triggeredEvent, &event);
+  EXPECT_EQ(triggeredCollId, event.collRecord->getCollId());
+}
+
+TEST_F(WatchdogPluginTest, AsyncErrorDelayDoesNotBlockProgress) {
+  std::promise<uint64_t> triggeredCollId;
+  auto triggeredCollIdFuture = triggeredCollId.get_future();
+
+  WatchdogPluginConfig config{
+      .funcIfError = mockErrorCheckTrue,
+      .funcTriggerOnError =
+          [&triggeredCollId](CollTraceEvent& event) {
+            triggeredCollId.set_value(event.collRecord->getCollId());
+          },
+      .asyncErrorDelay = std::chrono::milliseconds{500},
+      .deferErrorTrigger = true,
+  };
+  plugin = std::make_unique<WatchdogPlugin>(config);
+
+  {
+    auto event = createCollTraceEvent(1);
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_VALUE(plugin->collEventProgressing(event));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::milliseconds{250});
+  }
+  plugin.reset();
+
+  ASSERT_EQ(
+      triggeredCollIdFuture.wait_for(std::chrono::seconds{2}),
+      std::future_status::ready);
+  EXPECT_EQ(triggeredCollIdFuture.get(), 1);
+}
+
+TEST_F(WatchdogPluginTest, AsyncErrorLatchesAcrossActiveEvents) {
+  WatchdogPluginConfig config{
+      .funcIfError = mockErrorCheckTrue,
+      .funcTriggerOnError = mockTriggerOnError,
+  };
+  plugin = std::make_unique<WatchdogPlugin>(config);
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+
+  EXPECT_VALUE(plugin->collEventProgressing(event1));
+  EXPECT_VALUE(plugin->collEventProgressing(event2));
+
+  EXPECT_EQ(errorCheckCallCount.load(), 1);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event1.collRecord->getCollId());
 }
 
 // Test timeout functionality - disabled by default
@@ -258,8 +310,8 @@ TEST_F(WatchdogPluginTest, TimeoutDisabledByDefault) {
   auto result2 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result2);
 
-  EXPECT_EQ(triggerCallCount, 0);
-  EXPECT_EQ(lastTriggeredEvent, nullptr);
+  EXPECT_EQ(triggerCallCount.load(), 0);
+  EXPECT_EQ(lastTriggeredCollId.load(), kNoCollId);
 }
 
 // Test per-event timers are independent — timing out event1 doesn't
@@ -284,13 +336,13 @@ TEST_F(WatchdogPluginTest, PerEventTimersAreIndependent) {
 
   // event1 times out.
   plugin->collEventProgressing(event1);
-  EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event1);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event1.collRecord->getCollId());
 
   // event2 also times out independently.
   plugin->collEventProgressing(event2);
-  EXPECT_EQ(triggerCallCount, 2);
-  EXPECT_EQ(lastTriggeredEvent, &event2);
+  EXPECT_EQ(triggerCallCount.load(), 2);
+  EXPECT_EQ(lastTriggeredCollId.load(), event2.collRecord->getCollId());
 }
 
 // Test timeout functionality - timeout occurs
@@ -307,7 +359,7 @@ TEST_F(WatchdogPluginTest, TimeoutOccurs) {
   // First call - starts the timer
   auto result1 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result1);
-  EXPECT_EQ(triggerCallCount, 0);
+  EXPECT_EQ(triggerCallCount.load(), 0);
 
   // Sleep longer than timeout
   std::this_thread::sleep_for(std::chrono::milliseconds{60});
@@ -315,8 +367,8 @@ TEST_F(WatchdogPluginTest, TimeoutOccurs) {
   // Second call with same event - should trigger timeout
   auto result2 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result2);
-  EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event.collRecord->getCollId());
 }
 
 // Test afterCollKernelEnd clears the timer for that event.
@@ -341,7 +393,24 @@ TEST_F(WatchdogPluginTest, AfterCollKernelEndClearsTimer) {
 
   // Progressing again — starts a fresh timer, no timeout.
   plugin->collEventProgressing(event);
-  EXPECT_EQ(triggerCallCount, 0);
+  EXPECT_EQ(triggerCallCount.load(), 0);
+}
+
+TEST_F(WatchdogPluginTest, TerminalDispositionClearsTimer) {
+  WatchdogPluginConfig config{
+      .checkTimeout = true,
+      .timeout = std::chrono::milliseconds{50},
+      .funcTriggerOnTimeout = mockTriggerOnError,
+  };
+  plugin = std::make_unique<WatchdogPlugin>(config);
+  auto event = createCollTraceEvent(1);
+
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+  EXPECT_VALUE(plugin->afterCollTerminated(
+      event, CollTraceTerminalReason::TraceDestroyed));
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+
+  EXPECT_EQ(triggerCallCount.load(), 0);
 }
 
 // Test startTs change resets the timer (new replay detection).
@@ -367,16 +436,17 @@ TEST_F(WatchdogPluginTest, StartTsChangeResetsTimer) {
   auto t2 = std::chrono::system_clock::now();
   event.collRecord->getTimingInfo().setCollStartTs(t2);
   plugin->collEventProgressing(event);
-  EXPECT_EQ(triggerCallCount, 0) << "Timer should reset on startTs change";
+  EXPECT_EQ(triggerCallCount.load(), 0)
+      << "Timer should reset on startTs change";
 
   // Sleep past timeout again — now it should fire.
   std::this_thread::sleep_for(std::chrono::milliseconds{60});
   plugin->collEventProgressing(event);
-  EXPECT_EQ(triggerCallCount, 1);
+  EXPECT_EQ(triggerCallCount.load(), 1);
 }
 
-// Test timeout functionality - multiple timeouts
-TEST_F(WatchdogPluginTest, MultipleTimeouts) {
+/* A timeout is reported once for one logical execution. */
+TEST_F(WatchdogPluginTest, TimeoutLatchesForExecution) {
   WatchdogPluginConfig config{
       .checkTimeout = true,
       .timeout = std::chrono::milliseconds{30}, // 30ms timeout
@@ -392,15 +462,38 @@ TEST_F(WatchdogPluginTest, MultipleTimeouts) {
   std::this_thread::sleep_for(std::chrono::milliseconds{40});
   auto result2 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result2);
-  EXPECT_EQ(triggerCallCount, 1);
-  EXPECT_EQ(lastTriggeredEvent, &event);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event.collRecord->getCollId());
 
-  // Second timeout on same event
+  /* Further progress for the same execution does not retrigger. */
   std::this_thread::sleep_for(std::chrono::milliseconds{40});
   auto result3 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result3);
-  EXPECT_EQ(triggerCallCount, 2);
-  EXPECT_EQ(lastTriggeredEvent, &event);
+  EXPECT_EQ(triggerCallCount.load(), 1);
+  EXPECT_EQ(lastTriggeredCollId.load(), event.collRecord->getCollId());
+}
+
+TEST_F(WatchdogPluginTest, NewExecutionResetsTimeoutLatch) {
+  WatchdogPluginConfig config{
+      .checkTimeout = true,
+      .timeout = std::chrono::milliseconds{0},
+      .funcTriggerOnTimeout = mockTriggerOnError,
+  };
+  plugin = std::make_unique<WatchdogPlugin>(config);
+  auto event = createCollTraceEvent(1);
+
+  event.collRecord->getTimingInfo().setCollStartTs(
+      std::chrono::system_clock::now());
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+  ASSERT_EQ(triggerCallCount.load(), 1);
+
+  event.collRecord->getTimingInfo().setCollStartTs(
+      std::chrono::system_clock::now());
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+  EXPECT_VALUE(plugin->collEventProgressing(event));
+
+  EXPECT_EQ(triggerCallCount.load(), 2);
 }
 
 // Test timeout with custom timeout callback
@@ -472,7 +565,7 @@ TEST_F(WatchdogPluginTest, AsyncErrorAndTimeoutTogether) {
   std::this_thread::sleep_for(std::chrono::milliseconds{60});
   auto result3 = plugin->collEventProgressing(event);
   EXPECT_VALUE(result3);
-  EXPECT_EQ(errorTriggerCount, 2); // Error triggered again
+  EXPECT_EQ(errorTriggerCount, 1); /* Communicator error remains latched. */
   EXPECT_EQ(timeoutTriggerCount, 1); // Timeout also triggered
 }
 

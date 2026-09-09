@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <optional>
 #include <set>
@@ -35,6 +36,7 @@ using meta::comms::colltrace::CollTraceConfig;
 using meta::comms::colltrace::ColltraceDeviceHandle;
 using meta::comms::colltrace::CollTraceEvent;
 using meta::comms::colltrace::CollTraceHandleTriggerState;
+using meta::comms::colltrace::CollTraceTerminalReason;
 using meta::comms::colltrace::GraphCollTraceEvent;
 using meta::comms::colltrace::GraphCollTracePhase;
 using meta::comms::colltrace::GraphCudaWaitEvent;
@@ -67,6 +69,11 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     uint64_t collId;
     std::optional<uint64_t> replayId;
     std::optional<uint64_t> capturedCollId;
+  };
+
+  struct TerminalEvent {
+    EventIdentity identity;
+    CollTraceTerminalReason reason;
   };
 
   std::string_view getName() const noexcept override {
@@ -129,6 +136,24 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     return folly::unit;
   }
 
+  meta::comms::CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& event,
+      CollTraceTerminalReason reason) noexcept override {
+    std::lock_guard<std::mutex> lock(mu_);
+    terminalEvents_.push_back(
+        TerminalEvent{
+            .identity =
+                EventIdentity{
+                    .collId = event.collRecord->getCollId(),
+                    .replayId = event.replayId,
+                    .capturedCollId = event.capturedCollId,
+                },
+            .reason = reason,
+        });
+    terminalCv_.notify_all();
+    return folly::unit;
+  }
+
   std::set<int64_t> getProgressedCollIds() const {
     std::lock_guard<std::mutex> lock(mu_);
     return progressedCollIds_;
@@ -154,27 +179,32 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
     return completedCollIds_;
   }
 
+  bool waitForTerminalEvents(
+      std::size_t count,
+      std::chrono::milliseconds timeout) const {
+    std::unique_lock<std::mutex> lock(mu_);
+    return terminalCv_.wait_for(
+        lock, timeout, [&] { return terminalEvents_.size() >= count; });
+  }
+
+  std::vector<TerminalEvent> getTerminalEvents() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return terminalEvents_;
+  }
+
   int progressCount() const {
     return progressCount_.load();
   }
 
-  void reset() {
-    std::lock_guard<std::mutex> lock(mu_);
-    progressedCollIds_.clear();
-    startedCollIds_.clear();
-    startedEventIdentities_.clear();
-    recordedEventIdentities_.clear();
-    completedCollIds_.clear();
-    progressCount_.store(0);
-  }
-
  private:
   mutable std::mutex mu_;
+  mutable std::condition_variable terminalCv_;
   std::set<int64_t> progressedCollIds_;
   std::set<int64_t> startedCollIds_;
   std::vector<EventIdentity> startedEventIdentities_;
   std::vector<EventIdentity> recordedEventIdentities_;
   std::set<int64_t> completedCollIds_;
+  std::vector<TerminalEvent> terminalEvents_;
   std::atomic<int> progressCount_{0};
 };
 
@@ -219,7 +249,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     colltrace_ = std::make_shared<CollTrace>(
         CollTraceConfig{.maxCheckCancelInterval = std::chrono::milliseconds{1}},
         logData,
-        [this]() -> meta::comms::CommsMaybeVoid {
+        []() -> meta::comms::CommsMaybeVoid {
           // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
           cudaSetDevice(0);
           auto mode = cudaStreamCaptureModeThreadLocal;
@@ -461,6 +491,7 @@ TEST_F(GraphColltraceProgressingTest, DetectsMultipleInFlightCollectives) {
     // starts fire (concurrently) before any end.
     writeColltraceRing(devHandle, GraphCollTracePhase::kStart, collStreams[c]);
     // Host sleep on the collective's stream — all sleeps run concurrently.
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaLaunchHostFunc(
         collStreams[c],
         hostSleepCallback,
@@ -659,6 +690,50 @@ TEST_F(GraphColltraceProgressingTest, DeviceHandleCapableOnlyForGraphPath) {
           .value();
   EXPECT_FALSE(eagerHandle->getColltraceDeviceHandle().valid())
       << "eager wait event has no ring and must not be in-kernel capable";
+}
+
+TEST_F(GraphColltraceProgressingTest, GraphDestructionTerminatesTemplateEvent) {
+  cudaGraph_t graph = nullptr;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  auto waitEvent = std::make_unique<GraphCudaWaitEvent>(stream_);
+  auto handle =
+      colltrace_
+          ->recordCollective(
+              std::make_unique<SimpleMetadata>(), std::move(waitEvent))
+          .value();
+  auto record = handle->getCollRecord();
+  ASSERT_TRUE(record.hasValue());
+  ASSERT_NE(record.value(), nullptr);
+  const auto templateCollId = record.value()->getCollId();
+  EXPECT_TRUE(handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel)
+                  .hasValue());
+  EXPECT_TRUE(handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel)
+                  .hasValue());
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaStreamEndCapture(stream_, &graph), cudaSuccess);
+  ASSERT_NE(graph, nullptr);
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  ASSERT_TRUE(
+      progressPlugin_->waitForTerminalEvents(1, std::chrono::seconds{5}));
+
+  const auto terminalEvents = progressPlugin_->getTerminalEvents();
+  ASSERT_EQ(terminalEvents.size(), 1);
+  EXPECT_EQ(terminalEvents.front().identity.collId, templateCollId);
+  EXPECT_FALSE(terminalEvents.front().identity.replayId.has_value());
+  EXPECT_EQ(
+      terminalEvents.front().identity.capturedCollId,
+      std::optional<uint64_t>{templateCollId});
+  EXPECT_EQ(
+      terminalEvents.front().reason, CollTraceTerminalReason::GraphDestroyed);
+
+  auto invalidatedRecord = handle->getCollRecord();
+  ASSERT_TRUE(invalidatedRecord.hasValue());
+  EXPECT_EQ(invalidatedRecord.value(), nullptr);
 }
 
 // The kernel-style writes through the ColltraceDeviceHandle drive the

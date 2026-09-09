@@ -235,8 +235,7 @@ TEST_F(CommDumpPluginTest, MultipleCollectives) {
   EXPECT_TRUE(dump3.pendingColls.empty());
 }
 
-// Test error cases
-TEST_F(CommDumpPluginTest, ErrorCases) {
+TEST_F(CommDumpPluginTest, MissingPendingRecordIsRecovered) {
   // Create events with different IDs
   auto event1 = createCollTraceEvent(1);
   auto event2 = createCollTraceEvent(2);
@@ -244,18 +243,63 @@ TEST_F(CommDumpPluginTest, ErrorCases) {
   // Schedule event1
   EXPECT_VALUE(plugin->afterCollKernelScheduled(event1));
 
-  // Try to start event2 (should fail due to mismatch)
+  /*
+   * Start event2 without scheduling it. The callback reports the mismatch but
+   * retains the event in current state so its terminal callback is not lost.
+   */
   auto result = plugin->afterCollKernelStart(event2);
   EXPECT_FALSE(result.hasValue());
   EXPECT_EQ(result.error().errorCode, commInternalError);
 
+  auto recoveredDump = plugin->dump();
+  ASSERT_TRUE(recoveredDump.hasValue());
+  ASSERT_EQ(recoveredDump.value().currentColls.size(), 1);
+  EXPECT_EQ(
+      recoveredDump.value().currentColls.front().get(),
+      event2.collRecord.get());
+
   // Start event1 correctly
   EXPECT_VALUE(plugin->afterCollKernelStart(event1));
 
-  // Try to end event2 (should fail due to mismatch)
-  auto result2 = plugin->afterCollKernelEnd(event2);
-  EXPECT_FALSE(result2.hasValue());
-  EXPECT_EQ(result2.error().errorCode, commInternalError);
+  /* The recovered event can still be terminally accounted. */
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event2));
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event1));
+
+  auto finalDump = plugin->dump();
+  ASSERT_TRUE(finalDump.hasValue());
+  EXPECT_TRUE(finalDump.value().pendingColls.empty());
+  EXPECT_TRUE(finalDump.value().currentColls.empty());
+  EXPECT_EQ(finalDump.value().pastColls.size(), 2);
+}
+
+TEST_F(CommDumpPluginTest, PendingDrainErrorStillAccountsCurrentEvent) {
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .pendingCollSize = 4,
+      .pendingDrainBatchSize = 1,
+  });
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event1));
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event2));
+
+  auto startResult = plugin->afterCollKernelStart(event1);
+  ASSERT_TRUE(startResult.hasError());
+
+  auto startedDump = plugin->dump();
+  ASSERT_TRUE(startedDump.hasValue());
+  ASSERT_EQ(startedDump.value().currentColls.size(), 1);
+  EXPECT_EQ(
+      startedDump.value().currentColls.front().get(), event1.collRecord.get());
+  ASSERT_EQ(startedDump.value().pendingColls.size(), 1);
+  EXPECT_EQ(
+      startedDump.value().pendingColls.front().get(), event2.collRecord.get());
+
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event1));
+  auto completedDump = plugin->dump();
+  ASSERT_TRUE(completedDump.hasValue());
+  ASSERT_EQ(completedDump.value().pastColls.size(), 1);
+  EXPECT_EQ(
+      completedDump.value().pastColls.front().get(), event1.collRecord.get());
 }
 
 // Test configurable pending queue size
@@ -396,6 +440,54 @@ TEST_F(CommDumpPluginTest, ConcurrentActiveCollectives) {
   EXPECT_VALUE(dump3);
   EXPECT_TRUE(dump3.value().currentColls.empty());
   EXPECT_EQ(dump3.value().pastColls.size(), 2);
+}
+
+TEST_F(CommDumpPluginTest, TerminalDispositionIsIdempotentAndBounded) {
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .pendingCollSize = 3,
+      .currentCollSize = 2,
+      .terminalCollSize = 2,
+  });
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+  auto event3 = createCollTraceEvent(3);
+
+  for (auto* event : {&event1, &event2, &event3}) {
+    EXPECT_VALUE(plugin->afterCollKernelScheduled(*event));
+    EXPECT_VALUE(plugin->afterCollKernelStart(*event));
+  }
+
+  auto boundedDump = plugin->dump();
+  ASSERT_TRUE(boundedDump.hasValue());
+  EXPECT_EQ(boundedDump.value().currentColls.size(), 2);
+  ASSERT_EQ(boundedDump.value().terminalColls.size(), 1);
+  EXPECT_EQ(
+      boundedDump.value().terminalColls.front().collRecord.get(),
+      event1.collRecord.get());
+  EXPECT_EQ(
+      boundedDump.value().terminalReasonCounts[static_cast<std::size_t>(
+          CollTraceTerminalReason::TrackingOverflow)],
+      1);
+
+  EXPECT_VALUE(plugin->afterCollTerminated(
+      event2, CollTraceTerminalReason::TraceDestroyed));
+  EXPECT_VALUE(plugin->afterCollTerminated(
+      event2, CollTraceTerminalReason::TraceDestroyed));
+  EXPECT_VALUE(plugin->afterCollTerminated(
+      event3, CollTraceTerminalReason::GraphDestroyed));
+
+  auto terminalDump = plugin->dump();
+  ASSERT_TRUE(terminalDump.hasValue());
+  EXPECT_TRUE(terminalDump.value().currentColls.empty());
+  EXPECT_EQ(terminalDump.value().terminalColls.size(), 2);
+  EXPECT_EQ(
+      terminalDump.value().terminalReasonCounts[static_cast<std::size_t>(
+          CollTraceTerminalReason::TraceDestroyed)],
+      1);
+  EXPECT_EQ(
+      terminalDump.value().terminalReasonCounts[static_cast<std::size_t>(
+          CollTraceTerminalReason::GraphDestroyed)],
+      1);
 }
 
 // ---- Iteration comm time tracking tests ----

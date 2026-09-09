@@ -283,6 +283,10 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
           {"CT_pastColls",
            "CT_currentColls",
            "CT_pendingColls",
+           "CT_terminalColls",
+           "CT_terminalReasonCounts",
+           "CT_terminalTransitionDrops",
+           "CT_pollLockTimeouts",
            "CT_currentIteration",
            "CT_currentIterationCommTimeUs"})) {
     map.merge(dumpNewCollTrace(*info.newCollTrace, requestFields));
