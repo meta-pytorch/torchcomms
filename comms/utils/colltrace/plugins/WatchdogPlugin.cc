@@ -2,10 +2,12 @@
 
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 
+#include <atomic>
 #include <string>
-#include <thread>
 
+#include <folly/Indestructible.h>
 #include <folly/Unit.h>
+#include <folly/executors/FunctionScheduler.h>
 #include <folly/json.h>
 
 #include "comms/utils/logger/SpdlogLogger.h"
@@ -13,6 +15,21 @@
 namespace meta::comms::colltrace {
 
 namespace {
+struct AsyncErrorScheduler {
+  AsyncErrorScheduler() {
+    scheduler.setThreadName("CollTraceWatchdog");
+    scheduler.start();
+  }
+
+  folly::FunctionScheduler scheduler;
+  std::atomic<uint64_t> nextTaskId{0};
+};
+
+AsyncErrorScheduler& getAsyncErrorScheduler() {
+  static folly::Indestructible<AsyncErrorScheduler> scheduler;
+  return *scheduler;
+}
+
 std::string_view getCollectiveStateStr(CollTraceEvent& curEvent) {
   auto& timingInfo = curEvent.collRecord->getTimingInfo();
   // This should not happen for collectives with async error/timeout
@@ -33,11 +50,9 @@ WatchdogPluginConfig normalizeWatchdogConfig(WatchdogPluginConfig config) {
   if (!config.funcTriggerOnError) {
     config.funcTriggerOnError =
         [loggerName = std::string{config.loggerName}](CollTraceEvent& event) {
-          /* Give Analyzer time to collect the error state before aborting. */
-          // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
-          std::this_thread::sleep_for(std::chrono::seconds(60));
           logFatalError(event, "AsyncError", loggerName);
         };
+    config.deferErrorTrigger = true;
   }
   if (!config.funcTriggerOnTimeout) {
     config.funcTriggerOnTimeout =
@@ -78,6 +93,50 @@ std::string_view WatchdogPlugin::getName() const noexcept {
   return kWatchdogPluginName;
 }
 
+CommsMaybeVoid WatchdogPlugin::dispatchAsyncError(
+    CollTraceEvent& curEvent) noexcept {
+  try {
+    auto event = std::make_shared<CollTraceEvent>();
+    event->collRecord = curEvent.collRecord;
+    event->replayId = curEvent.replayId;
+    event->capturedCollId = curEvent.capturedCollId;
+
+    auto callback = config_.funcTriggerOnError;
+    const auto delay = config_.asyncErrorDelay;
+    auto loggerName = config_.loggerName;
+    auto& scheduler = getAsyncErrorScheduler();
+    const auto taskName = fmt::format(
+        "colltrace_async_error_{}", scheduler.nextTaskId.fetch_add(1));
+    scheduler.scheduler.addFunctionOnce(
+        [callback = std::move(callback),
+         event = std::move(event),
+         loggerName = std::move(loggerName)]() mutable {
+          try {
+            callback(*event);
+          } catch (const std::exception& ex) {
+            COMMS_LOG_NAMED(
+                loggerName,
+                ERR,
+                "Watchdog async-error callback threw an exception: {}",
+                ex.what());
+          } catch (...) {
+            COMMS_LOG_NAMED(
+                loggerName,
+                ERR,
+                "Watchdog async-error callback threw an unknown exception");
+          }
+        },
+        taskName,
+        std::chrono::duration_cast<std::chrono::microseconds>(delay));
+  } catch (const std::exception& ex) {
+    return folly::makeUnexpected(CommsError(
+        fmt::format(
+            "Failed to dispatch watchdog async-error callback: {}", ex.what()),
+        commInternalError));
+  }
+  return folly::unit;
+}
+
 CommsMaybeVoid WatchdogPlugin::beforeCollKernelScheduled(
     CollTraceEvent&) noexcept {
   return folly::unit;
@@ -101,11 +160,21 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
       "WatchdogPlugin::collEventProgressing for CollTraceEvent {}",
       folly::toJson(curEvent.collRecord->toDynamic()));
 
-  if (config_.checkAsyncError && config_.funcIfError()) {
+  if (config_.checkAsyncError && !asyncErrorTriggered_ &&
+      config_.funcIfError()) {
     COMMS_LOGGER_STREAM(*logger_, DBG)
         << "WatchdogPlugin::collEventProgressing: triggering async error handling";
 
-    config_.funcTriggerOnError(curEvent);
+    asyncErrorTriggered_ = true;
+    if (config_.deferErrorTrigger) {
+      auto dispatchResult = dispatchAsyncError(curEvent);
+      if (dispatchResult.hasError()) {
+        asyncErrorTriggered_ = false;
+        return dispatchResult;
+      }
+    } else {
+      config_.funcTriggerOnError(curEvent);
+    }
   }
   // Per-event timeout: each in-flight event gets its own timer so a stuck
   // collective is detected even when others are progressing normally.
@@ -117,7 +186,11 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
     if (inserted || it->second.startTs != currentStartTs) {
       it->second.timer.reset();
       it->second.startTs = currentStartTs;
-    } else if (it->second.timer.elapsed(config_.timeout)) {
+      it->second.timeoutTriggered = false;
+    } else if (
+        !it->second.timeoutTriggered &&
+        it->second.timer.elapsed(config_.timeout)) {
+      it->second.timeoutTriggered = true;
       config_.funcTriggerOnTimeout(curEvent);
     }
   }
@@ -126,6 +199,22 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
 
 CommsMaybeVoid WatchdogPlugin::afterCollKernelEnd(
     CollTraceEvent& curEvent) noexcept {
+  eventTimers_.erase(&curEvent);
+  return folly::unit;
+}
+
+CommsMaybeVoid WatchdogPlugin::afterCollTerminated(
+    CollTraceEvent& curEvent,
+    CollTraceTerminalReason reason) noexcept {
+  /*
+   * These reasons are delivered by the producer thread before the event can
+   * enter the poll thread, so they cannot have an associated watchdog timer.
+   * Avoid touching the poll-thread-owned timer map from that thread.
+   */
+  if (reason == CollTraceTerminalReason::QueueRejected ||
+      reason == CollTraceTerminalReason::SupersededBeforeSchedule) {
+    return folly::unit;
+  }
   eventTimers_.erase(&curEvent);
   return folly::unit;
 }
