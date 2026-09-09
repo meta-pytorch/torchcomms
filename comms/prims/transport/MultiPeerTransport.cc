@@ -211,6 +211,7 @@ void MultiPeerTransport::initFromTopology(
 
 MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
+  (void)MultipeerIbgdaTransport::tryDeferCleanup(ibgdaTransport_);
 }
 
 std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
