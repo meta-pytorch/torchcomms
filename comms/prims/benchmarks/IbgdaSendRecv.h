@@ -170,12 +170,12 @@ void launch_ibgda_drain_send_recv(
     AbortDevice abortDevice = AbortDevice());
 
 /**
- * Reset benchmark-owned send/recv transport state after outstanding work has
- * been drained.
+ * Reset benchmark-owned send/recv transport state across the prepared logical
+ * channel prefix after outstanding work has been drained.
  */
 void launch_ibgda_reset_send_recv(
     P2pIbgdaTransportDevice* transport,
-    int maxGroups,
+    int numPreparedChannels,
     cudaStream_t stream);
 
 /**

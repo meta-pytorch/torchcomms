@@ -12,6 +12,7 @@ namespace comms::prims {
 
 // Forward declaration - full definition in P2pIbTransportDevice.cuh
 struct P2pIbTransportDevice;
+struct MultiPeerDeviceHandle;
 // Forward declaration - full definition in P2pIbgdaTransportDevice.cuh
 class P2pIbgdaTransportDevice;
 
@@ -189,6 +190,34 @@ void testSendRecv(
     bool send,
     int numBlocks,
     int blockSize);
+
+/**
+ * Test kernel: bidirectional two-part transfer on independent channel slices.
+ */
+void testChannelRoundTrip(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream = nullptr);
+
+void testMultiPeerChannelRoundTrip(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream);
 
 /**
  * Test kernel: Blocking pipelined send or recv driving the variable-size

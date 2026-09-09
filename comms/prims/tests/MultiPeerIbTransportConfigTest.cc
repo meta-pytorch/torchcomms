@@ -1,18 +1,20 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
-
-#include <gtest/gtest.h>
-
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <random>
 #include <set>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
@@ -654,6 +656,11 @@ TEST(MultiPeerIbTransportConfigTest, LazyChannelsDefaultOff) {
   EXPECT_FALSE(config.lazyChannels);
 }
 
+TEST(MultiPeerIbTransportConfigTest, LegacyBootstrapPhaseValuesRemainStable) {
+  EXPECT_EQ(0, kIbPeerQpExchangeTag);
+  EXPECT_EQ(1, kIbPeerBufferExchangeTag);
+}
+
 TEST(MultiPeerTransportInitTest, MatchingRecordsSucceed) {
   const detail::ChannelProtocolRecord record{
       .mode = detail::PrimsChannelMode::kLazyPrefix,
@@ -732,6 +739,8 @@ class TestLegacyIbTransport
             makeConfig()) {}
 
   int materializedPeer{-1};
+  int cleanedPeerIndex{-1};
+  bool failMaterialization{false};
 
   bool legacyPeerMaterialized(int peerRank) const {
     return peerMaterialized_[rankToPeerIndex(peerRank)];
@@ -743,10 +752,14 @@ class TestLegacyIbTransport
   void doMaterializePeer(int peerRank) {
     materializedPeer = peerRank;
     peerMaterialized_[rankToPeerIndex(peerRank)] = true;
+    if (failMaterialization) {
+      throw std::runtime_error("injected legacy materialization failure");
+    }
   }
 
   void cleanupPeerOnFailure(int peerIndex) {
     peerMaterialized_[peerIndex] = false;
+    cleanedPeerIndex = peerIndex;
   }
 
   static MultipeerIbTransportConfig makeConfig() {
@@ -765,6 +778,272 @@ TEST(MultiPeerIbTransportConfigTest, LegacyBackendHookMaterializesCapacity) {
   EXPECT_EQ(1, transport.materializedPeer);
   EXPECT_TRUE(transport.legacyPeerMaterialized(/*peerRank=*/1));
   EXPECT_EQ(8, transport.materializedChannelCount(/*peerRank=*/1));
+}
+
+TEST(MultiPeerIbTransportConfigTest, LegacyBackendFailureRunsCleanupHook) {
+  TestLegacyIbTransport transport;
+  transport.failMaterialization = true;
+
+  EXPECT_THROW(transport.materializePeer(/*peerRank=*/1), std::runtime_error);
+
+  EXPECT_EQ(1, transport.materializedPeer);
+  EXPECT_EQ(0, transport.cleanedPeerIndex);
+}
+
+class TestLazyChannelTransport
+    : public MultiPeerIbTransport<TestLazyChannelTransport> {
+ public:
+  struct MaterializedRange {
+    int peerRank;
+    uint32_t beginChannel;
+    uint32_t endChannel;
+
+    bool operator==(const MaterializedRange&) const = default;
+  };
+
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend kPeerChannelBackend =
+      PeerChannelBackend::kIbgda;
+
+  explicit TestLazyChannelTransport(bool lazyChannels)
+      : MultiPeerIbTransport<TestLazyChannelTransport>(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::make_shared<
+                ::testing::NiceMock<meta::comms::testing::MockBootstrap>>(),
+            makeConfig(lazyChannels)) {
+    // This fake isolates local target and watermark behavior.
+    channelRangeProtocolEnabled_ = false;
+  }
+
+  explicit TestLazyChannelTransport(
+      int myRank,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
+      int maxGroups = 8)
+      : MultiPeerIbTransport<TestLazyChannelTransport>(
+            myRank,
+            /*nRanks=*/2,
+            std::move(bootstrap),
+            makeConfig(/*lazyChannels=*/true, maxGroups)) {}
+
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t beginChannel,
+      uint32_t endChannel) {
+    observedWatermarks.push_back(
+        materializedChannels_[rankToPeerIndex(peerRank)]);
+    materializedRanges.push_back({peerRank, beginChannel, endChannel});
+    if (failNextMaterialization) {
+      throw std::runtime_error("injected materialization failure");
+    }
+  }
+
+  uint32_t rawMaterializedChannelCount(int peerRank) const {
+    return materializedChannels_[rankToPeerIndex(peerRank)];
+  }
+
+  int configuredQpsPerConnection() const {
+    return config_.qpsPerConnection;
+  }
+
+  std::vector<MaterializedRange> materializedRanges;
+  std::vector<uint32_t> observedWatermarks;
+  bool failNextMaterialization{false};
+  int terminalFailureCount{0};
+
+ private:
+  friend class MultiPeerIbTransport<TestLazyChannelTransport>;
+
+  void onTerminalMaterializationFailure() noexcept {
+    ++terminalFailureCount;
+  }
+
+  static MultipeerIbTransportConfig makeConfig(
+      bool lazyChannels,
+      int maxGroups = 8) {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    config.maxGroups = maxGroups;
+    config.qpsPerBlockPerNic = 2;
+    config.lazyChannels = lazyChannels;
+    return config;
+  }
+};
+
+TEST(MultiPeerIbTransportConfigTest, LegacyQpGeometryIsNormalized) {
+  const TestLazyChannelTransport transport(/*lazyChannels=*/false);
+  EXPECT_EQ(8, transport.channelCapacity());
+  EXPECT_EQ(2, transport.configuredQpsPerConnection());
+}
+
+TEST(
+    MultiPeerIbTransportConfigTest,
+    LazyChannelsMaterializeExactMissingPrefix) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/true);
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/3);
+  transport.connectPeers();
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/2);
+  transport.connectPeers();
+
+  const std::vector<TestLazyChannelTransport::MaterializedRange> expected{
+      {1, 0, 1},
+      {1, 1, 3},
+  };
+  EXPECT_EQ(expected, transport.materializedRanges);
+  EXPECT_EQ((std::vector<uint32_t>{0, 1}), transport.observedWatermarks);
+  EXPECT_EQ(3, transport.materializedChannelCount(/*peerRank=*/1));
+}
+
+TEST(MultiPeerIbTransportConfigTest, LazyGrowthUsesUniqueBootstrapTags) {
+  auto bootstrap = std::make_shared<
+      ::testing::NiceMock<meta::comms::testing::MockBootstrap>>();
+  std::vector<std::byte> payload;
+  std::vector<int> sendTags;
+  std::vector<int> recvTags;
+  ON_CALL(*bootstrap, send(_, _, /*peer=*/0, _))
+      .WillByDefault([&](void* buf, int len, int, int tag) {
+        const auto* const begin = static_cast<const std::byte*>(buf);
+        payload.assign(begin, begin + len);
+        sendTags.push_back(tag);
+        return folly::makeSemiFuture(0);
+      });
+  ON_CALL(*bootstrap, recv(_, _, /*peer=*/0, _))
+      .WillByDefault([&](void* buf, int len, int, int tag) {
+        EXPECT_EQ(static_cast<std::size_t>(len), payload.size());
+        std::copy(payload.begin(), payload.end(), static_cast<std::byte*>(buf));
+        recvTags.push_back(tag);
+        return folly::makeSemiFuture(0);
+      });
+
+  TestLazyChannelTransport transport(/*myRank=*/1, std::move(bootstrap));
+  transport.queuePeerForMaterialization(/*peerRank=*/0, /*targetChannels=*/1);
+  transport.connectPeers();
+  transport.queuePeerForMaterialization(/*peerRank=*/0, /*targetChannels=*/4);
+  transport.connectPeers();
+
+  EXPECT_EQ(sendTags, recvTags);
+  EXPECT_EQ(4, sendTags.size());
+  EXPECT_EQ(sendTags.size(), std::set(sendTags.begin(), sendTags.end()).size());
+}
+
+TEST(MultiPeerIbTransportConfigTest, LazyBootstrapTagsIgnoreLocalCapacity) {
+  const auto firstGrowthTags = [](int maxGroups) {
+    auto bootstrap = std::make_shared<
+        ::testing::NiceMock<meta::comms::testing::MockBootstrap>>();
+    std::vector<std::byte> payload;
+    std::vector<int> sendTags;
+    ON_CALL(*bootstrap, send(_, _, /*peer=*/0, _))
+        .WillByDefault([&](void* buf, int len, int, int tag) {
+          const auto* const begin = static_cast<const std::byte*>(buf);
+          payload.assign(begin, begin + len);
+          sendTags.push_back(tag);
+          return folly::makeSemiFuture(0);
+        });
+    ON_CALL(*bootstrap, recv(_, _, /*peer=*/0, _))
+        .WillByDefault([&](void* buf, int len, int, int) {
+          std::copy(
+              payload.begin(), payload.end(), static_cast<std::byte*>(buf));
+          return folly::makeSemiFuture(0);
+        });
+
+    TestLazyChannelTransport transport(
+        /*myRank=*/1, std::move(bootstrap), maxGroups);
+    transport.queuePeerForMaterialization(/*peerRank=*/0, /*targetChannels=*/1);
+    transport.connectPeers();
+    return sendTags;
+  };
+
+  EXPECT_EQ(firstGrowthTags(4), firstGrowthTags(8));
+}
+
+TEST(MultiPeerIbTransportConfigTest, EagerChannelsMaterializeCapacity) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/false);
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+
+  const std::vector<TestLazyChannelTransport::MaterializedRange> expected{
+      {1, 0, 8},
+  };
+  EXPECT_EQ(expected, transport.materializedRanges);
+  EXPECT_EQ(8, transport.materializedChannelCount(/*peerRank=*/1));
+}
+
+TEST(
+    MultiPeerIbTransportConfigTest,
+    FailedGrowthDoesNotPublishAndPoisonsTransport) {
+  TestLazyChannelTransport transport(/*lazyChannels=*/true);
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/1);
+  transport.connectPeers();
+  transport.failNextMaterialization = true;
+
+  transport.queuePeerForMaterialization(/*peerRank=*/1, /*targetChannels=*/4);
+  EXPECT_THROW(transport.connectPeers(), std::runtime_error);
+
+  EXPECT_EQ(1, transport.rawMaterializedChannelCount(/*peerRank=*/1));
+  EXPECT_EQ(1, transport.terminalFailureCount);
+  EXPECT_THROW(
+      transport.materializedChannelCount(/*peerRank=*/1), std::runtime_error);
+  EXPECT_THROW(
+      transport.queuePeerForMaterialization(
+          /*peerRank=*/1, /*targetChannels=*/2),
+      std::runtime_error);
+}
+
+class TestRangeAllocationTransport
+    : public MultiPeerIbTransport<TestRangeAllocationTransport> {
+ public:
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend kPeerChannelBackend =
+      PeerChannelBackend::kIbgda;
+
+  TestRangeAllocationTransport()
+      : MultiPeerIbTransport<TestRangeAllocationTransport>(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::make_shared<
+                ::testing::NiceMock<meta::comms::testing::MockBootstrap>>(),
+            makeConfig()) {}
+
+  void allocateOneChannelRange() {
+    PeerBufferPayload payload{};
+    (void)allocateSendRecvChannelRange(
+        /*peerIndex=*/0,
+        /*beginChannel=*/0,
+        /*endChannel=*/1,
+        payload);
+  }
+
+ private:
+  static MultipeerIbTransportConfig makeConfig() {
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t perChannelSize =
+        (std::numeric_limits<std::size_t>::max() / 4 / kAlignment + 1) *
+        kAlignment;
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    config.max_num_channels = 1;
+    config.qpsPerConnection = 1;
+    config.pipelineDepth = 1;
+    config.perChannelSize = perChannelSize;
+    config.lazyChannels = true;
+    return config;
+  }
+};
+
+TEST(MultiPeerIbTransportConfigTest, LazyRangeAllocationRejectsSizeOverflow) {
+  TestRangeAllocationTransport transport;
+
+  EXPECT_THROW(transport.allocateOneChannelRange(), std::overflow_error);
 }
 
 } // namespace

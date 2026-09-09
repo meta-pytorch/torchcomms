@@ -116,6 +116,13 @@ using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 class MultipeerIbgdaTransport
     : public MultiPeerIbTransport<MultipeerIbgdaTransport> {
  public:
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend kPeerChannelBackend =
+      PeerChannelBackend::kIbgda;
+
   /**
    * Constructor - Initialize multi-peer IBGDA transport
    */
@@ -166,8 +173,10 @@ class MultipeerIbgdaTransport
    * This method handles the rank-to-index mapping internally and provides
    * explicit peer selection without requiring CUDA headers.
    *
-   * In lazy mode, this materializes the requested peer before returning, so
-   * the returned pointer is ready for kernel use.
+   * If no channel has been prepared, this materializes the peer at full
+   * capacity for compatibility with callers that do not declare demand. If a
+   * prefix is already prepared, it returns the stable slot without expanding
+   * that prefix; the caller may use only the prepared channels.
    *
    * @param peerRank Global rank of the peer (must be != myRank and < nRanks)
    * @return Pointer to P2pIbgdaTransportDevice for the specified peer
@@ -176,7 +185,7 @@ class MultipeerIbgdaTransport
 
   // queuePeerForMaterialization()/connectPeers()/isPeerMaterialized() are
   // inherited from MultiPeerIbTransport. This backend supplies the
-  // doMaterializePeer()/cleanupPeerOnFailure() hooks below.
+  // materializePeerChannelRange() hook below.
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -226,7 +235,6 @@ class MultipeerIbgdaTransport
   void openIbDevice();
   void allocateResources();
   void registerMemory();
-  void createQpGroups();
   void cleanup();
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
@@ -239,20 +247,34 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransport.
 
   // Per-peer helpers used by lazy materialization.
-  void createPeerQps(int peerIndex);
-  void connectPeerLoopback(int peerIndex);
-  P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
+  void createPeerQps(int peerIndex, uint32_t beginChannel, uint32_t endChannel);
+  void connectPeerLoopback(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel);
+  P2pIbgdaTransportBuildParams buildPeerTransportParams(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
 
-  void
-  doMaterializePeer(int peerRank, uint32_t oldChannels, uint32_t newChannels);
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t beginChannel,
+      uint32_t endChannel);
 
-  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
-  void cleanupPeerOnFailure(int peerIndex);
+  PeerQpPayload buildLocalQpPayload(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
+  void connectPeerMainQps(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const PeerQpPayload& remotePayload);
 
   // MultiPeerIbTransport drives the shared control plane (config, MR registry,
   // lazy materialization, bootstrap exchangeWithPeer) and calls back into this
-  // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
+  // backend's materializePeerChannelRange() hook.
   friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
 
   // myRank_/nRanks_/bootstrap_/config_/registrationState_/nics_/lazy-state are
@@ -329,12 +351,9 @@ class MultipeerIbgdaTransport
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Per-peer send/recv buffer views (IbSendRecvPeerBuffers) and the eager-mode
-  // bulk allocations now live in MultiPeerIbTransportBase
-  // (sendRecvPeerBuffers_). Eager allocation/exchange/cleanup delegate to the
-  // base's allocateSendRecvBuffersEager(Device)/exchangeSendRecvBuffersEager()/
-  // cleanupSendRecvBuffers(); the lazy path below fills the inherited
-  // sendRecvPeerBuffers_ directly.
+  // Eager send/recv views and bulk allocations live in
+  // MultiPeerIbTransportBase. Lazy growth retains separate immutable range
+  // buffers there until communicator teardown.
 
   // Lazy readiness state is inherited from MultiPeerIbTransport.
 };

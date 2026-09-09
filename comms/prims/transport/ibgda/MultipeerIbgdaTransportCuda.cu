@@ -28,6 +28,52 @@ void throwOnCudaError(cudaError_t error, const char* operation) {
   }
 }
 
+// Initializes and publishes device transport state outside active stream
+// capture.
+class CaptureSafeDeviceInitStream {
+ public:
+  CaptureSafeDeviceInitStream() {
+    throwOnCudaError(
+        cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking),
+        "Failed to create IBGDA device initialization stream");
+  }
+
+  ~CaptureSafeDeviceInitStream() {
+    if (stream_ != nullptr) {
+      cudaStream_t stream = stream_;
+      stream_ = nullptr;
+      (void)cudaStreamSynchronize(stream);
+      (void)cudaStreamDestroy(stream);
+    }
+  }
+
+  void memset(void* dst, int value, std::size_t bytes) {
+    throwOnCudaError(
+        cudaMemsetAsync(dst, value, bytes, stream_),
+        "Failed to enqueue IBGDA device initialization memset");
+  }
+
+  void copyHostToDevice(void* dst, const void* src, std::size_t bytes) {
+    throwOnCudaError(
+        cudaMemcpyAsync(dst, src, bytes, cudaMemcpyHostToDevice, stream_),
+        "Failed to enqueue IBGDA device initialization copy");
+  }
+
+  void synchronize() {
+    cudaStream_t stream = stream_;
+    stream_ = nullptr;
+    const cudaError_t syncError = cudaStreamSynchronize(stream);
+    const cudaError_t destroyError = cudaStreamDestroy(stream);
+    throwOnCudaError(
+        syncError, "Failed to synchronize IBGDA device initialization");
+    throwOnCudaError(
+        destroyError, "Failed to destroy IBGDA device initialization stream");
+  }
+
+ private:
+  cudaStream_t stream_{nullptr};
+};
+
 struct QpTableLayout {
   std::size_t qpsPerChannel;
   std::size_t qpsPerNic;
@@ -67,19 +113,6 @@ IbLocalChannel* peerLocalChannels(
       static_cast<std::size_t>(peerIndex) * tables.maxChannels;
 }
 
-bool tryCudaMemset(void* ptr, std::size_t bytes, const char* label) noexcept {
-  if (bytes == 0) {
-    return true;
-  }
-  const cudaError_t error = cudaMemset(ptr, 0, bytes);
-  if (error == cudaSuccess) {
-    return true;
-  }
-  LOG(ERROR) << "Failed to clear fixed IBGDA " << label << ": "
-             << cudaGetErrorString(error);
-  return false;
-}
-
 std::vector<IbLocalChannel> buildLegacyLocalChannels(
     const P2pIbgdaTransportBuildParams& params,
     IbSendCompletionSlot* completionSlots) {
@@ -98,7 +131,6 @@ std::vector<IbLocalChannel> buildLegacyLocalChannels(
   }
   return localChannels;
 }
-
 } // namespace
 
 IbgdaFixedDeviceTables allocateIbgdaFixedDeviceTables(
@@ -206,33 +238,10 @@ IbSendCompletionSlot* allocateIbgdaCompletionSlots(
   cudaError_t err = cudaMalloc(&completionSlots, completionBytes);
   throwOnCudaError(err, "Failed to allocate GPU send completion slots");
   outGpuAllocations.push_back(completionSlots);
-  err = cudaMemset(completionSlots, 0, completionBytes);
-  throwOnCudaError(err, "Failed to zero GPU send completion slots");
+  CaptureSafeDeviceInitStream deviceInitStream;
+  deviceInitStream.memset(completionSlots, 0, completionBytes);
+  deviceInitStream.synchronize();
   return completionSlots;
-}
-
-bool resetIbgdaDeviceSlot(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex) noexcept {
-  if (tables.transports == nullptr || tables.qps == nullptr ||
-      tables.nicResources == nullptr || tables.localChannels == nullptr ||
-      peerIndex < 0 || peerIndex >= tables.numPeers) {
-    LOG(ERROR) << "Invalid fixed IBGDA reset peer=" << peerIndex;
-    return false;
-  }
-
-  const std::size_t nicBytes = static_cast<std::size_t>(tables.numNics) *
-      sizeof(NicDeviceIbgdaResources);
-  const bool nicsCleared = tryCudaMemset(
-      tables.nicResources +
-          static_cast<std::size_t>(peerIndex) * tables.numNics,
-      nicBytes,
-      "NIC resource entries");
-  const bool transportCleared = tryCudaMemset(
-      tables.transports + peerIndex,
-      sizeof(P2pIbgdaTransportDevice),
-      "device transport entry");
-  return nicsCleared && transportCleared;
 }
 
 void populateIbgdaDeviceRange(
@@ -270,7 +279,7 @@ void populateIbgdaDeviceRange(
       layout.qpsPerChannel;
   auto* const peerQpTable = peerQps(tables, layout, peerIndex);
 
-  cudaError_t err = cudaSuccess;
+  CaptureSafeDeviceInitStream deviceInitStream;
   for (int nic = 0; nic < tables.numNics; ++nic) {
     const auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
     CHECK_EQ(nicSpec.qps.size(), layout.qpsPerNic);
@@ -279,31 +288,23 @@ void populateIbgdaDeviceRange(
         peerQpTable + static_cast<std::size_t>(nic) * 2 * layout.qpsPerNic;
     if (qpCount != 0) {
       const std::size_t qpBytes = qpCount * sizeof(doca_gpu_dev_verbs_qp*);
-      err = cudaMemcpy(
-          mainQps + beginQp,
-          nicSpec.qps.data() + beginQp,
-          qpBytes,
-          cudaMemcpyHostToDevice);
-      throwOnCudaError(err, "Failed to populate fixed main QP range");
-      err = cudaMemcpy(
+      deviceInitStream.copyHostToDevice(
+          mainQps + beginQp, nicSpec.qps.data() + beginQp, qpBytes);
+      deviceInitStream.copyHostToDevice(
           mainQps + layout.qpsPerNic + beginQp,
           nicSpec.companionQps.data() + beginQp,
-          qpBytes,
-          cudaMemcpyHostToDevice);
-      throwOnCudaError(err, "Failed to populate fixed companion QP range");
+          qpBytes);
     }
   }
 
   auto* const peerLocalChannelTable = peerLocalChannels(tables, peerIndex);
   if (beginChannel != endChannel) {
-    err = cudaMemcpy(
+    deviceInitStream.copyHostToDevice(
         peerLocalChannelTable + beginChannel,
         rangeLocalChannels.data(),
-        rangeLocalChannels.size() * sizeof(IbLocalChannel),
-        cudaMemcpyHostToDevice);
-    throwOnCudaError(
-        err, "Failed to populate fixed local channel descriptor range");
+        rangeLocalChannels.size() * sizeof(IbLocalChannel));
   }
+  deviceInitStream.synchronize();
 }
 
 void publishIbgdaDeviceSlot(
@@ -347,14 +348,13 @@ void publishIbgdaDeviceSlot(
             nicSpec.deviceId,
         });
   }
-  cudaError_t err = cudaMemcpy(
+  CaptureSafeDeviceInitStream deviceInitStream;
+  deviceInitStream.copyHostToDevice(
       tables.nicResources +
           static_cast<std::size_t>(peerIndex) * tables.numNics,
       hostNicResources.data(),
       static_cast<std::size_t>(tables.numNics) *
-          sizeof(NicDeviceIbgdaResources),
-      cudaMemcpyHostToDevice);
-  throwOnCudaError(err, "Failed to publish fixed NIC resource entries");
+          sizeof(NicDeviceIbgdaResources));
 
   auto* const peerLocalChannelTable = peerLocalChannels(tables, peerIndex);
   P2pIbgdaTransportDevice hostTransport(
@@ -373,56 +373,11 @@ void publishIbgdaDeviceSlot(
       DeviceSpan<IbLocalChannel>(peerLocalChannelTable, params.maxChannels),
       params.channelLayout,
       params.collapsedCq);
-  err = cudaMemcpy(
+  deviceInitStream.copyHostToDevice(
       tables.transports + peerIndex,
       &hostTransport,
-      sizeof(P2pIbgdaTransportDevice),
-      cudaMemcpyHostToDevice);
-  throwOnCudaError(err, "Failed to publish fixed device transport slot");
-}
-
-bool clearIbgdaDeviceRange(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex,
-    int beginChannel,
-    int endChannel) noexcept {
-  if (tables.qps == nullptr || tables.localChannels == nullptr ||
-      peerIndex < 0 || peerIndex >= tables.numPeers || beginChannel < 0 ||
-      beginChannel > endChannel || endChannel > tables.maxChannels) {
-    LOG(ERROR) << "Invalid fixed IBGDA clear range: peer=" << peerIndex
-               << " begin=" << beginChannel << " end=" << endChannel;
-    return false;
-  }
-
-  const QpTableLayout layout = qpTableLayout(tables);
-  const std::size_t beginQp =
-      static_cast<std::size_t>(beginChannel) * layout.qpsPerChannel;
-  const std::size_t qpCount =
-      static_cast<std::size_t>(endChannel - beginChannel) *
-      layout.qpsPerChannel;
-  auto* const peerQpTable = peerQps(tables, layout, peerIndex);
-
-  bool ok = true;
-  const std::size_t qpBytes = qpCount * sizeof(doca_gpu_dev_verbs_qp*);
-  for (int nic = 0; nic < tables.numNics; ++nic) {
-    auto* mainQps =
-        peerQpTable + static_cast<std::size_t>(nic) * 2 * layout.qpsPerNic;
-    ok = tryCudaMemset(mainQps + beginQp, qpBytes, "main QP range") && ok;
-    ok = tryCudaMemset(
-             mainQps + layout.qpsPerNic + beginQp,
-             qpBytes,
-             "companion QP range") &&
-        ok;
-  }
-
-  const std::size_t localChannelCount =
-      static_cast<std::size_t>(endChannel - beginChannel);
-  ok = tryCudaMemset(
-           peerLocalChannels(tables, peerIndex) + beginChannel,
-           localChannelCount * sizeof(IbLocalChannel),
-           "local channel descriptor range") &&
-      ok;
-  return ok;
+      sizeof(P2pIbgdaTransportDevice));
+  deviceInitStream.synchronize();
 }
 
 P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
