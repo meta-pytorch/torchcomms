@@ -120,7 +120,7 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
         .ibConfig =
             {
                 .cudaDevice = localRank,
-                .max_num_channels = kIbgdaMaxGroups,
+                .maxGroups = kIbgdaMaxGroups,
             },
         .topoConfig =
             {
@@ -136,10 +136,9 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
   int localSize_{0};
 };
 
-// MNNVL (GB200 NVL72):  all peers in the same fabric → NVL preferred, IBGDA
-// universal. Non-MNNVL (H100 / standalone GB200): same-node → NVL preferred,
-// cross-node → IBGDA preferred. On both platforms, IBGDA covers ALL non-self
-// peers.
+// MNNVL (GB200 NVL72): all peers in the same fabric, so NVL is preferred.
+// Non-MNNVL (H100 / standalone GB200): same-node peers prefer NVL and
+// cross-node peers prefer IBGDA.
 TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
   if (numRanks < 4) {
     GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
@@ -150,24 +149,21 @@ TEST_F(MultiPeerTransportMultiNodeFixture, TopologyDiscoveryMultiNode) {
   int nvlCount = states->nvl_peer_ranks().size();
   int ibgdaCount = states->ib_peer_ranks().size();
 
-  // IBGDA is universal — always covers all non-self peers.
-  EXPECT_EQ(ibgdaCount, numRanks - 1)
-      << "IBGDA should cover all non-self peers regardless of platform";
-
   if (isMnnvl_) {
-    // All ranks share the same NVLink fabric → every peer also has NVL.
+    // All ranks share the same NVLink fabric, so no preferred-IB peers exist.
     EXPECT_EQ(nvlCount, numRanks - 1) << "MNNVL: all peers should be NVL";
+    EXPECT_EQ(ibgdaCount, 0) << "MNNVL: no peers should prefer IBGDA";
   } else {
-    // Same-node peers use NVL, cross-node peers use IBGDA as preferred.
     EXPECT_EQ(nvlCount, localSize_ - 1)
         << "Non-MNNVL: NVL peers should be same-node only";
+    EXPECT_EQ(ibgdaCount, numRanks - localSize_)
+        << "Non-MNNVL: IBGDA peers should be cross-node only";
   }
 
   // Self should always be SELF.
   EXPECT_EQ(states->get_transport_type(globalRank), TransportType::SELF);
 
-  // Invariant: NVL peers are a subset of IBGDA peers.
-  EXPECT_LE(nvlCount, ibgdaCount);
+  EXPECT_EQ(nvlCount + ibgdaCount, numRanks - 1);
 
   COMMS_LOG(
       INFO,
@@ -195,9 +191,8 @@ TEST_F(MultiPeerTransportMultiNodeFixture, ExchangeMultiNode) {
 
 // Verify the device handle reflects the platform-specific topology.
 //
-// IBGDA transports are always populated for all peers.
-// NVL transports are populated based on platform:
-//   MNNVL: all peers,  Non-MNNVL: same-node peers only.
+// Preferred transport counts vary by platform:
+//   MNNVL: all NVL, Non-MNNVL: same-node NVL and cross-node IBGDA.
 TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
   if (numRanks < 4) {
     GTEST_SKIP() << "Requires >= 4 ranks (nnodes=2, ppn=2)";
@@ -222,9 +217,8 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
         << "Non-MNNVL: NVL peers should be same-node only";
   }
 
-  // IBGDA is universal — all non-self peers.
-  EXPECT_EQ(handle.numIbPeers, numRanks - 1)
-      << "IBGDA transports should cover all peers";
+  const int expectedIbPeers = isMnnvl_ ? 0 : numRanks - localSize_;
+  EXPECT_EQ(handle.numIbPeers, expectedIbPeers);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -277,7 +271,6 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   }
 
   auto states = create_transport_states();
-  EXPECT_EQ(states->ibgda_max_groups(), kIbgdaMaxGroups);
   states->exchange();
 
   // NVL peer accessor — always has at least same-node peers.
@@ -291,20 +284,34 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
     (void)p2p;
   }
 
-  // IBGDA is universal — accessor works for ALL non-self peers.
-  ASSERT_EQ(static_cast<int>(states->ib_peer_ranks().size()), numRanks - 1);
-  for (int r : states->ib_peer_ranks()) {
-    auto* p2p = states->get_p2p_ibgda_transport_device(r);
-    EXPECT_NE(p2p, nullptr) << "IBGDA transport device null for peer " << r;
+  const int probePeer = (globalRank + 1) % numRanks;
+  if (!states->has_ibgda(probePeer)) {
+    GTEST_SKIP() << "Communicator has no underlying IBGDA transport";
+  }
+  EXPECT_EQ(states->ibgda_max_groups(), kIbgdaMaxGroups);
+
+  // Once constructed, the underlying IBGDA transport can serve every
+  // non-self peer, including NVL-preferred peers.
+  std::vector<int> fallbackPeers;
+  fallbackPeers.reserve(numRanks - 1);
+  for (int peer = 0; peer < numRanks; ++peer) {
+    if (peer == globalRank) {
+      continue;
+    }
+    fallbackPeers.push_back(peer);
+  }
+  (void)states->get_device_handle(fallbackPeers);
+  for (int peer : fallbackPeers) {
+    auto* p2p = states->get_p2p_ibgda_transport_device(peer);
+    EXPECT_NE(p2p, nullptr) << "IBGDA transport device null for peer " << peer;
   }
 
   COMMS_LOG(
       INFO,
-      "Rank {}: isMnnvl={}, validated {} NVL peers, {} IBGDA peers",
+      "Rank {}: isMnnvl={}, validated {} NVL peers and IBGDA fallback",
       globalRank,
       isMnnvl_,
-      states->nvl_peer_ranks().size(),
-      states->ib_peer_ranks().size());
+      states->nvl_peer_ranks().size());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }

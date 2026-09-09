@@ -174,7 +174,6 @@ struct ChannelSlotView {
   IbLocalChannel& channel; ///< shared: sendQp, recvQp, recvDataReadyLaneCursor
   IbChannelProtoSlot& local; ///< this protocol's cursors and local buffer views
   IbRemoteChannel remote; ///< this protocol's peer-side views
-  std::size_t stagingBase; ///< byte offset of this slot's staging window
 };
 
 template <typename P, typename Transport>
@@ -1328,7 +1327,6 @@ __device__ __forceinline__ void send_impl(
       const int ringSlot = static_cast<int>(absSlot % pipelineDepth);
       const uint64_t pipelineCycle = absSlot / pipelineDepth;
       const std::size_t stagingOff =
-          static_cast<std::size_t>(groupId) * pipelineBytes +
           static_cast<std::size_t>(ringSlot) * perBlockSlot +
           subStep * chunkStride;
       const std::size_t dataOff = s * chunkSize;
@@ -1349,7 +1347,7 @@ __device__ __forceinline__ void send_impl(
       //     return value is the compressed byte count the leader uses to size
       //     the RDMA put.
       const std::size_t copyResult = CopyOp::send(
-          channelLayout.sendStagingPtr + stagingOff,
+          static_cast<char*>(ch.local.sendStaging.ptr) + stagingOff,
           static_cast<const char*>(src) + dataOff,
           bytesThis,
           group,
@@ -1391,7 +1389,7 @@ __device__ __forceinline__ void send_impl(
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
         const auto completion = transport.put(
             solo,
-            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            ch.local.sendStaging.subBuffer(stagingOff),
             remoteChannel.recvStaging.subBuffer(stagingOff),
             copyResult,
             remoteChannel.dataReady,
@@ -1446,7 +1444,7 @@ __device__ __forceinline__ void send_impl(
           (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, payloadBytes, nbytes);
-      const std::size_t stagingOff = ch.stagingBase +
+      const std::size_t stagingOff =
           static_cast<std::size_t>(slot) * perBlockSlotWire +
           Proto::wire_bytes(chunkOff);
       const uint64_t streamWire = Proto::wire_bytes(streamPayload);
@@ -1495,7 +1493,7 @@ __device__ __forceinline__ void send_impl(
       [[maybe_unused]] const SendSignal sig = prepareSendBuf<CopyOp>(
           Proto{},
           group,
-          channelLayout.sendStagingPtr + stagingOff,
+          static_cast<char*>(ch.local.sendStaging.ptr) + stagingOff,
           static_cast<const char*>(src) + dataOff,
           payloadBytes,
           nbytes,
@@ -1575,7 +1573,7 @@ __device__ __forceinline__ void send_impl(
               bytesThis);
           const auto completion = transport.put(
               solo,
-              channelLayout.sendStagingBuf.subBuffer(stagingOff),
+              ch.local.sendStaging.subBuffer(stagingOff),
               remoteChannel.recvStaging.subBuffer(stagingOff),
               bytesThis,
               sig.buf,
@@ -1614,7 +1612,7 @@ __device__ __forceinline__ void send_impl(
         ibOps->submit_send(
             transport,
             group,
-            channelLayout.sendStagingBuf.subBuffer(stagingOff),
+            ch.local.sendStaging.subBuffer(stagingOff),
             stagingOff,
             bytesThis,
             protocolBytesThis,
@@ -1766,13 +1764,11 @@ __device__ __forceinline__ void recv_impl(
   auto& channelLayout = transport.channel_layout();
   const SendRecvGeometry geometry =
       calcGeometry(Proto{}, channelLayout, group, nbytes, max_signal_bytes);
-  const int groupId = geometry.groupId;
   const std::size_t perBlockSlotWire = geometry.perBlockSlotWire;
   const std::size_t perBlockSlotPayload = geometry.perBlockSlotPayload;
   [[maybe_unused]] const std::size_t chunkPayload = geometry.chunkPayload;
   [[maybe_unused]] const std::size_t pipelineBytesPayload =
       geometry.pipelineBytesPayload;
-  const std::size_t pipelineBytesWire = geometry.pipelineBytesWire;
   [[maybe_unused]] const std::size_t payloadProtocolBytes =
       geometry.payloadProtocolBytes;
 
@@ -1895,7 +1891,6 @@ __device__ __forceinline__ void recv_impl(
       const std::size_t absSlot = baseSlot + slotIdx;
       const int ringSlot = static_cast<int>(absSlot % pipelineDepth);
       const std::size_t stagingOff =
-          static_cast<std::size_t>(groupId) * pipelineBytesWire +
           static_cast<std::size_t>(ringSlot) * perBlockSlot +
           subStep * chunkStride;
       const std::size_t dataOff = s * chunkSize;
@@ -1914,7 +1909,7 @@ __device__ __forceinline__ void recv_impl(
       // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
           static_cast<char*>(dst) + dataOff,
-          channelLayout.recvStagingPtr + stagingOff,
+          ch.local.recvStaging + stagingOff,
           bytesThis,
           group,
           dataOff,
@@ -1958,7 +1953,7 @@ __device__ __forceinline__ void recv_impl(
       // wire_bytes(cursor)). Identity for Simple; kPacketBytes:kData for LL.
       const std::size_t protocolBytesThis = bytesThis +
           (isFinalChunk ? Proto::wire_bytes(protocolTailPadding) : 0);
-      const std::size_t stagingOff = ch.stagingBase +
+      const std::size_t stagingOff =
           static_cast<std::size_t>(slot) * perBlockSlotWire +
           Proto::wire_bytes(chunkOff);
       // flagVal (a per-ring-pass counter) for this chunk's slot; LL stamps it
@@ -1980,7 +1975,7 @@ __device__ __forceinline__ void recv_impl(
             localChannel,
             localDataReady,
             static_cast<char*>(dst) + dataOff,
-            channelLayout.recvStagingPtr + stagingOff,
+            ch.local.recvStaging + stagingOff,
             payloadBytes,
             nbytes,
             dataOff,
@@ -2025,7 +2020,7 @@ __device__ __forceinline__ void recv_impl(
         if (validBytes > 0) {
           CopyOp::recv(
               static_cast<char*>(dst) + dataOff,
-              channelLayout.recvStagingPtr + stagingOff,
+              ch.local.recvStaging + stagingOff,
               validBytes,
               group,
               dataOff,
@@ -2262,7 +2257,7 @@ __device__ __forceinline__ void forward_impl(
         static_cast<int>(recvPipelineOff / recvGeo.perBlockSlotPayload);
     const std::size_t recvChunkOff =
         recvPipelineOff - recvSlot * recvGeo.perBlockSlotPayload;
-    const std::size_t recvStagingOff = recvCh.stagingBase +
+    const std::size_t recvStagingOff =
         static_cast<std::size_t>(recvSlot) * recvGeo.perBlockSlotWire +
         Proto::wire_bytes(recvChunkOff);
     const std::size_t recvSlotRemaining =
@@ -2276,7 +2271,7 @@ __device__ __forceinline__ void forward_impl(
         static_cast<int>(fwdPipelineOff / fwdGeo.perBlockSlotPayload);
     const std::size_t fwdChunkOff =
         fwdPipelineOff - fwdSlot * fwdGeo.perBlockSlotPayload;
-    const std::size_t fwdStagingOff = fwdCh.stagingBase +
+    const std::size_t fwdStagingOff =
         static_cast<std::size_t>(fwdSlot) * fwdGeo.perBlockSlotWire +
         Proto::wire_bytes(fwdChunkOff);
     const std::size_t fwdSlotRemaining =
@@ -2329,8 +2324,8 @@ __device__ __forceinline__ void forward_impl(
           recvLocalChannel,
           recvDataReady,
           dst ? static_cast<char*>(dst) + dataOff : nullptr,
-          fwdChannelLayout.sendStagingPtr + fwdStagingOff,
-          channelLayout.recvStagingPtr + recvStagingOff,
+          static_cast<char*>(fwdCh.local.sendStaging.ptr) + fwdStagingOff,
+          recvCh.local.recvStaging + recvStagingOff,
           payloadBytes,
           nbytes,
           dataOff,
@@ -2428,7 +2423,7 @@ __device__ __forceinline__ void forward_impl(
             bytesThis);
         const auto completion = fwdTransport.put(
             solo,
-            fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+            fwdCh.local.sendStaging.subBuffer(fwdStagingOff),
             fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
             bytesThis,
             sig.buf,
@@ -2477,8 +2472,8 @@ __device__ __forceinline__ void forward_impl(
       if (validBytes > 0) {
         CopyOp::forward(
             dst ? static_cast<char*>(dst) + dataOff : nullptr,
-            fwdChannelLayout.sendStagingPtr + fwdStagingOff,
-            channelLayout.recvStagingPtr + recvStagingOff,
+            static_cast<char*>(fwdCh.local.sendStaging.ptr) + fwdStagingOff,
+            recvCh.local.recvStaging + recvStagingOff,
             validBytes,
             group,
             dataOff,
@@ -2493,7 +2488,7 @@ __device__ __forceinline__ void forward_impl(
       ibOps->submit_send(
           fwdTransport,
           group,
-          fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+          fwdCh.local.sendStaging.subBuffer(fwdStagingOff),
           fwdStagingOff,
           bytesThis,
           fwdProtocolBytesThis,
@@ -2747,15 +2742,18 @@ __device__ __forceinline__ ChannelSlotView acquire_channel(
     ThreadGroup& group) {
   validate_progress_group(channelLayout, group);
   const int channelId = static_cast<int>(group.group_id);
-  const int slotIndex =
-      channelLayout.protoChannelSlot(channelId, P::kProtoSlot);
+  IbLocalChannel& channel =
+      transport.local_channel(static_cast<uint32_t>(channelId));
+  IbChannelProtoSlot& local = channel.protos[P::kProtoSlot];
   return ChannelSlotView{
-      .channel = transport.local_channel(static_cast<uint32_t>(channelId)),
-      .local = transport.template local_channel_slot<P>(
-          static_cast<uint32_t>(channelId)),
-      .remote = makeIbRemoteChannel(channelLayout, slotIndex),
-      .stagingBase =
-          static_cast<std::size_t>(slotIndex) * pipeline_window(channelLayout),
+      .channel = channel,
+      .local = local,
+      .remote =
+          IbRemoteChannel{
+              .dataReady = local.remoteDataReady,
+              .slotFree = local.remoteSlotFree,
+              .recvStaging = local.remoteRecvStaging,
+          },
   };
 }
 
