@@ -85,10 +85,10 @@ struct ThreadGroup {
   // For warps: global warp ID. Use for work distribution.
   uint32_t group_id;
 
-  // block_id - Physical CUDA block ID that owns transport resources.
-  // Unlike group_id, this is preserved when groups are partitioned or
-  // renumbered. IBGDA QP selection uses block_id so logical group routing
-  // cannot accidentally move a group onto another block's QPs.
+  // block_id - Physical CUDA block ID. Unlike group_id, this is preserved when
+  // groups are partitioned or renumbered. Channel-indexed IB transports use
+  // group_id; block_id remains available to algorithms that need physical
+  // launch identity.
   uint32_t block_id;
 
   // total_groups - Total number of groups in entire kernel

@@ -18,7 +18,7 @@ constexpr uint32_t kProgressAborted = 2U;
  *
  * `stagingOff` is an offset into the transport-owned send/recv staging
  * buffers. `dataOff` is the matching protocol offset into the caller's user
- * buffer. `bytes` never crosses a per-block staging partition or the
+ * buffer. `bytes` never crosses a per-channel pipeline slot or the
  * reserved protocol byte count. `streamEnd` is the absolute protocol byte
  * value after this chunk and is used as the DATA_READY and SLOT_FREE readiness
  * threshold. `slotId` and `pipelineGeneration` identify the local completion
@@ -46,12 +46,9 @@ struct ProgressChunk {
  * and `group`, so caching them would duplicate HBM state for no gain.
  */
 struct ProgressGeometry {
-  // Two independent coordinates, never merged: `groupId` is the LOGICAL channel
-  // (and therefore the QP channel); `slotIndex` is this protocol's flat
-  // resource slot, addressing slot-indexed storage. Merging them would force a
-  // division to recover one from the other on the QP path.
+  // groupId is the logical channel and therefore the QP channel. Protocol-
+  // specific buffer bindings are resolved through that channel's stable slot.
   int groupId;
-  int slotIndex;
   std::size_t payloadBytes; // raw nbytes, for valid-byte masking
   std::size_t
       protocolBytes; // payload rounded up to Proto::kData (cursor bound)
@@ -355,7 +352,7 @@ template <typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ void progress_send_prepare_buf(
     protocol::Simple,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    char* sendStaging,
     const ProgressChunk& chunk,
     const void* __restrict__ src,
     std::size_t payloadBytes,
@@ -365,7 +362,7 @@ __device__ __forceinline__ void progress_send_prepare_buf(
       valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
   if (validBytes > 0) {
     CopyOp::send(
-        channelLayout.sendStagingPtr + chunk.stagingOff,
+        sendStaging + chunk.stagingOff,
         static_cast<const char*>(src) + chunk.dataOff,
         validBytes,
         group,
@@ -374,7 +371,7 @@ __device__ __forceinline__ void progress_send_prepare_buf(
   }
 #else
   (void)group;
-  (void)channelLayout;
+  (void)sendStaging;
   (void)chunk;
   (void)src;
   (void)payloadBytes;
@@ -406,7 +403,7 @@ template <typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ void progress_send_prepare_buf(
     protocol::LL,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    char* sendStaging,
     const ProgressChunk& chunk,
     const void* __restrict__ src,
     std::size_t payloadBytes,
@@ -422,7 +419,7 @@ __device__ __forceinline__ void progress_send_prepare_buf(
       valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
   CopyOp::template sendLL<P>(
       group,
-      channelLayout.sendStagingPtr + chunk.stagingOff,
+      sendStaging + chunk.stagingOff,
       static_cast<const char*>(src) + chunk.dataOff,
       validBytes,
       chunk.dataOff,
@@ -430,7 +427,7 @@ __device__ __forceinline__ void progress_send_prepare_buf(
       args...);
 #else
   (void)group;
-  (void)channelLayout;
+  (void)sendStaging;
   (void)chunk;
   (void)src;
   (void)payloadBytes;
@@ -545,7 +542,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     progress_send_prepare_buf<CopyOp>(
         Proto{},
         group,
-        channelLayout,
+        static_cast<char*>(ch.local.sendStaging.ptr),
         chunk,
         state.activeUserBuf,
         progress_params.payloadBytes,
@@ -668,7 +665,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           protocolBytesThis);
       const auto completion = transport.put(
           solo,
-          channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
+          ch.local.sendStaging.subBuffer(chunk.stagingOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           chunk.wireBytes,
           sig.buf,
@@ -1130,7 +1127,7 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  */
 // Non-blocking readiness check for one recv chunk (Simple: poll the round-robin
 // DATA_READY lane that carried this chunk; leader-only + broadcast, no spin).
-// `channelLayout`/`chunk` are unused by Simple (they carry the recv staging +
+// `recvStaging`/`chunk` are unused by Simple (they carry the recv staging +
 // packet geometry the LL overload polls); the seam passes them so both
 // protocols share the call site in progress_recv_once.
 template <typename Transport>
@@ -1138,7 +1135,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
     protocol::Simple,
     Transport& transport,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    const char* recvStaging,
     const ProgressChunk& chunk,
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
@@ -1148,7 +1145,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
     PipesTraceProgressState* traceState,
     uint8_t qpLane) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  (void)channelLayout;
+  (void)recvStaging;
   (void)chunk;
   uint32_t ready = 1;
   if (group.is_leader()) {
@@ -1209,7 +1206,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
 #else
   (void)transport;
   (void)group;
-  (void)channelLayout;
+  (void)recvStaging;
   (void)chunk;
   (void)localChannel;
   (void)localDataReady;
@@ -1228,7 +1225,7 @@ template <typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ void progress_recv_consume_buf(
     protocol::Simple,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    const char* recvStaging,
     const ProgressChunk& chunk,
     void* __restrict__ dst,
     std::size_t payloadBytes,
@@ -1248,7 +1245,7 @@ __device__ __forceinline__ void progress_recv_consume_buf(
     }
     CopyOp::recv(
         static_cast<char*>(dst) + chunk.dataOff,
-        channelLayout.recvStagingPtr + chunk.stagingOff,
+        recvStaging + chunk.stagingOff,
         validBytes,
         group,
         chunk.dataOff,
@@ -1263,7 +1260,7 @@ __device__ __forceinline__ void progress_recv_consume_buf(
   }
 #else
   (void)group;
-  (void)channelLayout;
+  (void)recvStaging;
   (void)chunk;
   (void)dst;
   (void)payloadBytes;
@@ -1292,7 +1289,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
     protocol::LL,
     Transport& transport,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    const char* recvStaging,
     const ProgressChunk& chunk,
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
@@ -1309,7 +1306,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   (void)traceContext;
   (void)traceState;
   (void)qpLane;
-  const char* staging = channelLayout.recvStagingPtr + chunk.stagingOff;
+  const char* staging = recvStaging + chunk.stagingOff;
   // Packet geometry lives in LLImpl, which owns the format; this seam only
   // decides what to do with the verdict -- report not-ready on false, rather
   // than spin.
@@ -1357,7 +1354,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
 #else
   (void)transport;
   (void)group;
-  (void)channelLayout;
+  (void)recvStaging;
   (void)chunk;
   (void)localChannel;
   (void)localDataReady;
@@ -1382,7 +1379,7 @@ template <typename CopyOp = Memcpy, typename... Args>
 __device__ __forceinline__ void progress_recv_consume_buf(
     protocol::LL,
     ThreadGroup& group,
-    const IbChannelLayout& channelLayout,
+    const char* recvStaging,
     const ProgressChunk& chunk,
     void* __restrict__ dst,
     std::size_t payloadBytes,
@@ -1407,7 +1404,7 @@ __device__ __forceinline__ void progress_recv_consume_buf(
   CopyOp::template recvLL<P>(
       group,
       static_cast<char*>(dst) + chunk.dataOff,
-      channelLayout.recvStagingPtr + chunk.stagingOff,
+      recvStaging + chunk.stagingOff,
       validBytes,
       chunk.dataOff,
       static_cast<typename P::FlagType>(chunk.flagVal),
@@ -1415,7 +1412,7 @@ __device__ __forceinline__ void progress_recv_consume_buf(
       args...);
 #else
   (void)group;
-  (void)channelLayout;
+  (void)recvStaging;
   (void)chunk;
   (void)dst;
   (void)payloadBytes;
@@ -1485,7 +1482,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
       Proto{},
       transport,
       group,
-      channelLayout,
+      ch.local.recvStaging,
       chunk,
       localChannel,
       localDataReady,
@@ -1505,7 +1502,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
   progress_recv_consume_buf<CopyOp>(
       Proto{},
       group,
-      channelLayout,
+      ch.local.recvStaging,
       chunk,
       state.activeUserBuf,
       progress_params.payloadBytes,
@@ -1656,7 +1653,7 @@ progress_recv_acquire_once(
       Proto{},
       transport,
       group,
-      channelLayout,
+      ch.local.recvStaging,
       chunk,
       ch.channel,
       ch.local.dataReady,
@@ -1673,7 +1670,7 @@ progress_recv_acquire_once(
     return IbgdaSendRecvProgressStatus::Waiting;
   }
 
-  out.staging = channelLayout.recvStagingPtr + chunk.stagingOff;
+  out.staging = ch.local.recvStaging + chunk.stagingOff;
   out.validBytes = valid_payload_bytes(
       chunk.dataOff, chunk.payloadBytes, geometry.payloadBytes);
   out.dataOff = chunk.dataOff;
@@ -1936,7 +1933,6 @@ __device__ __forceinline__ ProgressGeometry make_progress_geometry(
   }
   return ProgressGeometry{
       .groupId = groupId,
-      .slotIndex = channelLayout.protoChannelSlot(groupId, Proto::kProtoSlot),
       .payloadBytes = nbytes,
       .protocolBytes = protocolBytes,
       .perBlockSlotWire = perBlockSlotWire,
@@ -2136,9 +2132,7 @@ __device__ __forceinline__ ProgressChunk next_chunk(
       : dataRemaining;
   payloadBytes = payloadBytes < slotRemaining ? payloadBytes : slotRemaining;
   return ProgressChunk{
-      .stagingOff = static_cast<std::size_t>(geometry.slotIndex) *
-              geometry.perChannelBufferSize +
-          static_cast<std::size_t>(slot) * geometry.perBlockSlotWire +
+      .stagingOff = static_cast<std::size_t>(slot) * geometry.perBlockSlotWire +
           Proto::wire_bytes(chunkOff),
       .dataOff = payloadNextByte,
       .payloadBytes = payloadBytes,

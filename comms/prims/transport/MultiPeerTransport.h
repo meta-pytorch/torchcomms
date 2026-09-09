@@ -3,8 +3,11 @@
 #pragma once
 
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <optional>
+#include <span>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -36,9 +39,57 @@ class Abort;
 
 namespace comms::prims {
 
-// Forward declaration — include MultiPeerDeviceHandle.cuh to use
-// get_device_handle(peers).
 struct MultiPeerDeviceHandle;
+
+namespace detail {
+
+enum class PrimsChannelMode : uint32_t {
+  kEager = 0,
+  kLazyPrefix = 1,
+};
+
+enum class PrimsTransportRoute : uint8_t {
+  kSelf = 0,
+  kNvl = 1,
+  kIbgda = 2,
+  kIbrc = 3,
+};
+
+struct ChannelProtocolRecord {
+  PrimsChannelMode mode{PrimsChannelMode::kEager};
+  uint32_t channelCapacity{0};
+
+  bool operator==(const ChannelProtocolRecord&) const = default;
+};
+
+static_assert(sizeof(ChannelProtocolRecord) == 8);
+static_assert(std::is_trivially_copyable_v<ChannelProtocolRecord>);
+
+void validateChannelProtocolRecords(
+    std::span<const ChannelProtocolRecord> records);
+
+void exchangeAndValidateChannelProtocol(
+    meta::comms::IBootstrap& bootstrap,
+    int rank,
+    int nRanks,
+    const ChannelProtocolRecord& localRecord);
+
+void validatePrimsTransportRoutes(
+    std::span<const PrimsTransportRoute> routeMatrix,
+    int nRanks);
+
+void exchangeAndValidatePrimsTransportRoutes(
+    meta::comms::IBootstrap& bootstrap,
+    int rank,
+    int nRanks,
+    std::span<const PrimsTransportRoute> localRoutes);
+
+} // namespace detail
+
+struct PeerChannelDemand {
+  int peerRank;
+  uint32_t ibChannels;
+};
 
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
@@ -51,31 +102,32 @@ struct MultiPeerTransportConfig {
   // See TopologyConfig for field-level documentation.
   TopologyConfig topoConfig;
 
-  // When true, IBGDA transport is never constructed and all non-self peers
+  // When true, no IB transport is constructed and all non-self peers
   // are routed over NVLink. Requires all ranks in the same NVL domain.
   bool disableIb{false};
 };
 
 /**
- * MultiPeerTransport - Host-side wrapper unifying NVLink, IBGDA, and
+ * MultiPeerTransport - Host-side wrapper unifying NVLink, IBGDA, IBRC, and
  * Self transports.
  *
- * IBGDA is the universal transport created for ALL non-self peers.
- * NVL is additionally created for NVLink-connected peers and is preferred
- * when available. get_transport_type() returns the preferred transport.
+ * NVL is created for NVLink-connected peers. The selected IB backend is
+ * created when at least one peer prefers IB; IBGDA can then also serve any
+ * non-self peer as an explicit fallback. get_transport_type() returns the
+ * preferred transport.
  *
  * Construction:
  *   1. Discovers topology (NVLink peers) via bootstrap allGather
  *      + cudaDeviceCanAccessPeer
  *   2. Creates MultiPeerNvlTransport for NVLink-reachable peers
  *      (using NvlBootstrapAdapter for local rank mapping)
- *   3. Always creates MultipeerIbgdaTransport for ALL peers
- *      (using full global rank space)
+ *   3. Creates the selected IB backend when the topology has IB peers
+ *      (using the full global rank space)
  *
  * Usage:
  *   auto transport = MultiPeerTransport(myRank, nRanks, deviceId, bootstrap,
- * config); transport.exchange();                            // COLLECTIVE auto
- * handle = transport.get_device_handle(peers); // For kernels
+ * config); transport.exchange(); // COLLECTIVE
+ * handle = transport.get_device_handle(demands); // For kernels
  */
 class MultiPeerTransport {
  public:
@@ -102,7 +154,7 @@ class MultiPeerTransport {
   MultiPeerTransport& operator=(MultiPeerTransport&&) = delete;
 
   /**
-   * COLLECTIVE: exchanges NVLink memory handles and IBGDA RDMA info.
+   * COLLECTIVE: exchanges NVLink memory handles and IB RDMA info.
    * All nRanks must call this.
    */
   void exchange();
@@ -230,8 +282,12 @@ class MultiPeerTransport {
   MultimemNvlTransportDevice get_multimem_nvl_transport_device() const;
 
   /**
+   * Return the IBGDA device slot. If the peer has no prepared channels, both
+   * endpoint ranks must enter this compatibility path and the peer is
+   * materialized at full capacity. An already-prepared prefix is not expanded.
+   *
    * @param globalPeerRank Global rank of the IBGDA peer.
-   * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
+   * @return Non-owning pointer to the GPU transport slot.
    */
   P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(
       int globalPeerRank) const;
@@ -242,14 +298,16 @@ class MultiPeerTransport {
   // --- Device handle (for passing to kernels) ---
 
   /**
-   * Materialize the specified IBGDA peers, then return the device handle.
-   * Use with lazy mode for DeviceWindow or direct Transport[] access.
+   * Compatibility overload for callers without channel geometry. Each valid
+   * IB peer is materialized at full configured capacity.
    *
-   * @param peers List of peer ranks to materialize
    * @throws std::runtime_error if called before exchange() or if peer
    * materialization fails.
    */
   MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
+
+  // Preserve source compatibility for calls such as get_device_handle({}).
+  MultiPeerDeviceHandle get_device_handle(std::initializer_list<int> peers);
 
   bool is_lazy_mode() const;
 
@@ -278,13 +336,48 @@ class MultiPeerTransport {
    */
   std::optional<int> nvl_max_num_channels() const;
 
-  /*
-   * Every requested edge must be requested by both endpoint ranks in the same
-   * connect round. Peer-vector order may differ between ranks.
+  /**
+   * Ensure the requested peer/channel prefixes are ready and return the
+   * stable device handle.
+   *
+   * A positive demand performs the peer's first connection when needed and
+   * grows an existing connection otherwise. Duplicate peers use their maximum
+   * demand. The merged batch is passed to the backend's canonical peer-edge
+   * ordering. Channel-lazy mode materializes the exact merged prefix without
+   * rounding it upward.
+   * Both endpoints must request the same exact prefix for each IB edge in the
+   * same connect round.
+   * Channel-eager mode promotes every positive demand to full capacity.
+   * On backends that support prefix growth, capture-time growth completes on
+   * graph-external device work before this call returns; graph replay performs
+   * no allocation or connection. Other backends must be prepared before
+   * capture and retain full-capacity materialization.
+   */
+  MultiPeerDeviceHandle get_device_handle(
+      std::span<const PeerChannelDemand> demands);
+
+  /**
+   * Ensure the same IB channel prefix is ready for every requested peer.
+   * This is the uniform-demand form for collectives that use the same channel
+   * count on every involved peer. It has the same validation and ordering
+   * requirements as the demand overload above.
+   */
+  void prepare_ib_channels(std::span<const int> peers, uint32_t ibChannels);
+
+  /**
+   * Compatibility entry point that materializes valid IB peers at full
+   * capacity. Every requested edge must be requested by both endpoint ranks in
+   * the same connect round; peer-vector order may differ between ranks.
    */
   void materializePeers(const std::vector<int>& peers);
 
+  /** Connect peers previously queued directly on the selected IB backend. */
   void connectPeers();
+
+  /** @return Configured IB channel capacity for each peer. */
+  uint32_t ib_channel_capacity() const {
+    return ibChannelCapacity_;
+  }
 
   // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
 
@@ -381,6 +474,8 @@ class MultiPeerTransport {
   // IBRC functional entry points fail fast until the backend is implemented.
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
   std::unique_ptr<MultipeerIbrcTransport> ibrcTransport_;
+  detail::PrimsChannelMode channelMode_{detail::PrimsChannelMode::kEager};
+  uint32_t ibChannelCapacity_{0};
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
@@ -390,6 +485,8 @@ class MultiPeerTransport {
   void initFromTopology(
       TopologyResult topo,
       const MultiPeerTransportConfig& config);
+  MultiPeerDeviceHandle make_device_handle() const;
+  void materializePeerChannels(std::span<const PeerChannelDemand> demands);
   void build_device_handle();
   void free_device_handle();
 

@@ -35,12 +35,49 @@ void writeIbrcDeviceSlot(
     int numCounterSlots,
     IbChannelLayout channelLayout,
     comms::fault_tolerance::AbortDevice abort) {
+  writeIbrcDeviceSlot(
+      slotsHost,
+      peerIndex,
+      queues,
+      numNics,
+      maxChannels,
+      qpsPerConnection,
+      kIbDirections,
+      localChannels,
+      remoteSignalBuf,
+      localSignalBuf,
+      counterDeviceBuf,
+      counterHostBuf,
+      numSignalSlots,
+      numCounterSlots,
+      channelLayout,
+      abort);
+}
+
+void writeIbrcDeviceSlot(
+    void* slotsHost,
+    int peerIndex,
+    DeviceSpan<IbrcCmdQueueDevice> queues,
+    uint32_t numNics,
+    uint32_t maxChannels,
+    uint32_t qpsPerConnection,
+    uint32_t qpDirectionCount,
+    DeviceSpan<IbLocalChannel> localChannels,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    IbgdaLocalBuffer localSignalBuf,
+    IbgdaLocalBuffer counterDeviceBuf,
+    IbgdaLocalBuffer counterHostBuf,
+    int numSignalSlots,
+    int numCounterSlots,
+    IbChannelLayout channelLayout,
+    comms::fault_tolerance::AbortDevice abort) {
   auto* slots = static_cast<P2pIbrcTransportDevice*>(slotsHost);
   new (&slots[peerIndex]) P2pIbrcTransportDevice(
       queues,
       numNics,
       maxChannels,
       qpsPerConnection,
+      qpDirectionCount,
       localChannels,
       remoteSignalBuf,
       localSignalBuf,
