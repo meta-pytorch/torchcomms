@@ -171,7 +171,9 @@ Args:
             GlobalInfo::totalCommDurPerIterationUs, memory
 
         Expensive — requires dumping + JSON serialization of collections:
-            CT_pastColls, CT_currentColls, CT_pendingColls,
+            CT_pastColls, CT_currentColls, CT_pendingColls, CT_terminalColls,
+            CT_terminalReasonCounts, CT_terminalTransitionDrops,
+            CT_pollLockTimeouts,
             PT_pastColls, PT_activeOps, PT_activeColls,
             MT_currentColl, MT_unfinishedRequests,
             MT_recvNotifiedByPeer, MT_putFinishedByPeer,

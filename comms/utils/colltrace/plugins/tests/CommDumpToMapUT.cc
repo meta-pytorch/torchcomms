@@ -34,12 +34,16 @@ TEST_F(CommDumpToMapTest, EmptyDump) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
   EXPECT_TRUE(map.find("CT_pastColls") != map.end());
   EXPECT_TRUE(map.find("CT_pendingColls") != map.end());
   EXPECT_TRUE(map.find("CT_currentColls") != map.end());
   EXPECT_TRUE(map.find("CT_currentIteration") != map.end());
   EXPECT_TRUE(map.find("CT_currentIterationCommTimeUs") != map.end());
+  EXPECT_TRUE(map.find("CT_terminalColls") != map.end());
+  EXPECT_TRUE(map.find("CT_terminalReasonCounts") != map.end());
+  EXPECT_TRUE(map.find("CT_terminalTransitionDrops") != map.end());
+  EXPECT_TRUE(map.find("CT_pollLockTimeouts") != map.end());
 
   // Verify the values are as expected for an empty dump
   EXPECT_EQ(map["CT_pastColls"], "[]");
@@ -47,6 +51,9 @@ TEST_F(CommDumpToMapTest, EmptyDump) {
   EXPECT_EQ(map["CT_currentColls"], "[]");
   EXPECT_EQ(map["CT_currentIteration"], "-1");
   EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "0");
+  EXPECT_EQ(map["CT_terminalColls"], "[]");
+  EXPECT_EQ(map["CT_terminalTransitionDrops"], "0");
+  EXPECT_EQ(map["CT_pollLockTimeouts"], "0");
 }
 
 // Test commDumpToMap with only pastColls
@@ -60,7 +67,7 @@ TEST_F(CommDumpToMapTest, WithPastColls) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
 
   // Parse the JSON for pastColls and verify it contains the expected data
   auto pastCollsJson = folly::parseJson(map["CT_pastColls"]);
@@ -83,7 +90,7 @@ TEST_F(CommDumpToMapTest, WithCurrentColl) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
 
   // Verify pastColls and pendingColls are empty
   EXPECT_EQ(map["CT_pastColls"], "[]");
@@ -107,7 +114,7 @@ TEST_F(CommDumpToMapTest, WithPendingColls) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
 
   // Verify pastColls is empty and currentColl is null
   EXPECT_EQ(map["CT_pastColls"], "[]");
@@ -130,7 +137,7 @@ TEST_F(CommDumpToMapTest, WithIterationFields) {
 
   auto map = commDumpToMap(dump);
 
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
   EXPECT_EQ(map["CT_currentIteration"], "42");
   EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "12345");
 }
@@ -157,7 +164,7 @@ TEST_F(CommDumpToMapTest, FullDump) {
   auto map = commDumpToMap(dump);
 
   // Verify the map has the expected keys
-  EXPECT_EQ(map.size(), 5);
+  EXPECT_EQ(map.size(), 9);
 
   // Parse the JSON for pastColls and verify it contains the expected data
   auto pastCollsJson = folly::parseJson(map["CT_pastColls"]);
@@ -179,4 +186,42 @@ TEST_F(CommDumpToMapTest, FullDump) {
   // Verify iteration fields
   EXPECT_EQ(map["CT_currentIteration"], "10");
   EXPECT_EQ(map["CT_currentIterationCommTimeUs"], "5000");
+}
+
+TEST_F(CommDumpToMapTest, TerminalDiagnostics) {
+  CollTraceDump dump;
+  auto record = createCollRecord(7);
+  dump.terminalColls.push_back(
+      TerminalCollRecord{
+          record,
+          CollTraceTerminalReason::GraphDestroyed,
+      });
+  dump.terminalReasonCounts[static_cast<std::size_t>(
+      CollTraceTerminalReason::GraphDestroyed)] = 3;
+  dump.terminalTransitionDrops = 2;
+  dump.pollLockTimeouts = 4;
+
+  auto map = commDumpToMap(dump);
+
+  auto terminalColls = folly::parseJson(map.at("CT_terminalColls"));
+  ASSERT_EQ(terminalColls.size(), 1);
+  EXPECT_EQ(terminalColls[0]["collId"], 7);
+  EXPECT_EQ(terminalColls[0]["terminalReason"], "graph_destroyed");
+  auto counts = folly::parseJson(map.at("CT_terminalReasonCounts"));
+  EXPECT_EQ(counts["graph_destroyed"], 3);
+  EXPECT_EQ(map.at("CT_terminalTransitionDrops"), "2");
+  EXPECT_EQ(map.at("CT_pollLockTimeouts"), "4");
+}
+
+TEST_F(CommDumpToMapTest, SelectsSingleTerminalDiagnostic) {
+  CollTraceDump dump;
+  dump.pollLockTimeouts = 4;
+
+  auto map = commDumpToMap(dump, {"CT_pollLockTimeouts"});
+
+  EXPECT_EQ(
+      map,
+      (std::unordered_map<std::string, std::string>{
+          {"CT_pollLockTimeouts", "4"},
+      }));
 }

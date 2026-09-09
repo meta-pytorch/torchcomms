@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -78,4 +79,104 @@ TEST(CommDumpPluginConcurrencyTest, DumpReturnsErrorOnReadLockTimeout) {
 
     // If we get here without crashing, this run passed.
   }
+}
+
+TEST(CommDumpPluginConcurrencyTest, PollCallbackUsesBoundedLockWait) {
+  CommDumpConfig config{
+      .pollLockAcquireTimeout = std::chrono::milliseconds{10},
+  };
+  CommDumpPlugin plugin{config};
+  auto event = createCollTraceEvent(1);
+  ASSERT_TRUE(plugin.afterCollKernelScheduled(event).hasValue());
+
+  std::promise<void> lockAcquired;
+  auto lockAcquiredFuture = lockAcquired.get_future();
+  std::promise<void> releaseLock;
+  auto releaseLockFuture = releaseLock.get_future();
+  std::thread reader([&] {
+    plugin.testOnlyExecuteWithReadLock([&] {
+      lockAcquired.set_value();
+      releaseLockFuture.wait();
+    });
+  });
+  if (lockAcquiredFuture.wait_for(std::chrono::seconds{1}) !=
+      std::future_status::ready) {
+    releaseLock.set_value();
+    reader.join();
+    ADD_FAILURE()
+        << "Timed out waiting for the test reader to acquire the lock";
+    return;
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  auto result = plugin.afterCollKernelStart(event);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_TRUE(result.hasError());
+  EXPECT_LT(elapsed, std::chrono::milliseconds{250});
+
+  releaseLock.set_value();
+  reader.join();
+
+  auto dump = plugin.dump();
+  ASSERT_TRUE(dump.hasValue());
+  EXPECT_TRUE(dump.value().pendingColls.empty());
+  EXPECT_TRUE(dump.value().currentColls.empty());
+  ASSERT_EQ(dump.value().terminalColls.size(), 1);
+  EXPECT_EQ(
+      dump.value().terminalColls.front().reason,
+      CollTraceTerminalReason::PluginContention);
+  EXPECT_EQ(dump.value().pollLockTimeouts, 1);
+}
+
+TEST(CommDumpPluginConcurrencyTest, DeferredCleanupSaturationReconcilesState) {
+  CommDumpPlugin plugin{CommDumpConfig{
+      .pendingCollSize = 4,
+      .currentCollSize = 4,
+      .terminalCollSize = 1,
+      .pollLockAcquireTimeout = std::chrono::milliseconds{10},
+  }};
+  auto event1 = createCollTraceEvent(1);
+  auto event2 = createCollTraceEvent(2);
+  auto event3 = createCollTraceEvent(3);
+  for (auto* event : {&event1, &event2, &event3}) {
+    ASSERT_TRUE(plugin.afterCollKernelScheduled(*event).hasValue());
+  }
+
+  std::promise<void> lockAcquired;
+  auto lockAcquiredFuture = lockAcquired.get_future();
+  std::promise<void> releaseLock;
+  auto releaseLockFuture = releaseLock.get_future();
+  std::thread reader([&] {
+    plugin.testOnlyExecuteWithReadLock([&] {
+      lockAcquired.set_value();
+      releaseLockFuture.wait();
+    });
+  });
+  if (lockAcquiredFuture.wait_for(std::chrono::seconds{1}) !=
+      std::future_status::ready) {
+    releaseLock.set_value();
+    reader.join();
+    ADD_FAILURE()
+        << "Timed out waiting for the test reader to acquire the lock";
+    return;
+  }
+
+  for (auto* event : {&event1, &event2, &event3}) {
+    EXPECT_TRUE(plugin.afterCollKernelStart(*event).hasError());
+  }
+  releaseLock.set_value();
+  reader.join();
+
+  auto dump = plugin.dump();
+  ASSERT_TRUE(dump.hasValue());
+  EXPECT_TRUE(dump.value().pendingColls.empty());
+  EXPECT_TRUE(dump.value().currentColls.empty());
+  EXPECT_EQ(dump.value().terminalColls.size(), 1);
+  EXPECT_EQ(
+      dump.value().terminalReasonCounts[static_cast<std::size_t>(
+          CollTraceTerminalReason::PluginContention)],
+      3);
+  EXPECT_EQ(dump.value().terminalTransitionDrops, 2);
+  EXPECT_EQ(dump.value().pollLockTimeouts, 3);
 }
