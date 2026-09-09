@@ -28,6 +28,7 @@ option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
 option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
+option(USE_UNIFLOW "Whether to build the uniflow._core Python extension" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
@@ -38,6 +39,7 @@ message(STATUS "  USE_RCCLX  : ${USE_RCCLX}")
 message(STATUS "  USE_XCCL  : ${USE_XCCL}")
 message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRANSPORT_CCA_HOOK : ${USE_TRANSPORT_CCA_HOOK}")
+message(STATUS "  USE_UNIFLOW    : ${USE_UNIFLOW}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
@@ -46,7 +48,7 @@ message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 # GLOO and XCCL are the only backends that are neither CUDA nor ROCm.
 # If no CUDA-dependent backend is enabled we can skip CUDA-specific setup
 # like TORCH_CUDA_ARCH_LIST detection.
-if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_TRITON)
+if(USE_NCCL OR USE_NCCLX OR USE_TRANSPORT OR USE_TRANSPORT_CCA_HOOK OR USE_UNIFLOW OR USE_TRITON)
     set(NEEDS_CUDA TRUE)
 else()
     set(NEEDS_CUDA FALSE)
@@ -284,6 +286,12 @@ endif()
 # the NCCLX static lib (ctran::RegCache), so also gate on USE_NCCLX.
 if (USE_TRANSPORT_CCA_HOOK AND USE_NCCLX)
     include(comms/torchcomms/transport/cca_hook/CMakeLists.txt)
+endif()
+# uniflow uses a subdirectory-style CMakeLists (shared with its standalone
+# build), so add_subdirectory rather than include().
+if (USE_UNIFLOW)
+    set(UNIFLOW_BUILD_PYTHON_EXT ON)
+    add_subdirectory(comms/uniflow)
 endif()
 if (USE_TRITON)
     include(comms/torchcomms/triton/CMakeLists.txt)
