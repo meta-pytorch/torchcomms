@@ -12,13 +12,6 @@
 #include "comms/utils/commSpecs.h"
 
 //------------------------------------------------------------------------------
-// External Kernel Declaration
-//------------------------------------------------------------------------------
-
-template <typename T, commRedOp_t redOp>
-extern __global__ void LocalReduceKernel(ReduceKernelBenchArg arg, int iters);
-
-//------------------------------------------------------------------------------
 // Common Helper Functions
 //------------------------------------------------------------------------------
 
@@ -84,12 +77,6 @@ class ReduceKernelBenchSetup : public CudaBenchBase {
   void* dstBuf_{nullptr};
 };
 
-// Template function pointers for different reduction operations
-template <typename T, commRedOp_t redOp>
-void* getReduceKernelFn() {
-  return reinterpret_cast<void*>(LocalReduceKernel<T, redOp>);
-}
-
 } // anonymous namespace
 
 //------------------------------------------------------------------------------
@@ -118,7 +105,7 @@ static void ReduceKernelPerf(uint32_t iters, folly::UserCounters& counters) {
   ReduceKernelBenchSetup bench(cudaDev, count, nGroups, nSrcs, nDsts);
   float totalTimeMs = 0.0f;
 
-  void* fn = getReduceKernelFn<int, op>();
+  void* fn = getLocalReduceKernelFn<int, op>();
 
   dim3 grid = {(unsigned int)nGroups, 1, 1};
   dim3 blocks = {1024, 1, 1};
