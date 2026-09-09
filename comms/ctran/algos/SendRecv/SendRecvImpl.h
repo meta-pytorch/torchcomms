@@ -320,6 +320,16 @@ inline commResult_t sendRecvImpl(
     FB_COMMCHECK(mapper->waitNotify(notifyVec[i].get()));
   }
 
+  // One flush covers the group: it is a loopback RDMA READ per local NIC, not
+  // per peer QP. Skip empty recvs so it targets a real registration.
+  for (auto i = 0; i < recvOpGroup.size(); i++) {
+    auto op = recvOpGroup[i];
+    if (notifyVec[i]->backend == CtranMapperBackend::IB && op->recv.count > 0) {
+      FB_COMMCHECK(mapper->flush(op->recv.recvbuff, recvMemHdl[i]));
+      break;
+    }
+  }
+
   // Deregister temporary registrations
   for (auto hdl : tmpRegHdls) {
     FB_COMMCHECK(mapper->deregDynamic(hdl));
