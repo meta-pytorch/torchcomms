@@ -11,10 +11,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -127,13 +130,132 @@ struct TransferResult {
 
 // Warmup then a pipelined timed loop keeping up to txDepth put/get calls in
 // flight over the single TCP connection.
+
+/*
+ * Filesystem barrier across the N rank-pairs of an aggregate run, keyed by
+ * (direction, size) so every size re-synchronises. Fails closed: a barrier
+ * that timed out silently would restore the defect it exists to remove.
+ */
+constexpr std::string_view kMarkerPrefix = "inst";
+
+std::filesystem::path markerPath(
+    const std::filesystem::path& dir,
+    int barrierIndex) {
+  return dir / fmt::format("{}{}", kMarkerPrefix, barrierIndex);
+}
+
+bool measurementBarrier(
+    const BenchmarkConfig& config,
+    const std::string& tag,
+    int barrierIndex) {
+  const bool hasBarrierDir = !config.barrierDir.empty();
+  const bool hasBarrierRanks = config.barrierRanks > 0;
+  if (hasBarrierDir != hasBarrierRanks) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: --measurement-barrier-dir and "
+        "--measurement-barrier-ranks must be specified together");
+    return false;
+  }
+  if (config.barrierRanks <= 1) {
+    return true;
+  }
+  // Keep participant identity independent of the CUDA device: an aggregate
+  // may legitimately use a non-zero-based GPU subset such as devices 4-7.
+  if (barrierIndex < 0 || barrierIndex >= config.barrierRanks) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier needs a unique per-instance key in [0, {}); got "
+        "{}. Pass --measurement-barrier-index for every instance",
+        config.barrierRanks,
+        barrierIndex);
+    return false;
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path dir = fs::path(config.barrierDir) / tag;
+  fs::create_directories(dir, ec);
+  if (ec) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: cannot create {}: {}",
+        dir.string(),
+        ec.message());
+    return false;
+  }
+  // Nothing else writes this instance's marker, so finding it already there
+  // means the directory is being reused after an earlier run. Counting it
+  // would pre-satisfy the barrier and release early -- the same silent
+  // overstatement this change exists to remove -- so refuse instead.
+  const auto marker = markerPath(dir, barrierIndex);
+  const bool markerExists = fs::exists(marker, ec);
+  if (ec) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: cannot stat {}: {}",
+        marker.string(),
+        ec.message());
+    return false;
+  }
+  if (markerExists) {
+    UNIFLOW_LOG_ERROR(
+        "measurement barrier: {} already exists; pass a fresh "
+        "--measurement-barrier-dir per run",
+        marker.string());
+    return false;
+  }
+  {
+    std::ofstream f(marker);
+    if (!f) {
+      UNIFLOW_LOG_ERROR(
+          "measurement barrier: cannot write marker in {}", dir.string());
+      return false;
+    }
+  }
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(120);
+  while (std::chrono::steady_clock::now() < deadline) {
+    size_t arrived = 0;
+    // Enumerate the exact quorum instead of counting a filename prefix:
+    // instructions.txt, inst.tmp, and out-of-range markers must not release
+    // the barrier before every expected instance has arrived.
+    for (int expectedRank = 0; expectedRank < config.barrierRanks;
+         ++expectedRank) {
+      const auto expectedMarker = markerPath(dir, expectedRank);
+      if (fs::exists(expectedMarker, ec)) {
+        ++arrived;
+      }
+      if (ec) {
+        // A filesystem error is not "peers have not arrived yet"; spinning to
+        // the timeout would report it as one.
+        UNIFLOW_LOG_ERROR(
+            "measurement barrier: cannot stat {}: {}",
+            expectedMarker.string(),
+            ec.message());
+        return false;
+      }
+    }
+    if (arrived == static_cast<size_t>(config.barrierRanks)) {
+      return true;
+    }
+    // Cross-process filesystem rendezvous has no condition variable to wait
+    // on; bounded polling is intentional and remains outside the timed loop.
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  UNIFLOW_LOG_ERROR(
+      "measurement barrier timed out at {} (index {}, need {})",
+      tag,
+      barrierIndex,
+      config.barrierRanks);
+  return false;
+}
+
 TransferResult runTransfer(
     Transport& transport,
     RegisteredSegment& localReg,
     RemoteRegisteredSegment& remoteReg,
     size_t size,
     const std::string& dir,
-    const BenchmarkConfig& config) {
+    const BenchmarkConfig& config,
+    int rank) {
   using Clock = std::chrono::steady_clock;
   const int batchSize = std::max(1, config.batchSize);
   const int txDepth = std::max(1, config.txDepth);
@@ -191,6 +313,13 @@ TransferResult runTransfer(
     inflight.pop_front();
     return true;
   };
+
+  // All N ranks line up here, after their own warmup, so that every rank's
+  // timed window covers the same wall-clock interval and the per-rank
+  // bandwidths are summable. Barrier cost is outside the clock below.
+  if (!measurementBarrier(config, fmt::format("{}_{}", dir, size), rank)) {
+    return out;
+  }
 
   auto start = Clock::now();
   for (int b = 0; b < numBatches; ++b) {
@@ -654,7 +783,14 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       if (tcpTransport != nullptr) {
         tcpTransport->logAndResetPhaseStats("reset");
       }
-      auto r = runTransfer(*transport, localReg, remoteReg, size, dir, config);
+      auto r = runTransfer(
+          *transport,
+          localReg,
+          remoteReg,
+          size,
+          dir,
+          config,
+          config.barrierIndex);
       if (!r.ok) {
         // Latched rather than returned: every remaining size has a barrier the
         // peer is going to execute.
