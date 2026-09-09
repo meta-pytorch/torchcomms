@@ -63,6 +63,16 @@ class ICollTracePlugin {
   virtual CommsMaybeVoid afterCollKernelEnd(
       CollTraceEvent& curEvent) noexcept = 0;
 
+  /*
+   * Called instead of afterCollKernelEnd when tracking cannot reach normal
+   * completion. Implementations must tolerate duplicate notification.
+   */
+  virtual CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& /* curEvent */,
+      CollTraceTerminalReason /* reason */) noexcept {
+    return folly::unit;
+  }
+
   // Return the maximum number of past events this plugin needs to retain.
   // CollTrace uses max(all plugins) to size the shared GPU ring buffer to
   // at least 2x this value, ensuring no data loss under normal operation.

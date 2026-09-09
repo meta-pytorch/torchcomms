@@ -193,17 +193,48 @@ CollTrace::~CollTrace() {
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
   }
-  // Invalidate all graph handles.
-  for (auto& [_, state] : graphStateMap_) {
-    for (auto& [_, collEntry] : state->collectives) {
-      if (auto h = collEntry.handle.lock()) {
-        h->invalidate();
-      }
-    }
-  }
-  // Wait for the thread to finish
   if (traceCollThread_.joinable()) {
     traceCollThread_.join();
+  }
+
+  if (pendingEnqueueColl_ != nullptr) {
+    terminateEvent(
+        *pendingEnqueueColl_, CollTraceTerminalReason::TraceDestroyed);
+  }
+  std::unique_ptr<CollTraceEvent> pendingEvent;
+  while (pendingTraceColls_.read(pendingEvent)) {
+    if (pendingEvent != nullptr) {
+      terminateEvent(*pendingEvent, CollTraceTerminalReason::TraceDestroyed);
+    }
+  }
+  for (auto& event : eagerEvents_) {
+    if (event != nullptr) {
+      terminateEvent(*event, CollTraceTerminalReason::TraceDestroyed);
+    }
+  }
+  for (auto& [_, event] : inFlightReplays_) {
+    if (event != nullptr) {
+      terminateEvent(*event, CollTraceTerminalReason::TraceDestroyed);
+    }
+  }
+
+  std::vector<std::unique_ptr<CollTraceEvent>> graphTemplateEvents;
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    for (auto& [_, state] : graphStateMap_) {
+      for (auto& [_, collEntry] : state->collectives) {
+        if (auto h = collEntry.handle.lock()) {
+          h->invalidate();
+        }
+        if (collEntry.event != nullptr) {
+          graphTemplateEvents.push_back(std::move(collEntry.event));
+        }
+      }
+    }
+    graphStateMap_.clear();
+  }
+  for (auto& event : graphTemplateEvents) {
+    terminateEvent(*event, CollTraceTerminalReason::TraceDestroyed);
   }
 }
 
@@ -309,6 +340,9 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       handlePtr->second->invalidate();
       eventToHandleMap_.erase(pendingEnqueueColl_.get());
     }
+    terminateEvent(
+        *pendingEnqueueColl_,
+        CollTraceTerminalReason::SupersededBeforeSchedule);
   }
 
   const auto collId = collId_.fetch_add(1);
@@ -363,6 +397,8 @@ CommsMaybeVoid CollTrace::triggerEventState(
         // holds its write lock and calling invalidate here will cause deadlock.
         eventToHandleMap_.at(pendingEnqueueColl_.get())->invalidateUnsafe();
         eventToHandleMap_.erase(pendingEnqueueColl_.get());
+        terminateEvent(
+            *pendingEnqueueColl_, CollTraceTerminalReason::QueueRejected);
         pendingEnqueueColl_ = nullptr;
         return folly::makeUnexpected(CommsError(
             "Failed to write to pendingTraceColls_ queue", commInternalError));
@@ -484,6 +520,23 @@ void CollTrace::ackFlush(uint64_t gen) noexcept {
   }
 }
 
+void CollTrace::terminateEvent(
+    CollTraceEvent& event,
+    CollTraceTerminalReason reason) noexcept {
+  if (event.terminalReason.has_value()) {
+    return;
+  }
+  event.terminalReason = reason;
+  for (auto& plugin : plugins_) {
+    auto result = plugin->afterCollTerminated(event, reason);
+    if (result.hasError()) {
+      COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 10)
+          << "Exception thrown in plugin " << plugin->getName()
+          << " when terminating event: " << result.error().message;
+    }
+  }
+}
+
 bool CollTrace::isThreadCancelled() const noexcept {
   return threadShouldStop_.test(std::memory_order_relaxed);
 }
@@ -494,28 +547,37 @@ void CollTrace::pollGraphEvents(
     return;
   }
 
+  std::vector<std::unique_ptr<CollTraceEvent>> destroyedGraphEvents;
   {
     std::lock_guard<std::mutex> lock(graphStateMutex_);
 
     // check to see if any graphs have been destroyed.
     // if so, remove stop tracking associated state.
-    std::erase_if(graphStateMap_, [this](const auto& entry) {
-      const auto& state = entry.second;
-      if (state->graph_destructed.load(std::memory_order_relaxed)) {
-        for (const auto& [collId, collEntry] : state->collectives) {
-          // Invalidate the handle to prevent use-after-free of the
-          // raw GraphCudaWaitEvent pointer once we destroy the entry.
-          if (auto h = collEntry.handle.lock()) {
-            h->invalidate();
+    std::erase_if(
+        graphStateMap_, [this, &destroyedGraphEvents](const auto& entry) {
+          const auto& state = entry.second;
+          if (state->graph_destructed.load(std::memory_order_relaxed)) {
+            for (auto& [collId, collEntry] : state->collectives) {
+              // Invalidate the handle to prevent use-after-free of the
+              // raw GraphCudaWaitEvent pointer once we destroy the entry.
+              if (auto h = collEntry.handle.lock()) {
+                h->invalidate();
+              }
+              collIdMap_.erase(collId);
+              progressingGraphCollectives_.erase(collId);
+              if (auto replayIt = inFlightReplays_.find(collId);
+                  replayIt != inFlightReplays_.end()) {
+                destroyedGraphEvents.push_back(std::move(replayIt->second));
+                inFlightReplays_.erase(replayIt);
+              }
+              if (collEntry.event != nullptr) {
+                destroyedGraphEvents.push_back(std::move(collEntry.event));
+              }
+            }
+            return true;
           }
-          collIdMap_.erase(collId);
-          progressingGraphCollectives_.erase(collId);
-          inFlightReplays_.erase(collId);
-        }
-        return true;
-      }
-      return false;
-    });
+          return false;
+        });
 
     // add new collectives that aren't in collIdMap_ yet.
     for (auto& [_, state] : graphStateMap_) {
@@ -527,12 +589,17 @@ void CollTrace::pollGraphEvents(
     }
   }
 
+  for (auto& event : destroyedGraphEvents) {
+    terminateEvent(*event, CollTraceTerminalReason::GraphDestroyed);
+  }
+
   if (collIdMap_.empty()) {
     return;
   }
 
   const auto& cal = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
 
+  std::unordered_set<uint32_t> replayStartsObserved;
   auto pollResult = ringReader_->poll(
       [&](const auto& entry, uint64_t /*slot*/) {
         auto collId = entry.data.collId;
@@ -547,6 +614,7 @@ void CollTrace::pollGraphEvents(
         auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
+          replayStartsObserved.insert(collId);
           // Graph replays are sequential on the stream, so seeing a second
           // start before the matching end means the prior end was dropped
           // by ring buffer overflow. The previous in-flight clone will be
@@ -581,6 +649,8 @@ void CollTrace::pollGraphEvents(
           auto* replayPtr = replayEvent.get();
           if (auto replayIt = inFlightReplays_.find(collId);
               replayIt != inFlightReplays_.end()) {
+            terminateEvent(
+                *replayIt->second, CollTraceTerminalReason::TrackingOverflow);
             graphReplayEvents_.push_back(std::move(replayIt->second));
             replayIt->second = std::move(replayEvent);
           } else {
@@ -611,6 +681,18 @@ void CollTrace::pollGraphEvents(
     COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
         << logPrefix_ << ": missed " << pollResult.entriesLost
         << " graph replay timestamp(s) (overwritten)";
+    for (auto it = inFlightReplays_.begin(); it != inFlightReplays_.end();) {
+      if (replayStartsObserved.contains(it->first)) {
+        ++it;
+        continue;
+      }
+      terminateEvent(*it->second, CollTraceTerminalReason::TrackingOverflow);
+      graphReplayEvents_.push_back(std::move(it->second));
+      it = inFlightReplays_.erase(it);
+    }
+    std::erase_if(progressingGraphCollectives_, [&](uint32_t collId) {
+      return !replayStartsObserved.contains(collId);
+    });
   }
 
   // Emit kProgressing for every in-flight clone so the watchdog plugin's
@@ -691,6 +773,9 @@ void CollTrace::pollEagerEvents(
 void CollTrace::processCompletedEvents(
     std::multiset<PendingAction>& actions) noexcept {
   for (auto& action : actions) {
+    if (action.event->terminalReason.has_value()) {
+      continue;
+    }
     switch (action.type) {
       case PendingActionType::kScheduleAndStart: {
         // for graph collectives, there is no actual scheduling
