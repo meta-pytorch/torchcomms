@@ -895,6 +895,43 @@ class TcpTransportFrameTest : public ::testing::Test {
     return TcpTransport::kMinStripeFrameBytes;
   }
 
+  /// Staging-pool geometry, exposed for the same reason as stripeThreshold():
+  /// TEST_F bodies subclass this fixture rather than being the friend, so they
+  /// cannot name TcpTransport's private constants.
+  static constexpr size_t poolSlabCount() {
+    return TcpTransport::kStagingSlabCount;
+  }
+  static constexpr size_t poolReservedForReader() {
+    return TcpTransport::kStagingSlabsReservedForReader;
+  }
+  static constexpr size_t waveChunks() {
+    return TcpTransport::kMaxPutWaveChunks;
+  }
+  static constexpr size_t queuedSlabBudget() {
+    return TcpTransport::kMaxOutQueueBytes / TcpTransport::kMaxChunkSize;
+  }
+  static constexpr size_t concurrentPutStaging() {
+    return TcpTransport::kMaxConcurrentPutStaging;
+  }
+
+  /// Drains every staging permit, standing in for other put() callers that are
+  /// already inside the staging window. Returns false if the permits were not
+  /// all free, which would make any test built on this assert for the wrong
+  /// reason.
+  bool takeAllStagingPermits() {
+    for (size_t i = 0; i < concurrentPutStaging(); ++i) {
+      if (!transport_->putStagingPermits_.try_acquire()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void releaseAllStagingPermits() {
+    transport_->putStagingPermits_.release(
+        static_cast<std::ptrdiff_t>(concurrentPutStaging()));
+  }
+
   /// Nulls one lane entry. No production path does this -- lanes_ is written
   /// only by establishLanes() -- so this manufactures a state the transport
   /// does not currently reach, purely to cover the defensive skip in
@@ -2480,6 +2517,128 @@ TEST_F(TcpTransportFrameTest, EnqueueFramesQueuesTheWholeGroupInOrder) {
 // of piling onto one. Without this, one sender pushes the whole ~28 MiB wave
 // through a single socket while the other lanes have nothing to do, and the
 // group's completion is bounded by one socket's rate.
+// The staging permit exists because put() holds a launched wave across the
+// pool's blocking acquire(), which contradicts the pool's documented "a waiter
+// here holds nothing" property -- the property that makes the bulk acquire
+// deadlock-free for any number of callers. Without a bound, four concurrent
+// VRAM puts each hold a wave and leave 3 slabs free against the 8 acquire()
+// needs, and none can release before its own acquire returns.
+//
+// This pins the derived bound rather than the deadlock itself. Reproducing the
+// deadlock faithfully needs four callers each staging three waves, which at
+// kMaxChunkSize is hundreds of MiB of buffers -- impractical here, and the same
+// limitation recorded for C-099 and C-104. What is checkable, and what would
+// actually regress, is the arithmetic: if a pool resize or a change to
+// kMaxPutWavesInFlight makes this admit more callers than the pool can seat,
+// the deadlock returns silently.
+TEST_F(TcpTransportFrameTest, TheStagingPermitSeatsOnlyWhatThePoolCanHold) {
+  constexpr size_t kHeldPerCaller = (wavesInFlight() - 1) * waveChunks();
+  const size_t seated = concurrentPutStaging() * kHeldPerCaller + waveChunks() +
+      queuedSlabBudget() + poolReservedForReader();
+
+  EXPECT_LE(seated, poolSlabCount())
+      << "the permit seats more staging callers than the pool can satisfy, "
+         "which is the deadlock it exists to prevent";
+
+  EXPECT_GE(concurrentPutStaging(), 1u) << "no put() could stage at all";
+
+  EXPECT_GT(seated + kHeldPerCaller, poolSlabCount())
+      << "the pool could seat another staging caller than the permit allows";
+}
+
+// A single-wave put must not wait on the staging permit. Its one acquire runs
+// with nothing held, which is the case TcpPinnedSlabPool::acquire() is already
+// deadlock-free for at any number of callers, so the permit buys no safety
+// there -- it only serialises. Taking it on the first wave made every
+// concurrent VRAM put of kMaxPutWaveChunks chunks or fewer (28 MiB at the
+// current sizing) run strictly one at a time for nothing.
+//
+// This is a real negative control, not a shape that passes either way: the test
+// holds every permit, so a put() that takes one before its first wave blocks
+// here forever and the frames never reach the connection.
+TEST_F(TcpTransportFrameTest, ASingleWavePutTakesNoStagingPermit) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  ASSERT_TRUE(takeAllStagingPermits())
+      << "the permits must all be free before the test occupies them, or this "
+         "asserts nothing";
+
+  const size_t chunks = waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  // The future stays open -- nothing Acks these writes -- so the frames
+  // reaching the connection are what says the put got through.
+  auto future = put(transfer.requests());
+
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<size_t>(conn.sendCount()) == chunks;
+  })) << "a single-wave put waited on the staging permit; its only acquire "
+         "happens while it holds nothing, so it owes no permit and must not "
+         "serialise against a caller that does";
+
+  releaseAllStagingPermits();
+  closeOutQueue();
+  sender.join();
+}
+
+// The other half of the rule: a plan that WILL hold a wave across an acquire
+// owes a permit, and waits for it before staging anything. Without this the
+// exemption above could decay into never taking the permit at all and the
+// single-wave test would still pass, which is how the deadlock the permit
+// exists to prevent would come back silently.
+//
+// It also pins the property that makes the permit worth taking up front rather
+// than at the wave that opens the window: a caller waiting for a permit holds
+// NO slabs. Taking it mid-loop is safe but leaves every serialised caller
+// sitting on a wave's worth of the pool it is not yet using, which stalls
+// exactly the single-wave puts the exemption exists to let through.
+TEST_F(TcpTransportFrameTest, AMultiWavePutWaitsForItsPermitBeforeTakingSlabs) {
+  setConnected();
+  stubStagingCopies();
+  releaseStagingCopies();
+  auto& conn = installCountingConn();
+  std::thread sender([this]() { runSenderLoop(); });
+
+  ASSERT_TRUE(takeAllStagingPermits())
+      << "the permits must all be free before the test occupies them, or this "
+         "asserts nothing";
+
+  const size_t chunks = 2 * waveCap();
+  VramPut transfer(chunks * slabPayloadCap());
+  // On its own thread because put() is synchronous and this one is MEANT to
+  // block: driving it from the test thread would park the only thread that can
+  // release the permit inside put(), deadlocking the test rather than the
+  // product.
+  std::thread putter([&]() { (void)put(transfer.requests()); });
+
+  // Generous on purpose: if the permit were not being waited for, all of these
+  // chunks would arrive promptly, so the full window is only ever waited out
+  // when the put is correctly held back.
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  EXPECT_EQ(static_cast<size_t>(conn.sendCount()), 0u)
+      << "a multi-wave put staged while another caller held every permit; that "
+         "is the waiter-holds-nothing violation the permit exists to bound";
+  auto pool = transportStagingPool();
+  if (pool != nullptr) {
+    EXPECT_EQ(freeSlabs(*pool), pool->slabCount())
+        << "a put waiting for a permit is holding staging slabs; it must wait "
+           "before it stages, or it occupies a pool it cannot yet use and "
+           "blocks the single-wave puts that owe no permit";
+  }
+
+  releaseAllStagingPermits();
+  EXPECT_TRUE(waitFor([&]() {
+    return static_cast<size_t>(conn.sendCount()) == chunks;
+  })) << "the put must finish once a permit is available";
+
+  putter.join();
+  closeOutQueue();
+  sender.join();
+}
+
 TEST_F(TcpTransportFrameTest, ALargeGroupIsStripedAcrossLanes) {
   setConnected();
   setLaneCount(4);

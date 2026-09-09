@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1047,6 +1048,25 @@ class TcpTransport : public Transport {
       std::span<const PlannedPutFrame> wave,
       void* stream,
       size_t startIdx);
+
+  /// One past the last chunk of the wave starting at `idx`. `planned[idx]` must
+  /// be a VRAM chunk of non-zero length.
+  ///
+  /// The wave rule lives here because put()'s staging loop and
+  /// putNeedsStagingPermit() have to partition a plan identically. If the scan
+  /// and the loop ever disagreed about where a wave ends, the permit would be
+  /// taken for the wrong puts -- either serialising ones that owe nothing, or
+  /// missing one that holds a wave across an acquire, which is the deadlock
+  /// kMaxConcurrentPutStaging exists to prevent.
+  static size_t putWaveEnd(
+      std::span<const PlannedPutFrame> planned,
+      size_t idx);
+
+  /// Whether this plan will ever launch a wave while another is still held.
+  /// That is the only condition under which put() owes a staging permit, and it
+  /// is decided BEFORE staging starts so the permit can be taken while the
+  /// caller still holds no slabs -- see the acquisition site in put().
+  static bool putNeedsStagingPermit(std::span<const PlannedPutFrame> planned);
   // Waits for one launched wave's copies to finish and destroys its event.
   // Waits on the event rather than the stream, because the stream also carries
   // later waves' copies and waiting for those would give back the overlap.
@@ -1309,6 +1329,12 @@ class TcpTransport : public Transport {
     std::deque<DeferredReadReply> deferred;
   };
 
+  /// Bounds how many put() callers may be inside the staging window at once, so
+  /// the pool's "a waiter here holds nothing" property holds again. See
+  /// kMaxConcurrentPutStaging for the derivation and why the bound exists at
+  /// the caller rather than in the pool.
+  std::counting_semaphore<> putStagingPermits_{kMaxConcurrentPutStaging};
+
   std::shared_ptr<TcpLaneSet> laneSet_{std::make_shared<TcpLaneSet>()};
   std::shared_ptr<TcpReplyState> reply_{std::make_shared<TcpReplyState>()};
 
@@ -1453,6 +1479,54 @@ class TcpTransport : public Transport {
               kStagingSlabsReservedForReader,
       "the pool must hold every wave the window keeps in flight at once, or "
       "put() deadlocks against slabs only it can release");
+
+  /// How many put() callers may be inside the staging window at once.
+  ///
+  /// The window is the span where a caller holds a launched wave --
+  /// (kMaxPutWavesInFlight - 1) * kMaxPutWaveChunks slabs, retained by
+  /// drainWaves() precisely so its copies overlap the next stage -- while it
+  /// may block in acquire() for kMaxPutWaveChunks more.
+  ///
+  /// That contradicts the pool's documented safety property, "a waiter here
+  /// holds nothing", which is what makes the bulk acquire deadlock-free for any
+  /// number of callers. Without a bound, N callers each hold a wave and none
+  /// can release before its own acquire returns: at the sizing below, four of
+  /// them leave 3 slabs free against the 8 acquire() needs, and every one of
+  /// them waits on slabs only the others can free.
+  ///
+  /// So rather than weaken the pool's contract, this bounds the callers until
+  /// it holds again. Derived from the same geometry as kStagingSlabCount so a
+  /// resize cannot silently reintroduce the deadlock:
+  ///
+  ///   K * held + requested + queued + reserved <= kStagingSlabCount
+  ///
+  /// which at the current sizing admits exactly one. Raising
+  /// kMaxPutWavesInFlight or shrinking the pool tightens this automatically;
+  /// growing the pool by one wave's worth admits one more caller.
+  ///
+  /// This serialises the *staging* of concurrent multi-wave VRAM puts, which is
+  /// a real cost -- but the alternative it replaces is those callers
+  /// deadlocking, so it is strictly better than what it changes. Two classes of
+  /// put never take a permit and so never serialise against anything: DRAM
+  /// puts, which do not touch the pool at all, and single-wave puts, whose one
+  /// acquire happens while they hold nothing -- the case the pool is already
+  /// deadlock-free for at any number of callers. putNeedsStagingPermit()
+  /// decides which a plan is.
+  ///
+  /// A caller that has to wait for a permit holds NO slabs while it waits,
+  /// because the decision is made before staging starts. That is load-bearing
+  /// twice over: it keeps the permit from inverting against the pool (waiting
+  /// for a permit while holding slabs another waiter needs), and it keeps a
+  /// serialised caller from occupying the pool it is not yet using, which would
+  /// stall the single-wave puts this exemption exists to let through.
+  static constexpr size_t kMaxConcurrentPutStaging =
+      (kStagingSlabCount - kMaxPutWaveChunks -
+       kMaxOutQueueBytes / kMaxChunkSize - kStagingSlabsReservedForReader) /
+      ((kMaxPutWavesInFlight - 1) * kMaxPutWaveChunks);
+  static_assert(
+      kMaxConcurrentPutStaging >= 1,
+      "the pool must admit at least one staging caller, or no put() can make "
+      "progress at all");
   // Two full wire frames can remain pinned while Phase 3d retires H2D copies;
   // exhaustion falls back to the reusable vector instead of blocking receive.
   static constexpr size_t kReceiveSlabCount = 2;
