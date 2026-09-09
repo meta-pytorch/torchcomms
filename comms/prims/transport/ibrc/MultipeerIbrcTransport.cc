@@ -1457,6 +1457,39 @@ void MultipeerIbrcTransport::connectPeerQps(
 void MultipeerIbrcTransport::exchangeAndConnectQps() {
   const int numPeers = nRanks_ - 1;
   const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
+  // PRECONDITION OF THIS FUNCTION, not of the transport. Nothing calls
+  // exchangeAndConnectQps() today -- exchange() defers everything to
+  // materializePeer(), and IBGDA never used the eager allGather at all -- so
+  // this is unreachable as written. It is kept rather than deleted because it
+  // is the invariant that makes reviving the eager path safe, and that
+  // invariant stopped holding in this diff: the allGather wire format
+  // dimensions IbTransportExchInfoAll::NicWireInfo::qpnForRank[][] at
+  // kMaxEagerExchangeQpsPerPeerPerNic, and the loop below writes `numQps` slots
+  // into it. That used to be bounded by coincidence -- with kMaxIbGroups at 64,
+  // 64 channels x kIbDirections filled the array exactly -- but the group index
+  // space is now wider than the eager wire format, so a revived eager path
+  // would write off the end of the exchanged struct.
+  //
+  // Deliberately NOT hoisted into config validation: every live path is lazy,
+  // and a shape wider than the eager cap is legal there -- the SendRecvTile
+  // collective this stack adds runs at 512 QPs/(peer, NIC). Rejecting it at
+  // construction would break the supported configuration to guard a dead one.
+  if (numQps > kMaxEagerExchangeQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "MultipeerIbrcTransport: eager QP exchange needs {} QPs per "
+            "(peer, NIC) but the allGather wire format holds only {}. Reduce "
+            "max_num_channels to at most {} for eager exchange, or keep using "
+            "the (default) lazy per-peer materialization path, which has no "
+            "such limit",
+            numQps,
+            kMaxEagerExchangeQpsPerPeerPerNic,
+            kMaxEagerExchangeQpsPerPeerPerNic /
+                std::max(
+                    1,
+                    config_.fixedChannelDirectionCount() *
+                        config_.qpsPerConnection)));
+  }
 
   for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
     createPeerQps(peerIndex);
