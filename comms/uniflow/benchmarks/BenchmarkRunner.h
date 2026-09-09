@@ -49,6 +49,16 @@ struct BenchmarkConfig {
    * reports excellent throughput.
    */
   bool verify{true};
+  /*
+   * Cross-rank measurement barrier. A multi-GPU run launches N independent
+   * rank-pairs; nothing lines their timed loops up, so summing their
+   * bandwidths sums windows that do not coincide. barrierDir is a host-local
+   * directory shared by the active aggregate instances; when set, all N
+   * rendezvous after warmup, immediately before the clock starts.
+   */
+  std::string barrierDir;
+  int barrierRanks{0};
+  int barrierIndex{-1};
 };
 
 class Benchmark {
