@@ -22,9 +22,8 @@ jobs:
           - name: RCCL
             runs-on: linux.rocm.gpu.meta-pytorch.mi350.4
             gpu-arch-type: "rocm"
-            gpu-arch-version: "7.2"
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2'
-            docker-image: pytorch/manylinux2_28-builder:rocm7.2
+            gpu-arch-version: "10.0"
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm10.0'
             cmake-version: "latest"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
@@ -32,6 +31,7 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      job-name: RCCL ROCm ${{ matrix.gpu-arch-version }}
       script: |
         set -ex
         # use faster libmamba solver
@@ -62,8 +62,26 @@ jobs:
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
 
-        export ROCM_HOME=/opt/rocm
-        export RCCL_INCLUDE=$ROCM_HOME/include/rccl
+        # ROCm 10.0 builders install TheRock wheels; the SDK root is not /opt/rocm.
+        # Prefer rocm-sdk (pulled in with the torch wheel), then the image env file,
+        # then a classic /opt/rocm layout.
+        if [ -f /etc/rocm_env.sh ]; then
+          # shellcheck source=/dev/null
+          source /etc/rocm_env.sh
+        fi
+        if command -v rocm-sdk >/dev/null 2>&1; then
+          export ROCM_HOME="$(rocm-sdk path --root)"
+          export PATH="$(rocm-sdk path --bin):${PATH}"
+        elif [ -z "${ROCM_HOME:-}" ] && [ -d /opt/rocm ]; then
+          export ROCM_HOME=/opt/rocm
+        fi
+        if [ -z "${ROCM_HOME:-}" ] || [ ! -f "${ROCM_HOME}/lib/librccl.so" ]; then
+          echo "Could not find librccl.so (ROCM_HOME=${ROCM_HOME:-unset})" >&2
+          exit 1
+        fi
+        export RCCL_INCLUDE="${ROCM_HOME}/include/rccl"
+        export LD_LIBRARY_PATH="${ROCM_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        echo "Using ROCM_HOME=${ROCM_HOME}"
 
         ./build_rccl.sh
         pip install numpy
