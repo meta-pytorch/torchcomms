@@ -1882,7 +1882,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
           .ibRegElem = regElem->ibRegElem,
           .remoteAccessKey = remoteAccessKey.ibKey,
           .notify = put.config.notify_,
-          .config = put.config.ibConfig_,
           .req = put.req == nullptr ? nullptr : &(put.req->ibReq),
       };
       msgs.emplace_back(std::move(msg));
@@ -1917,7 +1916,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
     const auto kernElem = config.kernElem_;
     const auto& remoteAccessKey = config.remoteAccessKey_;
     const auto& notify = config.notify_;
-    const auto& ibConfig = config.ibConfig_;
     if (remoteAccessKey.backend == CtranMapperBackend::IB ||
         // If kernElem is not provided, falls back to IB
         // NOTE: it requires a match with the receiver side waitNotify, where it
@@ -1960,7 +1958,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
             regElem->ibRegElem,
             remoteAccessKey.ibKey,
             notify,
-            ibConfig,
             ibReqPtr,
             config.ibFastPath_));
       } else {
@@ -2052,7 +2049,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       CtranMapperRequest* req) {
     const auto shdl = config.memHdl_;
     const auto& remoteAccessKey = config.remoteAccessKey_;
-    const auto& ibConfig = config.ibConfig_;
     if (remoteAccessKey.backend == CtranMapperBackend::IB) {
       if (req != nullptr) {
         if (this->ctranIb != nullptr) {
@@ -2090,7 +2086,6 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
             peerRank,
             regElem->ibRegElem,
             remoteAccessKey.ibKey,
-            ibConfig,
             ibReqPtr,
             config.ibFastPath_));
       } else {

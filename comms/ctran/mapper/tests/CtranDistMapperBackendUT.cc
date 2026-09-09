@@ -74,7 +74,6 @@ class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
       const std::vector<int>& ranks,
       std::vector<void*>& remoteBufs,
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
-      CtranIbConfig* config,
       const bool lowlatency,
       const bool ibFastPath = false) {
     const auto myRank = comm_->statex_.get()->rank();
@@ -102,7 +101,6 @@ class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
                   .remoteAccessKey_ = remoteAccessKeys[peer],
                   .notify_ = ibFastPath,
                   .kernElem_ = kElem,
-                  .ibConfig_ = config,
                   .ibFastPath_ = ibFastPath},
               static_cast<CtranMapperRequest*>(nullptr)),
           commSuccess);
@@ -121,7 +119,6 @@ class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
                   .remoteAccessKey_ = remoteAccessKeys[peer],
                   .notify_ = ibFastPath,
                   .kernElem_ = kElem,
-                  .ibConfig_ = config,
                   .ibFastPath_ = ibFastPath},
               &req),
           commSuccess);
@@ -146,7 +143,6 @@ class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
                     .remoteAccessKey_ = remoteAccessKeys[peer],
                     .notify_ = true,
                     .kernElem_ = kElem,
-                    .ibConfig_ = config,
                     .ibFastPath_ = ibFastPath},
                 &user_allocated_req),
             commSuccess);
@@ -162,7 +158,6 @@ class CtranDistMapperBackendTest : public ctran::CtranDistTestFixture {
                     .remoteAccessKey_ = remoteAccessKeys[peer],
                     .notify_ = true,
                     .kernElem_ = kElem,
-                    .ibConfig_ = config,
                     .ibFastPath_ = ibFastPath},
                 &user_allocated_req),
             commSuccess);
@@ -259,7 +254,7 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, IntraNodeUseIb) {
     std::vector<CtranMapperNotify> notifies(ranks.size());
     ASSERT_EQ(mapper->initNotifyBatchIB(ranks, notifies), commSuccess);
     issuePutsAndWaitForCompletion(
-        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, nullptr, lowlatency);
+        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, lowlatency);
 
     ASSERT_EQ(
         mapper->iPutCount[CtranMapperBackend::IB], ranks.size() * putTimes);
@@ -322,7 +317,7 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, IntraNodeUseNvl) {
     ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::NVL], 0);
 
     issuePutsAndWaitForCompletion(
-        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, nullptr, perfconfig);
+        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, perfconfig);
   }
 
   ASSERT_EQ(mapper->iPutCount[CtranMapperBackend::IB], 0);
@@ -382,7 +377,7 @@ TEST_P(
     // issue puts to all ranks, they should use NVL for intra-node and IB for
     // inter-node
     issuePutsAndWaitForCompletion(
-        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, nullptr, lowlatency);
+        buf, sendHdl, ranks, remoteBufs, remoteAccessKeys, lowlatency);
   }
 
   ASSERT_EQ(
@@ -460,7 +455,6 @@ TEST_P(CtranDistMapperBackendPerfConfigTestParam, InteNodeUseIbFastPut) {
         ranks,
         remoteBufs,
         remoteAccessKeys,
-        nullptr,
         lowlatency,
         /*ibFastPath=*/true);
 

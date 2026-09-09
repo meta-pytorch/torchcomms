@@ -229,6 +229,11 @@ benchmarkIput(benchmark::State& state, CtranIbConfig config, bool withNotify) {
   const size_t bufferSize = state.range(0);
   auto ctx = setupBenchmarkContext(bufferSize);
 
+  // The per-call config override is gone; the config is now ambient and is
+  // installed once for the scope that issues the puts, so each registered
+  // variant still measures its own config.
+  CtranIbActiveConfigRAII activeConfig(ctx.senderIb.get(), &config);
+
   // Benchmark the iput operation
   for (auto _ : state) {
     CtranIbRequest ibReq;
@@ -240,7 +245,6 @@ benchmarkIput(benchmark::State& state, CtranIbConfig config, bool withNotify) {
             ctx.senderRegHdl, /* ibRegElem */
             ctx.ibReceiveKey, /* remoteAccessKey */
             withNotify, /* notify */
-            &config, /* config */
             &ibReq, /* req */
             false /* fast */
             ) != commSuccess) {
@@ -272,7 +276,11 @@ benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
   const size_t bufferSize = state.range(0);
   auto ctx = setupBenchmarkContext(bufferSize);
 
-  // Benchmark the iput operation
+  // See benchmarkIput: the config is ambient now, installed once for the
+  // scope that issues the gets.
+  CtranIbActiveConfigRAII activeConfig(ctx.receiverIb.get(), &config);
+
+  // Benchmark the iget operation
   for (auto _ : state) {
     CtranIbRequest ibReq;
     if (ctx.receiverIb->iget(
@@ -282,7 +290,6 @@ benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
             kDummyRank, /* peerRank */
             ctx.receiverRegHdl, /* ibRegElem */
             ctx.ibSendKey, /* remoteAccessKey */
-            &config, /* config */
             &ibReq, /* req */
             false /* fast */
             ) != commSuccess) {
@@ -361,6 +368,10 @@ static void benchmarkMultiPut(benchmark::State& state, int numPuts) {
       .qpMsgs = 128,
   };
 
+  // See benchmarkIput: the config is ambient now, installed once for the
+  // scope that issues the puts.
+  CtranIbActiveConfigRAII activeConfig(ctx.senderIb.get(), &config);
+
   std::vector<double> sumDeltaUs(numPuts, 0.0);
 
   for (auto _ : state) {
@@ -381,7 +392,6 @@ static void benchmarkMultiPut(benchmark::State& state, int numPuts) {
               ctx.senderRegHdl,
               ctx.ibReceiveKey,
               true /* notify */,
-              &config,
               &putReq[i],
               false /* fast */) != commSuccess) {
         throw ctran::utils::Exception("iput failed", commSystemError);

@@ -263,7 +263,6 @@ class CtranIb {
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
       bool notify,
-      CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast = false) {
     return iputImpl<PerfConfig>(
@@ -274,7 +273,6 @@ class CtranIb {
         ibRegElem,
         remoteAccessKey,
         notify,
-        config,
         req,
         fast);
   }
@@ -325,19 +323,10 @@ class CtranIb {
       int peerRank,
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
-      CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast = false) {
     return igetImpl<PerfConfig>(
-        sbuf,
-        dbuf,
-        len,
-        peerRank,
-        ibRegElem,
-        remoteAccessKey,
-        config,
-        req,
-        fast);
+        sbuf, dbuf, len, peerRank, ibRegElem, remoteAccessKey, req, fast);
   }
 
   // Input arguments:
@@ -573,6 +562,7 @@ class CtranIb {
 
  private:
   friend class CtranIbRequest;
+  friend class CtranIbActiveConfigRAII;
   void init(
       CtranComm* comm,
       int rank,
@@ -849,6 +839,16 @@ class CtranIb {
     return commSuccess;
   }
 
+  // Ambient per-collective IB config override. Null clears back to VC
+  // defaults. See activeIbConfig_.
+  inline void setActiveIbConfig(const CtranIbConfig* config) {
+    activeIbConfig_ = config;
+  }
+
+  inline const CtranIbConfig* activeIbConfig() const {
+    return activeIbConfig_;
+  }
+
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t iputBatchImpl(
       const std::vector<PutIbMsg>& puts,
@@ -859,8 +859,11 @@ class CtranIb {
         vcState_.getVc<PerfConfig>(peerRank);
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
-    CTRAN_IB_PER_OBJ_LOCK_GUARD(
-        vc->mutex, { FB_COMMCHECK(vc->iputBatch<PerfConfig>(puts)); });
+    CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
+      // Sole config source: the ambient per-collective config. There is
+      // no per-call override at this level; use setActiveIbConfig.
+      FB_COMMCHECK(vc->iputBatch<PerfConfig>(puts, activeIbConfig_));
+    });
 
     return commSuccess;
   }
@@ -874,7 +877,6 @@ class CtranIb {
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
       bool notify,
-      CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     FB_COMMCHECK(checkEpochLock(this));
@@ -884,6 +886,8 @@ class CtranIb {
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
+      // Sole config source: the ambient per-collective config. There is
+      // no per-call override at this level; use setActiveIbConfig.
       FB_COMMCHECK(vc->iput<PerfConfig>(
           sbuf,
           dbuf,
@@ -891,7 +895,7 @@ class CtranIb {
           ibRegElem,
           remoteAccessKey,
           notify,
-          config,
+          activeIbConfig_,
           req,
           fast));
     });
@@ -907,7 +911,6 @@ class CtranIb {
       int peerRank,
       void* ibRegElem,
       CtranIbRemoteAccessKey remoteAccessKey,
-      CtranIbConfig* config,
       CtranIbRequest* req,
       bool fast) {
     FB_COMMCHECK(checkEpochLock(this));
@@ -917,8 +920,17 @@ class CtranIb {
     FB_COMMCHECK(checkValidVc(vc, peerRank));
 
     CTRAN_IB_PER_OBJ_LOCK_GUARD(vc->mutex, {
+      // Sole config source: the ambient per-collective config. There is
+      // no per-call override at this level; use setActiveIbConfig.
       FB_COMMCHECK(vc->iget<PerfConfig>(
-          sbuf, dbuf, len, ibRegElem, remoteAccessKey, config, req, fast));
+          sbuf,
+          dbuf,
+          len,
+          ibRegElem,
+          remoteAccessKey,
+          activeIbConfig_,
+          req,
+          fast));
     });
 
     return commSuccess;
@@ -1125,6 +1137,13 @@ class CtranIb {
   std::string commDesc;
   CommLogData ncclLogData;
   bool enableLocalFlush_{true};
+  // Ambient per-collective IB config (override for puts/gets issued while
+  // set). Set once at collective scope entry via CtranIbActiveConfigRAII
+  // (EpochLock-style); read at op-issue time, when VC snapshots the resolved
+  // values into PutInfo/GetInfo. Null (default) means VC defaults govern.
+  // Contract: set only when no ops are outstanding (collective boundary),
+  // while holding the epoch lock like all other CtranIb critical-path state.
+  const CtranIbConfig* activeIbConfig_{nullptr};
   BootstrapMode bootstrapMode{BootstrapMode::kDefaultServer};
 
   std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;
@@ -1168,6 +1187,35 @@ class CtranIb {
   std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
 
   std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl_{nullptr};
+};
+
+// EpochLock-style scope guard for the ambient per-collective IB config:
+// sets it on entry, restores the previous value on exit (null-safe).
+// Unlike epochLock(), nesting is allowed — save/restore keeps each scope's
+// config intact. Pair with collective scope: all puts/gets issued inside
+// observe `config` unless they carry an explicit per-op override.
+class CtranIbActiveConfigRAII {
+ public:
+  CtranIbActiveConfigRAII(CtranIb* ctranIb, const CtranIbConfig* config)
+      : ctranIb_(ctranIb) {
+    if (ctranIb_ != nullptr) {
+      prev_ = ctranIb_->activeIbConfig();
+      ctranIb_->setActiveIbConfig(config);
+    }
+  }
+
+  ~CtranIbActiveConfigRAII() {
+    if (ctranIb_ != nullptr) {
+      ctranIb_->setActiveIbConfig(prev_);
+    }
+  }
+
+  CtranIbActiveConfigRAII(const CtranIbActiveConfigRAII&) = delete;
+  CtranIbActiveConfigRAII& operator=(const CtranIbActiveConfigRAII&) = delete;
+
+ private:
+  CtranIb* ctranIb_{nullptr};
+  const CtranIbConfig* prev_{nullptr};
 };
 
 // Convenient RAII class to guard CtranIb epoch lock.
