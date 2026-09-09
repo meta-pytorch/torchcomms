@@ -33,6 +33,8 @@ namespace meta::comms::logger {
 
 inline constexpr std::string_view kCommsLoggerName{"comms"};
 
+class CommsDistSink;
+
 class CommsSpdlogLogger {
  public:
   CommsSpdlogLogger();
@@ -124,12 +126,15 @@ class CommsSpdlogLogger {
       bool asyncLogging,
       spdlog::level::level_enum logLevel);
 
-  // Test-only: appends to the dist sink so a test can observe delivery from
-  // inside the sink call, which is the only point where the lease scoping in
-  // logFormatted() is visible.
+  /*
+   * Test-only: appends to the dist sink so a test can observe delivery from
+   * inside the sink call. Test sinks must not re-enter comms fatal logging.
+   */
   void addSinkForTesting(std::shared_ptr<spdlog::sinks::sink> sink);
 
  private:
+  friend void shutdownSpdlogForFatal();
+
   struct Configuration {
     std::string prefix{"COMMS"};
     std::function<int(void)> threadContextFn{[]() { return 0; }};
@@ -140,7 +145,7 @@ class CommsSpdlogLogger {
   struct Backend {
     std::string outputPath;
     std::shared_ptr<spdlog::logger> logger;
-    std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink;
+    std::shared_ptr<CommsDistSink> outputSink;
     std::shared_ptr<spdlog::logger> synchronousLogger;
   };
 
@@ -162,7 +167,7 @@ class CommsSpdlogLogger {
   std::shared_ptr<const State> loadState() const;
   void storeState(std::shared_ptr<const State> state);
   std::shared_ptr<Backend> createBackend(
-      std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink,
+      std::shared_ptr<CommsDistSink> outputSink,
       std::string outputPath,
       bool asyncLogging) const;
   void reconfigureImpl(
@@ -179,6 +184,7 @@ class CommsSpdlogLogger {
       std::string_view levelName,
       std::string_view message,
       bool bypassLevelGate);
+  void tryFlushForFatal() noexcept;
 
   std::string name_;
   std::atomic<spdlog::level::level_enum> logLevel_{spdlog::level::info};
@@ -302,18 +308,19 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
- * shutdownSpdlogForFatal() stops the library-owned async pool and nothing
- * else. That pool drains once every in-flight async post releases its lease;
- * synchronous delivery holds no lease. spdlog's global registry pool is left
- * running on purpose: draining it means registry::instance(), which may
- * already be gone when a FATAL fires during static destruction. The synchronous
- * logger and its output sinks remain valid throughout.
+ * shutdownSpdlogForFatal() drains the library-owned async pool before
+ * best-effort flushing initialized logger sinks. It does not join the periodic
+ * sink worker because that worker may already be waiting behind an unrelated
+ * blocked sink. It skips the named registry or a distribution sink when its
+ * outer lock is busy. Child-sink mutexes, I/O, and the final synchronous FATAL
+ * delivery may still block. spdlog's global registry pool is left running:
+ * registry::instance() may already be gone when a FATAL fires during static
+ * destruction.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \
   do {                                                               \
     try {                                                            \
       auto& _comms_logger = (logger_expression);                     \
-      _comms_logger.flush();                                         \
       ::meta::comms::logger::shutdownSpdlogForFatal();               \
       _comms_logger.logFatal(                                        \
           ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \

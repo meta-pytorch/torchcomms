@@ -33,6 +33,8 @@ using meta::comms::logger::getSpdlogLogger;
 
 namespace meta::comms::logger::testing {
 bool holdAsyncThreadPoolLeaseForTesting(const std::function<void()>& callback);
+void holdNamedLoggerRegistryLockForTesting(
+    const std::function<void()>& callback);
 void waitForAsyncThreadPoolShutdownForTesting();
 bool asyncThreadPoolLeaseAvailableForTesting();
 void addSinkForTesting(
@@ -41,6 +43,8 @@ void addSinkForTesting(
 void initGlobalThreadPoolForTesting();
 bool globalThreadPoolAliveForTesting();
 void shutdownAsyncThreadPoolForTesting();
+void stopPeriodicSinkFlusherForTesting();
+bool periodicSinkFlusherRunningForTesting();
 } // namespace meta::comms::logger::testing
 
 // Runs a callback from inside sink delivery, which is the only point at which
@@ -60,6 +64,48 @@ class CallbackSink final : public spdlog::sinks::sink {
 
  private:
   std::function<void()> onLog_;
+};
+
+class ThrowingFlushSink final : public spdlog::sinks::sink {
+ public:
+  void log(const spdlog::details::log_msg& /* message */) override {}
+  [[noreturn]] void flush() override {
+    throw std::runtime_error{"test flush failure"};
+  }
+  void set_pattern(const std::string& /* pattern */) override {}
+  void set_formatter(
+      std::unique_ptr<spdlog::formatter> /* formatter */) override {}
+};
+
+class FlushReportingSink final : public spdlog::sinks::sink {
+ public:
+  FlushReportingSink(
+      std::thread::id producerThread,
+      std::string expectedMessage)
+      : producerThread_{producerThread},
+        expectedMessage_{std::move(expectedMessage)} {}
+
+  void log(const spdlog::details::log_msg& message) override {
+    const std::string_view payload{
+        message.payload.data(), message.payload.size()};
+    if (std::this_thread::get_id() != producerThread_ &&
+        payload.find(expectedMessage_) != std::string_view::npos) {
+      receivedAsynchronously_.store(true, std::memory_order_release);
+    }
+  }
+  void flush() override {
+    if (receivedAsynchronously_.load(std::memory_order_acquire)) {
+      std::fputs("queued async record flushed\n", stderr);
+    }
+  }
+  void set_pattern(const std::string& /* pattern */) override {}
+  void set_formatter(
+      std::unique_ptr<spdlog::formatter> /* formatter */) override {}
+
+ private:
+  const std::thread::id producerThread_;
+  const std::string expectedMessage_;
+  std::atomic<bool> receivedAsynchronously_{false};
 };
 
 /*
@@ -924,7 +970,7 @@ TEST(SpdlogLoggerTest, AsyncPoolShutdownIsNotBlockedBySynchronousDelivery) {
       "synchronous delivery must not block shutdown");
 }
 
-TEST(SpdlogLoggerTest, FatalDoesNotWaitForUnrelatedSynchronousDelivery) {
+TEST(SpdlogLoggerTest, FatalSkipsLoggerWithBusyDistributionSink) {
   ::testing::FLAGS_gtest_death_test_style = "threadsafe";
   EXPECT_EXIT(
       {
@@ -933,11 +979,11 @@ TEST(SpdlogLoggerTest, FatalDoesNotWaitForUnrelatedSynchronousDelivery) {
         constexpr std::string_view kFatalContext{"comms.z_fatal_test"};
         auto& blockedLogger = getSpdlogLogger(kBlockedContext);
         blockedLogger.configure(
-            "BLOCKED", []() { return 0; }, {}, /*asyncLogging=*/false);
+            "BLOCKED", []() { return 0; }, {}, /*asyncLogging=*/true);
         blockedLogger.set_level(spdlog::level::info);
         auto& fatalLogger = getSpdlogLogger(kFatalContext);
         fatalLogger.configure(
-            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/false);
+            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/true);
         fatalLogger.set_level(spdlog::level::info);
 
         std::atomic<bool> deliveryStarted{false};
@@ -949,6 +995,8 @@ TEST(SpdlogLoggerTest, FatalDoesNotWaitForUnrelatedSynchronousDelivery) {
                 std::this_thread::sleep_for(std::chrono::milliseconds{1});
               }
             }));
+
+        meta::comms::logger::testing::shutdownAsyncThreadPoolForTesting();
 
         std::thread blockedDelivery{[&]() {
           COMMS_LOG_NAMED(
@@ -977,6 +1025,124 @@ TEST(SpdlogLoggerTest, FatalDoesNotWaitForUnrelatedSynchronousDelivery) {
       },
       ::testing::KilledBySignal(SIGABRT),
       "fatal must not wait for unrelated sink");
+}
+
+TEST(SpdlogLoggerTest, FatalShutdownTraversalSkipsBusyNamedLoggerRegistry) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        constexpr std::string_view kFatalContext{
+            "comms.fatal_busy_registry_test"};
+        auto& fatalLogger = getSpdlogLogger(kFatalContext);
+        fatalLogger.configure(
+            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/true);
+        fatalLogger.set_level(spdlog::level::info);
+
+        std::atomic<bool> registryLockHeld{false};
+        std::thread blockedRegistry{[&]() {
+          meta::comms::logger::testing::holdNamedLoggerRegistryLockForTesting(
+              [&]() {
+                registryLockHeld.store(true, std::memory_order_release);
+                for (;;) {
+                  /* sleep override */
+                  std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+              });
+        }};
+        blockedRegistry.detach();
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds{10};
+        while (!registryLockHeld.load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < deadline) {
+          /* sleep override */
+          std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+        if (!registryLockHeld.load(std::memory_order_acquire)) {
+          std::_Exit(2);
+        }
+
+        std::thread watchdog{[]() {
+          /* sleep override */
+          std::this_thread::sleep_for(std::chrono::seconds{10});
+          std::_Exit(3);
+        }};
+        watchdog.detach();
+        COMMS_LOG_FATAL_IMPL(fatalLogger, "fatal skips busy registry");
+      },
+      ::testing::KilledBySignal(SIGABRT),
+      "fatal skips busy registry");
+}
+
+TEST(SpdlogLoggerTest, FatalShutdownDoesNotDestroyPeriodicSinkFlusherWorker) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        auto& logger =
+            getSpdlogLogger("comms.fatal_keeps_periodic_flusher_worker");
+        logger.configure(
+            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/true);
+        logger.set_level(spdlog::level::info);
+
+        if (!meta::comms::logger::testing::
+                periodicSinkFlusherRunningForTesting()) {
+          std::_Exit(2);
+        }
+
+        meta::comms::logger::shutdownSpdlogForFatal();
+        std::_Exit(
+            meta::comms::logger::testing::periodicSinkFlusherRunningForTesting()
+                ? 0
+                : 3);
+      },
+      ::testing::ExitedWithCode(0),
+      "");
+}
+
+TEST(SpdlogLoggerTest, FatalReportsSinkFlushFailure) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      {
+        auto& logger = getSpdlogLogger();
+        logger.configure(
+            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/false);
+        logger.set_level(spdlog::level::info);
+        meta::comms::logger::testing::addSinkForTesting(
+            logger, std::make_shared<ThrowingFlushSink>());
+
+        COMMS_LOG(FATAL, "fatal after sink flush failure");
+      },
+      "ERROR: communications logging failed(.|\\n)*"
+      "FATAL fatal after sink flush failure");
+}
+
+TEST(SpdlogLoggerTest, FatalFlushesEveryAsyncLoggerSink) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      {
+        constexpr std::string_view kQueuedContext{"comms.a_queued_fatal_test"};
+        constexpr std::string_view kFatalContext{"comms.z_fatal_flush_test"};
+        auto& queuedLogger = getSpdlogLogger(kQueuedContext);
+        queuedLogger.configure(
+            "QUEUED", []() { return 0; }, {}, /*asyncLogging=*/true);
+        queuedLogger.set_level(spdlog::level::info);
+        auto& fatalLogger = getSpdlogLogger(kFatalContext);
+        fatalLogger.configure(
+            "FATAL", []() { return 0; }, {}, /*asyncLogging=*/true);
+        fatalLogger.set_level(spdlog::level::info);
+
+        meta::comms::logger::testing::stopPeriodicSinkFlusherForTesting();
+        if (!meta::comms::logger::testing::
+                asyncThreadPoolLeaseAvailableForTesting()) {
+          std::_Exit(2);
+        }
+        meta::comms::logger::testing::addSinkForTesting(
+            queuedLogger,
+            std::make_shared<FlushReportingSink>(
+                std::this_thread::get_id(), "queued before fatal"));
+        COMMS_LOG_NAMED(kQueuedContext, INFO, "queued before fatal");
+        COMMS_LOG_NAMED(kFatalContext, FATAL, "fatal flush trigger");
+      },
+      "queued async record flushed(.|\\n)*FATAL fatal flush trigger");
 }
 
 TEST(SpdlogLoggerTest, ShutdownWaitsForActiveSynchronousDelivery) {
