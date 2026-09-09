@@ -36,6 +36,34 @@ void reportCommsLoggingFailureToStderr(const char* level) noexcept {
   std::fflush(stderr);
 }
 
+class CommsDistSink final : public spdlog::sinks::dist_sink_mt {
+ public:
+  using spdlog::sinks::dist_sink_mt::dist_sink_mt;
+
+  void tryFlush() noexcept {
+    /*
+     * Production child sinks are terminal and do not re-enter comms logging.
+     * This is required before try-locking the non-recursive outer mutex.
+     */
+    std::unique_lock lock{mutex_, std::try_to_lock};
+    if (!lock) {
+      return;
+    }
+    /*
+     * This avoids waiting behind another operation through this distribution
+     * sink. Child-sink flushes can still block on their own mutexes or I/O,
+     * just as synchronous delivery of the fatal record can.
+     */
+    for (const auto& sink : sinks_) {
+      try {
+        sink->flush();
+      } catch (...) {
+        reportCommsLoggingFailureToStderr("ERROR");
+      }
+    }
+  }
+};
+
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept {
   reportCommsLoggingFailureToStderr("FATAL");
   std::abort();
@@ -177,14 +205,11 @@ class PeriodicSinkFlusher final {
 
   // Joins the flush thread so it cannot touch sinks or stdio during exit. The
   // flusher itself survives, so registerSink() from a running thread stays
-  // safe.
+  // safe. Keep workerMutex_ held through the join so concurrent shutdown
+  // callers cannot observe a stopped worker until it has actually stopped.
   void stopFlushing() noexcept {
-    std::unique_ptr<spdlog::details::periodic_worker> worker;
-    {
-      std::lock_guard lock{workerMutex_};
-      worker = std::move(worker_);
-    }
-    worker.reset();
+    std::lock_guard lock{workerMutex_};
+    worker_.reset();
   }
 
   void registerSink(const std::shared_ptr<spdlog::sinks::sink>& sink) {
@@ -200,6 +225,11 @@ class PeriodicSinkFlusher final {
       }
     }
     sinks_.push_back(sink);
+  }
+
+  bool runningForTesting() {
+    std::lock_guard lock{workerMutex_};
+    return worker_ != nullptr;
   }
 
  private:
@@ -241,6 +271,12 @@ PeriodicSinkFlusher& getPeriodicSinkFlusher() {
     return initialized;
   }();
   return *flusher;
+}
+
+void stopPeriodicSinkFlusher() noexcept {
+  if (auto* flusher = periodicSinkFlusher.load(std::memory_order_acquire)) {
+    flusher->stopFlushing();
+  }
 }
 
 class ErrorCallbackGuard {
@@ -357,6 +393,39 @@ NamedLoggerRegistry& getNamedLoggerRegistry() {
 
 std::atomic<CommsSpdlogLogger*> defaultLogger{nullptr};
 
+template <typename Callback>
+void forEachInitializedLoggerNoexcept(Callback&& callback) noexcept {
+  const auto invokeNoexcept = [&](CommsSpdlogLogger& logger) noexcept {
+    try {
+      callback(logger);
+    } catch (...) {
+      reportCommsLoggingFailureToStderr("ERROR");
+    }
+  };
+
+  if (auto* logger = defaultLogger.load(std::memory_order_acquire)) {
+    invokeNoexcept(*logger);
+  }
+  if (auto* registry = namedLoggerRegistry.load(std::memory_order_acquire)) {
+    std::vector<CommsSpdlogLogger*> loggers;
+    try {
+      {
+        std::shared_lock lock{registry->mutex};
+        loggers.reserve(registry->loggers.size());
+        for (const auto& [name, logger] : registry->loggers) {
+          (void)name;
+          loggers.push_back(logger.get());
+        }
+      }
+    } catch (...) {
+      reportCommsLoggingFailureToStderr("ERROR");
+    }
+    for (auto* logger : loggers) {
+      invokeNoexcept(*logger);
+    }
+  }
+}
+
 std::mutex& getCommsLoggingShutdownMutex() {
   /*
    * Concurrent callers must not return while another caller is still joining
@@ -367,8 +436,7 @@ std::mutex& getCommsLoggingShutdownMutex() {
   return *mutex;
 }
 
-std::shared_ptr<spdlog::sinks::dist_sink_mt> createOutputSink(
-    std::string_view logFilePath) {
+std::shared_ptr<CommsDistSink> createOutputSink(std::string_view logFilePath) {
   std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks;
   if (logFilePath.empty()) {
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
@@ -388,13 +456,13 @@ std::shared_ptr<spdlog::sinks::dist_sink_mt> createOutputSink(
   for (auto& sink : sinks) {
     sink->set_formatter(makeFormatter());
   }
-  return std::make_shared<spdlog::sinks::dist_sink_mt>(std::move(sinks));
+  return std::make_shared<CommsDistSink>(std::move(sinks));
 }
 
-std::shared_ptr<spdlog::sinks::dist_sink_mt> createInitialOutputSink() {
+std::shared_ptr<CommsDistSink> createInitialOutputSink() {
   auto sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
   sink->set_formatter(makeFormatter());
-  return std::make_shared<spdlog::sinks::dist_sink_mt>(
+  return std::make_shared<CommsDistSink>(
       std::vector<std::shared_ptr<spdlog::sinks::sink>>{std::move(sink)});
 }
 
@@ -402,6 +470,26 @@ std::shared_ptr<spdlog::sinks::dist_sink_mt> createInitialOutputSink() {
 
 void shutdownSpdlogForFatal() {
   getCommsThreadPoolState().stop();
+  if (auto* logger = defaultLogger.load(std::memory_order_acquire)) {
+    logger->tryFlushForFatal();
+  }
+  if (auto* registry = namedLoggerRegistry.load(std::memory_order_acquire)) {
+    std::shared_lock lock{registry->mutex, std::try_to_lock};
+    if (lock) {
+      /*
+       * Fatal shutdown must not wait to acquire the named-logger registry. It
+       * instead traverses under the try-locked registry: entries are never
+       * erased, and production child sinks do not re-enter named-logger
+       * lookup. This also avoids allocating a pointer snapshot before the
+       * fatal record. Holding the lock can delay concurrent logger creation
+       * while a child sink flushes, which is acceptable during termination.
+       */
+      for (const auto& [name, logger] : registry->loggers) {
+        (void)name;
+        logger->tryFlushForFatal();
+      }
+    }
+  }
 }
 
 void shutdownCommsLogging() noexcept {
@@ -412,40 +500,19 @@ void shutdownCommsLogging() noexcept {
     reportCommsLoggingFailureToStderr("ERROR");
   }
 
-  const auto flushLoggerNoexcept = [](CommsSpdlogLogger& logger) noexcept {
-    try {
-      logger.flush();
-    } catch (...) {
-      reportCommsLoggingFailureToStderr("ERROR");
-    }
-  };
-  if (auto* logger = defaultLogger.load(std::memory_order_acquire)) {
-    flushLoggerNoexcept(*logger);
-  }
-  if (auto* registry = namedLoggerRegistry.load(std::memory_order_acquire)) {
-    std::vector<CommsSpdlogLogger*> loggers;
-    try {
-      {
-        std::shared_lock lock{registry->mutex};
-        loggers.reserve(registry->loggers.size());
-        for (const auto& [name, logger] : registry->loggers) {
-          (void)name;
-          loggers.push_back(logger.get());
-        }
-      }
-    } catch (...) {
-      reportCommsLoggingFailureToStderr("ERROR");
-    }
-    for (auto* logger : loggers) {
-      flushLoggerNoexcept(*logger);
-    }
-  }
-  if (auto* flusher = periodicSinkFlusher.load(std::memory_order_acquire)) {
-    flusher->stopFlushing();
-  }
+  forEachInitializedLoggerNoexcept(
+      [](CommsSpdlogLogger& logger) { logger.flush(); });
+  stopPeriodicSinkFlusher();
 }
 
 namespace testing {
+
+void holdNamedLoggerRegistryLockForTesting(
+    const std::function<void()>& callback) {
+  auto& registry = getNamedLoggerRegistry();
+  std::unique_lock lock{registry.mutex};
+  callback();
+}
 
 void addSinkForTesting(
     CommsSpdlogLogger& logger,
@@ -470,6 +537,17 @@ bool globalThreadPoolAliveForTesting() {
 
 void shutdownAsyncThreadPoolForTesting() {
   getCommsThreadPoolState().stop();
+}
+
+void stopPeriodicSinkFlusherForTesting() {
+  stopPeriodicSinkFlusher();
+}
+
+bool periodicSinkFlusherRunningForTesting() {
+  if (auto* flusher = periodicSinkFlusher.load(std::memory_order_acquire)) {
+    return flusher->runningForTesting();
+  }
+  return false;
 }
 
 bool holdAsyncThreadPoolLeaseForTesting(const std::function<void()>& callback) {
@@ -532,7 +610,6 @@ void CommsLogStreamBase::log() {
 
 [[noreturn]] void CommsLogStreamBase::logFatalAndAbort() noexcept {
   try {
-    logger_.flush();
     shutdownSpdlogForFatal();
     logger_.logFatal(location_, stream_.str());
   } catch (...) {
@@ -606,6 +683,15 @@ void CommsSpdlogLogger::flush() {
   }
 }
 
+void CommsSpdlogLogger::tryFlushForFatal() noexcept {
+  try {
+    const auto state = loadState();
+    state->backend->outputSink->tryFlush();
+  } catch (...) {
+    reportCommsLoggingFailureToStderr("ERROR");
+  }
+}
+
 void CommsSpdlogLogger::log(
     spdlog::source_loc location,
     spdlog::level::level_enum level,
@@ -674,7 +760,7 @@ void CommsSpdlogLogger::storeState(std::shared_ptr<const State> state) {
 }
 
 std::shared_ptr<CommsSpdlogLogger::Backend> CommsSpdlogLogger::createBackend(
-    std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink,
+    std::shared_ptr<CommsDistSink> outputSink,
     std::string outputPath,
     bool asyncLogging) const {
   auto threadPoolLease = getCommsThreadPoolState().acquire();
