@@ -265,8 +265,9 @@ class MultiPeerTransport {
   MultimemNvlTransportDevice get_multimem_nvl_transport_device() const;
 
   /**
-   * Return the IBGDA device slot after materializing the peer at full capacity.
-   * Both endpoint ranks must enter this compatibility path for the same edge.
+   * Return the IBGDA device slot. If the peer has no prepared channels, both
+   * endpoint ranks must enter this compatibility path and the peer is
+   * materialized at full capacity. An already-prepared prefix is not expanded.
    *
    * @param globalPeerRank Global rank of the IBGDA peer.
    * @return Non-owning pointer to the GPU transport slot.
@@ -327,9 +328,13 @@ class MultiPeerTransport {
    * demand, and the backend processes the merged batch in canonical peer-edge
    * order. Prefix-growth backends materialize the exact requested prefix
    * without rounding; other backends may promote it to full capacity.
-   * Both endpoints must demand each IB edge in the same connect round.
+   * Both endpoints must request the same exact prefix for each IB edge in the
+   * same connect round.
    * Channel-eager mode promotes every positive demand to full capacity.
-   * Demanded peers must be materialized before CUDA graph capture begins.
+   * On backends that support prefix growth, capture-time growth completes on
+   * graph-external device work before this call returns; graph replay performs
+   * no allocation or connection. Other backends must be prepared before
+   * capture and retain full-capacity materialization.
    */
   MultiPeerDeviceHandle get_device_handle(
       std::span<const PeerChannelDemand> demands);

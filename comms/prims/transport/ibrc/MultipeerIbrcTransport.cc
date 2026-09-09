@@ -307,6 +307,9 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
             config_.qpsPerConnection,
             numQpsPerPeerPerNic));
   }
+  if (sendRecvBuffersEnabled()) {
+    validateSendRecvConfig();
+  }
   peerResources_.resize(nRanks_ - 1);
   peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
 
@@ -777,6 +780,12 @@ void MultipeerIbrcTransport::publishTransportError(
     __atomic_store_n(&status->error, 1, __ATOMIC_RELEASE);
   }
   stopProgress_.store(true, std::memory_order_release);
+}
+
+void MultipeerIbrcTransport::onTerminalMaterializationFailure() noexcept {
+  publishTransportError(
+      ECANCELED, "terminal peer/channel materialization failure");
+  stopProgressThread();
 }
 
 void MultipeerIbrcTransport::initializeControlResources() {
@@ -1614,6 +1623,7 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
+  throwIfMaterializationFailed();
   if (p2pTransportDevices_.device == nullptr) {
     throw std::runtime_error(
         "getP2pTransportDeviceSlot: IBRC device transport slots are not initialized");
@@ -1626,6 +1636,7 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDeviceSlot(
 
 P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
     int peerRank) {
+  throwIfMaterializationFailed();
   if (!isPeerMaterialized(peerRank)) {
     queuePeerForMaterialization(peerRank, channelCapacity());
     connectPeers();
@@ -1640,7 +1651,7 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
       peerIndex * ibrcDeviceSlotSize());
 }
 
-void MultipeerIbrcTransport::doMaterializePeer(
+void MultipeerIbrcTransport::materializePeerChannelRange(
     int peerRank,
     uint32_t oldChannels,
     uint32_t newChannels) {
@@ -1674,15 +1685,6 @@ void MultipeerIbrcTransport::doMaterializePeer(
   applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
   allocatePeerCmdQueues(peerIndex);
   startProgressThread();
-}
-
-void MultipeerIbrcTransport::cleanupPeerOnFailure(int peerIndex) {
-  publishTransportError(EIO, "peer materialization failed");
-  stopProgressThread();
-  cleanupPeerCmdQueues(peerIndex);
-  cleanupPeerQps(peerIndex);
-  cleanupPeerSignalCounterResources(peerIndex);
-  cleanupSendRecvBufferForPeer(peerIndex);
 }
 
 } // namespace comms::prims

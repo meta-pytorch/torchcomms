@@ -136,21 +136,7 @@ void publishIbgdaDeviceSlot(
     int peerIndex,
     const P2pIbgdaTransportBuildParams& params);
 
-/** Clear one peer's canonical channel range without freeing table storage. */
-bool clearIbgdaDeviceRange(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex,
-    int beginChannel,
-    int endChannel) noexcept;
-
-/** Restore one outer slot to an unpublished shape while retaining table bases.
- */
-bool resetIbgdaDeviceSlot(
-    const IbgdaFixedDeviceTables& tables,
-    int peerIndex) noexcept;
-
-// Compatibility entry points retained for callers that build complete device
-// tables outside MultipeerIbgdaTransport.
+/** Build complete device tables for callers outside the host transport. */
 P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
     const std::vector<P2pIbgdaTransportBuildParams>& params,
     int numPeers,
@@ -163,5 +149,4 @@ void writeDeviceTransportSlot(
     std::vector<void*>& outGpuAllocations);
 
 std::size_t getP2pIbgdaTransportDeviceSize();
-
 } // namespace comms::prims
