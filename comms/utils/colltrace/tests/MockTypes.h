@@ -71,6 +71,11 @@ class MockCollTracePlugin : public ICollTracePlugin {
       afterCollKernelEnd,
       (CollTraceEvent & curEvent),
       (noexcept, override));
+  MOCK_METHOD(
+      CommsMaybeVoid,
+      afterCollTerminated,
+      (CollTraceEvent & curEvent, CollTraceTerminalReason reason),
+      (noexcept, override));
 };
 
 // Mock CollWaitEvent for testing
