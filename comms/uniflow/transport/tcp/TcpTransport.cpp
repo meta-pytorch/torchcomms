@@ -986,6 +986,41 @@ std::future<Status> TcpTransport::put(
   // dropping one with a copy still running would return its slab under an
   // active DMA.
   std::deque<PendingPutWave> inFlight;
+  // The comment above holds for every *explicit* exit -- each was checked --
+  // but not for unwinding. PendingPutWave is a plain aggregate with no
+  // destructor, so an exception destroys `inFlight` directly: every held slab
+  // goes back to the pool while the device is still copying into it, and the
+  // events leak. The throw sites are all allocation failures inside the window
+  // -- enqueueFrames, the deque push_back of a launched wave, the Err string in
+  // state->fail, and lock_guard throwing system_error.
+  //
+  // Same shape as the read path's CopyBarrier in startReadReply, which covers
+  // that function only. abandonPutWaves is noexcept, which is what makes it
+  // safe during unwinding, and it retires each wave -- event wait with the
+  // streamSynchronize fallback -- before clearing, which is exactly the quiesce
+  // the slabs need. The emptiness check keeps this from double-retiring: the
+  // explicit paths drain first and leave nothing to do here.
+  // Copy and move are deleted because a second WaveBarrier over the same deque
+  // would abandon the waves twice. That makes this a non-aggregate, hence the
+  // constructor.
+  class WaveBarrier {
+   public:
+    WaveBarrier(TcpTransport* self, std::deque<PendingPutWave>* waves)
+        : self_(self), waves_(waves) {}
+    WaveBarrier(const WaveBarrier&) = delete;
+    WaveBarrier& operator=(const WaveBarrier&) = delete;
+    WaveBarrier(WaveBarrier&&) = delete;
+    WaveBarrier& operator=(WaveBarrier&&) = delete;
+    ~WaveBarrier() {
+      if (waves_ != nullptr && !waves_->empty()) {
+        self_->abandonPutWaves(*waves_);
+      }
+    }
+
+   private:
+    TcpTransport* self_;
+    std::deque<PendingPutWave>* waves_;
+  } waveBarrier{this, &inFlight};
   // Retires and queues launched waves, oldest first, until at most `keep`
   // remain. Returns false once it has already failed the operation, so callers
   // just return. Everything before the wave it failed on stays
