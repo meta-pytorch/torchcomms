@@ -5,11 +5,8 @@
 
 #if defined(__HIP_PLATFORM_AMD__)
 #else
-// For CUDA, define the shared memory variables that are declared as extern in
-// DevCommon.cuh
-__shared__ ctran::CommStateXDev* statex;
-__shared__ int* kernelFlag;
-__shared__ bool kernelDoAbort;
+// statex/kernelFlag/kernelDoAbort are static __shared__ in DevShmState.cuh, so
+// they need no definition here.
 // TODO: remove once all kernels migrated to populate kernelFlag
 __constant__ int placeHolderKernelFlag = KERNEL_STARTED;
 #endif

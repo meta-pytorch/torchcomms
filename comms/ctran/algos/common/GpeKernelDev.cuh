@@ -20,7 +20,9 @@ namespace ctran::device {
 
 // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
 // channels.
-static inline __device__ void devLoadAbortFlags(
+// __forceinline__: touches the static __shared__
+// statex/kernelFlag/kernelDoAbort, which are per-TU. See DevShmState.cuh.
+static __forceinline__ __device__ void devLoadAbortFlags(
     int* flag,
     CtranAlgoDeviceState* devState) {
   shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
@@ -63,7 +65,8 @@ static inline __device__ void KernelStartGpeAndExit(
   comms::device::st_volatile_global(&f->flag_[bId], KERNEL_STARTED_AND_EXIT);
 }
 
-static inline __device__ bool KernelTestHostAbort(volatile int* flag) {
+// __forceinline__: reads the per-TU static __shared__ kernelDoAbort.
+static __forceinline__ __device__ bool KernelTestHostAbort(volatile int* flag) {
   // enableCancellableWaits is the feature guard. See comment on the struct
   // field.
   //
@@ -76,7 +79,10 @@ static inline __device__ bool KernelTestHostAbort(volatile int* flag) {
        (flag && comms::device::ld_volatile_global(flag) == KERNEL_HOST_ABORT));
 }
 
-static inline __device__ bool KernelTestHostAbortBlock(volatile int* flag) {
+// __forceinline__: reads/writes the per-TU static __shared__ kernelFlag and
+// kernelDoAbort.
+static __forceinline__ __device__ bool KernelTestHostAbortBlock(
+    volatile int* flag) {
   if (threadIdx.x == 0 && ctran::device::KernelTestHostAbort(kernelFlag)) {
     kernelDoAbort = true;
   }
