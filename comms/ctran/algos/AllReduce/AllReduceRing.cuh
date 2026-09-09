@@ -50,23 +50,31 @@ __device__ __forceinline__ const T* getBufAtByteOffset(
       reinterpret_cast<const char*>(buf) + offset);
 }
 
-template <typename T, commRedOp_t RedOp>
-inline constexpr bool kUseBfloat16AvgPreMul =
+template <typename T>
+inline constexpr bool kSupportsAvgPreMul = std::is_same_v<T, half>
 #if defined(__CUDA_BF16_TYPES_EXIST__)
-    std::is_same_v<T, __nv_bfloat16> && RedOp == commAvg;
-#else
-    false;
+    || std::is_same_v<T, __nv_bfloat16>
 #endif
+    ;
 
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-__device__ __forceinline__ __nv_bfloat16
-getBfloat16AvgPreMul(const KernArgs& args) {
+template <typename T, commRedOp_t RedOp>
+inline constexpr bool kUseAvgPreMul = kSupportsAvgPreMul<T> && RedOp == commAvg;
+
+template <typename T>
+__device__ __forceinline__ T getAvgPreMul(const KernArgs& args) {
+  static_assert(kSupportsAvgPreMul<T>);
   if (args.avgPreMul == 0.0f) {
     trap();
   }
-  return __float2bfloat16(args.avgPreMul);
-}
+  if constexpr (std::is_same_v<T, half>) {
+    return __float2half(args.avgPreMul);
+  }
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+  else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+    return __float2bfloat16(args.avgPreMul);
+  }
 #endif
+}
 
 template <typename T, commRedOp_t RedOp, bool FinalizeAvg>
 __device__ __forceinline__ void reduceRing(
@@ -77,8 +85,7 @@ __device__ __forceinline__ void reduceRing(
     size_t ndsts,
     T** dsts,
     size_t count) {
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-  if constexpr (kUseBfloat16AvgPreMul<T, RedOp>) {
+  if constexpr (kUseAvgPreMul<T, RedOp>) {
     localReducePreMulSumSrc0<T>(
         nsrcs,
         srcs,
@@ -87,10 +94,9 @@ __device__ __forceinline__ void reduceRing(
         count,
         blockIdx.x,
         gridDim.x,
-        getBfloat16AvgPreMul(args));
+        getAvgPreMul<T>(args));
     return;
   }
-#endif
   if constexpr (RedOp == commAvg && !FinalizeAvg) {
     localReduce<T, commSum>(
         nsrcs, srcs, ndsts, dsts, count, blockIdx.x, gridDim.x, algoCtx.nRanks);
@@ -107,22 +113,13 @@ __device__ __forceinline__ void copyRing(
     const T* src,
     T* dst,
     size_t count) {
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-  if constexpr (kUseBfloat16AvgPreMul<T, RedOp>) {
+  if constexpr (kUseAvgPreMul<T, RedOp>) {
     const T* srcs[1] = {src};
     T* dsts[1] = {dst};
     localReducePreMulSumSrc0<T>(
-        1,
-        srcs,
-        1,
-        dsts,
-        count,
-        blockIdx.x,
-        gridDim.x,
-        getBfloat16AvgPreMul(args));
+        1, srcs, 1, dsts, count, blockIdx.x, gridDim.x, getAvgPreMul<T>(args));
     return;
   }
-#endif
   ctranKernCopyRaw<T>(src, dst, count, blockIdx.x, gridDim.x);
 }
 

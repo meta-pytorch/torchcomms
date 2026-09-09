@@ -130,6 +130,17 @@ __device__ __forceinline__ T reduceNcclOp1(const T& a, const T& b) {
   }
 }
 
+template <typename T>
+__device__ __forceinline__ T applyPreMul(const T& value, const T& preMul) {
+  return reduceNcclOp1<T, commProd>(value, preMul);
+}
+
+// The explicit conversion preserves NCCL's FP16 rounding before summation.
+__device__ __forceinline__ __half
+applyPreMul(const __half& value, const __half& preMul) {
+  return __float2half(__half2float(value) * __half2float(preMul));
+}
+
 template <typename T, int N = 16>
 struct __align__(16) T_NBytes {
   static constexpr int kWords = N / sizeof(T);
@@ -237,7 +248,7 @@ __device__ __forceinline__ void localReduceVectorized(
 #pragma unroll
         for (int wordIdx = 0; wordIdx < kWordsPerVectorLoad; ++wordIdx) {
           s[unrollIdx][0].v[wordIdx] =
-              reduceNcclOp1<T, commProd>(s[unrollIdx][0].v[wordIdx], preMul);
+              applyPreMul(s[unrollIdx][0].v[wordIdx], preMul);
         }
       }
     }
@@ -273,7 +284,7 @@ __device__ __forceinline__ void localReduceVectorized(
     for (uint32_t i = limitCount + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
       if constexpr (PreMulSrc0) {
-        s = reduceNcclOp1<T, commProd>(s, preMul);
+        s = applyPreMul(s, preMul);
       }
 #pragma unroll
       for (int j = 1; j < NSrcs; ++j) {
@@ -375,7 +386,7 @@ __device__ __forceinline__ void localReduceFallback(
 #pragma unroll
       for (int j = 0; j < kUnroll; ++j) {
         if constexpr (PreMulSrc0) {
-          s[j][0] = reduceNcclOp1<T, commProd>(s[j][0], preMul);
+          s[j][0] = applyPreMul(s[j][0], preMul);
         }
         for (uint32_t k = 1; k < nsrcs; ++k) {
           s[j][0] = reduceNcclOp1<T, RedOp>(s[j][0], s[j][k]);
@@ -397,7 +408,7 @@ __device__ __forceinline__ void localReduceFallback(
     for (size_t i = p.limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
       T s = srcs[0][i];
       if constexpr (PreMulSrc0) {
-        s = reduceNcclOp1<T, commProd>(s, preMul);
+        s = applyPreMul(s, preMul);
       }
 #pragma unroll
       for (int j = 1; j < nsrcs; ++j) {
