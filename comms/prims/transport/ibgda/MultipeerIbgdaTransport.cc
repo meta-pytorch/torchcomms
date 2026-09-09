@@ -18,6 +18,8 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -34,9 +36,10 @@
 #ifndef __HIP_PLATFORM_AMD__
 #include "comms/prims/platform/CudaDriverLazy.h"
 #include "comms/prims/platform/DocaHostUtils.h"
-// MCCL_IBGDA_MAX_RD_ATOMIC / MCCL_IBGDA_QP_ORDERING_SEMANTIC. Generated header.
+// MCCL_IBGDA_* runtime controls. Generated header.
 #include "comms/utils/cvars/nccl_cvars.h" // @manual
 #endif
+#include "comms/prims/transport/BoundedCleanupExecutor.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
@@ -1325,13 +1328,45 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
           << " initialized on GPU " << gpuPciBusId_;
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+namespace {
+
+struct VerbsTeardownTask {
+  VerbsTeardownTask(
+      int device,
+      std::unique_ptr<MultipeerIbgdaTransport> oldTransport) noexcept
+      : cudaDevice(device), transport(std::move(oldTransport)) {}
+
+  void operator()() noexcept {
+    cudaError_t err = cudaSetDevice(cudaDevice);
+    if (err == cudaSuccess) {
+      err = cudaFree(nullptr);
+    }
+    if (err != cudaSuccess) {
+      LOG(WARNING) << "MultipeerIbgdaTransport: deferred teardown could not "
+                      "bind CUDA device "
+                   << cudaDevice << ": " << cudaGetErrorString(err);
+    }
+    transport.reset();
+  }
+
+  int cudaDevice;
+  std::unique_ptr<MultipeerIbgdaTransport> transport;
+};
+
+detail::BoundedCleanupExecutor<VerbsTeardownTask>& verbsTeardownReaper() {
+  static detail::BoundedCleanupExecutor<VerbsTeardownTask> reaper;
+  return reaper;
+}
+
+} // namespace
+#endif
+
 MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
   cleanup();
 }
 
-void MultipeerIbgdaTransport::cleanup() {
-  auto& symbols = ibverbx::ibvSymbols;
-
+void MultipeerIbgdaTransport::cleanupGpuAllocationsAndStaging() noexcept {
   // Free all GPU memory (transport objects + QP pointer arrays)
   for (auto* ptr : gpuAllocations_) {
     if (ptr != nullptr) {
@@ -1348,6 +1383,75 @@ void MultipeerIbgdaTransport::cleanup() {
   // Free send/recv staging buffers (eager bulks + any lazy per-peer
   // allocations) via the shared base cleanup.
   cleanupSendRecvBuffers();
+}
+
+void MultipeerIbgdaTransport::cleanupRegisteredBuffers() noexcept {
+  auto registrations = registrationState_.wlock();
+  auto& symbols = ibverbx::ibvSymbols;
+  for (auto& [_, cached] : registrations->registeredBuffers) {
+    for (int n = 0; n < numNics_; ++n) {
+      if (cached.mrs[n] != nullptr &&
+          symbols.ibv_internal_dereg_mr != nullptr) {
+        symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+      }
+    }
+  }
+  registrations->registeredBuffers.clear();
+}
+
+void MultipeerIbgdaTransport::prepareForDeferredCleanup() noexcept {
+  if (deferredCleanupPrepared_) {
+    return;
+  }
+  cleanupGpuAllocationsAndStaging();
+
+  // These registrations can refer to caller-owned allocations, which may be
+  // released as soon as the enclosing transport destructor returns.
+  cleanupSignalCounterResources();
+  cleanupRegisteredBuffers();
+  deferredCleanupPrepared_ = true;
+}
+
+bool MultipeerIbgdaTransport::tryDeferCleanup(
+    std::unique_ptr<MultipeerIbgdaTransport>& transport) noexcept {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  return false;
+#else
+  if (!transport || !MCCL_IBGDA_ASYNC_TEARDOWN) {
+    return false;
+  }
+
+  transport->prepareForDeferredCleanup();
+  const int cudaDevice = transport->config_.cudaDevice;
+  try {
+    auto& reaper = verbsTeardownReaper();
+    VerbsTeardownTask task(cudaDevice, std::move(transport));
+    if (reaper.tryEnqueue(task)) {
+      return true;
+    }
+    LOG(WARNING) << "MultipeerIbgdaTransport: teardown reaper is busy; "
+                    "destroying synchronously to bound retained resources";
+    task();
+    return true;
+  } catch (const std::exception& ex) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: could not enqueue deferred "
+                    "teardown; destroying synchronously: "
+                 << ex.what();
+  } catch (...) {
+    LOG(WARNING) << "MultipeerIbgdaTransport: could not enqueue deferred "
+                    "teardown; destroying synchronously";
+  }
+  return !transport;
+#endif
+}
+
+void MultipeerIbgdaTransport::cleanup() noexcept {
+  if (!deferredCleanupPrepared_) {
+    cleanupGpuAllocationsAndStaging();
+  }
+
+  auto& symbols = ibverbx::ibvSymbols;
 
   // Destroy per-NIC QPs and loopback responders.
   for (auto& nic : nicDoca_) {
@@ -1371,22 +1475,11 @@ void MultipeerIbgdaTransport::cleanup() {
     nic.loopbackCompanionQps.clear();
   }
 
-  cleanupSignalCounterResources();
+  if (!deferredCleanupPrepared_) {
+    cleanupSignalCounterResources();
 
-  // Destroy user buffer MRs
-  {
-    auto registrations = registrationState_.wlock();
-    for (auto& [_, cached] : registrations->registeredBuffers) {
-      // numNics_=1 today; loop is the multi-NIC-ready shape (P2.x fills the
-      // rest of mrs[]).
-      for (int n = 0; n < numNics_; ++n) {
-        if (cached.mrs[n] != nullptr &&
-            symbols.ibv_internal_dereg_mr != nullptr) {
-          symbols.ibv_internal_dereg_mr(cached.mrs[n]);
-        }
-      }
-    }
-    registrations->registeredBuffers.clear();
+    // Destroy user buffer MRs
+    cleanupRegisteredBuffers();
   }
 
   // Destroy per-NIC sink MRs. Iterate over actual nicDoca_ entries
@@ -1402,7 +1495,7 @@ void MultipeerIbgdaTransport::cleanup() {
   }
 
   // Free sink buffer. NVIDIA: cuMem-allocated with gpuDirectRDMACapable.
-  // AMD: hipHostMalloc'd. Shared across NICs — only one allocation,
+  // AMD: hipHostMalloc'd. Shared across NICs -- only one allocation,
   // freed after all per-NIC MRs.
   if (sinkBuffer_ != nullptr) {
 #ifdef __HIP_PLATFORM_AMD__

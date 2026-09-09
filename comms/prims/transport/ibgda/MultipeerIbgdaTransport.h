@@ -226,7 +226,12 @@ class MultipeerIbgdaTransport
   void allocateResources();
   void registerMemory();
   void createQpGroups();
-  void cleanup();
+  void cleanup() noexcept;
+  void cleanupGpuAllocationsAndStaging() noexcept;
+  void cleanupRegisteredBuffers() noexcept;
+  void prepareForDeferredCleanup() noexcept;
+  static bool tryDeferCleanup(
+      std::unique_ptr<MultipeerIbgdaTransport>& transport) noexcept;
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
   // remote-side GID / LID / qpn. At numNics_=1 nic is always 0.
@@ -252,6 +257,7 @@ class MultipeerIbgdaTransport
   // lazy materialization, bootstrap exchangeWithPeer) and calls back into this
   // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
   friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
+  friend class MultiPeerTransport;
 
   // myRank_/nRanks_/bootstrap_/config_/registrationState_/nics_/lazy-state are
   // inherited (protected) from MultiPeerIbTransport.
@@ -327,6 +333,7 @@ class MultipeerIbgdaTransport
 
   // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
   std::vector<void*> gpuAllocations_;
+  bool deferredCleanupPrepared_{false};
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
