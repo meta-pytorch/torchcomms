@@ -149,6 +149,9 @@ class CollTrace : public ICollTrace {
    ***************************************************************************/
   bool isThreadCancelled() const noexcept;
   void ackFlush(uint64_t gen) noexcept;
+  void terminateEvent(
+      CollTraceEvent& event,
+      CollTraceTerminalReason reason) noexcept;
 
   void collTraceThread(
       const std::function<CommsMaybeVoid(void)>& threadSetupFunc);

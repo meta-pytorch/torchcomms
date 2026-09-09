@@ -1,5 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
+#include <future>
+#include <limits>
 #include <set>
 
 #include <gmock/gmock.h>
@@ -46,6 +49,8 @@ class CollTraceTest : public ::testing::Test {
     ON_CALL(*mockPlugin, collEventProgressing(_))
         .WillByDefault(Return(folly::unit));
     ON_CALL(*mockPlugin, afterCollKernelEnd(_))
+        .WillByDefault(Return(folly::unit));
+    ON_CALL(*mockPlugin, afterCollTerminated(_, _))
         .WillByDefault(Return(folly::unit));
 
     // Store a raw pointer to the mock plugin before moving it
@@ -487,6 +492,107 @@ TEST_F(CollTraceTest, CheckHandleValidityWhenPendingQueueFull) {
       EXPECT_NE(res.value(), nullptr);
     }
   }
+}
+
+TEST(CollTraceQueueFullTest, QueueRejectionHasTerminalDisposition) {
+  auto mockPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  auto* mockPluginPtr = mockPlugin.get();
+  ON_CALL(*mockPlugin, getName()).WillByDefault(Return("MockPlugin"));
+  ON_CALL(*mockPlugin, afterCollRecorded(_)).WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, beforeCollKernelScheduled(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, afterCollKernelScheduled(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, afterCollKernelStart(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, collEventProgressing(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, afterCollKernelEnd(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*mockPlugin, afterCollTerminated(_, _))
+      .WillByDefault(Return(folly::unit));
+
+  uint64_t rejectedCollId = std::numeric_limits<uint64_t>::max();
+  EXPECT_CALL(
+      *mockPluginPtr,
+      afterCollTerminated(_, CollTraceTerminalReason::QueueRejected))
+      .WillOnce([&](CollTraceEvent& event, CollTraceTerminalReason) {
+        rejectedCollId = event.collRecord->getCollId();
+        return folly::unit;
+      });
+
+  std::promise<void> pollBlocked;
+  auto pollBlockedFuture = pollBlocked.get_future();
+  std::promise<void> releasePoll;
+  auto releasePollFuture = releasePoll.get_future();
+  std::atomic_bool signaled{false};
+
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins;
+  plugins.push_back(std::move(mockPlugin));
+  auto trace = std::make_unique<CollTrace>(
+      CollTraceConfig{
+          .maxCheckCancelInterval = std::chrono::milliseconds{1},
+          .maxPendingQueueSize = 1,
+      },
+      CommLogData{},
+      []() -> CommsMaybeVoid { return folly::unit; },
+      std::move(plugins));
+
+  auto enqueue = [&](std::unique_ptr<MockCollWaitEvent> waitEvent) {
+    auto result = trace->recordCollective(
+        std::make_unique<NiceMock<MockCollMetadata>>(), std::move(waitEvent));
+    EXPECT_TRUE(result.hasValue());
+    if (!result.hasValue()) {
+      return std::shared_ptr<ICollTraceHandle>{};
+    }
+    auto handle = result.value();
+    EXPECT_VALUE(
+        handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel));
+    handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
+    return handle;
+  };
+
+  auto blockingWaitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+  ON_CALL(*blockingWaitEvent, beforeCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*blockingWaitEvent, afterCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*blockingWaitEvent, waitCollStart(_))
+      .WillByDefault([&](std::chrono::milliseconds) {
+        if (!signaled.exchange(true)) {
+          pollBlocked.set_value();
+        }
+        releasePollFuture.wait();
+        return CommsMaybe<bool>{false};
+      });
+  auto handle1 = enqueue(std::move(blockingWaitEvent));
+  ASSERT_NE(handle1, nullptr);
+  if (pollBlockedFuture.wait_for(std::chrono::seconds{1}) !=
+      std::future_status::ready) {
+    releasePoll.set_value();
+    trace.reset();
+    ADD_FAILURE() << "Timed out waiting for the poll thread to block";
+    return;
+  }
+
+  auto makeReadyWaitEvent = [] {
+    auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+    ON_CALL(*waitEvent, beforeCollKernelScheduled())
+        .WillByDefault(Return(folly::unit));
+    ON_CALL(*waitEvent, afterCollKernelScheduled())
+        .WillByDefault(Return(folly::unit));
+    return waitEvent;
+  };
+  auto handle2 = enqueue(makeReadyWaitEvent());
+  auto handle3 = enqueue(makeReadyWaitEvent());
+
+  EXPECT_NE(handle2, nullptr);
+  EXPECT_NE(handle3, nullptr);
+  EXPECT_EQ(rejectedCollId, 2);
+  ::testing::Mock::VerifyAndClearExpectations(mockPluginPtr);
+
+  releasePoll.set_value();
+  trace.reset();
 }
 
 // If multiple enqueue happened at the same time, colltrace would not be able
