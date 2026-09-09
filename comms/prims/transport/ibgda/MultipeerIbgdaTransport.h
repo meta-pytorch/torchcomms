@@ -34,6 +34,7 @@
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
+struct IbgdaFixedDeviceTables;
 struct MultipeerIbgdaDeviceTransport;
 struct P2pIbgdaTransportBuildParams;
 struct PeerQpPayload;
@@ -136,10 +137,10 @@ class MultipeerIbgdaTransport
   MultipeerIbgdaTransport& operator=(MultipeerIbgdaTransport&&) = delete;
 
   /**
-   * exchange - Exchange connection info and connect QPs
+   * exchange - Reserve stable device descriptor tables
    *
-   * COLLECTIVE OPERATION: All ranks MUST call this before using
-   * getDeviceTransportPtr().
+   * All ranks must call this before using getDeviceTransportPtr(). Peer QPs
+   * and channel resources are materialized separately on demand.
    */
   void exchange();
 
@@ -149,6 +150,7 @@ class MultipeerIbgdaTransport
    * Returns a MultipeerIbgdaDeviceTransport wrapper that provides convenient
    * access to per-peer transport handles with rank-to-index mapping.
    * Use .get(peerRank) to get the transport for a specific peer.
+   * This accessor does not materialize peers.
    *
    * NOTE: Requires including MultipeerIbgdaDeviceTransport.cuh in CUDA files.
    * For non-CUDA code, use getP2pTransportDevice(peerRank) instead.
@@ -271,10 +273,9 @@ class MultipeerIbgdaTransport
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
 
-  // Per-NIC host-side IB verbs resources. blockQpGroups and
-  // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0
-  // main QP comes from blockQpGroups; extra main QPs are indexed
-  // [(peer * maxGroups + block) * (qpsPerBlockPerNic - 1) + (lane - 1)].
+  // Per-NIC host-side IB verbs resources. The legacy-named blockQpGroups and
+  // loopbackCompanionQps use flattened fixed-capacity peer/channel/direction
+  // slots. extraMainQps additionally indexes the lane within each channel.
   // Backend-specific (DOCA) per-NIC state. The generic per-NIC resources
   // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
   // index-aligned with this vector; openIbDevice() fills both.
@@ -321,11 +322,8 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransportBase (set by openNics()); the backend reads them
   // (inherited) when building DOCA AH attrs and connecting QPs.
 
-  // Per-peer device transports (GPU accessible)
-  P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
-  std::size_t peerTransportSize_{0};
-
-  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  // Host view of communicator-lifetime tables; gpuAllocations_ owns storage.
+  std::unique_ptr<IbgdaFixedDeviceTables> fixedDeviceTables_;
   std::vector<void*> gpuAllocations_;
 
   // Exchange info received from peers
