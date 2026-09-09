@@ -127,7 +127,8 @@ __device__ __forceinline__ int prims_ibgda_wait_collapsed_cq(
 //
 // `IbgdaSendRecvProgressStatus` and the pipelined send/recv algorithm live in
 // private shared helpers in P2pIbTransportDeviceImpl.cuh; backend-owned
-// `channelLayout_` carries the actual protocol state.
+// `channelLayout_` carries shared geometry while each `IbLocalChannel` carries
+// channel-specific resources and mutable protocol state.
 
 // Slot-id bounds checks for the slot-index API. Catches both
 // out-of-range slot ids and slot-index calls made when the transport was
@@ -181,9 +182,9 @@ struct NicDeviceIbgdaResources {
  *
  * Every method has two overloads:
  *   Group-scope: put(group, ...) — all threads in group must call.
- *     QP selection is owned by the physical CUDA block. The block
- *     round-robins put operations across NIC-first QP lanes and preserves
- *     signal/flush ordering for operations issued by the same block_id.
+ *     group.group_id selects the logical channel. That channel round-robins
+ *     put operations across NIC-first QP lanes and preserves signal/flush
+ *     ordering for operations issued on the same channel.
  *     Data transfer uses the exact buffer span supplied by the caller.
  *     Threads in the group coordinate the operation; callers that want the
  *     transport to shard a larger buffer should use put_cooperative().
@@ -192,9 +193,8 @@ struct NicDeviceIbgdaResources {
  *     group-scope wait_local() consumes that leader's ticket collectively.
  *
  *   Thread-scope: put(...) — single thread calls.
- *     QP selection uses the caller's physical blockIdx.x. Implemented as a
- *     thin wrapper: creates a solo ThreadGroup with block_id=blockIdx.x, then
- *     forwards to the group-scope implementation.
+ *     Implemented as a thin wrapper that maps blockIdx.x to the solo group's
+ *     group_id, then forwards to the group-scope implementation.
  *
  * CRITICAL: Do not rely on scope-family mixing for synchronization.
  *   Thread-scope wrappers do not synchronize with other threads in the block.
@@ -203,12 +203,11 @@ struct NicDeviceIbgdaResources {
  *   standalone signal when the signal is meant to announce completion of prior
  *   puts.
  *
- * CRITICAL: Same-block warp-scope batching is not a supported ordering
- * contract in this implementation. The block_id owns one logical ordered
- * stream. If multiple independent warps use the same block_id, this transport
- * does not infer cross-warp order for a later signal() or flush(); the caller
- * must use a CTA-level barrier or another protocol-level synchronization
- * before issuing the covering signal/flush. In particular, do not rely on:
+ * CRITICAL: Multiple independent warps sharing one logical channel are not a
+ * supported ordering contract. The transport does not infer cross-warp order
+ * for a later signal() or flush(); the caller must use a CTA-level barrier or
+ * another protocol-level synchronization before issuing the covering
+ * signal/flush. In particular, do not rely on:
  *
  *   warp0: put(A); put(B); signal(S);
  *   warp1: put(C); put(D); signal(S);
@@ -236,18 +235,17 @@ struct NicDeviceIbgdaResources {
  */
 class P2pIbgdaTransportDevice {
  public:
-  // Default ctor required so an array of these can be cudaMemcpy'd from host
-  // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
-  // call methods on a default-constructed instance — nicDevices_ is empty.
+  // Default ctor supports unpublished entries in the fixed device table. Do
+  // not call methods on a default-constructed instance: nicDevices_ is empty.
   P2pIbgdaTransportDevice() = default;
 
   /**
    * Construct a per-peer device transport handle.
    *
    * Each P2p instance owns one peer's NICs. Each NicDeviceIbgdaResources
-   * carries its main and companion QPs plus a sink lkey. Lane selection is
-   * block-owned: each physical CUDA block round-robins its puts across
-   * numNics * qpsPerBlockPerNic lanes, using NIC-first lane ordinals.
+   * carries its main and companion QPs plus a sink lkey. Each logical channel
+   * round-robins its puts across numNics * qpsPerConnection lanes, using
+   * NIC-first lane ordinals.
    *
    * Single-NIC usage: pass a 1-element nicDevices span. All ops fall through
    * to NIC 0.
@@ -1050,7 +1048,7 @@ class P2pIbgdaTransportDevice {
       const ThreadGroup& group) const {
     if (group.scope == SyncScope::CLUSTER) {
       printf(
-          "[PIPES] FATAL: IBGDA per-block QP selection does not support "
+          "[PIPES] FATAL: IBGDA channel QP selection does not support "
           "cluster-scope ThreadGroup yet\n");
       PIPES_DEVICE_TRAP();
     }
@@ -1074,7 +1072,7 @@ class P2pIbgdaTransportDevice {
     if (numNics == 0) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
-          "(peer not materialized? call get_device_handle(peers) first) "
+          "(peer not materialized? prepare it on the host first) "
           "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
           __FILE__,
           __LINE__,
@@ -1097,11 +1095,12 @@ class P2pIbgdaTransportDevice {
           qpDirectionCount_);
       PIPES_DEVICE_TRAP();
     }
-    const uint32_t qpSlotPerNic =
-        ((channelId * static_cast<uint32_t>(qpDirectionCount_) +
-          directionIndex) *
-         static_cast<uint32_t>(qpsPerConnection_)) +
-        qpIndex;
+    const uint32_t qpSlotPerNic = ibQpSlotWithinNic(
+        channelId,
+        direction,
+        static_cast<uint32_t>(qpDirectionCount_),
+        static_cast<uint32_t>(qpsPerConnection_),
+        qpIndex);
     const uint32_t companionSlotPerNic = qpSlotPerNic;
     const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
     if (qpIndex >= static_cast<uint32_t>(qpsPerConnection_) ||
@@ -1138,7 +1137,7 @@ class P2pIbgdaTransportDevice {
     if (nicDevices_.empty()) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
-          "(peer not materialized? call get_device_handle(peers) first) "
+          "(peer not materialized? prepare it on the host first) "
           "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
           __FILE__,
           __LINE__,
@@ -2389,7 +2388,7 @@ class P2pIbgdaTransportDevice {
    *   pipelineBytes = perChannelBufferSize
    *   pipelineOff   = streamStart % pipelineBytes
    *   slot          = pipelineOff / perBlockSlot
-   *   stagingOff    = groupId * pipelineBytes + slot * perBlockSlot +
+   *   stagingOff    = slot * perBlockSlot +
    *                   (pipelineOff - slot * perBlockSlot)
    *
    * Sender chunk state machine:
@@ -3123,9 +3122,7 @@ class P2pIbgdaTransportDevice {
    *   pipeline_chunk() = pipeline_window() / pipeline_depth()
    */
   __device__ __forceinline__ std::size_t pipeline_window() const {
-    return channelLayout_.perChannelBufferSize != 0
-        ? channelLayout_.perChannelBufferSize
-        : channelLayout_.perChannelSize;
+    return channelLayout_.channelBufferSize();
   }
 
   __device__ __forceinline__ std::size_t pipeline_window(

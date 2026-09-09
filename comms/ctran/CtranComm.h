@@ -61,6 +61,9 @@ struct ctranPrimsConfig {
   // cap. Multimem requires it not to exceed maxChannels because a launch
   // cannot consume more blocks than the provisioned channel capacity.
   int64_t maxBlocks{-1};
+  // Materialize only the IB channel prefix requested by each collective.
+  // Appended to preserve positional aggregate initialization of older fields.
+  bool lazyChannels{false};
 
   bool operator==(const ctranPrimsConfig& other) const {
     return enablePrims == other.enablePrims &&
@@ -68,16 +71,14 @@ struct ctranPrimsConfig {
         ibLazyConnect == other.ibLazyConnect &&
         channelBufferSize == other.channelBufferSize &&
         channelPipelineDepth == other.channelPipelineDepth &&
-        maxChannels == other.maxChannels && maxBlocks == other.maxBlocks;
+        maxChannels == other.maxChannels && maxBlocks == other.maxBlocks &&
+        lazyChannels == other.lazyChannels;
   }
 };
 
-// Per-communicator override first, global CVAR second. Both the transport
-// (comm init) and the collective launch geometry (per call) must resolve these
-// the same way, so they share these helpers rather than reading the CVAR
-// directly. NOTE: mccl's own launch-geometry validation still reads
-// MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS globally; a communicator that overrides
-// these and also runs mccl collectives would be validated against the global.
+// Per-communicator override first, global CVAR second. Transport setup resolves
+// both values here; collective channel validation reads the resulting transport
+// capacity so it stays consistent with the communicator override.
 inline int64_t ctranPrimsResolvedMaxChannels(const ctranPrimsConfig& pc) {
   return pc.maxChannels > 0 ? pc.maxChannels
                             : static_cast<int64_t>(MCCL_MAX_NCHANNELS);
@@ -244,8 +245,8 @@ class CtranComm {
     return parentRanks_;
   }
 
-  // Materializes `peers` and returns the Transport array indexed by global
-  // rank. An empty peer list initializes no IB transport slots.
+  // Materializes `peers` at full IB channel capacity and returns the stable
+  // Transport array indexed by global rank.
   comms::prims::Transport* getMultiPeerTransportsPtr(
       const std::vector<int>& peers);
 

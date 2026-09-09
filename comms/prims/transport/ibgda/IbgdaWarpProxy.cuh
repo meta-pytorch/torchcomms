@@ -78,7 +78,7 @@ class IbgdaWarpProxy {
   struct SendCommand {
     P2pIbgdaTransportDevice* transport;
     IbgdaLocalBuffer source;
-    uint64_t remoteOffset;
+    uint64_t stagingOffset;
     uint64_t bytes;
     uint64_t protocolBytes;
     uint64_t slotFreeExpected;
@@ -249,7 +249,7 @@ class IbgdaWarpProxy {
         P2pIbgdaTransportDevice& transport,
         ThreadGroup& workers,
         const IbgdaLocalBuffer& source,
-        std::size_t remoteOffset,
+        std::size_t stagingOffset,
         std::size_t bytes,
         std::size_t protocolBytes,
         uint64_t slotFreeExpected,
@@ -271,7 +271,7 @@ class IbgdaWarpProxy {
           SendCommand{
               .transport = &transport,
               .source = source,
-              .remoteOffset = remoteOffset,
+              .stagingOffset = stagingOffset,
               .bytes = bytes,
               .protocolBytes = protocolBytes,
               .slotFreeExpected = slotFreeExpected,
@@ -676,12 +676,15 @@ class IbgdaWarpProxy {
     const uint64_t copiedTail = copied.load(cuda::memory_order_acquire);
     while (head < copiedTail) {
       const RecvCommand command = storage.recv.commands[head % kQueueCapacity];
-      const IbRemoteChannel remote = makeIbRemoteChannel(
-          command.transport->channel_layout(),
-          static_cast<int>(command.channel));
+      const IbChannelProtoSlot& localSlot =
+          command.transport->template local_channel_slot<protocol::Simple>(
+              command.channel);
       ThreadGroup solo = make_solo_group(command.channel, fullBlock);
       command.transport->signal(
-          solo, remote.slotFree, command.protocolBytes, IbDirection::Recv);
+          solo,
+          localSlot.remoteSlotFree,
+          command.protocolBytes,
+          IbDirection::Recv);
       credited.store(++head, cuda::memory_order_release);
     }
   }
@@ -756,10 +759,10 @@ class IbgdaWarpProxy {
           static_cast<unsigned long long>(command.requiredRecvCredit));
       return;
     }
+    const IbChannelProtoSlot& localSlot =
+        command.transport->template local_channel_slot<protocol::Simple>(
+            command.channel);
     if (command.slotFreeExpected != 0) {
-      const IbChannelProtoSlot& localSlot =
-          command.transport->template local_channel_slot<protocol::Simple>(
-              command.channel);
       const uint64_t current =
           command.transport->read_signal(localSlot.slotFree);
       if (current < command.slotFreeExpected) {
@@ -775,15 +778,13 @@ class IbgdaWarpProxy {
       }
     }
 
-    const IbRemoteChannel remote = makeIbRemoteChannel(
-        command.transport->channel_layout(), static_cast<int>(command.channel));
     ThreadGroup solo = make_solo_group(command.channel, fullBlock);
     const IbLocalCompletionTicket ticket = command.transport->put(
         solo,
         command.source,
-        remote.recvStaging.subBuffer(command.remoteOffset),
+        localSlot.remoteRecvStaging.subBuffer(command.stagingOffset),
         command.bytes,
-        remote.dataReady,
+        localSlot.remoteDataReady,
         command.protocolBytes,
         /*counterBuf=*/{},
         /*counterVal=*/0,
