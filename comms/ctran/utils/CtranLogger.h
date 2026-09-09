@@ -63,7 +63,7 @@ inline void configureStandaloneCtranLogging(
 #define CTRAN_LOG_STREAM(level) \
   COMMS_LOGGER_STREAM(::ctran::logging::getCtranLogger(), level)
 
-#define CTRAN_LOG_SYNC_ERR(...)                                          \
+#define CTRAN_LOG_SYNC_ERR_IMPL(...)                                     \
   do {                                                                   \
     static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
         ::ctran::logging::kCtranLoggerName);                             \
@@ -74,6 +74,9 @@ inline void configureStandaloneCtranLogging(
           __VA_ARGS__);                                                  \
     }                                                                    \
   } while (false)
+
+// Compatibility alias; new code should express the owning operation instead.
+#define CTRAN_LOG_SYNC_ERR(...) CTRAN_LOG_SYNC_ERR_IMPL(__VA_ARGS__)
 
 #define CTRAN_LOG_IF_IMPL(level, spdlog_level, condition, ...)           \
   do {                                                                   \
