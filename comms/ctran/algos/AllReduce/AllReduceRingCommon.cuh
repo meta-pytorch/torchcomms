@@ -25,6 +25,7 @@ struct KernArgs {
   commDataType_t datatype;
   commRedOp_t redOp;
   size_t count;
+  float avgPreMul;
 
   size_t chunkSize;
   size_t numChunks;
