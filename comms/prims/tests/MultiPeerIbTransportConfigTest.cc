@@ -593,5 +593,61 @@ TEST(MultiPeerIbTransportConfigTest, QpOrderingWireDefaultMatchesIbta) {
       payload.qpOrderingSemantic, static_cast<int>(IbQpOrderingSemantic::Ibta));
 }
 
+// PeerQpPayload is the lazy (ibLazyConnect) bilateral wire format: one is sent
+// and one received per peer on every materializePeer(), and both live on the
+// stack while in flight. Its qpns[] array is dimensioned by
+// kMaxIbQpsPerPeerPerNic, so that constant must stay a QP budget in its own
+// right rather than being derived from the kMaxIbGroups index space -- growing
+// the group index space must not grow what every lazy peer exchange costs. The
+// footprint bound is kMaxNicsPerGpu * 8192 QPNs, ~64KB.
+TEST(MultiPeerIbTransportConfigTest, LazyQpPayloadDoesNotScaleWithGroupLimit) {
+  // What actually matters to a lazy caller is the observable property: the
+  // bilateral exchange payload stays small no matter how wide the group index
+  // space gets. Assert that directly, against the same named bound the header
+  // static_asserts on, so there is no second copy of the number to drift.
+  //
+  // Deliberately NOT `kMaxIbQpsPerPeerPerNic < kMaxIbGroups *
+  // kMaxIbQpsPerBlockPerNic`: that only holds because kMaxIbGroups is 256
+  // today. Returning it to 64 would make the product exactly 8192 and turn the
+  // check red even though the constant would still be independent -- it
+  // expresses the decoupling only by accident.
+  //
+  // Nor `sizeof(PeerQpPayload) <= kMaxPeerQpPayloadBytes`: that is the header's
+  // static_assert, so a violation fails to compile and this test could never go
+  // red. Assert instead what only a runtime check can see -- that the WIDEST
+  // shape the index space admits still fits the exchanged array. That is the
+  // property a future kMaxIbGroups bump can actually break.
+  MultipeerIbTransportConfig narrow;
+  narrow.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape
+  narrow.max_num_channels = 1;
+  narrow.qpsPerConnection = 1;
+
+  MultipeerIbTransportConfig widest = narrow;
+  widest.max_num_channels = kMaxIbGroups;
+
+  ASSERT_LT(
+      narrow.fixedChannelMainQpsPerPeerPerNic(),
+      widest.fixedChannelMainQpsPerPeerPerNic())
+      << "the two shapes must differ for this to prove anything";
+  EXPECT_LE(widest.fixedChannelMainQpsPerPeerPerNic(), kMaxIbQpsPerPeerPerNic)
+      << "the widest configurable shape must fit the exchanged qpns[] array; "
+         "raising kMaxIbGroups past the QP budget needs a wire-format change";
+}
+
+// The shape this limit exists for -- SendRecvTile's 256 channels, both
+// directions -- must fit the QP budget while landing above the eager exchange
+// cap, i.e. it is reachable only with ibLazyConnect=true.
+TEST(MultiPeerIbTransportConfigTest, MaxGroupShapeFitsBudgetAndRequiresLazy) {
+  MultipeerIbTransportConfig config;
+  config.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape
+  config.max_num_channels = kMaxIbGroups;
+  config.qpsPerConnection = 1;
+
+  const int mainQps = config.fixedChannelMainQpsPerPeerPerNic();
+  EXPECT_EQ(mainQps, kMaxIbGroups * kIbDirections);
+  EXPECT_LE(mainQps, kMaxIbQpsPerPeerPerNic);
+  EXPECT_GT(mainQps, kMaxEagerExchangeQpsPerPeerPerNic);
+}
+
 } // namespace
 } // namespace comms::prims
