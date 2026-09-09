@@ -261,18 +261,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
     return commInvalidArgument;
   }
 
-  auto* mpt = comm->multiPeerTransport_.get();
-  std::vector<int> peers;
-  peers.reserve(static_cast<size_t>(nRanks - 1));
-  for (int peer = 0; peer < nRanks; ++peer) {
-    if (peer != statex->rank()) {
-      peers.push_back(peer);
-    }
-  }
-
   try {
-    mpt->materializePeers(peers);
-
     size_t wireRecvBytes = recvBytes;
     size_t wireTotalBytes = totalBytes;
     if (quantized &&
@@ -292,6 +281,16 @@ static commResult_t ctranReduceScatterDirectIbImpl(
             wireTotalBytes,
             static_cast<int>(ctranPrimsResolvedMaxChannels(primsConfig)),
             static_cast<int>(ctranPrimsResolvedMaxBlocks(primsConfig)));
+
+    auto* mpt = comm->multiPeerTransport_.get();
+    std::vector<int> peers;
+    peers.reserve(static_cast<size_t>(nRanks - 1));
+    for (int peer = 0; peer < nRanks; ++peer) {
+      if (peer != statex->rank()) {
+        peers.push_back(peer);
+      }
+    }
+    mpt->prepare_ib_channels(peers, static_cast<uint32_t>(numBlocks));
 
     comms::prims::DirectReduceScatterIbLaunchParams params{};
     params.my_rank = statex->rank();
@@ -317,7 +316,7 @@ static commResult_t ctranReduceScatterDirectIbImpl(
     // comms/common/fault_tolerance/FAULT_TOLERANCE.md.
     params.stream = stream;
 
-    for (int peer : peers) {
+    for (const int peer : peers) {
       params.peers[peer] = comms::prims::P2pIbTransportDevice(
           mpt->get_p2p_ibgda_transport_device(peer));
     }

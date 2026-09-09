@@ -223,11 +223,29 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
   auto transport = createTransport();
   transport->exchange();
 
-  auto handle = transport->get_device_handle(transport->ib_peer_ranks());
+  std::vector<PeerChannelDemand> demands;
+  for (const int peer : transport->ib_peer_ranks()) {
+    demands.push_back(
+        PeerChannelDemand{
+            .peerRank = peer,
+            .ibChannels = transport->ib_channel_capacity(),
+        });
+    demands.push_back(
+        PeerChannelDemand{
+            .peerRank = peer,
+            .ibChannels = 1,
+        });
+  }
+  auto handle = transport->get_device_handle(demands);
+  for (auto& demand : demands) {
+    demand.ibChannels = 1;
+  }
+  auto repeatedHandle = transport->get_device_handle(demands);
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
   EXPECT_FALSE(handle.abort.isEnabled());
+  EXPECT_EQ(handle.transports.data(), repeatedHandle.transports.data());
   EXPECT_GT(handle.numNvlPeers, 0);
   // Every remote rank is classified either as NVL or IB (see
   // TopologyDiscovery). Old assertion `numIbPeers == numRanks-1` held only on
@@ -248,6 +266,55 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleCarriesEnabledAbort) {
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
+TEST_F(MultiPeerTransportTestFixture, DeviceHandleDemandValidation) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createTransport();
+  transport->exchange();
+  if (numRanks % 2 != 0) {
+    GTEST_SKIP() << "Requires an even rank count for symmetric peer pairs";
+  }
+  const int peer = globalRank ^ 1;
+
+  EXPECT_THROW(
+      transport->get_device_handle(
+          std::vector<PeerChannelDemand>{{.peerRank = -1, .ibChannels = 0}}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      transport->get_device_handle(
+          std::vector<PeerChannelDemand>{
+              {.peerRank = globalRank, .ibChannels = 0}}),
+      std::invalid_argument);
+  EXPECT_THROW(
+      transport->get_device_handle(
+          std::vector<PeerChannelDemand>{{
+              .peerRank = peer,
+              .ibChannels = transport->ib_channel_capacity() + 1,
+          }}),
+      std::invalid_argument);
+
+  const auto handle = transport->get_device_handle(
+      std::vector<PeerChannelDemand>{{.peerRank = peer, .ibChannels = 0}});
+  EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
+
+  if (transport->is_nvl_peer(peer)) {
+    if (transport->has_ibgda(peer)) {
+      EXPECT_NO_THROW(transport->get_device_handle(
+          std::vector<PeerChannelDemand>{{.peerRank = peer, .ibChannels = 1}}));
+    } else {
+      EXPECT_THROW(
+          transport->get_device_handle(
+              std::vector<PeerChannelDemand>{
+                  {.peerRank = peer, .ibChannels = 1}}),
+          std::invalid_argument);
+    }
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
 TEST_F(MultiPeerTransportTestFixture, DeviceHandleBeforeExchange) {
   auto transport = createTransport();
   EXPECT_THROW(transport->get_device_handle({}), std::runtime_error);
@@ -255,34 +322,24 @@ TEST_F(MultiPeerTransportTestFixture, DeviceHandleBeforeExchange) {
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-TEST_F(MultiPeerTransportTestFixture, HostIbgdaAccessorForNvlPeer) {
-  if (numRanks < 2) {
-    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+TEST_F(MultiPeerTransportTestFixture, HostIbgdaAccessorSupportsColdFallback) {
+  if (numRanks < 2 || numRanks % 2 != 0) {
+    GTEST_SKIP() << "Requires an even rank count >= 2, got " << numRanks;
   }
 
   auto transport = createTransport();
   transport->exchange();
 
-  int peer = (globalRank == 0) ? 1 : 0;
+  const int peer = globalRank ^ 1;
   ASSERT_TRUE(transport->is_nvl_peer(peer));
-  // `has_ibgda(peer)` is a comm-level predicate -- it returns true iff the
-  // MultiPeerTransport built an IBGDA sub-transport at all, which happens
-  // iff at least one peer is IB-classified (see
-  // MultiPeerTransport.cc:172-188). Per-peer classification is strictly
-  // NVL-xor-IB (MultiPeerTransport.cc:111-119), so there is no per-peer
-  // IBGDA fallback provisioned for NVL-classified peers. This test still
-  // asserts the historic dual-path property that on a comm that DOES have
-  // IBGDA, the accessor returns a device even for NVL peers -- something
-  // the underlying MultipeerIbgdaTransport supports for backward
-  // compatibility. On MNNVL every peer is NVL-classified so no IBGDA
-  // sub-transport is built and has_ibgda is false for all peers; skip
-  // cleanly rather than assert has_ibgda == true.
   if (!transport->has_ibgda(peer)) {
     GTEST_SKIP()
         << "comm has no IBGDA sub-transport (all peers NVL-classified); "
            "dual-path accessor assertion not applicable";
   }
-  EXPECT_NE(transport->get_p2p_ibgda_transport_device(peer), nullptr);
+  auto* device = transport->get_p2p_ibgda_transport_device(peer);
+  EXPECT_NE(device, nullptr);
+  EXPECT_EQ(device, transport->get_p2p_ibgda_transport_device(peer));
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -831,6 +888,24 @@ TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
   } catch (const std::exception&) {
     // NVL transport creation failed (expected without GPU).
   }
+}
+
+TEST(MultiPeerTransportDisableIbTest, IgnoresUnusedIbConfiguration) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 1;
+  auto topo = makeTopology(kMyRank, {});
+  MultiPeerTransportConfig config{
+      .ibConfig = {.max_num_channels = -1},
+      .disableIb = true,
+  };
+
+  EXPECT_NO_THROW(MultiPeerTransport(
+      kMyRank,
+      kNRanks,
+      /*deviceId=*/0,
+      std::make_shared<MockBootstrap>(),
+      config,
+      std::move(topo)));
 }
 
 // NCCL_P2P_DISABLE + disableIb: P2P disabled removes NVL peers from topology,

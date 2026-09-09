@@ -1332,8 +1332,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       nic.loopbackCompanionQps.resize(
           static_cast<size_t>(numPeers) * companionSlots);
     }
-    peerMaterialized_.resize(numPeers, false);
-
     // Allocate and register sink buffer for atomic return values
     allocateResources();
     registerMemory();
@@ -1511,7 +1509,8 @@ MultipeerIbgdaDeviceTransport MultipeerIbgdaTransport::getDeviceTransport()
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDevice(
     int peerRank) {
   if (!isPeerMaterialized(peerRank)) {
-    materializePeer(peerRank);
+    queuePeerForMaterialization(peerRank, channelCapacity());
+    connectPeers();
   }
   return ibgdaDeviceSlot(getDeviceTransportPtr(), rankToPeerIndex(peerRank));
 }
@@ -1524,10 +1523,6 @@ P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getDeviceTransportPtr()
 
 P2pIbgdaTransportDevice* MultipeerIbgdaTransport::getP2pTransportDeviceSlot(
     int peerRank) const {
-  LOG_FIRST_N(WARNING, 1)
-      << "MultipeerIbgdaTransport: Transport[] array is being built with "
-      << "possibly unmaterialized IBGDA slots. Call get_device_handle(peers) "
-      << "before kernels access those peers.";
   auto* const transports = getDeviceTransportPtr();
   return transports == nullptr
       ? nullptr
@@ -1557,15 +1552,11 @@ int MultipeerIbgdaTransport::qpsPerBlockPerNic() const {
 
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     int peerIndex) const {
-  const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
   PeerQpPayload payload{};
+  populatePeerGeometry(payload);
   payload.gidIndex = gidIndex_;
   payload.mtu = static_cast<int>(localMtu_);
-  payload.numNics = numNics_;
-  payload.numQpsPerPeerPerNic = mainQpsPerPeerPerNic;
-  payload.maxGroups = config_.max_num_channels;
-  payload.qpsPerBlockPerNic = config_.qpsPerConnection;
   payload.qpOrderingSemantic = static_cast<int>(qpOrderingSemantic_);
   payload.maxRdAtomic = static_cast<int>(maxRdAtomic_);
 
@@ -1638,10 +1629,16 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   }
   cleanupSendRecvBufferForPeer(peerIndex);
   cleanupPeerSignalCounterResources(peerIndex);
-  peerMaterialized_[peerIndex] = false;
 }
 
-void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
+void MultipeerIbgdaTransport::doMaterializePeer(
+    int peerRank,
+    uint32_t oldChannels,
+    uint32_t newChannels) {
+  if (oldChannels != 0 || newChannels != channelCapacity()) {
+    throw std::runtime_error(
+        "IBGDA eager materialization requires the full channel range");
+  }
   int peerIndex = rankToPeerIndex(peerRank);
 
   createPeerQps(peerIndex);
@@ -1649,15 +1646,8 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
   // Phase 1: exchange QP info, connect QPs.
   auto localQp = buildLocalQpPayload(peerIndex);
   auto remoteQp = exchangeWithPeer(peerRank, localQp, kIbPeerQpExchangeTag);
+  validatePeerGeometry(peerRank, remoteQp);
 
-  if (remoteQp.numNics != numNics_) {
-    throw std::runtime_error(
-        fmt::format(
-            "materializePeer: peer {} numNics={} vs local {}",
-            peerRank,
-            remoteQp.numNics,
-            numNics_));
-  }
   // The read/atomic depth is a per-QP-pair property: one end's responder
   // window (log_rra_max) has to cover the other end's initiator window
   // (log_sra_max), so the two ends must have resolved the same value.
@@ -1668,18 +1658,6 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             peerRank,
             remoteQp.maxRdAtomic,
             static_cast<int>(maxRdAtomic_)));
-  }
-  if (remoteQp.maxGroups != config_.max_num_channels ||
-      remoteQp.qpsPerBlockPerNic != config_.qpsPerConnection) {
-    throw std::runtime_error(
-        fmt::format(
-            "materializePeer: peer {} maxGroups={} qpsPerBlockPerNic={} "
-            "vs local maxGroups={} qpsPerBlockPerNic={}",
-            peerRank,
-            remoteQp.maxGroups,
-            remoteQp.qpsPerBlockPerNic,
-            config_.max_num_channels,
-            config_.qpsPerConnection));
   }
   // dp_ordering has to match on both ends of a connection: fail closed and name
   // both sides rather than silently let one end reassemble in order while the
@@ -1747,7 +1725,6 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
       params,
       localChannels);
   publishIbgdaDeviceSlot(*fixedDeviceTables_, peerIndex, params);
-  peerMaterialized_[peerIndex] = true;
 
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " materialized peer " << peerRank;

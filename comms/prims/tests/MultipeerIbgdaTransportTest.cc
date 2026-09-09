@@ -138,10 +138,7 @@ class TestIbTransport {
     if (ibgda_) {
       return P2pIbTransportDevice(ibgda_->getP2pTransportDevice(peerRank));
     }
-    if (!ibrc_->isPeerMaterialized(peerRank)) {
-      ibrc_->materializePeer(peerRank);
-    }
-    return P2pIbTransportDevice(ibrc_->getP2pTransportDeviceSlot(peerRank));
+    return P2pIbTransportDevice(ibrc_->getP2pTransportDevice(peerRank));
   }
 
   IbgdaLocalBuffer registerBuffer(void* ptr, std::size_t size) {
@@ -155,11 +152,11 @@ class TestIbTransport {
                   : ibrc_->exchangeBuffer(localBuf);
   }
 
-  void queuePeerForMaterialization(int peerRank) {
+  void queuePeerForMaterialization(int peerRank, uint32_t targetChannels) {
     if (ibgda_) {
-      ibgda_->queuePeerForMaterialization(peerRank);
+      ibgda_->queuePeerForMaterialization(peerRank, targetChannels);
     } else {
-      ibrc_->queuePeerForMaterialization(peerRank);
+      ibrc_->queuePeerForMaterialization(peerRank, targetChannels);
     }
   }
 
@@ -178,6 +175,15 @@ class TestIbTransport {
 
   bool collapsedCqActive() const {
     return ibgda_ != nullptr && ibgda_->collapsedCqActive();
+  }
+
+  uint32_t materializedChannelCount(int peerRank) const {
+    return ibgda_ ? ibgda_->materializedChannelCount(peerRank)
+                  : ibrc_->materializedChannelCount(peerRank);
+  }
+
+  uint32_t channelCapacity() const {
+    return static_cast<uint32_t>(config_.max_num_channels);
   }
 
  private:
@@ -3941,12 +3947,14 @@ class LazyModeTestFixture
     return GetParam();
   }
 
-  std::unique_ptr<TestIbTransport> createLazyTransport() {
+  std::unique_ptr<TestIbTransport> createLazyTransport(
+      bool lazyChannels = false) {
     MultipeerIbTransportConfig config{
         .cudaDevice = localRank,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
+        .lazyChannels = lazyChannels,
     };
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     return std::make_unique<TestIbTransport>(
@@ -3979,22 +3987,37 @@ TEST_P(LazyModeTestFixture, MaterializeOnAccess) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-TEST_P(LazyModeTestFixture, QueueThenConnect) {
+TEST_P(LazyModeTestFixture, LazyChannelsUseEagerCapacity) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
   try {
-    auto transport = createLazyTransport();
-    int peerRank = (globalRank == 0) ? 1 : 0;
-
-    transport->queuePeerForMaterialization(peerRank);
-    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
-
-    transport->connectPeers();
-    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+    auto availabilityProbe = createLazyTransport();
+    (void)availabilityProbe;
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
+
+  auto transport = createLazyTransport(/*lazyChannels=*/true);
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr uint32_t kRequestedChannels = 1;
+
+  transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
+  EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+  EXPECT_EQ(0u, transport->materializedChannelCount(peerRank));
+
+  transport->connectPeers();
+  EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+  EXPECT_EQ(
+      transport->channelCapacity(),
+      transport->materializedChannelCount(peerRank));
+
+  transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
+  transport->connectPeers();
+  EXPECT_EQ(
+      transport->channelCapacity(),
+      transport->materializedChannelCount(peerRank));
+
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
