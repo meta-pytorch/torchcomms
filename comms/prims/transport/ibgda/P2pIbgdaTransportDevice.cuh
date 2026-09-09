@@ -1072,7 +1072,7 @@ class P2pIbgdaTransportDevice {
     if (numNics == 0) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
-          "(peer not materialized? call get_device_handle(peers) first) "
+          "(peer not materialized? prepare it on the host first) "
           "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
           __FILE__,
           __LINE__,
@@ -1137,7 +1137,7 @@ class P2pIbgdaTransportDevice {
     if (nicDevices_.empty()) {
       printf(
           "P2pIbgdaTransportDevice: transport not initialized "
-          "(peer not materialized? call get_device_handle(peers) first) "
+          "(peer not materialized? prepare it on the host first) "
           "at %s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
           __FILE__,
           __LINE__,

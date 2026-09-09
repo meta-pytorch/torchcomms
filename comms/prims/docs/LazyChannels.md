@@ -292,9 +292,8 @@ per-communicator option today, while direct/internal transport construction can
 set the per-communicator configuration explicitly.
 
 Ranks exchange a fixed `ChannelProtocolRecord` containing mode and capacity
-during communicator initialization. Route symmetry is validated separately.
-Backend, NIC, QP, staging, pipeline, and slot geometry are validated
-bilaterally before an IB range is published.
+during communicator initialization. Backend, NIC, QP, staging, pipeline, and
+slot geometry are validated bilaterally before an IB range is published.
 
 ## Deferred extensions
 

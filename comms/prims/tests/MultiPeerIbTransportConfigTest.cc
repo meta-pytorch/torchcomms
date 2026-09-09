@@ -1,5 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <array>
+#include <cerrno>
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -11,7 +14,12 @@
 #include <utility>
 #include <vector>
 
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/prims/transport/MultiPeerIbTransport.h"
+#include "comms/prims/transport/MultiPeerTransport.h"
+
+using ::testing::_;
+using ::testing::StrictMock;
 
 namespace comms::prims {
 namespace {
@@ -639,6 +647,101 @@ TEST(MultiPeerIbTransportConfigTest, QpOrderingWireDefaultMatchesIbta) {
   const PeerQpPayload payload;
   EXPECT_EQ(
       payload.qpOrderingSemantic, static_cast<int>(IbQpOrderingSemantic::Ibta));
+}
+
+TEST(MultiPeerIbTransportConfigTest, LazyChannelsDefaultOff) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_FALSE(config.lazyChannels);
+}
+
+TEST(MultiPeerTransportInitTest, MatchingRecordsSucceed) {
+  const detail::ChannelProtocolRecord record{
+      .mode = detail::PrimsChannelMode::kLazyPrefix,
+      .channelCapacity = 64,
+  };
+  const std::array records{record, record};
+  EXPECT_NO_THROW(detail::validateChannelProtocolRecords(records));
+}
+
+TEST(MultiPeerTransportInitTest, MismatchedChannelModesFail) {
+  detail::ChannelProtocolRecord eager;
+  auto lazy = eager;
+  lazy.mode = detail::PrimsChannelMode::kLazyPrefix;
+  const std::array records{eager, lazy};
+  EXPECT_THROW(
+      detail::validateChannelProtocolRecords(records), std::runtime_error);
+}
+
+TEST(MultiPeerTransportInitTest, MismatchedChannelCapacitiesFail) {
+  detail::ChannelProtocolRecord smaller;
+  smaller.channelCapacity = 4;
+  auto larger = smaller;
+  larger.channelCapacity = 8;
+  const std::array records{smaller, larger};
+  EXPECT_THROW(
+      detail::validateChannelProtocolRecords(records), std::runtime_error);
+}
+
+TEST(MultiPeerTransportInitTest, AllGatherFailureFailsInitialization) {
+  StrictMock<meta::comms::testing::MockBootstrap> bootstrap;
+  EXPECT_CALL(
+      bootstrap,
+      allGather(
+          _, static_cast<int>(sizeof(detail::ChannelProtocolRecord)), 0, 2))
+      .WillOnce(
+          [](void*, int, int, int) { return folly::makeSemiFuture(EIO); });
+
+  EXPECT_THROW(
+      detail::exchangeAndValidateChannelProtocol(
+          bootstrap, 0, 2, detail::ChannelProtocolRecord{}),
+      std::runtime_error);
+}
+
+class TestLegacyIbTransport
+    : public MultiPeerIbTransport<TestLegacyIbTransport> {
+ public:
+  TestLegacyIbTransport()
+      : MultiPeerIbTransport<TestLegacyIbTransport>(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::make_shared<
+                ::testing::NiceMock<meta::comms::testing::MockBootstrap>>(),
+            makeConfig()) {}
+
+  int materializedPeer{-1};
+
+  bool legacyPeerMaterialized(int peerRank) const {
+    return peerMaterialized_[rankToPeerIndex(peerRank)];
+  }
+
+ private:
+  friend class MultiPeerIbTransport<TestLegacyIbTransport>;
+
+  void doMaterializePeer(int peerRank) {
+    materializedPeer = peerRank;
+    peerMaterialized_[rankToPeerIndex(peerRank)] = true;
+  }
+
+  void cleanupPeerOnFailure(int peerIndex) {
+    peerMaterialized_[peerIndex] = false;
+  }
+
+  static MultipeerIbTransportConfig makeConfig() {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    config.maxGroups = 8;
+    return config;
+  }
+};
+
+TEST(MultiPeerIbTransportConfigTest, LegacyBackendHookMaterializesCapacity) {
+  TestLegacyIbTransport transport;
+
+  transport.materializePeer(/*peerRank=*/1);
+
+  EXPECT_EQ(1, transport.materializedPeer);
+  EXPECT_TRUE(transport.legacyPeerMaterialized(/*peerRank=*/1));
+  EXPECT_EQ(8, transport.materializedChannelCount(/*peerRank=*/1));
 }
 
 } // namespace
