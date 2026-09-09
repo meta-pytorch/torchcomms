@@ -13,6 +13,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <random>
@@ -255,7 +256,8 @@ TransferResult runTransfer(
     size_t size,
     const std::string& dir,
     const BenchmarkConfig& config,
-    int rank) {
+    int rank,
+    const std::function<bool()>& peerAck) {
   using Clock = std::chrono::steady_clock;
   const int batchSize = std::max(1, config.batchSize);
   const int txDepth = std::max(1, config.txDepth);
@@ -278,12 +280,14 @@ TransferResult runTransfer(
   };
 
   TransferResult out;
+  bool transferFailed = false;
 
   for (int i = 0; i < config.warmupIterations; ++i) {
     if (submit().get().hasError()) {
       UNIFLOW_LOG_ERROR(
           "TcpBandwidthBenchmark: warmup {} failed at size {}", dir, size);
-      return out;
+      transferFailed = true;
+      break;
     }
   }
 
@@ -317,31 +321,51 @@ TransferResult runTransfer(
   // All N ranks line up here, after their own warmup, so that every rank's
   // timed window covers the same wall-clock interval and the per-rank
   // bandwidths are summable. Barrier cost is outside the clock below.
-  if (!measurementBarrier(config, fmt::format("{}_{}", dir, size), rank)) {
-    return out;
+  if (!transferFailed &&
+      !measurementBarrier(config, fmt::format("{}_{}", dir, size), rank)) {
+    transferFailed = true;
   }
 
-  auto start = Clock::now();
-  for (int b = 0; b < numBatches; ++b) {
-    if (static_cast<int>(inflight.size()) >= txDepth) {
+  Clock::time_point start;
+  if (!transferFailed) {
+    start = Clock::now();
+    for (int b = 0; b < numBatches; ++b) {
+      if (static_cast<int>(inflight.size()) >= txDepth && !completeOne()) {
+        transferFailed = true;
+        break;
+      }
+      // Timestamp before submit(), not as a sibling argument to emplace_back:
+      // argument evaluation order is unspecified, so Clock::now() could be
+      // evaluated after submit() returns. That matters now that put() applies
+      // backpressure and blocks inside submit() while enqueueing chunks -- the
+      // blocked time would fall outside the measured interval and the reported
+      // latency would be a fraction of the real one (bandwidth, bracketed by
+      // start/end, stayed correct).
+      auto submitTime = Clock::now();
+      inflight.emplace_back(submit(), submitTime);
+    }
+    while (!transferFailed && !inflight.empty()) {
       if (!completeOne()) {
-        return out;
+        transferFailed = true;
       }
     }
-    // Timestamp before submit(), not as a sibling argument to emplace_back:
-    // argument evaluation order is unspecified, so Clock::now() could be
-    // evaluated after submit() returns. That matters now that put() applies
-    // backpressure and blocks inside submit() while enqueueing chunks -- the
-    // blocked time would fall outside the measured interval and the reported
-    // latency would be a fraction of the real one (bandwidth, bracketed by
-    // start/end, stayed correct).
-    auto submitTime = Clock::now();
-    inflight.emplace_back(submit(), submitTime);
   }
-  while (!inflight.empty()) {
-    if (!completeOne()) {
-      return out;
-    }
+  /*
+   * Always execute exactly one peer rendezvous for this size, including after
+   * warmup, measurement-barrier, or completion failure. The passive rank has
+   * already committed to its matching barrier; skipping this one shifts every
+   * later rendezvous by one and strands the peer at the end of the sweep.
+   *
+   * On success, stop the clock only after the peer confirms. A resolved local
+   * future means this side handed the transfer off, not that the peer has it.
+   */
+  if (peerAck && !peerAck()) {
+    UNIFLOW_LOG_ERROR(
+        "TcpBandwidthBenchmark: peer ack failed at {} size {}", dir, size);
+    return out;
+  }
+  if (transferFailed) {
+    return out;
   }
   auto end = Clock::now();
 
@@ -724,6 +748,17 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   const bool isActiveRank = config.bidirectional || bootstrap.isRank0();
   auto sizes = generateSizes(config.minSize, config.maxSize);
 
+  auto abortBarrierSequence = [&]() {
+    // A barrier failure can be observed asymmetrically. Close the control
+    // connections so a peer that already returned success wakes with EOF at
+    // its next rendezvous instead of waiting through the retry budget.
+    for (auto& peer : peers) {
+      peer.ctrl->close();
+    }
+    peers.clear();
+    transport->shutdown();
+  };
+
   // Correctness before performance. Both ranks must reach the same barriers, so
   // the passive rank waits here while the active rank runs the sweep.
   //
@@ -736,7 +771,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
   if (config.verify) {
     if (!barrier(peers, bootstrap)) {
       UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: pre-verify barrier failed");
-      transport->shutdown();
+      abortBarrierSequence();
       return {};
     }
     if (isActiveRank &&
@@ -754,12 +789,12 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     }
     if (!barrier(peers, bootstrap)) {
       UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: post-verify barrier failed");
-      transport->shutdown();
+      abortBarrierSequence();
       return {};
     }
   }
 
-  auto runDirection = [&](const std::string& dir) {
+  auto runDirection = [&](const std::string& dir) -> bool {
     // Seeded from the verify result: a failed correctness sweep still walks the
     // whole size sweep, meeting every barrier and reporting nothing.
     //
@@ -770,9 +805,15 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
     for (auto size : sizes) {
       if (!barrier(peers, bootstrap)) {
         UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: barrier failed");
-        return;
+        return false;
       }
       if (aborted || !isActiveRank) {
+        // Match the active rank's peer-ack barrier, or the two sides drift
+        // by one barrier per size and the final size hangs.
+        if (!barrier(peers, bootstrap)) {
+          UNIFLOW_LOG_ERROR("TcpBandwidthBenchmark: peer-ack barrier failed");
+          return false;
+        }
         continue;
       }
       // Bracket the timed loop so the phase split covers the same frames the
@@ -783,6 +824,7 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
       if (tcpTransport != nullptr) {
         tcpTransport->logAndResetPhaseStats("reset");
       }
+      bool peerAckFailed = false;
       auto r = runTransfer(
           *transport,
           localReg,
@@ -790,7 +832,15 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
           size,
           dir,
           config,
-          config.barrierIndex);
+          config.barrierIndex,
+          [&]() {
+            const bool ok = static_cast<bool>(barrier(peers, bootstrap));
+            peerAckFailed = !ok;
+            return ok;
+          });
+      if (peerAckFailed) {
+        return false;
+      }
       if (!r.ok) {
         // Latched rather than returned: every remaining size has a barrier the
         // peer is going to execute.
@@ -830,13 +880,20 @@ std::vector<BenchmarkResult> TcpBandwidthBenchmark::run(
           stats.avg,
           config.bidirectional ? "(bidirectional)" : "(unidirectional)");
     }
+    return true;
   };
 
   if (config.direction == "put" || config.direction == "both") {
-    runDirection("put");
+    if (!runDirection("put")) {
+      abortBarrierSequence();
+      return results;
+    }
   }
   if (config.direction == "get" || config.direction == "both") {
-    runDirection("get");
+    if (!runDirection("get")) {
+      abortBarrierSequence();
+      return results;
+    }
   }
 
   if (!barrier(peers, bootstrap)) {
