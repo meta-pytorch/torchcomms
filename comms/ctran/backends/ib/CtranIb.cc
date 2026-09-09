@@ -943,8 +943,20 @@ commResult_t CtranIb::iflush(
     CtranIbRequest* req) {
   FB_COMMCHECK(checkEpochLock(this));
 
-  if (enableLocalFlush_ && localRegHdl != nullptr) {
+  // Spray mode needs a receiver-side flush for data integrity even when
+  // NCCL_CTRAN_NET_FORCE_FLUSH=0 (see sprayFlushRequired). localVc may not
+  // exist when local flush was disabled at construction; create it lazily.
+  // A null registration still skips: with no IB registration there are no
+  // RDMA writes to order against, and LocalVirtualConn::iflush requires a
+  // valid registration.
+  if ((enableLocalFlush_ || sprayFlushRequired()) && localRegHdl != nullptr) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
+      if (localVc == nullptr) {
+        localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
+      }
+      // Publish before posting so the progress loop routes this flush's
+      // CQE to localVc even after the collective's ambient config is gone.
+      localFlushUsed_.store(true, std::memory_order_release);
       auto& vc = localVc;
       return vc->iflush(dbuf, localRegHdl, req);
     });
