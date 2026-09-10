@@ -239,6 +239,15 @@ class MultipeerIbgdaTransport
 
   // Per-peer helpers shared by eager exchange() and lazy materializePeer()
   void createPeerQps(int peerIndex);
+
+  // Create one QP group, degrading this NIC to VALID_DBR if the NIC refuses a
+  // DBR-less one. Returns the original error if the group could not be made.
+  doca_error_t createQpGroupWithDoorbellFallback(
+      int nic,
+      int slot,
+      int companionSlots,
+      doca_gpu_verbs_qp_init_attr_hl& mainAttr,
+      doca_gpu_verbs_qp_group_hl** outGroup);
   void connectPeerLoopback(int peerIndex);
   P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
 
