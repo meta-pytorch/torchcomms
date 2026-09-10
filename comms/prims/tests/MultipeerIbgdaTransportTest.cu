@@ -2,6 +2,7 @@
 
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.cuh"
+#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 
 #include <cuda_runtime.h>
 #include <stdexcept>
@@ -410,6 +411,94 @@ __global__ void sendRecvKernel(
   }
 }
 
+__device__ void runChannelRoundTrip(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    AbortDevice abortDevice) {
+  auto group = make_block_group();
+  abortDevice.start();
+  const std::size_t channelOffset = group.group_id * (firstBytes + secondBytes);
+  auto* const sendBytes = static_cast<const char*>(sendBuffer) + channelOffset;
+  auto* const recvBytes = static_cast<char*>(recvBuffer) + channelOffset;
+
+  if (sendFirst) {
+    transport.send(group, sendBytes, firstBytes, maxSignalBytes, abortDevice);
+    transport.recv(group, recvBytes, firstBytes, maxSignalBytes, abortDevice);
+    transport.send(
+        group,
+        sendBytes + firstBytes,
+        secondBytes,
+        maxSignalBytes,
+        abortDevice);
+    transport.recv(
+        group,
+        recvBytes + firstBytes,
+        secondBytes,
+        maxSignalBytes,
+        abortDevice);
+  } else {
+    transport.recv(group, recvBytes, firstBytes, maxSignalBytes, abortDevice);
+    transport.send(group, sendBytes, firstBytes, maxSignalBytes, abortDevice);
+    transport.recv(
+        group,
+        recvBytes + firstBytes,
+        secondBytes,
+        maxSignalBytes,
+        abortDevice);
+    transport.send(
+        group,
+        sendBytes + firstBytes,
+        secondBytes,
+        maxSignalBytes,
+        abortDevice);
+  }
+}
+
+__global__ void channelRoundTripKernel(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    AbortDevice abortDevice) {
+  runChannelRoundTrip(
+      transport,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes,
+      sendFirst,
+      abortDevice);
+}
+
+__global__ void multiPeerChannelRoundTripKernel(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst) {
+  runChannelRoundTrip(
+      handle.get_ib(peerRank),
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes,
+      sendFirst,
+      handle.abort);
+}
+
 __global__ void twoCallSendThenRecvKernel(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
@@ -442,6 +531,61 @@ void testSendRecv(
   sendRecvKernel<<<numBlocks, blockSize>>>(
       transport, buffer, nbytes, maxSignalBytes, send, testAbortDevice());
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testChannelRoundTrip(
+    P2pIbTransportDevice transport,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream) {
+  channelRoundTripKernel<<<numBlocks, blockSize, 0, stream>>>(
+      transport,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes,
+      sendFirst,
+      testAbortDevice());
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testMultiPeerChannelRoundTrip(
+    MultiPeerDeviceHandle handle,
+    int peerRank,
+    const void* sendBuffer,
+    void* recvBuffer,
+    std::size_t firstBytes,
+    std::size_t secondBytes,
+    std::size_t maxSignalBytes,
+    bool sendFirst,
+    int numBlocks,
+    int blockSize,
+    cudaStream_t stream) {
+  multiPeerChannelRoundTripKernel<<<numBlocks, blockSize, 0, stream>>>(
+      handle,
+      peerRank,
+      sendBuffer,
+      recvBuffer,
+      firstBytes,
+      secondBytes,
+      maxSignalBytes,
+      sendFirst);
+  const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
         std::string("Kernel launch failed: ") + cudaGetErrorString(err));

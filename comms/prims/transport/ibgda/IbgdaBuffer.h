@@ -491,9 +491,8 @@ struct IbChannelLayout {
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
   IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
-  int maxChannels{0}; ///< Layout size for SLOT-indexed resources. Equals
-                      ///< numChannels today; the diff that adds a second
-                      ///< protocol makes it numChannels * kNumProtoSlots.
+  int maxChannels{0}; ///< Flat protocol-slot capacity for SLOT-indexed
+                      ///< resources: numChannels * kNumProtoSlots.
   int numChannels{0}; ///< Logical channels; a caller's group_id selects within
                       ///< [0, numChannels). Also the QP channel: protocols
                       ///< share a channel's QPs and are separated by resource
@@ -504,10 +503,17 @@ struct IbChannelLayout {
   std::size_t perChannelSize{0}; ///< Backward-compatible channel window alias
   std::size_t perChannelBufferSize{0}; ///< Total staging bytes for one channel
 
-  __host__ __device__ std::size_t data_buffer_size() const {
-    const std::size_t perChannel =
-        perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
-    return perChannel * static_cast<std::size_t>(maxChannels);
+  IBGDA_HOST_DEVICE std::size_t channelBufferSize() const {
+    return perChannelBufferSize != 0 ? perChannelBufferSize : perChannelSize;
+  }
+
+  IBGDA_HOST_DEVICE std::size_t channelBufferOffset(int channelId) const {
+    assert(channelId >= 0 && channelId < maxChannels);
+    return static_cast<std::size_t>(channelId) * channelBufferSize();
+  }
+
+  IBGDA_HOST_DEVICE std::size_t data_buffer_size() const {
+    return channelBufferSize() * static_cast<std::size_t>(maxChannels);
   }
 
   // Flat resource slot for (logical channel, protocol slot). Proto-major, so
@@ -589,6 +595,31 @@ enum class IbDirection : uint8_t {
 inline constexpr int kIbDirections = 2;
 inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
 
+IBGDA_HOST_DEVICE inline uint32_t ibQpSlotWithinNic(
+    uint32_t channelId,
+    IbDirection direction,
+    uint32_t directionCount,
+    uint32_t qpsPerConnection,
+    uint32_t lane) {
+  return ((channelId * directionCount + static_cast<uint32_t>(direction)) *
+          qpsPerConnection) +
+      lane;
+}
+
+IBGDA_HOST_DEVICE inline uint32_t ibCommandQueueSlot(
+    uint32_t channelId,
+    IbDirection direction,
+    uint32_t directionCount,
+    uint32_t qpsPerConnection,
+    uint32_t qpIndex,
+    uint32_t numNics,
+    uint32_t nicId) {
+  return ibQpSlotWithinNic(
+             channelId, direction, directionCount, qpsPerConnection, qpIndex) *
+      numNics +
+      nicId;
+}
+
 // Per-protocol resource slots reserved on every channel, indexed by a protocol
 // tag's kProtoSlot (Simple = 0, LL = 1). The layout reserves this many
 // channels' worth of staging, signal, and counter slots per peer, so raising it
@@ -658,8 +689,16 @@ struct IbChannelProtoSlot {
   IbgdaLocalBuffer slotFree;
   IbgdaLocalBuffer nicDoneWait;
   IbgdaLocalBuffer nicDoneCompletion;
-
   IbSendCompletionSlot* sendCompletionSlots{nullptr};
+
+  // Exact staging and peer bindings for this protocol slot. Lazy channel
+  // ranges use independent allocations, so these cannot be derived from the
+  // peer-wide geometry stored in the outer transport.
+  IbgdaLocalBuffer sendStaging;
+  char* recvStaging{nullptr};
+  IbgdaRemoteBuffer remoteDataReady;
+  IbgdaRemoteBuffer remoteSlotFree;
+  IbgdaRemoteBuffer remoteRecvStaging;
 };
 
 // A channel: the state every protocol on it shares, plus one slot per protocol.
@@ -714,6 +753,15 @@ IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
     proto.slotFree = layout.localSlotFreeSignal(slot);
     proto.nicDoneWait = layout.localCounter(slot);
     proto.nicDoneCompletion = layout.localCompletionCounter(slot);
+    const std::size_t stagingOffset =
+        layout.maxChannels == 0 ? 0 : layout.channelBufferOffset(slot);
+    proto.sendStaging = layout.sendStagingBuf.subBuffer(stagingOffset);
+    proto.recvStaging = layout.recvStagingPtr == nullptr
+        ? nullptr
+        : layout.recvStagingPtr + stagingOffset;
+    proto.remoteDataReady = layout.remoteDataReadySignal(slot);
+    proto.remoteSlotFree = layout.remoteSlotFreeSignal(slot);
+    proto.remoteRecvStaging = layout.recvStagingBuf.subBuffer(stagingOffset);
     proto.sendCompletionSlots = sendCompletionSlots;
   }
   return channel;

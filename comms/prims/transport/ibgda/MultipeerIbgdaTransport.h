@@ -34,6 +34,7 @@
 // Forward declarations for device types (defined in .cuh files)
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
+struct IbgdaFixedDeviceTables;
 struct MultipeerIbgdaDeviceTransport;
 struct P2pIbgdaTransportBuildParams;
 struct PeerQpPayload;
@@ -115,6 +116,13 @@ using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 class MultipeerIbgdaTransport
     : public MultiPeerIbTransport<MultipeerIbgdaTransport> {
  public:
+  static constexpr bool supportsLazyChannelPrefixGrowth() {
+    return true;
+  }
+
+  static constexpr PeerChannelBackend kPeerChannelBackend =
+      PeerChannelBackend::kIbgda;
+
   /**
    * Constructor - Initialize multi-peer IBGDA transport
    */
@@ -136,10 +144,10 @@ class MultipeerIbgdaTransport
   MultipeerIbgdaTransport& operator=(MultipeerIbgdaTransport&&) = delete;
 
   /**
-   * exchange - Exchange connection info and connect QPs
+   * exchange - Reserve stable device descriptor tables
    *
-   * COLLECTIVE OPERATION: All ranks MUST call this before using
-   * getDeviceTransportPtr().
+   * All ranks must call this before using getDeviceTransportPtr(). Peer QPs
+   * and channel resources are materialized separately on demand.
    */
   void exchange();
 
@@ -149,6 +157,7 @@ class MultipeerIbgdaTransport
    * Returns a MultipeerIbgdaDeviceTransport wrapper that provides convenient
    * access to per-peer transport handles with rank-to-index mapping.
    * Use .get(peerRank) to get the transport for a specific peer.
+   * This accessor does not materialize peers.
    *
    * NOTE: Requires including MultipeerIbgdaDeviceTransport.cuh in CUDA files.
    * For non-CUDA code, use getP2pTransportDevice(peerRank) instead.
@@ -164,18 +173,19 @@ class MultipeerIbgdaTransport
    * This method handles the rank-to-index mapping internally and provides
    * explicit peer selection without requiring CUDA headers.
    *
-   * In lazy mode, this materializes the requested peer before returning, so
-   * the returned pointer is ready for kernel use.
+   * If no channel has been prepared, this materializes the peer at full
+   * capacity for compatibility with callers that do not declare demand. If a
+   * prefix is already prepared, it returns the stable slot without expanding
+   * that prefix; the caller may use only the prepared channels.
    *
    * @param peerRank Global rank of the peer (must be != myRank and < nRanks)
    * @return Pointer to P2pIbgdaTransportDevice for the specified peer
    */
   P2pIbgdaTransportDevice* getP2pTransportDevice(int peerRank);
 
-  // materializePeer()/queuePeerForMaterialization()/connectPeers()/
-  // isPeerMaterialized() are inherited from MultiPeerIbTransport (the lazy
-  // state machine lives in the base; this backend supplies the
-  // doMaterializePeer()/cleanupPeerOnFailure() hooks below).
+  // queuePeerForMaterialization()/connectPeers()/isPeerMaterialized() are
+  // inherited from MultiPeerIbTransport. This backend supplies the
+  // materializePeerChannelRange() hook below.
 
   /**
    * getDeviceTransportPtr - Get pointer to device transport array
@@ -225,7 +235,6 @@ class MultipeerIbgdaTransport
   void openIbDevice();
   void allocateResources();
   void registerMemory();
-  void createQpGroups();
   void cleanup();
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
@@ -237,20 +246,35 @@ class MultipeerIbgdaTransport
   // rankToPeerIndex()/peerIndexToRank() are inherited from
   // MultiPeerIbTransport.
 
-  // Per-peer helpers shared by eager exchange() and lazy materializePeer()
-  void createPeerQps(int peerIndex);
-  void connectPeerLoopback(int peerIndex);
-  P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
+  // Per-peer helpers used by lazy materialization.
+  void createPeerQps(int peerIndex, uint32_t beginChannel, uint32_t endChannel);
+  void connectPeerLoopback(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel);
+  P2pIbgdaTransportBuildParams buildPeerTransportParams(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
 
-  void doMaterializePeer(int peerRank);
+  void materializePeerChannelRange(
+      int peerRank,
+      uint32_t beginChannel,
+      uint32_t endChannel);
 
-  PeerQpPayload buildLocalQpPayload(int peerIndex) const;
-  void connectPeerMainQps(int peerIndex, const PeerQpPayload& remotePayload);
-  void cleanupPeerOnFailure(int peerIndex);
+  PeerQpPayload buildLocalQpPayload(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel) const;
+  void connectPeerMainQps(
+      int peerIndex,
+      uint32_t beginChannel,
+      uint32_t endChannel,
+      const PeerQpPayload& remotePayload);
 
   // MultiPeerIbTransport drives the shared control plane (config, MR registry,
   // lazy materialization, bootstrap exchangeWithPeer) and calls back into this
-  // backend's doMaterializePeer()/cleanupPeerOnFailure() hooks.
+  // backend's materializePeerChannelRange() hook.
   friend class MultiPeerIbTransport<MultipeerIbgdaTransport>;
 
   // myRank_/nRanks_/bootstrap_/config_/registrationState_/nics_/lazy-state are
@@ -271,10 +295,9 @@ class MultipeerIbgdaTransport
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
 
-  // Per-NIC host-side IB verbs resources. blockQpGroups and
-  // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0
-  // main QP comes from blockQpGroups; extra main QPs are indexed
-  // [(peer * maxGroups + block) * (qpsPerBlockPerNic - 1) + (lane - 1)].
+  // Per-NIC host-side IB verbs resources. The legacy-named blockQpGroups and
+  // loopbackCompanionQps use flattened fixed-capacity peer/channel/direction
+  // slots. extraMainQps additionally indexes the lane within each channel.
   // Backend-specific (DOCA) per-NIC state. The generic per-NIC resources
   // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
   // index-aligned with this vector; openIbDevice() fills both.
@@ -321,25 +344,18 @@ class MultipeerIbgdaTransport
   // MultiPeerIbTransportBase (set by openNics()); the backend reads them
   // (inherited) when building DOCA AH attrs and connecting QPs.
 
-  // Per-peer device transports (GPU accessible)
-  P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
-  std::size_t peerTransportSize_{0};
-
-  // All GPU allocations from buildDeviceTransportsOnGpu (freed in cleanup)
+  // Host view of communicator-lifetime tables; gpuAllocations_ owns storage.
+  std::unique_ptr<IbgdaFixedDeviceTables> fixedDeviceTables_;
   std::vector<void*> gpuAllocations_;
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 
-  // Per-peer send/recv buffer views (IbSendRecvPeerBuffers) and the eager-mode
-  // bulk allocations now live in MultiPeerIbTransportBase
-  // (sendRecvPeerBuffers_). Eager allocation/exchange/cleanup delegate to the
-  // base's allocateSendRecvBuffersEager(Device)/exchangeSendRecvBuffersEager()/
-  // cleanupSendRecvBuffers(); the lazy path below fills the inherited
-  // sendRecvPeerBuffers_ directly.
+  // Eager send/recv views and bulk allocations live in
+  // MultiPeerIbTransportBase. Lazy growth retains separate immutable range
+  // buffers there until communicator teardown.
 
-  // Lazy state (pendingPeers_/peerMaterialized_/materializationFailed_) is
-  // inherited (protected) from MultiPeerIbTransport.
+  // Lazy readiness state is inherited from MultiPeerIbTransport.
 };
 
 } // namespace comms::prims

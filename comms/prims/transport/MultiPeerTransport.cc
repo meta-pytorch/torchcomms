@@ -65,6 +65,52 @@ comms::fault_tolerance::AbortDevice makeAbortDeviceHandle(
 
 } // namespace
 
+namespace detail {
+
+void validateChannelProtocolRecords(
+    std::span<const ChannelProtocolRecord> records) {
+  if (records.empty()) {
+    throw std::invalid_argument(
+        "channel protocol validation requires at least one rank");
+  }
+  for (size_t rank = 0; rank < records.size(); ++rank) {
+    const auto& record = records[rank];
+    if (record.mode != PrimsChannelMode::kEager &&
+        record.mode != PrimsChannelMode::kLazyPrefix) {
+      throw std::runtime_error(
+          "invalid channel protocol record from rank " + std::to_string(rank));
+    }
+  }
+  for (size_t rank = 1; rank < records.size(); ++rank) {
+    if (records[rank] != records.front()) {
+      throw std::runtime_error(
+          "channel protocol mismatch between rank 0 and rank " +
+          std::to_string(rank));
+    }
+  }
+}
+
+void exchangeAndValidateChannelProtocol(
+    meta::comms::IBootstrap& bootstrap,
+    int rank,
+    int nRanks,
+    const ChannelProtocolRecord& localRecord) {
+  std::vector<ChannelProtocolRecord> records(nRanks);
+  records.at(rank) = localRecord;
+  const int rc =
+      bootstrap
+          .allGather(
+              records.data(), sizeof(ChannelProtocolRecord), rank, nRanks)
+          .get();
+  if (rc != 0) {
+    throw std::runtime_error(
+        "channel protocol allGather failed with error " + std::to_string(rc));
+  }
+  validateChannelProtocolRecords(records);
+}
+
+} // namespace detail
+
 MultiPeerTransport::MultiPeerTransport(
     int myRank,
     int nRanks,
@@ -185,11 +231,14 @@ void MultiPeerTransport::initFromTopology(
             << " nvlLocalRank=" << nvlLocalRank_;
   }
 
-  // Create the IB sub-transport — the universal fallback for all non-NVL peers.
-  // Exactly one backend is built, selected by config.ibMode (kIbgda default;
-  // kIbrc selects the CPU-proxy backend).
+  // Create the selected IB backend when at least one peer prefers IB. Its
+  // global-rank table can also serve NVL-preferred peers when an algorithm
+  // explicitly requests an IBGDA fallback.
   if (!config.disableIb && !ibPeerRanks_.empty()) {
-    auto ibConfig = config.ibConfig;
+    auto ibConfig = config.ibConfig.normalizedChannelGeometry();
+    channelMode_ = ibConfig.lazyChannels ? detail::PrimsChannelMode::kLazyPrefix
+                                         : detail::PrimsChannelMode::kEager;
+    ibChannelCapacity_ = static_cast<uint32_t>(ibConfig.max_num_channels);
     ibConfig.cudaDevice = deviceId_;
     if (config.ibMode == IbBackendMode::kIbrc) {
       // IBRC's device waits sit on the CPU proxy, so the backend needs the
@@ -211,6 +260,10 @@ void MultiPeerTransport::initFromTopology(
 
 MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
+}
+
+bool MultiPeerTransport::is_lazy_mode() const {
+  return true;
 }
 
 std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
@@ -252,6 +305,12 @@ void MultiPeerTransport::setExternalNvlDataBuffers(
 }
 
 void MultiPeerTransport::exchange() {
+  const detail::ChannelProtocolRecord channelProtocol{
+      .mode = channelMode_,
+      .channelCapacity = ibChannelCapacity_,
+  };
+  detail::exchangeAndValidateChannelProtocol(
+      *bootstrap_, myRank_, nRanks_, channelProtocol);
 #ifndef __HIP_PLATFORM_AMD__
   // CUDA driver-API init is required for the cuMem-based fabric / POSIX-FD
   // exchange paths. On AMD only the cudaIpc (hipIpc) path is available, so
@@ -345,15 +404,7 @@ P2pSelfTransportDevice MultiPeerTransport::get_p2p_self_transport_device()
   return P2pSelfTransportDevice{};
 }
 
-MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
-    const std::vector<int>& peers) {
-  if (!deviceHandleBuilt_) {
-    throw std::runtime_error(
-        "MultiPeerTransport::get_device_handle(peers) called before exchange()");
-  }
-  if (!peers.empty()) {
-    materializePeers(peers);
-  }
+MultiPeerDeviceHandle MultiPeerTransport::make_device_handle() const {
   return MultiPeerDeviceHandle{
       myRank_,
       nRanks_,
@@ -364,25 +415,41 @@ MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
   };
 }
 
-bool MultiPeerTransport::is_lazy_mode() const {
-  return true;
+MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
+    const std::vector<int>& peers) {
+  std::vector<PeerChannelDemand> demands;
+  demands.reserve(peers.size());
+  for (const int peer : peers) {
+    if (peer < 0 || peer >= nRanks_ || peer == myRank_) {
+      continue;
+    }
+    const auto type = typePerRank_[peer];
+    if (type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
+      demands.push_back({.peerRank = peer, .ibChannels = ibChannelCapacity_});
+    }
+  }
+  return get_device_handle(demands);
+}
+
+MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
+    std::initializer_list<int> peers) {
+  return get_device_handle(std::vector<int>(peers));
 }
 
 void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
-  auto materializeOn = [&](auto& ibTransport) {
-    for (int peer : peers) {
-      if (peer >= 0 && peer < nRanks_ && peer != myRank_ &&
-          (typePerRank_[peer] == TransportType::P2P_IBGDA ||
-           typePerRank_[peer] == TransportType::P2P_IBRC)) {
-        ibTransport->queuePeerForMaterialization(peer);
-      }
+  std::vector<PeerChannelDemand> demands;
+  demands.reserve(peers.size());
+  for (const int peer : peers) {
+    if (peer < 0 || peer >= nRanks_ || peer == myRank_) {
+      continue;
     }
-    ibTransport->connectPeers();
-  };
-  if (ibgdaTransport_) {
-    materializeOn(ibgdaTransport_);
-  } else if (ibrcTransport_) {
-    materializeOn(ibrcTransport_);
+    const auto type = typePerRank_[peer];
+    if (type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC) {
+      demands.push_back({.peerRank = peer, .ibChannels = ibChannelCapacity_});
+    }
+  }
+  if (!demands.empty()) {
+    materializePeerChannels(demands);
   }
 }
 
@@ -391,6 +458,77 @@ void MultiPeerTransport::connectPeers() {
     ibgdaTransport_->connectPeers();
   } else if (ibrcTransport_) {
     ibrcTransport_->connectPeers();
+  }
+}
+
+MultiPeerDeviceHandle MultiPeerTransport::get_device_handle(
+    std::span<const PeerChannelDemand> demands) {
+  if (!deviceHandleBuilt_) {
+    throw std::runtime_error(
+        "MultiPeerTransport::get_device_handle called before exchange()");
+  }
+  if (ibgdaTransport_) {
+    ibgdaTransport_->throwIfMaterializationFailed();
+  } else if (ibrcTransport_) {
+    ibrcTransport_->throwIfMaterializationFailed();
+  }
+  bool hasPositiveDemand = false;
+  for (const auto& demand : demands) {
+    if (demand.peerRank < 0 || demand.peerRank >= nRanks_ ||
+        demand.peerRank == myRank_) {
+      throw std::invalid_argument(
+          "peer channel demand contains an invalid peer rank");
+    }
+    if (demand.ibChannels > ibChannelCapacity_) {
+      throw std::invalid_argument(
+          "peer channel demand exceeds the configured IB capacity");
+    }
+    if (demand.ibChannels != 0) {
+      hasPositiveDemand = true;
+      const auto type = typePerRank_[demand.peerRank];
+      const bool prefersIb =
+          type == TransportType::P2P_IBGDA || type == TransportType::P2P_IBRC;
+      if (!prefersIb && !ibgdaTransport_) {
+        throw std::invalid_argument(
+            "positive channel demand requires a preferred IB peer or an "
+            "IBGDA fallback");
+      }
+    }
+  }
+
+  if (hasPositiveDemand) {
+    materializePeerChannels(demands);
+  }
+  return make_device_handle();
+}
+
+void MultiPeerTransport::prepare_ib_channels(
+    std::span<const int> peers,
+    uint32_t ibChannels) {
+  std::vector<PeerChannelDemand> demands;
+  demands.reserve(peers.size());
+  for (const int peer : peers) {
+    demands.push_back({.peerRank = peer, .ibChannels = ibChannels});
+  }
+  (void)get_device_handle(demands);
+}
+
+void MultiPeerTransport::materializePeerChannels(
+    std::span<const PeerChannelDemand> demands) {
+  auto materializeOn = [&](auto& ibTransport) {
+    for (const auto& demand : demands) {
+      if (demand.ibChannels == 0) {
+        continue;
+      }
+      ibTransport->queuePeerForMaterialization(
+          demand.peerRank, demand.ibChannels);
+    }
+    ibTransport->connectPeers();
+  };
+  if (ibgdaTransport_) {
+    materializeOn(ibgdaTransport_);
+  } else if (ibrcTransport_) {
+    materializeOn(ibrcTransport_);
   }
 }
 

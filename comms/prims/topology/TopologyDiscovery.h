@@ -85,7 +85,7 @@ struct TopologyConfig {
   // Follows NCCL's NCCL_P2P_DISABLE semantics (PATH_LOC — self only):
   //   - false (default): use NVLink when available (MNNVL or peer access)
   //   - true: skip both Tier 1 and Tier 2; all non-self peers fall back to
-  //     IBGDA
+  //     the selected IB backend
   bool p2pDisable{false};
 };
 
@@ -97,8 +97,8 @@ struct TopologyConfig {
  *   - nvlNRanks        = nvlPeerRanks.size() + 1
  *   - nvlLocalRank     = globalToNvlLocal.at(myRank)
  *   - typePerRank[r]   = SELF if r==myRank, P2P_NVL if in globalToNvlLocal,
- *                         P2P_IBGDA otherwise
- *   - ibgdaPeerRanks   = all ranks except self (universal fallback)
+ *                         selected IB backend otherwise
+ *   - ibPeerRanks      = non-self ranks not in globalToNvlLocal
  */
 struct TopologyResult {
   /// Global ranks of NVLink-connected peers (excluding self), sorted.
