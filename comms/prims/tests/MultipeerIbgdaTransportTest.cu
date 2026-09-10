@@ -410,6 +410,66 @@ __global__ void sendRecvKernel(
   }
 }
 
+__global__ void shardedSendRecvIbKernel(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    AbortDevice abortDevice) {
+  auto group = make_block_group();
+  abortDevice.start();
+  // make_block_group() sets group_id = blockIdx.x, and the fixed-channel
+  // send/recv path keys its channel off group_id, so block b drives channel b.
+  // Giving each block its own slice makes that mapping observable end to end.
+  auto* slice = static_cast<char*>(buffer) +
+      static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  if (send) {
+    transport.send(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+  } else {
+    transport.recv(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+  }
+}
+
+// Single definition of the sharded pattern, shared by the producer and the
+// checker below. Restating the formula in both is how a test ends up passing
+// or failing for the wrong reason after one side is edited.
+__device__ __forceinline__ uint8_t
+shardedExpectedByte(uint8_t baseValue, unsigned slice, std::size_t i) {
+  return static_cast<uint8_t>(baseValue + slice + (i % 256));
+}
+
+__global__ void fillShardedPatternKernel(
+    uint8_t* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue) {
+  uint8_t* slice =
+      buffer + static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  for (std::size_t i = threadIdx.x; i < bytesPerBlock; i += blockDim.x) {
+    slice[i] = shardedExpectedByte(baseValue, blockIdx.x, i);
+  }
+}
+
+__global__ void verifyShardedPatternKernel(
+    const uint8_t* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice) {
+  const uint8_t* slice =
+      buffer + static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  int local = 0;
+  for (std::size_t i = threadIdx.x; i < bytesPerBlock; i += blockDim.x) {
+    if (slice[i] != shardedExpectedByte(expectedBaseValue, blockIdx.x, i)) {
+      ++local;
+    }
+  }
+  if (local > 0) {
+    atomicAdd(errorCount, local);
+    atomicMin(firstBadSlice, static_cast<int>(blockIdx.x));
+  }
+}
+
 __global__ void twoCallSendThenRecvKernel(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
@@ -441,6 +501,64 @@ void testSendRecv(
     int blockSize) {
   sendRecvKernel<<<numBlocks, blockSize>>>(
       transport, buffer, nbytes, maxSignalBytes, send, testAbortDevice());
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testShardedSendRecvIb(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize) {
+  shardedSendRecvIbKernel<<<numBlocks, blockSize>>>(
+      transport,
+      buffer,
+      bytesPerBlock,
+      maxSignalBytes,
+      send,
+      testAbortDevice());
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void fillShardedPattern(
+    void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue,
+    int numBlocks,
+    int blockSize) {
+  fillShardedPatternKernel<<<numBlocks, blockSize>>>(
+      static_cast<uint8_t*>(buffer), bytesPerBlock, baseValue);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void verifyShardedPattern(
+    const void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice,
+    int numBlocks,
+    int blockSize) {
+  verifyShardedPatternKernel<<<numBlocks, blockSize>>>(
+      static_cast<const uint8_t*>(buffer),
+      bytesPerBlock,
+      expectedBaseValue,
+      errorCount,
+      firstBadSlice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

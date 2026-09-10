@@ -7,6 +7,7 @@
 #include <chrono>
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -3941,9 +3942,16 @@ class LazyModeTestFixture
     return GetParam();
   }
 
-  std::unique_ptr<TestIbTransport> createLazyTransport() {
+  // Default taken from the config struct rather than restated, so a change to
+  // MultipeerIbTransportConfig::max_num_channels keeps applying to the callers
+  // that do not pass one.
+  std::unique_ptr<TestIbTransport> createLazyTransport(
+      int maxChannels = MultipeerIbTransportConfig{}.max_num_channels,
+      std::size_t perChannelSize = 0) {
     MultipeerIbTransportConfig config{
         .cudaDevice = localRank,
+        .perChannelSize = perChannelSize,
+        .max_num_channels = maxChannels,
         .numSignalSlots = 1,
         .numCounterSlots = 1,
         .ibLazyConnect = true,
@@ -3994,6 +4002,254 @@ TEST_P(LazyModeTestFixture, QueueThenConnect) {
     EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
   } catch (const std::exception& e) {
     GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+// A full kMaxIbGroups channel count is reachable only through lazy peer
+// materialization: kMaxIbGroups channels x kIbDirections is far past
+// kMaxEagerExchangeQpsPerPeerPerNic. Materializes that shape for real and moves
+// data over it, so the bilateral PeerQpPayload exchange is exercised at the
+// widest group count the index space allows.
+TEST_P(LazyModeTestFixture, MaterializeAndTransferAboveEagerQpLimit) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  ASSERT_GT(kMaxIbGroups * kIbDirections, kMaxEagerExchangeQpsPerPeerPerNic);
+
+  constexpr std::size_t perChannelSize = 4 * 1024;
+  constexpr std::size_t nbytes = 64 * 1024;
+  constexpr int numBlocks = 1;
+  constexpr int blockSize = 32;
+  constexpr uint8_t testPattern = 0x5a;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  // Try only around construction, with the skip decision reduced across ranks
+  // -- same shape as FixedChannelSendRecvSpansGroupsAboveLegacyLimit below, and
+  // for the same two reasons: a genuine failure at the 256-group shape is what
+  // this test exists to catch and must not be reported as "backend not
+  // available", and a rank that bailed out mid-body would leave its peer
+  // blocked in an inner barrier.
+  std::unique_ptr<TestIbTransport> transport;
+  std::string setupError;
+  try {
+    transport = createLazyTransport(kMaxIbGroups, perChannelSize);
+  } catch (const std::exception& e) {
+    setupError = e.what();
+  }
+  int localSetupOk = setupError.empty() ? 1 : 0;
+  int globalSetupOk = 0;
+  MPI_CHECK(MPI_Allreduce(
+      &localSetupOk, &globalSetupOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD));
+  if (globalSetupOk == 0) {
+    if (setupError.empty()) {
+      GTEST_SKIP() << backendName(backend())
+                   << " not available: peer rank could not construct";
+    }
+    GTEST_SKIP() << backendName(backend()) << " not available: " << setupError;
+  }
+
+  {
+    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+
+    if (globalRank == 0) {
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testPutAndSignal(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          /*signalId=*/0,
+          /*signalVal=*/1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testWaitSignal(
+          peerTransport,
+          /*signalId=*/0,
+          /*expectedSignal=*/1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* dErrorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(dErrorCount, 0, sizeof(int)));
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          dErrorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int hErrorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &hErrorCount, dErrorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      EXPECT_EQ(hErrorCount, 0)
+          << "Rank " << globalRank << ": " << hErrorCount
+          << " byte mismatches over a " << kMaxIbGroups << "-group lazy peer";
+    }
+  }
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+// The group ceiling this diff replaces. Named so the test below cannot
+// quietly become vacuous if kMaxIbGroups is ever lowered back toward it.
+constexpr int kLegacyMaxIbGroups = 64;
+
+// MaterializeAndTransferAboveEagerQpLimit proves the lazy peer EXCHANGE
+// survives 512 QPs. It does not prove send/recv can SELECT a channel above the
+// old ceiling: it moves its bytes with a single-block put/signal, so it only
+// ever touches channel 0. Channel selection indexes a different set of
+// structures per block -- the per-(channel, protocol) resource slot, its
+// staging window, its progress cursor and its QP lane -- and none of those
+// above index 63 were reached.
+//
+// So drive the real fixed-channel send/recv path with one block per channel
+// across the whole 0..kMaxIbGroups-1 range. Two properties make the coverage
+// real rather than nominal:
+//   - each block owns its own slice, so a channel that moves nothing leaves
+//     its slice zeroed instead of being covered by a sibling block writing the
+//     same bytes;
+//   - bytesPerBlock stays inside one pipeline window, so a sender never waits
+//     on a peer's SLOT_FREE. With 256 blocks per rank and far fewer resident,
+//     a sender that could block on a not-yet-scheduled receiver would deadlock
+//     the test rather than fail it.
+TEST_P(LazyModeTestFixture, FixedChannelSendRecvSpansGroupsAboveLegacyLimit) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  ASSERT_GT(kMaxIbGroups, kLegacyMaxIbGroups)
+      << "vacuous unless the group limit is above the legacy ceiling";
+
+  constexpr int numBlocks = kMaxIbGroups;
+  constexpr int blockSize = 256;
+  // Inside one pipeline window (perChannelSize) -- see the deadlock note above.
+  constexpr std::size_t bytesPerBlock = 4 * 1024;
+  constexpr std::size_t perChannelSize = 16 * 1024;
+  constexpr std::size_t maxSignalBytes = 0;
+  constexpr uint8_t basePattern = 0x11;
+  constexpr std::size_t totalBytes = bytesPerBlock * numBlocks;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+
+  // Only the transport construction is allowed to turn into a skip, and the
+  // skip decision is reduced across ranks before it is acted on. Wrapping the
+  // whole body instead would (a) report a genuine failure at the 256-group
+  // shape -- exactly what this test targets -- as "backend not available", and
+  // (b) let one rank bail out mid-test while its peer is still blocked on an
+  // inner barrier, hanging the run instead of failing it.
+  std::unique_ptr<TestIbTransport> transport;
+  std::string setupError;
+  try {
+    // perChannelSize > 0 selects the fixed-channel shape, which is also what
+    // makes the transport derive maxGroups from max_num_channels -- device-side
+    // QP selection needs block_id < maxGroups, so a 64-group transport would
+    // fault on block 64 rather than merely mis-route it.
+    transport = createLazyTransport(kMaxIbGroups, perChannelSize);
+  } catch (const std::exception& e) {
+    setupError = e.what();
+  }
+  int localSetupOk = setupError.empty() ? 1 : 0;
+  int globalSetupOk = 0;
+  MPI_CHECK(MPI_Allreduce(
+      &localSetupOk, &globalSetupOk, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD));
+  if (globalSetupOk == 0) {
+    // Two statements rather than a ternary: mixing a string literal with
+    // `setupError` in one conditional forces both arms to std::string, which
+    // copies the error on the branch that already owns it.
+    if (setupError.empty()) {
+      GTEST_SKIP() << backendName(backend())
+                   << " not available: peer rank could not construct";
+    }
+    GTEST_SKIP() << backendName(backend()) << " not available: " << setupError;
+  }
+
+  {
+    auto peerTransport = transport->getP2pTransportDevice(peerRank);
+    // EXPECT, not ASSERT: an ASSERT returns from the test body, so a rank that
+    // failed here would skip the trailing barrier while its peer stays blocked
+    // in it -- turning a failure into a distributed hang, and desyncing the
+    // barrier sequence for every later test in the binary.
+    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
+
+    DeviceBuffer buffer(totalBytes);
+    if (globalRank == 0) {
+      test::fillShardedPattern(
+          buffer.get(), bytesPerBlock, basePattern, numBlocks, blockSize);
+    } else {
+      CUDACHECK_TEST(cudaMemset(buffer.get(), 0, totalBytes));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testShardedSendRecvIb(
+        peerTransport,
+        buffer.get(),
+        bytesPerBlock,
+        maxSignalBytes,
+        /*send=*/globalRank == 0,
+        numBlocks,
+        blockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      DeviceBuffer errorCountBuf(sizeof(int));
+      DeviceBuffer firstBadSliceBuf(sizeof(int));
+      auto* dErrorCount = static_cast<int*>(errorCountBuf.get());
+      auto* dFirstBadSlice = static_cast<int*>(firstBadSliceBuf.get());
+      CUDACHECK_TEST(cudaMemset(dErrorCount, 0, sizeof(int)));
+      const int sentinel = std::numeric_limits<int>::max();
+      CUDACHECK_TEST(cudaMemcpy(
+          dFirstBadSlice, &sentinel, sizeof(int), cudaMemcpyHostToDevice));
+
+      test::verifyShardedPattern(
+          buffer.get(),
+          bytesPerBlock,
+          basePattern,
+          dErrorCount,
+          dFirstBadSlice,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int hErrorCount = 0;
+      int hFirstBadSlice = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &hErrorCount, dErrorCount, sizeof(int), cudaMemcpyDeviceToHost));
+      CUDACHECK_TEST(cudaMemcpy(
+          &hFirstBadSlice,
+          dFirstBadSlice,
+          sizeof(int),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(hErrorCount, 0)
+          << hErrorCount << " byte mismatches across " << numBlocks
+          << " fixed channels; first bad channel "
+          << (hFirstBadSlice == sentinel ? -1 : hFirstBadSlice)
+          << " (legacy ceiling was " << kLegacyMaxIbGroups << ")";
+    }
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }

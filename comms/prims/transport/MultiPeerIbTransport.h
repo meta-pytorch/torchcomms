@@ -698,9 +698,34 @@ constexpr int kMaxRanksForAllGather = 128;
 // block-owned QP shapes must use lazy peer materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
-constexpr int kMaxIbGroups = 64;
+// Group (channel) index space: device-side IB QP selection uses
+// ThreadGroup::block_id and requires block_id < maxGroups.
+//
+// This is an index space only: raising it creates no QP by itself, and a group
+// index costs nothing until a configuration actually asks for that many
+// channels. What it does NOT mean is that QPs appear per group on first use.
+// Materialization is lazy per PEER, not per group: the first touch of a peer
+// runs materializePeer() -> createPeerQps(), which builds that peer's ENTIRE
+// configured shape up front — `fixedChannelCompanionQpsPerPeerPerNic()` slots,
+// each a QP group plus a loopback companion — even if a single group ever runs
+// on it. So the QP cost of a transport is set by `max_num_channels` (times
+// directions, times qpsPerConnection) and the number of peers touched, and the
+// knob for reducing it is `max_num_channels`, not this limit.
+constexpr int kMaxIbGroups = 256;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
-constexpr int kMaxIbQpsPerPeerPerNic = kMaxIbGroups * kMaxIbQpsPerBlockPerNic;
+
+// Budget for QPs actually created per (peer, NIC): max_num_channels *
+// direction_count * qpsPerConnection. Must stay independent of kMaxIbGroups:
+// it dimensions the PeerQpPayload::NicQpInfo::qpns wire array below, so
+// deriving it from the group index space would grow every lazy peer exchange
+// whenever that space grows. kMaxIbGroups * kMaxIbQpsPerBlockPerNic is also
+// not a meaningful bound — it multiplies two limits no configuration reaches
+// simultaneously.
+constexpr int kMaxIbQpsPerPeerPerNic = 8192;
+
+static_assert(
+    kMaxIbQpsPerPeerPerNic >= kMaxEagerExchangeQpsPerPeerPerNic,
+    "the eager-exchange QP cap must fit inside the created-QP budget");
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -778,6 +803,29 @@ struct PeerQpPayload {
   // Defaults to the same 1 the transport resolves when nobody raises the depth.
   int maxRdAtomic{1};
 };
+
+// This payload is sent and received once per peer on every materializePeer(),
+// and both copies are stack-resident while in flight, so its size is a
+// bootstrap cost every lazy collective pays per peer -- not only the ones that
+// ask for a large group count. It must stay within kMaxNicsPerGpu * 8192 QPNs
+// (~64KB) however large the group index space becomes; widening a QP-shape
+// limit past this has to revisit the wire format rather than silently scale
+// it.
+//
+// Derived from the documented shape rather than rounded up to a convenient
+// number: a round bound leaves kilobytes of headroom for a new fixed array to
+// be added without the static_assert ever firing, which is exactly the drift
+// this constant exists to catch. The only slack is the scalar header.
+//
+// Named so the bound has one definition: MultiPeerIbTransportConfigTest checks
+// the same constant rather than restating the number.
+inline constexpr std::size_t kMaxPeerQpPayloadBytes =
+    kMaxNicsPerGpu * sizeof(PeerQpPayload::NicQpInfo) +
+    /*scalar header allowance=*/256;
+
+static_assert(
+    sizeof(PeerQpPayload) <= kMaxPeerQpPayloadBytes,
+    "PeerQpPayload is exchanged and stack-allocated per peer; keep it small");
 
 struct PeerBufferPayload {
   IbgdaBufferExchInfo recvStaging;

@@ -179,6 +179,60 @@ void testPipelineGeometry(
     int blockSize);
 
 /**
+ * Test kernel: blocking pipelined send or recv over the backend-DISPATCHING
+ * `P2pIbTransportDevice`, one fixed channel per block. Block `b` drives
+ * channel `b` over the `bytesPerBlock`-sized slice of `buffer` at
+ * `b * bytesPerBlock`.
+ *
+ * The per-block slice is what makes channel coverage observable. Handing
+ * every block the same buffer (what the single-buffer `testSendRecv` does)
+ * means a channel that silently moves nothing is masked by a sibling block
+ * writing the same bytes, so the verify passes with most channels dead.
+ *
+ * Caller must keep `bytesPerBlock` within one pipeline window: senders then
+ * never block on a peer's SLOT_FREE, so the test cannot deadlock when it runs
+ * more blocks than the GPU can hold resident.
+ */
+void testShardedSendRecvIb(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Fill `numBlocks` consecutive `bytesPerBlock` slices, keying slice `b` on
+ * `baseValue + b` so every slice is byte-distinguishable from its neighbours.
+ */
+void fillShardedPattern(
+    void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Verify the layout `fillShardedPattern` writes. `errorCount` accumulates
+ * mismatched bytes; `firstBadSlice` is `atomicMin`-reduced to the lowest slice
+ * index that had any mismatch, which is what tells a failure whether the
+ * channels above the legacy limit were the ones that dropped data.
+ *
+ * The caller must pre-seed `firstBadSlice` with a sentinel above every valid
+ * slice index (`std::numeric_limits<int>::max()`); a clean run leaves it
+ * untouched rather than writing a "no failure" value of its own.
+ */
+void verifyShardedPattern(
+    const void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Blocking pipelined send or recv.
  */
 void testSendRecv(
