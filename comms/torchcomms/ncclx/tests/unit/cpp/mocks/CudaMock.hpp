@@ -160,6 +160,11 @@ class CudaMock : public CudaApi {
       (cudaEvent_t event, cudaStream_t stream, unsigned int flags),
       (override));
   MOCK_METHOD(cudaError_t, eventQuery, (cudaEvent_t event), (override));
+  MOCK_METHOD(
+      cudaError_t,
+      eventElapsedTime,
+      (float* ms, cudaEvent_t start, cudaEvent_t end),
+      (override));
 
   // Error handling
   MOCK_METHOD(const char*, getErrorString, (cudaError_t error), (override));

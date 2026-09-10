@@ -16,7 +16,7 @@
 
 namespace comms {
 
-// Host-drive timing for one bucket of collectives, in microseconds.
+// Timing and abort totals; latency fields are zero when count is zero.
 struct CollectiveStat {
   uint64_t count{0};
   uint64_t total_us{0};
@@ -32,6 +32,9 @@ struct CollectiveStat {
   // SM residency: sum of ceil(num_blocks / blocks_per_sm) * duration. Survives
   // roll-ups where the geometry above collapses to unknown.
   uint64_t total_sm_us{0};
+
+  // Extension counters follow the base layout to preserve its ABI.
+  uint64_t aborted_count{0};
 
   void add(
       uint64_t durationUs,
@@ -76,17 +79,24 @@ struct CollectiveStat {
   }
 
   void merge(const CollectiveStat& other) {
+    if (other.count == 0 && other.aborted_count == 0) {
+      return;
+    }
     if (other.count == 0) {
+      aborted_count += other.aborted_count;
       return;
     }
     if (count == 0) {
+      const uint64_t existingAbortedCount = aborted_count;
       *this = other;
+      aborted_count += existingAbortedCount;
       return;
     }
     min_us = std::min(min_us, other.min_us);
     max_us = std::max(max_us, other.max_us);
     total_us += other.total_us;
     count += other.count;
+    aborted_count += other.aborted_count;
     total_sm_us += other.total_sm_us;
 
     // Roll-ups span buckets whose geometry differs.
@@ -132,6 +142,17 @@ class CollectiveStats {
     });
   }
 
+  void recordAborted(std::string_view collective, std::string_view key) {
+    stats_.withWLock([&](auto& m) {
+      auto it = m.find(key);
+      if (it == m.end()) {
+        it = m.emplace(std::string(key), Entry{std::string(collective), {}})
+                 .first;
+      }
+      ++it->second.stat.aborted_count;
+    });
+  }
+
   CollectiveStatsMap getAndClear() {
     EntryMap drained;
     stats_.withWLock([&](auto& m) { drained.swap(m); });
@@ -148,7 +169,7 @@ class CollectiveStats {
       }
       out[key].merge(entry.stat);
     }
-    if (overall.count > 0) {
+    if (overall.count > 0 || overall.aborted_count > 0) {
       out[std::string(kCollectiveStatsAllKey)].merge(overall);
     }
     return out;
@@ -172,11 +193,12 @@ class CollectiveStats {
 
 inline std::ostream& operator<<(std::ostream& os, const CollectiveStat& s) {
   os << fmt::format(
-      "count={} total_us={} min_us={} max_us={} total_sm_us={}",
+      "count={} total_us={} min_us={} max_us={} aborted_count={} total_sm_us={}",
       s.count,
       s.total_us,
       s.min_us,
       s.max_us,
+      s.aborted_count,
       s.total_sm_us);
   if (s.block_size != 0) {
     os << fmt::format(
