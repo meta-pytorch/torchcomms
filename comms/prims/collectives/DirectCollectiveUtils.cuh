@@ -43,6 +43,38 @@ direct_pipeline_window(const PeerArray& peers, int my_rank, int num_ranks) {
   return window;
 }
 
+// Largest payload every non-self peer can reserve before receives advance the
+// channels. Use this for collective phases that issue all sends before any
+// matching receive, with at most one outstanding send per peer in each window.
+// Returns zero when there is no non-self peer, ranks are invalid, or any peer
+// reports no capacity.
+// `peers` must be indexable through `[0, num_ranks)`.
+template <typename PeerArray>
+__host__ __device__ __forceinline__ std::size_t
+direct_nvl_send_before_recv_payload_bytes(
+    const PeerArray& peers,
+    int my_rank,
+    int num_ranks,
+    std::size_t max_signal_bytes) {
+  if (num_ranks <= 1 || my_rank < 0 || my_rank >= num_ranks) {
+    return 0;
+  }
+
+  std::size_t payload_bytes = ~std::size_t{0};
+  for (int peer = 0; peer < num_ranks; ++peer) {
+    if (peer == my_rank) {
+      continue;
+    }
+    const std::size_t peer_bytes =
+        peers[peer].max_payload_without_peer_progress(max_signal_bytes);
+    if (peer_bytes == 0) {
+      return 0;
+    }
+    payload_bytes = peer_bytes < payload_bytes ? peer_bytes : payload_bytes;
+  }
+  return payload_bytes;
+}
+
 template <typename Group>
 __device__ __forceinline__ void
 hierarchical_allgather_nvl_broadcast_from_recvbuf(
