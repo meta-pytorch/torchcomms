@@ -223,6 +223,36 @@ class P2pNvlTransportDevice {
     return options_.per_channel_slot;
   }
 
+  /**
+   * Largest payload a drained channel can reserve without waiting for peer
+   * progress.
+   *
+   * A send channel is drained when SLOT_FREE has credited every reservation
+   * before its current send cursor. This is a static geometry bound; it does
+   * not inspect live cursor or credit state.
+   *
+   * send()/recv() align payloads to 16 bytes and may pad the reservation to
+   * the signal granularity. A reused cursor is only guaranteed to be
+   * 16-byte-aligned, so reserve space for the worst possible tail padding.
+   * The tile geometry requires a 16-byte-aligned window and slot, with the
+   * slot no larger than and evenly dividing the window. Invalid geometry
+   * returns zero.
+   */
+  __host__ __device__ __forceinline__ std::size_t
+  max_payload_without_peer_progress(std::size_t maxSignalBytes) const {
+    constexpr std::size_t kProtocolAlignment = 16;
+    const std::size_t window = options_.per_channel_buffer;
+    const std::size_t slot = options_.per_channel_slot;
+    if (window < kProtocolAlignment || window % kProtocolAlignment != 0 ||
+        slot < kProtocolAlignment || slot % kProtocolAlignment != 0 ||
+        slot > window || window % slot != 0) {
+      return 0;
+    }
+
+    const std::size_t signalAlignment = signal_alignment(maxSignalBytes, slot);
+    return window - (signalAlignment - kProtocolAlignment);
+  }
+
   // Getters for testing
   __host__ const LocalState& getLocalState() const {
     return localState_;
@@ -1627,7 +1657,7 @@ class P2pNvlTransportDevice {
     return ((value + alignment64 - 1) / alignment64) * alignment64;
   }
 
-  __device__ __forceinline__ static std::size_t signal_alignment(
+  __host__ __device__ __forceinline__ static std::size_t signal_alignment(
       std::size_t maxSignalBytes,
       std::size_t perChannelSlot) {
     const bool usesPartialSlot =
