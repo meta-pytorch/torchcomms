@@ -1072,6 +1072,54 @@ void MultipeerIbgdaTransport::connectQp(
           << peerInfo.qpn;
 }
 
+doca_error_t MultipeerIbgdaTransport::createQpGroupWithDoorbellFallback(
+    int nic,
+    int slot,
+    int companionSlots,
+    doca_gpu_verbs_qp_init_attr_hl& mainAttr,
+    doca_gpu_verbs_qp_group_hl** outGroup) {
+  doca_error_t err = doca_gpu_verbs_create_qp_group_hl(&mainAttr, outGroup);
+#ifndef __HIP_PLATFORM_AMD__
+  // Only the auto policy may degrade. An explicit enableReliableDoorbell is a
+  // hard requirement -- reliableDoorbellActiveForNic() throws for it -- so it
+  // must fail here too rather than be silently satisfied with the other mode.
+  if (err == DOCA_SUCCESS || !nicDoca_[nic].useReliableDoorbell ||
+      config_.enableReliableDoorbell.has_value()) {
+    return err;
+  }
+
+  // The NIC caps DBR-less QPs and the capability is a bare bit with no count,
+  // so the ceiling is only observable as a create refusal. DOCA_ERROR_DRIVER
+  // is generic, so the retry -- same attrs, only the doorbell mode changed --
+  // is what identifies it. Mode is local (not exchanged, dispatched per QP),
+  // so switching mid-job is safe. On failure the callee leaves *outGroup
+  // untouched, so the retry cannot orphan an allocation.
+  const doca_error_t noDbrErr = err;
+  mainAttr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+  err = doca_gpu_verbs_create_qp_group_hl(&mainAttr, outGroup);
+
+  if (err != DOCA_SUCCESS) {
+    // Not a doorbell problem; report the original error.
+    mainAttr.send_dbr_mode_ext =
+        DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW;
+    return noDbrErr;
+  }
+
+  // Latch, or every remaining slot re-fails against the same ceiling.
+  nicDoca_[nic].useReliableDoorbell = false;
+  LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << nics_[nic].deviceName
+               << " hit its NO_DBR_HW QP limit at slot " << slot << "/"
+               << companionSlots << " (" << docaErrorToString(noDbrErr)
+               << "); using VALID_DBR for the rest of this NIC. Lower "
+                  "max_num_channels or qpsPerConnection to stay under it.";
+#else
+  (void)nic;
+  (void)slot;
+  (void)companionSlots;
+#endif
+  return err;
+}
+
 void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
@@ -1125,8 +1173,8 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
     for (int slot = 0; slot < companionSlots; slot++) {
       const int slotIdx = peerIndex * companionSlots + slot;
-      doca_error_t err =
-          doca_gpu_verbs_create_qp_group_hl(&mainAttr, &nicQps[slotIdx]);
+      doca_error_t err = createQpGroupWithDoorbellFallback(
+          nic, slot, companionSlots, mainAttr, &nicQps[slotIdx]);
       checkDocaError(err, "Failed to create QP group");
       err = doca_gpu_verbs_create_qp_hl(&loopbackAttr, &nicLoopback[slotIdx]);
       checkDocaError(err, "Failed to create loopback companion QP");
