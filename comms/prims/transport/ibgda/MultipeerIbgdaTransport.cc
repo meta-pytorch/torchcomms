@@ -1702,7 +1702,11 @@ void MultipeerIbgdaTransport::materializePeerChannelRange(
   IbChannelLayout channelLayout;
   if (config_.lazyChannels) {
     channelLayout = allocateSendRecvChannelRange(
-        peerIndex, beginChannel, endChannel, localBuf);
+        peerIndex,
+        beginChannel,
+        endChannel,
+        localBuf,
+        IbCounterStorage::Device);
   } else {
     if (beginChannel != 0 || endChannel != channelCapacity()) {
       throw std::logic_error(

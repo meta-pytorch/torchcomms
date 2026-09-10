@@ -997,7 +997,8 @@ class TestRangeAllocationTransport
         /*peerIndex=*/0,
         /*beginChannel=*/0,
         /*endChannel=*/1,
-        payload);
+        payload,
+        IbCounterStorage::Device);
   }
 
  private:

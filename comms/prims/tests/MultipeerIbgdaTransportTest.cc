@@ -3987,6 +3987,35 @@ void expectLazyChannelPatterns(
   EXPECT_EQ(actual, expected);
 }
 
+void exerciseLazyChannelRoundTrip(
+    P2pIbTransportDevice peerTransport,
+    int globalRank,
+    int channelCount) {
+  const std::size_t bytes = channelCount * kLazyBytesPerChannel;
+  DeviceBuffer sendBuffer(bytes);
+  DeviceBuffer recvBuffer(bytes);
+  const uint8_t localPattern = globalRank == 0 ? 0x30 : 0xA0;
+  const uint8_t remotePattern = globalRank == 0 ? 0xA0 : 0x30;
+  prepareLazyChannelBuffers(
+      sendBuffer.get(), recvBuffer.get(), channelCount, localPattern);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  test::testChannelRoundTrip(
+      peerTransport,
+      sendBuffer.get(),
+      recvBuffer.get(),
+      kLazyTransferPartBytes,
+      kLazyTransferPartBytes,
+      /*maxSignalBytes=*/1024,
+      /*sendFirst=*/globalRank == 0,
+      channelCount,
+      kLazyChannelBlockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  expectLazyChannelPatterns(recvBuffer.get(), channelCount, remotePattern);
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
 } // namespace
 
 class LazyModeTestFixture
@@ -4089,32 +4118,6 @@ TEST_P(LazyModeTestFixture, LazyChannelsGrowAndTransfer) {
   constexpr uint32_t kRequestedChannels = 1;
   const void* const deviceTransport = transport->getDeviceTransportPtr();
   const auto peerTransport = transport->getP2pTransportDeviceSlot(peerRank);
-  const uint8_t localPattern = globalRank == 0 ? 0x30 : 0xA0;
-  const uint8_t remotePattern = globalRank == 0 ? 0xA0 : 0x30;
-  const bool supportsPrefixGrowth = backend() == IbTestBackend::Ibgda;
-  const auto exerciseChannels = [&](int channelCount) {
-    const std::size_t bytes = channelCount * kLazyBytesPerChannel;
-    DeviceBuffer sendBuffer(bytes);
-    DeviceBuffer recvBuffer(bytes);
-    prepareLazyChannelBuffers(
-        sendBuffer.get(), recvBuffer.get(), channelCount, localPattern);
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    test::testChannelRoundTrip(
-        peerTransport,
-        sendBuffer.get(),
-        recvBuffer.get(),
-        kLazyTransferPartBytes,
-        kLazyTransferPartBytes,
-        /*maxSignalBytes=*/1024,
-        /*sendFirst=*/globalRank == 0,
-        channelCount,
-        kLazyChannelBlockSize);
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    expectLazyChannelPatterns(recvBuffer.get(), channelCount, remotePattern);
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  };
 
   transport->queuePeerForMaterialization(peerRank, kRequestedChannels);
   EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
@@ -4122,32 +4125,20 @@ TEST_P(LazyModeTestFixture, LazyChannelsGrowAndTransfer) {
 
   transport->connectPeers();
   EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
-  if (supportsPrefixGrowth) {
-    EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
-    EXPECT_EQ(
-        kRequestedChannels, transport->materializedChannelCount(peerRank));
-  } else {
-    EXPECT_TRUE(transport->isPeerMaterialized(peerRank));
-    EXPECT_EQ(
-        transport->channelCapacity(),
-        transport->materializedChannelCount(peerRank));
-  }
-  exerciseChannels(/*channelCount=*/1);
+  EXPECT_FALSE(transport->isPeerMaterialized(peerRank));
+  EXPECT_EQ(kRequestedChannels, transport->materializedChannelCount(peerRank));
+  exerciseLazyChannelRoundTrip(peerTransport, globalRank, /*channelCount=*/1);
 
   transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/3);
   transport->connectPeers();
-  EXPECT_EQ(
-      supportsPrefixGrowth ? 3 : transport->channelCapacity(),
-      transport->materializedChannelCount(peerRank));
+  EXPECT_EQ(3, transport->materializedChannelCount(peerRank));
   EXPECT_EQ(deviceTransport, transport->getDeviceTransportPtr());
-  exerciseChannels(/*channelCount=*/3);
+  exerciseLazyChannelRoundTrip(peerTransport, globalRank, /*channelCount=*/3);
 
   transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/2);
   transport->connectPeers();
-  EXPECT_EQ(
-      supportsPrefixGrowth ? 3 : transport->channelCapacity(),
-      transport->materializedChannelCount(peerRank));
-  exerciseChannels(/*channelCount=*/1);
+  EXPECT_EQ(3, transport->materializedChannelCount(peerRank));
+  exerciseLazyChannelRoundTrip(peerTransport, globalRank, /*channelCount=*/1);
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
@@ -4199,19 +4190,88 @@ TEST_P(LazyModeTestFixture, IbgdaAccessorPreservesPreparedPrefix) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
+TEST_P(LazyModeTestFixture, IbrcAccessorPreservesPreparedPrefix) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  if (backend() != IbTestBackend::Ibrc) {
+    GTEST_SKIP() << "The accessor is IBRC-specific";
+  }
+
+  std::unique_ptr<TestIbTransport> transport;
+  try {
+    transport = createLazyTransport(/*lazyChannels=*/true);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBRC not available: " << e.what();
+  }
+
+  const int peerRank = globalRank == 0 ? 1 : 0;
+  transport->queuePeerForMaterialization(peerRank, /*targetChannels=*/1);
+  transport->connectPeers();
+  EXPECT_EQ(1, transport->materializedChannelCount(peerRank));
+
+  const auto preparedSlot = transport->getP2pTransportDeviceSlot(peerRank);
+  (void)transport->getP2pTransportDevice(peerRank);
+  EXPECT_EQ(1, transport->materializedChannelCount(peerRank));
+  exerciseLazyChannelRoundTrip(preparedSlot, globalRank, /*channelCount=*/1);
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
+TEST_P(LazyModeTestFixture, IbrcGrowthUsesConfiguredCudaDevice) {
+  if (backend() != IbTestBackend::Ibrc) {
+    GTEST_SKIP() << "IBRC-only device-context test";
+  }
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks";
+  }
+  int deviceCount = 0;
+  CUDACHECK_TEST(cudaGetDeviceCount(&deviceCount));
+  if (deviceCount < 2) {
+    GTEST_SKIP() << "Requires at least two visible GPUs";
+  }
+
+  std::unique_ptr<TestIbTransport> transport;
+  try {
+    transport = createLazyTransport(/*lazyChannels=*/true);
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBRC not available: " << e.what();
+  }
+
+  const int peerRank = globalRank == 0 ? 1 : 0;
+  const int alternateDevice = (localRank + 1) % deviceCount;
+  const auto peerTransport = transport->getP2pTransportDeviceSlot(peerRank);
+  const auto growFromAlternateDevice = [&](uint32_t targetChannels) {
+    transport->queuePeerForMaterialization(peerRank, targetChannels);
+    meta::comms::CudaDeviceGuard callerDeviceGuard{alternateDevice};
+    transport->connectPeers();
+    int currentDevice = -1;
+    CUDACHECK_TEST(cudaGetDevice(&currentDevice));
+    EXPECT_EQ(alternateDevice, currentDevice);
+  };
+
+  growFromAlternateDevice(/*targetChannels=*/1);
+  EXPECT_EQ(1, transport->materializedChannelCount(peerRank));
+  growFromAlternateDevice(/*targetChannels=*/3);
+  EXPECT_EQ(3, transport->materializedChannelCount(peerRank));
+
+  int currentDevice = -1;
+  CUDACHECK_TEST(cudaGetDevice(&currentDevice));
+  EXPECT_EQ(localRank, currentDevice);
+  exerciseLazyChannelRoundTrip(peerTransport, globalRank, /*channelCount=*/3);
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+
 TEST_P(LazyModeTestFixture, ColdGraphCaptureGrowAndReplayOldGraph) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
   }
-  if (backend() != IbTestBackend::Ibgda) {
-    GTEST_SKIP() << "IBRC prefix growth is introduced by a later diff";
-  }
-
   std::unique_ptr<MultiPeerTransport> transport;
   try {
     transport = createLazyMultiPeerTransport();
   } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA not available: " << e.what();
+    GTEST_SKIP() << backendName(backend()) << " not available: " << e.what();
   }
 
   constexpr int kMaxChannels = 4;

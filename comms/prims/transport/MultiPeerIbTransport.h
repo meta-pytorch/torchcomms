@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -700,7 +701,7 @@ struct IbTransportExchInfo {
 constexpr int kMaxRanksForAllGather = 128;
 
 // Eager allGather QPN exchange uses a compact fixed-size wire format. Larger
-// block-owned QP shapes must use lazy peer materialization.
+// fixed-channel QP shapes must use per-peer channel materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
 constexpr int kMaxIbGroups = 64;
@@ -754,6 +755,7 @@ constexpr int kIbPeerChannelReadyTag = 3;
 
 enum class PeerChannelBackend : uint32_t {
   kIbgda = 0,
+  kIbrc = 1,
 };
 
 struct PeerChannelRequest {
@@ -765,12 +767,14 @@ struct PeerChannelRequest {
   uint32_t directionCount{0};
   uint32_t qpsPerConnection{0};
   uint32_t pipelineDepth{0};
+  uint32_t numSignalSlots{0};
+  uint32_t numCounterSlots{0};
   uint64_t perChannelSize{0};
 
   bool operator==(const PeerChannelRequest&) const = default;
 };
 
-static_assert(sizeof(PeerChannelRequest) == 40);
+static_assert(sizeof(PeerChannelRequest) == 48);
 
 // Wire formats for the request, QP, buffer, and ready phases of bilateral peer
 // materialization.
@@ -962,7 +966,7 @@ class MultiPeerIbTransportBase {
         .count();
   }
 
-  /** Throw after a terminal materialization failure. */
+  /** Throw after a terminal transport failure. */
   void throwIfMaterializationFailed() const;
 
   /** @return Configured logical channel capacity for each peer. */
@@ -1025,9 +1029,9 @@ class MultiPeerIbTransportBase {
   // Bilateral bootstrap exchange of a fixed-size payload with one peer. The
   // typed wrapper is header-only (so it can instantiate with backend-private
   // payload types); the heavy logic (lower-rank-recvs-first to avoid deadlock)
-  // lives in exchangeRawWithPeer in the .cc. The bootstrap implementation owns
-  // timeout and cancellation so caller-owned payloads remain live until the
-  // exchange completes.
+  // lives in exchangeRawWithPeer in the .cc. Production MCCL bootstrap shares
+  // the communicator Abort and supplies timeout/cancellation; payloads remain
+  // live until each returned future completes.
   template <typename T>
   T exchangeWithPeer(int peerRank, const T& localPayload, int phase) {
     T remotePayload{};
@@ -1041,6 +1045,7 @@ class MultiPeerIbTransportBase {
       void* remotePayload,
       std::size_t bytes,
       int phase);
+  void poisonTransport() noexcept;
 
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
@@ -1086,11 +1091,14 @@ class MultiPeerIbTransportBase {
   // Allocate one immutable send/recv resource range. Channel descriptors keep
   // these addresses for the communicator lifetime, so a later prefix growth
   // appends another range instead of moving an already-published allocation.
+  // counterStorage selects IBGDA's device counter or IBRC's host-mapped proxy
+  // counter.
   IbChannelLayout allocateSendRecvChannelRange(
       int peerIndex,
       uint32_t beginChannel,
       uint32_t endChannel,
-      PeerBufferPayload& payload);
+      PeerBufferPayload& payload,
+      IbCounterStorage counterStorage);
   void applyRemoteSendRecvChannelRange(
       IbChannelLayout& layout,
       const PeerBufferPayload& remotePayload) const;
@@ -1227,7 +1235,9 @@ class MultiPeerIbTransportBase {
   std::vector<bool> peerMaterialized_;
   std::vector<uint32_t> materializedChannels_;
   std::vector<uint32_t> materializationGenerations_;
-  bool materializationFailed_{false};
+  // The IBRC progress thread must publish terminal failure without waiting for
+  // a bootstrap exchange that holds materializationMutex_.
+  std::atomic<bool> materializationFailed_{false};
 
  private:
   struct DeviceSlotAllocation {
@@ -1318,6 +1328,8 @@ class MultiPeerIbTransportBase {
   std::vector<CounterSlotAllocation> lazySendRecvHostCounters_;
   std::vector<std::vector<std::unique_ptr<meta::comms::DeviceBuffer>>>
       lazyPeerChannelRangeBufs_;
+  std::vector<std::vector<CounterSlotAllocation>>
+      lazyPeerChannelRangeHostCounters_;
 };
 
 /**
@@ -1429,11 +1441,12 @@ template <typename Backend>
 void MultiPeerIbTransport<Backend>::connectPeers() {
   // queuePeerForMaterialization() releases this mutex before entering here;
   // backend hooks must not recursively call connectPeers().
+  throwIfMaterializationFailed();
   std::unique_lock<std::mutex> lock(materializationMutex_);
-  if (materializationFailed_) {
+  if (materializationFailed_.load(std::memory_order_acquire)) {
     pendingPeers_.clear();
     throw std::runtime_error(
-        "MultiPeerIbTransport: lazy peer materialization previously failed; "
+        "MultiPeerIbTransport: transport is in a terminal failed state; "
         "retry is not supported");
   }
   if (pendingPeers_.empty()) {
@@ -1474,6 +1487,8 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
               static_cast<uint32_t>(config_.fixedChannelDirectionCount()),
           .qpsPerConnection = static_cast<uint32_t>(config_.qpsPerConnection),
           .pipelineDepth = static_cast<uint32_t>(config_.pipelineDepth),
+          .numSignalSlots = static_cast<uint32_t>(config_.numSignalSlots),
+          .numCounterSlots = static_cast<uint32_t>(config_.numCounterSlots),
           .perChannelSize = config_.perChannelSize,
       };
       if (channelRangeProtocolEnabled_ &&
@@ -1482,19 +1497,22 @@ void MultiPeerIbTransport<Backend>::connectPeers() {
         throw std::runtime_error(
             "MultiPeerIbTransport: peer channel request mismatch");
       }
+      throwIfMaterializationFailed();
       materializeBackendRange(peer.rank, oldChannels, peer.targetChannels);
+      throwIfMaterializationFailed();
       if (channelRangeProtocolEnabled_ &&
           exchangeWithPeer(peer.rank, request, kIbPeerChannelReadyTag) !=
               request) {
         throw std::runtime_error(
             "MultiPeerIbTransport: peer channel ready mismatch");
       }
+      throwIfMaterializationFailed();
       materializedChannels_[peerIndex] = peer.targetChannels;
       peerMaterialized_[peerIndex] = true;
       ++materializationGenerations_[peerIndex];
     }
   } catch (...) {
-    materializationFailed_ = true;
+    materializationFailed_.store(true, std::memory_order_release);
     pendingPeers_.clear();
     lock.unlock();
     // Report elapsed on the way out too: a rendezvous that stalls and then
