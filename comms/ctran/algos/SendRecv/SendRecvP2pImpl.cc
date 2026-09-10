@@ -151,13 +151,18 @@ commResult_t setupP2pKernelConfig(
   kernArgs.numSends = sendIdx;
   kernArgs.numRecvs = recvIdx;
 
-  // If no kernel ops, still need to launch kernel for GPE to start: so at least
-  // 1 block needed.
-  config.numBlocks =
-      std::max((size_t)1, kernArgs.numSendBlocks + kernArgs.numRecvBlocks);
   // TODO: tunning needed
   kernArgs.useBlockGroup = true;
-  config.numThreads = NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE;
+
+  // Launch geometry. Both fields default to 1, which is what an op group with
+  // no NVL work needs: the kernel only starts the GPE and spins until it is
+  // done, and that is thread 0's job alone. The blocks and the NVL block size
+  // exist to drive the copy loops in `sendImpl` / `recvImpl`.
+  const size_t nvlBlocks = kernArgs.numSendBlocks + kernArgs.numRecvBlocks;
+  if (nvlBlocks > 0) {
+    config.numBlocks = nvlBlocks;
+    config.numThreads = NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE;
+  }
   config.algoArgs = &kernArgs;
   return commSuccess;
 }
