@@ -299,7 +299,16 @@ class TcpTransportFrameTest : public ::testing::Test {
     // copy landed inside this memory rather than in a vector.
     ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
         .WillByDefault([this](size_t size, unsigned int) -> Result<void*> {
-          // Default-initialised rather than zeroed: this is 64 MiB per pool.
+          // Default-initialised rather than zeroed: the pools behind this are
+          // large enough that zeroing them would dominate test time -- a
+          // staging pool is kStagingSlabCount slabs of kMaxChunkSize, and the
+          // receive pool this fixture also creates is kReceiveSlabCount slabs
+          // of kMaxFrameSize. Naming the constants rather than a figure is
+          // deliberate -- three copies of a hardcoded "64 MiB" went stale when
+          // kStagingSlabCount was re-derived, and this was the last of them.
+          // For the same reason this does not rank them: which pool allocates
+          // most is arithmetic across four constants, so a superlative here
+          // would be the next thing to go stale.
           auto buf = std::unique_ptr<uint8_t[]>(new uint8_t[size]);
           void* ptr = buf.get();
           std::lock_guard<std::mutex> lk(allocMu_);
