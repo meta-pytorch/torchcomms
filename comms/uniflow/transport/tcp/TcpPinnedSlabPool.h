@@ -108,6 +108,14 @@ class TcpPinnedSlabPool
   /// waited for the rest could deadlock against another doing the same, so a
   /// waiter here holds nothing.
   ///
+  /// That property is a contract on CALLERS, not something this class can
+  /// enforce, and it is load-bearing: it is the whole reason the bulk acquire
+  /// is deadlock-free for any number of them. TcpTransport::put() has to hold a
+  /// launched wave across its acquire to overlap staging with transmission,
+  /// which would break it, so put() bounds its own concurrency with a permit
+  /// derived from this pool's geometry -- see kMaxConcurrentPutStaging. A
+  /// future caller that holds slabs across acquire() owes the same bound.
+  ///
   /// Fails if `count` exceeds the unreserved capacity (it could never be
   /// satisfied), if the pool has been closed, or if `timeout` elapses first.
   ///

@@ -889,6 +889,51 @@ Result<const TcpRemoteRegistrationHandle*> TcpTransport::findRemoteHandle(
       ErrCode::InvalidArgument, "tcp: no TCP remote registration handle found");
 }
 
+size_t TcpTransport::putWaveEnd(
+    std::span<const PlannedPutFrame> planned,
+    size_t idx) {
+  // Breaking on deviceId is what makes one event per wave correct: a wave
+  // spanning devices would leave the other device's copies unwaited and return
+  // their slabs under live DMA. Waves are therefore at most kMaxPutWaveChunks
+  // chunks, not exactly that many.
+  const int deviceId = planned[idx].deviceId;
+  size_t waveEnd = idx;
+  while (waveEnd < planned.size() && planned[waveEnd].vram &&
+         planned[waveEnd].len > 0 && planned[waveEnd].deviceId == deviceId &&
+         waveEnd - idx < kMaxPutWaveChunks) {
+    ++waveEnd;
+  }
+  return waveEnd;
+}
+
+bool TcpTransport::putNeedsStagingPermit(
+    std::span<const PlannedPutFrame> planned) {
+  // With a window one wave deep, drainWaves() keeps nothing, so no wave is ever
+  // held across the next acquire and no plan can owe a permit.
+  if constexpr (kMaxPutWavesInFlight < 2) {
+    return false;
+  }
+  // Mirrors put()'s loop, which is why it walks waves through putWaveEnd()
+  // rather than counting chunks. A DRAM or empty chunk drains every launched
+  // wave before it queues its own frame, so it closes the window and the run
+  // starts over: [wave][DRAM][wave] never holds one wave across another's
+  // acquire, and owes nothing.
+  size_t consecutive = 0;
+  size_t idx = 0;
+  while (idx < planned.size()) {
+    if (!planned[idx].vram || planned[idx].len == 0) {
+      consecutive = 0;
+      ++idx;
+      continue;
+    }
+    if (++consecutive == 2) {
+      return true;
+    }
+    idx = putWaveEnd(planned, idx);
+  }
+  return false;
+}
+
 std::future<Status> TcpTransport::put(
     std::span<const TransferRequest> requests,
     const RequestOptions& options) {
@@ -979,6 +1024,50 @@ std::future<Status> TcpTransport::put(
   void* stream = options.stream.has_value()
       ? static_cast<void*>(options.stream.value())
       : nullptr;
+  // Bounds how many put() callers may be inside the staging window at once, so
+  // the pool's "a waiter here holds nothing" property holds.
+  //
+  // DECLARED BEFORE `inFlight` and its WaveBarrier so that it is destroyed
+  // LAST. Destruction runs in reverse declaration order, so the barrier returns
+  // this caller's slabs to the pool before the permit is released. The other
+  // order hands the permit to a caller that then blocks in acquire() while
+  // these slabs are still held pending a DMA retire -- the exact state the
+  // permit exists to prevent, and a spurious acquire-deadline failure under
+  // concurrency. Only unwinding reaches that ordering: every explicit exit
+  // calls abandonPutWaves() inline, so it returns the slabs first regardless.
+  struct StagingPermit {
+    std::counting_semaphore<>* held{nullptr};
+    void take(std::counting_semaphore<>& sem) {
+      if (held == nullptr) {
+        sem.acquire();
+        held = &sem;
+      }
+    }
+    ~StagingPermit() {
+      if (held != nullptr) {
+        held->release();
+      }
+    }
+  } stagingPermit;
+  // Taken here, before the first wave, and only by a plan that will hold a wave
+  // across an acquire. Both halves matter and they pull in opposite directions.
+  //
+  // Only such a plan: a DRAM-only put never touches the pool, and a single-wave
+  // put's one acquire happens while it holds nothing, which the pool already
+  // serves deadlock-free at any number of callers. Taking the permit on the
+  // first wave regardless serialised every concurrent VRAM put of
+  // kMaxPutWaveChunks chunks or fewer for no safety at all.
+  //
+  // But HERE rather than at the wave that opens the window, because a caller
+  // must never wait for the permit holding slabs. Waiting there would invert
+  // permit against pool -- A parked on the permit with a wave held while B
+  // holds the permit and blocks in acquire() for slabs only A can free -- and
+  // even resolved (by draining to nothing first), it would leave every
+  // serialised caller sitting on a wave's worth of slabs it is not yet using,
+  // stalling the single-wave puts the exemption above exists to let through.
+  if (putNeedsStagingPermit(planned)) {
+    stagingPermit.take(putStagingPermits_);
+  }
   // Waves whose copies are launched but not yet waited for. Keeping more than
   // one here is what overlaps staging with transmission: the copy engine stays
   // busy through the gap where the previous wave is waited for, queued and
@@ -1084,17 +1173,9 @@ std::future<Status> TcpTransport::put(
       continue;
     }
 
-    // Breaking on deviceId is what makes one event per wave correct: a wave
-    // spanning devices would leave the other device's copies unwaited and
-    // return their slabs under live DMA. Waves are therefore at most
-    // kMaxPutWaveChunks chunks, not exactly that many.
-    size_t waveEnd = idx;
-    while (waveEnd < planned.size() && planned[waveEnd].vram &&
-           planned[waveEnd].len > 0 &&
-           planned[waveEnd].deviceId == first.deviceId &&
-           waveEnd - idx < kMaxPutWaveChunks) {
-      ++waveEnd;
-    }
+    // Shared with putNeedsStagingPermit(), which decided this put's permit from
+    // the same partition; see putWaveEnd().
+    const size_t waveEnd = putWaveEnd(planned, idx);
     // Drain before launching, not after. This is what bounds the window to
     // kMaxPutWavesInFlight - 1 waves held at the moment of acquire, which is
     // the assumption kStagingSlabCount is sized against. Launching first would
