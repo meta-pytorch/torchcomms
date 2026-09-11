@@ -78,7 +78,8 @@ LocalVirtualConn::LocalVirtualConn(
         initQp(
             ibvQps_[device],
             devices_[device].port,
-            ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ),
+            ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ,
+            NCCL_IB_PKEY),
         commLogData_);
 
     remoteQpInfo.qpn = ibvQps_[device].qp()->qp_num;

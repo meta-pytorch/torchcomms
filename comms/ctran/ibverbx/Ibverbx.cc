@@ -4,11 +4,8 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
 #include <dlfcn.h>
-#include <folly/ScopeGuard.h>
-#include <folly/Singleton.h>
-#include <folly/String.h>
 #include <folly/synchronization/CallOnce.h>
-#include "comms/utils/cvars/nccl_cvars.h"
+#include <cstdlib>
 
 namespace ibverbx {
 
@@ -18,12 +15,17 @@ namespace {
 
 folly::once_flag initIbvSymbolOnce;
 
+// Read at the point of use rather than through a cvar, so every ibverbx
+// consumer sees it regardless of whether it initializes ncclx cvars.
+constexpr const char* kIbverbsSoEnv = "IBVERBX_IBVERBS_SO";
+
 } // namespace
 
 folly::Expected<folly::Unit, Error> ibvInit() {
   static std::atomic<int> errNum{1};
   folly::call_once(initIbvSymbolOnce, [&]() {
-    errNum = buildIbvSymbols(ibvSymbols, NCCL_IBVERBS_PATH);
+    const char* path = std::getenv(kIbverbsSoEnv);
+    errNum = buildIbvSymbols(ibvSymbols, path != nullptr ? path : "");
   });
   if (errNum != 0) {
     return folly::makeUnexpected(Error(errNum));

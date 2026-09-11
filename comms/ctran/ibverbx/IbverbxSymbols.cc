@@ -8,8 +8,9 @@
 #endif
 
 #include <dlfcn.h>
-#include <folly/ScopeGuard.h>
 #include <folly/synchronization/CallOnce.h>
+
+#include "comms/ctran/ibverbx/utils/ScopeGuard.h"
 
 #include "comms/ctran/utils/CtranLogger.h"
 
@@ -560,8 +561,8 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   void* tmp;
   void** cast;
 
-  // Use folly::ScopedGuard to ensure resources are cleaned up upon failure
-  auto guard = folly::makeGuard([&]() {
+  // Ensure resources are cleaned up upon failure
+  auto guard = utils::makeScopeGuard([&]() {
     if (ibvhandle != nullptr) {
       dlclose(ibvhandle);
     }
