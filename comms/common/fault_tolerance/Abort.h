@@ -288,6 +288,7 @@ class Abort final {
 
   AbortState* state_{nullptr};
   bool stateMapped_{false};
+  int stateDevice_{-1};
   std::atomic<bool> hasTimeout_{false};
   std::atomic<std::chrono::steady_clock::time_point> deadline_{
       std::chrono::steady_clock::time_point{}};
