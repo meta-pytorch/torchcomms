@@ -116,9 +116,9 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
     };
 
     // Set up the environment variables for IbVerbs mock.
-    auto hookIbVerbs = getenv("NCCL_IBVERBS_PATH");
+    auto hookIbVerbs = getenv("IBVERBX_IBVERBS_SO");
     if (hookIbVerbs != nullptr || strlen(hookIbVerbs) != 0) {
-      envList.emplace_back(fmt::format("NCCL_IBVERBS_PATH={}", hookIbVerbs));
+      envList.emplace_back(fmt::format("IBVERBX_IBVERBS_SO={}", hookIbVerbs));
     }
 
     mccl::CollectiveIntegrationTestMixin::SetUp(
