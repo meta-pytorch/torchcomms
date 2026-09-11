@@ -188,14 +188,32 @@ __device__ __forceinline__ void validate_protocol() {
       phase != NvlSignalPhase::Consumed);
 }
 
+// The default `WaitAll` policy and the Aggregate barrier both land here, so
+// this is the NVL wait most hangs actually stall in -- it needs the identity
+// just as much as the opt-in policies below, and it knows more than they do:
+// `wait_per_peer_all` can name the specific publisher it is stuck on.
+//
+// `peer` is -1 where the wait is on an aggregated counter rather than on one
+// publisher.
+//
+// Both indices are **NVL-local**, which is why every NVL site labels them
+// `nvl_rank=` / `peer=` rather than `rank=`. `MultimemNvlTransportDevice` knows
+// only its position within the NVL domain -- 0..3 on a GB300 host -- while the
+// IB waits print the communicator rank, 0..95 on the same host. Printing both
+// under one label made grepping a global rank silently match another rank's NVL
+// lines, which is the correlation these messages exist to support.
 __device__ __forceinline__ void wait_until_reached(
     const SignalState& signal,
     uint64_t expected,
+    int nvlRank,
+    int peer,
     const AbortDevice& abortDevice) {
   while (!sequence_reached(signal.load(), expected)) {
     if (FT_ABORT_CHECK(
             abortDevice,
-            "NVL signal wait for sequence=%llu",
+            "NVL signal wait: nvl_rank=%d peer=%d sequence=%llu",
+            nvlRank,
+            peer,
             static_cast<unsigned long long>(expected))) {
       FT_DEVICE_TRAP();
     }
@@ -264,7 +282,7 @@ __device__ __forceinline__ void validate_common(
       round.channel >= transport.maxChannels || round.value == 0 ||
       transport.signalsPerChannel != expectedSignalsPerChannel) {
     printf(
-        "NVL signal invalid geometry: rank=%d ranks=%d channel=%u "
+        "NVL signal invalid geometry: nvl_rank=%d nvl_ranks=%d channel=%u "
         "round=%llu maxChannels=%u publishers=(%llu,%llu) "
         "waiters=(%llu,%llu) arrivals=%u\n",
         transport.nvlRank,
@@ -349,6 +367,8 @@ __device__ __forceinline__ void wait_per_peer_all(
         transport.internalLocalSignals[peer_signal_id<phase>(
             transport, round, source)],
         round.value,
+        transport.nvlRank,
+        source,
         abortDevice);
   }
   group.sync();
@@ -379,7 +399,8 @@ __device__ __forceinline__ void wait_per_peer_serial(
       if (!complete) {
         if (FT_ABORT_CHECK(
                 abortDevice,
-                "NVL serial per-peer wait for round=%llu",
+                "NVL serial per-peer wait: nvl_rank=%d round=%llu",
+                transport.nvlRank,
                 static_cast<unsigned long long>(round.value))) {
           FT_DEVICE_TRAP();
         }
@@ -421,7 +442,8 @@ __device__ __forceinline__ void wait_per_peer_tree(
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
               abortDevice,
-              "NVL tree per-peer wait for round=%llu",
+              "NVL tree per-peer wait: nvl_rank=%d round=%llu",
+              transport.nvlRank,
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
       }
@@ -469,7 +491,8 @@ __device__ __forceinline__ void wait_per_peer_butterfly(
     if (!complete && group.is_leader()) {
       if (FT_ABORT_CHECK(
               abortDevice,
-              "NVL butterfly per-peer wait for round=%llu",
+              "NVL butterfly per-peer wait: nvl_rank=%d round=%llu",
+              transport.nvlRank,
               static_cast<unsigned long long>(round.value))) {
         FT_DEVICE_TRAP();
       }
@@ -729,7 +752,8 @@ __device__ __forceinline__ void signal_wait_impl(
       const uint64_t expected =
           epoch->load() + static_cast<uint64_t>(participants.expectedArrivals);
       if (isWaiter) {
-        nvl_signal_detail::wait_until_reached(*counter, expected, abortDevice);
+        nvl_signal_detail::wait_until_reached(
+            *counter, expected, transport.nvlRank, /*peer=*/-1, abortDevice);
       }
       if constexpr (access == NvlSignalAccess::Multimem) {
         epoch->store(expected);
@@ -837,7 +861,8 @@ __device__ __forceinline__ void nvl_block_barrier(
         epoch->load() + static_cast<uint64_t>(transport.nvlRanks);
     transport.template signal_internal_scalar_prefenced<SignalOp::SIGNAL_ADD>(
         signalId, 1);
-    nvl_signal_detail::wait_until_reached(*counter, expected, abortDevice);
+    nvl_signal_detail::wait_until_reached(
+        *counter, expected, transport.nvlRank, /*peer=*/-1, abortDevice);
     epoch->store(expected);
   }
   block.sync();
