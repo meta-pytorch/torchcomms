@@ -1537,6 +1537,62 @@ void testMultiQpPutAndSignal(
 // CQ still reports an error after later completions overwrite its single slot.
 // =============================================================================
 
+__global__ void prepareSendSlotWithAbortKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer source,
+    IbgdaRemoteBuffer remote,
+    std::size_t nbytes,
+    uint32_t* unretiredOut,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  abort.start();
+
+  const auto ticket = transport->put(
+      group,
+      source,
+      remote,
+      nbytes,
+      /*signalId=*/-1,
+      /*signalVal=*/0);
+  if (group.is_leader()) {
+    detail::record_send_completion<protocol::Simple>(
+        *transport,
+        group.group_id,
+        /*slotId=*/0,
+        /*generation=*/0,
+        ticket);
+  }
+  group.sync();
+
+  const bool unretired = detail::prepare_send_slot<protocol::Simple>(
+      *transport,
+      group,
+      /*slotId=*/0,
+      /*generation=*/1,
+      abort);
+  if (group.is_leader()) {
+    *unretiredOut = static_cast<uint32_t>(unretired);
+  }
+}
+
+void testPrepareSendSlotWithAbort(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    const IbgdaRemoteBuffer& remote,
+    std::size_t nbytes,
+    uint32_t* unretiredOut,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize) {
+  prepareSendSlotWithAbortKernel<<<numBlocks, blockSize>>>(
+      transport, source, remote, nbytes, unretiredOut, abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 __global__ void putAndFlushWithAbortKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,

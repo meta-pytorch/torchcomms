@@ -554,6 +554,23 @@ void testRegisteredSendDrainWithAbort(
     int numBlocks,
     int blockSize);
 
+/**
+ * Test kernel: retire a blocking send slot after a completion error.
+ *
+ * Posts a write through a caller-supplied remote buffer, records its local
+ * completion ticket in a blocking send slot, then advances the slot generation
+ * through the production `prepare_send_slot()` helper.
+ */
+void testPrepareSendSlotWithAbort(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    const IbgdaRemoteBuffer& remote,
+    std::size_t nbytes,
+    uint32_t* unretiredOut,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,

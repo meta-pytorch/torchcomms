@@ -624,6 +624,152 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
 }
 
 /*
+ * A bad-rkey completion retired through the blocking send-slot helper.
+ *
+ * The wait and its confirming CQ poll must use the same abort handle. If the
+ * confirmation falls back to a disabled handle, the error CQE traps and
+ * poisons the process CUDA context instead of unwinding with NETWORK_ERROR.
+ */
+TEST_P(
+    MultipeerIbTransportTestFixture,
+    BlockingSendSlotCompletionErrorUnwinds) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks, got " << numRanks;
+  }
+  if (backend() != IbTestBackend::Ibgda) {
+    GTEST_SKIP() << "blocking completion-error handling is IBGDA-specific";
+  }
+
+  constexpr std::size_t nbytes = 64 * 1024;
+  constexpr int pipelineDepth = 2;
+  constexpr int numBlocks = 1;
+  constexpr int blockSize = 128;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr std::chrono::milliseconds kDeadline{30000};
+  constexpr std::chrono::milliseconds kMaxElapsed{5000};
+
+  std::unique_ptr<TestIbTransport> transport;
+  std::unique_ptr<DeviceBuffer> dataBuffer;
+  IbgdaLocalBuffer localDataBuf{};
+  std::vector<IbgdaRemoteBuffer> remoteDataBufs;
+  P2pIbgdaTransportDevice* peerTransport = nullptr;
+  int localSetupOk = 0;
+  std::string skipReason;
+  try {
+    MultipeerIbTransportConfig config{
+        .cudaDevice = localRank,
+        .perChannelSize = nbytes / numBlocks,
+        .max_num_channels = numBlocks,
+        .pipelineDepth = pipelineDepth,
+    };
+    config.enableCollapsedCq = true;
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    transport = std::make_unique<TestIbTransport>(
+        backend(), globalRank, numRanks, std::move(bootstrap), config);
+    if (!transport->collapsedCqActive()) {
+      throw std::runtime_error("collapsed CQ mode is not active");
+    }
+    dataBuffer = std::make_unique<DeviceBuffer>(nbytes);
+    localDataBuf = transport->registerBuffer(dataBuffer->get(), nbytes);
+    remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    peerTransport = transport->getIbgdaTransportDevice(peerRank);
+    if (peerTransport == nullptr) {
+      throw std::runtime_error("IBGDA peer transport is unavailable");
+    }
+    localSetupOk = 1;
+  } catch (const std::exception& e) {
+    skipReason = e.what();
+  }
+  int allSetupOk = 0;
+  MPI_CHECK(MPI_Allreduce(
+      &localSetupOk, &allSetupOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  if (allSetupOk == 0) {
+    GTEST_SKIP() << "IBGDA collapsed CQ transport not available on some rank: "
+                 << skipReason;
+  }
+
+  int localRunOk = 1;
+  std::string runFailure;
+  if (globalRank == 0) {
+    try {
+      const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+      auto poisonedRemote = remoteDataBufs[peerIndex];
+      if (poisonedRemote.rkey_per_device.size <= 0) {
+        throw std::runtime_error("remote buffer has no populated device key");
+      }
+      for (int nic = 0; nic < poisonedRemote.rkey_per_device.size; ++nic) {
+        poisonedRemote.rkey_per_device[nic].value ^=
+            comms::prims::detail::ibgdaNetworkByteOrderKey(0xFFU);
+      }
+
+      DeviceBuffer unretiredBuffer(sizeof(uint32_t));
+      CUDACHECK_TEST(cudaMemset(unretiredBuffer.get(), 0, sizeof(uint32_t)));
+      comms::fault_tolerance::Abort abort(/*enabled=*/true);
+      auto deviceAbort = abort.getDeviceHandle();
+      deviceAbort.setOpTimeoutMs(kDeadline.count());
+
+      const auto start = std::chrono::steady_clock::now();
+      test::testPrepareSendSlotWithAbort(
+          peerTransport,
+          localDataBuf,
+          poisonedRemote,
+          nbytes,
+          static_cast<uint32_t*>(unretiredBuffer.get()),
+          deviceAbort,
+          numBlocks,
+          blockSize);
+      const cudaError_t syncStatus = cudaDeviceSynchronize();
+      const auto elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - start);
+
+      if (syncStatus != cudaSuccess) {
+        localRunOk = 0;
+        runFailure = std::string("completion recheck trapped: ") +
+            cudaGetErrorString(syncStatus);
+      } else {
+        uint32_t unretired = 0;
+        CUDACHECK_TEST(cudaMemcpy(
+            &unretired,
+            unretiredBuffer.get(),
+            sizeof(unretired),
+            cudaMemcpyDeviceToHost));
+        EXPECT_EQ(unretired, 1u)
+            << "an aborted completion must leave the send slot unretired";
+        EXPECT_LT(elapsed.count(), kMaxElapsed.count())
+            << "an error CQE is immediate; this suggests the wait timed out";
+        EXPECT_EQ(
+            comms::fault_tolerance::AbortReason::NETWORK_ERROR, abort.reason());
+
+        test::fillBufferWithPattern(
+            localDataBuf.ptr,
+            nbytes,
+            /*baseValue=*/0xA5,
+            numBlocks,
+            blockSize);
+        const cudaError_t healthStatus = cudaDeviceSynchronize();
+        if (healthStatus != cudaSuccess) {
+          localRunOk = 0;
+          runFailure = std::string("CUDA context remained unhealthy: ") +
+              cudaGetErrorString(healthStatus);
+        }
+      }
+    } catch (const std::exception& e) {
+      localRunOk = 0;
+      runFailure = e.what();
+    }
+  }
+
+  int allRunOk = 0;
+  MPI_CHECK(MPI_Allreduce(
+      &localRunOk, &allRunOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  ASSERT_EQ(allRunOk, 1) << "blocking send-slot completion exercise failed: "
+                         << runFailure;
+}
+
+/*
  * A registered send whose completions never land, drained by the production
  * loop shape -- the case the synthetic progress-slot test in D116982768 cannot
  * reach.

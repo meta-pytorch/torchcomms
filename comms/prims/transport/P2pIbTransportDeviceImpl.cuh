@@ -2844,7 +2844,8 @@ template <typename P, typename Transport>
         // Confirm rather than assume: the wait above cannot report that it gave
         // up, and a lane earlier in this loop may already have latched the
         // abort, so later lanes can fall straight through it.
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+        if (transport.is_local_completion_ready(
+                group.group_id, ticket, abortDevice)) {
           pending &= ~laneBit;
         }
       }
