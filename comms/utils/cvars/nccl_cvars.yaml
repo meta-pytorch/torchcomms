@@ -3616,6 +3616,14 @@ cvars:
    default     : true
    description : Enable per-(collective_op, algorithm, msg_size) host-drive timing stats accumulated by the GPE thread and drained each training step.
 
+ - name        : MCCL_COLLECTIVE_PERF_STATS_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable algorithm-independent CUDA-event timing for MCCL collectives.
+     Graph-replay samples are drained after the caller synchronizes each step;
+     disabled by default because timing-enabled CUDA events add launch overhead.
+
  - name        : MCCL_DEBUG
    type        : string
    default     : "__MCCL_INHERIT__"
