@@ -1,7 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/utils/cvars/nccl_cvars.h"
-
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
 
 namespace ibverbx {
@@ -62,11 +60,11 @@ folly::Expected<IbvQp, Error> createRcQpWithOooDp(
 }
 
 folly::Expected<folly::Unit, Error>
-initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
+initQp(IbvQp& ibvQp, int port, int qp_access_flags, uint16_t pkeyIndex) {
   ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_INIT;
-  qpAttr.pkey_index = NCCL_IB_PKEY;
+  qpAttr.pkey_index = pkeyIndex;
   qpAttr.port_num = port;
   qpAttr.qp_access_flags = qp_access_flags;
   return ibvQp.modifyQp(

@@ -51,10 +51,12 @@ folly::Expected<IbvQp, Error> createRcQpWithOooDp(
     int maxRecvWr,
     bool oooDp);
 
-// initQp - Transitions QP to INIT state with port and access
-// configuration
+// initQp - Transitions QP to INIT state with port, access and partition-key
+// configuration. pkeyIndex indexes the port's PKey table; the caller supplies
+// it from its own config so ibverbx stays independent of any one consumer's
+// config system (see rtrQp / rtsQp, which take their tunables the same way).
 folly::Expected<folly::Unit, Error>
-initQp(IbvQp& ibvQp, int port, int qp_access_flags);
+initQp(IbvQp& ibvQp, int port, int qp_access_flags, uint16_t pkeyIndex);
 
 // rtrQp - Transitions QP to Ready To Receive (RTR) state with remote
 // endpoint info
