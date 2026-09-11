@@ -3616,6 +3616,30 @@ cvars:
    default     : true
    description : Enable per-(collective_op, algorithm, msg_size) host-drive timing stats accumulated by the GPE thread and drained each training step.
 
+ - name        : MCCL_DEBUG
+   type        : string
+   default     : "__MCCL_INHERIT__"
+   description : |-
+     Controls MCCL text-log severity independently from NCCL. When this
+     variable is absent, MCCL inherits NCCL_DEBUG for backward compatibility.
+
+ - name        : MCCL_DEBUG_FILE
+   type        : string
+   default     : "__MCCL_INHERIT__"
+   description : |-
+     Directs MCCL text logs to a separate file. Supports the same %h and %p
+     substitutions as NCCL_DEBUG_FILE. When this variable is absent, MCCL
+     inherits NCCL_DEBUG_FILE for backward compatibility.
+
+ - name        : MCCL_DEBUG_SUBSYS
+   type        : string
+   default     : "__MCCL_INHERIT__"
+   description : |-
+     Filters MCCL INFO logs by subsystem independently from NCCL. Accepts the
+     same comma-separated subsystem names as NCCL_DEBUG_SUBSYS. When this
+     variable is absent, MCCL inherits NCCL_DEBUG_SUBSYS for backward
+     compatibility.
+
  - name        : MCCL_SCUBA_LOG_LEVEL
    type        : enum
    default     : NORMAL
