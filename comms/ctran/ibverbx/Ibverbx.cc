@@ -4,9 +4,6 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
 #include <dlfcn.h>
-#include <folly/ScopeGuard.h>
-#include <folly/Singleton.h>
-#include <folly/String.h>
 #include <folly/synchronization/CallOnce.h>
 #include <cstdlib>
 
