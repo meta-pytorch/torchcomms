@@ -61,7 +61,7 @@ struct fmt::formatter<ControlMsgType> : fmt::formatter<const char*> {
 struct CtranIbConfig {
   int numQps{NCCL_CTRAN_IB_MAX_QPS};
   size_t qpScalingTh{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
-  enum NCCL_CTRAN_IB_VC_MODE vcMode { NCCL_CTRAN_IB_VC_MODE::spray };
+  enum NCCL_CTRAN_IB_VC_MODE vcMode { NCCL_CTRAN_IB_VC_MODE };
   int qpMsgs{static_cast<int>(NCCL_CTRAN_IB_QP_MAX_MSGS)};
   int64_t trafficClass{NCCL_IB_TC};
 };
