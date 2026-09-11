@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -24,6 +25,7 @@
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
+#include "comms/prims/transport/ibrc/P2pIbrcHostWriter.h"
 
 namespace comms::prims {
 
@@ -55,12 +57,18 @@ class MultipeerIbrcTransport
   // per-peer device slot so the device-side waits on the CPU proxy terminate on
   // abort instead of trapping. A default-constructed handle keeps the legacy
   // cycle-deadline trap; see kIbrcDefaultDeviceTimeoutCycles.
+  //
+  // `hostAborted` is the same abort seen from the CPU, and it is separate only
+  // because AbortDevice::isAborted() is __device__-only. Every writer handed
+  // out by getHostWriter() is armed with it, so a host-driven collective cannot
+  // forget to and fall back to the writer's ten-minute deadline.
   MultipeerIbrcTransport(
       int myRank,
       int nRanks,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultipeerIbTransportConfig& config,
-      comms::fault_tolerance::AbortDevice abort = {});
+      comms::fault_tolerance::AbortDevice abort = {},
+      std::function<bool()> hostAborted = nullptr);
 
   ~MultipeerIbrcTransport();
 
@@ -86,6 +94,15 @@ class MultipeerIbrcTransport
   // Per-peer device handle accessor used by Ring/SendRecv algorithms. The
   // requested peer is materialized before its device slot is returned.
   P2pIbrcTransportDevice* getP2pTransportDevice(int peerRank);
+
+  // Host-side writer into a peer's IBRC command-queue ring, so a CPU thread can
+  // post RDMA put/signal without a kernel; the CPU proxy drains host-produced
+  // descriptors unchanged. `queueIndex` selects one (qpSlot, nic) ring. The
+  // peer must already be materialized and remain materialized while the
+  // returned writer is used; P2pIbrcHostWriter is a non-owning view of the
+  // queue's mapped host memory. Do not concurrently drive the same ring from
+  // device code.
+  P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
 
  private:
   // Lazy per-peer materialization hook. The shared base owns queueing,
@@ -233,6 +250,7 @@ class MultipeerIbrcTransport
   std::thread progressThread_;
   std::vector<int> progressCpus_;
   comms::fault_tolerance::AbortDevice abortDevice_;
+  std::function<bool()> hostAborted_;
 
   // Send/recv staging state (eager mode) lives in MultiPeerIbTransportBase
   // (sendRecvPeerBuffers_ + bulks); IBRC delegates allocation/exchange/cleanup.
