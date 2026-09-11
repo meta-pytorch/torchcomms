@@ -1748,6 +1748,11 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   // [META] Colltrace handle creation and in-kernel graph timestamp arming.
   auto colltraceHandle = ncclx::colltrace::prepareNcclKernelColltrace(
       plan, launchStream, comm->compCap);
+  // Every `goto do_return` below is a launch failure that never reaches
+  // AfterEnqueueKernel; the guard releases the record so the next collective
+  // does not inherit a stale pending trace.
+  meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{
+      colltraceHandle};
 
   int driverVersion;
   NCCLCHECKGOTO(ncclCudaDriverVersion(&driverVersion), ret, do_return);
@@ -1823,12 +1828,14 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
     colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernelEx(&launchConfig, fn, nullptr, extra), ret, do_return);
     colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
   #endif
   } else {
     // Standard kernel launch
     colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernel(fn, grid.x, grid.y, grid.z, block.x, block.y, block.z, smem, launchStream, nullptr, extra), ret, do_return);
     colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
+    colltraceEnqueueGuard.disarm();
   }
 
 do_return:

@@ -24,6 +24,12 @@ class MockCollTrace : public ICollTrace {
       (noexcept, override));
 
   MOCK_METHOD(
+      CommsMaybeVoid,
+      cancelEvent,
+      (CollTraceEvent & collEvent),
+      (noexcept, override));
+
+  MOCK_METHOD(
       CommsMaybe<std::shared_ptr<ICollTraceHandle>>,
       recordCollective,
       (std::unique_ptr<ICollMetadata> metadata,

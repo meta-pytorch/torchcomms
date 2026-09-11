@@ -184,6 +184,19 @@ TEST_F(CollTraceTest, TriggerEventState) {
       handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
 }
 
+TEST_F(CollTraceTest, CancelPendingCollectiveAllowsNextRecord) {
+  auto firstHandle = collTrace->recordCollective(
+      std::make_unique<StrictMock<MockCollMetadata>>(),
+      std::make_unique<NiceMock<MockCollWaitEvent>>());
+  ASSERT_TRUE(firstHandle.hasValue());
+  EXPECT_VALUE(firstHandle.value()->cancel());
+
+  auto secondHandle = collTrace->recordCollective(
+      std::make_unique<StrictMock<MockCollMetadata>>(),
+      std::make_unique<NiceMock<MockCollWaitEvent>>());
+  EXPECT_VALUE(secondHandle);
+}
+
 // Test complete workflow with multiple collectives
 TEST_F(CollTraceTest, CompleteWorkflow) {
   // Create first collective

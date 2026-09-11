@@ -25,8 +25,15 @@ std::string_view triggerStateToStr(CollTraceHandleTriggerState state) {
   }
 }
 
-CollTraceHandle::CollTraceHandle(ICollTrace* collTrace, CollTraceEvent* event)
-    : state_(CollTraceHandleState{.collTrace_ = collTrace, .event_ = event}) {}
+CollTraceHandle::CollTraceHandle(
+    ICollTrace* collTrace,
+    CollTraceEvent* event,
+    std::shared_ptr<EagerCancellationGate> cancellationGate)
+    : state_(
+          CollTraceHandleState{
+              .collTrace_ = collTrace,
+              .event_ = event,
+              .cancellationGate_ = std::move(cancellationGate)}) {}
 
 CommsMaybeVoid CollTraceHandle::checkTriggerStateValidity(
     CollTraceHandleTriggerState state) noexcept {
@@ -126,15 +133,50 @@ CollTraceHandle::getCollRecord() noexcept {
   return stateReadLocked->event_->collRecord;
 }
 
+CommsMaybeVoid CollTraceHandle::cancel() noexcept {
+  std::shared_ptr<EagerCancellationGate> cancellationGate;
+  CollTraceEvent* event;
+  {
+    auto stateWriteLocked = state_.wlock();
+    if (stateWriteLocked->referenceInvalidated_) {
+      return folly::unit;
+    }
+    if (stateWriteLocked->event_ == nullptr) {
+      return folly::makeUnexpected(CommsError(
+          "Cannot cancel a handle without an owning CollTrace event",
+          commInternalError));
+    }
+
+    cancellationGate = std::move(stateWriteLocked->cancellationGate_);
+    event = stateWriteLocked->event_;
+    stateWriteLocked->referenceInvalidated_ = true;
+    stateWriteLocked->collTrace_ = nullptr;
+    stateWriteLocked->event_ = nullptr;
+  }
+  if (cancellationGate == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Cannot cancel a handle without an owning CollTrace",
+        commInternalError));
+  }
+  return cancellationGate->cancel(event);
+}
+
 CommsMaybeVoid CollTraceHandle::invalidate() noexcept {
-  // Set the invalidated flag
-  state_.wlock()->referenceInvalidated_ = true;
+  auto stateWriteLocked = state_.wlock();
+  stateWriteLocked->referenceInvalidated_ = true;
+  stateWriteLocked->collTrace_ = nullptr;
+  stateWriteLocked->event_ = nullptr;
+  stateWriteLocked->cancellationGate_ = nullptr;
 
   return folly::unit;
 }
 
 void CollTraceHandle::invalidateUnsafe() noexcept {
-  state_.unsafeGetUnlocked().referenceInvalidated_ = true;
+  auto& state = state_.unsafeGetUnlocked();
+  state.referenceInvalidated_ = true;
+  state.collTrace_ = nullptr;
+  state.event_ = nullptr;
+  state.cancellationGate_ = nullptr;
 }
 
 } // namespace meta::comms::colltrace
