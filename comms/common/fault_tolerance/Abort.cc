@@ -46,6 +46,7 @@ Abort::Abort(bool enabled, AbortBehavior behavior) : behavior_(behavior) {
     }
   } else {
     stateMapped_ = true;
+    (void)cudaGetDevice(&stateDevice_);
   }
 #else
   state_ = new AbortState;
@@ -61,7 +62,19 @@ Abort::~Abort() {
   }
 #ifdef COMMS_FAULT_TOLERANCE_WITH_CUDA
   if (stateMapped_) {
+    // The last reference may drop on a worker thread with no current device;
+    // a CUDA call there would create a primary context on device 0. Such a
+    // thread reports device 0, so only a non-zero previous device is known to
+    // have been selected on purpose and is restored.
+    int previousDevice = -1;
+    const bool switched = stateDevice_ >= 0 &&
+        cudaGetDevice(&previousDevice) == cudaSuccess &&
+        previousDevice != stateDevice_ &&
+        cudaSetDevice(stateDevice_) == cudaSuccess;
     (void)cudaFreeHost(state_);
+    if (switched && previousDevice != 0) {
+      (void)cudaSetDevice(previousDevice);
+    }
   } else {
     delete state_;
   }
