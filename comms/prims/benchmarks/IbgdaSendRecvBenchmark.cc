@@ -51,6 +51,10 @@ DEFINE_int32(
     ibgda_sendrecv_qps_per_connection,
     1,
     "QPs per channel, direction, and NIC");
+DEFINE_bool(
+    ibgda_sendrecv_enable_companion_qp,
+    false,
+    "Create companion and loopback QPs for resource-shape comparisons");
 DEFINE_int32(ibgda_sendrecv_warmup_iters, 5, "Warmup iterations");
 DEFINE_uint32(
     ibgda_warp_proxy_queue_depth,
@@ -514,6 +518,7 @@ class IbgdaSendRecvBenchmarkContext {
         .max_num_channels = numBlocks_,
         .pipelineDepth = pipelineDepth_,
         .qpsPerConnection = FLAGS_ibgda_sendrecv_qps_per_connection,
+        .enableCompanionQP = FLAGS_ibgda_sendrecv_enable_companion_qp,
     };
     transportConfig.ibHca = benchIbHca();
     transport_ = std::make_unique<MultipeerIbgdaTransport>(

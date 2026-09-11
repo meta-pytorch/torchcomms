@@ -220,12 +220,25 @@ class MultipeerIbgdaTransport
   }
 
  private:
+  struct QpSlotResources {
+    doca_gpu_verbs_qp_group_hl* group{nullptr};
+    doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
+    doca_gpu_verbs_qp_hl* loopback{nullptr};
+
+    doca_gpu_verbs_qp_hl* main() const {
+      return group != nullptr ? &group->qp_main : standaloneMain;
+    }
+
+    doca_gpu_verbs_qp_hl* companion() const {
+      return group != nullptr ? &group->qp_companion : nullptr;
+    }
+  };
+
   // Helper methods
   void initDocaGpu();
   void openIbDevice();
   void allocateResources();
   void registerMemory();
-  void createQpGroups();
   void cleanup();
   // Connect a QP to a peer (or self for loopback). The nic argument selects
   // which local NIC's AH attrs / port to use; the peerInfo carries the
@@ -239,15 +252,13 @@ class MultipeerIbgdaTransport
 
   // Per-peer helpers shared by eager exchange() and lazy materializePeer()
   void createPeerQps(int peerIndex);
-
-  // Create one QP group, degrading this NIC to VALID_DBR if the NIC refuses a
-  // DBR-less one. Returns the original error if the group could not be made.
-  doca_error_t createQpGroupWithDoorbellFallback(
+  QpSlotResources createQpSlot(
       int nic,
       int slot,
-      int companionSlots,
+      int slotsPerPeer,
       doca_gpu_verbs_qp_init_attr_hl& mainAttr,
-      doca_gpu_verbs_qp_group_hl** outGroup);
+      doca_gpu_verbs_qp_init_attr_hl& loopbackAttr);
+  bool companionQpEnabled() const;
   void connectPeerLoopback(int peerIndex);
   P2pIbgdaTransportBuildParams buildPeerTransportParams(int peerIndex) const;
 
@@ -280,10 +291,6 @@ class MultipeerIbgdaTransport
   // numNics_ is inherited (protected) from MultiPeerIbTransport;
   // nicDoca_.size() == numNics_ after openIbDevice().
 
-  // Per-NIC host-side IB verbs resources. blockQpGroups and
-  // loopbackCompanionQps are indexed [peer * maxGroups + block]. The lane-0
-  // main QP comes from blockQpGroups; extra main QPs are indexed
-  // [(peer * maxGroups + block) * (qpsPerBlockPerNic - 1) + (lane - 1)].
   // Backend-specific (DOCA) per-NIC state. The generic per-NIC resources
   // (device name, context, PD, GID) live in MultiPeerIbTransport::nics_,
   // index-aligned with this vector; openIbDevice() fills both.
@@ -291,11 +298,10 @@ class MultipeerIbgdaTransport
     doca_verbs_ah_attr* ahAttr{nullptr};
     ibverbx::ibv_mr* sinkMr{nullptr};
     bool useReliableDoorbell{false};
-    std::vector<doca_gpu_verbs_qp_group_hl*> blockQpGroups;
-    std::vector<doca_gpu_verbs_qp_hl*> extraMainQps;
-    std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQps;
+    std::vector<QpSlotResources> qpSlots;
   };
   std::vector<NicDocaResources> nicDoca_;
+  bool qpResourceShapeLogged_{false};
 
   // What was asked for: config value, or MCCL_IBGDA_QP_ORDERING_SEMANTIC when
   // that cvar is set to something other than its registered default. Taken in
