@@ -63,6 +63,25 @@ class GraphSideStreamTest : public ::testing::Test {
     EXPECT_EQ(cudaGraphNodeGetType(node, &t), cudaSuccess);
     return t;
   }
+
+  static bool isAncestor(cudaGraphNode_t ancestor, cudaGraphNode_t descendant) {
+    std::vector<cudaGraphNode_t> pending = {descendant};
+    std::set<cudaGraphNode_t> visited;
+    while (!pending.empty()) {
+      const auto current = pending.back();
+      pending.pop_back();
+      if (!visited.insert(current).second) {
+        continue;
+      }
+      for (const auto predecessor : getPreds(current)) {
+        if (predecessor == ancestor) {
+          return true;
+        }
+        pending.push_back(predecessor);
+      }
+    }
+    return false;
+  }
 };
 
 TEST_F(GraphSideStreamTest, ConstructAndDestruct) {
@@ -196,6 +215,75 @@ TEST_F(GraphSideStreamTest, ForkFromRoutesWorkOffMainCriticalPath) {
   EXPECT_EQ(cudaEventDestroy(ext_event), cudaSuccess);
   EXPECT_EQ(cudaStreamDestroy(main), cudaSuccess);
   EXPECT_EQ(cudaFree(dev_counter), cudaSuccess);
+}
+
+// Keep the timing start on the operation stream so the side-stream end event
+// provably brackets the operation.
+TEST_F(GraphSideStreamTest, DirectStartAndSideEndBracketOperation) {
+  GraphSideStream side;
+  cudaStream_t main = nullptr;
+  ASSERT_EQ(cudaStreamCreate(&main), cudaSuccess);
+
+  int* dev_buf = nullptr;
+  ASSERT_EQ(cudaMalloc(&dev_buf, sizeof(int)), cudaSuccess);
+
+  cudaEvent_t start_event = nullptr;
+  cudaEvent_t end_event = nullptr;
+  ASSERT_EQ(cudaEventCreate(&start_event), cudaSuccess);
+  ASSERT_EQ(cudaEventCreate(&end_event), cudaSuccess);
+
+  ASSERT_EQ(
+      cudaStreamBeginCapture(main, cudaStreamCaptureModeThreadLocal),
+      cudaSuccess);
+  ASSERT_EQ(
+      cudaEventRecordWithFlags(start_event, main, cudaEventRecordExternal),
+      cudaSuccess);
+  ASSERT_EQ(cudaMemsetAsync(dev_buf, 0, sizeof(int), main), cudaSuccess);
+  ASSERT_EQ(
+      side.fork_from(
+          main,
+          [&](cudaStream_t stream) {
+            (void)cudaEventRecordWithFlags(
+                end_event, stream, cudaEventRecordExternal);
+          }),
+      cudaSuccess);
+
+  cudaGraph_t graph = nullptr;
+  ASSERT_EQ(cudaStreamEndCapture(main, &graph), cudaSuccess);
+  ASSERT_NE(graph, nullptr);
+
+  cudaGraphNode_t start_node = nullptr;
+  cudaGraphNode_t operation_node = nullptr;
+  cudaGraphNode_t end_node = nullptr;
+  for (const auto node : getNodes(graph)) {
+    const auto type = nodeType(node);
+    if (type == cudaGraphNodeTypeMemset) {
+      operation_node = node;
+      continue;
+    }
+    if (type != cudaGraphNodeTypeEventRecord) {
+      continue;
+    }
+    cudaEvent_t event = nullptr;
+    ASSERT_EQ(cudaGraphEventRecordNodeGetEvent(node, &event), cudaSuccess);
+    if (event == start_event) {
+      start_node = node;
+    } else if (event == end_event) {
+      end_node = node;
+    }
+  }
+
+  ASSERT_NE(start_node, nullptr);
+  ASSERT_NE(operation_node, nullptr);
+  ASSERT_NE(end_node, nullptr);
+  EXPECT_TRUE(isAncestor(start_node, operation_node));
+  EXPECT_TRUE(isAncestor(operation_node, end_node));
+
+  EXPECT_EQ(cudaGraphDestroy(graph), cudaSuccess);
+  EXPECT_EQ(cudaEventDestroy(start_event), cudaSuccess);
+  EXPECT_EQ(cudaEventDestroy(end_event), cudaSuccess);
+  EXPECT_EQ(cudaStreamDestroy(main), cudaSuccess);
+  EXPECT_EQ(cudaFree(dev_buf), cudaSuccess);
 }
 
 // Simulates two back-to-back async collectives inside a single graph capture,

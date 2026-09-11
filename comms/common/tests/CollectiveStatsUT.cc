@@ -63,6 +63,33 @@ TEST(CollectiveStatsTest, GetAndClearResetsState) {
   EXPECT_TRUE(stats.getAndClear().empty());
 }
 
+TEST(CollectiveStatsTest, AbortedSamplesAreRetainedWithoutLatency) {
+  CollectiveStats stats;
+  stats.recordAborted("allreduce", "allreduce.ring.1024");
+
+  const auto out = stats.getAndClear();
+  const CollectiveStat expected{.aborted_count = 1};
+  EXPECT_EQ(out.at("allreduce.ring.1024"), expected);
+  EXPECT_EQ(out.at("allreduce.all"), expected);
+  EXPECT_EQ(out.at("all"), expected);
+}
+
+TEST(CollectiveStatsTest, SuccessfulAndAbortedSamplesMerge) {
+  CollectiveStats stats;
+  stats.recordAborted("allreduce", "allreduce.ring.1024");
+  stats.record("allreduce", "allreduce.ring.1024", 10);
+
+  const auto out = stats.getAndClear();
+  EXPECT_EQ(
+      out.at("allreduce.ring.1024"),
+      (CollectiveStat{
+          .count = 1,
+          .total_us = 10,
+          .min_us = 10,
+          .max_us = 10,
+          .aborted_count = 1}));
+}
+
 TEST(CollectiveStatsTest, ConcurrentRecordIsThreadSafe) {
   CollectiveStats stats;
   constexpr uint64_t kThreads = 8;
