@@ -1959,7 +1959,7 @@ class CtranIbVirtualConn {
   int maxNumQps_{0};
   int numQpsPerDevice_{0};
   size_t qpScalingTh_{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
-  enum NCCL_CTRAN_IB_VC_MODE vcMode_ { NCCL_CTRAN_IB_VC_MODE::spray };
+  enum NCCL_CTRAN_IB_VC_MODE vcMode_ { NCCL_CTRAN_IB_VC_MODE };
   // When true and the VC spans multiple NICs, tryToPostOp interleaves a single
   // op's QP-scaling sub-chunks across all NICs (visit order qp0, qpK, qp2K, ...
   // advancing the device first, where K = maxNumQps_ / numActiveDevices)
