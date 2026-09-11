@@ -2,16 +2,22 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/common/fault_tolerance/tests/AbortDeviceTest.cuh"
+#include "comms/common/fault_tolerance/tests/AbortLogMarkers.h"
 
 namespace comms::fault_tolerance::testing {
 namespace {
@@ -58,6 +64,58 @@ void destroyEvent(cudaEvent_t event) {
   if (event != nullptr) {
     EXPECT_EQ(cudaEventDestroy(event), cudaSuccess);
   }
+}
+
+// Captured stdout plus the CUDA status of the launch that produced it.
+//
+// The status has to travel with the text: `ASSERT_*` cannot be used in a
+// value-returning helper, and reporting a launch or sync failure with
+// `EXPECT_*` inside the helper lets the test carry on and match against a
+// capture that may be empty -- so the real failure is a CUDA error but what
+// gets reported is a missing substring.
+struct DeviceCapture {
+  std::string out;
+  cudaError_t status{cudaSuccess};
+};
+
+// Runs `launch`, drains the device printf FIFO, and returns everything the
+// process wrote to stdout meanwhile.
+//
+// The synchronize has to happen *inside* the capture window. Device `printf`
+// appends to a per-context FIFO that the runtime drains only on kernel
+// completion, synchronization, or context destruction, so reading the capture
+// before syncing returns an empty string and the test silently proves nothing.
+template <typename Launch>
+DeviceCapture captureDeviceStdoutWithStatus(Launch&& launch) {
+  ::testing::internal::CaptureStdout();
+  const cudaError_t launched = launch();
+  const cudaError_t synced = cudaDeviceSynchronize();
+  std::string captured = ::testing::internal::GetCapturedStdout();
+  return DeviceCapture{
+      std::move(captured), launched != cudaSuccess ? launched : synced};
+}
+
+// The device first-writer line as it should render, built in one place.
+//
+// Every assertion on the rendered line goes through this, so the field layout
+// lives here rather than in each test. Reconstructing it inline meant a change
+// to the line's shape had to be mirrored at every assertion, and missing one
+// left a stale expectation that still compiled.
+std::string expectedDeviceFirstWriterLine(
+    AbortReason reason,
+    std::string_view context) {
+  return std::string{kFirstWriterMarker} +
+      "device reason=" + std::to_string(static_cast<int>(reason)) +
+      " context=" + std::string{context};
+}
+
+size_t countSubstr(const std::string& haystack, const std::string& needle) {
+  size_t count = 0;
+  for (size_t pos = haystack.find(needle); pos != std::string::npos;
+       pos = haystack.find(needle, pos + needle.size())) {
+    ++count;
+  }
+  return count;
 }
 
 } // namespace
@@ -244,25 +302,27 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
   ASSERT_NE(firstWon, nullptr);
   ASSERT_NE(secondWon, nullptr);
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::NETWORK_ERROR,
-          /*useContext=*/true,
-          firstWon.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const auto firstOutCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        firstWon.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(firstOutCapture.status, cudaSuccess);
+  const std::string& firstOut = firstOutCapture.out;
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::INTERNAL_ERROR,
-          /*useContext=*/true,
-          secondWon.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const auto secondOutCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::INTERNAL_ERROR,
+        /*useContext=*/true,
+        secondWon.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(secondOutCapture.status, cudaSuccess);
+  const std::string& secondOut = secondOutCapture.out;
 
   EXPECT_EQ(readDeviceValue(firstWon), 1);
   EXPECT_EQ(readDeviceValue(secondWon), 0);
@@ -272,6 +332,21 @@ TEST(AbortDeviceTest, deviceContextLogsOnlyForReasonCasWinner) {
           .reason = AbortReason::NETWORK_ERROR,
           .context = "",
       }));
+
+  // The winner's line, in full. Asserting the rendered text rather than only
+  // the CAS result is the point: the boolean is unchanged if the printf is
+  // deleted or its arguments are wrong.
+  EXPECT_THAT(
+      firstOut,
+      ::testing::HasSubstr(expectedDeviceFirstWriterLine(
+          AbortReason::NETWORK_ERROR, "AbortDeviceTest callsite")))
+      << "captured: " << firstOut;
+
+  // The loser is silent, and silence is the property that keeps one aborted
+  // communicator from producing one line per observing thread.
+  EXPECT_EQ(countSubstr(secondOut, kFirstWriterMarker), 0U)
+      << "captured: " << secondOut;
+  EXPECT_EQ(countSubstr(firstOut + secondOut, kFirstWriterMarker), 1U);
 }
 
 TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
@@ -279,15 +354,16 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
   auto won = makeDeviceValue<int>();
   ASSERT_NE(won, nullptr);
 
-  EXPECT_EQ(
-      launchDeviceSetAbortWithContext(
-          abort.getDeviceHandle(),
-          AbortReason::INTERNAL_ERROR,
-          /*useContext=*/false,
-          won.get(),
-          /*stream=*/nullptr),
-      cudaSuccess);
-  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceSetAbortWithContext(
+        abort.getDeviceHandle(),
+        AbortReason::INTERNAL_ERROR,
+        /*useContext=*/false,
+        won.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
 
   EXPECT_EQ(readDeviceValue(won), 1);
   EXPECT_EQ(
@@ -296,6 +372,208 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
           .reason = AbortReason::INTERNAL_ERROR,
           .context = "",
       }));
+
+  // The log belongs to the CAS win, not to whether a diagnostic string was
+  // supplied. This is the regression guard for the `context != nullptr` guard
+  // that used to sit on the printf: with it restored, the line disappears
+  // entirely and this fails.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          expectedDeviceFirstWriterLine(AbortReason::INTERNAL_ERROR, "") +
+          "\n"))
+      << "captured: " << out;
+}
+
+// `AbortFlag` is the other device writer of the shared reason -- the
+// poll-state-free handle the IBRC transport keeps in device memory, and the one
+// its proxy watchdogs abort through. It must produce the same first-writer line
+// as `AbortDevice`, or a watchdog abort leaves no greppable origin at all.
+TEST(AbortDeviceTest, flagSetAbortEmitsFirstWriterMarker) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchAbortFlagSetAbort(
+        abort.getDeviceHandle(),
+        AbortReason::IBRC_PROXY_TIMEOUT,
+        /*useContext=*/true,
+        won.get(),
+        contextReady.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(won), 1);
+  EXPECT_EQ(abort.reason(), AbortReason::IBRC_PROXY_TIMEOUT);
+
+  // Including the context. The IBRC watchdogs already pass one naming which
+  // watchdog fired; before this it was accepted and dropped.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(expectedDeviceFirstWriterLine(
+          AbortReason::IBRC_PROXY_TIMEOUT, "AbortFlagTest callsite")))
+      << "captured: " << out;
+}
+
+TEST(AbortDeviceTest, flagSetAbortLoserIsSilent) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  // The host takes the reason first, so the flag's CAS loses.
+  EXPECT_TRUE(abort.setAbort(AbortReason::ABORTED, "host got there first"));
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchAbortFlagSetAbort(
+        abort.getDeviceHandle(),
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        won.get(),
+        contextReady.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(won), 0);
+  EXPECT_EQ(abort.reason(), AbortReason::ABORTED);
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 0U) << "captured: " << out;
+}
+
+// The disabled-handle guard, from device code.
+//
+// This diff collapsed an `if (!isEnabled())` check out of both `setAbort`
+// bodies into the single `state == nullptr` return in `deviceTrySetAbort`. The
+// substitution is exact -- `isEnabled()` *is* `state_ != nullptr` -- but the
+// only disabled-handle device tests drive `reason()` and `getTimeoutMs()`,
+// which never reach that helper. Deleting the guard outright would have left
+// the suite green.
+TEST(AbortDeviceTest, flagSetAbortOnDisabledHandleIsSilentNoop) {
+  const AbortDevice handle; // default-constructed: no shared state
+  ASSERT_FALSE(handle.isEnabled());
+
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchAbortFlagSetAbort(
+        handle,
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        won.get(),
+        contextReady.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(won), 0) << "a disabled handle cannot win the CAS";
+  EXPECT_EQ(readDeviceValue(contextReady), -1)
+      << "a disabled handle has no state to publish readiness into";
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 0U) << "captured: " << out;
+}
+
+// Contended `NONE -> TIMED_OUT`, which is the shape production actually
+// produces: one `groupAborted()` leader per block, all polling the same shared
+// reason, all reaching their deadline together.
+//
+// One leader wins the CAS. Every loser must still return true, which it can
+// only do by reading the winner's reason back out of the CAS through
+// `observed`. A loser that returned false would broadcast "not aborted" to its
+// whole block and let it cross the abort gate into a peer-visible action while
+// the communicator is already aborted -- Principle 4 in FAULT_TOLERANCE.md.
+//
+// The existing coverage cannot catch a regression here: both timeout kernels
+// run a single poller, and `directTimeoutNonWinnerIsSilent` seeds the reason on
+// the host, so the device never contends for the CAS at all.
+TEST(AbortDeviceTest, contendedTimeoutLosersStillReportExpiry) {
+  constexpr int kBlocks = 64;
+
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{1});
+
+  // Mapped pinned, not device memory: the host releases the blocks with a plain
+  // store while the kernel is spinning. A `cudaMemcpy` would be ordered behind
+  // the very kernel it is meant to unblock, and the two would deadlock.
+  int* hostGate = nullptr;
+  ASSERT_EQ(
+      cudaHostAlloc(&hostGate, sizeof(int), cudaHostAllocMapped), cudaSuccess);
+  ASSERT_NE(hostGate, nullptr);
+  *hostGate = 0;
+  int* deviceGate = nullptr;
+  ASSERT_EQ(cudaHostGetDevicePointer(&deviceGate, hostGate, 0), cudaSuccess);
+
+  int* observedExpired = nullptr;
+  int* observedWon = nullptr;
+  ASSERT_EQ(cudaMalloc(&observedExpired, kBlocks * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&observedWon, kBlocks * sizeof(int)), cudaSuccess);
+  ASSERT_NE(observedExpired, nullptr);
+  ASSERT_NE(observedWon, nullptr);
+  ASSERT_EQ(cudaMemset(observedExpired, 0, kBlocks * sizeof(int)), cudaSuccess);
+  ASSERT_EQ(cudaMemset(observedWon, 0, kBlocks * sizeof(int)), cudaSuccess);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    const cudaError_t launched = launchDeviceContendedTimeout(
+        abort.getDeviceHandle(),
+        deviceGate,
+        observedExpired,
+        observedWon,
+        kBlocks,
+        kDeviceTimeoutPollIterations,
+        /*stream=*/nullptr);
+    if (launched != cudaSuccess) {
+      return launched;
+    }
+    // Give every block time to reach the gate with its deadline armed, then
+    // release them together so the CAS is genuinely contended rather than
+    // serialized by launch skew.
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    __atomic_store_n(hostGate, 1, __ATOMIC_RELEASE);
+    return cudaSuccess;
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  std::vector<int> expired(kBlocks, 0);
+  std::vector<int> won(kBlocks, 0);
+  EXPECT_EQ(
+      cudaMemcpy(
+          expired.data(),
+          observedExpired,
+          kBlocks * sizeof(int),
+          cudaMemcpyDeviceToHost),
+      cudaSuccess);
+  EXPECT_EQ(
+      cudaMemcpy(
+          won.data(),
+          observedWon,
+          kBlocks * sizeof(int),
+          cudaMemcpyDeviceToHost),
+      cudaSuccess);
+  EXPECT_EQ(cudaFree(observedExpired), cudaSuccess);
+  EXPECT_EQ(cudaFree(observedWon), cudaSuccess);
+  EXPECT_EQ(cudaFreeHost(hostGate), cudaSuccess);
+
+  EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
+  // The property that matters: nobody reports "not aborted".
+  EXPECT_EQ(std::count(expired.begin(), expired.end(), 1), kBlocks)
+      << "every contending block must observe expiry, winner or loser";
+  // And the split is real -- one transition, many non-winners. Without this the
+  // test would still pass if every block somehow won its own CAS.
+  EXPECT_EQ(std::count(won.begin(), won.end(), 1), 1)
+      << "exactly one block may perform the NONE -> TIMED_OUT transition";
+  // Still exactly one line: the CAS is what gates it, and only one block can
+  // perform the transition no matter how many observe it.
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
 }
 
 TEST(AbortDeviceTest, abortFlagPublishesEmptyContext) {
@@ -309,6 +587,7 @@ TEST(AbortDeviceTest, abortFlagPublishesEmptyContext) {
       launchAbortFlagSetAbort(
           abort.getDeviceHandle(),
           AbortReason::INTERNAL_ERROR,
+          /*useContext=*/false,
           won.get(),
           contextReady.get(),
           /*stream=*/nullptr),
@@ -634,6 +913,107 @@ TEST(AbortDeviceTest, startAliasAndCheckExpiredRecordTimeout) {
   EXPECT_EQ(
       readDeviceValue(observedMode), static_cast<int>(AbortReason::TIMED_OUT));
   EXPECT_TRUE(abort.isTimedOut());
+}
+
+// The timeout path has two entry shapes and neither goes through a macro. These
+// are how production actually observes a deadline: `groupAborted()` in the IB
+// and NVL send/recv/forward loops and in Ring AllReduce calls `checkExpired()`,
+// and the IBGDA warp proxy calls `isAborted()` directly. Neither has a macro
+// above it to name a callsite, so unless the transition speaks for itself the
+// abort has no greppable origin -- and no later observer can supply one,
+// because they all take the `reason() != NONE` return without transitioning.
+// Routing the deadline CAS through `detail::deviceTrySetAbort` is what makes
+// these two identical to `setAbort()` in what they emit.
+
+TEST(AbortDeviceTest, directTimeoutViaIsAbortedEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+  auto observedMode = makeDeviceValue<int>();
+  auto observedIsAborted = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedIsAborted, nullptr);
+
+  abort.setDefaultTimeout(std::chrono::milliseconds{1});
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceWaitForTimeout(
+        abort.getDeviceHandle(),
+        observedMode.get(),
+        observedIsAborted.get(),
+        kDeviceTimeoutPollIterations,
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  ASSERT_TRUE(abort.isTimedOut());
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(expectedDeviceFirstWriterLine(
+          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+      << "captured: " << out;
+  // Exactly one, even though the kernel polls in a loop: the line is gated on
+  // the CAS, and only one iteration can perform the transition.
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+}
+
+TEST(AbortDeviceTest, directTimeoutViaCheckExpiredEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+  auto observedMode = makeDeviceValue<int>();
+  auto observedCheckExpired = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedCheckExpired, nullptr);
+
+  abort.setDefaultTimeout(std::chrono::milliseconds{1});
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceWaitForTimeoutStartAlias(
+        abort.getDeviceHandle(),
+        observedMode.get(),
+        observedCheckExpired.get(),
+        kDeviceTimeoutPollIterations,
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  ASSERT_TRUE(abort.isTimedOut());
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(expectedDeviceFirstWriterLine(
+          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+      << "captured: " << out;
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+}
+
+// A deadline that lapses after someone else already declared the reason is an
+// observation, not a transition, and must stay silent. Without the CAS gate
+// every thread that later notices the abort would emit its own line.
+TEST(AbortDeviceTest, directTimeoutNonWinnerIsSilent) {
+  Abort abort{/*enabled=*/true};
+  auto observedMode = makeDeviceValue<int>();
+  auto observedIsAborted = makeDeviceValue<int>();
+  ASSERT_NE(observedMode, nullptr);
+  ASSERT_NE(observedIsAborted, nullptr);
+
+  // Host wins first. Its own marker goes to stderr, so it cannot be mistaken
+  // for a device line in the stdout capture below.
+  ASSERT_TRUE(abort.setAbort(AbortReason::ABORTED, "host got there first"));
+  abort.setDefaultTimeout(std::chrono::milliseconds{1});
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceWaitForTimeout(
+        abort.getDeviceHandle(),
+        observedMode.get(),
+        observedIsAborted.get(),
+        kDeviceTimeoutPollIterations,
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(observedIsAborted), 1);
+  EXPECT_EQ(abort.reason(), AbortReason::ABORTED);
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 0U) << "captured: " << out;
 }
 
 TEST(AbortDeviceTest, deviceTimeoutCanBeCancelledAndRestarted) {
@@ -1098,6 +1478,60 @@ TEST(AbortMacrosTest, TimeoutTerminatesTheLoop) {
   EXPECT_LT(observed, kMacroTimeoutLoopBound);
   EXPECT_GT(observed, kMacroTimeoutMinIterations);
   EXPECT_TRUE(abort.isTimedOut());
+}
+
+// The third way a device abort is declared: not `setAbort()` from either
+// handle, but a deadline lapsing inside `FT_ABORT_CHECK`.
+//
+// This is the case that produces both lines. The transition emits the
+// first-writer line from inside the CAS exactly as the direct-timeout kernels
+// above do, and the macro adds a site line naming the wait that noticed it.
+// Asserting both is what pins the split: a regression that folds the caller's
+// message back into the first-writer marker, or that drops the site line,
+// changes one of these without changing the other.
+//
+// Deliberately on the SKIP path. Under TRAP the markers are unassertable:
+// `__trap()` faults the context and the printf FIFO is not reliably drained.
+TEST(AbortMacrosTest, TimeoutFirstWriterEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(kMacroTimeoutMs);
+  ASSERT_EQ(abort.getDeviceHandle().behavior(), AbortBehavior::SKIP);
+
+  auto iterations = makeDeviceValue<int>();
+  ASSERT_NE(iterations, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchMacroTimeoutLoop(
+        abort.getDeviceHandle(),
+        iterations.get(),
+        kMacroTimeoutLoopBound,
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  ASSERT_TRUE(abort.isTimedOut());
+  // The transition. Same line the direct-timeout kernels produce, because it
+  // comes from the same place.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(expectedDeviceFirstWriterLine(
+          AbortReason::TIMED_OUT, kDeadlineExpiredContext)))
+      << "captured: " << out;
+  // The observation, carrying what only the callsite knows.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kSiteMarker} + "macroTimeoutLoop iteration"))
+      << "captured: " << out;
+  // The source location the macro concatenates at compile time, which is what
+  // makes the site line attributable to a wait rather than to a communicator.
+  EXPECT_THAT(out, ::testing::HasSubstr("AbortDeviceTest.cu:"))
+      << "captured: " << out;
+  // One of each: every later observer of the same terminal reason stays silent,
+  // and the site line is gated on the same CAS win.
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+  EXPECT_EQ(countSubstr(out, kSiteMarker), 1U) << "captured: " << out;
 }
 
 } // namespace comms::fault_tolerance::testing

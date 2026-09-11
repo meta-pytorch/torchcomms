@@ -31,13 +31,20 @@ __global__ void deviceSetAbortWithContextKernel(
 __global__ void abortFlagSetAbortKernel(
     AbortDevice abort,
     AbortReason reason,
+    bool useContext,
     int* observedWinner,
     int* observedContextReady) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
+    const char* context = useContext ? "AbortFlagTest callsite" : nullptr;
     const AbortFlag flag{abort};
-    *observedWinner = flag.setAbort(reason) ? 1 : 0;
-    *observedContextReady =
-        detail::deviceLoadAcquireSystem(&abort.stateForFlag()->contextReady);
+    *observedWinner = flag.setAbort(reason, context) ? 1 : 0;
+    // A disabled handle has no shared state to read the readiness flag out of,
+    // so report -1 rather than dereferencing null. That also lets the disabled
+    // case assert something specific instead of just "not 1".
+    AbortState* state = abort.stateForFlag();
+    *observedContextReady = state != nullptr
+        ? detail::deviceLoadAcquireSystem(&state->contextReady)
+        : -1;
   }
 }
 
@@ -146,6 +153,56 @@ __global__ void deviceWaitForTimeoutKernel(
   *observedIsAborted = 0;
 }
 
+// Many block leaders race the same `NONE -> TIMED_OUT` deadline CAS.
+//
+// This is the shape `comms::prims::groupAborted()` produces in production: one
+// leader per block, all polling the same shared reason, all reaching their
+// local deadline at roughly the same moment. Exactly one wins the CAS; every
+// loser must still report "aborted", which it can only do by reading back the
+// reason the winner published through `observed`. A loser that returns false
+// would broadcast "not aborted" to its whole block and let it cross the abort
+// gate.
+//
+// The blocks are released together by spinning on `startGate` so the CAS is
+// genuinely contended rather than serialized by launch skew. `startGate` must
+// be mapped pinned host memory: the host has to be able to release the blocks
+// with a plain store *while the kernel runs*, and a `cudaMemcpy` on the same
+// stream would deadlock behind the kernel it is trying to unblock.
+__global__ void deviceContendedTimeoutKernel(
+    AbortDevice abort,
+    int* startGate,
+    int* observedExpired,
+    int* observedWon,
+    int maxIterations) {
+  if (threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+
+  // Wait for the host to release every block, then let the deadline lapse.
+  // Bounded so a broken handshake fails the assertions instead of hanging the
+  // suite; the bound is far longer than the host store needs.
+  for (int i = 0; i < maxIterations; ++i) {
+    if (detail::deviceLoadAcquireSystem(startGate) != 0) {
+      break;
+    }
+    __nanosleep(64);
+  }
+
+  int expired = 0;
+  bool flippedHere = false;
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.checkExpired(&flippedHere)) {
+      expired = 1;
+      break;
+    }
+    __nanosleep(64);
+  }
+  observedExpired[blockIdx.x] = expired;
+  observedWon[blockIdx.x] = flippedHere ? 1 : 0;
+}
+
 __global__ void deviceWaitForTimeoutStartAliasKernel(
     AbortDevice abort,
     int* observedMode,
@@ -226,11 +283,25 @@ cudaError_t launchDeviceSetAbortWithContext(
 cudaError_t launchAbortFlagSetAbort(
     AbortDevice abort,
     AbortReason reason,
+    bool useContext,
     int* observedWinner,
     int* observedContextReady,
     cudaStream_t stream) {
   abortFlagSetAbortKernel<<<1, 1, 0, stream>>>(
-      abort, reason, observedWinner, observedContextReady);
+      abort, reason, useContext, observedWinner, observedContextReady);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceContendedTimeout(
+    AbortDevice abort,
+    int* startGate,
+    int* observedExpired,
+    int* observedWon,
+    int blocks,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceContendedTimeoutKernel<<<blocks, 1, 0, stream>>>(
+      abort, startGate, observedExpired, observedWon, maxIterations);
   return cudaGetLastError();
 }
 
