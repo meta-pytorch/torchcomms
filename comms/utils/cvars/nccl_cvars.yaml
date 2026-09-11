@@ -2970,12 +2970,6 @@ cvars:
    description : |-
      Cluster size for CGA kernel launch. The default cluster size is 4.
 
- - name        : NCCL_IBVERBS_PATH
-   type        : string
-   default     : "libibverbs.so"
-   description : Path to libibverbs.so. This allows fault injection for
-     verbs APIs in NCCLx.
-
  - name        : NCCL_IBVERBS_LIB
    type        : string
    default     : ""
