@@ -2,6 +2,7 @@
 
 #include "comms/prims/transport/MultiPeerTransport.h"
 
+#include <functional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -195,7 +196,14 @@ void MultiPeerTransport::initFromTopology(
       // IBRC's device waits sit on the CPU proxy, so the backend needs the
       // handle itself; IBGDA takes one per call on the wait APIs instead.
       ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
-          myRank_, nRanks_, bootstrap_, ibConfig, abortDevice_);
+          myRank_,
+          nRanks_,
+          bootstrap_,
+          ibConfig,
+          abortDevice_,
+          abort_ ? std::function<bool()>(
+                       [abort = abort_] { return abort->isAborted(); })
+                 : nullptr);
       VLOG(1) << "MultiPeerTransport: rank " << myRank_
               << " created IBRC sub-transport for " << ibPeerRanks_.size()
               << " peers";
