@@ -706,8 +706,8 @@ constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 // channels. What it does NOT mean is that QPs appear per group on first use.
 // Materialization is lazy per PEER, not per group: the first touch of a peer
 // runs materializePeer() -> createPeerQps(), which builds that peer's ENTIRE
-// configured shape up front — `fixedChannelCompanionQpsPerPeerPerNic()` slots,
-// each a QP group plus a loopback companion — even if a single group ever runs
+// configured shape up front -- `fixedChannelCompanionQpsPerPeerPerNic()` slots,
+// each a QP group plus a loopback companion -- even if a single group ever runs
 // on it. So the QP cost of a transport is set by `max_num_channels` (times
 // directions, times qpsPerConnection) and the number of peers touched, and the
 // knob for reducing it is `max_num_channels`, not this limit.

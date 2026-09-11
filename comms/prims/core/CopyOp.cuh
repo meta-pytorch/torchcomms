@@ -17,9 +17,41 @@
 // plain `:copy_op` never see this include and don't need to device-link
 // the nvcompdx fatbin.
 #include <nvcompdx.hpp>
+// nvcompdx 26.06 renamed NVCOMPDX_SKIP_IF_NOT_APPLICABLE ->
+// NVCOMPDX_SKIP_IF_NOT_APPLICABLE_SM (same semantics: dead-strip the codec on
+// archs whose SM != __CUDA_ARCH__). Alias the old name so the call sites below
+// compile against both the CUDA-12 (25.12.1) and CUDA-13 (26.06.0) bases.
+#if !defined(NVCOMPDX_SKIP_IF_NOT_APPLICABLE) && \
+    defined(NVCOMPDX_SKIP_IF_NOT_APPLICABLE_SM)
+#define NVCOMPDX_SKIP_IF_NOT_APPLICABLE(NVCOMPDX_TYPE) \
+  NVCOMPDX_SKIP_IF_NOT_APPLICABLE_SM(NVCOMPDX_TYPE)
+#endif
 #endif
 
 namespace comms::prims {
+
+#ifdef PIPES_ENABLE_ANS_COMPRESSION
+// nvcompdx 26.06 (NVCOMPDX_VERSION 104) changed the codec `execute()`'s
+// output_chunk_size parameter from `size_t*` to `unsigned long long*` (a
+// distinct pointer type, same width on LP64). Alias the size-header element
+// type so the declarations below match whichever mathdx base is selected
+// (25.12.1 = 102 -> size_t; 26.06.0 = 104 -> unsigned long long).
+#if defined(NVCOMPDX_VERSION) && NVCOMPDX_VERSION >= 104
+using AnsChunkSizeT = unsigned long long;
+#else
+using AnsChunkSizeT = std::size_t;
+#endif
+
+// One definition of the in-staging size-header layout, keyed on the element
+// type actually written there. The four call sites used to spell this
+// `numChunks * sizeof(std::size_t)` independently, which agreed with the
+// element type only by way of the width static_assert below -- four places for
+// the layout and the type to drift apart.
+__host__ __device__ __forceinline__ constexpr std::size_t ans_header_bytes(
+    std::size_t numChunks) {
+  return numChunks * sizeof(AnsChunkSizeT);
+}
+#endif
 
 template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 struct TileReduce {
@@ -388,7 +420,19 @@ struct AnsCompress {
   // the (de)compressor.
   // ===========================================================================
 #if defined(__CUDA_ARCH__)
-#if __CUDA_ARCH__ >= 1000
+#if __CUDA_ARCH__ == 1030
+  // sm_103 (Blackwell Ultra, GB300). Keep the descriptor arch EXACTLY on 1030
+  // so the static_assert below holds and nvcompdx's SKIP_IF_NOT_APPLICABLE
+  // branch (sm_of_v != __CUDA_ARCH__) stays dead.
+  //
+  // Deliberately NOT gated on NVCOMPDX_VERSION, unlike the two shims above:
+  // `commondx/operators/sm.hpp` defines SM<1030> identically in 0.1.2 and
+  // 0.1.4 (both at line 72), so this branch is valid on the CUDA-12 base too.
+  // Note upstream marks AArch64 sm_103 support experimental and NVRTC +
+  // nvJitLink only; this branch is about the descriptor arch under nvcc
+  // -dlink, and does not by itself establish that path.
+  static constexpr unsigned int kAnsArch = 1030;
+#elif __CUDA_ARCH__ >= 1000
   static constexpr unsigned int kAnsArch = 1000;
 #elif __CUDA_ARCH__ >= 900
   static constexpr unsigned int kAnsArch = 900;
@@ -450,22 +494,40 @@ struct AnsCompress {
   // `constexpr` so this is resolved at compile time and the
   // unused-direction storage drops out without any runtime cost.
   //
-  // SAFETY PAD (1024 B): nvcompdx's `shmem_size_group()` (queried on
-  // the `BlockWarp<NumWarps, true>` cooperative-block descriptors used
-  // here) empirically under-reports the actual `__shared__` write
-  // footprint by a small constant on H100 (compute-sanitizer memcheck
-  // flagged ~28 bytes of `coalesce_subchunks` writes past the reported
-  // end at NumWarps=8 — see internal task / D-history on
-  // AllToAllvTileCompressed). Without the pad the OOB writes corrupt
-  // neighbouring `__shared__` and surface much later as an opaque
-  // `cudaErrorIllegalAddress` from a DeviceBuffer destructor. The pad
-  // costs 1 KiB of per-kernel static shmem (well under the 48 KiB
-  // H100 cap budgeted in the BUCK comment) and absorbs the
-  // under-report across all `NumWarps ∈ {1, 2, 4, 8, 16, 32}`
-  // instantiations. DO NOT remove without confirming nvcompdx
-  // upstream has fixed `shmem_size_group()` and running
-  // compute-sanitizer over the full IbSweepCompressed sweep.
+  // SAFETY PAD -- required on the CUDA-12 base only.
+  //
+  // nvcompdx 0.1.2's `shmem_size_group()` under-reports the actual `__shared__`
+  // write footprint of block-level ANS compression: compute-sanitizer memcheck
+  // flagged ~28 bytes of `coalesce_subchunks` writes past the reported end at
+  // NumWarps=8. Unpadded, those OOB writes corrupt neighbouring `__shared__`
+  // and surface much later as an opaque `cudaErrorIllegalAddress` from a
+  // DeviceBuffer destructor.
+  //
+  // 0.1.3 fixed it upstream ("Increased the shared memory requirement for
+  // block-level ANS compression to fit worst-case inputs"). In
+  // `lto/ans/compress_device.hpp::ShmemSizeGroup<block, DT, ans, compress>`
+  // the floor moved 4096 -> 5324:
+  //
+  //   NumWarps :   1     2     4     8    16    32
+  //   0.1.2    : 3584  4096  4096  4096  4096  5120
+  //   0.1.4    : 3584  5324  5324  5324  5324  5324
+  //
+  // So the pad is gated on the LIBRARY VERSION, not on NumWarps: the overrun is
+  // a fixed ~28 B, not something that scales with the warp count, so no
+  // configuration needs the pad once the library sizes for worst-case inputs.
+  // But only the CUDA-13 flavour is pinned to 0.1.4 -- CUDA-12 deliberately
+  // stays on 0.1.2 (see `comms/prims/mathdx_versions.bzl`), and that base still
+  // has the bug. Dropping the pad unconditionally would leave every CUDA-12
+  // build writing out of bounds again.
+  //
+  // Same `NVCOMPDX_VERSION >= 104` gate as the other two 26.06 shims at the top
+  // of this header, so all three move together whenever the CUDA-12 pin
+  // eventually advances.
+#if defined(NVCOMPDX_VERSION) && NVCOMPDX_VERSION >= 104
+  inline static constexpr std::size_t kSharedScratchPadBytes = 0ULL;
+#else
   inline static constexpr std::size_t kSharedScratchPadBytes = 1024ULL;
+#endif
   inline static constexpr std::size_t kSharedScratchBytes =
       (AnsCompressorType::shmem_size_group() >
                AnsDecompressorType::shmem_size_group()
@@ -568,14 +630,16 @@ struct AnsCompress {
     }
     const std::size_t numChunks =
         (chunkSize + MaxUncompBytes - 1ULL) / MaxUncompBytes;
-    const std::size_t headerBytes = numChunks * sizeof(std::size_t);
-    // The per-chunk size header table is written here as `size_t` and read
+    const std::size_t headerBytes = ans_header_bytes(numChunks);
+    // The per-chunk size header table is written as `AnsChunkSizeT` and read
     // back on the receiver via `unsigned long long` (`__ldcv` in recv /
-    // recv_forward); require identical width so the two views agree. Holds on
-    // all 64-bit CUDA targets in scope; fails loudly if that ever changes.
+    // recv_forward); require identical width so the two views agree. This is
+    // what lets the CUDA-12 (size_t) and CUDA-13 (unsigned long long) bases
+    // share one wire layout. Holds on all 64-bit CUDA targets in scope; fails
+    // loudly if that ever changes.
     static_assert(
-        sizeof(std::size_t) == sizeof(unsigned long long),
-        "ANS size-header table assumes sizeof(size_t) == sizeof(unsigned long long)");
+        sizeof(AnsChunkSizeT) == sizeof(unsigned long long),
+        "ANS size-header table assumes sizeof(AnsChunkSizeT) == sizeof(unsigned long long)");
     const std::size_t headerPadded = alignInputBufferSize(headerBytes);
     const std::size_t worstTotal =
         headerPadded + numChunks * worst_comp_padded_per_chunk();
@@ -716,12 +780,13 @@ struct AnsCompress {
     // each sub-piece so the receiver can walk the layout.
     const std::size_t numChunks =
         (nbytes + MaxUncompBytes - 1ULL) / MaxUncompBytes;
-    const std::size_t headerBytes = numChunks * sizeof(std::size_t);
+    const std::size_t headerBytes = ans_header_bytes(numChunks);
     // Padded header section so chunk[0] starts at a 16-byte aligned
     // offset (nvCOMPDx decompress input alignment requirement).
     std::size_t writeOffset = alignInputBufferSize(headerBytes);
 
-    size_t* const sizeHeaders = reinterpret_cast<size_t*>(staging);
+    AnsChunkSizeT* const sizeHeaders =
+        reinterpret_cast<AnsChunkSizeT*>(staging);
 
     // Misalignment detection — done once for the base src pointer.
     // For typical MaxUncompBytes that is a multiple of 16, every
@@ -891,14 +956,14 @@ struct AnsCompress {
 
     const std::size_t numChunks =
         (nbytes + MaxUncompBytes - 1ULL) / MaxUncompBytes;
-    const std::size_t headerBytes = numChunks * sizeof(std::size_t);
+    const std::size_t headerBytes = ans_header_bytes(numChunks);
     // Chunk[0] begins immediately after the (16-byte-padded) header
     // section; subsequent chunks each advance by
     // `alignInputBufferSize(comp_i)` so their start offsets remain
     // 16-byte aligned (nvCOMPDx decompress input requirement).
     std::size_t readOffset = alignInputBufferSize(headerBytes);
 
-    __shared__ size_t ans_out_size;
+    __shared__ AnsChunkSizeT ans_out_size;
     for (std::size_t i = 0; i < numChunks; ++i) {
       const std::size_t pieceOffset = i * MaxUncompBytes;
       const std::size_t pieceBytes = (pieceOffset + MaxUncompBytes <= nbytes)
@@ -1017,7 +1082,7 @@ struct AnsCompress {
 
     const std::size_t numChunks =
         (nbytes + MaxUncompBytes - 1ULL) / MaxUncompBytes;
-    const std::size_t headerBytes = numChunks * sizeof(std::size_t);
+    const std::size_t headerBytes = ans_header_bytes(numChunks);
     const std::size_t firstChunkOffset = alignInputBufferSize(headerBytes);
 
     // Walk the header table first so we know the total compressed
@@ -1040,7 +1105,7 @@ struct AnsCompress {
     // If we're the terminal hop on this rank, also produce the
     // decompressed output. Relay-only ranks (dst == nullptr) skip it.
     if (dst != nullptr) {
-      __shared__ size_t ans_fwd_out_size;
+      __shared__ AnsChunkSizeT ans_fwd_out_size;
       std::size_t readOffset = firstChunkOffset;
       for (std::size_t i = 0; i < numChunks; ++i) {
         const std::size_t pieceOffset = i * MaxUncompBytes;
