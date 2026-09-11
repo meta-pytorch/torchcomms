@@ -201,6 +201,7 @@ std::unique_ptr<TestIbTransport> createTestTransport(
     int numCounterSlots = 1,
     int maxGroups = 64,
     int qpsPerBlockPerNic = 1,
+    std::optional<bool> enableCompanionQP = std::nullopt,
     std::optional<bool> enableCollapsedCq = std::nullopt) {
   MultipeerIbTransportConfig config{
       .cudaDevice = localRank,
@@ -209,6 +210,7 @@ std::unique_ptr<TestIbTransport> createTestTransport(
       .maxGroups = maxGroups,
       .qpsPerBlockPerNic = qpsPerBlockPerNic,
   };
+  config.enableCompanionQP = enableCompanionQP.value_or(numCounterSlots > 0);
   config.enableCollapsedCq = enableCollapsedCq;
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
   return std::make_unique<TestIbTransport>(
@@ -233,6 +235,7 @@ class MultipeerIbTransportTestFixture
       int numCounterSlots = 1,
       int maxGroups = 64,
       int qpsPerBlockPerNic = 1,
+      std::optional<bool> enableCompanionQP = std::nullopt,
       std::optional<bool> enableCollapsedCq = std::nullopt) {
     return createTestTransport(
         backend(),
@@ -243,6 +246,7 @@ class MultipeerIbTransportTestFixture
         numCounterSlots,
         maxGroups,
         qpsPerBlockPerNic,
+        enableCompanionQP,
         enableCollapsedCq);
   }
 };
@@ -264,6 +268,27 @@ class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
   }
 };
 
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(MultipeerIbgdaTransportTestFixture, CounterSlotsRequireCompanionQp) {
+  MultipeerIbTransportConfig config{
+      .cudaDevice = localRank,
+      .numCounterSlots = 1,
+  };
+  try {
+    MultipeerIbgdaTransport(
+        globalRank,
+        numRanks,
+        std::make_shared<meta::comms::MpiBootstrap>(),
+        config);
+    FAIL() << "Expected counter slots without companion QPs to be rejected";
+  } catch (const std::invalid_argument& error) {
+    EXPECT_STREQ(
+        error.what(),
+        "numCounterSlots requires enableCompanionQP=true on NVIDIA IBGDA");
+  }
+}
+#endif
+
 // =============================================================================
 // Basic Construction and Exchange Test
 // =============================================================================
@@ -276,7 +301,12 @@ TEST_P(MultipeerIbTransportTestFixture, ConstructAndExchange) {
   }
 
   try {
-    auto transport = createTransport();
+    auto transport = createTransport(
+        /*numSignalSlots=*/1,
+        /*numCounterSlots=*/0,
+        /*maxGroups=*/64,
+        /*qpsPerBlockPerNic=*/1,
+        /*enableCompanionQP=*/false);
 
     EXPECT_EQ(transport->myRank(), globalRank);
     EXPECT_EQ(transport->nRanks(), numRanks);
@@ -369,7 +399,12 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
   const uint8_t testPattern = 0x42;
 
   try {
-    auto transport = createTransport();
+    auto transport = createTransport(
+        /*numSignalSlots=*/1,
+        /*numCounterSlots=*/0,
+        /*maxGroups=*/64,
+        /*qpsPerBlockPerNic=*/1,
+        /*enableCompanionQP=*/false);
 
     // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
@@ -380,8 +415,8 @@ TEST_P(MultipeerIbTransportTestFixture, PutSignalBasic) {
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Signal/counter buffers are transport-owned (numSignalSlots=1,
-    // numCounterSlots=1)
+    // The signal buffer is transport-owned. No counter buffer or companion QP
+    // is needed for this data-plus-signal path.
 
     COMMS_LOG(
         INFO,
@@ -533,6 +568,7 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
           /*numCounterSlots=*/1,
           /*maxGroups=*/64,
           /*qpsPerBlockPerNic=*/1,
+          /*enableCompanionQP=*/std::nullopt,
           collapsed);
       EXPECT_EQ(transport->collapsedCqActive(), collapsed);
       dataBuffer = std::make_unique<DeviceBuffer>(nbytes);
@@ -1504,6 +1540,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
           .maxGroups = 1,
           .qpDepth = kQpDepth,
       };
+      config.enableCompanionQP = true;
       config.max_num_channels = 1;
       config.enableCollapsedCq = collapsed;
       auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -3956,6 +3993,7 @@ class LazyModeTestFixture
         .numCounterSlots = 1,
         .ibLazyConnect = true,
     };
+    config.enableCompanionQP = true;
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     return std::make_unique<TestIbTransport>(
         backend(), globalRank, numRanks, std::move(bootstrap), config);

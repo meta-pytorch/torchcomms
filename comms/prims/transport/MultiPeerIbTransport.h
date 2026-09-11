@@ -250,9 +250,9 @@ inline std::optional<IbQpOrderingPolicy> parseIbQpOrderingPolicy(
 }
 
 /**
- * Shared configuration for the multi-peer IB transports (IBGDA, IBRC). Every
- * field is backend-agnostic IB transport config. IMPORTANT: all ranks must use
- * identical configuration values.
+ * Shared configuration for the multi-peer IB transports (IBGDA, IBRC). Fields
+ * are backend-agnostic unless documented otherwise. IMPORTANT: all ranks must
+ * use identical configuration values.
  */
 struct MultipeerIbTransportConfig {
   // CUDA device index for GPU operations
@@ -329,6 +329,12 @@ struct MultipeerIbTransportConfig {
   // qpsPerConnection.
   int qpsPerConnection{1};
 
+  // NVIDIA IBGDA-only: create companion QPs and their local loopback
+  // responders for counter-bearing put operations. Disabled by default because
+  // the collective send/recv paths use main-QP completion tickets instead.
+  // Ignored by IBRC and AMD.
+  bool enableCompanionQP{false};
+
   // IBGDA-only reliable-doorbell policy; ignored by IBRC and AMD. nullopt
   // auto-detects NIC support, true requires support, and false disables it.
   std::optional<bool> enableReliableDoorbell;
@@ -378,21 +384,6 @@ struct MultipeerIbTransportConfig {
   }
 
   int fixedChannelMainQpsPerPeerPerNic() const {
-    if (max_num_channels < 0 || qpsPerConnection < 0) {
-      throw std::invalid_argument(
-          "max_num_channels and qpsPerConnection must be >= 0");
-    }
-    const int directionCount = fixedChannelDirectionCount();
-    if (max_num_channels != 0 &&
-        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
-                max_num_channels) {
-      throw std::overflow_error(
-          "max_num_channels * direction_count * qpsPerConnection overflows int");
-    }
-    return max_num_channels * directionCount * qpsPerConnection;
-  }
-
-  int fixedChannelCompanionQpsPerPeerPerNic() const {
     if (max_num_channels < 0 || qpsPerConnection < 0) {
       throw std::invalid_argument(
           "max_num_channels and qpsPerConnection must be >= 0");
@@ -706,11 +697,11 @@ constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 // channels. What it does NOT mean is that QPs appear per group on first use.
 // Materialization is lazy per PEER, not per group: the first touch of a peer
 // runs materializePeer() -> createPeerQps(), which builds that peer's ENTIRE
-// configured shape up front — `fixedChannelCompanionQpsPerPeerPerNic()` slots,
-// each a QP group plus a loopback companion — even if a single group ever runs
-// on it. So the QP cost of a transport is set by `max_num_channels` (times
-// directions, times qpsPerConnection) and the number of peers touched, and the
-// knob for reducing it is `max_num_channels`, not this limit.
+// configured shape up front — `fixedChannelMainQpsPerPeerPerNic()` slots — even
+// if a single group ever runs on it. So the QP cost of a transport is set by
+// `max_num_channels` (times directions, times qpsPerConnection) and the number
+// of peers touched, and the knob for reducing it is `max_num_channels`, not
+// this limit.
 constexpr int kMaxIbGroups = 256;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
 

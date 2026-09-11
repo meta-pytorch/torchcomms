@@ -160,8 +160,9 @@ __device__ __forceinline__ int prims_ibgda_wait_collapsed_cq(
 /**
  * NicDeviceIbgdaResources - Per-NIC bundle of QPs and sink lkey
  *
- * Owns the QPs (primary + companion for compound put+signal+counter ops)
- * and the sink lkey for atomic FA responses on a single NIC. The
+ * Owns the main QPs, optional companion QPs for compound
+ * put+signal+counter ops, and the sink lkey for atomic FA responses on a
+ * single NIC. The
  * P2pIbgdaTransportDevice holds a `DeviceSpan<NicDeviceIbgdaResources>` indexed
  * by physical NIC slot.
  */
@@ -245,8 +246,8 @@ class P2pIbgdaTransportDevice {
    * Construct a per-peer device transport handle.
    *
    * Each P2p instance owns one peer's NICs. Each NicDeviceIbgdaResources
-   * carries its main and companion QPs plus a sink lkey. Lane selection is
-   * block-owned: each physical CUDA block round-robins its puts across
+   * carries main QPs, optional companion QPs, and a sink lkey. Lane selection
+   * is block-owned: each physical CUDA block round-robins its puts across
    * numNics * qpsPerBlockPerNic lanes, using NIC-first lane ordinals.
    *
    * Single-NIC usage: pass a 1-element nicDevices span. All ops fall through
@@ -255,7 +256,8 @@ class P2pIbgdaTransportDevice {
    * @param nicDevices          GPU span of per-NIC bundles (length =
    *                              numNics). Each NicDeviceIbgdaResources owns
    *                              maxChannels * qpDirectionCount *
-   *                              qpsPerConnection main and companion QPs.
+   *                              qpsPerConnection main QPs and either zero or
+   *                              the same number of companion QPs.
    * @param ownedRemoteSignalBuf  Remote-side signal outbox: writing here
    *                              targets the peer's local signal inbox.
    *                              Used by the slot-index signal API.
@@ -996,7 +998,6 @@ class P2pIbgdaTransportDevice {
     uint32_t lane_ordinal{0};
     uint32_t channel_id{0};
     uint32_t qp_slot_per_nic{0};
-    uint32_t companion_slot_per_nic{0};
     IbDirection direction{IbDirection::Send};
     IbQpState* qp_state{nullptr};
     doca_gpu_dev_verbs_qp* qp{nullptr};
@@ -1102,22 +1103,31 @@ class P2pIbgdaTransportDevice {
           directionIndex) *
          static_cast<uint32_t>(qpsPerConnection_)) +
         qpIndex;
-    const uint32_t companionSlotPerNic = qpSlotPerNic;
     const NicDeviceIbgdaResources& nic = nicDevices_[nicId];
     if (qpIndex >= static_cast<uint32_t>(qpsPerConnection_) ||
-        qpSlotPerNic >= nic.qps.size() ||
-        companionSlotPerNic >= nic.companion_qps.size()) {
+        qpSlotPerNic >= nic.qps.size()) {
       printf(
           "[PIPES] FATAL: invalid IBGDA lane channel=%u direction=%u nic=%u "
-          "qpIndex=%u qpsPerConnection=%d qps=%u companionQps=%u\n",
+          "qpIndex=%u qpsPerConnection=%d qps=%u\n",
           channelId,
           directionIndex,
           nicId,
           qpIndex,
           qpsPerConnection_,
-          static_cast<unsigned>(nic.qps.size()),
-          static_cast<unsigned>(nic.companion_qps.size()));
+          static_cast<unsigned>(nic.qps.size()));
       PIPES_DEVICE_TRAP();
+    }
+    doca_gpu_dev_verbs_qp* companionQp = nullptr;
+    if (!nic.companion_qps.empty()) {
+      if (qpSlotPerNic >= nic.companion_qps.size()) {
+        printf(
+            "[PIPES] FATAL: invalid IBGDA companion lane slot=%u "
+            "companionQps=%u\n",
+            qpSlotPerNic,
+            static_cast<unsigned>(nic.companion_qps.size()));
+        PIPES_DEVICE_TRAP();
+      }
+      companionQp = nic.companion_qps[qpSlotPerNic];
     }
     return IbgdaLane{
         .nic_id = nicId,
@@ -1125,11 +1135,21 @@ class P2pIbgdaTransportDevice {
         .lane_ordinal = laneOrdinal,
         .channel_id = channelId,
         .qp_slot_per_nic = qpSlotPerNic,
-        .companion_slot_per_nic = companionSlotPerNic,
         .direction = direction,
         .qp_state = &qp_state(channelId, direction),
         .qp = nic.qps[qpSlotPerNic],
-        .companion_qp = nic.companion_qps[companionSlotPerNic]};
+        .companion_qp = companionQp};
+  }
+
+  __device__ __forceinline__ doca_gpu_dev_verbs_qp* require_companion_qp(
+      const IbgdaLane& lane) const {
+    if (lane.companion_qp == nullptr) {
+      printf(
+          "[PIPES] FATAL: IBGDA local counter operation requires "
+          "enableCompanionQP=true\n");
+      PIPES_DEVICE_TRAP();
+    }
+    return lane.companion_qp;
   }
 
   __device__ __forceinline__ uint32_t
@@ -1409,12 +1429,19 @@ class P2pIbgdaTransportDevice {
     laneOrdinal = group.broadcast<uint32_t>(laneOrdinal);
     IbgdaLane lane =
         lane_from_ordinal(group.group_id, IbDirection::Send, laneOrdinal);
+    const bool hasCounter = counterBuf.ptr != nullptr;
+    if (hasCounter && lane.companion_qp == nullptr) {
+      if (group.is_leader()) {
+        (void)require_companion_qp(lane);
+      }
+      group.sync();
+      return;
+    }
 
     lastPutWqeIdx =
         put_cooperative_data_impl(group, lane, localBuf, remoteBuf, nbytes);
     if (group.is_leader()) {
       record_put_wqe(lane, lastPutWqeIdx);
-      const bool hasCounter = counterBuf.ptr != nullptr;
       if (hasSignal) {
         const uint64_t signalTicket = signal_fenced(lane, signalBuf, signalVal);
         record_signal_wqe(lane, signalTicket);
@@ -1952,7 +1979,7 @@ class P2pIbgdaTransportDevice {
         noSigRemoteAddr,
         noSigSinkAddr,
         0,
-        lane.companion_qp,
+        require_companion_qp(lane),
         counterRemoteAddr,
         counterSinkAddr,
         counterVal);
@@ -1960,7 +1987,7 @@ class P2pIbgdaTransportDevice {
 #else
     constexpr unsigned int kNumQps = 2;
     doca_gpu_dev_verbs_qp* qp = lane.qp;
-    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
+    doca_gpu_dev_verbs_qp* companionQp = require_companion_qp(lane);
 
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
@@ -2062,7 +2089,7 @@ class P2pIbgdaTransportDevice {
     constexpr unsigned int kNumQps = 2;
     const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
     doca_gpu_dev_verbs_qp* qp = lane.qp;
-    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
+    doca_gpu_dev_verbs_qp* companionQp = require_companion_qp(lane);
 
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
@@ -2185,7 +2212,7 @@ class P2pIbgdaTransportDevice {
       uint64_t counterVal) {
     const NicDeviceIbgdaResources& nic = nicDevices_[lane.nic_id];
     doca_gpu_dev_verbs_qp* qp = lane.qp;
-    doca_gpu_dev_verbs_qp* companionQp = lane.companion_qp;
+    doca_gpu_dev_verbs_qp* companionQp = require_companion_qp(lane);
 
     doca_gpu_dev_verbs_addr counterRemoteAddr = {
         .addr = reinterpret_cast<uint64_t>(counterBuf.ptr),
@@ -2341,14 +2368,14 @@ class P2pIbgdaTransportDevice {
   //   ┌────────────┐       RDMA put              ┌─────┴──────┐
   //   │sendStaging │ ─────────────────────────▶  │recvStaging │
   //   │  (GPU A)   │  + DATA_READY signal        │  (GPU B)   │
-  //   └────────────┘  + NIC_DONE counter         └────────────┘
+  //   └────────────┘  + local completion ticket  └────────────┘
   //        ▲                                           │
   //        └───────────── SLOT_FREE signal ────────────┘
   //
-  // Signal protocol (per channel/group, 3 primitives):
+  // Signal/completion protocol (per channel/group, 3 primitives):
   //   DATA_READY  — piggybacked on put (sender → receiver's signalBuf)
   //   SLOT_FREE   — explicit signal    (receiver → sender's signalBuf)
-  //   NIC_DONE    — loopback counter   (NIC → sender's counterBuf)
+  //   LOCAL_DONE  — main-QP completion ticket retained by the sender
   //
   // Terminology used below:
   //   channel window   = one channel's contiguous staging region. There are
@@ -2364,9 +2391,10 @@ class P2pIbgdaTransportDevice {
   //                        chunkSize = floor16(min(perBlockSlot,
   //                                             max_signal_bytes))
   //   channel progress   = persistent 16-byte-aligned protocol cursor.
-  //                        DATA_READY, SLOT_FREE, and NIC_DONE counters also
-  //                        advance by protocol bytes, which keeps cursor state
-  //                        independent of max_signal_bytes.
+  //                        DATA_READY and SLOT_FREE counters also advance by
+  //                        protocol bytes, which keeps cursor state independent
+  //                        of max_signal_bytes. Main-QP completion tickets gate
+  //                        reuse of local send staging.
   //
   // Typical usage:
   //   auto [role, sub] = group.partition(2);
@@ -2415,8 +2443,8 @@ class P2pIbgdaTransportDevice {
    *
    * Compatibility follows from using the same cumulative byte counters:
    * DATA_READY advances by bytesThis/chunk.bytes on each put, SLOT_FREE
-   * advances by the same amount after recv copies out of staging, and NIC_DONE
-   * advances by the same amount after the NIC completes the sender's WQE.
+   * advances by the same amount after recv copies out of staging, and the
+   * sender retains a main-QP completion ticket for each staging-slot use.
    * Blocking send()/recv() and async init share one transport-owned byte
    * cursor. Blocking calls advance it when the call completes; progress init
    * reserves that cursor range before returning so later blocking calls cannot
@@ -2539,17 +2567,17 @@ class P2pIbgdaTransportDevice {
    * Attempt bounded progress on one initialized send.
    *
    * This method advances at most one staged copy plus one RDMA put for the
-   * current chunk. It never spins on NIC_DONE or SLOT_FREE: if either
+   * current chunk. It never spins on local completion or SLOT_FREE: if either
    * dependency is not ready, it returns immediately so a higher-level scheduler
    * can try another independent lane. If a `AbortDevice` is enabled, it is
    * checked only at those readiness points and should already have been started
    * by the caller.
    *
-   * The send path first waits for NIC_DONE before reusing the local
-   * send-staging range, then copies user data into send-staging through
+   * The send path first checks the prior main-QP completion ticket before
+   * reusing the local send-staging range, then copies user data through
    * `CopyOp::send`, waits for SLOT_FREE before reusing the peer's recv-staging
    * range, and finally issues an RDMA put that piggybacks DATA_READY and
-   * records NIC_DONE in the local counter. Returning `Done` means the reserved
+   * records the returned completion ticket. Returning `Done` means the reserved
    * protocol byte range has completed. For unaligned payload sizes, the final
    * WQE may include transport-private padding; `CopyOp` is invoked only for
    * valid payload bytes.
@@ -2703,9 +2731,9 @@ class P2pIbgdaTransportDevice {
    * perBlockSlot into multiple signaled sub-chunks, enabling finer-grained
    * overlap at the receiver.
    *
-   * Signaling protocol (per group):
-   *   NIC_DONE   — loopback counter incremented by NIC after each RDMA put.
-   *                send waits on this before overwriting local sendStaging.
+   * Signaling/completion protocol (per group):
+   *   LOCAL_DONE — main-QP completion ticket retained by the sender. send waits
+   *                on this before overwriting local sendStaging.
    *   SLOT_FREE  — receiver increments by bytesThis for each signaled byte
    *                range. send waits before overwriting recvStaging.
    *   DATA_READY — sender increments by bytesThis, piggybacked on put.
@@ -2956,7 +2984,7 @@ class P2pIbgdaTransportDevice {
    *
    * Signal ordering invariant (critical for ring deadlock avoidance):
    *   1. Wait DATA_READY from sender (this transport)
-   *   2. Wait NIC_DONE on fwd transport's sendStaging (backpressure)
+   *   2. Wait for local main-QP completion on fwd sendStaging (backpressure)
    *   3. CopyOp::forward(dst, fwd_staging, staging, ...)
    *   4. Signal SLOT_FREE to sender (this transport) — BEFORE step 5
    *   5. Wait SLOT_FREE from fwd transport's receiver
@@ -2977,10 +3005,10 @@ class P2pIbgdaTransportDevice {
    *
    *   Fwd side (fwd transport):
    *     - Uses the forward channel's send progress cursor.
-   *     - Waits NIC_DONE on the forward channel's local completion counter.
+   *     - Waits on the forward channel's main-QP completion ticket.
    *     - Waits SLOT_FREE on the forward channel's local slot-free signal.
-   *     - RDMA puts with DATA_READY on the forward remote channel and
-   *       posts NIC_DONE credit per chunk to the local completion counter.
+   *     - RDMA puts with DATA_READY on the forward remote channel and records
+   *       the returned local-completion ticket per chunk.
    *
    * Any chain of send → forward* → recv is therefore valid: each
    * forward consumes exactly the signals its predecessor produces

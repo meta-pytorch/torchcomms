@@ -957,6 +957,7 @@ TEST_P(IbgdaBenchmarkFixture, PutCompletionComparison) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.enableCompanionQP = true;
     transportConfig.ibHca = benchIbHca();
     transportConfig.enableDataDirect = benchDataDirect();
     transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
@@ -1103,6 +1104,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalWaitCounter) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.enableCompanionQP = true;
     transportConfig.ibHca = benchIbHca();
     transportConfig.enableDataDirect = benchDataDirect();
     transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
@@ -1208,6 +1210,7 @@ TEST_P(IbgdaBenchmarkFixture, SignalOnly) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.enableCompanionQP = true;
     transportConfig.ibHca = benchIbHca();
     transportConfig.enableDataDirect = benchDataDirect();
     transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
@@ -1324,6 +1327,7 @@ TEST_P(IbgdaBenchmarkFixture, PutSignalComparison) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.enableCompanionQP = true;
     transportConfig.ibHca = benchIbHca();
     transportConfig.enableDataDirect = benchDataDirect();
     transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
@@ -1456,6 +1460,7 @@ TEST_P(IbgdaBenchmarkFixture, MultiPeerCounterFanOut) {
         .numCounterSlots = 1,
         .cudaDevice = localRank,
     };
+    transportConfig.enableCompanionQP = true;
     transportConfig.ibHca = benchIbHca();
     transportConfig.enableDataDirect = benchDataDirect();
     transportConfig.qpOrderingPolicy = benchQpOrderingPolicy();
