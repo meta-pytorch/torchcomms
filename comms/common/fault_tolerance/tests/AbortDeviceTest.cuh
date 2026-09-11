@@ -22,17 +22,50 @@ cudaError_t launchDeviceSetAbortWithContext(
     int* observedWinner,
     cudaStream_t stream);
 
+// Records a terminal reason through `AbortFlag`, the poll-state-free handle the
+// IBRC transport stores in device memory, rather than through `AbortDevice`.
+// The two are separate writers of the same shared reason and must produce the
+// same first-writer line.
+//
+// `observedContextReady` comes back -1 for a disabled handle, which has no
+// shared state to publish readiness into.
 cudaError_t launchAbortFlagSetAbort(
     AbortDevice abort,
     AbortReason reason,
+    bool useContext,
     int* observedWinner,
     int* observedContextReady,
+    cudaStream_t stream);
+
+// Arms the deadline, publishes `armedFlag`, then blocks on `startGate` before
+// letting the deadline lapse. Lets a test change the communicator default
+// *after* the deadline is built from it, which is the only way to tell an armed
+// `timeout_ms` from a live re-read of the shared default.
+cudaError_t launchDeviceArmThenAwaitHostThenTimeout(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations,
     cudaStream_t stream);
 
 cudaError_t launchDevicePublishReasonWithoutContext(
     AbortDevice abort,
     AbortReason reason,
     int* observedWinner,
+    cudaStream_t stream);
+
+// Releases `blocks` block leaders together onto the same expiring deadline, so
+// they genuinely contend for the `NONE -> TIMED_OUT` CAS. Writes one flag per
+// block into `observedExpired`; every block must report expiry, whether it won
+// the CAS or read the winner's reason back through the loss path.
+cudaError_t launchDeviceContendedTimeout(
+    AbortDevice abort,
+    int* startGate,
+    int* observedExpired,
+    int* observedWon,
+    int blocks,
+    int maxIterations,
     cudaStream_t stream);
 
 cudaError_t launchDeviceReadAbort(
@@ -89,6 +122,17 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     int* observedAfterCancel,
     int* observedMode,
     int maxIterations,
+    cudaStream_t stream);
+
+// Arms the handle and reports the arm-site clock state that the abort context
+// log line is derived from, so the derivation can be checked against the
+// timeout the caller actually asked for.
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
     cudaStream_t stream);
 
 // FT_ABORT_* macro coverage. Each kernel runs a bounded spin loop that can only

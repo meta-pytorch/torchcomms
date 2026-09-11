@@ -52,8 +52,10 @@ rules the detail exists to serve.
    work-in-progress paths. A spin loop that reaches main without an abort check
    is a hang waiting to happen.
 10. **Per-operation timeouts come only from the collective API.** The
-    communicator deadline stays late-bound in shared state so `setTimeout()` is
-    observed by already-created device handles.
+    communicator deadline stays late-bound in shared state, read by the device.
+    Do not cache it in the handle: a captured CUDA graph replays with no host
+    code, so a host-stamped value is frozen for every replay. See
+    *Per-operation timeouts*.
 11. **Validate a timeout's sign, not its size.** Choosing a sane magnitude is
     the caller's job; `std::chrono` types already make unit mistakes unlikely.
     A negative value must be rejected, because at the `AbortDevice` layer it
@@ -251,6 +253,103 @@ Two consequences worth internalizing:
   It trades abort-detection latency against a fixed percentage of every
   collective's runtime, and the cost is linear in the value.
 
+## What the abort log costs, and where it lives
+
+The section above is about the *check*. The *log* has the opposite constraint
+and is the other easy way to make abort handling expensive.
+
+The check must stay inlined -- it is the throttle gate, on every spin iteration
+of every wait. The log runs at most once per communicator, after something has
+already gone wrong, so its runtime cost is irrelevant. Its **static** cost is
+not: with RDC off, an inlined log body is copied into every abort call site in
+every kernel that includes `AbortDevice.cuh` -- about 60 call sites, multiplied
+across every consuming translation unit.
+
+So `detail::deviceLogFirstWriter()` is `noinline`, emitting one copy per
+translation unit. Counted on
+`//comms/mccl/collectives/allreduce:allreduce_fused_tree_device`
+(50 kernels across sm_80 and sm_90a): **6,930,608 instructions against 7,163,792
+inlined, 5.8% less**.
+
+That function is also the *only* device emitter. Every path that takes the
+shared reason from `NONE` to terminal -- `AbortDevice::setAbort()`,
+`AbortFlag::setAbort()`, and the deadline CAS in `markTimedOutIfExpired()` --
+reaches it through `detail::deviceTrySetAbort()`, so there is one format string
+and one field list. A `FT_ABORT_*` macro adds a second line under a *different*
+marker, `COMMS FT ABORT SITE:`, naming where the abort was observed; that is an
+observation rather than a transition, which is why it does not reuse the
+first-writer marker. Counting `COMMS FT ABORT FIRST WRITER:` therefore counts
+transitions, and it should be exactly one per communicator.
+
+The identity and timing fields (`op`, `timeout_ms`, `elapsed_ms`, and the raw
+cycle counts) ride on the first-writer line itself rather than on a line of
+their own. Two printfs interleave across aborting threads, and once they do
+there is no way to attribute a context line to its marker.
+
+Two things that are easy to get wrong here:
+
+- **64-bit division is expensive, not the `printf`.** Deriving a millisecond
+  value from cycle counts calls `__cuda_sm20_div_u64`, a device software
+  routine. The log does two of them, for `elapsed_ms` and `timeout_ms`, and
+  both are affordable only because the emitter is out-of-lined: that is two
+  divisions per translation unit on a path that runs at most once per
+  communicator, not two at each of the ~60 abort sites.
+  `timeout_ms` is *derived* from `deadline_cycles - startCycles` rather than
+  re-read from the shared default. The live default is not necessarily the value
+  the deadline was built from -- if the host moves it mid-operation the line
+  would report the new timeout beside a deadline computed from the old one --
+  and deriving it also keeps the armed value out of the handle, which is copied
+  into every kernel argument struct and again per block.
+- **Nothing may cross the out-of-line boundary by pointer.** The emitter takes
+  loose scalars. Handing it the handle instead forces the callee to materialize
+  it in local memory, which measured worse than not out-of-lining at all: 40
+  registers, a 160-byte stack frame, and 6 rather than 8 blocks/SM.
+- **The linkage needs `inline` in both compilation passes** and `noinline` in
+  only the device pass. `comms/ctran` device-links its objects, so external
+  device linkage there is `nvlink error : Multiple definition`; and gcc rejects
+  `inline` plus `noinline` under `-Werror`. See the comment on
+  `COMMS_FT_ABORT_LOG_LINKAGE`.
+
+## Abort log visibility: a post-mortem, not a signal
+
+The abort log is a `printf` from device code, and device `printf` does not write
+to stdout. It appends to a fixed-size per-context FIFO in device memory, sized by
+`cudaLimitPrintfFifoSize` (1 MiB by default). The host drains that FIFO only at
+specific **host-side flush points** -- as of CUDA 12.8: the start of a subsequent
+kernel launch, an explicit synchronize, a blocking memory copy, module load or
+unload, context destruction, and before a stream callback runs. Ordinary
+asynchronous kernel completion is not one of them, and nothing drains the FIFO
+mid-kernel.
+
+So the line becomes visible at the next flush point after the writing kernel has
+finished, not when the `printf` executed and not necessarily when the kernel
+exited. Two consequences for the abort log:
+
+- It is a **post-mortem record**. Under `AbortBehavior::SKIP` the kernel does
+  unwind -- the abort contract guarantees it -- and the line then surfaces at the
+  next flush. That is the common case and the log serves it well.
+- It is **not a liveness signal**. It cannot tell you a rank is stuck while it is
+  stuck: a hang is exactly the state in which no flush point is reached. Do not
+  build a watchdog, an alert, or an oncall runbook step on the appearance of
+  these lines.
+
+Under TRAP it is worse rather than better: `__trap()` faults the context, and
+FIFO contents at that point are not reliably delivered.
+
+### Further work: real-time device diagnostics
+
+A mapped-pinned store *is* visible to a polling host thread while the kernel is
+still running -- `AbortSignalHostDeviceRoundTrip` in `Perf.md` measures that path
+at 2.12us one way on H100. Real-time device diagnostics are therefore achievable,
+but they need a different mechanism: a record ring in the mapped allocation
+`Abort` already owns, plus a host poller and a small logging framework over it.
+That is a new subsystem on the abort path, whose whole value would be being
+simple enough to be correct, and it is **not in scope here**.
+
+One constraint worth recording for whoever builds it: records cannot carry the
+`const char*` `context` used today. That is a device address into constant
+memory, and the host cannot dereference it.
+
 ## MPT And Prims Integration
 
 `MultiPeerTransport` is the device-handle propagation point for Prims
@@ -393,14 +492,44 @@ handle, calls `AbortDevice::setOpTimeoutMs()` on that copy, and stores it in the
 kernel arguments, so the override travels by value and costs no shared-state
 read.
 
-When no per-operation timeout is supplied the override stays unset and the
-device reads the communicator timeout from shared state on every
-`startTimeout()`. That keeps it late-bound, so `IComm::setTimeout()` is observed
-even by transports that cache one device handle for the communicator's lifetime.
+When no per-operation timeout is supplied the override stays unset and
+`startTimeout()` reads the communicator timeout from mapped shared state.
+
+That read is not free, and it is worth knowing how unfree before optimizing it.
+Collectives arm on *every thread* -- `abortDevice.start()` at the top of the
+AllReduce tree and ring kernels is not leader-gated, because the poll throttle
+state it initializes has to be per-poller. Reads of one mapped cacheline from
+different warps serialize completely, so the cost is linear in warps at the full
+uncached-PCIe rate. Measured with `ArmOnly*` in `benchmarks/AbortBench.cc`:
+
+| Launch shape | Warps | Arm cost |
+|---|---:|---:|
+| 1 x 1 | 1 | +1.41us |
+| 1 x 640 *(the real AllReduce shape)* | 20 | **+18.71us** |
+| 8 x 640 | 160 | +144.82us |
+
+Roughly 0.9us per warp, linear in warps. `benchmarks/Perf.md` is the source of
+these numbers and carries the enabled/disabled columns they are derived from;
+re-run `abort_bench` and update *there* first, then mirror the summary here, so
+the two documents cannot drift into quoting different runs of the same
+benchmark.
+
+**And yet moving it off the device is the wrong fix**, which is the useful part
+of this measurement. Resolving the timeout on the host and stamping it into the
+handle removes all of the above in microbenchmark and changes the collective by
+**zero** -- the arm reads overlap with real kernel work, which an empty-kernel
+benchmark cannot show. It also breaks CUDA graphs: a captured graph replays with
+no host code in between, so the stamp is frozen and the deadline never lapses.
+`AbortState` lives in mapped memory precisely so graph-mode device code can read
+the live value.
+
+What actually costs is the poll *rate*, not this one read per arm -- see
+*Where the healthy-path overhead went*.
 
 `MCCL_ABORT_TIMEOUT_MS` seeds only the communicator timeout. It is never turned
-into a per-operation override: doing so would snapshot it at launch and defeat
-that late-binding.
+into a per-operation override: `opTimeoutMs()` means "the caller asked for this
+deadline", and conflating it with the communicator default would lose that
+distinction in the abort log.
 
 ## Integration Notes
 

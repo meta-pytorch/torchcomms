@@ -31,13 +31,20 @@ __global__ void deviceSetAbortWithContextKernel(
 __global__ void abortFlagSetAbortKernel(
     AbortDevice abort,
     AbortReason reason,
+    bool useContext,
     int* observedWinner,
     int* observedContextReady) {
   if (blockIdx.x == 0 && threadIdx.x == 0) {
+    const char* context = useContext ? "AbortFlagTest callsite" : nullptr;
     const AbortFlag flag{abort};
-    *observedWinner = flag.setAbort(reason) ? 1 : 0;
-    *observedContextReady =
-        detail::deviceLoadAcquireSystem(&abort.stateForFlag()->contextReady);
+    *observedWinner = flag.setAbort(reason, context) ? 1 : 0;
+    // A disabled handle has no shared state to read the readiness flag out of,
+    // so report -1 rather than dereferencing null. That also lets the disabled
+    // case assert something specific instead of just "not 1".
+    AbortState* state = abort.stateForFlag();
+    *observedContextReady = state != nullptr
+        ? detail::deviceLoadAcquireSystem(&state->contextReady)
+        : -1;
   }
 }
 
@@ -146,6 +153,98 @@ __global__ void deviceWaitForTimeoutKernel(
   *observedIsAborted = 0;
 }
 
+// Many block leaders race the same `NONE -> TIMED_OUT` deadline CAS.
+//
+// This is the shape `comms::prims::groupAborted()` produces in production: one
+// leader per block, all polling the same shared reason, all reaching their
+// local deadline at roughly the same moment. Exactly one wins the CAS; every
+// loser must still report "aborted", which it can only do by reading back the
+// reason the winner published through `observed`. A loser that returns false
+// would broadcast "not aborted" to its whole block and let it cross the abort
+// gate.
+//
+// The blocks are released together by spinning on `startGate` so the CAS is
+// genuinely contended rather than serialized by launch skew. `startGate` must
+// be mapped pinned host memory: the host has to be able to release the blocks
+// with a plain store *while the kernel runs*, and a `cudaMemcpy` on the same
+// stream would deadlock behind the kernel it is trying to unblock.
+__global__ void deviceContendedTimeoutKernel(
+    AbortDevice abort,
+    int* startGate,
+    int* observedExpired,
+    int* observedWon,
+    int maxIterations) {
+  if (threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+
+  // Wait for the host to release every block, then let the deadline lapse.
+  // Bounded so a broken handshake fails the assertions instead of hanging the
+  // suite; the bound is far longer than the host store needs.
+  for (int i = 0; i < maxIterations; ++i) {
+    if (detail::deviceLoadAcquireSystem(startGate) != 0) {
+      break;
+    }
+    __nanosleep(64);
+  }
+
+  int expired = 0;
+  bool flippedHere = false;
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.checkExpired(&flippedHere)) {
+      expired = 1;
+      break;
+    }
+    __nanosleep(64);
+  }
+  observedExpired[blockIdx.x] = expired;
+  observedWon[blockIdx.x] = flippedHere ? 1 : 0;
+}
+
+// Arms a deadline, tells the host it has armed, waits for the host to change
+// the communicator default, and only then lets the deadline lapse.
+//
+// This is what makes the armed-vs-live distinction observable. Without the
+// handshake the shared default still holds the value the deadline was built
+// from, so a log that (wrongly) re-read it live would print the same number and
+// the test would prove nothing.
+//
+// Both flags are mapped pinned host memory; see `deviceContendedTimeoutKernel`
+// for why a stream-ordered copy cannot be used to talk to a running kernel.
+__global__ void deviceArmThenAwaitHostThenTimeoutKernel(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+
+  int expected = 0;
+  (void)detail::deviceCompareExchangeSystem(armedFlag, &expected, 1);
+
+  for (int i = 0; i < maxIterations; ++i) {
+    if (detail::deviceLoadAcquireSystem(startGate) != 0) {
+      break;
+    }
+    __nanosleep(64);
+  }
+
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.isAborted()) {
+      *observedIsAborted = 1;
+      return;
+    }
+    __nanosleep(64);
+  }
+  *observedIsAborted = 0;
+}
+
 __global__ void deviceWaitForTimeoutStartAliasKernel(
     AbortDevice abort,
     int* observedMode,
@@ -167,6 +266,23 @@ __global__ void deviceWaitForTimeoutStartAliasKernel(
 
   *observedMode = static_cast<int>(AbortReason::NONE);
   *observedCheckExpired = 0;
+}
+
+__global__ void deviceReadArmedClockStateKernel(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+  *observedStartCycles = abort.startCycles();
+  *observedDeadlineCycles = abort.deadlineCycles();
+  *observedCyclesPerMs = abort.cyclesPerMs();
+  *observedOpId = abort.opId();
 }
 
 __global__ void deviceCancelAndRestartTimeoutKernel(
@@ -226,11 +342,37 @@ cudaError_t launchDeviceSetAbortWithContext(
 cudaError_t launchAbortFlagSetAbort(
     AbortDevice abort,
     AbortReason reason,
+    bool useContext,
     int* observedWinner,
     int* observedContextReady,
     cudaStream_t stream) {
   abortFlagSetAbortKernel<<<1, 1, 0, stream>>>(
-      abort, reason, observedWinner, observedContextReady);
+      abort, reason, useContext, observedWinner, observedContextReady);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceContendedTimeout(
+    AbortDevice abort,
+    int* startGate,
+    int* observedExpired,
+    int* observedWon,
+    int blocks,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceContendedTimeoutKernel<<<blocks, 1, 0, stream>>>(
+      abort, startGate, observedExpired, observedWon, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceArmThenAwaitHostThenTimeout(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceArmThenAwaitHostThenTimeoutKernel<<<1, 1, 0, stream>>>(
+      abort, armedFlag, startGate, observedIsAborted, maxIterations);
   return cudaGetLastError();
 }
 
@@ -331,6 +473,22 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     cudaStream_t stream) {
   deviceCancelAndRestartTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedAfterCancel, observedMode, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
+    cudaStream_t stream) {
+  deviceReadArmedClockStateKernel<<<1, 1, 0, stream>>>(
+      abort,
+      observedStartCycles,
+      observedDeadlineCycles,
+      observedCyclesPerMs,
+      observedOpId);
   return cudaGetLastError();
 }
 
