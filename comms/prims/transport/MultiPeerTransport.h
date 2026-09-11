@@ -321,6 +321,17 @@ class MultiPeerTransport {
   std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
       const IbgdaLocalBuffer& localBuf);
 
+  /**
+   * Host-driven RDMA writer for one peer (CPU posts put/signal into the IBRC
+   * command queue, no GPU kernel involved). Only available when the transport
+   * was built in IBRC mode (config.ibMode == kIbrc); throws otherwise.
+   *
+   * @param peerRank Global rank of the IB peer.
+   * @param queueIndex Command-queue index for this peer (default 0).
+   * @return A P2pIbrcHostWriter bound to that peer's command queue.
+   */
+  P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
+
   IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
   IbgdaLocalBuffer registerIbCounterBuffer(
       const IbgdaLocalBuffer& buffer,

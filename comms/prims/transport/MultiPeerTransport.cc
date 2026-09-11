@@ -460,6 +460,16 @@ std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
   throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
 }
 
+P2pIbrcHostWriter MultiPeerTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->getHostWriter(peerRank, queueIndex);
+  }
+  throw std::runtime_error(
+      "getHostWriter: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
 IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     std::size_t size,
     void** hostPtr) {
