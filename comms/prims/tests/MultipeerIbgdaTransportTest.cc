@@ -534,7 +534,9 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
           /*maxGroups=*/64,
           /*qpsPerBlockPerNic=*/1,
           collapsed);
-      EXPECT_EQ(transport->collapsedCqActive(), collapsed);
+      if (transport->collapsedCqActive() != collapsed) {
+        throw std::runtime_error("requested CQ format was not activated");
+      }
       dataBuffer = std::make_unique<DeviceBuffer>(nbytes);
       localDataBuf = transport->registerBuffer(dataBuffer->get(), nbytes);
       remoteDataBufs = transport->exchangeBuffer(localDataBuf);
@@ -621,6 +623,145 @@ TEST_P(MultipeerIbTransportTestFixture, BadRkeyCompletionErrorUnwinds) {
     ASSERT_EQ(allRunOk, 1) << "bad-rkey exercise failed on one rank: "
                            << runFailure;
   }
+}
+
+TEST_P(
+    MultipeerIbTransportTestFixture,
+    BadRkeyPrepareSendSlotConfirmationUnwinds) {
+#ifdef __HIP_PLATFORM_AMD__
+  GTEST_SKIP() << "send-slot CQ error handling is NVIDIA-only";
+#else
+  if (numRanks != 2) {
+    GTEST_SKIP() << "requires exactly 2 ranks, got " << numRanks;
+  }
+  if (backend() != IbTestBackend::Ibgda) {
+    GTEST_SKIP() << "completion-error handling under test is IBGDA-specific";
+  }
+
+  constexpr std::size_t kBytes = 64 * 1024;
+  constexpr std::chrono::milliseconds kDeadline{30000};
+  constexpr std::chrono::milliseconds kMaxElapsed{5000};
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+  for (const bool collapsed : {false, true}) {
+    SCOPED_TRACE(collapsed ? "collapsed" : "ring");
+    std::unique_ptr<TestIbTransport> transport;
+    std::unique_ptr<DeviceBuffer> dataBuffer;
+    IbgdaLocalBuffer localDataBuf{};
+    std::vector<IbgdaRemoteBuffer> remoteDataBufs;
+    P2pIbgdaTransportDevice* peerTransport = nullptr;
+
+    int localSetupOk = 0;
+    std::string skipReason;
+    try {
+      MultipeerIbTransportConfig config{
+          .cudaDevice = localRank,
+          .perChannelSize = kBytes,
+          .max_num_channels = 1,
+          .pipelineDepth = 2,
+      };
+      config.enableCollapsedCq = collapsed;
+      auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+      transport = std::make_unique<TestIbTransport>(
+          backend(), globalRank, numRanks, std::move(bootstrap), config);
+      if (transport->collapsedCqActive() != collapsed) {
+        throw std::runtime_error("requested CQ format was not activated");
+      }
+      dataBuffer = std::make_unique<DeviceBuffer>(kBytes);
+      localDataBuf = transport->registerBuffer(dataBuffer->get(), kBytes);
+      remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+      peerTransport = transport->getIbgdaTransportDevice(peerRank);
+      localSetupOk = 1;
+    } catch (const std::exception& e) {
+      skipReason = e.what();
+    }
+    int allSetupOk = 0;
+    MPI_CHECK(MPI_Allreduce(
+        &localSetupOk, &allSetupOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    if (allSetupOk == 0) {
+      GTEST_SKIP() << "IB transport not available on some rank: " << skipReason;
+    }
+
+    int localRunOk = 1;
+    std::string runFailure;
+    if (globalRank == 0) {
+      try {
+        auto poisonedRemote = remoteDataBufs[peerIndex];
+        if (poisonedRemote.rkey_per_device.size <= 0) {
+          throw std::runtime_error("remote buffer has no populated device key");
+        }
+        for (int nic = 0; nic < poisonedRemote.rkey_per_device.size; ++nic) {
+          poisonedRemote.rkey_per_device[nic].value ^=
+              comms::prims::detail::ibgdaNetworkByteOrderKey(0xFFU);
+        }
+
+        DeviceBuffer observationBuffer(sizeof(uint32_t));
+        if (const cudaError_t status =
+                cudaMemset(observationBuffer.get(), 0, sizeof(uint32_t));
+            status != cudaSuccess) {
+          throw std::runtime_error(
+              std::string("cudaMemset failed: ") + cudaGetErrorString(status));
+        }
+        comms::fault_tolerance::Abort abort(/*enabled=*/true);
+        auto deviceAbort = abort.getDeviceHandle();
+        deviceAbort.setOpTimeoutMs(kDeadline.count());
+
+        const auto start = std::chrono::steady_clock::now();
+        test::testPrepareSendSlotBadRkey(
+            peerTransport,
+            localDataBuf,
+            poisonedRemote,
+            kBytes,
+            static_cast<uint32_t*>(observationBuffer.get()),
+            deviceAbort,
+            /*numBlocks=*/1,
+            /*blockSize=*/32);
+        const cudaError_t syncStatus = cudaDeviceSynchronize();
+        const auto elapsed =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start);
+
+        if (syncStatus != cudaSuccess) {
+          throw std::runtime_error(
+              std::string("confirmation poll trapped: ") +
+              cudaGetErrorString(syncStatus));
+        }
+        if (elapsed >= kMaxElapsed) {
+          throw std::runtime_error("confirmation poll did not unwind promptly");
+        }
+        if (abort.reason() !=
+            comms::fault_tolerance::AbortReason::NETWORK_ERROR) {
+          throw std::runtime_error(
+              "completion error did not latch NETWORK_ERROR");
+        }
+        uint32_t observedUnretired = 0;
+        if (const cudaError_t status = cudaMemcpy(
+                &observedUnretired,
+                observationBuffer.get(),
+                sizeof(observedUnretired),
+                cudaMemcpyDeviceToHost);
+            status != cudaSuccess) {
+          throw std::runtime_error(
+              std::string("cudaMemcpy failed: ") + cudaGetErrorString(status));
+        }
+        if (observedUnretired != 1U) {
+          throw std::runtime_error("failed completion slot was retired");
+        }
+      } catch (const std::exception& e) {
+        localRunOk = 0;
+        runFailure = e.what();
+      }
+    }
+    int allRunOk = 0;
+    MPI_CHECK(MPI_Allreduce(
+        &localRunOk, &allRunOk, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    ASSERT_EQ(allRunOk, 1) << "send-slot CQ error exercise failed: "
+                           << runFailure;
+  }
+#endif
 }
 
 /*

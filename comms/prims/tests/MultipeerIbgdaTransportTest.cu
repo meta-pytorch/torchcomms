@@ -1679,6 +1679,78 @@ void testRegisteredSendDrainWithAbort(
 #endif
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void prepareSendSlotBadRkeyKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  abort.start();
+
+  if (group.is_leader()) {
+    ThreadGroup solo{
+        0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+    const auto ticket = transport->put(
+        solo,
+        localBuf,
+        poisonedRemoteBuf,
+        nbytes,
+        /*signalId=*/-1,
+        /*signalVal=*/0);
+    detail::record_send_completion<protocol::Simple>(
+        *transport,
+        group.group_id,
+        /*slotId=*/0,
+        /*generation=*/0,
+        ticket);
+  }
+  group.sync();
+
+  const bool unretired = detail::prepare_send_slot<protocol::Simple>(
+      *transport,
+      group,
+      /*slotId=*/0,
+      /*generation=*/1,
+      abort);
+  if (group.is_leader()) {
+    *observedUnretired = static_cast<uint32_t>(unretired);
+  }
+}
+#endif
+
+void testPrepareSendSlotBadRkey(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)localBuf;
+  (void)poisonedRemoteBuf;
+  (void)nbytes;
+  (void)observedUnretired;
+  (void)abort;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("send-slot CQ error test is NVIDIA-only");
+#else
+  prepareSendSlotBadRkeyKernel<<<numBlocks, blockSize>>>(
+      transport, localBuf, poisonedRemoteBuf, nbytes, observedUnretired, abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,

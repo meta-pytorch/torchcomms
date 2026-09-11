@@ -602,9 +602,11 @@ inline constexpr int kNumProtoSlots = 2;
 
 // Identifies a lane-local completion threshold returned by put().
 // completionId is the send-lane ordinal; value is complete once that lane's
-// backend-specific completion frontier reaches it.
+// backend-specific completion frontier reaches it. posted is false when the
+// operation stopped before publishing a WQE.
 struct IbLocalCompletionTicket {
   uint32_t completionId{0};
+  bool posted{false};
   uint64_t value{0};
 };
 
