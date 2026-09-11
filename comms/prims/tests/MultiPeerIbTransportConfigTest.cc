@@ -607,9 +607,9 @@ TEST(MultiPeerIbTransportConfigTest, LazyQpPayloadDoesNotScaleWithGroupLimit) {
   // static_asserts on, so there is no second copy of the number to drift.
   //
   // Deliberately NOT `kMaxIbQpsPerPeerPerNic < kMaxIbGroups *
-  // kMaxIbQpsPerBlockPerNic`: that only holds because kMaxIbGroups is 256
-  // today. Returning it to 64 would make the product exactly 8192 and turn the
-  // check red even though the constant would still be independent -- it
+  // kMaxIbQpsPerBlockPerNic`: that holds only for the values the two constants
+  // happen to have. At kMaxIbGroups=64 the product is exactly 8192, which turns
+  // the check red even though the constants would still be independent -- it
   // expresses the decoupling only by accident.
   //
   // Nor `sizeof(PeerQpPayload) <= kMaxPeerQpPayloadBytes`: that is the header's
@@ -634,9 +634,11 @@ TEST(MultiPeerIbTransportConfigTest, LazyQpPayloadDoesNotScaleWithGroupLimit) {
          "raising kMaxIbGroups past the QP budget needs a wire-format change";
 }
 
-// The shape this limit exists for -- SendRecvTile's 256 channels, both
-// directions -- must fit the QP budget while landing above the eager exchange
-// cap, i.e. it is reachable only with ibLazyConnect=true.
+// The widest shape this limit admits -- kMaxIbGroups channels, both directions
+// -- must fit the QP budget while landing above the eager exchange cap, i.e. it
+// is reachable only with ibLazyConnect=true. Written against the constant, not
+// against a literal, so a bump to the index space re-checks the same property
+// at its new width instead of silently continuing to check the old one.
 TEST(MultiPeerIbTransportConfigTest, MaxGroupShapeFitsBudgetAndRequiresLazy) {
   MultipeerIbTransportConfig config;
   config.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape

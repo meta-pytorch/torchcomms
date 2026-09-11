@@ -4026,10 +4026,10 @@ TEST_P(LazyModeTestFixture, MaterializeAndTransferAboveEagerQpLimit) {
 
   // Try only around construction, with the skip decision reduced across ranks
   // -- same shape as FixedChannelSendRecvSpansGroupsAboveLegacyLimit below, and
-  // for the same two reasons: a genuine failure at the 256-group shape is what
-  // this test exists to catch and must not be reported as "backend not
-  // available", and a rank that bailed out mid-body would leave its peer
-  // blocked in an inner barrier.
+  // for the same two reasons: a genuine failure at the full kMaxIbGroups-wide
+  // shape is what this test exists to catch and must not be reported as
+  // "backend not available", and a rank that bailed out mid-body would leave
+  // its peer blocked in an inner barrier.
   std::unique_ptr<TestIbTransport> transport;
   std::string setupError;
   try {
@@ -4115,17 +4115,22 @@ TEST_P(LazyModeTestFixture, MaterializeAndTransferAboveEagerQpLimit) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 }
 
-// The group ceiling this diff replaces. Named so the test below cannot
-// quietly become vacuous if kMaxIbGroups is ever lowered back toward it.
-constexpr int kLegacyMaxIbGroups = 64;
+// The group ceiling the current kMaxIbGroups replaces. Named so the test below
+// cannot quietly become vacuous if kMaxIbGroups is ever lowered back toward it.
+// Tracks the previous value on every bump -- 64 before kMaxIbGroups went to
+// 256, 256 now that it is 1024 -- so the test always proves coverage of the
+// range the most recent bump added, not of a range some earlier bump already
+// covered.
+constexpr int kLegacyMaxIbGroups = 256;
 
 // MaterializeAndTransferAboveEagerQpLimit proves the lazy peer EXCHANGE
-// survives 512 QPs. It does not prove send/recv can SELECT a channel above the
-// old ceiling: it moves its bytes with a single-block put/signal, so it only
-// ever touches channel 0. Channel selection indexes a different set of
-// structures per block -- the per-(channel, protocol) resource slot, its
-// staging window, its progress cursor and its QP lane -- and none of those
-// above index 63 were reached.
+// survives the widest shape the index space admits (kMaxIbGroups x
+// kIbDirections QPs per peer per NIC). It does not prove send/recv can SELECT a
+// channel above the old ceiling: it moves its bytes with a single-block
+// put/signal, so it only ever touches channel 0. Channel selection indexes a
+// different set of structures per block -- the per-(channel, protocol) resource
+// slot, its staging window, its progress cursor and its QP lane -- and index 0
+// is the only entry of any of them that test reaches.
 //
 // So drive the real fixed-channel send/recv path with one block per channel
 // across the whole 0..kMaxIbGroups-1 range. Two properties make the coverage
@@ -4134,9 +4139,9 @@ constexpr int kLegacyMaxIbGroups = 64;
 //     its slice zeroed instead of being covered by a sibling block writing the
 //     same bytes;
 //   - bytesPerBlock stays inside one pipeline window, so a sender never waits
-//     on a peer's SLOT_FREE. With 256 blocks per rank and far fewer resident,
-//     a sender that could block on a not-yet-scheduled receiver would deadlock
-//     the test rather than fail it.
+//     on a peer's SLOT_FREE. With kMaxIbGroups blocks per rank (1024 today) and
+//     far fewer resident, a sender that could block on a not-yet-scheduled
+//     receiver would deadlock the test rather than fail it.
 TEST_P(LazyModeTestFixture, FixedChannelSendRecvSpansGroupsAboveLegacyLimit) {
   if (numRanks != 2) {
     GTEST_SKIP() << "Requires exactly 2 ranks";
@@ -4156,17 +4161,18 @@ TEST_P(LazyModeTestFixture, FixedChannelSendRecvSpansGroupsAboveLegacyLimit) {
 
   // Only the transport construction is allowed to turn into a skip, and the
   // skip decision is reduced across ranks before it is acted on. Wrapping the
-  // whole body instead would (a) report a genuine failure at the 256-group
-  // shape -- exactly what this test targets -- as "backend not available", and
-  // (b) let one rank bail out mid-test while its peer is still blocked on an
-  // inner barrier, hanging the run instead of failing it.
+  // whole body instead would (a) report a genuine failure at the full
+  // kMaxIbGroups-wide shape -- exactly what this test targets -- as "backend
+  // not available", and (b) let one rank bail out mid-test while its peer is
+  // still blocked on an inner barrier, hanging the run instead of failing it.
   std::unique_ptr<TestIbTransport> transport;
   std::string setupError;
   try {
     // perChannelSize > 0 selects the fixed-channel shape, which is also what
     // makes the transport derive maxGroups from max_num_channels -- device-side
-    // QP selection needs block_id < maxGroups, so a 64-group transport would
-    // fault on block 64 rather than merely mis-route it.
+    // QP selection needs block_id < maxGroups, so a transport built with a
+    // narrower group count would fault on the first block past its own ceiling
+    // rather than merely mis-route it.
     transport = createLazyTransport(kMaxIbGroups, perChannelSize);
   } catch (const std::exception& e) {
     setupError = e.what();

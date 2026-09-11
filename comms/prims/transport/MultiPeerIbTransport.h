@@ -711,7 +711,20 @@ constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 // on it. So the QP cost of a transport is set by `max_num_channels` (times
 // directions, times qpsPerConnection) and the number of peers touched, and the
 // knob for reducing it is `max_num_channels`, not this limit.
-constexpr int kMaxIbGroups = 256;
+//
+// Sized for the a2av 1.5D compressed sweep at high blocks/peer: GB300 runs
+// BPP=170 x 3 IB peers = 510 groups, above the previous 256 ceiling.
+//
+// 1024 rather than 512, which that consumer would also clear: the number that
+// bounds real resource use is kMaxIbQpsPerPeerPerNic below, not this one, so
+// widening the index space costs no memory and no QP -- it only widens the set
+// of shapes the constructor accepts. 512 would leave two spare group indices,
+// so BPP 171, a fourth IB peer (4 x 170 = 680), or a rail-count change would
+// each become a construction-time throw for no reason but this ceiling. At
+// 1024 the widest admissible shape is 1024 x kIbDirections = 2048 QPs per peer
+// per NIC, a quarter of the 8192 budget below, which stays the binding limit
+// on what actually gets created.
+constexpr int kMaxIbGroups = 1024;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
 
 // Budget for QPs actually created per (peer, NIC): max_num_channels *
