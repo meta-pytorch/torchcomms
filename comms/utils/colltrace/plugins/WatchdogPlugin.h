@@ -4,6 +4,8 @@
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
+#include <chrono>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -28,6 +30,24 @@ struct WatchdogPluginConfig {
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
   std::function<void(CollTraceEvent&)> funcTriggerOnError;
+  /*
+   * funcMarkError runs synchronously before a deferred trigger. The default
+   * marker is emitted synchronously so Analyzer can snapshot the failure state
+   * before bounded history advances and process teardown can discard it.
+   *
+   * An unset deferErrorTrigger defers the default fatal handler and keeps a
+   * custom handler synchronous. An explicit value always wins. The default
+   * deferred path writes its diagnostic marker synchronously, then delays only
+   * termination so process teardown cannot discard the marker.
+   *
+   * A custom deferred callback receives a point-in-time record snapshot plus
+   * replay, capture, and terminal identifiers. Its waitEvent is intentionally
+   * absent because wait events have unique ownership and no cloning contract.
+   * Deferred callbacks must own anything they capture.
+   */
+  std::function<void(CollTraceEvent&)> funcMarkError;
+  std::chrono::milliseconds asyncErrorDelay{std::chrono::seconds{60}};
+  std::optional<bool> deferErrorTrigger;
 
   // Timeout config
   bool checkTimeout{false};
@@ -55,6 +75,10 @@ class WatchdogPlugin : public ICollTracePlugin {
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
 
+  CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& curEvent,
+      CollTraceTerminalReason reason) noexcept override;
+
   static constexpr std::string_view kWatchdogPluginName = "WatchdogPlugin";
 
  private:
@@ -69,8 +93,13 @@ class WatchdogPlugin : public ICollTracePlugin {
   struct EventTimer {
     folly::stop_watch<> timer;
     ICollWaitEvent::system_clock_time_point startTs{};
+    bool timeoutTriggered{false};
   };
   std::unordered_map<CollTraceEvent*, EventTimer> eventTimers_;
+  bool asyncErrorTriggered_{false};
+  bool asyncErrorMarked_{false};
+
+  CommsMaybeVoid dispatchAsyncError(CollTraceEvent& curEvent) noexcept;
 };
 
 } // namespace meta::comms::colltrace
