@@ -163,6 +163,34 @@ inline uint64_t hostDeviceCyclesPerMs(int device) {
 #endif
 }
 
+/**
+ * Device spelling of `abortReasonToString()`.
+ *
+ * The host version returns `std::string_view`, which is not usable as a printf
+ * argument from device code, so the names are duplicated here as literals.
+ * Keep the two in sync when `AbortReason` gains a value.
+ */
+__device__ __forceinline__ const char* deviceAbortReasonName(
+    AbortReason reason) {
+  switch (reason) {
+    case AbortReason::NONE:
+      return "none";
+    case AbortReason::ABORTED:
+      return "aborted";
+    case AbortReason::TIMED_OUT:
+      return "timed_out";
+    case AbortReason::BOOTSTRAP_POLL:
+      return "bootstrap_poll";
+    case AbortReason::NETWORK_ERROR:
+      return "network_error";
+    case AbortReason::INTERNAL_ERROR:
+      return "internal_error";
+    case AbortReason::IBRC_PROXY_TIMEOUT:
+      return "ibrc_proxy_timeout";
+  }
+  return "unknown";
+}
+
 __device__ __forceinline__ bool deviceIsValidTerminalReason(
     AbortReason reason) {
   switch (reason) {
@@ -210,7 +238,7 @@ __device__ __forceinline__ void publishContextReady(AbortState* state) {
 }
 
 /**
- * Emits the device first-writer line for a transition this call just won.
+ * Emits the one device abort line, from the transition that just won the CAS.
  *
  * Every device path that takes `AbortState::abort` from `NONE` to a terminal
  * reason ends here -- `AbortDevice::setAbort`, `AbortFlag::setAbort`, and the
@@ -218,23 +246,44 @@ __device__ __forceinline__ void publishContextReady(AbortState* state) {
  * `deviceTrySetAbort`. There is no second emitter, so the marker has one
  * spelling and one field list, and counting it counts transitions.
  *
+ * The identity and timing every abort has -- which operation, which deadline,
+ * how long it waited -- go on this same line rather than a second one. Two
+ * printfs from two aborting threads interleave, and once they do there is no
+ * way to tell which context belongs to which marker; one printf per transition
+ * cannot be torn apart. It also means the fields are formatted in exactly one
+ * place, so adding one cannot land in some emitters and miss others.
+ *
+ * **Takes scalars, never the handle.** This is out-of-lined (see
+ * `COMMS_FT_ABORT_LOG_LINKAGE`), and anything that crosses that boundary by
+ * pointer has to be materialized in memory by the callee -- passing
+ * `const AbortDevice*` here spilled the whole handle to local memory and cost
+ * more than the inlining the outlining was meant to avoid: 40 registers, a
+ * 160-byte stack frame, and 6 rather than 8 blocks/SM. The caller already has
+ * these four values live in registers, so reading them there and passing them
+ * by value is free on the hot path and cheap across the call.
+ *
+ * `opId` is -1 when the writer has no operation identity, matching the
+ * `timeout_ms` / `elapsed_ms` sentinels on the same line. It is signed for
+ * exactly that reason: zero is a real operation number, so it cannot double as
+ * "absent". `startCycles == 0` likewise means "never armed" and prints the
+ * timing fields as unarmed -- which is what `AbortFlag` passes, since it
+ * deliberately carries no per-operation identity or arm-site clock.
+ *
  * `FT_ABORT_CHECK` adds a separate `FT_ABORT_SITE_` line carrying the caller's
  * message and source location. That is an observation, not a transition, so it
  * deliberately does not reuse this marker.
  */
 COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
     AbortReason reason,
-    const char* context) {
-  // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
-  printf(
-      FT_ABORT_FIRST_WRITER_DEVICE_ "reason=%d context=%s\n",
-      static_cast<int>(reason),
-      context == nullptr ? "" : context);
-}
+    const char* context,
+    long long opId,
+    uint64_t startCycles,
+    uint64_t deadlineCycles,
+    uint64_t cyclesPerMs);
 
 /**
  * Records a terminal reason from device code, first-writer-wins, and emits the
- * common first-writer marker if this call is the winner.
+ * abort line if this call is the winner.
  *
  * Shared by both device writers of `AbortState::abort` -- `AbortDevice` and
  * `AbortFlag`. They differ in what else they carry (a poll throttle, a
@@ -242,8 +291,12 @@ COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
  * it are the same event, and a writer that transitions without logging leaves
  * an abort with no greppable origin.
  *
- * Takes the raw `AbortState*` rather than either handle type so it can be
- * defined once, before both, without a forward declaration dance.
+ * Takes the raw `AbortState*` for the CAS and the diagnostics as loose scalars
+ * rather than a handle. Two reasons, and they point the same way: `AbortFlag`
+ * has state but no handle and still has to take this path, and the emitter this
+ * forwards to must not receive anything by pointer (see
+ * `deviceLogFirstWriter`). The callers are members of the handle types, so they
+ * read these out of registers they already hold.
  *
  * `observed` reports the reason already in place when the CAS loses. A caller
  * that needs to distinguish "someone else recorded the reason I wanted" from
@@ -256,6 +309,10 @@ __device__ __forceinline__ bool deviceTrySetAbort(
     AbortState* state,
     AbortReason newReason,
     const char* context,
+    long long opId,
+    uint64_t startCycles,
+    uint64_t deadlineCycles,
+    uint64_t cyclesPerMs,
     AbortReason* observed = nullptr) {
   if (observed != nullptr) {
     *observed = AbortReason::NONE;
@@ -276,7 +333,8 @@ __device__ __forceinline__ bool deviceTrySetAbort(
     // Device context is intentionally not persisted in mapped host state, so
     // the winner completes the readiness protocol immediately.
     publishContextReady(state);
-    deviceLogFirstWriter(newReason, context);
+    deviceLogFirstWriter(
+        newReason, context, opId, startCycles, deadlineCycles, cyclesPerMs);
   } else if (observed != nullptr) {
     // The CAS wrote back what it found, so this costs no extra read.
     *observed = static_cast<AbortReason>(expected);
@@ -363,11 +421,47 @@ struct AbortDevice final {
   }
 
   /**
+   * Stamps the collective operation number this handle belongs to.
+   *
+   * Diagnostic only: nothing branches on it. It exists so an abort log line can
+   * be joined against colltrace and against the other ranks' lines for the same
+   * operation, which is otherwise impossible -- a device wait can see a signal
+   * value but has no way to know which collective it belongs to.
+   *
+   * Same rule as `setOpTimeoutMs()`: set it on a per-operation COPY of the
+   * handle. Communicator-scoped handles are shared, so mutating one in place
+   * would misattribute later operations.
+   */
+  __host__ __device__ void setOpId(uint64_t opId) {
+    opId_ = opId;
+  }
+
+  __host__ __device__ uint64_t opId() const {
+    return opId_;
+  }
+
+  /**
+   * Device-clock value when `startTimeout()` last armed this handle, or zero if
+   * it was never armed. Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t startCycles() const {
+    return startCycles_;
+  }
+
+  /**
    * Device-clock value this handle's deadline expires at, or zero when no
    * device deadline is active. Cold-path diagnostics only.
    */
   __host__ __device__ uint64_t deadlineCycles() const {
     return deadlineCycles_;
+  }
+
+  /**
+   * Device clock cycles per millisecond for the device this handle targets.
+   * Cold-path diagnostics only.
+   */
+  __host__ __device__ uint64_t cyclesPerMs() const {
+    return cyclesPerMs_;
   }
 
   /**
@@ -379,8 +473,9 @@ struct AbortDevice final {
    * than silently creating an effectively infinite deadline.
    */
   __device__ void startTimeout() {
+    deadlineCycles_ = 0;
+    startCycles_ = 0;
     if (!isEnabled()) {
-      deadlineCycles_ = 0;
       return;
     }
     const auto now = detail::deviceClock();
@@ -388,9 +483,12 @@ struct AbortDevice final {
     // first `checkExpired()` on every armed handle unthrottled, which is one
     // uncached mapped-pinned read on the one call guaranteed to happen.
     nextPollCycles_ = now + pollIntervalCycles_;
+    // Stamped before the deadline is resolved, and stamped even when no
+    // deadline results. Diagnostics need "how long has this been waiting",
+    // which is a property of the arm site, not of whether a deadline was armed.
+    startCycles_ = now;
     const auto timeoutMs = resolveTimeoutMs();
     if (timeoutMs <= 0 || cyclesPerMs_ == 0) {
-      deadlineCycles_ = 0;
       return;
     }
     const auto timeoutMsU = static_cast<uint64_t>(timeoutMs);
@@ -537,28 +635,6 @@ struct AbortDevice final {
   }
 
   /**
-   * Records the first shared abort reason from device code.
-   *
-   * Every non-`NONE` AbortReason is terminal. `AbortReason::NONE` and unknown
-   * enum values are invalid; debug/device assert builds catch them, and
-   * release-compatible builds return before touching shared state. The CAS
-   * only transitions the shared state from `NONE`, so later writers cannot
-   * overwrite the first terminal reason. `context` matches the host API but is
-   * never persisted in shared state; device-side diagnostics may consume it at
-   * the winning callsite without adding mapped-memory traffic.
-   *
-   * Returns whether this call performed the `NONE` to terminal transition.
-   */
-  __device__ bool setAbort(
-      AbortReason newReason = AbortReason::ABORTED,
-      const char* context = nullptr) const {
-    return detail::deviceTrySetAbort(state_, newReason, context);
-  }
-
- private:
-  friend class Abort;
-
-  /**
    * Deadline duration for this operation, in milliseconds.
    *
    * A per-operation override wins because it is the more specific request and
@@ -584,6 +660,38 @@ struct AbortDevice final {
     }
     return getTimeoutMs();
   }
+
+  /**
+   * Records the first shared abort reason from device code.
+   *
+   * Every non-`NONE` AbortReason is terminal. `AbortReason::NONE` and unknown
+   * enum values are invalid; debug/device assert builds catch them, and
+   * release-compatible builds return before touching shared state. The CAS
+   * only transitions the shared state from `NONE`, so later writers cannot
+   * overwrite the first terminal reason. `context` matches the host API but is
+   * never persisted in shared state; device-side diagnostics may consume it at
+   * the winning callsite without adding mapped-memory traffic.
+   *
+   * Returns whether this call performed the `NONE` to terminal transition.
+   */
+  __device__ bool setAbort(
+      AbortReason newReason = AbortReason::ABORTED,
+      const char* context = nullptr) const {
+    // Read out of registers this handle already holds, rather than handing the
+    // handle across the emitter's out-of-line boundary; see
+    // `detail::deviceLogFirstWriter`.
+    return detail::deviceTrySetAbort(
+        state_,
+        newReason,
+        context,
+        static_cast<long long>(opId_),
+        startCycles_,
+        deadlineCycles_,
+        cyclesPerMs_);
+  }
+
+ private:
+  friend class Abort;
 
   /**
    * Creates a device handle for mapped pinned state owned by `Abort`.
@@ -646,6 +754,10 @@ struct AbortDevice final {
             state_,
             AbortReason::TIMED_OUT,
             kDeadlineExpiredContext,
+            static_cast<long long>(opId_),
+            startCycles_,
+            deadlineCycles_,
+            cyclesPerMs_,
             &observed)) {
       if (flippedHere != nullptr) {
         *flippedHere = true;
@@ -680,6 +792,12 @@ struct AbortDevice final {
   int64_t opTimeoutMs_{-1};
 
   /**
+   * Collective operation number, for diagnostics only. Travels by value with
+   * the rest of the handle, so reading it costs no shared-state access.
+   */
+  uint64_t opId_{0};
+
+  /**
    * Minimum device-clock cycles between reads of the mapped shared state.
    *
    * Bounds abort-observation latency to one interval while keeping spin loops
@@ -710,7 +828,98 @@ struct AbortDevice final {
    * the copied handle and is not part of the host-owned shared state.
    */
   uint64_t deadlineCycles_{0};
+
+  /**
+   * Device clock value at the last `startTimeout()`, or zero if never armed.
+   *
+   * Purely diagnostic: it lets a log line report how long the operation had
+   * been running. Stamped rather than derived because there is nothing to
+   * derive it from -- no other field records when the wait began.
+   */
+  uint64_t startCycles_{0};
 };
+
+// Copied by value into kernel argument structs and copied again per block, so
+// growth is not free. Two 8-byte diagnostic fields -- `opId_` and
+// `startCycles_` -- are the deliberate budget; anything more should go through
+// mapped state instead.
+static_assert(sizeof(AbortDevice) <= 80);
+
+namespace detail {
+
+COMMS_FT_ABORT_LOG_LINKAGE void deviceLogFirstWriter(
+    AbortReason reason,
+    const char* context,
+    long long opId,
+    uint64_t startCycles,
+    uint64_t deadlineCycles,
+    uint64_t cyclesPerMs) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  const uint64_t now = deviceClock();
+  // An unarmed handle has no origin to measure from, so report -1 rather than
+  // an elapsed time counted from clock zero. `now >= startCycles` is part of
+  // the guard, not a redundant check: the subtraction is unsigned, and
+  // `deviceClock()` is per-SM, so a handle armed on one SM and logged from
+  // another can read backwards. Without this a few cycles of skew print as an
+  // elapsed_ms near 10^13.
+  const bool armed = startCycles != 0 && cyclesPerMs != 0 && now >= startCycles;
+  const uint64_t elapsedCycles = armed ? now - startCycles : 0;
+  const int64_t elapsedMs =
+      armed ? static_cast<int64_t>(elapsedCycles / cyclesPerMs) : -1;
+  // The deadline that is actually in force, recovered from the arm site rather
+  // than re-read from shared state.
+  //
+  // `resolveTimeoutMs()` would be the live communicator default, and the live
+  // value is not necessarily the one this deadline was built from: if the host
+  // moves the default from A to B while the operation is in flight, a live read
+  // prints `timeout_ms=B` next to a `deadline_cycles` derived from A, and the
+  // line contradicts itself. `startTimeout()` computes
+  // `deadlineCycles_ = startCycles_ + timeoutMs * cyclesPerMs_`, so inverting
+  // that recovers the armed value exactly, with no field to store and no
+  // mapped-pinned read.
+  //
+  // The second 64-bit division is affordable only because this function is
+  // out-of-lined (see `COMMS_FT_ABORT_LOG_LINKAGE`). The 7.2% SASS figure that
+  // once argued against dividing here was measured with the log inlined at
+  // every abort site; one division per translation unit, on a path that runs
+  // at most once per communicator, is not that.
+  const bool deadlineArmed =
+      deadlineCycles != 0 && cyclesPerMs != 0 && deadlineCycles >= startCycles;
+  const int64_t timeoutMs = deadlineArmed
+      ? static_cast<int64_t>((deadlineCycles - startCycles) / cyclesPerMs)
+      : -1;
+  // One printf, not two. Two would interleave across aborting threads and leave
+  // no way to attribute a context line to its marker.
+  // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+  printf(
+      FT_ABORT_FIRST_WRITER_DEVICE_
+      "reason=%s context=%s op=%lld "
+      "timeout_ms=%lld elapsed_ms=%lld "
+      "elapsed_cycles=%llu deadline_cycles=%llu "
+      "now_cycles=%llu cycles_per_ms=%llu "
+      "block=%d thread=%d\n",
+      deviceAbortReasonName(reason),
+      context == nullptr ? "" : context,
+      opId,
+      static_cast<long long>(timeoutMs),
+      static_cast<long long>(elapsedMs),
+      static_cast<unsigned long long>(elapsedCycles),
+      static_cast<unsigned long long>(deadlineCycles),
+      static_cast<unsigned long long>(now),
+      static_cast<unsigned long long>(cyclesPerMs),
+      static_cast<int>(blockIdx.x),
+      static_cast<int>(threadIdx.x));
+#else
+  (void)reason;
+  (void)context;
+  (void)opId;
+  (void)startCycles;
+  (void)deadlineCycles;
+  (void)cyclesPerMs;
+#endif
+}
+
+} // namespace detail
 
 /**
  * A poll-state-free view of the shared abort state, safe to store in device
@@ -751,19 +960,33 @@ struct AbortFlag final {
    * system-scope CAS, which is exactly what the shared state is for. Only
    * *polling* needs per-thread throttle state, and this type has none.
    *
-   * The winner emits the same first-writer marker `AbortDevice` does, and
-   * publishes `contextReady` on the same terms, through the same helper. That
-   * costs this type nothing it was built to avoid: the `printf` is gated on the
-   * CAS win, so it happens at most once per communicator, and it adds no
-   * mutable state and no poll. Without it the IBRC proxy watchdogs -- which
-   * reach the shared reason only through this type -- can leave a communicator
-   * aborted with no greppable origin at all, and the `context` they pass
-   * describing which watchdog fired is discarded.
+   * The winner emits the same line `AbortDevice` does, and publishes
+   * `contextReady` on the same terms, through the same helper. That costs this
+   * type nothing it was built to avoid: the `printf` is gated on the CAS win,
+   * so it happens at most once per communicator, and it adds no mutable state
+   * and no poll. Without it the IBRC proxy watchdogs -- which reach the shared
+   * reason only through this type -- can leave a communicator aborted with no
+   * greppable origin at all, and the `context` they pass describing which
+   * watchdog fired is discarded.
+   *
+   * The diagnostics are passed absent because this type has none: no `opId`,
+   * no arm-site clock. The line still carries the marker, the reason and the
+   * context, and reports operation and timing as absent. That is the honest
+   * answer -- those are properties of an operation's handle, and a
+   * communicator-scoped flag is not one -- and printing them as absent rather
+   * than omitting them keeps the line's shape invariant across writers.
    */
   __device__ bool setAbort(
       AbortReason newReason = AbortReason::ABORTED,
       const char* context = nullptr) const {
-    return detail::deviceTrySetAbort(state_, newReason, context);
+    return detail::deviceTrySetAbort(
+        state_,
+        newReason,
+        context,
+        /*opId=*/-1,
+        /*startCycles=*/0,
+        /*deadlineCycles=*/0,
+        /*cyclesPerMs=*/0);
   }
 
   /**

@@ -37,6 +37,18 @@ cudaError_t launchAbortFlagSetAbort(
     int* observedContextReady,
     cudaStream_t stream);
 
+// Arms the deadline, publishes `armedFlag`, then blocks on `startGate` before
+// letting the deadline lapse. Lets a test change the communicator default
+// *after* the deadline is built from it, which is the only way to tell an armed
+// `timeout_ms` from a live re-read of the shared default.
+cudaError_t launchDeviceArmThenAwaitHostThenTimeout(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations,
+    cudaStream_t stream);
+
 cudaError_t launchDevicePublishReasonWithoutContext(
     AbortDevice abort,
     AbortReason reason,
@@ -110,6 +122,17 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     int* observedAfterCancel,
     int* observedMode,
     int maxIterations,
+    cudaStream_t stream);
+
+// Arms the handle and reports the arm-site clock state that the abort context
+// log line is derived from, so the derivation can be checked against the
+// timeout the caller actually asked for.
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
     cudaStream_t stream);
 
 // FT_ABORT_* macro coverage. Each kernel runs a bounded spin loop that can only

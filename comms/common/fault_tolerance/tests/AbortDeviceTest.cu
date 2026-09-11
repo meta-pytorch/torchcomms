@@ -203,6 +203,48 @@ __global__ void deviceContendedTimeoutKernel(
   observedWon[blockIdx.x] = flippedHere ? 1 : 0;
 }
 
+// Arms a deadline, tells the host it has armed, waits for the host to change
+// the communicator default, and only then lets the deadline lapse.
+//
+// This is what makes the armed-vs-live distinction observable. Without the
+// handshake the shared default still holds the value the deadline was built
+// from, so a log that (wrongly) re-read it live would print the same number and
+// the test would prove nothing.
+//
+// Both flags are mapped pinned host memory; see `deviceContendedTimeoutKernel`
+// for why a stream-ordered copy cannot be used to talk to a running kernel.
+__global__ void deviceArmThenAwaitHostThenTimeoutKernel(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+
+  int expected = 0;
+  (void)detail::deviceCompareExchangeSystem(armedFlag, &expected, 1);
+
+  for (int i = 0; i < maxIterations; ++i) {
+    if (detail::deviceLoadAcquireSystem(startGate) != 0) {
+      break;
+    }
+    __nanosleep(64);
+  }
+
+  for (int i = 0; i < maxIterations; ++i) {
+    if (abort.isAborted()) {
+      *observedIsAborted = 1;
+      return;
+    }
+    __nanosleep(64);
+  }
+  *observedIsAborted = 0;
+}
+
 __global__ void deviceWaitForTimeoutStartAliasKernel(
     AbortDevice abort,
     int* observedMode,
@@ -224,6 +266,23 @@ __global__ void deviceWaitForTimeoutStartAliasKernel(
 
   *observedMode = static_cast<int>(AbortReason::NONE);
   *observedCheckExpired = 0;
+}
+
+__global__ void deviceReadArmedClockStateKernel(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId) {
+  if (blockIdx.x != 0 || threadIdx.x != 0) {
+    return;
+  }
+
+  abort.startTimeout();
+  *observedStartCycles = abort.startCycles();
+  *observedDeadlineCycles = abort.deadlineCycles();
+  *observedCyclesPerMs = abort.cyclesPerMs();
+  *observedOpId = abort.opId();
 }
 
 __global__ void deviceCancelAndRestartTimeoutKernel(
@@ -302,6 +361,18 @@ cudaError_t launchDeviceContendedTimeout(
     cudaStream_t stream) {
   deviceContendedTimeoutKernel<<<blocks, 1, 0, stream>>>(
       abort, startGate, observedExpired, observedWon, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceArmThenAwaitHostThenTimeout(
+    AbortDevice abort,
+    int* armedFlag,
+    int* startGate,
+    int* observedIsAborted,
+    int maxIterations,
+    cudaStream_t stream) {
+  deviceArmThenAwaitHostThenTimeoutKernel<<<1, 1, 0, stream>>>(
+      abort, armedFlag, startGate, observedIsAborted, maxIterations);
   return cudaGetLastError();
 }
 
@@ -402,6 +473,22 @@ cudaError_t launchDeviceCancelAndRestartTimeout(
     cudaStream_t stream) {
   deviceCancelAndRestartTimeoutKernel<<<1, 1, 0, stream>>>(
       abort, observedAfterCancel, observedMode, maxIterations);
+  return cudaGetLastError();
+}
+
+cudaError_t launchDeviceReadArmedClockState(
+    AbortDevice abort,
+    unsigned long long* observedStartCycles,
+    unsigned long long* observedDeadlineCycles,
+    unsigned long long* observedCyclesPerMs,
+    unsigned long long* observedOpId,
+    cudaStream_t stream) {
+  deviceReadArmedClockStateKernel<<<1, 1, 0, stream>>>(
+      abort,
+      observedStartCycles,
+      observedDeadlineCycles,
+      observedCyclesPerMs,
+      observedOpId);
   return cudaGetLastError();
 }
 

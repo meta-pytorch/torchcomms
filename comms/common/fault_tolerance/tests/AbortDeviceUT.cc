@@ -105,7 +105,7 @@ std::string expectedDeviceFirstWriterLine(
     AbortReason reason,
     std::string_view context) {
   return std::string{kFirstWriterMarker} +
-      "device reason=" + std::to_string(static_cast<int>(reason)) +
+      "device reason=" + std::string{abortReasonToString(reason)} +
       " context=" + std::string{context};
 }
 
@@ -381,7 +381,7 @@ TEST(AbortDeviceTest, deviceNullContextCanLogForReasonCasWinner) {
       out,
       ::testing::HasSubstr(
           expectedDeviceFirstWriterLine(AbortReason::INTERNAL_ERROR, "") +
-          "\n"))
+          " op="))
       << "captured: " << out;
 }
 
@@ -1139,6 +1139,306 @@ TEST(AbortDeviceTest, perOpTimeoutOverridesCommunicatorDefault) {
       elapsedMs,
       static_cast<float>(kDeviceTimeoutExpectedMs) + kDeviceTimeoutAccuracyMs)
       << "per-op override did not take precedence over the 60s comm default";
+}
+
+// The abort context log reports `timeout_ms` and `elapsed_ms` as arithmetic
+// over the arm-site clock state rather than as stored values. This checks that
+// derivation against the timeout the caller actually asked for -- a log line
+// that silently reports the wrong deadline is worse than one that reports none.
+TEST(AbortDeviceTest, armedClockStateRecoversTheRequestedTimeout) {
+  constexpr int64_t kRequestedTimeoutMs = 2500;
+  constexpr uint64_t kOpId = 987654321;
+
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{kRequestedTimeoutMs});
+
+  auto handle = abort.getDeviceHandle();
+  handle.setOpId(kOpId);
+
+  auto startCycles = makeDeviceValue<unsigned long long>();
+  auto deadlineCycles = makeDeviceValue<unsigned long long>();
+  auto cyclesPerMs = makeDeviceValue<unsigned long long>();
+  auto opId = makeDeviceValue<unsigned long long>();
+  ASSERT_NE(startCycles, nullptr);
+  ASSERT_NE(deadlineCycles, nullptr);
+  ASSERT_NE(cyclesPerMs, nullptr);
+  ASSERT_NE(opId, nullptr);
+
+  EXPECT_EQ(
+      launchDeviceReadArmedClockState(
+          handle,
+          startCycles.get(),
+          deadlineCycles.get(),
+          cyclesPerMs.get(),
+          opId.get(),
+          /*stream=*/nullptr),
+      cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+
+  const auto observedStart = readDeviceValue(startCycles);
+  const auto observedDeadline = readDeviceValue(deadlineCycles);
+  const auto observedCyclesPerMs = readDeviceValue(cyclesPerMs);
+
+  EXPECT_EQ(readDeviceValue(opId), kOpId) << "op number must survive the copy";
+  EXPECT_GT(observedCyclesPerMs, 0U);
+  EXPECT_GT(observedStart, 0U) << "arming must stamp an origin to measure from";
+  EXPECT_GT(observedDeadline, observedStart);
+  EXPECT_EQ(
+      static_cast<int64_t>(
+          (observedDeadline - observedStart) / observedCyclesPerMs),
+      kRequestedTimeoutMs);
+}
+
+// An unarmed handle has no origin, so the log must be able to tell "never
+// armed" from "armed at clock zero" and report -1 rather than an elapsed time
+// counted from the start of the device's uptime.
+TEST(AbortDeviceTest, unarmedHandleReportsNoArmSite) {
+  Abort abort{/*enabled=*/true};
+  const auto handle = abort.getDeviceHandle();
+
+  // `startCycles == 0` is the field that actually encodes "never armed", and it
+  // is what makes the log's `armed` predicate false and its `elapsed_ms` -1.
+  // Asserting only `opId`/`cyclesPerMs` would leave this test passing through a
+  // regression in the arm-site origin, which is the thing it exists to protect.
+  EXPECT_EQ(handle.startCycles(), 0U)
+      << "an unarmed handle must have no origin to measure from";
+  EXPECT_EQ(handle.deadlineCycles(), 0U);
+  EXPECT_EQ(handle.opId(), 0U);
+  EXPECT_GT(handle.cyclesPerMs(), 0U)
+      << "the clock conversion is captured at handle creation, not at arm time";
+}
+
+// The two tests above check the arm-site state the context fields are derived
+// from. This checks the fields as *rendered*, which is a different claim: the
+// derivation can be correct while the printf that reports it is missing an
+// argument, has them out of order, or was never reached. The clock-state tests
+// pass in all three cases.
+//
+// It is also what pins the merge. `op`, `timeout_ms` and `elapsed_ms` used to
+// be a second `COMMS FT ABORT CONTEXT:` line; asserting they appear on the
+// first-writer line itself is what fails if anything splits them back apart.
+TEST(AbortDeviceTest, deviceFirstWriterLineCarriesTheAbortContext) {
+  constexpr int64_t kCommunicatorTimeoutMs = 2500;
+  constexpr uint64_t kOpId = 987654321;
+
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{kCommunicatorTimeoutMs});
+
+  auto handle = abort.getDeviceHandle();
+  handle.setOpId(kOpId);
+
+  auto won = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceSetAbortWithContext(
+        handle,
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/true,
+        won.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(won), 1);
+  // The kernel aborts without arming, so this operation has no deadline -- and
+  // the line says so, even though the communicator default is 2500ms.
+  //
+  // That distinction is the whole point of deriving `timeout_ms` from the arm
+  // site instead of reading the communicator default live. A live read would
+  // print `timeout_ms=2500` here and claim a deadline that was never in force,
+  // next to a `deadline_cycles=0` saying the opposite.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "device reason=" +
+          std::string{abortReasonToString(AbortReason::NETWORK_ERROR)} +
+          " context=AbortDeviceTest callsite op=" + std::to_string(kOpId) +
+          " timeout_ms=-1 elapsed_ms=-1 elapsed_cycles=0 deadline_cycles=0"))
+      << "captured: " << out;
+  // Still one line, carrying all of it.
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+}
+
+// The other half of that claim: when a deadline *is* armed, the line reports
+// the deadline actually in force.
+//
+// `timeout_ms` is recovered from `deadline_cycles - startCycles`, which is what
+// `startTimeout()` built the deadline from, so it stays truthful even if the
+// host moves the communicator default while the operation is in flight. Reading
+// the default live would print the new value beside a deadline derived from the
+// old one, and the line would contradict itself.
+TEST(AbortDeviceTest, deviceFirstWriterLineReportsTheArmedDeadline) {
+  // A is what the deadline is built from; B is what the shared default holds by
+  // the time the line is emitted. They have to differ, and the handshake below
+  // has to order them, or a live re-read of the default would print the same
+  // number as the armed value and this test would prove nothing.
+  constexpr int64_t kArmedTimeoutMs = 7;
+  constexpr int64_t kChangedTimeoutMs = 4321;
+  constexpr uint64_t kOpId = 24680;
+
+  Abort abort{/*enabled=*/true};
+  abort.setDefaultTimeout(std::chrono::milliseconds{kArmedTimeoutMs});
+
+  auto handle = abort.getDeviceHandle();
+  handle.setOpId(kOpId);
+
+  // Mapped pinned both ways: the device publishes "armed" and the host releases
+  // the deadline, both while the kernel is running.
+  int* armedFlag = nullptr;
+  int* startGate = nullptr;
+  ASSERT_EQ(
+      cudaHostAlloc(&armedFlag, sizeof(int), cudaHostAllocMapped), cudaSuccess);
+  ASSERT_EQ(
+      cudaHostAlloc(&startGate, sizeof(int), cudaHostAllocMapped), cudaSuccess);
+  ASSERT_NE(armedFlag, nullptr);
+  ASSERT_NE(startGate, nullptr);
+  *armedFlag = 0;
+  *startGate = 0;
+  int* deviceArmedFlag = nullptr;
+  int* deviceStartGate = nullptr;
+  ASSERT_EQ(
+      cudaHostGetDevicePointer(&deviceArmedFlag, armedFlag, 0), cudaSuccess);
+  ASSERT_EQ(
+      cudaHostGetDevicePointer(&deviceStartGate, startGate, 0), cudaSuccess);
+
+  auto observedIsAborted = makeDeviceValue<int>();
+  ASSERT_NE(observedIsAborted, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    const cudaError_t launched = launchDeviceArmThenAwaitHostThenTimeout(
+        handle,
+        deviceArmedFlag,
+        deviceStartGate,
+        observedIsAborted.get(),
+        kDeviceTimeoutPollIterations,
+        /*stream=*/nullptr);
+    if (launched != cudaSuccess) {
+      return launched;
+    }
+    // Wait until the deadline is actually built from A...
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (__atomic_load_n(armedFlag, __ATOMIC_ACQUIRE) == 0) {
+      if (std::chrono::steady_clock::now() > deadline) {
+        return cudaErrorUnknown;
+      }
+      std::this_thread::yield();
+    }
+    // ...then move the shared default out from under it before releasing the
+    // device. Anything that re-reads the default now sees B.
+    abort.setDefaultTimeout(std::chrono::milliseconds{kChangedTimeoutMs});
+    __atomic_store_n(startGate, 1, __ATOMIC_RELEASE);
+    return cudaSuccess;
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(cudaFreeHost(armedFlag), cudaSuccess);
+  EXPECT_EQ(cudaFreeHost(startGate), cudaSuccess);
+
+  ASSERT_TRUE(abort.isTimedOut());
+  EXPECT_EQ(readDeviceValue(observedIsAborted), 1);
+
+  // Delimited on both sides: an unterminated `timeout_ms=7` would also accept
+  // 70 or 4321 truncated to a prefix, which is most of what this test is for.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          expectedDeviceFirstWriterLine(
+              AbortReason::TIMED_OUT, kDeadlineExpiredContext) +
+          " op=" + std::to_string(kOpId) +
+          " timeout_ms=" + std::to_string(kArmedTimeoutMs) + " elapsed_ms="))
+      << "captured: " << out;
+  // And the value the rejected live read would have produced is absent.
+  EXPECT_THAT(
+      out,
+      ::testing::Not(
+          ::testing::HasSubstr(
+              " timeout_ms=" + std::to_string(kChangedTimeoutMs))))
+      << "captured: " << out;
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+}
+
+// `AbortFlag` has no handle to report on -- no `opId`, no arm-site clock. The
+// line still has to appear and keep its shape, with the timing fields reported
+// as unarmed, or the IBRC watchdogs that abort only through this type produce a
+// line that parses differently from every other abort.
+TEST(AbortDeviceTest, flagFirstWriterLineReportsUnarmedContext) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  const auto outCapture = captureDeviceStdoutWithStatus([&] {
+    return launchAbortFlagSetAbort(
+        abort.getDeviceHandle(),
+        AbortReason::IBRC_PROXY_TIMEOUT,
+        /*useContext=*/true,
+        won.get(),
+        contextReady.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(outCapture.status, cudaSuccess);
+  const std::string& out = outCapture.out;
+
+  EXPECT_EQ(readDeviceValue(won), 1);
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          expectedDeviceFirstWriterLine(
+              AbortReason::IBRC_PROXY_TIMEOUT, "AbortFlagTest callsite") +
+          " op=-1 timeout_ms=-1 elapsed_ms=-1"))
+      << "captured: " << out;
+  EXPECT_EQ(countSubstr(out, kFirstWriterMarker), 1U) << "captured: " << out;
+}
+
+// `op=0` is a real operation number -- the INIT lifecycle record consumes trace
+// sequence 0 -- so absence cannot be spelled the same way, or an `AbortFlag`
+// line joins to a legitimate record instead of being recognized as having no
+// operation identity. `-1` is the sentinel, matching `timeout_ms`/`elapsed_ms`
+// beside it.
+TEST(AbortDeviceTest, absentOpIdIsDistinguishableFromOperationZero) {
+  Abort abort{/*enabled=*/true};
+  auto won = makeDeviceValue<int>();
+  auto contextReady = makeDeviceValue<int>();
+  ASSERT_NE(won, nullptr);
+  ASSERT_NE(contextReady, nullptr);
+
+  // A real handle whose operation number genuinely is zero.
+  auto handle = abort.getDeviceHandle();
+  ASSERT_EQ(handle.opId(), 0U);
+
+  const auto zeroCapture = captureDeviceStdoutWithStatus([&] {
+    return launchDeviceSetAbortWithContext(
+        handle,
+        AbortReason::NETWORK_ERROR,
+        /*useContext=*/false,
+        won.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(zeroCapture.status, cudaSuccess);
+  EXPECT_THAT(zeroCapture.out, ::testing::HasSubstr(" op=0 "))
+      << "captured: " << zeroCapture.out;
+
+  // And a writer with no operation identity at all.
+  Abort flagAbort{/*enabled=*/true};
+  const auto flagCapture = captureDeviceStdoutWithStatus([&] {
+    return launchAbortFlagSetAbort(
+        flagAbort.getDeviceHandle(),
+        AbortReason::IBRC_PROXY_TIMEOUT,
+        /*useContext=*/false,
+        won.get(),
+        contextReady.get(),
+        /*stream=*/nullptr);
+  });
+  ASSERT_EQ(flagCapture.status, cudaSuccess);
+  EXPECT_THAT(flagCapture.out, ::testing::HasSubstr(" op=-1 "))
+      << "captured: " << flagCapture.out;
+  EXPECT_THAT(flagCapture.out, ::testing::Not(::testing::HasSubstr(" op=0 ")))
+      << "captured: " << flagCapture.out;
 }
 
 TEST(AbortDeviceTest, perOpTimeoutUnsetFallsBackToCommunicatorDefault) {
