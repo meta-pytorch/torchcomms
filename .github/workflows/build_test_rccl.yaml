@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build_test_rccl.yaml
+      - build_rccl.sh
+      - comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
+      - comms/torchcomms/rccl/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
