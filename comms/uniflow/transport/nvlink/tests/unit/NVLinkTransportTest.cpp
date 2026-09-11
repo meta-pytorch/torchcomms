@@ -1900,7 +1900,7 @@ TEST_F(NVLinkTransportPutGetTest, PutMultipleRequestsCopiesAllData) {
 #if CUDART_VERSION >= 12080
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,
@@ -2044,7 +2044,7 @@ TEST_F(NVLinkTransportPutGetTest, PutSubSpanTransfersPartialData) {
 #if CUDART_VERSION >= 12080
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,
@@ -2202,7 +2202,7 @@ TEST_F(NVLinkTransportPutGetTest, GetMultipleRequestsCopiesAllData) {
 #if CUDART_VERSION >= 12080
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,
