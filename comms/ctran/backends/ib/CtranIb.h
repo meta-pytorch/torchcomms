@@ -51,8 +51,8 @@ class CtranIb {
   // to the local rank.
   // Input arguments:
   //   - comm: the Ctran communicator
-  //   - enableLocalFlush: whether to support local flush. If not specified, use
-  //              default config based on cuda arch.
+  //   - enableLocalFlush: whether to issue non-forced local flushes. If not
+  //                       specified, use the default for the CUDA architecture.
   CtranIb(
       CtranComm* comm,
       std::optional<bool> enableLocalFlush = std::nullopt,
@@ -70,7 +70,7 @@ class CtranIb {
   //              mapping NIC
   //   - commHash: for logging only.
   //   - commDesc: for logging only.
-  //   - enableLocalFlush: whether to support local flush.
+  //   - enableLocalFlush: whether to issue non-forced local flushes.
   //   - bootstrapMode: defines the needed bootstrap mode. If kDefaultServer,
   //                    it launches internal listen thread which binds and
   //                    listens to the default server address and port as
@@ -401,10 +401,14 @@ class CtranIb {
   // Input arguments:
   //   - dbuf: the local buffer to flush
   //   - localRegHdl: the local registration handle of the local buffer
+  //   - force: bypass enableLocalFlush and fail if the flush cannot be issued.
   // Output arguments:
   //   - req: the request object to track the progress of the flush.
-  commResult_t
-  iflush(const void* dbuf, const void* localRegHdl, CtranIbRequest* req);
+  commResult_t iflush(
+      const void* dbuf,
+      const void* localRegHdl,
+      CtranIbRequest* req,
+      const bool force = false);
 
   // Notify the remote peer via a zero-byte RDMA_WRITE_WITH_IMM over the
   // established IB connection without extra data transfer.
@@ -1066,17 +1070,21 @@ class CtranIb {
           continueWhileLoop = true;
         }
 
-        if (enableLocalFlush_) {
-          CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
-            auto& vc = localVc;
-            // First check if it is a local flush CQE
-            if (wc.qp_num == vc->qpNum(device)) {
-              CQE_ERROR_CHECK(wc, rank, "localFlush");
-              FB_COMMCHECK(vc->processCqe(wc.opcode, device));
-              continue;
-            }
-          });
-        }
+        CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
+          auto& vc = localVc;
+          if (vc == nullptr) {
+            CTRAN_ERR(
+                commInternalError,
+                "No local virtual connection available while processing CQE on device {}",
+                device);
+            return commInternalError;
+          }
+          if (wc.qp_num == vc->qpNum(device)) {
+            CQE_ERROR_CHECK(wc, rank, "localFlush");
+            FB_COMMCHECK(vc->processCqe(wc.opcode, device));
+            continue;
+          }
+        });
 
         // Next search from remote VCs.
         // Expect received CQE should be with a registered rank and established
