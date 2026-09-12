@@ -52,10 +52,14 @@ Census censusOf(cudaGraph_t graph) {
   std::vector<cudaGraphNode_t> nodes(c.nodes);
   EXPECT_EQ(cudaGraphGetNodes(graph, nodes.data(), &c.nodes), cudaSuccess);
 
-  EXPECT_EQ(cudaGraphGetEdges(graph, nullptr, nullptr, &c.edges), cudaSuccess);
+  EXPECT_EQ(
+      ctran::utils::cudagraph::getGraphEdges(graph, nullptr, nullptr, &c.edges),
+      cudaSuccess);
   std::vector<cudaGraphNode_t> from(c.edges), to(c.edges);
   EXPECT_EQ(
-      cudaGraphGetEdges(graph, from.data(), to.data(), &c.edges), cudaSuccess);
+      ctran::utils::cudagraph::getGraphEdges(
+          graph, from.data(), to.data(), &c.edges),
+      cudaSuccess);
 
   std::unordered_set<cudaGraphNode_t> hostNodes;
   for (cudaGraphNode_t n : nodes) {

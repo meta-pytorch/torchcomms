@@ -18,6 +18,7 @@
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/VerifyAlgoStatsUtil.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -1059,10 +1060,15 @@ TEST_P(CtranAllgatherCtwinHostSpineTest, HostNodeWiring) {
   ASSERT_EQ(cudaGraphGetNodes(graph, nodes.data(), &numNodes), cudaSuccess);
 
   size_t numEdges = 0;
-  ASSERT_EQ(cudaGraphGetEdges(graph, nullptr, nullptr, &numEdges), cudaSuccess);
+  ASSERT_EQ(
+      ctran::utils::cudagraph::getGraphEdges(
+          graph, nullptr, nullptr, &numEdges),
+      cudaSuccess);
   std::vector<cudaGraphNode_t> from(numEdges), to(numEdges);
   ASSERT_EQ(
-      cudaGraphGetEdges(graph, from.data(), to.data(), &numEdges), cudaSuccess);
+      ctran::utils::cudagraph::getGraphEdges(
+          graph, from.data(), to.data(), &numEdges),
+      cudaSuccess);
 
   std::unordered_map<cudaGraphNode_t, cudaGraphNodeType> kind;
   for (cudaGraphNode_t n : nodes) {
