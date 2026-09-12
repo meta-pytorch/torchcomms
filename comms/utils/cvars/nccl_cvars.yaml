@@ -3387,7 +3387,7 @@ cvars:
 
  - name        : MCCL_ALGO
    type        : string
-   default     : none
+   default     : "allreduce:ring"
    description : |-
      MCCL-native collective algorithm override. Use "none" or leave unset to
      preserve the collective's existing selection. Prefer qualified selectors
