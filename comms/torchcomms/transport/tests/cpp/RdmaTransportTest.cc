@@ -1025,6 +1025,72 @@ TEST_F(RdmaTransportTest, BrokenTransportFailsFast) {
 
   EXPECT_EQ(transport->waitForWrite().get(), commInternalError);
 
+  auto flushFuture = transport->flush(rdmaMemory.createView());
+  EXPECT_EQ(std::move(flushFuture).get(), commInternalError);
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+TEST_F(RdmaTransportTest, FlushWithoutConnectedPeer) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  EXPECT_FALSE(transport->bind().empty());
+  EXPECT_FALSE(transport->connected());
+
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  auto flushFuture = transport->flush(rdmaMemory.createView());
+  EXPECT_EQ(std::move(flushFuture).get(), commSuccess);
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+TEST_F(RdmaTransportTest, FlushEmptyRegion) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  EXPECT_FALSE(transport->bind().empty());
+
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+  ASSERT_FALSE(rdmaMemory.reusedRegistration());
+
+  auto flushFuture = transport->flush(rdmaMemory.createView(bufferSize, 0));
+  EXPECT_EQ(std::move(flushFuture).get(), commSuccess);
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+TEST_F(RdmaTransportTest, FlushWithTimeoutSucceeds) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  EXPECT_FALSE(transport->bind().empty());
+
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  auto flushFuture = transport->flush(
+      rdmaMemory.createView(), std::chrono::milliseconds(30000));
+  EXPECT_EQ(std::move(flushFuture).get(), commSuccess);
+
   EXPECT_EQ(cudaFree(buffer), cudaSuccess);
 }
 

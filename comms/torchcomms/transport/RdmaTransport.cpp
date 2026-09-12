@@ -156,8 +156,6 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
-  // Ownership is keyed on dynRegHdl_: the HIT path has dynRegHdl_ == nullptr,
-  // so this is a no-op there and only the owned dynamic registration is freed.
   if (dynRegHdl_ != nullptr) {
     FB_COMMCHECKIGNORE(regCache_->deregDynamic(
         static_cast<ctran::regcache::RegElem*>(dynRegHdl_)));
@@ -452,6 +450,52 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   }
 
   // Add work to pending list and schedule progress
+  auto pendingWorks = pendingWorks_.wlock();
+  pendingWorks->emplace_back(std::move(work));
+  evb_->runInEventBaseThread([this]() { progress(); });
+
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
+  return sf;
+}
+
+folly::SemiFuture<commResult_t> RdmaTransport::flush(
+    RdmaMemory::View localBuffer,
+    std::optional<std::chrono::milliseconds> timeout) {
+  if (broken_.load(std::memory_order_relaxed)) {
+    return commInternalError;
+  }
+  CHECK_THROW(evb_, std::runtime_error);
+
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
+  if (localBuffer.size() == 0) {
+    return commSuccess;
+  }
+
+  auto work = std::make_unique<Work>();
+  // Flush has the same completion and timeout behavior as write.
+  work->type = Work::Type::Write;
+  auto sf = work->promise.getSemiFuture();
+
+  CtranIbEpochRAII epochRAII(ib_.get());
+  const auto ibRes =
+      ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
+  if (ibRes != commSuccess && ibRes != commInProgress) {
+    XLOGF(
+        ERR,
+        "RdmaTransport::flush: iflush failed with {}",
+        static_cast<int>(ibRes));
+    broken_.store(true, std::memory_order_relaxed);
+    // iflush may have stored a pointer to work->ibReq in the local VC
+    // queues before failing; park the work instead of destroying it.
+    work->promise.setValue(ibRes);
+    retiredWorks_.wlock()->emplace_back(std::move(work));
+    return sf;
+  }
+  if (timeout.has_value()) {
+    work->timeout = timeout;
+    work->creationTime = std::chrono::steady_clock::now();
+  }
+
   auto pendingWorks = pendingWorks_.wlock();
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
