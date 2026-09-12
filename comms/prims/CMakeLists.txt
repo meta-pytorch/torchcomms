@@ -19,6 +19,14 @@ list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/transport/amd/.*")
 list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/collectives/link_ep/.*")
 # triton is Python-only.
 list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/triton/.*")
+# The ANS-compressed collective variants need nvCOMPDx: they must be compiled
+# with -DPIPES_ENABLE_ANS_COMPRESSION and --device-c, then device-linked against
+# the nvCOMPDx LTO fatbin. This build has neither the MathDx package nor a
+# device-link step, and a plain glob-compile of them fails rather than silently
+# dropping the feature -- `compressor_copyop<>::type` is only defined under that
+# macro. Excluded by name pattern rather than by listing files so the next
+# `*Compressed.cu` does not reintroduce the same breakage.
+list(FILTER PRIMS_SOURCES EXCLUDE REGEX ".*/collectives/.*Compressed\\.cu$")
 
 add_library(prims OBJECT
     ${PRIMS_SOURCES}
@@ -108,8 +116,15 @@ endif()
 # co-located with the source glob above (lines ~11-21) so both are maintained in
 # one place. DESTINATION must stay include/comms/prims to match those includes;
 # file(REAL_PATH) resolves the symlinked OSS source tree.
+#
+# `*Compressed.cuh` is excluded for the same reason its `.cu` is excluded from
+# the glob above: it declares an API this package does not provide. Shipping it
+# would let a consumer include the header, call
+# `fetch_and_reset_sendrecv_ans_compress_stats()` or name a compressed kernel,
+# and only find out at link time that no definition was ever compiled.
 file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}" _PRIMS_SRC_DIR)
 install(DIRECTORY ${_PRIMS_SRC_DIR}/ DESTINATION include/comms/prims
     FILES_MATCHING PATTERN "*.h" PATTERN "*.cuh"
+    PATTERN "*Compressed.cuh" EXCLUDE
     PATTERN "tests" EXCLUDE PATTERN "benchmarks" EXCLUDE
     PATTERN "amd" EXCLUDE PATTERN "link_ep" EXCLUDE PATTERN "triton" EXCLUDE)
