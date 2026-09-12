@@ -9,6 +9,8 @@
 
 namespace comms::prims::test {
 
+inline constexpr uint32_t kTestBlockSize = 32;
+
 struct PrepareSendSlotAbortObservation {
   uint32_t waitReason{0};
   uint32_t confirmationReason{0};
@@ -22,6 +24,9 @@ struct VariableWaitAbortObservation {
   uint32_t putCount{0};
   uint32_t recvCopyCount{0};
   uint32_t signalCount{0};
+  uint32_t waitCallCount{0};
+  uint32_t waitObservedAbortCount{0};
+  uint32_t waitBoundExpiredCount{0};
 };
 
 void launchPrepareSendSlotAbortForwarding(

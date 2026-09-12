@@ -201,10 +201,22 @@ class VariableWaitProbeTransport {
       const comms::fault_tolerance::AbortDevice& abort) {
     if (group.is_leader()) {
       abort.setAbort();
-      // A real abortable wait returns only after its own handle observes the
-      // terminal state; preserve that contract even if a prior poll armed the
-      // mapped-memory throttle.
-      while (!abort.checkExpired()) {
+      // This is far above the mapped-state polling interval but still turns a
+      // broken probe into an observation failure instead of a wedged test.
+      constexpr uint64_t kObservationBoundCycles = 10'000'000'000ULL;
+      const uint64_t start = clock64();
+      ++observation_->waitCallCount;
+      bool observedAbort = false;
+      while (clock64() - start < kObservationBoundCycles) {
+        if (abort.checkExpired()) {
+          observedAbort = true;
+          break;
+        }
+      }
+      if (observedAbort) {
+        ++observation_->waitObservedAbortCount;
+      } else {
+        ++observation_->waitBoundExpiredCount;
       }
     }
     group.sync();
@@ -591,7 +603,8 @@ uint32_t ibrcTestQueueDepth() {
 void launchPrepareSendSlotAbortForwarding(
     PrepareSendSlotAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort) {
-  prepareSendSlotAbortForwardingKernel<<<1, 32>>>(observation, abort);
+  prepareSendSlotAbortForwardingKernel<<<1, kTestBlockSize>>>(
+      observation, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -600,7 +613,8 @@ void launchIbrcPutUntilQueueFull(
     uint32_t* postedOut,
     uint32_t attempts,
     comms::fault_tolerance::AbortDevice abort) {
-  putUntilQueueFullKernel<<<1, 32>>>(dataBuf, postedOut, attempts, abort);
+  putUntilQueueFullKernel<<<1, kTestBlockSize>>>(
+      dataBuf, postedOut, attempts, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -608,7 +622,7 @@ void launchIbrcFlushNeverDrains(
     uint64_t* dataBuf,
     uint32_t* postedOut,
     comms::fault_tolerance::AbortDevice abort) {
-  flushNeverDrainsKernel<<<1, 32>>>(dataBuf, postedOut, abort);
+  flushNeverDrainsKernel<<<1, kTestBlockSize>>>(dataBuf, postedOut, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -618,7 +632,7 @@ void launchIbrcQueueFullReleasedByCollectiveDeadline(
     uint32_t attempts,
     uint64_t* signal,
     comms::fault_tolerance::AbortDevice abort) {
-  queueFullReleasedByCollectiveDeadlineKernel<<<2, 32>>>(
+  queueFullReleasedByCollectiveDeadlineKernel<<<2, kTestBlockSize>>>(
       dataBuf, postedOut, attempts, signal, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
@@ -630,7 +644,7 @@ void launchIbWrapperWaitSignal(
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait) {
   waitSignalKernel<IbEntryPoint::Wrapper>
-      <<<1, 32>>>(signal, waitResult, expected, abort, enteredWait);
+      <<<1, kTestBlockSize>>>(signal, waitResult, expected, abort, enteredWait);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -641,7 +655,7 @@ void launchIbrcWaitSignal(
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait) {
   waitSignalKernel<IbEntryPoint::Ibrc>
-      <<<1, 32>>>(signal, waitResult, expected, abort, enteredWait);
+      <<<1, kTestBlockSize>>>(signal, waitResult, expected, abort, enteredWait);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -649,21 +663,21 @@ void launchIbWrapperTrySignal(
     uint64_t* signal,
     uint32_t* postedCount,
     comms::fault_tolerance::AbortDevice abort) {
-  wrapperTrySignalKernel<<<1, 32>>>(signal, postedCount, abort);
+  wrapperTrySignalKernel<<<1, kTestBlockSize>>>(signal, postedCount, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void launchVariableSendWaitAbort(
     VariableWaitAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort) {
-  variableSendWaitAbortKernel<<<1, 32>>>(observation, abort);
+  variableSendWaitAbortKernel<<<1, kTestBlockSize>>>(observation, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void launchVariableRecvWaitAbort(
     VariableWaitAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort) {
-  variableRecvWaitAbortKernel<<<1, 32>>>(observation, abort);
+  variableRecvWaitAbortKernel<<<1, kTestBlockSize>>>(observation, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
