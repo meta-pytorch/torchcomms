@@ -10,6 +10,10 @@
 #include "comms/prims/trace/PipesTraceTypes.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
+namespace comms::fault_tolerance {
+class Abort;
+}
+
 namespace comms::prims::tests {
 
 // Test transport construction on device (null QP)
@@ -108,6 +112,21 @@ struct CollapsedCqPollResult {
   uint32_t aborted;
 };
 
+struct DataOnlySqAbortResult {
+  uint64_t reservedIndex;
+  uint64_t readyIndex;
+  uint64_t producerIndex;
+  uint64_t doorbell;
+  uint64_t pendingFlushLanesMask;
+  uint32_t prePutAbortClear;
+  uint32_t reservationObserved;
+  uint32_t posted;
+  uint32_t wqeUnchanged;
+  uint32_t doorbellRecord;
+  uint32_t completionId;
+  uint64_t completionValue;
+};
+
 cudaError_t runTestCollapsedCqPoll(
     const CollapsedCqPollCase& testCase,
     CollapsedCqPollResult* result);
@@ -118,6 +137,17 @@ cudaError_t runTestIbgdaSqPollWithAbort(
     bool gpuSharing,
     comms::fault_tolerance::AbortDevice abort,
     CollapsedCqPollResult* result);
+
+cudaError_t runTestDataOnlySqReservationAbort(
+    bool collapsedCq,
+    comms::fault_tolerance::Abort& abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlyPutWithCapacity(
+    comms::fault_tolerance::AbortDevice abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlySqErrorWithoutFt();
 #endif
 
 // =============================================================================

@@ -293,6 +293,52 @@ void testBurstPutAndFlush(
   }
 }
 
+__global__ void burstPutAndFlushWithAbortKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort) {
+  abort.start();
+  auto group = make_warp_group();
+  for (int i = 0; i < numPuts; ++i) {
+    const auto completion = transport.put(
+        group,
+        localBuf.subBuffer(i * bytesPerPut),
+        remoteBuf.subBuffer(i * bytesPerPut),
+        bytesPerPut,
+        IbgdaRemoteBuffer{},
+        /*signalVal=*/0,
+        IbgdaLocalBuffer{},
+        /*counterVal=*/0,
+        /*signalPerLane=*/false,
+        abort);
+    const uint32_t posted =
+        group.broadcast<uint32_t>(completion.posted ? 1U : 0U);
+    if (posted == 0U) {
+      break;
+    }
+  }
+  transport.flush(group, abort);
+}
+
+void testBurstPutAndFlushWithAbort(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort) {
+  burstPutAndFlushWithAbortKernel<<<1, comms::prims::kWarpSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, bytesPerPut, numPuts, abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 // =============================================================================
 // Kernel: Signal only (no data)
 // =============================================================================
