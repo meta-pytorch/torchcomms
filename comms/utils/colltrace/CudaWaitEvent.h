@@ -122,7 +122,7 @@ class CudaWaitEvent : public ICollWaitEvent {
  public:
   CudaWaitEvent(cudaStream_t stream);
 
-  ~CudaWaitEvent() = default;
+  ~CudaWaitEvent() override;
 
   CommsMaybeVoid beforeCollKernelScheduled() noexcept override;
 

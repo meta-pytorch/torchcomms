@@ -10,7 +10,9 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
 #include <atomic>
+#include <barrier>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -210,6 +212,13 @@ class GraphColltraceProgressingTest : public ::testing::Test {
 
     hrdw_ring_buffer::GlobaltimerCalibration::get();
 
+    createCollTrace(nullptr);
+  }
+
+  // Replaces colltrace_ (and progressPlugin_) with a fresh instance. The hook
+  // lets a test stop the poll thread between its cancellation sweep and its
+  // ring dispatch.
+  void createCollTrace(std::function<void()> afterGraphSweepHook) {
     auto progressPlugin = std::make_unique<ProgressTrackingPlugin>();
     progressPlugin_ = progressPlugin.get();
 
@@ -217,7 +226,9 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     plugins.push_back(std::move(progressPlugin));
     CommLogData logData{};
     colltrace_ = std::make_shared<CollTrace>(
-        CollTraceConfig{.maxCheckCancelInterval = std::chrono::milliseconds{1}},
+        CollTraceConfig{
+            .maxCheckCancelInterval = std::chrono::milliseconds{1},
+            .afterGraphSweepHook = std::move(afterGraphSweepHook)},
         logData,
         [this]() -> meta::comms::CommsMaybeVoid {
           // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
@@ -365,6 +376,101 @@ TEST_F(GraphColltraceProgressingTest, DetectsInFlightCollective) {
   auto completedIds = progressPlugin_->getCompletedCollIds();
   EXPECT_EQ(completedIds.size(), kNumColls)
       << "All collectives should be marked completed after stream sync";
+}
+
+TEST_F(GraphColltraceProgressingTest, CancelledCaptureIgnoresReplayEvents) {
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  auto handle = colltrace_
+                    ->recordCollective(
+                        std::make_unique<SimpleMetadata>(),
+                        std::make_unique<GraphCudaWaitEvent>(stream_))
+                    .value();
+  const auto deviceHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel)
+                  .hasValue());
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kStart);
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kEnd);
+  ASSERT_TRUE(handle->cancel().hasValue());
+
+  CapturedGraph graph;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaStreamEndCapture(stream_, &graph.graph), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaGraphInstantiate(&graph.instance, graph.graph, nullptr, nullptr, 0),
+      cudaSuccess);
+  ASSERT_EQ(cudaGraphLaunch(graph.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  EXPECT_TRUE(progressPlugin_->getStartedCollIds().empty());
+  EXPECT_TRUE(progressPlugin_->getCompletedCollIds().empty());
+  const auto cancelledRecord = handle->getCollRecord();
+  ASSERT_TRUE(cancelledRecord.hasValue());
+  EXPECT_EQ(cancelledRecord.value(), nullptr);
+}
+
+// The sweep that erases cancelled collectives runs once per poll pass, before
+// the ring is drained. A cancellation that lands in between must still be
+// honoured, or entries already queued for the cancelled collId become plugin
+// actions. The hook parks the poll thread in exactly that window.
+TEST_F(GraphColltraceProgressingTest, CancelAfterSweepSuppressesQueuedEntries) {
+  std::barrier sweepReached{2};
+  std::barrier cancelRecorded{2};
+  std::atomic_bool parkNextSweep{false};
+  createCollTrace([&] {
+    if (!parkNextSweep.exchange(false, std::memory_order_acq_rel)) {
+      return;
+    }
+    sweepReached.arrive_and_wait();
+    cancelRecorded.arrive_and_wait();
+  });
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  auto handle = colltrace_
+                    ->recordCollective(
+                        std::make_unique<SimpleMetadata>(),
+                        std::make_unique<GraphCudaWaitEvent>(stream_))
+                    .value();
+  const auto deviceHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel)
+                  .hasValue());
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kStart);
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kEnd);
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel)
+                  .hasValue());
+
+  CapturedGraph graph;
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaStreamEndCapture(stream_, &graph.graph), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaGraphInstantiate(&graph.instance, graph.graph, nullptr, nullptr, 0),
+      cudaSuccess);
+
+  // Park the poll thread just past its sweep, then produce the ring entries
+  // and cancel while it is held there.
+  parkNextSweep.store(true, std::memory_order_release);
+  sweepReached.arrive_and_wait();
+  ASSERT_EQ(cudaGraphLaunch(graph.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  ASSERT_TRUE(handle->cancel().hasValue());
+  cancelRecorded.arrive_and_wait();
+
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  EXPECT_TRUE(progressPlugin_->getStartedCollIds().empty());
+  EXPECT_TRUE(progressPlugin_->getCompletedCollIds().empty());
+
+  // The hook closes over locals of this test body, so the poll thread must be
+  // joined before they go out of scope.
+  colltrace_.reset();
 }
 
 TEST_F(GraphColltraceProgressingTest, PreservesIdentityAcrossReplays) {

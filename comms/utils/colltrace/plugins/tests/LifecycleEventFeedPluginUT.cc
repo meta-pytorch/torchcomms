@@ -29,6 +29,13 @@ CollTraceEvent makeEvent(
   };
 }
 
+TEST(LifecycleEventFeedPluginTest, SharedCommunicatorIdsAreUnique) {
+  const auto first = getNextLifecycleFeedCommId();
+  const auto second = getNextLifecycleFeedCommId();
+
+  EXPECT_EQ(second, first + 1);
+}
+
 TEST(LifecycleEventFeedPluginTest, DrainsUnreadLifecycleEvents) {
   constexpr uint64_t kCommId = 17;
   constexpr uint64_t kCollId = 23;

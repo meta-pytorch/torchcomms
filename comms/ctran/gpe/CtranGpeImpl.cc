@@ -247,6 +247,11 @@ commResult_t CtranGpe::Impl::submit(
       colltraceCreatesRecord ? meta::comms::colltrace::getCollTraceHandle(
                                    comm, opGroup, kernelConfig, ifchecksum)
                              : nullptr;
+  // Every exit below this point -- early return, or goto fail -- must release
+  // the record it just took out, or the next collective inherits a stale
+  // pending trace.
+  meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{
+      colltraceHandle};
 
   // Arm the collective kernel to publish its own start/end timestamps into the
   // colltrace ring, replacing the host-launched timestamp kernels for the
@@ -542,6 +547,7 @@ commResult_t CtranGpe::Impl::submit(
   if (colltraceHandle != nullptr) {
     colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
   }
+  colltraceEnqueueGuard.disarm();
 
   CTRAN_LOG_SUBSYS(
       INFO,

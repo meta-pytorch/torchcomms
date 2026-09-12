@@ -1,10 +1,15 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
+#include <barrier>
+#include <thread>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
+#include "comms/utils/colltrace/GraphCollTraceHandle.h"
 #include "comms/utils/colltrace/tests/MockTypes.h"
 
 using namespace meta::comms;
@@ -18,12 +23,17 @@ class CollTraceHandleTest : public ::testing::Test {
   void SetUp() override {
     mockCollTrace = std::make_unique<MockCollTrace>();
     emptyEvent = std::make_unique<CollTraceEvent>(nullptr, nullptr);
+    cancellationGate =
+        std::make_shared<EagerCancellationGate>([this](CollTraceEvent& event) {
+          return mockCollTrace->cancelEvent(event);
+        });
     handle = std::make_unique<CollTraceHandle>(
-        mockCollTrace.get(), emptyEvent.get());
+        mockCollTrace.get(), emptyEvent.get(), cancellationGate);
   }
 
   std::unique_ptr<MockCollTrace> mockCollTrace;
   std::unique_ptr<CollTraceEvent> emptyEvent;
+  std::shared_ptr<EagerCancellationGate> cancellationGate;
   std::unique_ptr<CollTraceHandle> handle;
 };
 
@@ -140,6 +150,168 @@ TEST_F(CollTraceHandleTest, Invalidate) {
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
   EXPECT_FALSE(triggerResult.hasValue());
   EXPECT_EQ(triggerResult.error().errorCode, commInvalidArgument);
+}
+
+TEST_F(CollTraceHandleTest, CancelRemovesOwnedEventAndInvalidatesHandle) {
+  EXPECT_CALL(*mockCollTrace, cancelEvent(testing::Ref(*emptyEvent)))
+      .WillOnce(Return(folly::unit));
+
+  const auto cancelResult = handle->cancel();
+  ASSERT_TRUE(cancelResult.hasValue()) << cancelResult.error().message;
+
+  auto triggerResult =
+      handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+  EXPECT_FALSE(triggerResult.hasValue());
+  EXPECT_EQ(triggerResult.error().errorCode, commInvalidArgument);
+}
+
+TEST(GraphCancellationGateTest, ShutdownDrainsInFlightCancellation) {
+  std::barrier callbackEntered{2};
+  std::barrier releaseCallback{2};
+  std::barrier shutdownStarted{2};
+  std::atomic<int> callbackCount{0};
+  std::atomic_bool shutdownFinished{false};
+  auto gate = std::make_shared<GraphCancellationGate>([&](uint32_t collId) {
+    EXPECT_EQ(collId, 17);
+    callbackEntered.arrive_and_wait();
+    releaseCallback.arrive_and_wait();
+    callbackCount.fetch_add(1, std::memory_order_relaxed);
+    return folly::unit;
+  });
+
+  std::thread cancelThread([&] { EXPECT_TRUE(gate->cancel(17).hasValue()); });
+  callbackEntered.arrive_and_wait();
+
+  std::thread shutdownThread([&] {
+    shutdownStarted.arrive_and_wait();
+    gate->shutdown();
+    shutdownFinished.store(true, std::memory_order_release);
+  });
+  shutdownStarted.arrive_and_wait();
+  EXPECT_FALSE(shutdownFinished.load(std::memory_order_acquire));
+
+  releaseCallback.arrive_and_wait();
+  cancelThread.join();
+  shutdownThread.join();
+
+  EXPECT_TRUE(shutdownFinished.load(std::memory_order_acquire));
+  EXPECT_EQ(callbackCount.load(std::memory_order_relaxed), 1);
+  EXPECT_TRUE(gate->cancel(17).hasValue());
+  EXPECT_EQ(callbackCount.load(std::memory_order_relaxed), 1);
+}
+
+TEST(EagerCancellationGateTest, ShutdownDrainsInFlightCancellation) {
+  CollTraceEvent event{
+      .collRecord = nullptr,
+      .waitEvent = nullptr,
+      .replayId = std::nullopt,
+      .capturedCollId = std::nullopt};
+  std::barrier callbackEntered{2};
+  std::barrier releaseCallback{2};
+  std::atomic_bool shutdownFinished{false};
+  auto gate = std::make_shared<EagerCancellationGate>(
+      [&](CollTraceEvent& cancelledEvent) {
+        EXPECT_EQ(&cancelledEvent, &event);
+        callbackEntered.arrive_and_wait();
+        releaseCallback.arrive_and_wait();
+        return folly::unit;
+      });
+
+  std::thread cancelThread(
+      [&] { EXPECT_TRUE(gate->cancel(&event).hasValue()); });
+  callbackEntered.arrive_and_wait();
+
+  std::thread shutdownThread([&] {
+    gate->shutdown();
+    shutdownFinished.store(true, std::memory_order_release);
+  });
+  EXPECT_FALSE(shutdownFinished.load(std::memory_order_acquire));
+
+  releaseCallback.arrive_and_wait();
+  cancelThread.join();
+  shutdownThread.join();
+
+  EXPECT_TRUE(shutdownFinished.load(std::memory_order_acquire));
+  EXPECT_TRUE(gate->cancel(&event).hasValue());
+}
+
+// Teardown that completes before cancellation even reaches the gate must not
+// leave the caller holding a reference to the destroyed event: the gate is
+// entered with a pointer and never dereferences it once shutdown() has run.
+TEST(EagerCancellationGateTest, TeardownBeforeCancelLeavesGateInert) {
+  auto ownedEvent = std::make_unique<CollTraceEvent>(nullptr, nullptr);
+  std::atomic<int> callbackCount{0};
+  auto gate = std::make_shared<EagerCancellationGate>(
+      [&](CollTraceEvent& /* cancelledEvent */) {
+        callbackCount.fetch_add(1, std::memory_order_relaxed);
+        return folly::unit;
+      });
+
+  auto* rawEvent = ownedEvent.get();
+  gate->shutdown();
+  ownedEvent.reset();
+
+  EXPECT_TRUE(gate->cancel(rawEvent).hasValue());
+  EXPECT_EQ(callbackCount.load(std::memory_order_relaxed), 0);
+}
+
+// Cancellation that is already parked on the gate mutex when teardown starts
+// must still run to completion against a live event, and shutdown() must wait
+// for it rather than freeing the event underneath it.
+TEST(EagerCancellationGateTest, TeardownDuringCancelWaitsForCallback) {
+  auto ownedEvent = std::make_unique<CollTraceEvent>(nullptr, nullptr);
+  std::barrier callbackEntered{2};
+  std::barrier releaseCallback{2};
+  std::atomic_bool shutdownFinished{false};
+  std::atomic<int> callbackCount{0};
+  auto gate = std::make_shared<EagerCancellationGate>(
+      [&](CollTraceEvent& cancelledEvent) {
+        EXPECT_EQ(&cancelledEvent, ownedEvent.get());
+        callbackEntered.arrive_and_wait();
+        releaseCallback.arrive_and_wait();
+        callbackCount.fetch_add(1, std::memory_order_relaxed);
+        return folly::unit;
+      });
+
+  auto* rawEvent = ownedEvent.get();
+  std::thread cancelThread(
+      [&] { EXPECT_TRUE(gate->cancel(rawEvent).hasValue()); });
+  callbackEntered.arrive_and_wait();
+
+  std::thread teardownThread([&] {
+    gate->shutdown();
+    shutdownFinished.store(true, std::memory_order_release);
+    ownedEvent.reset();
+  });
+  EXPECT_FALSE(shutdownFinished.load(std::memory_order_acquire));
+
+  releaseCallback.arrive_and_wait();
+  cancelThread.join();
+  teardownThread.join();
+
+  EXPECT_TRUE(shutdownFinished.load(std::memory_order_acquire));
+  EXPECT_EQ(callbackCount.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(ownedEvent, nullptr);
+}
+
+TEST_F(CollTraceHandleTest, EnqueueGuardCancelsUnlessDisarmed) {
+  EXPECT_CALL(*mockCollTrace, cancelEvent(testing::Ref(*emptyEvent)))
+      .WillOnce(Return(folly::unit));
+
+  {
+    CollTraceEnqueueGuard guard(
+        std::shared_ptr<ICollTraceHandle>(std::move(handle)));
+  }
+}
+
+TEST_F(CollTraceHandleTest, EnqueueGuardDisarmSuppressesCancel) {
+  EXPECT_CALL(*mockCollTrace, cancelEvent(_)).Times(0);
+
+  {
+    CollTraceEnqueueGuard guard(
+        std::shared_ptr<ICollTraceHandle>(std::move(handle)));
+    guard.disarm();
+  }
 }
 
 // Test with null CollTrace

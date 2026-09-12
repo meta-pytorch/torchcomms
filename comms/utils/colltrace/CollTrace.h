@@ -3,6 +3,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <latch>
 #include <mutex>
 #include <set>
@@ -35,6 +36,7 @@ namespace meta::comms::colltrace {
 
 struct GraphCollTraceState;
 struct GraphCollectiveEntry;
+class GraphCancellationGate;
 class GraphCudaWaitEvent;
 
 // Whether graph-captured collectives can be timed on the *current* device.
@@ -69,6 +71,11 @@ struct CollTraceConfig {
   // If we have too many pending events, we will start dropping events.
   // 1024 should be enough for most of the cases.
   ::size_t maxPendingQueueSize{kDefaultMaxPendingQueueSize};
+
+  // Test seam. Invoked on the poll thread after the cancelled-collective
+  // sweep and before any ring entry is dispatched, so a test can land a
+  // cancellation exactly in that window. Empty in production.
+  std::function<void()> afterGraphSweepHook;
 };
 
 // Action types for the unified polling pipeline.
@@ -132,6 +139,8 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept override;
 
+  CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept override;
+
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
 
@@ -141,6 +150,7 @@ class CollTrace : public ICollTrace {
   CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordGraphCollectiveImpl(
       std::unique_ptr<ICollMetadata> metadata,
       std::unique_ptr<ICollWaitEvent> waitEvent) noexcept;
+  CommsMaybeVoid cancelGraphCollective(uint32_t collId) noexcept;
 
   /****************************************************************************
    * Start of Private Methods for CollTrace thread. All of these methods should
@@ -196,6 +206,7 @@ class CollTrace : public ICollTrace {
   // Remove by: CollTrace Thread
   folly::ConcurrentHashMap<CollTraceEvent*, std::shared_ptr<CollTraceHandle>>
       eventToHandleMap_;
+  std::shared_ptr<EagerCancellationGate> eagerCancellationGate_;
 
   std::unordered_map<std::string, ICollTracePlugin&> pluginByName_;
   std::vector<std::unique_ptr<ICollTracePlugin>> plugins_;
@@ -213,6 +224,8 @@ class CollTrace : public ICollTrace {
   std::mutex graphStateMutex_;
   std::unordered_map<unsigned long long, std::shared_ptr<GraphCollTraceState>>
       graphStateMap_;
+  std::shared_ptr<GraphCancellationGate> graphCancellationGate_;
+  std::atomic<bool> hasCancelledGraphCollectives_{false};
 
   // Single shared ring buffer for ALL cuda graphs. RAII-managed via
   // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).

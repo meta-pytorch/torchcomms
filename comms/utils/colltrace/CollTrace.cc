@@ -123,6 +123,10 @@ CollTrace::CollTrace(
           folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
               config_.maxPendingQueueSize}),
       plugins_(std::move(plugins)) {
+  eagerCancellationGate_ = std::make_shared<EagerCancellationGate>(
+      [this](CollTraceEvent& event) { return cancelEvent(event); });
+  graphCancellationGate_ = std::make_shared<GraphCancellationGate>(
+      [this](uint32_t collId) { return cancelGraphCollective(collId); });
   if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH &&
       graphColltraceSupported(logPrefix_, config_.loggerName)) {
     // Eagerly initialize the globaltimer calibration singleton now (outside
@@ -178,6 +182,8 @@ CollTrace::CollTrace(
 }
 
 CollTrace::~CollTrace() {
+  eagerCancellationGate_->shutdown();
+  graphCancellationGate_->shutdown();
   // Set the cancellation flag under the flush mutex so waitFlush()
   // can't miss the state change between its predicate check and wait.
   {
@@ -193,17 +199,20 @@ CollTrace::~CollTrace() {
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
   }
-  // Invalidate all graph handles.
-  for (auto& [_, state] : graphStateMap_) {
-    for (auto& [_, collEntry] : state->collectives) {
-      if (auto h = collEntry.handle.lock()) {
-        h->invalidate();
-      }
-    }
-  }
-  // Wait for the thread to finish
+  // Stop the only thread that removes graph state before walking that state.
   if (traceCollThread_.joinable()) {
     traceCollThread_.join();
+  }
+  // Invalidate all graph handles.
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    for (auto& [_, state] : graphStateMap_) {
+      for (auto& [_, collEntry] : state->collectives) {
+        if (auto h = collEntry.handle.lock()) {
+          h->invalidate();
+        }
+      }
+    }
   }
 }
 
@@ -316,8 +325,8 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       .collRecord = std::make_shared<CollRecord>(collId, std::move(metadata)),
       .waitEvent = std::move(waitEvent),
   });
-  auto handle =
-      std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
+  auto handle = std::make_shared<CollTraceHandle>(
+      this, pendingEnqueueColl_.get(), eagerCancellationGate_);
   eventToHandleMap_.emplace(pendingEnqueueColl_.get(), handle);
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
       *logger_, plugins_, *pendingEnqueueColl_);
@@ -326,6 +335,42 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
 
 ICollTracePlugin* CollTrace::getPluginByName(std::string name) noexcept {
   return folly::get_ptr(pluginByName_, name);
+}
+
+CommsMaybeVoid CollTrace::cancelEvent(CollTraceEvent& collEvent) noexcept {
+  if (&collEvent == pendingEnqueueColl_.get()) {
+    eventToHandleMap_.erase(&collEvent);
+    pendingEnqueueColl_.reset();
+    return folly::unit;
+  }
+
+  std::lock_guard<std::mutex> lock(graphStateMutex_);
+  for (auto& [_, state] : graphStateMap_) {
+    for (auto& collective : state->collectives) {
+      if (collective.second.event.get() == &collEvent) {
+        collective.second.cancelled = true;
+        hasCancelledGraphCollectives_.store(true, std::memory_order_release);
+        return folly::unit;
+      }
+    }
+  }
+  return folly::makeUnexpected(
+      CommsError("CollTrace event is no longer pending", commInvalidArgument));
+}
+
+CommsMaybeVoid CollTrace::cancelGraphCollective(uint32_t collId) noexcept {
+  std::lock_guard<std::mutex> lock(graphStateMutex_);
+  for (auto& [_, state] : graphStateMap_) {
+    auto collective = state->collectives.find(collId);
+    if (collective == state->collectives.end()) {
+      continue;
+    }
+    collective->second.cancelled = true;
+    hasCancelledGraphCollectives_.store(true, std::memory_order_release);
+    return folly::unit;
+  }
+  return folly::makeUnexpected(
+      CommsError("CollTrace event is no longer pending", commInvalidArgument));
 }
 
 CommsMaybeVoid CollTrace::triggerEventState(
@@ -352,7 +397,9 @@ CommsMaybeVoid CollTrace::triggerEventState(
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
           *logger_, plugins_, collEvent); // Trigger before calling waitEvent
       EXPECT_CHECK(collEvent.waitEvent->afterCollKernelScheduled());
-      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(precisionNow());
+      auto enqueueTime = collEvent.waitEvent->getCollEnqueueTime();
+      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(
+          enqueueTime.hasValue() ? enqueueTime.value() : precisionNow());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
         // If the write fails, pendingEnqueueColl_ will not be moved. Do a
@@ -433,10 +480,9 @@ CollTrace::recordGraphCollectiveImpl(
   });
   auto* registrationEvent = collEvent.get();
 
-  auto handle = std::make_shared<GraphCollTraceHandle>(
-      rawWaitEvent, std::move(recordPtr));
-
   uint32_t collId = rawWaitEvent->getCollId();
+  auto handle = std::make_shared<GraphCollTraceHandle>(
+      rawWaitEvent, std::move(recordPtr), graphCancellationGate_, collId);
 
   GraphCollectiveEntry collectiveEntry{
       .graphWaitEvent = rawWaitEvent,
@@ -517,6 +563,25 @@ void CollTrace::pollGraphEvents(
       return false;
     });
 
+    if (hasCancelledGraphCollectives_.exchange(
+            false, std::memory_order_acq_rel)) {
+      for (auto& [_, state] : graphStateMap_) {
+        std::erase_if(state->collectives, [this](const auto& entry) {
+          if (!entry.second.cancelled) {
+            return false;
+          }
+          if (auto handle = entry.second.handle.lock()) {
+            handle->invalidate();
+          }
+          const auto collId = entry.first;
+          collIdMap_.erase(collId);
+          progressingGraphCollectives_.erase(collId);
+          inFlightReplays_.erase(collId);
+          return true;
+        });
+      }
+    }
+
     // add new collectives that aren't in collIdMap_ yet.
     for (auto& [_, state] : graphStateMap_) {
       for (auto& [collId, collEntry] : state->collectives) {
@@ -525,6 +590,10 @@ void CollTrace::pollGraphEvents(
         }
       }
     }
+  }
+
+  if (config_.afterGraphSweepHook) {
+    config_.afterGraphSweepHook();
   }
 
   if (collIdMap_.empty()) {
@@ -544,6 +613,16 @@ void CollTrace::pollGraphEvents(
         }
 
         auto& collEntry = *(it->second);
+        // Cancellation can land after the sweep above exchanged the flag but
+        // before this entry is dispatched, so re-check under the mutex that
+        // publishes it. Without this, ring entries already queued for a
+        // cancelled collId still become plugin actions.
+        {
+          std::lock_guard<std::mutex> lock(graphStateMutex_);
+          if (collEntry.cancelled) {
+            return;
+          }
+        }
         auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
@@ -618,10 +697,18 @@ void CollTrace::pollGraphEvents(
   // than collIdMap_ (the templates) so that progressing fires against the
   // actual replay record with correct timing.
   auto now = precisionNow();
-  for (auto collId : progressingGraphCollectives_) {
-    auto it = inFlightReplays_.find(collId);
-    if (it != inFlightReplays_.end()) {
-      actions.insert({it->second.get(), PendingActionType::kProgressing, now});
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    for (auto collId : progressingGraphCollectives_) {
+      auto entryIt = collIdMap_.find(collId);
+      if (entryIt != collIdMap_.end() && entryIt->second->cancelled) {
+        continue;
+      }
+      auto it = inFlightReplays_.find(collId);
+      if (it != inFlightReplays_.end()) {
+        actions.insert(
+            {it->second.get(), PendingActionType::kProgressing, now});
+      }
     }
   }
 }
