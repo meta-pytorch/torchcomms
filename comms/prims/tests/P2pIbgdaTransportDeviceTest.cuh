@@ -105,10 +105,18 @@ struct CollapsedCqPollCase {
 struct CollapsedCqPollResult {
   int status;
   uint64_t finalConsumerIndex;
+  uint32_t aborted;
 };
 
 cudaError_t runTestCollapsedCqPoll(
     const CollapsedCqPollCase& testCase,
+    CollapsedCqPollResult* result);
+
+cudaError_t runTestIbgdaSqPollWithAbort(
+    const CollapsedCqPollCase& testCase,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
     CollapsedCqPollResult* result);
 #endif
 

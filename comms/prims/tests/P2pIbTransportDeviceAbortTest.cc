@@ -250,7 +250,65 @@ class PutFixture {
   uint32_t* posted_{nullptr};
 };
 
+class PrepareSendSlotObservationFixture {
+ public:
+  PrepareSendSlotObservationFixture() {
+    CUDACHECK_TEST(cudaSetDevice(0));
+    CUDACHECK_TEST(cudaMalloc(&device_, sizeof(*device_)));
+    CUDACHECK_TEST(cudaMemset(device_, 0, sizeof(*device_)));
+  }
+
+  ~PrepareSendSlotObservationFixture() {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaFree(device_);
+  }
+
+  PrepareSendSlotObservationFixture(const PrepareSendSlotObservationFixture&) =
+      delete;
+  PrepareSendSlotObservationFixture& operator=(
+      const PrepareSendSlotObservationFixture&) = delete;
+  PrepareSendSlotObservationFixture(PrepareSendSlotObservationFixture&&) =
+      delete;
+  PrepareSendSlotObservationFixture& operator=(
+      PrepareSendSlotObservationFixture&&) = delete;
+
+  test::PrepareSendSlotAbortObservation* device() {
+    return device_;
+  }
+
+  test::PrepareSendSlotAbortObservation read() const {
+    test::PrepareSendSlotAbortObservation observation;
+    CUDACHECK_TEST(cudaMemcpy(
+        &observation, device_, sizeof(observation), cudaMemcpyDeviceToHost));
+    return observation;
+  }
+
+ private:
+  test::PrepareSendSlotAbortObservation* device_{nullptr};
+};
+
 } // namespace
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    PrepareSendSlotForwardsAbortToConfirmation) {
+  PrepareSendSlotObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+
+  test::launchPrepareSendSlotAbortForwarding(
+      fixture.device(), abort.getDeviceHandle());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  const auto expectedReason =
+      static_cast<uint32_t>(comms::fault_tolerance::AbortReason::ABORTED);
+  EXPECT_EQ(observation.waitReason, expectedReason);
+  EXPECT_EQ(observation.confirmationReason, expectedReason);
+  EXPECT_EQ(observation.slotUnretired, 1U);
+  EXPECT_EQ(observation.remainingLaneMask, 1U);
+  EXPECT_EQ(observation.generation, 0U);
+}
 
 // A put that finds the ring full has to unwind, not trap: under fault tolerance
 // a device trap takes down the CUDA context for the whole process, which is the

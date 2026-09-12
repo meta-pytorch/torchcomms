@@ -156,6 +156,28 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, CollapsedCqWaitReturnsError) {
     EXPECT_EQ(result.finalConsumerIndex, 0);
   }
 }
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, SqCapacityPollObservesAbort) {
+  constexpr uint8_t kInvalidCompletion = 15;
+  const CollapsedCqPollCase testCase{0, 0, 1, 0, kInvalidCompletion, false};
+  for (const auto& [collapsedCq, gpuSharing] :
+       std::vector<std::pair<bool, bool>>{{true, true}, {false, false}}) {
+    SCOPED_TRACE(
+        ::testing::Message()
+        << "collapsedCq=" << collapsedCq << ", gpuSharing=" << gpuSharing);
+    comms::fault_tolerance::Abort abort(/*enabled=*/true);
+    abort.setAbort();
+    CollapsedCqPollResult result{};
+
+    CUDACHECK_TEST(runTestIbgdaSqPollWithAbort(
+        testCase, collapsedCq, gpuSharing, abort.getDeviceHandle(), &result));
+
+    EXPECT_EQ(result.status, EBUSY);
+    EXPECT_EQ(result.aborted, 1U);
+    EXPECT_EQ(result.finalConsumerIndex, 0U);
+    EXPECT_TRUE(abort.isAborted());
+  }
+}
 #endif
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {

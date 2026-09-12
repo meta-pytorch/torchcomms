@@ -554,6 +554,19 @@ void testRegisteredSendDrainWithAbort(
     int numBlocks,
     int blockSize);
 
+/**
+ * Test the blocking send-slot retirement error path against a bad-rkey CQE.
+ */
+void testPrepareSendSlotBadRkey(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,

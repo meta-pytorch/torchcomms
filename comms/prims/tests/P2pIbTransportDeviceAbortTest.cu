@@ -15,6 +15,83 @@ namespace comms::prims::test {
 
 namespace {
 
+struct PrepareSendSlotProbeChannel {
+  IbSendCompletionSlot sendCompletionSlots[1];
+};
+
+class PrepareSendSlotProbeTransport {
+ public:
+  __device__ explicit PrepareSendSlotProbeTransport(
+      PrepareSendSlotProbeChannel* slot,
+      PrepareSendSlotAbortObservation* observation)
+      : slot_(slot), observation_(observation) {}
+
+  template <typename P>
+  __device__ PrepareSendSlotProbeChannel& local_channel_slot(
+      uint32_t /*channelId*/) {
+    return *slot_;
+  }
+
+  __device__ uint32_t send_completion_lane_count() const {
+    return 1;
+  }
+
+  __device__ void wait_local_completion(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    observation_->waitReason = static_cast<uint32_t>(abort.reason());
+  }
+
+  __device__ bool is_local_completion_ready(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/) = delete;
+
+  __device__ bool is_local_completion_ready(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    observation_->confirmationReason = static_cast<uint32_t>(abort.reason());
+    return false;
+  }
+
+  __device__ const PrepareSendSlotProbeChannel& slot() const {
+    return *slot_;
+  }
+
+ private:
+  PrepareSendSlotProbeChannel* slot_{nullptr};
+  PrepareSendSlotAbortObservation* observation_{nullptr};
+};
+
+__global__ void prepareSendSlotAbortForwardingKernel(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  __shared__ PrepareSendSlotProbeChannel slot;
+  if (group.is_leader()) {
+    auto& completion = slot.sendCompletionSlots[0];
+    completion.generation = 0;
+    completion.laneMask = 1;
+    completion.values[0] = 1;
+  }
+  group.sync();
+  PrepareSendSlotProbeTransport transport(&slot, observation);
+
+  const bool slotUnretired = detail::prepare_send_slot<protocol::Simple>(
+      transport,
+      group,
+      /*slotId=*/0,
+      /*generation=*/1,
+      abort);
+  if (group.is_leader()) {
+    const auto& completion = transport.slot().sendCompletionSlots[0];
+    observation->slotUnretired = static_cast<uint32_t>(slotUnretired);
+    observation->remainingLaneMask = completion.laneMask;
+    observation->generation = completion.generation;
+  }
+}
+
 // Queue and channel state backing the transport under test.
 //
 // Must be one block-wide object: `wait_signal` is a group primitive whose
@@ -251,6 +328,13 @@ __global__ void flushNeverDrainsKernel(
 
 uint32_t ibrcTestQueueDepth() {
   return kIbrcTestQueueDepth;
+}
+
+void launchPrepareSendSlotAbortForwarding(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  prepareSendSlotAbortForwardingKernel<<<1, 32>>>(observation, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void launchIbrcPutUntilQueueFull(

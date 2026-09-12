@@ -354,6 +354,7 @@ class P2pIbrcTransportDevice {
       if (seq != kIbrcInvalidReadySeq) {
         completion = IbLocalCompletionTicket{
             .completionId = laneOrdinal,
+            .posted = true,
             .value = seq + 1,
         };
       }

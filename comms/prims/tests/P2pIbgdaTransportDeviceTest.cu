@@ -497,27 +497,54 @@ __global__ void testCollapsedCqPoll(
     doca_gpu_dev_verbs_cq* cq,
     uint64_t ticket,
     bool blocking,
+    bool abortAware,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
     CollapsedCqPollResult* result) {
   if (blocking) {
     result->status = prims_ibgda_wait_collapsed_cq<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+    result->aborted = 0;
+  } else if (abortAware) {
+    const auto pollResult = gpuSharing
+        ? detail::pollIbgdaSqOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+              DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(
+              cq, ticket, collapsedCq, abort)
+        : detail::pollIbgdaSqOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+              DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(
+              cq, ticket, collapsedCq, abort);
+    result->status = pollResult.status;
+    result->aborted = pollResult.aborted ? 1U : 0U;
   } else {
     result->status = prims_ibgda_poll_collapsed_cq_once<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+    result->aborted = 0;
   }
   result->finalConsumerIndex = cq->cqe_ci;
 }
 
-cudaError_t runTestCollapsedCqPoll(
+namespace {
+
+cudaError_t runTestIbgdaSqPoll(
     const CollapsedCqPollCase& testCase,
+    bool abortAware,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
     CollapsedCqPollResult* result) {
   doca_gpunetio_ib_mlx5_cqe64 hostCqe{};
   hostCqe.wqe_counter = static_cast<__be16>(
       (testCase.wqeCounter >> 8) | (testCase.wqeCounter << 8));
   hostCqe.op_own = static_cast<uint8_t>(
       testCase.opcode << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT);
+  if (!collapsedCq) {
+    hostCqe.op_own |= DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK;
+  }
 
   doca_gpunetio_ib_mlx5_cqe64* deviceCqe = nullptr;
   doca_gpu_dev_verbs_cq* deviceCq = nullptr;
@@ -550,7 +577,14 @@ cudaError_t runTestCollapsedCqPoll(
   }
   if (status == cudaSuccess) {
     testCollapsedCqPoll<<<1, 1>>>(
-        deviceCq, testCase.ticket, testCase.blocking, deviceResult);
+        deviceCq,
+        testCase.ticket,
+        testCase.blocking,
+        abortAware,
+        collapsedCq,
+        gpuSharing,
+        abort,
+        deviceResult);
     status = cudaDeviceSynchronize();
   }
   if (status == cudaSuccess) {
@@ -574,6 +608,35 @@ cudaError_t runTestCollapsedCqPoll(
     return cqFreeStatus;
   }
   return cqeFreeStatus;
+}
+
+} // namespace
+
+cudaError_t runTestCollapsedCqPoll(
+    const CollapsedCqPollCase& testCase,
+    CollapsedCqPollResult* result) {
+  return runTestIbgdaSqPoll(
+      testCase,
+      /*abortAware=*/false,
+      /*collapsedCq=*/true,
+      /*gpuSharing=*/true,
+      comms::fault_tolerance::AbortDevice{},
+      result);
+}
+
+cudaError_t runTestIbgdaSqPollWithAbort(
+    const CollapsedCqPollCase& testCase,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
+    CollapsedCqPollResult* result) {
+  return runTestIbgdaSqPoll(
+      testCase,
+      /*abortAware=*/true,
+      collapsedCq,
+      gpuSharing,
+      abort,
+      result);
 }
 #endif
 
