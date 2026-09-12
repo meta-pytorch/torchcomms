@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <stdlib.h>
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <thread>
 
@@ -325,6 +327,101 @@ TEST_P(CtranAllToAllTestParam, AllToAllDynamicRegister) {
       NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
       enable_put_fast_path_for_small_msgs);
   run(8192, 8192 * ctranComm->statex_->nRanks(), false);
+}
+
+// Back-to-back non-persistent AllToAll execs with NO cudaStreamSynchronize
+// inside the burst, a port of ctranAllToAllPTest.BackToBackExecNoSync to the
+// eager API. run() syncs and verifies after every collective, so premature
+// flush completion before the recvbuf read or a next-op overwrite of a
+// NIC-read source buffer is unobservable there. Fresh sendbuf per exec (the
+// host fill must not race a prior exec's device reads); two alternating
+// recvbufs verified against their last writers after the single sync.
+TEST_P(CtranAllToAllTestParam, BackToBackNoSyncVerify) {
+  const auto& [enable_lowlatency_config, enable_put_fast_path_for_small_msgs] =
+      GetParam();
+  EnvRAII env1(NCCL_CTRAN_NO_ERROR_CHECK, enable_lowlatency_config);
+  EnvRAII env2(NCCL_CTRAN_ENABLE_PRECONNECT, enable_lowlatency_config);
+  EnvRAII env3(
+      NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS,
+      enable_put_fast_path_for_small_msgs);
+
+  const size_t count = 8192;
+  // Any kNumExecs >= 2 leaves the two recvbufs with distinct last writers.
+  constexpr int kNumExecs = 7;
+  const size_t bufNbytes = count * numRanks * sizeof(int);
+  // Strides above the max chunk index / band width keep (source rank, chunk)
+  // pairs and the execs' payload bands unique at any rank count.
+  const int kRankStride = std::max(100, numRanks + 1);
+  const int kExecStride =
+      std::max(1000000, 100000 + (numRanks + 1) * kRankStride);
+
+  if (!checkTestPrerequisite(count, commInt)) {
+    GTEST_SKIP() << "Skip test because ctranAllToAllSupport returns false";
+  }
+
+  std::array<int*, 2> recvBufs;
+  for (int idx = 0; idx < 2; idx++) {
+    recvBufs[idx] = (int*)createDataBuf(bufNbytes, true);
+  }
+
+  // Only the last exec that targeted each recvbuf is observable since
+  // back-to-back execs overwrite the same buffer.
+  std::array<int, 2> lastExpectedVal{};
+  std::vector<int*> sendBufs;
+  sendBufs.reserve(kNumExecs);
+  for (int x = 0; x < kNumExecs; x++) {
+    generateDistRandomExpValue();
+    // Clamped base + per-exec stride keep the execs' payload bands disjoint
+    // without int overflow.
+    expectedVal = expectedVal % 100000 + x * kExecStride;
+    lastExpectedVal[x % 2] = expectedVal;
+    int* buf = (int*)createDataBuf(bufNbytes, true);
+    for (int i = 0; i < numRanks; ++i) {
+      assignChunkValue<int>(
+          buf + i * count,
+          count,
+          expectedVal + globalRank * kRankStride + i + 1);
+    }
+    sendBufs.push_back(buf);
+  }
+
+  for (int x = 0; x < kNumExecs; x++) {
+    EXPECT_EQ(
+        ctranAllToAll(
+            sendBufs[x],
+            recvBufs[x % 2],
+            count,
+            commInt,
+            ctranComm.get(),
+            testStream,
+            NCCL_ALLTOALL_ALGO::ctran),
+        commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  for (int idx = 0; idx < 2; idx++) {
+    for (int i = 0; i < numRanks; ++i) {
+      int errs = checkChunkValue<int>(
+          recvBufs[idx] + i * count,
+          count,
+          lastExpectedVal[idx] + i * kRankStride + globalRank + 1);
+      EXPECT_EQ(errs, 0) << "rank " << globalRank << " recvbuf " << idx
+                         << " checked chunk " << i << " at "
+                         << recvBufs[idx] + i * count << " with " << errs
+                         << " errors";
+    }
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  for (int x = 0; x < kNumExecs; x++) {
+    releaseDataBuf(sendBufs[x], bufNbytes, true);
+  }
+  for (int idx = 0; idx < 2; idx++) {
+    releaseDataBuf(recvBufs[idx], bufNbytes, true);
+  }
 }
 
 // Tests for fast put configs

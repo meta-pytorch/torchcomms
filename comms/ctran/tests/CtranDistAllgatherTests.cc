@@ -327,6 +327,88 @@ TEST_P(CtranAllgatherTestEnvFixture, OutOfPlaceAllgatherRingDynamicRegist) {
   memoryCleanUp(memType, kTestOutOfPlace, kTestPairNone);
 }
 
+// No-sync burst with a distinct payload per iteration, run under ctsrd: the
+// send buffer is overwritten stream-ordered (no host sync) before each
+// allgather, and after the single sync every rank's chunk must hold the
+// LAST iteration's value. Detection is destination-side: stale data from an
+// earlier iteration, or a never-written chunk, is caught byte-for-byte;
+// source-drain violations in earlier iterations are overwritten by later
+// ones and are not directly observable.
+TEST_P(CtranAllgatherTestEnvFixture, CtsrdNoSyncBurstDistinctPayload) {
+  const auto algo = NCCL_ALLGATHER_ALGO::ctsrd;
+  const size_t count = 8192;
+  constexpr int kNumIters = 8;
+
+  EnvRAII env(NCCL_ALLGATHER_ALGO, algo);
+
+  if (!ctranAllGatherSupport(ctranComm.get(), algo)) {
+    GTEST_SKIP() << "Test with " << allGatherAlgoName(algo)
+                 << " only supports nLocalRanks=1, but got "
+                 << ctranComm->statex_->nLocalRanks() << ", skip test";
+  }
+
+  const auto memType = kMemNcclMemAlloc;
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+  // All (rank, iteration) payload bytes are distinct only within this bound
+  // (values in [1, 127] avoid char sign issues); outside it the verification
+  // weakens, so skip — checked before any allocation or registration.
+  if (numRanks * kNumIters > 127) {
+    GTEST_SKIP() << "distinct payloads need numRanks * kNumIters <= 127";
+  }
+  memorySetUp(memType, 0, count, kTestOutOfPlace, kTestPairNone);
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
+  }
+
+  // Distinct per (rank, iteration) within the bound the skip above enforces.
+  auto payloadByte = [](int rank, int x) {
+    return 1 + (rank * kNumIters + x) % 127;
+  };
+
+  const size_t sCommBytes = count * commTypeSize(dt);
+  // Zero the recv buffer (stream-ordered) so a never-written chunk cannot
+  // match any payload byte (payloads start at 1).
+  CUDACHECK_TEST(
+      cudaMemsetAsync(rCommBuf, 0, sCommBytes * numRanks, testStream));
+  for (int x = 0; x < kNumIters; x++) {
+    CUDACHECK_TEST(cudaMemsetAsync(
+        sCommBuf, payloadByte(globalRank, x), sCommBytes, testStream));
+    auto res = ctranAllGather(
+        sCommBuf, rCommBuf, count, dt, ctranComm.get(), testStream, algo);
+    EXPECT_EQ(res, commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  for (int i = 0; i < numRanks; ++i) {
+    size_t errs = checkChunkValue<char>(
+        reinterpret_cast<char*>(rCommBuf) + sCommBytes * i,
+        sCommBytes,
+        static_cast<char>(payloadByte(i, kNumIters - 1)),
+        0,
+        globalRank);
+    EXPECT_EQ(errs, 0) << "on rank " << globalRank << " received from peer "
+                       << i;
+  }
+
+  verifyBackendsUsed(
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
+      memType,
+      {CtranMapperBackend::NVL});
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+  }
+  memoryCleanUp(memType, kTestOutOfPlace, kTestPairNone);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranAllgatherTest,
     CtranAllgatherTestEnvFixture,

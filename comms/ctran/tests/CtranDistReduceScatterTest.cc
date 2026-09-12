@@ -5,7 +5,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
+#include <algorithm>
 #include <iostream>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include "CtranUtUtils.h"
@@ -135,6 +138,35 @@ class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
     }
   }
 
+  // ctranReduceScatterSupport always returns false for ctrhd algo, but we
+  // still want to test it here, so gate on its actual constraints directly
+  // (nLocalRanks=1, nNodes is power of 2, and tmpBuf is small enough).
+  // Returns the skip reason, or nullopt when the algo is testable.
+  std::optional<std::string> algoSkipReason(
+      enum NCCL_REDUCESCATTER_ALGO algo,
+      size_t count) const {
+    if (algo == NCCL_REDUCESCATTER_ALGO::ctrhd) {
+      const int nNodes = ctranComm->statex_->nNodes();
+      const int nLocalRanks = ctranComm->statex_->nLocalRanks();
+      if (nLocalRanks != 1) {
+        return "ctrhd only supports nLocalRanks=1, but got " +
+            std::to_string(nLocalRanks) + ", skip test";
+      }
+      if ((nNodes & (nNodes - 1)) != 0) {
+        return "ctrhd only supports power-of-two number of nodes but got " +
+            std::to_string(nNodes) + ", skip test";
+      }
+      const size_t totalBufSize = count * commTypeSize(dt) * numRanks;
+      if (NCCL_CTRAN_INTERNODE_TMPBUF_SIZE < totalBufSize) {
+        return "data buffer of size " + std::to_string(totalBufSize) +
+            " bytes is too large to fit in tmpBuf for ctrhd, skip test";
+      }
+    } else if (!ctranReduceScatterSupport(ctranComm.get(), algo)) {
+      return "ctranReduceScatterSupport returns fails, skip test";
+    }
+    return std::nullopt;
+  }
+
   void beginTest(
       size_t count,
       TestInPlaceType inplace,
@@ -144,29 +176,8 @@ class CtranReduceScatterTest : public ctran::CtranDistTestFixture,
       enum NCCL_REDUCESCATTER_ALGO algo) {
     EnvRAII env(NCCL_REDUCESCATTER_ALGO, algo);
 
-    if (algo == NCCL_REDUCESCATTER_ALGO::ctrhd) {
-      // ctranReduceScatterSupport always returns false for ctrhd algo, but we
-      // still want to test it here. We only test ctrhd when the conditions are
-      // met (nLocalRanks=1, nNodes is power of 2, and tmpBuf is small enough)
-      const int nNodes = ctranComm->statex_->nNodes();
-      const int nLocalRanks = ctranComm->statex_->nLocalRanks();
-      if (nLocalRanks != 1) {
-        GTEST_SKIP() << "ctrhd only supports nLocalRanks=1, but got "
-                     << nLocalRanks << ", skip test";
-      }
-      if ((nNodes & (nNodes - 1)) != 0) {
-        GTEST_SKIP() << "ctrhd only supports power-of-two number "
-                     << "of nodes but got " << nNodes << ", skip test";
-      }
-      const size_t recvBytes = count * commTypeSize(dt);
-      const size_t totalBufSize = recvBytes * numRanks;
-      if (NCCL_CTRAN_INTERNODE_TMPBUF_SIZE < totalBufSize) {
-        GTEST_SKIP() << "data buffer of size " << totalBufSize
-                     << " bytes is too large to fit in tmpBuf for "
-                     << "ctrhd, skip test";
-      }
-    } else if (!ctranReduceScatterSupport(ctranComm.get(), algo)) {
-      GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
+    if (auto reason = algoSkipReason(algo, count)) {
+      GTEST_SKIP() << *reason;
     }
 
     if (memType == kCuMemAllocDisjoint && !NCCL_CTRAN_IB_DMABUF_ENABLE) {
@@ -307,6 +318,128 @@ TEST_P(CtranReduceScatterTestParamSpecial, TestDirectAvg) {
   const auto algo = NCCL_REDUCESCATTER_ALGO::ctdirect;
   beginTest(count, inplace, regist, memType, commAvg, algo);
 }
+
+// =============================================================================
+// Back-to-back ReduceScatter with no host sync inside the burst.
+// Every eager test above is single-shot, so a collective that signals stream
+// completion before its outgoing puts drain, or that reduces a stale chunk
+// from a premature flush/notify, is never observable there (reduction
+// corruption is numerically plausible with constant payloads). Distinct
+// per-iteration integer payloads give exact expected sums; verification
+// happens only after the single sync. Burst scaffolding stays per-suite:
+// buffer shapes, payload seeds, and launch signatures differ per collective,
+// so a shared helper would be parameter plumbing around fixture primitives.
+// =============================================================================
+
+class CtranReduceScatterB2BTestParam
+    : public CtranReduceScatterTest<uint64_t>,
+      public ::testing::WithParamInterface<enum NCCL_REDUCESCATTER_ALGO> {};
+
+TEST_P(CtranReduceScatterB2BTestParam, BackToBackNoSync) {
+  const auto algo = GetParam();
+  EnvRAII env(NCCL_REDUCESCATTER_ALGO, algo);
+
+  constexpr int kNumColls = 8;
+  const size_t count = 8192;
+  // Iteration stride above each iteration's count * numRanks fill span, so
+  // stale data cannot alias another iteration's sums at any rank count;
+  // uint64 keeps the sums exact.
+  const uint64_t kIterStride =
+      std::max<uint64_t>(1000000, (count + 1) * numRanks);
+
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+
+  if (auto reason = algoSkipReason(algo, count)) {
+    GTEST_SKIP() << *reason;
+  }
+
+  size_t recvNbytes = count * commTypeSize(dt);
+  if (recvNbytes < CTRAN_MIN_REGISTRATION_SIZE) {
+    recvNbytes = CTRAN_MIN_REGISTRATION_SIZE;
+  }
+  const size_t sendNbytes = recvNbytes * numRanks;
+  const size_t sendAllocBytes = pageAligned(sendNbytes);
+  const size_t recvAllocBytes = pageAligned(recvNbytes);
+
+  // Separate send/recv buffers per collective: host fills must not race an
+  // earlier iteration's device reads (no sync inside the burst), and every
+  // result stays observable for verification after the single sync.
+  std::vector<uint64_t*> sendBufs(kNumColls), recvBufs(kNumColls);
+  for (int x = 0; x < kNumColls; x++) {
+    sendBufs[x] = reinterpret_cast<uint64_t*>(
+        prepareBuf(sendAllocBytes, kMemNcclMemAlloc, segments));
+    recvBufs[x] = reinterpret_cast<uint64_t*>(
+        prepareBuf(recvAllocBytes, kMemNcclMemAlloc, segments));
+    assignChunkValue<uint64_t>(
+        sendBufs[x], count * numRanks, globalRank + x * kIterStride, 1);
+    // Poison recv buffers so an iteration whose result is never written
+    // cannot pass verification on stale allocator-returned contents.
+    CUDACHECK_TEST(cudaMemset(recvBufs[x], 0xEE, recvAllocBytes));
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
+  }
+
+  for (int x = 0; x < kNumColls; x++) {
+    auto res = ctranReduceScatter(
+        sendBufs[x],
+        recvBufs[x],
+        count,
+        dt,
+        commSum,
+        ctranComm.get(),
+        testStream,
+        algo);
+    EXPECT_EQ(res, commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  // Rank r contributed (r + x * kIterStride + globalRank * count + i) to
+  // index i of this rank's chunk of iteration x.
+  const uint64_t rankSum = uint64_t(numRanks) * (numRanks - 1) / 2;
+  for (int x = 0; x < kNumColls; x++) {
+    size_t errs = checkChunkValue<uint64_t>(
+        recvBufs[x],
+        count,
+        rankSum + numRanks * (x * kIterStride + globalRank * count),
+        uint64_t(numRanks),
+        globalRank);
+    EXPECT_EQ(errs, 0) << "iteration " << x << " on rank " << globalRank;
+  }
+
+  verifyBackendsUsed(
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
+      kMemNcclMemAlloc,
+      {CtranMapperBackend::NVL});
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+  }
+  for (int x = 0; x < kNumColls; x++) {
+    releaseBuf(sendBufs[x], sendAllocBytes, kMemNcclMemAlloc);
+    releaseBuf(recvBufs[x], recvAllocBytes, kMemNcclMemAlloc);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranReduceScatterB2BTestParam,
+    ::testing::Values(
+        NCCL_REDUCESCATTER_ALGO::ctring,
+        NCCL_REDUCESCATTER_ALGO::ctrhd,
+        NCCL_REDUCESCATTER_ALGO::ctdirect),
+    [](const testing::TestParamInfo<enum NCCL_REDUCESCATTER_ALGO>& info) {
+      return reduceScatterAlgoName(info.param);
+    });
 
 // common function to get test name from test parameter
 inline std::string getTestName(

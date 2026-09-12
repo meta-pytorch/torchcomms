@@ -8,7 +8,8 @@ static AlgoDescriptor makeAllReduce(enum NCCL_ALLREDUCE_ALGO algo) {
     ctran::TestDeviceBuffer send, recv;
     size_t bytes;
     B(size_t c, int rank)
-        : send(c * sizeof(int32_t)),
+        : Buffers(c * sizeof(int32_t)),
+          send(c * sizeof(int32_t)),
           recv(c * sizeof(int32_t)),
           bytes(c * sizeof(int32_t)) {
       CtranCudaGraphTestBase::fillSendBuf(send.get(), c, rank);
