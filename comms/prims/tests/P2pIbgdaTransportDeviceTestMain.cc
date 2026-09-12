@@ -178,6 +178,28 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, SqCapacityPollObservesAbort) {
     EXPECT_TRUE(abort.isAborted());
   }
 }
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    DataOnlySqReservationAbortLeavesUnpublished) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  DataOnlySqAbortResult result{};
+
+  CUDACHECK_TEST(runTestDataOnlySqReservationAbort(abort, &result));
+
+  EXPECT_EQ(result.prePutAbortClear, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.producerIndex, 0U);
+  EXPECT_EQ(result.doorbellRecord, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.pendingFlushLanesMask, 0U);
+  EXPECT_EQ(result.wqeUnchanged, 1U);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_FALSE(abort.isTimedOut());
+}
 #endif
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {
