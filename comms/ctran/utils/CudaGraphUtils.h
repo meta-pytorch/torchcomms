@@ -26,6 +26,22 @@ inline cudaError_t getStreamCaptureInfo(
 #endif
 }
 
+// CUDA 13 folded the optional edge-data output into cudaGraphGetEdges itself;
+// HIP and earlier CUDA runtimes keep the four-argument form.
+inline cudaError_t getGraphEdges(
+    cudaGraph_t graph,
+    cudaGraphNode_t* from,
+    cudaGraphNode_t* to,
+    size_t* numEdges) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return hipGraphGetEdges(graph, from, to, numEdges);
+#elif CUDART_VERSION >= 13000
+  return cudaGraphGetEdges(graph, from, to, nullptr, numEdges);
+#else
+  return cudaGraphGetEdges(graph, from, to, numEdges);
+#endif
+}
+
 // Retain a user object on the graph so its destroy callback runs when the
 // graph is destroyed. Use this to tie resource lifetime to graph lifetime
 // (e.g., pinned memory that must outlive graph replays).
