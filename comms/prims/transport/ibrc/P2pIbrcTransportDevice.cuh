@@ -250,11 +250,16 @@ class P2pIbrcTransportDevice {
   // Public raw put/signal/flush/fence APIs default to the Send direction.
   // Recv-direction operations are reserved for the send/recv protocol internals
   // that explicitly pass IbDirection::Recv.
-  __device__ void signal(
+  // IBRC enqueue owns one persistent transport abort and its fixed proxy
+  // watchdog. Explicit operation handles are accepted for common-interface
+  // parity, but cannot cancel a claimed sequence without leaving a queue hole.
+  [[nodiscard]] __device__ bool try_signal(
       ThreadGroup& group,
       const IbgdaRemoteBuffer& signalBuf,
-      uint64_t signalVal = 1,
-      IbDirection direction = IbDirection::Send) {
+      uint64_t signalVal,
+      IbDirection direction,
+      const AbortDevice& /*abortDevice*/) {
+    uint32_t posted = 0;
     if (group.is_leader()) {
       if (signalBuf.ptr == nullptr) {
         trap("P2pIbrcTransportDevice: signal buffer is null");
@@ -269,9 +274,17 @@ class P2pIbrcTransportDevice {
       desc.op = static_cast<uint16_t>(IbrcOp::SIGNAL);
       desc.flags = IBRC_HAS_SIGNAL | IBRC_SIGNAL_ADD;
       desc.ready_seq = kIbrcInvalidReadySeq;
-      enqueue(queueId, desc);
+      posted = enqueue(queueId, desc) != kIbrcInvalidReadySeq ? 1U : 0U;
     }
-    group.sync();
+    return group.broadcast<uint32_t>(posted) != 0U;
+  }
+
+  __device__ void signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal = 1,
+      IbDirection direction = IbDirection::Send) {
+    (void)try_signal(group, signalBuf, signalVal, direction, AbortDevice{});
   }
 
   __device__ void signal(
@@ -364,6 +377,29 @@ class P2pIbrcTransportDevice {
     }
     group.sync();
     return completion;
+  }
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal,
+      bool signalPerLane,
+      const AbortDevice& /*abortDevice*/) {
+    return put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalBuf,
+        signalVal,
+        counterBuf,
+        counterVal,
+        signalPerLane);
   }
 
   __device__ IbLocalCompletionTicket
