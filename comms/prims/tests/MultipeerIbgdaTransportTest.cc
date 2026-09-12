@@ -1701,15 +1701,15 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
+    comms::fault_tolerance::Abort abort(/*enabled=*/true);
     if (globalRank == 0) {
-      test::testBurstPutAndFlush(
+      test::testBurstPutAndFlushWithAbort(
           peerTransport,
           localDataBuf,
           remoteDataBuf,
           kBytesPerPut,
           numBurstPuts,
-          1,
-          32);
+          abort.getDeviceHandle());
     }
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));

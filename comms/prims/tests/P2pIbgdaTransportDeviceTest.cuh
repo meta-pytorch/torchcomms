@@ -123,6 +123,8 @@ struct DataOnlySqAbortResult {
   uint32_t posted;
   uint32_t wqeUnchanged;
   uint32_t doorbellRecord;
+  uint32_t completionId;
+  uint64_t completionValue;
 };
 
 cudaError_t runTestCollapsedCqPoll(
@@ -137,8 +139,15 @@ cudaError_t runTestIbgdaSqPollWithAbort(
     CollapsedCqPollResult* result);
 
 cudaError_t runTestDataOnlySqReservationAbort(
+    bool collapsedCq,
     comms::fault_tolerance::Abort& abort,
     DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlyPutWithCapacity(
+    comms::fault_tolerance::AbortDevice abort,
+    DataOnlySqAbortResult* result);
+
+cudaError_t runTestDataOnlySqErrorWithoutFt();
 #endif
 
 // =============================================================================

@@ -643,6 +643,8 @@ cudaError_t runTestIbgdaSqPollWithAbort(
 namespace {
 
 constexpr uint8_t kDataOnlyWqeCanary = 0xa5;
+constexpr uint32_t kUnsetCompletionId = UINT32_MAX;
+constexpr uint64_t kUnsetCompletionValue = UINT64_MAX;
 
 struct DataOnlySqAbortState {
   doca_gpu_dev_verbs_qp qp{};
@@ -658,96 +660,128 @@ struct DataOnlySqAbortState {
   DataOnlySqAbortResult result{};
 };
 
+__device__ void initializeDataOnlySqState(
+    DataOnlySqAbortState* state,
+    uint64_t reservedIndex,
+    uint8_t completionOpcode,
+    bool completionOwner) {
+  auto* wqeBytes = reinterpret_cast<uint8_t*>(&state->wqe);
+  for (std::size_t i = 0; i < sizeof(state->wqe); ++i) {
+    wqeBytes[i] = kDataOnlyWqeCanary;
+  }
+
+  state->cqe.op_own = static_cast<uint8_t>(
+      completionOpcode << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT);
+  if (completionOwner) {
+    state->cqe.op_own |= DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK;
+  }
+  state->qp.sq_rsvd_index = reservedIndex;
+  state->qp.sq_ready_index = 0;
+  state->qp.sq_wqe_pi = 0;
+  state->qp.sq_wqe_num = 1;
+  state->qp.sq_wqe_mask = 0;
+  state->qp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(&state->wqe);
+  state->qp.sq_dbrec = &state->doorbellRecord;
+  state->qp.sq_db = &state->doorbell;
+  state->qp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(&state->cqe);
+  state->qp.cq_sq.cqe_num = 1;
+  state->qp.cq_sq.cqe_mask = 0;
+  state->qp.cq_sq.cqe_ci = 0;
+  for (int i = 0; i < kIbDirections; ++i) {
+    state->qps[i] = &state->qp;
+    state->companionQps[i] = &state->qp;
+  }
+  state->result.completionId = kUnsetCompletionId;
+  state->result.completionValue = kUnsetCompletionValue;
+}
+
+__device__ IbLocalCompletionTicket issueDataOnlyPut(
+    DataOnlySqAbortState* state,
+    ThreadGroup& group,
+    bool collapsedCq,
+    const comms::fault_tolerance::AbortDevice& abort) {
+  NicDeviceIbgdaResources nic{
+      .qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(state->qps, kIbDirections),
+      .companion_qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(
+          state->companionQps, kIbDirections),
+  };
+  P2pIbgdaTransportDevice transport(
+      DeviceSpan<NicDeviceIbgdaResources>(&nic, 1),
+      IbgdaRemoteBuffer{},
+      IbgdaLocalBuffer{},
+      IbgdaLocalBuffer{},
+      /*numSignalSlots=*/0,
+      /*numCounterSlots=*/0,
+      /*maxChannels=*/1,
+      /*qpsPerConnection=*/1,
+      /*qpDirectionCount=*/kIbDirections,
+      DeviceSpan<IbLocalChannel>(&state->channel, 1),
+      IbChannelLayout{},
+      collapsedCq);
+  const IbgdaLocalBuffer localBuf(
+      &state->localData, NetworkLKeys{NetworkLKey{0x1111}});
+  const IbgdaRemoteBuffer remoteBuf(
+      &state->remoteData, NetworkRKeys{NetworkRKey{0x2222}});
+  return transport.put(
+      group,
+      localBuf,
+      remoteBuf,
+      /*nbytes=*/1,
+      IbgdaRemoteBuffer{},
+      /*signalVal=*/1,
+      IbgdaLocalBuffer{},
+      /*counterVal=*/1,
+      /*signalPerLane=*/false,
+      abort);
+}
+
+__device__ void recordDataOnlySqResult(
+    DataOnlySqAbortState* state,
+    const IbLocalCompletionTicket& completion) {
+  state->result.posted = completion.posted ? 1U : 0U;
+  state->result.completionId = completion.completionId;
+  state->result.completionValue = completion.value;
+  state->result.reservedIndex = state->qp.sq_rsvd_index;
+  state->result.readyIndex = state->qp.sq_ready_index;
+  state->result.producerIndex = state->qp.sq_wqe_pi;
+  state->result.doorbellRecord = state->doorbellRecord;
+  state->result.doorbell = state->doorbell;
+  state->result.pendingFlushLanesMask =
+      state->channel.sendQp.pendingFlushLanesMask;
+  state->result.wqeUnchanged = 1U;
+  const auto* wqeBytes = reinterpret_cast<const uint8_t*>(&state->wqe);
+  for (std::size_t i = 0; i < sizeof(state->wqe); ++i) {
+    if (wqeBytes[i] != kDataOnlyWqeCanary) {
+      state->result.wqeUnchanged = 0U;
+      break;
+    }
+  }
+}
+
 __global__ void testDataOnlySqReservationAbort(
     DataOnlySqAbortState* state,
     uint32_t* enteredReservation,
+    bool collapsedCq,
     comms::fault_tolerance::AbortDevice abort) {
   if (threadIdx.x == 0) {
-    auto* wqeBytes = reinterpret_cast<uint8_t*>(&state->wqe);
-    for (std::size_t i = 0; i < sizeof(state->wqe); ++i) {
-      wqeBytes[i] = kDataOnlyWqeCanary;
-    }
-
-    state->cqe.op_own = static_cast<uint8_t>(
-        (15U << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT) |
-        DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK);
-    state->qp.sq_rsvd_index = 1;
-    state->qp.sq_ready_index = 0;
-    state->qp.sq_wqe_pi = 0;
-    state->qp.sq_wqe_num = 1;
-    state->qp.sq_wqe_mask = 0;
-    state->qp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(&state->wqe);
-    state->qp.sq_dbrec = &state->doorbellRecord;
-    state->qp.sq_db = &state->doorbell;
-    state->qp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(&state->cqe);
-    state->qp.cq_sq.cqe_num = 1;
-    state->qp.cq_sq.cqe_mask = 0;
-    state->qp.cq_sq.cqe_ci = 0;
-    for (int i = 0; i < kIbDirections; ++i) {
-      state->qps[i] = &state->qp;
-      state->companionQps[i] = &state->qp;
-    }
+    initializeDataOnlySqState(
+        state,
+        /*reservedIndex=*/1,
+        /*completionOpcode=*/15,
+        /*completionOwner=*/!collapsedCq);
   }
   __syncthreads();
 
   if (threadIdx.x < comms::prims::kWarpSize) {
     auto group = comms::prims::make_warp_group();
-    NicDeviceIbgdaResources nic{
-        .qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(state->qps, kIbDirections),
-        .companion_qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(
-            state->companionQps, kIbDirections),
-    };
-    P2pIbgdaTransportDevice transport(
-        DeviceSpan<NicDeviceIbgdaResources>(&nic, 1),
-        IbgdaRemoteBuffer{},
-        IbgdaLocalBuffer{},
-        IbgdaLocalBuffer{},
-        /*numSignalSlots=*/0,
-        /*numCounterSlots=*/0,
-        /*maxChannels=*/1,
-        /*qpsPerConnection=*/1,
-        /*qpDirectionCount=*/kIbDirections,
-        DeviceSpan<IbLocalChannel>(&state->channel, 1),
-        IbChannelLayout{},
-        /*collapsedCq=*/false);
-    const IbgdaLocalBuffer localBuf(
-        &state->localData, NetworkLKeys{NetworkLKey{0x1111}});
-    const IbgdaRemoteBuffer remoteBuf(
-        &state->remoteData, NetworkRKeys{NetworkRKey{0x2222}});
-
     if (group.is_leader()) {
       state->result.prePutAbortClear = abort.isAborted() ? 0U : 1U;
     }
     group.sync();
-    const auto completion = transport.put(
-        group,
-        localBuf,
-        remoteBuf,
-        /*nbytes=*/1,
-        IbgdaRemoteBuffer{},
-        /*signalVal=*/1,
-        IbgdaLocalBuffer{},
-        /*counterVal=*/1,
-        /*signalPerLane=*/false,
-        abort);
+    const auto completion = issueDataOnlyPut(state, group, collapsedCq, abort);
 
     if (group.is_leader()) {
-      state->result.posted = completion.posted ? 1U : 0U;
-      state->result.reservedIndex = state->qp.sq_rsvd_index;
-      state->result.readyIndex = state->qp.sq_ready_index;
-      state->result.producerIndex = state->qp.sq_wqe_pi;
-      state->result.doorbellRecord = state->doorbellRecord;
-      state->result.doorbell = state->doorbell;
-      state->result.pendingFlushLanesMask =
-          state->channel.sendQp.pendingFlushLanesMask;
-      state->result.wqeUnchanged = 1U;
-      const auto* wqeBytes = reinterpret_cast<const uint8_t*>(&state->wqe);
-      for (std::size_t i = 0; i < sizeof(state->wqe); ++i) {
-        if (wqeBytes[i] != kDataOnlyWqeCanary) {
-          state->result.wqeUnchanged = 0U;
-          break;
-        }
-      }
+      recordDataOnlySqResult(state, completion);
     }
     return;
   }
@@ -765,9 +799,53 @@ __global__ void testDataOnlySqReservationAbort(
   }
 }
 
+__global__ void testDataOnlyPutWithCapacity(
+    DataOnlySqAbortState* state,
+    comms::fault_tolerance::AbortDevice abort) {
+  if (threadIdx.x == 0) {
+    initializeDataOnlySqState(
+        state,
+        /*reservedIndex=*/0,
+        /*completionOpcode=*/0,
+        /*completionOwner=*/false);
+    state->qp.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY;
+  }
+  __syncthreads();
+
+  auto group = comms::prims::make_warp_group();
+  if (group.is_leader()) {
+    state->result.prePutAbortClear = abort.isAborted() ? 0U : 1U;
+  }
+  group.sync();
+  const auto completion =
+      issueDataOnlyPut(state, group, /*collapsedCq=*/false, abort);
+  if (group.is_leader()) {
+    recordDataOnlySqResult(state, completion);
+  }
+}
+
+__global__ void testDataOnlySqErrorWithoutFt(DataOnlySqAbortState* state) {
+  if (threadIdx.x == 0) {
+    initializeDataOnlySqState(
+        state,
+        /*reservedIndex=*/1,
+        /*completionOpcode=*/13,
+        /*completionOwner=*/false);
+  }
+  __syncthreads();
+
+  auto group = comms::prims::make_warp_group();
+  (void)issueDataOnlyPut(
+      state,
+      group,
+      /*collapsedCq=*/false,
+      comms::fault_tolerance::AbortDevice{});
+}
+
 } // namespace
 
 cudaError_t runTestDataOnlySqReservationAbort(
+    bool collapsedCq,
     comms::fault_tolerance::Abort& abort,
     DataOnlySqAbortResult* result) {
   DataOnlySqAbortState* state = nullptr;
@@ -798,7 +876,7 @@ cudaError_t runTestDataOnlySqReservationAbort(
       0);
   if (status == cudaSuccess) {
     testDataOnlySqReservationAbort<<<1, 2 * comms::prims::kWarpSize>>>(
-        state, deviceEnteredReservation, abort.getDeviceHandle());
+        state, deviceEnteredReservation, collapsedCq, abort.getDeviceHandle());
     status = cudaGetLastError();
   }
 
@@ -837,6 +915,44 @@ cudaError_t runTestDataOnlySqReservationAbort(
     return flagFreeStatus;
   }
   return stateFreeStatus;
+}
+
+cudaError_t runTestDataOnlyPutWithCapacity(
+    comms::fault_tolerance::AbortDevice abort,
+    DataOnlySqAbortResult* result) {
+  DataOnlySqAbortState* state = nullptr;
+  cudaError_t status = cudaMalloc(&state, sizeof(*state));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMemset(state, 0, sizeof(*state));
+  if (status == cudaSuccess) {
+    testDataOnlyPutWithCapacity<<<1, comms::prims::kWarpSize>>>(state, abort);
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result, &state->result, sizeof(*result), cudaMemcpyDeviceToHost);
+  }
+  const cudaError_t freeStatus = cudaFree(state);
+  return status == cudaSuccess ? freeStatus : status;
+}
+
+cudaError_t runTestDataOnlySqErrorWithoutFt() {
+  DataOnlySqAbortState* state = nullptr;
+  cudaError_t status = cudaMalloc(&state, sizeof(*state));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMemset(state, 0, sizeof(*state));
+  if (status != cudaSuccess) {
+    cudaFree(state);
+    return status;
+  }
+  testDataOnlySqErrorWithoutFt<<<1, comms::prims::kWarpSize>>>(state);
+  // The expected trap poisons the CUDA context, so cudaFree cannot release this
+  // allocation. The reset-isolated fixture reclaims it in TearDown.
+  return cudaDeviceSynchronize();
 }
 #endif
 
