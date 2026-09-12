@@ -1,6 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
+
+#include <algorithm>
+#include <cstdint>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
@@ -28,6 +32,11 @@ LocalVirtualConn::LocalVirtualConn(
   ibvMrs_.reserve(devices_.size());
   ibvQps_.reserve(devices_.size());
   sgs_.resize(devices_.size());
+  sendWr_.wr_id = 0;
+  sendWr_.next = nullptr;
+  sendWr_.num_sge = 1;
+  sendWr_.opcode = ibverbx::IBV_WR_RDMA_READ;
+  sendWr_.send_flags = ibverbx::IBV_SEND_SIGNALED;
 
   for (int device = 0; device < devices_.size(); device++) {
     auto maybeMr = devices_[device].ibvPd->regMr(
@@ -132,19 +141,31 @@ commResult_t LocalVirtualConn::iflush(
     }
   }
 
-  for (int device = 0; device < devices_.size(); device++) {
-    ibverbx::ibv_send_wr wr;
-    memset(&wr, 0, sizeof(wr));
-    wr.wr_id = 0;
-    wr.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(dbuf);
-    wr.wr.rdma.rkey = (*mrs)[device].mr()->rkey;
-    wr.sg_list = &sgs_[device];
-    wr.num_sge = 1;
-    wr.opcode = ibverbx::IBV_WR_RDMA_READ;
-    wr.send_flags = ibverbx::IBV_SEND_SIGNALED;
+  // All NICs register the same range, so compute the bounded read size once.
+  const auto* const mr = mrs->front().mr();
+  const auto dbufAddr = reinterpret_cast<uintptr_t>(dbuf);
+  const auto mrAddr = reinterpret_cast<uintptr_t>(mr->addr);
+  if (dbufAddr < mrAddr || dbufAddr - mrAddr >= mr->length) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: flush buffer {} is outside registered region [{}, {})",
+        dbuf,
+        mr->addr,
+        static_cast<const void*>(
+            static_cast<const uint8_t*>(mr->addr) + mr->length));
+    return commInvalidArgument;
+  }
+  const size_t mrBytesLeft = mr->length - (dbufAddr - mrAddr);
+  const auto minBytes = std::min(sizeof(int), mrBytesLeft);
+  sendWr_.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(dbuf);
 
-    ibverbx::ibv_send_wr* bad_wr{nullptr};
-    auto maybeSend = ibvQps_[device].postSend(&wr, &bad_wr);
+  for (int device = 0; device < devices_.size(); device++) {
+    sgs_[device].length = static_cast<uint32_t>(minBytes);
+    sendWr_.wr.rdma.rkey = (*mrs)[device].mr()->rkey;
+    sendWr_.sg_list = &sgs_[device];
+
+    ibverbx::ibv_send_wr* badSendWr{nullptr};
+    auto maybeSend = ibvQps_[device].postSend(&sendWr_, &badSendWr);
     if (maybeSend.hasError()) {
       // Devices before this one already posted. Their CQEs will arrive with
       // nothing tracked, so there is no recoverable exit.

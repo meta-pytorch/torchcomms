@@ -632,9 +632,7 @@ void CtranIb::init(
     // FIXME: use initRemoteTransStates() to create cq
   }
 
-  if (enableLocalFlush) {
-    localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
-  }
+  localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
 
   // Record reference to CtranIbSingleton
   if (comm) {
@@ -940,21 +938,34 @@ commResult_t CtranIb::deregMem(void* ibRegElem) {
 commResult_t CtranIb::iflush(
     const void* dbuf,
     const void* localRegHdl,
-    CtranIbRequest* req) {
+    CtranIbRequest* req,
+    const bool force) {
   FB_COMMCHECK(checkEpochLock(this));
 
-  if (enableLocalFlush_ && localRegHdl != nullptr) {
+  if ((enableLocalFlush_ || force) && localRegHdl != nullptr) {
     CTRAN_IB_PER_OBJ_LOCK_GUARD(localVcMutex, {
       auto& vc = localVc;
-      return vc->iflush(dbuf, localRegHdl, req);
+      if (vc != nullptr) {
+        return vc->iflush(dbuf, localRegHdl, req);
+      }
     });
+  }
+
+  if (force) {
+    CTRAN_ERR(
+        commInternalError,
+        "CTRAN-IB: cannot force flush of buffer {}: no local flush connection available (enableLocalFlush {}, localRegHdl {})",
+        dbuf,
+        enableLocalFlush_,
+        localRegHdl);
+    return commInternalError;
   } else {
     // A buffer with no IB registration never received IB RDMA writes, so there
     // is nothing to order against and skipping is correct. Local flush being
     // disabled altogether is the expected steady state, not an anomaly, so it
     // stays silent.
     if (enableLocalFlush_) {
-      CTRAN_LOG(WARN, "CTRAN-IB: No IB registration for flush, skip");
+      CTRAN_LOG(WARN, "CTRAN-IB: No local flush connection available, skip");
     }
     if (req != nullptr) {
       FB_COMMCHECK(req->complete());
