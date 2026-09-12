@@ -2067,7 +2067,7 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable bidirectional Ring reduce-scatter and all-gather for non-LL
      collectives with more than two nodes on both staged-copy and registered
