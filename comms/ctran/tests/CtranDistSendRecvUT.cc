@@ -459,6 +459,150 @@ TEST_P(CtranTestEnvFixture, oneToOneSendRecv) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
+// Source-reuse burst: the sender overwrites the SAME send buffer via a
+// same-stream cudaMemcpyAsync each iteration and posts the send immediately,
+// with no host sync until after the last iteration. If a send signals stream
+// completion while the NIC is still reading the buffer, the next iteration's
+// overwrite corrupts the in-flight payload. The receiver lands each
+// iteration in its own slot and verifies every payload after the single
+// sync, so a torn source read from any send is caught.
+TEST_P(CtranTestEnvFixture, sendRecvSourceReuseBurstNoSync) {
+  const commDataType_t dt = commInt;
+  // Large message so NIC reads of the source buffer stay in flight long
+  // enough for the next iteration's overwrite to race them.
+  constexpr size_t count = 2 * 1024 * 1024;
+  constexpr int kNumIters = 8;
+  const MemAllocType memType = kMemCudaMalloc;
+
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Source-reuse burst requires at least 2 ranks, skip test";
+  }
+
+  regCache->init();
+
+  EnvRAII env(NCCL_CTRAN_IB_MAX_QPS, 4);
+  auto ctranComm = makeCtranComm();
+  ASSERT_NE(nullptr, ctranComm.get());
+  ASSERT_NE(nullptr, ctranComm->ctran_.get());
+
+  for (int peer = 0; peer < ctranComm->statex_->nRanks(); peer++) {
+    if (!ctranSendRecvSupport(peer, ctranComm.get())) {
+      // The reg cache is already initialized; release it so later tests with
+      // a different NCCL_CTRAN_REGISTER config are unaffected by the skip.
+      // Comm teardown deregisters from the cache, so it must go first.
+      ctranComm.reset();
+      COMMCHECK_TEST(regCache->destroy());
+      GTEST_SKIP() << "Skip test since ctran cannot support SendRecv with peer "
+                   << peer;
+    }
+  }
+
+  const int sendRank = 0;
+  const int recvRank = numRanks - 1;
+  const bool isSender = globalRank == sendRank;
+  const bool isReceiver = globalRank == recvRank;
+
+  const size_t sendSize = count * commTypeSize(dt);
+  const size_t slotBytes = pageAligned(sendSize);
+  // The receiver lands each iteration in its own slot (a shared slot would
+  // let later recvs overwrite a corrupted payload before verification); the
+  // sender reuses slot 0 as its single source, so other roles need one slot.
+  const size_t bufSize = isReceiver ? slotBytes * kNumIters : slotBytes;
+  void* base = prepareBuf(bufSize, memType, segments);
+  cudaStream_t stream = 0;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
+  }
+
+  int* buf = reinterpret_cast<int*>(base);
+
+  if (isSender) {
+    // Pinned per-iteration payloads so the same-stream cudaMemcpyAsync stays
+    // genuinely asynchronous (no hidden host sync inside the burst).
+    int* payloads = nullptr;
+    CUDACHECK_TEST(
+        cudaHostAlloc(&payloads, kNumIters * sendSize, cudaHostAllocDefault));
+    for (int x = 0; x < kNumIters; x++) {
+      std::iota(payloads + x * count, payloads + (x + 1) * count, sendRank + x);
+    }
+
+    for (int x = 0; x < kNumIters; x++) {
+      CUDACHECK_TEST(cudaMemcpyAsync(
+          buf, payloads + x * count, sendSize, cudaMemcpyDefault, stream));
+      commGroupDepth++;
+      EXPECT_EQ(
+          ctranSend(
+              buf,
+              count,
+              dt,
+              recvRank,
+              ctranComm.get(),
+              stream,
+              NCCL_SENDRECV_ALGO),
+          commSuccess);
+      commGroupDepth--;
+      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+    }
+
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaFreeHost(payloads));
+  } else if (isReceiver) {
+    // Poison the destination on the recv stream: `stream` is non-blocking, so
+    // it does not order against a legacy-default-stream cudaMemset, which
+    // could otherwise land after the first recv's data.
+    CUDACHECK_TEST(cudaMemsetAsync(base, rand(), bufSize, stream));
+    for (int x = 0; x < kNumIters; x++) {
+      commGroupDepth++;
+      EXPECT_EQ(
+          ctranRecv(
+              reinterpret_cast<int*>(
+                  reinterpret_cast<char*>(base) + x * slotBytes),
+              count,
+              dt,
+              sendRank,
+              ctranComm.get(),
+              stream,
+              NCCL_SENDRECV_ALGO),
+          commSuccess);
+      commGroupDepth--;
+      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+    }
+
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    for (int x = 0; x < kNumIters; x++) {
+      EXPECT_EQ(
+          checkChunkValue(
+              reinterpret_cast<int*>(
+                  reinterpret_cast<char*>(base) + x * slotBytes),
+              count,
+              sendRank + x,
+              1,
+              this->globalRank),
+          0)
+          << "iteration " << x;
+    }
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  // First deregister buffer to catch potential 'remote access error' caused
+  // by incomplete ctranSend when ctranRecv has returned incorrectly.
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  releaseBuf(base, bufSize, memType);
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+
+  // Comm teardown deregisters from the cache, so it must go first.
+  ctranComm.reset();
+  COMMCHECK_TEST(regCache->destroy());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     CtranTest,
     CtranTestEnvFixture,

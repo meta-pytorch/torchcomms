@@ -8,7 +8,8 @@ static AlgoDescriptor makeReduceScatter(enum NCCL_REDUCESCATTER_ALGO algo) {
     ctran::TestDeviceBuffer send, recv;
     size_t bytes;
     B(size_t c, int rank, int nR)
-        : send(c * nR * sizeof(int32_t)),
+        : Buffers(c * nR * sizeof(int32_t)),
+          send(c * nR * sizeof(int32_t)),
           recv(c * sizeof(int32_t)),
           bytes(c * sizeof(int32_t)) {
       CtranCudaGraphTestBase::fillSendBuf(send.get(), c * nR, rank);
