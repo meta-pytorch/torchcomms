@@ -93,7 +93,7 @@ std::future<Status> NVLinkTransport::transfer(
                   cudaStream]() mutable noexcept {
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
-#if CUDART_VERSION >= 12080
+#if CUDART_VERSION >= 12080 && CUDART_VERSION < 13000
     if (ops.size() > 1) {
       // Small inline buffer avoids heap allocation for typical batch sizes.
       // Falls back to vector for larger batches.
