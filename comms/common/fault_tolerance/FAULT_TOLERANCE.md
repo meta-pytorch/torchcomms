@@ -310,6 +310,46 @@ Two things that are easy to get wrong here:
   `inline` plus `noinline` under `-Werror`. See the comment on
   `COMMS_FT_ABORT_LOG_LINKAGE`.
 
+## Abort log visibility: a post-mortem, not a signal
+
+The abort log is a `printf` from device code, and device `printf` does not write
+to stdout. It appends to a fixed-size per-context FIFO in device memory, sized by
+`cudaLimitPrintfFifoSize` (1 MiB by default). The host drains that FIFO only at
+specific **host-side flush points** -- as of CUDA 12.8: the start of a subsequent
+kernel launch, an explicit synchronize, a blocking memory copy, module load or
+unload, context destruction, and before a stream callback runs. Ordinary
+asynchronous kernel completion is not one of them, and nothing drains the FIFO
+mid-kernel.
+
+So the line becomes visible at the next flush point after the writing kernel has
+finished, not when the `printf` executed and not necessarily when the kernel
+exited. Two consequences for the abort log:
+
+- It is a **post-mortem record**. Under `AbortBehavior::SKIP` the kernel does
+  unwind -- the abort contract guarantees it -- and the line then surfaces at the
+  next flush. That is the common case and the log serves it well.
+- It is **not a liveness signal**. It cannot tell you a rank is stuck while it is
+  stuck: a hang is exactly the state in which no flush point is reached. Do not
+  build a watchdog, an alert, or an oncall runbook step on the appearance of
+  these lines.
+
+Under TRAP it is worse rather than better: `__trap()` faults the context, and
+FIFO contents at that point are not reliably delivered.
+
+### Further work: real-time device diagnostics
+
+A mapped-pinned store *is* visible to a polling host thread while the kernel is
+still running -- `AbortSignalHostDeviceRoundTrip` in `Perf.md` measures that path
+at 2.12us one way on H100. Real-time device diagnostics are therefore achievable,
+but they need a different mechanism: a record ring in the mapped allocation
+`Abort` already owns, plus a host poller and a small logging framework over it.
+That is a new subsystem on the abort path, whose whole value would be being
+simple enough to be correct, and it is **not in scope here**.
+
+One constraint worth recording for whoever builds it: records cannot carry the
+`const char*` `context` used today. That is a device address into constant
+memory, and the host cannot dereference it.
+
 ## MPT And Prims Integration
 
 `MultiPeerTransport` is the device-handle propagation point for Prims
