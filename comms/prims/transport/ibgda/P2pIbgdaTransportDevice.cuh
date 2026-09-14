@@ -1135,6 +1135,11 @@ class P2pIbgdaTransportDevice {
     bool posted{false};
   };
 
+  struct IbgdaPutTicket {
+    uint64_t put_wqe{0};
+    bool posted{false};
+  };
+
   __device__ __forceinline__ static uint64_t load_acquire_system_u64(
       const void* ptr) {
     auto* slot = static_cast<uint64_t*>(const_cast<void*>(ptr));
@@ -1504,10 +1509,14 @@ class P2pIbgdaTransportDevice {
         dataTicket = putTicket;
         record_put_wqe(lane, putTicket);
       } else {
-        const uint64_t putTicket =
-            put_single_impl(lane, localBuf, remoteBuf, nbytes);
-        dataTicket = putTicket;
-        record_put_wqe(lane, putTicket);
+        const auto ticket =
+            put_single_impl(lane, localBuf, remoteBuf, nbytes, abortDevice);
+        if (ticket.posted) {
+          dataTicket = ticket.put_wqe;
+          record_put_wqe(lane, ticket.put_wqe);
+        } else {
+          dataPosted = false;
+        }
       }
       if (dataPosted) {
         completion = IbLocalCompletionTicket{
@@ -1726,11 +1735,12 @@ class P2pIbgdaTransportDevice {
 
   // --- put_single_impl: one thread, one WQE ---
 
-  __device__ uint64_t put_single_impl(
+  __device__ IbgdaPutTicket put_single_impl(
       const IbgdaLane& lane,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
+      std::size_t nbytes,
+      const AbortDevice& abortDevice) {
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
         .key = localBuf.lkey_per_device[lane.nic_id].value};
@@ -1745,9 +1755,23 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
         lane.qp, remoteAddr, localAddr, nbytes, &ticket);
-    return ticket;
+    (void)abortDevice;
+    return {.put_wqe = ticket, .posted = true};
 #else
-    return put_single_local(lane.qp, remoteAddr, localAddr, nbytes);
+    const uint32_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2_32bits(
+        nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
+    const auto reservation = try_reserve_wqes_mode<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+        lane.qp, numChunks > 1 ? numChunks : 1, abortDevice);
+    if (!reservation.acquired) {
+      return {};
+    }
+    return {
+        .put_wqe = put_single_local(
+            lane.qp, remoteAddr, localAddr, nbytes, reservation.firstWqe),
+        .posted = true,
+    };
 #endif
   }
 
@@ -1907,13 +1931,11 @@ class P2pIbgdaTransportDevice {
       doca_gpu_dev_verbs_qp* qp,
       doca_gpu_dev_verbs_addr remoteAddr,
       doca_gpu_dev_verbs_addr localAddr,
-      std::size_t nbytes) const {
+      std::size_t nbytes,
+      uint64_t firstWqe) const {
     uint32_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2_32bits(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
     numChunks = numChunks > 1 ? numChunks : 1;
-    const uint64_t firstWqe =
-        reserve_wqes_mode<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
-            qp, numChunks);
     uint64_t lastWqe = firstWqe;
     std::size_t remainingBytes = nbytes;
 

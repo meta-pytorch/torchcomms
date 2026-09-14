@@ -9,12 +9,24 @@
 
 namespace comms::prims::test {
 
+inline constexpr uint32_t kTestBlockSize = 32;
+
 struct PrepareSendSlotAbortObservation {
   uint32_t waitReason{0};
   uint32_t confirmationReason{0};
   uint32_t slotUnretired{0};
   uint64_t remainingLaneMask{0};
   uint64_t generation{0};
+};
+
+struct VariableWaitAbortObservation {
+  uint32_t sendCopyCount{0};
+  uint32_t putCount{0};
+  uint32_t recvCopyCount{0};
+  uint32_t signalCount{0};
+  uint32_t waitCallCount{0};
+  uint32_t waitObservedAbortCount{0};
+  uint32_t waitBoundExpiredCount{0};
 };
 
 void launchPrepareSendSlotAbortForwarding(
@@ -54,6 +66,19 @@ void launchIbrcWaitSignal(
     uint64_t expected,
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait = nullptr);
+
+void launchIbWrapperTrySignal(
+    uint64_t* signal,
+    uint32_t* postedCount,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableSendWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableRecvWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
 
 /*
  * Depth of the command queue backing `launchIbrcPutUntilQueueFull`, so the test

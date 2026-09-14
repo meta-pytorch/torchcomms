@@ -215,6 +215,13 @@ struct P2pIbTransportDevice {
       const IbgdaRemoteBuffer& signalBuf,
       uint64_t signalVal = 1);
 
+  [[nodiscard]] __device__ bool try_signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      IbDirection direction,
+      const AbortDevice& abortDevice);
+
   __device__ IbLocalCompletionTicket
   put(ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
@@ -225,6 +232,18 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
       bool signalPerLane = false);
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& counterBuf,
+      uint64_t counterVal,
+      bool signalPerLane,
+      const AbortDevice& abortDevice);
 
   __device__ IbLocalCompletionTicket
   put(const IbgdaLocalBuffer& localBuf,
