@@ -40,6 +40,7 @@
 #include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims {
 
@@ -404,17 +405,18 @@ IbQpOrderingSemantic resolveQpOrderingSemanticForNic(
 
   if (ibQpOrderingPolicyIsAuto(policy)) {
     if (!cap.has_value()) {
-      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                   "back to ibta on NIC "
-                << deviceName << " because " << queryFailure;
+      COMMS_LOG(
+          DBG,
+          "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {} because {}",
+          deviceName,
+          queryFailure);
       return IbQpOrderingSemantic::Ibta;
     }
     if (!cap->forceSupported) {
-      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                   "back to ibta on NIC "
-                << deviceName
-                << ": the NIC does not report cmd_hca_cap_2.dp_ordering_force, "
-                   "without which the QPC tier is ignored";
+      COMMS_LOG(
+          DBG,
+          "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {}: the NIC does not report cmd_hca_cap_2.dp_ordering_force, without which the QPC tier is ignored",
+          deviceName);
       return IbQpOrderingSemantic::Ibta;
     }
     // Ladder: take the strongest tier this NIC reports, ooo_all first.
@@ -443,11 +445,10 @@ IbQpOrderingSemantic resolveQpOrderingSemanticForNic(
         return candidate;
       }
     }
-    LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                 "back to ibta on NIC "
-              << deviceName
-              << ": the NIC reports no out-of-order placement tier "
-                 "(cmd_hca_cap.dp_ordering_ooo_{rw,all}_rc both clear)";
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {}: the NIC reports no out-of-order placement tier (cmd_hca_cap.dp_ordering_ooo_{{rw,all}}_rc both clear)",
+        deviceName);
     return IbQpOrderingSemantic::Ibta;
   }
 
@@ -633,8 +634,11 @@ void MultipeerIbgdaTransport::openIbDevice() {
         maxRdAtomic_,
         reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx),
         nics_[n].deviceName);
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " max_rd_atomic=" << static_cast<unsigned>(maxRdAtomic_);
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} max_rd_atomic={}",
+        nics_[n].deviceName,
+        static_cast<unsigned>(maxRdAtomic_));
 
     const bool nicReliableDoorbellCapable =
         reliableDoorbellNeedsCapabilityQuery(config_)
@@ -644,11 +648,12 @@ void MultipeerIbgdaTransport::openIbDevice() {
         : false;
     nicDoca_[n].useReliableDoorbell =
         reliableDoorbellActiveForNic(config_, nicReliableDoorbellCapable);
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " reliable_doorbell_mode="
-              << reliableDoorbellModeName(config_.enableReliableDoorbell)
-              << " send_dbr_mode="
-              << (nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} reliable_doorbell_mode={} send_dbr_mode={}",
+        nics_[n].deviceName,
+        reliableDoorbellModeName(config_.enableReliableDoorbell),
+        nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
 
     // Resolve the dp_ordering tier against this NIC before any QP exists. An
     // explicit policy throws here; auto demotes to Ibta and logs why.
@@ -675,18 +680,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
     // enabled that is OOO_RW, not IBTA. Logging "tier=0" as though it were the
     // QP's state would be actively misleading: it reads as strict ordering when
     // the QP is in fact relaxed for reads and writes.
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " qp_ordering_policy="
-              << ibQpOrderingPolicyName(qpOrderingPolicy_)
-              << " qp_ordering_semantic="
-              << ibQpOrderingSemanticName(qpOrderingSemantic_)
-              << " (dp_ordering written tier="
-              << ibQpOrderingTier(qpOrderingSemantic_)
-              << " force=" << ibQpOrderingForce(qpOrderingSemantic_)
-              << (ibQpOrderingIsWireNoOp(qpOrderingSemantic_)
-                      ? "; nothing written, QP keeps the firmware default"
-                      : "")
-              << ")";
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} qp_ordering_policy={} qp_ordering_semantic={} (dp_ordering written tier={} force={}{})",
+        nics_[n].deviceName,
+        ibQpOrderingPolicyName(qpOrderingPolicy_),
+        ibQpOrderingSemanticName(qpOrderingSemantic_),
+        ibQpOrderingTier(qpOrderingSemantic_),
+        ibQpOrderingForce(qpOrderingSemantic_),
+        ibQpOrderingIsWireNoOp(qpOrderingSemantic_)
+            ? "; nothing written, QP keeps the firmware default"
+            : "");
 #endif
 
     doca_error_t err = doca_verbs_ah_attr_create(
@@ -716,11 +720,13 @@ void MultipeerIbgdaTransport::openIbDevice() {
 #ifndef __HIP_PLATFORM_AMD__
   collapsedCq_ =
       collapsedCqActiveForTransport(config_, allNicsAcceptCollapsedCq);
-  LOG(INFO) << "MultipeerIbgdaTransport: collapsed_cq_mode="
-            << (config_.enableCollapsedCq.has_value()
-                    ? (*config_.enableCollapsedCq ? "on" : "off")
-                    : "auto")
-            << " active=" << collapsedCq_;
+  COMMS_LOG(
+      DBG,
+      "MultipeerIbgdaTransport: collapsed_cq_mode={} active={}",
+      config_.enableCollapsedCq.has_value()
+          ? (*config_.enableCollapsedCq ? "on" : "off")
+          : "auto",
+      collapsedCq_);
 #endif
 }
 

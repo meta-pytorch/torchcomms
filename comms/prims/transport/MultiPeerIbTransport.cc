@@ -20,6 +20,7 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5core.h"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 // GPU DMA-BUF export for MR registration. Generic (no DOCA context): on NVIDIA
 // it is cuMemGetHandleForAddressRange via DocaHostUtils (with the CUDA driver
 // address-range lookup from CudaDriverLazy); on AMD it is the HSA path provided
@@ -1068,12 +1069,16 @@ void MultiPeerIbTransportBase::openNics() {
     // and log its resolved Data-Direct / Relaxed-Ordering status inline.
     relaxedOrderingCapable_ =
         relaxedOrderingCapable_ && nics_[n].relaxedOrderingCapable;
-    LOG(INFO) << "MultiPeerIbTransport: NIC " << n << " ("
-              << nics_[n].deviceName << ") Data-Direct enabled=" << ddEnabled
-              << " nicCapable=" << nics_[n].isDataDirect << " -> "
-              << ((ddEnabled && nics_[n].isDataDirect) ? "ACTIVE" : "inactive")
-              << "; relaxedOrdering=" << roMode
-              << " nicCapable=" << nics_[n].relaxedOrderingCapable;
+    COMMS_LOG(
+        DBG,
+        "MultiPeerIbTransport: NIC {} ({}) Data-Direct enabled={} nicCapable={} -> {}; relaxedOrdering={} nicCapable={}",
+        n,
+        nics_[n].deviceName,
+        ddEnabled,
+        nics_[n].isDataDirect,
+        (ddEnabled && nics_[n].isDataDirect) ? "ACTIVE" : "inactive",
+        roMode,
+        nics_[n].relaxedOrderingCapable);
   }
 
   // PCIe Relaxed Ordering is applied only when every NIC accepts the flag
@@ -1090,9 +1095,12 @@ void MultiPeerIbTransportBase::openNics() {
                     "(Enabled) but not supported on all NICs; falling back to "
                     "strict ordering on data MRs";
   } else {
-    LOG(INFO) << "MultiPeerIbTransport: PCIe Relaxed Ordering config=" << roMode
-              << " allNicsCapable=" << relaxedOrderingCapable_ << " -> "
-              << (useRelaxedOrdering ? "ACTIVE" : "strict");
+    COMMS_LOG(
+        DBG,
+        "MultiPeerIbTransport: PCIe Relaxed Ordering config={} allNicsCapable={} -> {}",
+        roMode,
+        relaxedOrderingCapable_,
+        useRelaxedOrdering ? "ACTIVE" : "strict");
   }
 
   // Success: SCOPE_EXIT frees the device list; SCOPE_FAIL is skipped, so the
@@ -2089,8 +2097,12 @@ void MultiPeerIbTransportBase::logPeersMaterialized(
                  << " peer(s) in " << elapsedMs << " ms";
     return;
   }
-  LOG(INFO) << "MultiPeerIbTransport: rank " << myRank_ << " materialized "
-            << peerCount << " peer(s) in " << elapsedMs << " ms";
+  COMMS_LOG(
+      DBG,
+      "MultiPeerIbTransport: rank {} materialized {} peer(s) in {} ms",
+      myRank_,
+      peerCount,
+      elapsedMs);
 }
 
 void MultiPeerIbTransportBase::queuePeerForMaterialization(int peerRank) {

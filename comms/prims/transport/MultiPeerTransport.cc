@@ -18,14 +18,13 @@
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
-#include <glog/logging.h>
-
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims {
 
@@ -102,8 +101,10 @@ void MultiPeerTransport::initFromTopology(
   if (config.disableIb) {
     // NVL-only mode: validate all non-self peers are NVL-reachable, then
     // force every non-self rank to P2P_NVL. IBGDA is never constructed.
-    LOG(INFO) << "MultiPeerTransport: rank " << myRank_
-              << " IBGDA disabled by config, NVL-only mode";
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} IBGDA disabled by config, NVL-only mode",
+        myRank_);
 
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
@@ -155,13 +156,22 @@ void MultiPeerTransport::initFromTopology(
         ++ibrcCount;
       }
     }
-    LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
-              << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
-              << " IBGDA peers, " << ibrcCount << " IBRC peers";
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {}/{} topology: {} NVL peers, {} IBGDA peers, {} IBRC peers",
+        myRank_,
+        nRanks_,
+        nvlCount,
+        ibgdaCount,
+        ibrcCount);
   }
   for (int r = 0; r < nRanks_; ++r) {
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
-            << ": " << transport_type_name(typePerRank_[r]);
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} -> rank {}: {}",
+        myRank_,
+        r,
+        transport_type_name(typePerRank_[r]));
   }
 
   // Create NVLink sub-transport with NvlBootstrapAdapter
@@ -180,9 +190,12 @@ void MultiPeerTransport::initFromTopology(
         deviceId_,
         nvlBootstrapAdapter_,
         config.nvlConfig);
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_
-            << " created NVL sub-transport, nvlNRanks=" << nvlNRanks_
-            << " nvlLocalRank=" << nvlLocalRank_;
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} created NVL sub-transport, nvlNRanks={} nvlLocalRank={}",
+        myRank_,
+        nvlNRanks_,
+        nvlLocalRank_);
   }
 
   // Create the IB sub-transport — the universal fallback for all non-NVL peers.
@@ -196,15 +209,19 @@ void MultiPeerTransport::initFromTopology(
       // handle itself; IBGDA takes one per call on the wait APIs instead.
       ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
           myRank_, nRanks_, bootstrap_, ibConfig, abortDevice_);
-      VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBRC sub-transport for " << ibPeerRanks_.size()
-              << " peers";
+      COMMS_LOG(
+          DBG,
+          "MultiPeerTransport: rank {} created IBRC sub-transport for {} peers",
+          myRank_,
+          ibPeerRanks_.size());
     } else {
       ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
           myRank_, nRanks_, bootstrap_, ibConfig);
-      VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBGDA sub-transport for " << ibPeerRanks_.size()
-              << " peers";
+      COMMS_LOG(
+          DBG,
+          "MultiPeerTransport: rank {} created IBGDA sub-transport for {} peers",
+          myRank_,
+          ibPeerRanks_.size());
     }
   }
 }
@@ -262,10 +279,13 @@ void MultiPeerTransport::exchange() {
   }
 #endif
 
-  VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
-          << " nvl=" << (nvlTransport_ ? "yes" : "no")
-          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no")
-          << " ibrc=" << (ibrcTransport_ ? "yes" : "no");
+  COMMS_LOG(
+      DBG,
+      "MultiPeerTransport: rank {} exchange() nvl={} ibgda={} ibrc={}",
+      myRank_,
+      nvlTransport_ ? "yes" : "no",
+      ibgdaTransport_ ? "yes" : "no",
+      ibrcTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
