@@ -10,7 +10,6 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <folly/Expected.h>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
@@ -69,12 +68,10 @@ struct RdmaResources {
   }
 };
 
-inline folly::Expected<RdmaResources, Error> initRdmaResources(
-    int deviceIndex,
-    int cqDepth) {
+inline Expected<RdmaResources> initRdmaResources(int deviceIndex, int cqDepth) {
   auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
   if (!devices) {
-    return folly::makeUnexpected(Error(ENODEV, "Failed to get device list"));
+    return makeUnexpected(Error(ENODEV, "Failed to get device list"));
   }
 
   CTRAN_LOG(DBG, "Found {} RDMA devices", devices->size());
@@ -83,7 +80,7 @@ inline folly::Expected<RdmaResources, Error> initRdmaResources(
   }
 
   if (deviceIndex < 0 || deviceIndex >= static_cast<int>(devices->size())) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         EINVAL,
         fmt::format(
             "Device index {} out of range (have {} devices)",
@@ -102,19 +99,19 @@ inline folly::Expected<RdmaResources, Error> initRdmaResources(
 
   auto pd = resources.device->allocPd();
   if (!pd) {
-    return folly::makeUnexpected(pd.error());
+    return makeUnexpected(pd.error());
   }
   resources.pd = std::make_unique<IbvPd>(std::move(*pd));
 
   auto cq = resources.device->createCq(cqDepth, nullptr, nullptr, 0);
   if (!cq) {
-    return folly::makeUnexpected(cq.error());
+    return makeUnexpected(cq.error());
   }
   resources.cq = std::make_unique<IbvCq>(std::move(*cq));
 
   auto gid = resources.device->queryGid(kPortNum, kGidIndex);
   if (!gid) {
-    return folly::makeUnexpected(gid.error());
+    return makeUnexpected(gid.error());
   }
   resources.gid = *gid;
 
@@ -134,21 +131,21 @@ class EndPointBase {
   EndPointBase& operator=(EndPointBase&&) = default;
 
   // Initialize common RDMA resources (device, PD, CQ)
-  folly::Expected<folly::Unit, Error> init(int deviceIndex) {
+  Status init(int deviceIndex) {
     auto resources = initRdmaResources(deviceIndex, kDefaultCqe);
     if (!resources) {
-      return folly::makeUnexpected(resources.error());
+      return makeUnexpected(resources.error());
     }
     device_ = std::move(resources->device);
     pd_ = std::move(resources->pd);
     cq_ = std::move(resources->cq);
     gid_ = resources->gid;
 
-    return folly::unit;
+    return ok();
   }
 
   // Register a memory region
-  folly::Expected<IbvMr, Error> registerMr(void* buf, size_t size) {
+  Expected<IbvMr> registerMr(void* buf, size_t size) {
     auto access = static_cast<ibv_access_flags>(
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
         IBV_ACCESS_REMOTE_READ);
@@ -156,7 +153,7 @@ class EndPointBase {
   }
 
   // Poll CQ for a single completion (non-blocking)
-  folly::Expected<std::vector<ibv_wc>, Error> pollCq(int maxEntries = 1) {
+  Expected<std::vector<ibv_wc>> pollCq(int maxEntries = 1) {
     return cq_->pollCq(maxEntries);
   }
 
@@ -276,11 +273,11 @@ class DcEndPoint : public EndPointBase {
   DcEndPoint() = default;
 
   // Initialize DC-specific resources (after base init)
-  folly::Expected<folly::Unit, Error> initDc() {
+  Status initDc() {
     // Create SRQ
     auto srqResult = createSRQ(*pd_, kDefaultSrqMaxWr);
     if (!srqResult) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           srqResult.error().errNum,
           "SRQ creation failed: " + srqResult.error().errStr));
     }
@@ -289,7 +286,7 @@ class DcEndPoint : public EndPointBase {
     // Create DCI
     auto dciResult = createDCI(*pd_, *cq_);
     if (!dciResult) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           dciResult.error().errNum,
           "DCI creation failed: " + dciResult.error().errStr));
     }
@@ -298,7 +295,7 @@ class DcEndPoint : public EndPointBase {
     // Create DCT
     auto dctResult = createDCT(*pd_, *cq_, *srq_);
     if (!dctResult) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           dctResult.error().errNum,
           "DCT creation failed: " + dctResult.error().errStr));
     }
@@ -309,7 +306,7 @@ class DcEndPoint : public EndPointBase {
     dvQp_ = ibvSymbols.mlx5dv_internal_qp_ex_from_ibv_qp_ex(exQp_);
 
     if (!exQp_ || !dvQp_) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           ENOTSUP,
           fmt::format(
               "Failed to get extended QP interface: exQp_={}, dvQp_={}",
@@ -320,16 +317,16 @@ class DcEndPoint : public EndPointBase {
     // Transition DCI to RTS
     auto dciTransition = transitionDCIToRts(*dci_, kPortNum, kDefaultMtu);
     if (!dciTransition) {
-      return folly::makeUnexpected(dciTransition.error());
+      return makeUnexpected(dciTransition.error());
     }
 
     // Transition DCT to RTR
     auto dctTransition = transitionDCTToRtr(*dct_, kPortNum, kDefaultMtu);
     if (!dctTransition) {
-      return folly::makeUnexpected(dctTransition.error());
+      return makeUnexpected(dctTransition.error());
     }
 
-    return folly::unit;
+    return ok();
   }
 
   // Create business card for exchange
@@ -339,7 +336,7 @@ class DcEndPoint : public EndPointBase {
   }
 
   // Create address handle for remote DCT
-  folly::Expected<IbvAh, Error> createAh(const DcBusinessCard& remoteCard) {
+  Expected<IbvAh> createAh(const DcBusinessCard& remoteCard) {
     return createAddressHandle(*pd_, remoteCard);
   }
 
@@ -489,7 +486,7 @@ class RdmaAvailabilityChecker {
   std::vector<int> dcCapableDevices_;
 };
 
-inline folly::Expected<folly::Unit, Error> transitionRcQpToInit(IbvQp& qp) {
+inline Status transitionRcQpToInit(IbvQp& qp) {
   ibv_qp_attr attr{};
   attr.qp_state = IBV_QPS_INIT;
   attr.pkey_index = 0;
@@ -502,13 +499,13 @@ inline folly::Expected<folly::Unit, Error> transitionRcQpToInit(IbvQp& qp) {
 
   auto result = qp.modifyQp(&attr, mask);
   if (result.hasError()) {
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(result.error().errNum, "Failed to transition QP to INIT"));
   }
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> transitionRcQpToRtr(
+inline Status transitionRcQpToRtr(
     IbvQp& qp,
     const ibv_gid& remoteGid,
     uint32_t remoteQpNum,
@@ -536,15 +533,13 @@ inline folly::Expected<folly::Unit, Error> transitionRcQpToRtr(
 
   auto result = qp.modifyQp(&attr, mask);
   if (result.hasError()) {
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(result.error().errNum, "Failed to transition QP to RTR"));
   }
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> transitionRcQpToRts(
-    IbvQp& qp,
-    uint32_t psn = 0) {
+inline Status transitionRcQpToRts(IbvQp& qp, uint32_t psn = 0) {
   ibv_qp_attr attr{};
   attr.qp_state = IBV_QPS_RTS;
   attr.sq_psn = psn;
@@ -558,10 +553,10 @@ inline folly::Expected<folly::Unit, Error> transitionRcQpToRts(
 
   auto result = qp.modifyQp(&attr, mask);
   if (result.hasError()) {
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(result.error().errNum, "Failed to transition QP to RTS"));
   }
-  return folly::unit;
+  return ok();
 }
 
 // RC Endpoint: Standard Reliable Connection QP
@@ -570,7 +565,7 @@ class RcEndPoint : public EndPointBase {
   RcEndPoint() = default;
 
   // Initialize RC QP
-  folly::Expected<folly::Unit, Error> initRc() {
+  Status initRc() {
     // Create RC QP
     ibv_qp_init_attr initAttr{};
     initAttr.send_cq = cq_->cq();
@@ -583,21 +578,20 @@ class RcEndPoint : public EndPointBase {
 
     auto qpResult = pd_->createQp(&initAttr);
     if (!qpResult) {
-      return folly::makeUnexpected(qpResult.error());
+      return makeUnexpected(qpResult.error());
     }
     qp_ = std::make_unique<IbvQp>(std::move(*qpResult));
 
-    return folly::unit;
+    return ok();
   }
 
   // Transition RC QP to INIT state
-  folly::Expected<folly::Unit, Error> transitionToInit() {
+  Status transitionToInit() {
     return transitionRcQpToInit(*qp_);
   }
 
   // Transition RC QP to RTR state (needs remote info)
-  folly::Expected<folly::Unit, Error> transitionToRtr(
-      const RcBusinessCard& remoteCard) {
+  Status transitionToRtr(const RcBusinessCard& remoteCard) {
     ibv_gid remoteGid{};
     remoteGid.global.subnet_prefix = remoteCard.subnetPrefix;
     remoteGid.global.interface_id = remoteCard.interfaceId;
@@ -606,13 +600,12 @@ class RcEndPoint : public EndPointBase {
   }
 
   // Transition RC QP to RTS state
-  folly::Expected<folly::Unit, Error> transitionToRts() {
+  Status transitionToRts() {
     return transitionRcQpToRts(*qp_, psn_);
   }
 
   // Connect to remote RC endpoint
-  folly::Expected<folly::Unit, Error> connect(
-      const RcBusinessCard& remoteCard) {
+  Status connect(const RcBusinessCard& remoteCard) {
     auto initResult = transitionToInit();
     if (!initResult) {
       return initResult;
@@ -628,7 +621,7 @@ class RcEndPoint : public EndPointBase {
       return rtsResult;
     }
 
-    return folly::unit;
+    return ok();
   }
 
   // Create business card for exchange
@@ -681,8 +674,7 @@ class RcEndPoint : public EndPointBase {
 // =============================================================================
 
 // Create DCI with configurable SQ depth (for high-throughput benchmarks)
-inline folly::Expected<IbvQp, Error>
-createDCILargeSq(IbvPd& pd, IbvCq& cq, int sqDepth) {
+inline Expected<IbvQp> createDCILargeSq(IbvPd& pd, IbvCq& cq, int sqDepth) {
   ibv_qp_init_attr_ex initAttr{};
   mlx5dv_qp_init_attr dvInitAttr{};
   memset(&initAttr, 0, sizeof(initAttr));
@@ -849,7 +841,7 @@ inline bool connectRcQpPair(
 }
 
 // Create DCI with configurable SQ depth and DCI Streams enabled
-inline folly::Expected<IbvQp, Error> createDCILargeSqWithStreams(
+inline Expected<IbvQp> createDCILargeSqWithStreams(
     IbvPd& pd,
     IbvCq& cq,
     int sqDepth,

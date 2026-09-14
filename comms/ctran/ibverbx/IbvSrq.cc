@@ -37,31 +37,27 @@ ibv_srq* IbvSrq::srq() const {
   return srq_;
 }
 
-folly::Expected<folly::Unit, Error> IbvSrq::postRecv(
-    ibv_recv_wr* recvWr,
-    ibv_recv_wr** badRecvWr) {
+Status IbvSrq::postRecv(ibv_recv_wr* recvWr, ibv_recv_wr** badRecvWr) {
   int rc = ibvSymbols.ibv_internal_post_srq_recv(srq_, recvWr, badRecvWr);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<folly::Unit, Error> IbvSrq::modifySrq(
-    ibv_srq_attr* srqAttr,
-    int srqAttrMask) {
+Status IbvSrq::modifySrq(ibv_srq_attr* srqAttr, int srqAttrMask) {
   int rc = ibvSymbols.ibv_internal_modify_srq(srq_, srqAttr, srqAttrMask);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<ibv_srq_attr, Error> IbvSrq::querySrq() const {
+Expected<ibv_srq_attr> IbvSrq::querySrq() const {
   ibv_srq_attr srqAttr{};
   int rc = ibvSymbols.ibv_internal_query_srq(srq_, &srqAttr);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
   return srqAttr;
 }

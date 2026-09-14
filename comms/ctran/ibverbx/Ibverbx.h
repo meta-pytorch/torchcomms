@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include <folly/dynamic.h>
 #include <folly/json.h>
 
@@ -24,11 +23,10 @@ class IbvVirtualQp;
 // ctranx, prims and uniflow-light, none of which populate ncclx cvars before
 // this runs. Point it at //comms/ctran/ibverbx/ib_injection to inject verbs
 // failures or completion skew.
-folly::Expected<folly::Unit, Error> ibvInit();
+Status ibvInit();
 
 // Get a completion event from the completion channel
-folly::Expected<folly::Unit, Error>
-ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context);
+Status ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context);
 
 // Acknowledge completion events
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents);

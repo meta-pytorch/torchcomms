@@ -32,7 +32,7 @@ struct RemoteQpInfo {
 };
 
 // createRcQp - Creates a new Reliable Connection (RC) QP
-folly::Expected<IbvQp, Error>
+Expected<IbvQp>
 createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr);
 
 // createRcQpWithOooDp - Creates an RC QP with the option to enable mlx5
@@ -44,7 +44,7 @@ createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr);
 // Caller must ensure the underlying device supports OOO DP when oooDp=true
 // (mlx5 provider, adaptive routing enabled, ooo_recv_wrs_caps.max_rc >=
 // maxRecvWr) — this helper does not gate.
-folly::Expected<IbvQp, Error> createRcQpWithOooDp(
+Expected<IbvQp> createRcQpWithOooDp(
     const IbvPd* ibvPd,
     ibv_cq* cq,
     int maxSendWr,
@@ -55,12 +55,11 @@ folly::Expected<IbvQp, Error> createRcQpWithOooDp(
 // configuration. pkeyIndex indexes the port's PKey table; the caller supplies
 // it from its own config so ibverbx stays independent of any one consumer's
 // config system (see rtrQp / rtsQp, which take their tunables the same way).
-folly::Expected<folly::Unit, Error>
-initQp(IbvQp& ibvQp, int port, int qp_access_flags, uint16_t pkeyIndex);
+Status initQp(IbvQp& ibvQp, int port, int qp_access_flags, uint16_t pkeyIndex);
 
 // rtrQp - Transitions QP to Ready To Receive (RTR) state with remote
 // endpoint info
-folly::Expected<folly::Unit, Error> rtrQp(
+Status rtrQp(
     const RemoteQpInfo& remoteQpInfo,
     IbvQp& ibvQp,
     uint8_t trafficClass,
@@ -71,7 +70,7 @@ folly::Expected<folly::Unit, Error> rtrQp(
 
 // rtsQp - Transitions QP to Ready To Send (RTS) state for active
 // communication
-folly::Expected<folly::Unit, Error> rtsQp(
+Status rtsQp(
     IbvQp& ibvQp,
     uint8_t timeout,
     uint8_t retryCnt,
