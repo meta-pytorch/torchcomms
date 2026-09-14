@@ -3,7 +3,6 @@
 #pragma once
 
 #include <type_traits>
-#include <utility>
 
 #include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/LLImpl.cuh"
@@ -15,6 +14,7 @@
 namespace comms::prims {
 
 namespace detail {
+
 // Query whether a CopyOp policy is variable-size (e.g. AnsCompress, which
 // produces a data-dependent compressed payload and needs the variable-size
 // transport protocol). Policies that don't declare `kVariableSize` (Memcpy,
@@ -111,6 +111,7 @@ struct Simple {
   static constexpr int kProtoSlot = 0;
   static constexpr std::size_t kData = 16; // protocol alignment quantum
   static constexpr std::size_t kPacketBytes = 16; // wire == payload
+  static constexpr bool kUsesDataReadySignal = true;
   __host__ __device__ static constexpr std::size_t max_payload(
       std::size_t wireBytes) {
     return wireBytes;
@@ -139,6 +140,7 @@ struct LL {
   using Packet = LlxPacket<4, 4>;
   static constexpr std::size_t kData = Packet::kData;
   static constexpr std::size_t kPacketBytes = Packet::kPacketBytes;
+  static constexpr bool kUsesDataReadySignal = false;
   __host__ __device__ static std::size_t max_payload(std::size_t wireBytes) {
     return Packet::max_payload(wireBytes);
   }
@@ -1365,6 +1367,9 @@ __device__ __forceinline__ void send_impl(
             protocolStreamEnd - pipelineBytes,
             abortDevice);
       }
+      if (groupAborted(group, abortDevice)) {
+        break;
+      }
 
       // (4) Leader-only RDMA put with fused signal. The put length is the
       //     compressed size; DATA_READY advances by the reserved wire stride so
@@ -1374,6 +1379,7 @@ __device__ __forceinline__ void send_impl(
       //     system scope before the WQE is posted (only the leader pays the
       //     system fence).
       group.sync();
+      uint32_t putPosted = 1U;
       if (group.is_leader()) {
         __threadfence_system();
         if (copyResult > chunkStride) {
@@ -1389,16 +1395,17 @@ __device__ __forceinline__ void send_impl(
         }
         ThreadGroup solo{
             0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-        const auto completion = transport.put(
-            solo,
-            channelLayout.sendStagingBuf.subBuffer(stagingOff),
-            remoteChannel.recvStaging.subBuffer(stagingOff),
-            copyResult,
-            remoteChannel.dataReady,
-            protocolBytesThis,
-            /*counterBuf=*/{},
-            /*counterVal=*/0,
-            /*signalPerLane=*/true);
+        const auto completion =
+            transport
+                .template put_staged<protocol::Simple::kUsesDataReadySignal>(
+                    solo,
+                    channelLayout.sendStagingBuf.subBuffer(stagingOff),
+                    remoteChannel.recvStaging.subBuffer(stagingOff),
+                    copyResult,
+                    remoteChannel.dataReady,
+                    protocolBytesThis,
+                    abortDevice);
+        putPosted = completion.posted ? 1U : 0U;
         record_send_completion<Proto>(
             transport,
             static_cast<uint32_t>(groupId),
@@ -1406,7 +1413,9 @@ __device__ __forceinline__ void send_impl(
             pipelineCycle,
             completion);
       }
-      group.sync();
+      if (group.broadcast<uint32_t>(putPosted) == 0U) {
+        break;
+      }
     }
 
     if (group.is_leader()) {
@@ -1516,6 +1525,7 @@ __device__ __forceinline__ void send_impl(
           ? protocolStreamEnd - pipelineBytesWire
           : 0;
       if constexpr (std::is_void_v<IbOps>) {
+        uint32_t putPosted = 1U;
         // (3) Backpressure: wait for receiver to free this byte range's
         //     recvStaging offset. Symmetric with DATA_READY.
         if (slotFreeExpected != 0) {
@@ -1573,16 +1583,16 @@ __device__ __forceinline__ void send_impl(
               PipesTraceEventType::kAllReduceWqeSubmitBegin,
               qpLane,
               bytesThis);
-          const auto completion = transport.put(
-              solo,
-              channelLayout.sendStagingBuf.subBuffer(stagingOff),
-              remoteChannel.recvStaging.subBuffer(stagingOff),
-              bytesThis,
-              sig.buf,
-              sig.val,
-              /*counterBuf=*/{},
-              /*counterVal=*/0,
-              /*signalPerLane=*/true);
+          const auto completion =
+              transport.template put_staged<Proto::kUsesDataReadySignal>(
+                  solo,
+                  channelLayout.sendStagingBuf.subBuffer(stagingOff),
+                  remoteChannel.recvStaging.subBuffer(stagingOff),
+                  bytesThis,
+                  sig.buf,
+                  sig.val,
+                  abortDevice);
+          putPosted = completion.posted ? 1U : 0U;
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -1605,7 +1615,9 @@ __device__ __forceinline__ void send_impl(
               qpLane,
               protocolBytesThis);
         }
-        group.sync();
+        if (group.broadcast<uint32_t>(putPosted) == 0U) {
+          break;
+        }
       } else {
         if (group.is_leader()) {
           __threadfence_system();
@@ -1910,6 +1922,9 @@ __device__ __forceinline__ void recv_impl(
           localDataReady,
           protocolBytesThis,
           abortDevice);
+      if (groupAborted(group, abortDevice)) {
+        break;
+      }
 
       // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
@@ -1922,8 +1937,14 @@ __device__ __forceinline__ void recv_impl(
       group.sync();
 
       // (3) Signal SLOT_FREE to sender (same reserved wire stride).
-      transport.signal(
-          group, remoteChannel.slotFree, protocolBytesThis, IbDirection::Recv);
+      if (!transport.try_signal(
+              group,
+              remoteChannel.slotFree,
+              protocolBytesThis,
+              IbDirection::Recv,
+              abortDevice)) {
+        break;
+      }
     }
 
     if (group.is_leader()) {
@@ -2005,17 +2026,21 @@ __device__ __forceinline__ void recv_impl(
               qpLane,
               protocolBytesThis);
         }
-        transport.signal(
+        const bool posted = transport.try_signal(
             group,
             remoteChannel.slotFree,
             protocolBytesThis,
-            IbDirection::Recv);
+            IbDirection::Recv,
+            abortDevice);
         if (group.is_leader()) {
           trace_allreduce_event(
               traceContext,
               PipesTraceEventType::kAllReduceBookkeepingEnd,
               qpLane,
               protocolBytesThis);
+        }
+        if (!posted) {
+          break;
         }
       } else {
         const uint64_t recvToken =
@@ -2369,11 +2394,14 @@ __device__ __forceinline__ void forward_impl(
         break;
       }
 
-      transport.signal(
-          group,
-          recvRemoteChannel.slotFree,
-          recvProtocolBytesThis,
-          IbDirection::Recv);
+      if (!transport.try_signal(
+              group,
+              recvRemoteChannel.slotFree,
+              recvProtocolBytesThis,
+              IbDirection::Recv,
+              abortDevice)) {
+        break;
+      }
 
       // (5) Wait for fwd receiver's SLOT_FREE (backpressure on fwd's
       //     recvStaging).
@@ -2403,6 +2431,7 @@ __device__ __forceinline__ void forward_impl(
       }
 
       // (6) Leader-only RDMA put via the forwarding transport.
+      uint32_t putPosted = 1U;
       if (group.is_leader()) {
         trace_allreduce_event(
             sendTraceContext,
@@ -2429,16 +2458,16 @@ __device__ __forceinline__ void forward_impl(
             PipesTraceEventType::kAllReduceWqeSubmitBegin,
             qpLane,
             bytesThis);
-        const auto completion = fwdTransport.put(
-            solo,
-            fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
-            fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
-            bytesThis,
-            sig.buf,
-            sig.val,
-            /*counterBuf=*/{},
-            /*counterVal=*/0,
-            /*signalPerLane=*/true);
+        const auto completion =
+            fwdTransport.template put_staged<Proto::kUsesDataReadySignal>(
+                solo,
+                fwdChannelLayout.sendStagingBuf.subBuffer(fwdStagingOff),
+                fwdRemoteChannel.recvStaging.subBuffer(fwdStagingOff),
+                bytesThis,
+                sig.buf,
+                sig.val,
+                abortDevice);
+        putPosted = completion.posted ? 1U : 0U;
         trace_allreduce_event(
             sendTraceContext,
             PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -2461,7 +2490,9 @@ __device__ __forceinline__ void forward_impl(
             qpLane,
             fwdProtocolBytesThis);
       }
-      group.sync();
+      if (group.broadcast<uint32_t>(putPosted) == 0U) {
+        break;
+      }
     } else {
       const uint64_t recvToken = ibOps->wait_recv(
           transport, group, recvProtocolBytesThis, abortDevice);

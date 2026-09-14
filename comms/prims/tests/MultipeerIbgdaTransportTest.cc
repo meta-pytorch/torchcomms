@@ -1722,6 +1722,52 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
           actual.size(),
           cudaMemcpyDeviceToHost));
       EXPECT_EQ(actual, expected);
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    comms::fault_tolerance::Abort abort(/*enabled=*/true);
+    std::unique_ptr<DeviceBuffer> allPostedBuffer;
+    if (globalRank == 0) {
+      allPostedBuffer = std::make_unique<DeviceBuffer>(sizeof(uint32_t));
+      constexpr uint32_t kAllPosted = 1U;
+      CUDACHECK_TEST(cudaMemcpy(
+          allPostedBuffer->get(),
+          &kAllPosted,
+          sizeof(kAllPosted),
+          cudaMemcpyHostToDevice));
+      test::testBurstPutAndFlushWithAbort(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          kBytesPerPut,
+          numBurstPuts,
+          abort.getDeviceHandle(),
+          static_cast<uint32_t*>(allPostedBuffer->get()));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      uint32_t allPosted = 0U;
+      CUDACHECK_TEST(cudaMemcpy(
+          &allPosted,
+          allPostedBuffer->get(),
+          sizeof(allPosted),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(allPosted, 1U);
+      EXPECT_FALSE(abort.isAborted());
+      EXPECT_FALSE(abort.isTimedOut());
+    }
+
+    if (globalRank == 1) {
+      std::vector<uint8_t> actual(expected.size());
+      CUDACHECK_TEST(cudaMemcpy(
+          actual.data(),
+          localDataBuf.ptr,
+          actual.size(),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(actual, expected);
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));

@@ -645,6 +645,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       abandon_progress_state(group, progressSlot, state);
       return IbgdaSendRecvProgressStatus::Aborted;
     }
+    uint32_t putPosted = 1U;
     if (group.is_leader()) {
       __threadfence_system();
       trace_allreduce_event(
@@ -666,16 +667,16 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           PipesTraceEventType::kAllReduceWqeSubmitBegin,
           qpLane,
           protocolBytesThis);
-      const auto completion = transport.put(
-          solo,
-          channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
-          remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
-          chunk.wireBytes,
-          sig.buf,
-          sig.val,
-          /*counterBuf=*/{},
-          /*counterVal=*/0,
-          /*signalPerLane=*/true);
+      const auto completion =
+          transport.template put_staged<Proto::kUsesDataReadySignal>(
+              solo,
+              channelLayout.sendStagingBuf.subBuffer(chunk.stagingOff),
+              remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
+              chunk.wireBytes,
+              sig.buf,
+              sig.val,
+              abortDevice);
+      putPosted = completion.posted ? 1U : 0U;
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceWqeSubmitEnd,
@@ -698,7 +699,10 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
           qpLane,
           protocolBytesThis);
     }
-    group.sync();
+    if (group.broadcast<uint32_t>(putPosted) == 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaSendRecvProgressStatus::Aborted;
+    }
 
     state.activeNextByte += chunk.payloadBytes;
     if (active_payload_offset(state) >= progress_params.protocolBytes) {
@@ -851,20 +855,20 @@ progress_registered_send_once(
       abandon_progress_state(group, progressSlot, state);
       return IbgdaRegisteredSendProgressStatus::Aborted;
     }
+    uint32_t putPosted = 1U;
     if (group.is_leader()) {
       __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-      const auto completion = transport.put(
+      const auto completion = transport.template put_staged<true>(
           solo,
           state.activeRegisteredBuf.subBuffer(chunk.dataOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           validBytes,
           remoteChannel.dataReady,
           protocolBytesThis,
-          {},
-          0,
-          true);
+          abortDevice);
+      putPosted = completion.posted ? 1U : 0U;
       record_send_completion<protocol::Simple>(
           transport,
           static_cast<uint32_t>(geometry.groupId),
@@ -872,7 +876,10 @@ progress_registered_send_once(
           chunk.pipelineGeneration,
           completion);
     }
-    group.sync();
+    if (group.broadcast<uint32_t>(putPosted) == 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaRegisteredSendProgressStatus::Aborted;
+    }
 
     state.activeNextByte += chunk.payloadBytes;
     if (active_payload_offset(state) >= geometry.protocolBytes) {

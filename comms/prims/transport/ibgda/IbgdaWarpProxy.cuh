@@ -790,17 +790,15 @@ class IbgdaWarpProxy {
     const IbRemoteChannel remote = makeIbRemoteChannel(
         command.transport->channel_layout(), static_cast<int>(command.channel));
     ThreadGroup solo = make_solo_group(command.channel, fullBlock);
-    const IbLocalCompletionTicket ticket = command.transport->put(
-        solo,
-        command.source,
-        remote.recvStaging.subBuffer(command.remoteOffset),
-        command.bytes,
-        remote.dataReady,
-        command.protocolBytes,
-        /*counterBuf=*/{},
-        /*counterVal=*/0,
-        /*signalPerLane=*/true,
-        abortDevice);
+    const IbLocalCompletionTicket ticket =
+        command.transport->template put_staged<true>(
+            solo,
+            command.source,
+            remote.recvStaging.subBuffer(command.remoteOffset),
+            command.bytes,
+            remote.dataReady,
+            command.protocolBytes,
+            abortDevice);
     if (!ticket.posted) {
       return;
     }
