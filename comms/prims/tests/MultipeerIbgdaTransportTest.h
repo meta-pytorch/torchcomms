@@ -110,6 +110,15 @@ void testBurstPutAndFlush(
     int numBlocks,
     int blockSize);
 
+void testBurstPutAndFlushWithAbort(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort,
+    uint32_t* allPosted);
+
 /**
  * Test kernel: Send signal only (no data, slot-index)
  */
