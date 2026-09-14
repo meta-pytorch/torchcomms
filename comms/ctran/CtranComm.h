@@ -257,6 +257,13 @@ class CtranComm {
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
 
+  // True when algo-stat recording is on (NCCL_COLLTRACE carries algostat or
+  // ALL). Exposed so callers can skip building the op/algo strings when
+  // nothing will consume them, without re-deriving the mode vocabulary.
+  bool algoStatsEnabled() const {
+    return algoStats_ != nullptr;
+  }
+
   void recordAlgoStats(
       const std::string& opName,
       const std::string& algoName,
