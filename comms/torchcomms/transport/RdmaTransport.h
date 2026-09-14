@@ -22,9 +22,9 @@ extern "C" int RdmaDeregTensor(void* addr, size_t len);
 
 // Forward declaration
 class CtranIb;
-
 namespace ctran {
 class RegCache;
+class ScopedRegHdl;
 } // namespace ctran
 
 namespace torch::comms {
@@ -105,7 +105,7 @@ class RdmaMemory : folly::MoveOnly {
      * calling this method is already undefined behavior.
      */
     bool isParentValid() const {
-      return parent_.buf_ != nullptr && parent_.regHdl_ != nullptr;
+      return parent_.buf_ != nullptr && parent_.localKey() != nullptr;
     }
 
    protected:
@@ -202,9 +202,7 @@ class RdmaMemory : folly::MoveOnly {
   /*
    * Local key associated with this buffer
    */
-  void* localKey() const {
-    return regHdl_;
-  }
+  void* localKey() const;
 
   /*
    * Get the access key for the registered buffer, that can be
@@ -215,7 +213,7 @@ class RdmaMemory : folly::MoveOnly {
   }
 
   bool reusedRegistration() const {
-    return cacheReg_;
+    return scopedRegHdl_ != nullptr;
   }
 
   int getDevice() const {
@@ -243,16 +241,13 @@ class RdmaMemory : folly::MoveOnly {
   size_t len_{0};
   int cudaDev_{-1};
 
-  void* regHdl_{nullptr};
   // Opaque handle to the dynamic ctran::regcache::RegElem when this RdmaMemory
   // owns a dynamic (non-cached) registration; null on the cache-HIT path.
   // Stored as void* to keep the regcache type out of this header.
   void* dynRegHdl_{nullptr};
   std::string remoteKey_;
-  // Whether this RdmaMemory reused an existing cached registration (cache hit);
-  // reported by reusedRegistration().
-  bool cacheReg_{false};
   std::shared_ptr<ctran::RegCache> regCache_;
+  std::unique_ptr<ctran::ScopedRegHdl> scopedRegHdl_;
 };
 
 /**

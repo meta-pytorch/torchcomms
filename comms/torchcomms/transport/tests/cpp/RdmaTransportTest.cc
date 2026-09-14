@@ -329,12 +329,14 @@ TEST_F(RdmaMemoryTest, ReportsRegistrationReuse) {
           /*ncclManaged=*/false,
           cudaDev_),
       commSuccess);
-  RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
-  EXPECT_TRUE(firstMemory.reusedRegistration());
-  RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
-  EXPECT_TRUE(secondMemory.reusedRegistration());
-  EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
-  EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+  {
+    RdmaMemory firstMemory(buffer_, bufferSize_, cudaDev_);
+    EXPECT_TRUE(firstMemory.reusedRegistration());
+    RdmaMemory secondMemory(buffer_, bufferSize_, cudaDev_);
+    EXPECT_TRUE(secondMemory.reusedRegistration());
+    EXPECT_EQ(secondMemory.localKey(), firstMemory.localKey());
+    EXPECT_EQ(secondMemory.remoteKey(), firstMemory.remoteKey());
+  }
   EXPECT_EQ(regCache->globalDeregister(buffer_, bufferSize_), commSuccess);
 }
 
