@@ -968,7 +968,10 @@ void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
   p2pTransportDevices_ = allocateMapped(
       numPeers * ibrcDeviceSlotSize(), "P2pIbrcTransportDevice slots");
   constructIbrcDeviceSlots(
-      p2pTransportDevices_.host, static_cast<int>(numPeers));
+      p2pTransportDevices_.host,
+      static_cast<int>(numPeers),
+      myRank_,
+      /*firstPeerIndex=*/0);
 }
 
 void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
@@ -982,7 +985,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
     constructIbrcDeviceSlots(
         static_cast<char*>(p2pTransportDevices_.host) +
             peerIndex * ibrcDeviceSlotSize(),
-        1);
+        1,
+        myRank_,
+        peerIndex);
     return;
   }
 
@@ -1018,7 +1023,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       config_.numSignalSlots,
       config_.numCounterSlots,
       channelLayoutForPeer(peerIndex),
-      abortDevice_);
+      abortDevice_,
+      myRank_,
+      peerIndexToRank(peerIndex));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
