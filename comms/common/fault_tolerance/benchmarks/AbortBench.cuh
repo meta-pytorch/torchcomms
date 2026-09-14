@@ -48,6 +48,22 @@ cudaError_t launchDeviceToDevicePingPong(
     uint64_t maxWaitCycles,
     cudaStream_t stream);
 
+// One `startTimeout()` per *thread* and nothing else, which is the shape of a
+// collective kernel's entry: the AllReduce tree and ring kernels arm on every
+// thread, not once per block, and reproducing that is the point. So a 1x640
+// launch performs 640 arms, and the per-warp figures in `Perf.md` are read from
+// that -- treating the count as per-block would understate the cost by the
+// block width.
+//
+// Run it against an enabled and a disabled handle and the difference is the
+// whole arm-site cost, separated from launch overhead.
+cudaError_t launchAbortDeviceArmOnly(
+    AbortDevice abort,
+    uint64_t* sink,
+    int blocks,
+    int threads,
+    cudaStream_t stream);
+
 cudaError_t launchAbortDeviceDefaultTimeoutLoadLoop(
     AbortDevice abort,
     int64_t* sink,
