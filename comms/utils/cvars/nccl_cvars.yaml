@@ -3447,6 +3447,19 @@ cvars:
      ibgda - use GPU-posted IBGDA.
      ibrc - use CPU-posted IBRC.
 
+ - name        : MCCL_IBGDA_ASYNC_TEARDOWN
+   type        : bool
+   default     : true
+   description : |-
+     Destroy the Prims IBGDA transport's QPs, internal sink MR, PDs, and device
+     contexts on a background thread instead of inline in the destructor.
+     Caller-visible GPU allocations and cached buffer registrations are still
+     released synchronously. A materialized transport holds peers x channels x
+     NICs QPs, and destroying them one uverbs ioctl at a time costs seconds per
+     MCCL reconfigure. At most one old transport generation is reclaimed
+     asynchronously per process; additional teardowns fall back to synchronous
+     reclamation.
+
  - name        : MCCL_IBGDA_RELIABLE_DOORBELL_MODE
    type        : enum
    default     : auto
