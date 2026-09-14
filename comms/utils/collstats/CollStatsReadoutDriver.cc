@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <exception>
+#include <thread>
 #include <utility>
 
 namespace meta::comms::collstats {
@@ -94,15 +95,18 @@ CollStatsReadoutDriver::~CollStatsReadoutDriver() {
   // Harvest the last issued window and the collectives accumulated since,
   // before the reader stream and the device bank go away.
   flushFinal();
-  // A window can still be in flight here, and pending_ does not tell us:
-  // collStatsIssueReadWindow enqueues both D2H copies into pinned_ before its
-  // last few steps, so a failure at the memset or the event record returns
-  // non-success with those copies already on the stream, and issue() then
-  // leaves pending_ false. cudaStreamDestroy does not wait, and pinned_ is
-  // freed as soon as this body returns, so a gated sync would let the device
-  // DMA into a freed page-locked buffer. Unconditional, because the paths that
-  // clear pending_ on failure are exactly the ones that need it.
-  if (reader_ != nullptr) {
+  // Then wait for the reader stream regardless of what flushFinal decided. A
+  // D2H into pinned_ can still be in flight with pending_ false: issue() can
+  // fail *after* both copies are enqueued (at the memset or the event record),
+  // and that failure disables the driver, after which flushFinal and flush both
+  // early-return. Freeing the DMA destination under a live copy is a
+  // use-after-free that cudaFreeHost's implicit synchronize only happens to
+  // mask.
+  //
+  // Not on the error path: once flushOnError has fired the device is wedged by
+  // definition and this wait is unbounded. Teardown of an already-failing job
+  // must not hang, so there the copy is left to process exit.
+  if (reader_ != nullptr && !errored_) {
     [[maybe_unused]] const cudaError_t e = cudaStreamSynchronize(reader_);
   }
   // Return values are consumed to satisfy HIP's nodiscard on the destroy
@@ -121,7 +125,7 @@ CollStatsReadoutDriver::~CollStatsReadoutDriver() {
   }
 }
 
-void CollStatsReadoutDriver::harvestIfReady() {
+void CollStatsReadoutDriver::harvestIfReadyLocked() {
   if (!pending_) {
     return;
   }
@@ -164,8 +168,9 @@ void CollStatsReadoutDriver::harvestIfReady() {
     // The previous copy is still in flight; leave it pending and retry the
     // harvest next cycle rather than overwrite an in-flight staging buffer.
     // Deferred, not lost: the window still lands in exported or dropped later,
-    // so charging it here would double-count it and stop the two counters from
-    // partitioning windows.
+    // so charging it here would double-count it and, because sinceReadout_ is
+    // no longer cleared on a skipped issue, fire once per collective for the
+    // whole length of a stall.
     ++harvestRetries_;
   } else {
     disabled_ = true;
@@ -174,17 +179,24 @@ void CollStatsReadoutDriver::harvestIfReady() {
 }
 
 void CollStatsReadoutDriver::onCollective(cudaStream_t instrumentedStream) {
+  // Cheap pre-check off the lock: the overwhelming majority of calls are
+  // non-readout ticks and must not serialize against anything.
   if (disabled_ || handle_.dev == nullptr) {
     return;
   }
-  // Not reset here: an issue that does not happen must not clear the count, or
-  // the collectives it covers become invisible to flushFinal. Left above
+  // Not reset here: an issue that does not happen must not clear the count,
+  // or the collectives it covers become invisible to flushFinal. Left above
   // cadence, the next tick retries instead of waiting a whole cadence again.
-  if (++sinceReadout_ < cadence_) {
+  if (sinceReadout_.fetch_add(1, std::memory_order_relaxed) + 1 < cadence_) {
     return;
   }
 
-  harvestIfReady();
+  std::lock_guard<std::mutex> lock(mu_);
+  if (disabled_) {
+    // flushOnError may have disabled the driver since the pre-check.
+    return;
+  }
+  harvestIfReadyLocked();
   if (disabled_ || pending_) {
     // Either a real error, or the previous window's copy is not done yet; do
     // not issue a new one until the staging buffer is free.
@@ -197,10 +209,10 @@ void CollStatsReadoutDriver::onCollective(cudaStream_t instrumentedStream) {
   gating.streamEvents = streamEvents;
   gating.numStreams = 1;
   gating.flipEvent = flipEvent_;
-  issue(&gating);
+  issueLocked(&gating);
 }
 
-void CollStatsReadoutDriver::issue(const CollStatsReadGating* gating) {
+void CollStatsReadoutDriver::issueLocked(const CollStatsReadGating* gating) {
   const cudaError_t e = collStatsIssueReadWindow(
       handle_, reader_, gating, localEpoch_, copyDone_, pinned_, *keys_);
   if (e == cudaSuccess) {
@@ -212,7 +224,7 @@ void CollStatsReadoutDriver::issue(const CollStatsReadGating* gating) {
     ++localEpoch_;
     pending_ = true;
     // The flip happened, so the bank this counts against is now the new one.
-    sinceReadout_ = 0;
+    sinceReadout_.store(0, std::memory_order_relaxed);
   } else {
     disabled_ = true;
     ++windowsDropped_;
@@ -220,6 +232,11 @@ void CollStatsReadoutDriver::issue(const CollStatsReadGating* gating) {
 }
 
 void CollStatsReadoutDriver::flush() {
+  std::lock_guard<std::mutex> lock(mu_);
+  flushLocked();
+}
+
+void CollStatsReadoutDriver::flushLocked() {
   if (disabled_ || !pending_) {
     return;
   }
@@ -228,16 +245,29 @@ void CollStatsReadoutDriver::flush() {
     ++windowsDropped_;
     return;
   }
-  harvestIfReady();
+  harvestIfReadyLocked();
 }
 
 void CollStatsReadoutDriver::flushFinal() {
-  flush();
+  std::lock_guard<std::mutex> lock(mu_);
+
+  if (errored_) {
+    // Both waits below are unbounded — flushLocked synchronizes the reader
+    // stream and the device sync waits on everything — and on this path what
+    // they would wait for is whatever wedged the GPU. flushOnError already made
+    // a time-boxed attempt at the pending window; take one more non-blocking
+    // look and give the rest up rather than hang teardown of a failing job.
+    harvestIfReadyLocked();
+    return;
+  }
+  flushLocked();
 
   // Nothing has accumulated since the last boundary, or the staging buffer is
-  // still occupied by a window flush() could not land: either way there is no
-  // extra window to issue.
-  if (disabled_ || pending_ || sinceReadout_ == 0 || handle_.dev == nullptr) {
+  // still occupied by a window flushLocked could not land: either way there is
+  // no extra window to issue.
+  if (disabled_ || pending_ ||
+      sinceReadout_.load(std::memory_order_relaxed) == 0 ||
+      handle_.dev == nullptr) {
     return;
   }
   // Stands in for the gating an on-boundary issue would do, without needing a
@@ -269,8 +299,38 @@ void CollStatsReadoutDriver::flushFinal() {
     ++windowsDropped_;
     return;
   }
-  issue(/*gating=*/nullptr);
-  flush();
+  issueLocked(/*gating=*/nullptr);
+  flushLocked();
+}
+
+void CollStatsReadoutDriver::flushOnError() {
+  std::lock_guard<std::mutex> lock(mu_);
+  // Set before the early return: the job is failing either way, and teardown
+  // uses this to decide it cannot afford to wait on the device.
+  errored_ = true;
+  if (disabled_ || !pending_) {
+    // Nothing in flight: the window is either already exported or was never
+    // issued. There is no partial state worth salvaging.
+    return;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + kErrorFlushTimeout;
+  do {
+    const cudaError_t q = cudaEventQuery(copyDone_);
+    if (q == cudaSuccess) {
+      harvestIfReadyLocked();
+      return;
+    }
+    if (q != cudaErrorNotReady) {
+      disabled_ = true;
+      ++windowsDropped_;
+      return;
+    }
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+
+  // Timed out. Leave the window pending rather than disabling: teardown's
+  // flush() gets one more, longer, chance at it — a deferral, not a loss.
+  ++harvestRetries_;
 }
 
 } // namespace meta::comms::collstats

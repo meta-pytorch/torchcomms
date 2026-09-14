@@ -1,8 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 
 #include <cuda_runtime.h>
 
@@ -27,14 +30,24 @@
 // failure disables the driver (telemetry stops) rather than risk the workload;
 // every dropped or lost window is counted.
 //
-// Not thread-safe: onCollective must be called from the comm's enqueue thread,
-// the same serialization the ctran launch path already assumes.
+// onCollective is expected from the comm's enqueue thread, the same
+// serialization the ctran launch path already assumes. flushOnError is the one
+// exception — it arrives from the ProcessGroup watchdog thread while the
+// enqueue thread may still be running — so every entry point takes `mu_`. The
+// lock is uncontended on the hot path: onCollective only reaches it once per
+// `cadence` collectives, and the error path fires at most once per job.
 
 namespace meta::comms::collstats {
 
 class CollStatsReadoutDriver {
  public:
   using Sink = std::function<void(const CollStatSnapshot&)>;
+
+  // How long flushOnError polls for the in-flight copy before giving up. The
+  // window it is trying to save describes a job that is already failing, so the
+  // budget is set by how long the teardown path can afford to stall, not by how
+  // long the copy might take.
+  static constexpr std::chrono::milliseconds kErrorFlushTimeout{100};
 
   // Creates a dedicated non-blocking reader stream and reusable events. If any
   // CUDA resource fails the driver is born disabled (a no-op). `handle.dev`
@@ -88,37 +101,57 @@ class CollStatsReadoutDriver {
   // finalizer has retired before the bank is copied — without touching a
   // borrowed handle.
   //
+  // That sync waits on the whole device, so once flushOnError has fired this
+  // degrades to plain flush(): on a wedged GPU the wait has no bound, and
+  // teardown of a failing job must not depend on the device recovering.
+  //
   // The one ordering requirement is that the device block outlive the driver.
   // CtranAlgo declares the driver last, so it is destroyed first.
   void flushFinal();
 
+  // Best-effort flush on ncclRemoteError, to capture the last window of the
+  // hang before the job dies. Unlike flush(), it polls the copy
+  // event for at most kErrorFlushTimeout instead of synchronizing the reader
+  // stream: on the error path that stream may sit behind whatever wedged the
+  // GPU, and telemetry must never outlive the error it describes. Callable from
+  // any thread. Never throws.
+  void flushOnError();
+
   uint64_t windowsExported() const {
+    std::lock_guard<std::mutex> lock(mu_);
     return windowsExported_;
   }
   uint64_t windowsDropped() const {
+    std::lock_guard<std::mutex> lock(mu_);
     return windowsDropped_;
   }
   // Harvest attempts that found the copy still in flight. Counts attempts, not
   // windows: a deferred window stays pending and still lands in exactly one of
   // exported/dropped, so one stalled copy can bump this many times.
   uint64_t harvestRetries() const {
+    std::lock_guard<std::mutex> lock(mu_);
     return harvestRetries_;
   }
   // Windows whose sink threw. Counted apart from windowsDropped_: the readout
   // itself succeeded and the window was complete, so this attributes the loss
   // to the consumer rather than to the device path.
   uint64_t sinkExceptions() const {
+    std::lock_guard<std::mutex> lock(mu_);
     return sinkExceptions_;
   }
   bool disabled() const {
-    return disabled_;
+    return disabled_.load(std::memory_order_relaxed);
   }
 
  private:
-  void harvestIfReady();
+  // Callers hold mu_.
+  void harvestIfReadyLocked();
+  void flushLocked();
   // Enqueues one window's readout, gated when `gating` is non-null. Marks the
   // driver disabled and counts a drop on failure.
-  void issue(const CollStatsReadGating* gating);
+  void issueLocked(const CollStatsReadGating* gating);
+
+  mutable std::mutex mu_;
 
   CollStatsDeviceBlockHandle handle_;
   uint32_t cadence_;
@@ -152,9 +185,15 @@ class CollStatsReadoutDriver {
   uint64_t pendingCloseNs_{0};
   // Collectives against the current bank. Cleared only when an issue succeeds
   // and the epoch actually flips, so a skipped issue leaves them counted.
-  uint32_t sinceReadout_{0};
+  // Incremented off the lock by onCollective's pre-check and read/cleared under
+  // mu_, so it must be atomic. Relaxed: it orders nothing, it only must not
+  // tear.
+  std::atomic<uint32_t> sinceReadout_{0};
   bool pending_{false}; // a copy into pinned_ is in flight
-  bool disabled_{false};
+  bool errored_{false}; // flushOnError has fired; teardown must not block
+  // Read without the lock by onCollective's hot-path pre-check, so it must be
+  // atomic: flushOnError can set it from the watchdog thread.
+  std::atomic<bool> disabled_{false};
 
   uint64_t windowsExported_{0};
   // Windows genuinely lost: a CUDA error on the query, a failed stream sync, or
