@@ -33,6 +33,7 @@ class LocalVirtualConn {
   std::vector<ibverbx::IbvMr> ibvMrs_;
   std::vector<ibverbx::IbvQp> ibvQps_;
   std::vector<ibverbx::ibv_sge> sgs_;
+  ibverbx::ibv_send_wr sendWr_{};
 
   std::vector<CtranIbDevice> devices_;
 

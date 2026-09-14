@@ -396,6 +396,55 @@ TEST_F(CtranIbBootstrapCommonTest, IflushSkipPathsAcceptNullRequest) {
       commSuccess);
 }
 
+TEST_F(CtranIbBootstrapCommonTest, IflushForceOverridesDisabledPolicy) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  auto ctranIb = createCtranIb(
+      /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
+
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+
+  constexpr size_t kBufferSize = 1024;
+  void* buffer = nullptr;
+  ASSERT_EQ(cudaMalloc(&buffer, kBufferSize), cudaSuccess);
+  void* regHdl = nullptr;
+  ASSERT_EQ(ctranIb->regMem(buffer, kBufferSize, 0, &regHdl), commSuccess);
+
+  CtranIbRequest reqWithRegHdl;
+  EXPECT_EQ(
+      ctranIb->iflush(
+          buffer,
+          regHdl,
+          &reqWithRegHdl,
+          /*force=*/true),
+      commSuccess);
+  while (!reqWithRegHdl.isComplete()) {
+    ASSERT_EQ(ctranIb->progress(), commSuccess);
+  }
+
+  CtranIbRequest reqAtRegionEnd;
+  EXPECT_EQ(
+      ctranIb->iflush(
+          static_cast<char*>(buffer) + kBufferSize,
+          regHdl,
+          &reqAtRegionEnd,
+          /*force=*/true),
+      commInvalidArgument);
+  EXPECT_FALSE(reqAtRegionEnd.isComplete());
+
+  EXPECT_EQ(ctranIb->deregMem(regHdl), commSuccess);
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+
+  CtranIbRequest reqWithoutRegHdl;
+  EXPECT_EQ(
+      ctranIb->iflush(
+          /*dbuf=*/nullptr,
+          /*localRegHdl=*/nullptr,
+          &reqWithoutRegHdl,
+          /*force=*/true),
+      commInternalError);
+  EXPECT_FALSE(reqWithoutRegHdl.isComplete());
+}
+
 // Test bootstrapStart with specified server address
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
   SocketServerAddr serverAddr = getSocketServerAddress();
