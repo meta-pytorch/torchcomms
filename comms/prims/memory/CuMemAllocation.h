@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <memory>
 
+#include "comms/utils/memtrace/McclCudaMemory.h"
+
 namespace comms::prims {
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -96,7 +98,8 @@ class CuMemAllocation {
       CUdevice cuDev,
       std::size_t size,
       unsigned int requestedHandleTypesMask,
-      std::size_t alignFloor = 0);
+      std::size_t alignFloor = 0,
+      const meta::comms::memtrace::GpuMemoryAllocationMetadata& metadata = {});
 
   /**
    * Retain the physical handle backing an existing VMM device pointer via
