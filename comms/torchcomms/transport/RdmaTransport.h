@@ -291,6 +291,7 @@ struct RdmaRemoteBuffer {
  * - `write` -> RDMA write to a remote memory
  * - `read`  -> RDMA read from a remote memory
  * - `waitForWrite` -> Wait for a remote write operation
+ * - `flush` -> Fence inbound remote writes into a local memory region
  *
  * Future APIs that can be supported as per use-case. Given this framework
  * adding new APIs should be relatively straightforward.
@@ -300,25 +301,25 @@ struct RdmaRemoteBuffer {
  * - <Atomic APIs>
  *
  * API return value contracts (commResult_t):
- * All async APIs (write, read, waitForWrite) return a commResult_t via
+ * All async APIs (write, read, waitForWrite, flush) return a commResult_t via
  * SemiFuture. Callers MUST use the timeout parameter to ensure bounded
  * completion — without it, operations may wait indefinitely for IB
  * completion.
  *
  *   commSuccess — normal completion:
- *     write(), read(), waitForWrite(), connect()
+ *     write(), read(), waitForWrite(), flush(), connect()
  *
  *   commTimeout — operation exceeded its timeout duration:
- *     write()
+ *     write(), flush()
  *
  *   commInternalError — IB / transport-level failure:
- *     write(), read(), waitForWrite()
+ *     write(), read(), waitForWrite(), flush()
  *     Any such failure permanently marks the transport as broken: all
  *     subsequent async API calls fail immediately with commInternalError
  *     without issuing IB operations. The owner should destroy the transport.
  *
  *   commUserAbort — transport was destroyed while operations were pending:
- *     write(), read(), waitForWrite()
+ *     write(), read(), waitForWrite(), flush()
  *
  *   Throws (no commResult_t) — unrecoverable setup error:
  *     bind(), connect()
@@ -410,6 +411,14 @@ class __attribute__((visibility("default"))) RdmaTransport {
   folly::SemiFuture<commResult_t> read(
       RdmaMemory::MutableView& localBuffer,
       const RdmaRemoteBuffer& remoteBuffer);
+
+  /* Fence completed inbound writes on every NIC bound to this device.
+   * This local operation requires no peer. An unset timeout waits indefinitely.
+   */
+  folly::SemiFuture<commResult_t> flush(
+      RdmaMemory::View localBuffer,
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+  // TODO: Add flush fault injection when ibverbx supports it.
 
   /*
    * Mock type for testing RDMA transport error scenarios
