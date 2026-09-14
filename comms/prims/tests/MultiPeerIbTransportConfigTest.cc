@@ -243,6 +243,22 @@ TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   EXPECT_TRUE(config.ibLazyConnect);
 }
 
+TEST(MultiPeerIbTransportConfigTest, LlProtocolControlsChannelStorage) {
+  MultipeerIbTransportConfig config;
+  config.max_num_channels = 3;
+  config.perChannelSize = 1024;
+
+  EXPECT_TRUE(config.enableLlProtocol);
+  EXPECT_EQ(config.numProtocolSlots(), 2);
+  EXPECT_EQ(config.totalChannelSlots(), 6);
+  EXPECT_EQ(config.fixedChannelDataBufferSize(), 6 * 1024);
+
+  config.enableLlProtocol = false;
+  EXPECT_EQ(config.numProtocolSlots(), 1);
+  EXPECT_EQ(config.totalChannelSlots(), 3);
+  EXPECT_EQ(config.fixedChannelDataBufferSize(), 3 * 1024);
+}
+
 // connectPeers() walks each rank's pending peers in peerMaterializationKey
 // order and materializes them one at a time against a peer that must be doing
 // the same. The checks below cover the two properties that buys: the schedule

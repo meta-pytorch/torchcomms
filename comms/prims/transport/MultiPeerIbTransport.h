@@ -280,7 +280,7 @@ struct MultipeerIbTransportConfig {
   // Per-peer data buffer size in bytes for raw put()/signal() users. When
   // perChannelSize is set for send()/recv(), the transport derives this as the
   // total fixed-channel staging size:
-  //   perChannelSize * max_num_channels
+  //   perChannelSize * max_num_channels * numProtocolSlots()
   std::size_t dataBufferSize{0};
 
   // Fixed-channel send/recv staging window size in bytes for one channel. When
@@ -296,6 +296,11 @@ struct MultipeerIbTransportConfig {
 
   // Fixed-channel send/recv slots/chunks per channel.
   int pipelineDepth{2};
+
+  // Whether fixed-channel resources include the LL protocol slot. Direct prims
+  // users keep the full protocol surface by default; MCCL disables this when
+  // its LL size threshold is zero.
+  bool enableLlProtocol{true};
 
   // Number of signal slots managed by the transport (per peer), for the
   // slot-index API. Independent of send/recv's private signal buffers.
@@ -353,18 +358,22 @@ struct MultipeerIbTransportConfig {
   // Slot-indexed storage is reserved per (logical channel, protocol slot).
   // max_num_channels stays the LOGICAL channel count a caller selects with
   // group_id; slot p owns [p * max_num_channels, (p+1) * max_num_channels).
-  // The slot count is kNumProtoSlots (IbgdaBuffer.h) rather than runtime
-  // config, so host sizing and device indexing cannot disagree. QPs are NOT
-  // multiplied: a channel is one QP pair shared by every protocol on it.
+  // QPs are NOT multiplied: a channel is one QP pair shared by every protocol
+  // on it.
+  int numProtocolSlots() const {
+    return enableLlProtocol ? kNumProtoSlots : 1;
+  }
+
   int totalChannelSlots() const {
     if (max_num_channels < 0) {
       throw std::invalid_argument("max_num_channels must be >= 0");
     }
-    if (max_num_channels > std::numeric_limits<int>::max() / kNumProtoSlots) {
+    const int protocolSlots = numProtocolSlots();
+    if (max_num_channels > std::numeric_limits<int>::max() / protocolSlots) {
       throw std::overflow_error(
-          "max_num_channels * kNumProtoSlots overflows int");
+          "max_num_channels * numProtocolSlots overflows int");
     }
-    return max_num_channels * kNumProtoSlots;
+    return max_num_channels * protocolSlots;
   }
 
   std::size_t fixedChannelDataBufferSize() const {
@@ -776,6 +785,7 @@ struct IbTransportExchInfoAll {
   // Block-owned QP shape.
   int maxGroups{64};
   int qpsPerBlockPerNic{1};
+  int numProtocolSlots{kNumProtoSlots};
 };
 
 // Phases within the peer-pair-specific bootstrap tag computed by
@@ -815,6 +825,7 @@ struct PeerQpPayload {
   // agree or one side's log_rra_max will not cover the other's log_sra_max.
   // Defaults to the same 1 the transport resolves when nobody raises the depth.
   int maxRdAtomic{1};
+  int numProtocolSlots{kNumProtoSlots};
 };
 
 // This payload is sent and received once per peer on every materializePeer(),

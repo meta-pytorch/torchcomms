@@ -1298,6 +1298,7 @@ PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
   payload.numQpsPerPeerPerNic = numQps;
   payload.maxGroups = config_.max_num_channels;
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
+  payload.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1435,15 +1436,18 @@ void MultipeerIbrcTransport::connectPeerQps(
             config_.fixedChannelMainQpsPerPeerPerNic()));
   }
   if (remotePayload.maxGroups != config_.max_num_channels ||
+      remotePayload.numProtocolSlots != config_.numProtocolSlots() ||
       remotePayload.qpsPerBlockPerNic != config_.qpsPerConnection) {
     throw std::runtime_error(
         fmt::format(
             "IBRC peerIndex={} fixed-channel QP shape max_num_channels={} "
-            "qpsPerConnection={} vs local {} {}",
+            "numProtocolSlots={} qpsPerConnection={} vs local {} {} {}",
             peerIndex,
             remotePayload.maxGroups,
+            remotePayload.numProtocolSlots,
             remotePayload.qpsPerBlockPerNic,
             config_.max_num_channels,
+            config_.numProtocolSlots(),
             config_.qpsPerConnection));
   }
 
@@ -1509,6 +1513,7 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
   myInfo.numQpsPerPeerPerNic = numQps;
   myInfo.maxGroups = config_.max_num_channels;
   myInfo.qpsPerBlockPerNic = config_.qpsPerConnection;
+  myInfo.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
