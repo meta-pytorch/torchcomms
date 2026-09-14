@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -25,10 +26,6 @@
 #include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
-#endif
-
 #if defined(ENABLE_PRIMS)
 namespace comms::prims {
 class DeviceWindow;
