@@ -18,18 +18,40 @@
  *
  * The winner of the reason CAS logs once and every later observer stays silent,
  * so exactly one of these lines exists per communicator and it names whatever
- * declared the abort. Defined here rather than spelled out at the three
- * emitting sites (`Abort::trySetAbort`, `AbortDevice::setAbort`,
- * `FT_ABORT_CHECK`) so host and device cannot drift apart and stop answering to
- * the same grep.
+ * declared the abort. Defined here rather than spelled out at the emitting
+ * sites (`Abort::trySetAbort` on the host, `detail::deviceLogFirstWriter` on
+ * the device) so host and device cannot drift apart and stop answering to the
+ * same grep.
  *
- * Host and device print different fields after the tag -- the host has the
- * reason name and a `std::string` context, the device has neither -- so this
- * shares the marker, not the whole line.
+ * Host and device print different fields after the tag -- the host has a
+ * `std::string` context it can persist, the device only what the winning
+ * callsite passed -- so this shares the marker, not the whole line.
+ *
+ * **The two halves land on different streams.** The host winner is an
+ * `fprintf` to `stderr`; the device winner goes through the CUDA printf FIFO,
+ * which the runtime drains to `stdout`. Neither reaches `NCCL_DEBUG_FILE`. So
+ * "exactly one of these lines per communicator" is a claim about a collector
+ * that merges both streams per rank -- on a job that captures only one, some
+ * abort origins are visible and others silently are not, which is the same
+ * failure this marker exists to prevent, one level up. Grep both, and see the
+ * abort-log visibility section of `FAULT_TOLERANCE.md` for what device-side
+ * output does and does not guarantee about *when* the line appears.
  */
 #define FT_ABORT_FIRST_WRITER_ "COMMS FT ABORT FIRST WRITER: "
 #define FT_ABORT_FIRST_WRITER_HOST_ FT_ABORT_FIRST_WRITER_ "host "
 #define FT_ABORT_FIRST_WRITER_DEVICE_ FT_ABORT_FIRST_WRITER_ "device "
+
+/*
+ * Marker prefixing the *observation* line a `FT_ABORT_*` macro adds.
+ *
+ * Distinct from the first-writer marker on purpose. The transition itself is
+ * one event and logs one line; a macro call site can only say where the abort
+ * was noticed, which is a different and repeatable thing. Giving it its own tag
+ * keeps `FT_ABORT_FIRST_WRITER_` meaning exactly "this line is the transition",
+ * so counting occurrences of that marker stays a valid check that the CAS fired
+ * once.
+ */
+#define FT_ABORT_SITE_ "COMMS FT ABORT SITE: "
 
 namespace comms::fault_tolerance {
 
