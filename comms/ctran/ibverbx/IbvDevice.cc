@@ -14,12 +14,21 @@ class RoceHca {
  public:
   RoceHca(std::string hcaStr, int defaultPort) {
     std::string s = std::move(hcaStr);
-    std::string delim = ":";
 
     std::vector<std::string> hcaStrPair;
-    folly::split(':', s, hcaStrPair);
+    // Stands in for folly::split(':', s, hcaStrPair), which keeps empty tokens:
+    // "mlx5_0:" yields two, and "" yields one.
+    for (size_t pos = 0;;) {
+      const size_t delim = s.find(':', pos);
+      if (delim == std::string::npos) {
+        hcaStrPair.push_back(s.substr(pos));
+        break;
+      }
+      hcaStrPair.push_back(s.substr(pos, delim - pos));
+      pos = delim + 1;
+    }
     if (hcaStrPair.size() == 1) {
-      this->name = s;
+      this->name = hcaStrPair.at(0);
       this->port = defaultPort;
     } else if (hcaStrPair.size() == 2) {
       this->name = hcaStrPair.at(0);
@@ -46,7 +55,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   ibv_pd* pd = nullptr;
   pd = ibvSymbols.ibv_internal_alloc_pd(context);
   if (!pd) {
-    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", folly::errnoStr(errno));
+    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", errnoStr(errno));
     return false;
   }
 
@@ -70,7 +79,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     CTRAN_LOG(
         WARN,
         "ibv_dealloc_pd failed: {} DMA-BUF support status: {}",
-        folly::errnoStr(errno),
+        errnoStr(errno),
         dev_fail);
     return false;
   }
