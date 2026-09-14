@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <type_traits>
 
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
@@ -260,16 +261,43 @@ __host__ __device__ __forceinline__ constexpr std::size_t alignInputBufferSize(
 
 #ifdef PIPES_ANS_COLLECT_STATS
 // Running totals of uncompressed/compressed bytes seen by AnsCompress::send
-// across all kernel launches since the last
-// fetch_and_reset_ans_compress_stats() call. Compiled in only when
-// PIPES_ANS_COLLECT_STATS is set (a stats-collecting bench target, built with
-// relocatable device code so the `inline __device__` external-linkage symbol
-// has a single definition across TUs). The default `:copy_op_compress`
-// consumers are compiled in whole-program mode (-rdc=false), where an inline
-// __device__ variable with external linkage is rejected, so keep both the
-// definition and its atomicAdd write sites behind this macro.
-inline __device__ unsigned long long g_pipes_ans_total_uncomp_bytes = 0;
-inline __device__ unsigned long long g_pipes_ans_total_comp_bytes = 0;
+// across all kernel launches since the last fetch-and-reset call.
+//
+// OWNED PER DEVICE-LINK UNIT, via `StatsTag`. These used to be two plain
+// `inline __device__` globals shared by every consumer, and that is only safe
+// while exactly one device-link unit in the process defines them. It is not a
+// theoretical limit: each `--device-c` + `nvcc -dlink` target is its own
+// module, each registers its own copy of the symbol under the same name, and
+// `cudaMemcpyFromSymbol` then returns `invalid device symbol` -- after which
+// CUDA's "first error sticks" semantics make every later `cudaLaunchKernel`
+// fail with the same error. `AnsCopyOpBench` hit exactly this and worked around
+// it by reporting `n/a` for its compression-ratio column.
+//
+// Giving each unit its own tag type gives each its own mangled symbol name, so
+// two independently device-linked collectives in one binary read and reset
+// only their own counters. A tag is just an incomplete type -- see
+// `SendRecvStatsTag`.
+//
+// Compiled in only when PIPES_ANS_COLLECT_STATS is set, which is only ever set
+// on `--device-c` targets. The default `:copy_op_compress` consumers are
+// compiled in whole-program mode (-rdc=false), where a `__device__` variable
+// with external linkage is rejected, so both the definitions and their
+// atomicAdd write sites must stay behind this macro.
+//
+// Namespace-scope VARIABLE TEMPLATES, not static data members of a class
+// template: CUDA rejects `__device__` on a data member outright ("memory
+// qualifier on data member is not allowed"), so the struct-shaped spelling does
+// not compile. A variable template gives the same thing -- one distinct,
+// externally-linked device symbol per `StatsTag` -- and reads the same at the
+// use site.
+namespace ans_counters {
+
+template <typename StatsTag>
+__device__ unsigned long long uncomp_bytes = 0;
+template <typename StatsTag>
+__device__ unsigned long long comp_bytes = 0;
+
+} // namespace ans_counters
 #endif
 
 /**
@@ -365,12 +393,27 @@ inline __device__ unsigned long long g_pipes_ans_total_comp_bytes = 0;
 // Defaults to `false` for safety — flip per call-site once the caller
 // can prove its `src` pointer is always 16-byte aligned (e.g. raw
 // `cudaMalloc` pointers, or sub-pointers stepped by multiples of 16).
+// `StatsTag` names the owner of the compression byte counters -- see
+// `ans_counters` above. It has no effect unless the TU is compiled with
+// PIPES_ANS_COLLECT_STATS, so it defaults to `void` and the stats path
+// static_asserts that a real tag was supplied. That way a stats-free build
+// never has to name one, while a stats-enabled build cannot silently share
+// another device-link unit's counters by forgetting to.
 template <
     int NumWarps,
     std::size_t MaxUncompBytes = PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES,
-    bool kSrcAligned = false>
+    bool kSrcAligned = false,
+    typename StatsTag = void>
 struct AnsCompress {
  public:
+#ifdef PIPES_ANS_COLLECT_STATS
+  static_assert(
+      !std::is_same_v<StatsTag, void>,
+      "AnsCompress: a TU compiled with PIPES_ANS_COLLECT_STATS must name its "
+      "own StatsTag, so its counters get a device symbol distinct from every "
+      "other device-link unit's. Sharing one leads to `invalid device symbol` "
+      "at the first cudaMemcpyFromSymbol.");
+#endif
   // Each per-piece compress feeds nvcompdx `src + i * MaxUncompBytes`; the
   // single up-front 16-byte alignment check on the base `src` only stays valid
   // for every sub-piece if MaxUncompBytes is itself a multiple of the required
@@ -906,10 +949,10 @@ struct AnsCompress {
         totalCompPayload += sizeHeaders[i];
       }
       atomicAdd(
-          &g_pipes_ans_total_uncomp_bytes,
+          &ans_counters::uncomp_bytes<StatsTag>,
           static_cast<unsigned long long>(nbytes));
       atomicAdd(
-          &g_pipes_ans_total_comp_bytes,
+          &ans_counters::comp_bytes<StatsTag>,
           static_cast<unsigned long long>(totalCompPayload));
     }
 #endif
