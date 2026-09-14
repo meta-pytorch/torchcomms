@@ -127,7 +127,8 @@ the channel index and the per-channel staging slice index are `group.group_id`.
 struct IbChannelProtoSlot {
   IbChannelProgress sendProgress;
   IbChannelProgress recvProgress;
-  // Local DATA_READY, SLOT_FREE, and NIC_DONE endpoints for this protocol.
+  // Local DATA_READY and SLOT_FREE endpoints for this protocol.
+  // Send-slot reuse is gated by retained main-QP completion tickets.
   // Per-lane receiver DATA_READY expectations for this protocol.
 };
 
@@ -335,9 +336,9 @@ primitives are used.
 | Aspect | NVL | IB |
 |---|---|---|
 | Data path | Direct P2P memcpy to **remote** `recv_staging` via NVLink | Cooperative memcpy to **local** `send_staging`, then fused RDMA put to remote `recv_staging` |
-| NIC wait | None — P2P writes complete in-order | `wait_counter(nic_done_counter)` before reusing local staging |
-| Signaling | `SignalState.signal(SIGNAL_SET, step)` via NVLink remote write | Fused RDMA put-with-signal (`put_signal_counter_remote`) |
-| Drain | None — no outstanding async ops after memcpy + sync | Internal drain at end: `wait_counter(nic_done_counter, step)` |
+| NIC wait | None — P2P writes complete in-order | Wait for the retained main-QP completion ticket before reusing local staging |
+| Signaling | `SignalState.signal(SIGNAL_SET, step)` via NVLink remote write | Fused RDMA put-with-signal; retain the returned main-QP ticket locally |
+| Drain | None — no outstanding async ops after memcpy + sync | Internal drain of retained main-QP completion tickets |
 | `send_staging` | Not used (`nullptr`) | Required (registered MR for RDMA source) |
 
 ### Common precomputation
@@ -492,11 +493,8 @@ for s in [0, total_chunks):
     stream_end    = base_byte + data_off + bytes_this
 
     // (1) Wait for prior NIC use of this slot to drain (local staging is safe).
-    if stream_end > pipeline_bytes:
-        wait_counter(group,
-                     local_ch.nic_done_counter,
-                     stream_end - pipeline_bytes,
-                     timeout)
+    if slot has an unretired main-QP completion ticket:
+        wait_local_completion(group, ticket, abort)
 
     // (2) Cooperative memcpy: src chunk -> local send_staging.
     memcpy_vectorized(send_staging + staging_off,
@@ -511,22 +509,21 @@ for s in [0, total_chunks):
                     stream_end - pipeline_bytes,
                     timeout)
 
-    // (4) Fused RDMA put + remote DATA_READY signal + local NIC_DONE bump.
+    // (4) Fused RDMA put + remote DATA_READY signal.
     if group.is_leader():
-        put_signal_counter_remote(
+        ticket = put_signal(
             local_src     = send_staging        + staging_off,
             remote_dst    = recv_staging_remote + staging_off,
             nbytes        = bytes_this,
             remote_signal = remote_ch.data_ready,
-            signal_val    = stream_end,
-            local_counter = local_ch.nic_done_counter,
-            counter_val   = stream_end)
+            signal_val    = stream_end)
+        record_send_completion(slot, generation, ticket)
 
 local_ch.sendProgress.cursor = base_byte + protocol_bytes
 group.sync()
 
-// (5) Internal drain: wait for all RDMA puts on this channel to complete.
-wait_counter(group, local_ch.nic_done_counter, base_byte + protocol_bytes, timeout)
+// (5) Internal drain: wait for all retained main-QP completion tickets.
+drain_send_completions(group, local_ch, abort)
 group.sync()
 ```
 

@@ -346,6 +346,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     config.ibConfig.maxGroups = maxChannels;
     config.ibConfig.qpsPerConnection =
         static_cast<int>(NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC);
+    config.ibConfig.enableCompanionQP = MCCL_IBGDA_ENABLE_COMPANION_QP;
     switch (MCCL_IBGDA_RELIABLE_DOORBELL_MODE) {
       case MCCL_IBGDA_RELIABLE_DOORBELL_MODE::auto_:
         break;
