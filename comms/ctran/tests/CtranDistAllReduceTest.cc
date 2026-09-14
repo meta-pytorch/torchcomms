@@ -581,6 +581,131 @@ INSTANTIATE_TEST_SUITE_P(
     getTestName);
 
 // =============================================================================
+// Back-to-back AllReduce with no host sync inside the burst.
+// Mirrors ctranAllToAllPTest.BackToBackExecNoSync: every eager test above
+// asserts exactly one collective, so a collective that signals stream
+// completion before its outgoing puts drain (or that consumes a premature
+// flush completion in its reduce input path) is never observable there.
+// Distinct per-iteration payloads make stale data differ bitwise from the
+// expected values; verification happens only after the single sync.
+// =============================================================================
+
+class CtranAllReduceB2BParamUInt64
+    : public CtranAllReduceTest<uint64_t>,
+      public ::testing::WithParamInterface<enum NCCL_ALLREDUCE_ALGO> {};
+
+TEST_P(CtranAllReduceB2BParamUInt64, AllReduceBackToBackNoSync) {
+  const auto algo = GetParam();
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+  if (algo == NCCL_ALLREDUCE_ALGO::ctring && !ctran::isNolocalTopo()) {
+    GTEST_SKIP() << "Ring AllReduce tests require nolocal topology; skip.";
+  }
+  if (!ctranAllReduceSupport(ctranComm.get(), algo)) {
+    GTEST_SKIP() << "ctranAllReduceSupport returns fails, skip test";
+  }
+  auto allreduceFunc = (algo == NCCL_ALLREDUCE_ALGO::ctring)
+      ? ctranAllReduceRing
+      : ctranAllReduceDirect;
+
+  constexpr int kNumColls = 8;
+  // Large stride between iterations so one iteration's stale data can never
+  // alias another iteration's expected values.
+  constexpr uint64_t kIterStride = 1000000;
+  const size_t count = 8192;
+  size_t bytes = count * commTypeSize(dt);
+  if (bytes < CTRAN_MIN_REGISTRATION_SIZE) {
+    bytes = CTRAN_MIN_REGISTRATION_SIZE;
+  }
+
+  // Separate send/recv buffers per collective: host fills must not race an
+  // earlier iteration's device reads (no sync inside the burst), and every
+  // result stays observable for verification after the single sync.
+  std::vector<uint64_t*> sendBufs(kNumColls), recvBufs(kNumColls);
+  for (int x = 0; x < kNumColls; x++) {
+    sendBufs[x] = reinterpret_cast<uint64_t*>(
+        prepareBuf(bytes, kMemNcclMemAlloc, segments));
+    recvBufs[x] = reinterpret_cast<uint64_t*>(
+        prepareBuf(bytes, kMemNcclMemAlloc, segments));
+    assignChunkValue<uint64_t>(
+        sendBufs[x], count, globalRank + x * kIterStride, 1);
+    // Poison recv buffers so an iteration whose result is never written
+    // cannot pass verification on stale allocator-returned contents.
+    CUDACHECK_TEST(cudaMemset(recvBufs[x], 0xEE, bytes));
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
+  }
+
+  ASSERT_TRUE(
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(ctranComm.get()));
+
+  for (int x = 0; x < kNumColls; x++) {
+    auto res = allreduceFunc(
+        sendBufs[x],
+        recvBufs[x],
+        count,
+        dt,
+        commSum,
+        ctranComm.get(),
+        testStream,
+        /*timeout=*/std::nullopt);
+    EXPECT_EQ(res, commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(testStream));
+
+  // Rank r contributed (r + x * kIterStride + i) at index i of iteration x.
+  const uint64_t rankSum = uint64_t(numRanks) * (numRanks - 1) / 2;
+  for (int x = 0; x < kNumColls; x++) {
+    size_t errs = checkChunkValue<uint64_t>(
+        recvBufs[x],
+        count,
+        rankSum + uint64_t(numRanks) * x * kIterStride,
+        uint64_t(numRanks),
+        globalRank);
+    EXPECT_EQ(errs, 0) << "iteration " << x << " on rank " << globalRank;
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  ASSERT_NE(ctranComm->colltraceNew_, nullptr);
+  auto dumpMap = ctran::waitForCollTraceDrain(ctranComm.get());
+  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_currentColls"], "[]");
+  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  EXPECT_EQ(pastCollsJson.size(), kNumColls);
+
+  verifyBackendsUsed(
+      ctranComm->ctran_.get(),
+      ctranComm->statex_.get(),
+      kMemNcclMemAlloc,
+      {CtranMapperBackend::NVL});
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+  }
+  for (int x = 0; x < kNumColls; x++) {
+    releaseBuf(recvBufs[x], bytes, kMemNcclMemAlloc);
+    releaseBuf(sendBufs[x], bytes, kMemNcclMemAlloc);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranAllReduceB2BParamUInt64,
+    ::testing::Values(
+        NCCL_ALLREDUCE_ALGO::ctdirect,
+        NCCL_ALLREDUCE_ALGO::ctring),
+    [](const testing::TestParamInfo<enum NCCL_ALLREDUCE_ALGO>& info) {
+      return allReduceAlgoName(info.param);
+    });
+
+// =============================================================================
 // TCPDM backend tests for AllReduceRing
 // Requires multi-host setup with devmem-capable NICs.
 // Run with: buck test <target> -c comms.hosts=<host1>,<host2>
