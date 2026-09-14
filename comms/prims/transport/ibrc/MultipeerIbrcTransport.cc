@@ -267,13 +267,15 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     int nRanks,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultipeerIbTransportConfig& config,
-    comms::fault_tolerance::AbortDevice abort)
+    comms::fault_tolerance::AbortDevice abort,
+    std::function<bool()> hostAborted)
     : MultiPeerIbTransport<MultipeerIbrcTransport>(
           myRank,
           nRanks,
           std::move(bootstrap),
           config),
-      abortDevice_(abort) {
+      abortDevice_(abort),
+      hostAborted_(std::move(hostAborted)) {
   const int numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   if (config_.max_num_channels < 1) {
     throw std::invalid_argument("max_num_channels must be >= 1");
@@ -1581,6 +1583,43 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
   return reinterpret_cast<P2pIbrcTransportDevice*>(
       static_cast<char*>(p2pTransportDevices_.device) +
       peerIndex * ibrcDeviceSlotSize());
+}
+
+P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format("getHostWriter: invalid peerRank={}", peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const PeerResources& peer = peerResources_[peerIndex];
+  if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        fmt::format(
+            "getHostWriter: peerRank={} command queues not published (materialize the peer first)",
+            peerRank));
+  }
+  if (queueIndex >= peer.cmdQueues.size()) {
+    throw std::out_of_range(
+        fmt::format(
+            "getHostWriter: queueIndex={} out of range (peer has {} rings)",
+            queueIndex,
+            peer.cmdQueues.size()));
+  }
+  const IbrcCmdQueueHost& q = peer.cmdQueues[queueIndex];
+  P2pIbrcHostWriter writer(
+      q.descsHost,
+      q.piHost,
+      q.ciHost,
+      statusHostByNic_.at(q.nic),
+      q.device.depth,
+      q.nic);
+  // Armed here rather than left to the caller: the device path already gets
+  // abortDevice_ baked in, and a writer that missed the predicate would spin
+  // out its ten-minute deadline instead of unwinding when the job aborts.
+  writer.set_abort_predicate(hostAborted_);
+  return writer;
 }
 
 void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {
