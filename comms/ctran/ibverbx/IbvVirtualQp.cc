@@ -183,7 +183,7 @@ void IbvVirtualQp::unregisterFromVirtualCq() {
   }
 }
 
-folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
+Status IbvVirtualQp::modifyVirtualQp(
     ibv_qp_attr* attr,
     int attrMask,
     const IbvVirtualQpBusinessCard& businessCard) {
@@ -192,7 +192,7 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
   if (!businessCard.qpNums_.empty()) {
     // Make sure the businessCard has the same number of QPs as physicalQps_
     if (businessCard.qpNums_.size() != physicalQps_.size()) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           EINVAL, "BusinessCard QP count doesn't match physical QP count"));
     }
 
@@ -201,7 +201,7 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
       attr->dest_qp_num = businessCard.qpNums_.at(i);
       auto maybeModifyQp = physicalQps_.at(i).modifyQp(attr, attrMask);
       if (maybeModifyQp.hasError()) {
-        return folly::makeUnexpected(maybeModifyQp.error());
+        return makeUnexpected(maybeModifyQp.error());
       }
     }
     // Only modify notifyQp if it exists
@@ -209,7 +209,7 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
       attr->dest_qp_num = businessCard.notifyQpNum_;
       auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
       if (maybeModifyQp.hasError()) {
-        return folly::makeUnexpected(maybeModifyQp.error());
+        return makeUnexpected(maybeModifyQp.error());
       }
     }
   } else {
@@ -217,17 +217,17 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
     for (auto& qp : physicalQps_) {
       auto maybeModifyQp = qp.modifyQp(attr, attrMask);
       if (maybeModifyQp.hasError()) {
-        return folly::makeUnexpected(maybeModifyQp.error());
+        return makeUnexpected(maybeModifyQp.error());
       }
     }
     if (hasNotifyQp()) {
       auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
       if (maybeModifyQp.hasError()) {
-        return folly::makeUnexpected(maybeModifyQp.error());
+        return makeUnexpected(maybeModifyQp.error());
       }
     }
   }
-  return folly::unit;
+  return ok();
 }
 
 IbvVirtualQpBusinessCard IbvVirtualQp::getVirtualQpBusinessCard() const {
@@ -267,8 +267,8 @@ folly::dynamic IbvVirtualQpBusinessCard::toDynamic() const {
   return obj;
 }
 
-folly::Expected<IbvVirtualQpBusinessCard, Error>
-IbvVirtualQpBusinessCard::fromDynamic(const folly::dynamic& obj) {
+Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::fromDynamic(
+    const folly::dynamic& obj) {
   std::vector<uint32_t> qpNums;
 
   if (obj.count("qpNums") > 0 && obj["qpNums"].isArray()) {
@@ -285,7 +285,7 @@ IbvVirtualQpBusinessCard::fromDynamic(const folly::dynamic& obj) {
             static_cast<uint32_t>(std::stoul(qpNum.asString()));
         qpNums.push_back(qpNumValue);
       } catch (const std::exception& e) {
-        return folly::makeUnexpected(Error(
+        return makeUnexpected(Error(
             EINVAL,
             fmt::format(
                 "Invalid QP number string format: {}. Exception: {}",
@@ -294,7 +294,7 @@ IbvVirtualQpBusinessCard::fromDynamic(const folly::dynamic& obj) {
       }
     }
   } else {
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(EINVAL, "Invalid qpNums array received from remote side"));
   }
 
@@ -304,7 +304,7 @@ IbvVirtualQpBusinessCard::fromDynamic(const folly::dynamic& obj) {
       notifyQpNum =
           static_cast<uint32_t>(std::stoul(obj["notifyQpNum"].asString()));
     } catch (const std::exception& e) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           EINVAL,
           fmt::format(
               "Invalid notifyQpNum string format: {}. Exception: {}",
@@ -320,13 +320,13 @@ std::string IbvVirtualQpBusinessCard::serialize() const {
   return folly::toJson(toDynamic());
 }
 
-folly::Expected<IbvVirtualQpBusinessCard, Error>
-IbvVirtualQpBusinessCard::deserialize(const std::string& jsonStr) {
+Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::deserialize(
+    const std::string& jsonStr) {
   try {
     folly::dynamic obj = folly::parseJson(jsonStr);
     return fromDynamic(obj);
   } catch (const std::exception& e) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         EINVAL,
         fmt::format(
             "Failed to parse JSON in IbvVirtualQpBusinessCard Deserialize. Exception: {}",

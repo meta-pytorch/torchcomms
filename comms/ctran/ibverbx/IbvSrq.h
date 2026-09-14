@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -25,17 +24,13 @@ class IbvSrq {
   ibv_srq* srq() const;
 
   // Post a receive work request to the SRQ
-  folly::Expected<folly::Unit, Error> postRecv(
-      ibv_recv_wr* recvWr,
-      ibv_recv_wr** badRecvWr);
+  Status postRecv(ibv_recv_wr* recvWr, ibv_recv_wr** badRecvWr);
 
   // Modify SRQ attributes
-  folly::Expected<folly::Unit, Error> modifySrq(
-      ibv_srq_attr* srqAttr,
-      int srqAttrMask);
+  Status modifySrq(ibv_srq_attr* srqAttr, int srqAttrMask);
 
   // Query SRQ attributes
-  folly::Expected<ibv_srq_attr, Error> querySrq() const;
+  Expected<ibv_srq_attr> querySrq() const;
 
  private:
   friend class IbvPd;

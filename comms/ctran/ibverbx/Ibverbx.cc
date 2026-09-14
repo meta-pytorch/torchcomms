@@ -21,25 +21,25 @@ constexpr const char* kIbverbsSoEnv = "IBVERBX_IBVERBS_SO";
 
 } // namespace
 
-folly::Expected<folly::Unit, Error> ibvInit() {
+Status ibvInit() {
   static std::atomic<int> errNum{1};
   folly::call_once(initIbvSymbolOnce, [&]() {
     const char* path = std::getenv(kIbverbsSoEnv);
     errNum = buildIbvSymbols(ibvSymbols, path != nullptr ? path : "");
   });
   if (errNum != 0) {
-    return folly::makeUnexpected(Error(errNum));
+    return makeUnexpected(Error(errNum));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<folly::Unit, Error>
+Status
 ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context) {
   int rc = ibvSymbols.ibv_internal_get_cq_event(channel, cq, cq_context);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents) {

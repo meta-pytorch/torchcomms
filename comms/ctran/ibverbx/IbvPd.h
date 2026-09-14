@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include "comms/ctran/ibverbx/IbvAh.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvMr.h"
@@ -34,22 +33,22 @@ class IbvPd {
   int32_t getDeviceId() const;
   std::string getDeviceName() const;
 
-  folly::Expected<IbvMr, Error>
-  regMr(void* addr, size_t length, ibv_access_flags access) const;
+  Expected<IbvMr> regMr(void* addr, size_t length, ibv_access_flags access)
+      const;
 
-  folly::Expected<IbvMr, Error> regDmabufMr(
+  Expected<IbvMr> regDmabufMr(
       uint64_t offset,
       size_t length,
       uint64_t iova,
       int fd,
       ibv_access_flags access) const;
 
-  folly::Expected<IbvQp, Error> createQp(ibv_qp_init_attr* initAttr) const;
+  Expected<IbvQp> createQp(ibv_qp_init_attr* initAttr) const;
 
   // The send_cq and recv_cq fields in initAttr are ignored.
   // Instead, initAttr.send_cq and initAttr.recv_cq will be set to the physical
   // CQ contained within virtualCq.
-  folly::Expected<IbvVirtualQp, Error> createVirtualQp(
+  Expected<IbvVirtualQp> createVirtualQp(
       int totalQps,
       ibv_qp_init_attr* initAttr,
       IbvVirtualCq* virtualCq,
@@ -60,16 +59,15 @@ class IbvPd {
 
   // Create a Shared Receive Queue (SRQ)
   // Used for DC transport to receive messages on DCT
-  folly::Expected<IbvSrq, Error> createSrq(
-      ibv_srq_init_attr* srqInitAttr) const;
+  Expected<IbvSrq> createSrq(ibv_srq_init_attr* srqInitAttr) const;
 
   // Create an Address Handle (AH)
   // Used for DC transport to route messages to remote DCTs
-  folly::Expected<IbvAh, Error> createAh(ibv_ah_attr* ahAttr) const;
+  Expected<IbvAh> createAh(ibv_ah_attr* ahAttr) const;
 
   // Create a DC QP (DCI or DCT) using mlx5dv_create_qp
   // This is for Dynamically Connected transport
-  folly::Expected<IbvQp, Error> createDcQp(
+  Expected<IbvQp> createDcQp(
       ibv_qp_init_attr_ex* initAttrEx,
       mlx5dv_qp_init_attr* mlx5InitAttr) const;
 
@@ -77,7 +75,7 @@ class IbvPd {
   // (e.g. MLX5DV_QP_CREATE_OOO_DP for out-of-order data placement) can be
   // applied. Caller is responsible for building initAttrEx (IBV_QPT_RC, caps,
   // etc.) and mlx5InitAttr (comp_mask, create_flags). See NCCL_IB_OOO_RQ.
-  folly::Expected<IbvQp, Error> createExtRcQpMlx5(
+  Expected<IbvQp> createExtRcQpMlx5(
       ibv_qp_init_attr_ex* initAttrEx,
       mlx5dv_qp_init_attr* mlx5InitAttr) const;
 
