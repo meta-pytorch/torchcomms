@@ -35,11 +35,6 @@ class TorchCommRCCLBootstrapTest : public ::testing::Test {
     // Create fresh mocks for each test
     rccl_mock_ = std::make_shared<NiceMock<RcclMock>>();
     hip_mock_ = std::make_shared<NiceMock<HipMock>>();
-
-    // Reset the static counter to a known state
-    // We'll access it through the public interface
-    TorchCommRCCLBootstrap::getRCCLStoreKey(); // This increments counter
-    initial_counter_ = TorchCommRCCLBootstrap::getRCCLStoreKeyCounter();
   }
 
   void TearDown() override {
@@ -68,28 +63,17 @@ class TorchCommRCCLBootstrapTest : public ::testing::Test {
   at::Device device_{at::DeviceType::CPU, 0};
   std::shared_ptr<NiceMock<RcclMock>> rccl_mock_;
   std::shared_ptr<NiceMock<HipMock>> hip_mock_;
-  int initial_counter_{-1};
 };
 
 TEST_F(TorchCommRCCLBootstrapTest, StaticMethodsStoreKeyGeneration) {
-  // Test that store key generation works correctly with counter
-  std::string prefix = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix();
+  const std::string prefix = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix();
   EXPECT_EQ(prefix, "rccl_storekey_");
 
-  int counter_before = TorchCommRCCLBootstrap::getRCCLStoreKeyCounter();
-  std::string key1 = TorchCommRCCLBootstrap::getRCCLStoreKey();
-  int counter_after = TorchCommRCCLBootstrap::getRCCLStoreKeyCounter();
-
-  EXPECT_EQ(counter_after, counter_before + 1);
-  EXPECT_EQ(key1, prefix + std::to_string(counter_before));
-
-  // Test that subsequent calls increment the counter
-  std::string key2 = TorchCommRCCLBootstrap::getRCCLStoreKey();
-  int final_counter = TorchCommRCCLBootstrap::getRCCLStoreKeyCounter();
-
-  EXPECT_EQ(final_counter, counter_after + 1);
-  EXPECT_EQ(key2, prefix + std::to_string(counter_after));
-  EXPECT_NE(key1, key2);
+  const std::string key1 = TorchCommRCCLBootstrap::getRCCLStoreKey("tp");
+  const std::string key2 = TorchCommRCCLBootstrap::getRCCLStoreKey("tp");
+  EXPECT_EQ(key1, prefix + "tp");
+  EXPECT_EQ(key2, key1);
+  EXPECT_NE(key1, TorchCommRCCLBootstrap::getRCCLStoreKey("dp"));
 }
 
 TEST_F(TorchCommRCCLBootstrapTest, GetRankAndSizeFromEnvironment) {
@@ -103,8 +87,7 @@ TEST_F(TorchCommRCCLBootstrapTest, GetRankAndSizeFromEnvironment) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix() +
-      std::to_string(TorchCommRCCLBootstrap::getRCCLStoreKeyCounter());
+  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKey("test_comm");
   store_->set(store_key, id_vec);
 
   // Set up mock expectations
@@ -142,8 +125,7 @@ TEST_F(TorchCommRCCLBootstrapTest, ExchangeUniqueIdRank0) {
   EXPECT_NE(comm, nullptr);
 
   // Verify the unique ID was stored
-  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix() +
-      std::to_string(initial_counter_);
+  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKey("test_comm");
   auto stored_vec = store_->get(store_key);
   ncclUniqueId stored_id;
   memcpy(&stored_id, stored_vec.data(), sizeof(stored_id));
@@ -160,8 +142,7 @@ TEST_F(TorchCommRCCLBootstrapTest, ExchangeUniqueIdNonRank0) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix() +
-      std::to_string(TorchCommRCCLBootstrap::getRCCLStoreKeyCounter());
+  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKey("test_comm");
   store_->set(store_key, id_vec);
 
   auto bootstrap = createBootstrap();
@@ -241,8 +222,7 @@ TEST_F(TorchCommRCCLBootstrapTest, ExchangeUniqueIdInvalidStoreData) {
   // Store invalid data (wrong size)
   std::vector<uint8_t> invalid_vec(
       10); // Wrong size, should be sizeof(ncclUniqueId)
-  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix() +
-      std::to_string(TorchCommRCCLBootstrap::getRCCLStoreKeyCounter());
+  std::string store_key = TorchCommRCCLBootstrap::getRCCLStoreKey("test_comm");
   store_->set(store_key, invalid_vec);
 
   auto bootstrap = createBootstrap();
