@@ -32,6 +32,44 @@ enum class CtranAllReduceRingMinSizeTestOpt {
   expect_padded_small_msg,
 };
 
+TEST(CtranAllReduceRoutingTest, ResolvesExecutedAlgorithm) {
+  EXPECT_EQ(
+      resolveCtranAllReduceAlgorithm(
+          NCCL_ALLREDUCE_ALGO::ctring,
+          /*count=*/4096,
+          /*numRanks=*/1,
+          /*forceSmallMessageRing=*/false),
+      NCCL_ALLREDUCE_ALGO::ctdirect);
+  EXPECT_EQ(
+      resolveCtranAllReduceAlgorithm(
+          NCCL_ALLREDUCE_ALGO::ctring,
+          /*count=*/1,
+          /*numRanks=*/4,
+          /*forceSmallMessageRing=*/false),
+      NCCL_ALLREDUCE_ALGO::ctdirect);
+  EXPECT_EQ(
+      resolveCtranAllReduceAlgorithm(
+          NCCL_ALLREDUCE_ALGO::ctring,
+          /*count=*/1,
+          /*numRanks=*/4,
+          /*forceSmallMessageRing=*/true),
+      NCCL_ALLREDUCE_ALGO::ctring);
+  EXPECT_EQ(
+      resolveCtranAllReduceAlgorithm(
+          NCCL_ALLREDUCE_ALGO::ctring,
+          /*count=*/4,
+          /*numRanks=*/4,
+          /*forceSmallMessageRing=*/false),
+      NCCL_ALLREDUCE_ALGO::ctring);
+  EXPECT_EQ(
+      resolveCtranAllReduceAlgorithm(
+          NCCL_ALLREDUCE_ALGO::ctran,
+          /*count=*/4096,
+          /*numRanks=*/4,
+          /*forceSmallMessageRing=*/false),
+      NCCL_ALLREDUCE_ALGO::ctdirect);
+}
+
 class CtranAllReduceTest
     : public CtranIntraProcessFixture,
       public ::testing::WithParamInterface<AllReduceTestParam> {
