@@ -50,6 +50,8 @@ jobs:
         pip install build
         python -m build --wheel --no-isolation
 
+        command -v sccache >/dev/null && sccache --show-stats || true
+
         mkdir -p "${RUNNER_ARTIFACT_DIR}"
         cp dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
 
@@ -87,6 +89,9 @@ jobs:
         # Build and run C++ tests
         cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
         cmake --build build_tests
+
+        command -v sccache >/dev/null && sccache --show-stats || true
+
         cd build_tests && ctest --output-on-failure
 
   run_py_tests:
