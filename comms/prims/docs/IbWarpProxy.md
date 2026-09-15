@@ -184,9 +184,11 @@ per chunk in send_impl:
                                                   cmd = commands[posted % cap]
                                                   gate: recv.credited >= requiredRecvCredit
                                                   gate: read_signal(slotFree) >= slotFreeExpected
-                                                  transport.put(solo{channel}, ...,
+                                                  ticket = transport.put_staged<true>(
+                                                     solo{channel}, ...,
                                                      remote.dataReady, protocolBytes,
-                                                     signalPerLane = true)
+                                                     abortDevice)
+                                                  if (!ticket.posted) stop
                                                   record_send_completion(...)
    returns immediately                    ◄────  posted.store(+1, release)
 ```
@@ -242,23 +244,21 @@ asynchronous poster the ordering has to be carried explicitly, and this field is
 ```c++
 loop {
   leader only:
-    aborted = FT_ABORT_CHECK(...)              // BEFORE any peer-visible work
-    step(post_recv_credits)                    // each step runs only if !aborted,
-    step(publish_recv_readiness)               // and re-reads the flag afterwards
-    step(post_send_once)
-    if (aborted) stop = 1
+    result = FT_ABORT_CHECK(...) ? Stop : post_recv_credits()
+    if (result == Continue) result = publish_recv_readiness()
+    if (result == Continue) result = post_send_once()
+    if (result == Stop) stop = 1
     else if (producerDone && posted == tail && credited == tail) stop = 1
   stop = service.broadcast(stop)
   if (stop) break
 }
 ```
 
-The abort check is hoisted **above** the three steps and re-read **between** them, and both
-placements are needed for different reasons. With the check only at the bottom, the
-iteration on which an abort first becomes visible has already emitted one more round of
-credits and puts. Hoisting alone does not close it either, because
-`publish_recv_readiness()` is itself abortable, so an abort first observed inside it would
-still be followed by `post_send_once()` in the same iteration.
+The abort check is hoisted **above** the three steps, and every step reports whether it
+refused work. A refusal is terminal for the iteration even when the shared abort reason was
+recorded below the caller and a separately throttled poll has not observed it yet. This
+prevents a refused credit, readiness wait, or data post from being followed by another
+peer-visible operation.
 
 Exiting on abort does not strand the workers. Their credit and slot waits are
 `FT_ABORT_BREAK`-guarded, so the same abort releases both sides — which is the property
