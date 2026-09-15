@@ -4,6 +4,7 @@
 #include "comms/prims/tests/MultipeerIbgdaTransportTest.cuh"
 
 #include <cuda_runtime.h>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -286,6 +287,65 @@ void testBurstPutAndFlush(
     int blockSize) {
   burstPutAndFlushKernel<<<numBlocks, blockSize>>>(
       deviceTransportPtr, localBuf, remoteBuf, bytesPerPut, numPuts);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+__global__ void burstPutAndFlushWithAbortKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort,
+    uint32_t* postedCount) {
+  abort.start();
+  auto group = make_warp_group();
+  uint32_t successfulPosts = 0U;
+  for (int i = 0; i < numPuts; ++i) {
+    const auto completion = transport.put(
+        group,
+        localBuf.subBuffer(i * bytesPerPut),
+        remoteBuf.subBuffer(i * bytesPerPut),
+        bytesPerPut,
+        IbgdaRemoteBuffer{},
+        /*signalVal=*/0,
+        IbgdaLocalBuffer{},
+        /*counterVal=*/0,
+        /*signalPerLane=*/false,
+        abort);
+    const uint32_t posted =
+        group.broadcast<uint32_t>(completion.posted ? 1U : 0U);
+    if (posted == 0U) {
+      break;
+    }
+    ++successfulPosts;
+  }
+  transport.flush(group, abort);
+  if (group.is_leader()) {
+    *postedCount = successfulPosts;
+  }
+}
+
+void testBurstPutAndFlushWithAbort(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort,
+    uint32_t* postedCount) {
+  burstPutAndFlushWithAbortKernel<<<1, comms::prims::kWarpSize>>>(
+      deviceTransportPtr,
+      localBuf,
+      remoteBuf,
+      bytesPerPut,
+      numPuts,
+      abort,
+      postedCount);
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -593,6 +653,166 @@ void testTwoCallSendThenRecv(
 #ifndef __HIP_PLATFORM_AMD__
 constexpr uint32_t kWarpProxyTestWorkerThreads = 512;
 using WarpProxyTest = IbgdaWarpProxy<kWarpProxyTestWorkerThreads>;
+
+constexpr uint32_t kWarpProxyRefusalWorkerThreads = comms::device::kWarpSize;
+using WarpProxyRefusalTest = IbgdaWarpProxy<kWarpProxyRefusalWorkerThreads>;
+
+struct WarpProxyRefusalState {
+  doca_gpu_dev_verbs_qp qp{};
+  doca_gpu_dev_verbs_qp* qps[kIbDirections]{};
+  doca_gpu_dev_verbs_qp* companionQps[kIbDirections]{};
+  NicDeviceIbgdaResources nic{};
+  IbChannelLayout layout{};
+  IbLocalChannel channel{};
+  IbSendCompletionSlot sendCompletions[1]{};
+  doca_gpunetio_ib_mlx5_cqe64 cqe{};
+  doca_gpu_dev_verbs_wqe wqes[2]{};
+  __be32 doorbellRecord{};
+  uint64_t doorbell{};
+  alignas(512) char staging[2 * 512]{};
+  alignas(8) char signals[4 * kSendRecvSignalSlotStride]{};
+  alignas(8) char counters[2 * kSendRecvSignalSlotStride]{};
+  uint8_t source[16]{};
+  WarpProxyRefusalResult result{};
+  P2pIbgdaTransportDevice transport{};
+};
+
+__device__ void initializeWarpProxyRefusalState(WarpProxyRefusalState* state) {
+  state->cqe.op_own =
+      static_cast<uint8_t>(13U << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT);
+  state->qp.sq_rsvd_index = 1;
+  state->qp.sq_ready_index = 0;
+  state->qp.sq_wqe_pi = 0;
+  state->qp.sq_wqe_num = 1;
+  state->qp.sq_wqe_mask = 0;
+  state->qp.sq_wqe_daddr = reinterpret_cast<uint8_t*>(state->wqes);
+  state->qp.sq_dbrec = &state->doorbellRecord;
+  state->qp.sq_db = &state->doorbell;
+  state->qp.cq_sq.cqe_daddr = reinterpret_cast<uint8_t*>(&state->cqe);
+  state->qp.cq_sq.cqe_num = 1;
+  state->qp.cq_sq.cqe_mask = 0;
+  state->qp.cq_sq.cqe_ci = 0;
+  for (int direction = 0; direction < kIbDirections; ++direction) {
+    state->qps[direction] = &state->qp;
+    state->companionQps[direction] = &state->qp;
+  }
+  ::new (static_cast<void*>(&state->nic)) NicDeviceIbgdaResources{
+      .qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(state->qps, kIbDirections),
+      .companion_qps = DeviceSpan<doca_gpu_dev_verbs_qp*>(
+          state->companionQps, kIbDirections),
+  };
+  state->layout.sendStagingBuf =
+      IbgdaLocalBuffer{state->staging, NetworkLKeys{NetworkLKey{0x1111}}};
+  state->layout.recvStagingBuf =
+      IbgdaRemoteBuffer{state->staging, NetworkRKeys{NetworkRKey{0x2222}}};
+  state->layout.sendStagingPtr = state->staging;
+  state->layout.recvStagingPtr = state->staging;
+  state->layout.localSignalBuf =
+      IbgdaLocalBuffer{state->signals, NetworkLKeys{}};
+  state->layout.remoteSignalBuf =
+      IbgdaRemoteBuffer{state->signals, NetworkRKeys{NetworkRKey{0x3333}}};
+  state->layout.localCounterBuf =
+      IbgdaLocalBuffer{state->counters, NetworkLKeys{}};
+  state->layout.localCounterCompletionBuf =
+      IbgdaLocalBuffer{state->counters, NetworkLKeys{}};
+  state->layout.maxChannels = kNumProtoSlots;
+  state->layout.numChannels = 1;
+  state->layout.numLanes = 1;
+  state->layout.pipelineDepth = 1;
+  state->layout.perChannelSize = 512;
+  state->layout.perChannelBufferSize = 512;
+  state->channel = makeIbLocalChannel(state->layout, 0, state->sendCompletions);
+  ::new (static_cast<void*>(&state->transport)) P2pIbgdaTransportDevice(
+      DeviceSpan<NicDeviceIbgdaResources>(&state->nic, 1),
+      state->layout.remoteSignalBuf,
+      state->layout.localSignalBuf,
+      state->layout.localCounterBuf,
+      /*numSignalSlots=*/4,
+      /*numCounterSlots=*/2,
+      /*maxChannels=*/1,
+      /*qpsPerConnection=*/1,
+      /*qpDirectionCount=*/kIbDirections,
+      DeviceSpan<IbLocalChannel>(&state->channel, 1),
+      state->layout,
+      /*collapsedCq=*/false);
+}
+
+__global__ void warpProxyStepRefusalKernel(
+    WarpProxyRefusalState* state,
+    WarpProxyRefusalStep step,
+    AbortDevice abortDevice) {
+  auto block = make_block_group();
+  if (block.is_leader()) {
+    initializeWarpProxyRefusalState(state);
+    if (step == WarpProxyRefusalStep::SendData) {
+      // The fused data + DATA_READY post reserves two WQEs. A two-entry SQ
+      // makes its capacity check poll ticket zero, where the injected error
+      // CQE is resident.
+      state->qp.sq_wqe_num = 2;
+      state->qp.sq_wqe_mask = 1;
+    }
+  }
+  block.sync();
+  abortDevice.start();
+
+  __shared__ WarpProxyRefusalTest::SharedState sharedState;
+  WarpProxyRefusalTest::run(
+      sharedState,
+      block,
+      WarpProxyRefusalTest::Config{.queueDepth = 1},
+      abortDevice,
+      [&](auto& ops) {
+        auto& workers = ops.group();
+        if (workers.is_leader()) {
+          if (step == WarpProxyRefusalStep::RecvCredit) {
+            sharedState.recv.commands[0] = {
+                .transport = &state->transport,
+                .protocolBytes = sizeof(state->source),
+                .channel = 0,
+            };
+            cuda::atomic_ref<uint64_t, cuda::thread_scope_block>(
+                sharedState.recv.tail)
+                .store(1, cuda::memory_order_relaxed);
+            cuda::atomic_ref<uint64_t, cuda::thread_scope_block>(
+                sharedState.recv.ready)
+                .store(1, cuda::memory_order_relaxed);
+            cuda::atomic_ref<uint64_t, cuda::thread_scope_block>(
+                sharedState.recv.copied)
+                .store(1, cuda::memory_order_release);
+          } else {
+            sharedState.send.commands[0] = {
+                .transport = &state->transport,
+                .source =
+                    IbgdaLocalBuffer{
+                        state->source, NetworkLKeys{NetworkLKey{0x4444}}},
+                .remoteOffset = 0,
+                .bytes = sizeof(state->source),
+                .protocolBytes = sizeof(state->source),
+                .slotFreeExpected = 0,
+                .generation = 0,
+                .requiredRecvCredit = 0,
+                .channel = 0,
+                .slot = 0,
+            };
+            cuda::atomic_ref<uint64_t, cuda::thread_scope_block>(
+                sharedState.send.tail)
+                .store(1, cuda::memory_order_release);
+          }
+        }
+        workers.sync();
+      });
+
+  if (block.is_leader()) {
+    state->result = WarpProxyRefusalResult{
+        .reservedIndex = state->qp.sq_rsvd_index,
+        .sendTail = sharedState.send.tail,
+        .sendPosted = sharedState.send.posted,
+        .recvCopied = sharedState.recv.copied,
+        .recvCredited = sharedState.recv.credited,
+        .kernelExited = 1,
+    };
+  }
+}
 
 __global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
     warpProxySendRecvKernel(
@@ -927,6 +1147,36 @@ void launchWarpProxyStalledSend(
         std::string("Kernel launch failed: ") + cudaGetErrorString(err));
   }
   // Deliberately no synchronize: the caller aborts while this is parked.
+#endif
+}
+
+cudaError_t runWarpProxyStepRefusal(
+    WarpProxyRefusalStep step,
+    comms::fault_tolerance::AbortDevice abort,
+    WarpProxyRefusalResult* result) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)step;
+  (void)abort;
+  (void)result;
+  return cudaErrorNotSupported;
+#else
+  WarpProxyRefusalState* state = nullptr;
+  cudaError_t status = cudaMalloc(&state, sizeof(*state));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMemset(state, 0, sizeof(*state));
+  if (status == cudaSuccess) {
+    warpProxyStepRefusalKernel<<<1, WarpProxyRefusalTest::kBlockThreads>>>(
+        state, step, abort);
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result, &state->result, sizeof(*result), cudaMemcpyDeviceToHost);
+  }
+  const cudaError_t freeStatus = cudaFree(state);
+  return status == cudaSuccess ? freeStatus : status;
 #endif
 }
 

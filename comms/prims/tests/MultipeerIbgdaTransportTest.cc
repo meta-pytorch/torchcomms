@@ -1741,6 +1741,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
     } else {
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
     }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
@@ -1755,6 +1756,48 @@ TEST_F(MultipeerIbgdaTransportTestFixture, CollapsedCqAndRingSurviveSqWrap) {
     }
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 1) {
+      std::vector<uint8_t> actual(expected.size());
+      CUDACHECK_TEST(cudaMemcpy(
+          actual.data(),
+          localDataBuf.ptr,
+          actual.size(),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(actual, expected);
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, expected.size()));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    comms::fault_tolerance::Abort abort(/*enabled=*/true);
+    std::unique_ptr<DeviceBuffer> postedCountBuffer;
+    if (globalRank == 0) {
+      postedCountBuffer = std::make_unique<DeviceBuffer>(sizeof(uint32_t));
+      CUDACHECK_TEST(cudaMemset(postedCountBuffer->get(), 0, sizeof(uint32_t)));
+      test::testBurstPutAndFlushWithAbort(
+          peerTransport,
+          localDataBuf,
+          remoteDataBuf,
+          kBytesPerPut,
+          numBurstPuts,
+          abort.getDeviceHandle(),
+          static_cast<uint32_t*>(postedCountBuffer->get()));
+    }
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    if (globalRank == 0) {
+      uint32_t postedCount = 0U;
+      CUDACHECK_TEST(cudaMemcpy(
+          &postedCount,
+          postedCountBuffer->get(),
+          sizeof(postedCount),
+          cudaMemcpyDeviceToHost));
+      EXPECT_EQ(postedCount, static_cast<uint32_t>(numBurstPuts));
+      EXPECT_FALSE(abort.isAborted());
+      EXPECT_FALSE(abort.isTimedOut());
+    }
 
     if (globalRank == 1) {
       std::vector<uint8_t> actual(expected.size());
@@ -2589,6 +2632,48 @@ TEST_F(
     EXPECT_EQ(info->reason, comms::fault_tolerance::AbortReason::ABORTED);
   }
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+}
+#endif
+
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyStopsAfterCreditPostRefusal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::RecvCredit,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_EQ(result.sendTail, 0U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvCopied, 1U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
+
+TEST_F(MultipeerIbgdaTransportTestFixture, WarpProxyStopsAfterDataPostRefusal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::SendData,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 3U);
+  EXPECT_EQ(result.sendTail, 1U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvCopied, 0U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
 }
 #endif
 
