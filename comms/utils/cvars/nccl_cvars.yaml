@@ -3390,6 +3390,75 @@ cvars:
      the LL size threshold but still requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0,
      which is what arms the LL path.
 
+ - name        : MCCL_TUNER_ALLREDUCE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Let the tuner choose the AllReduce algorithm and protocol. OFF by default,
+     so a build carrying the tuner behaves exactly as one without it.
+
+     Enabling it takes TWO variables:
+
+       MCCL_TUNER_ALLREDUCE_ENABLE=1 MCCL_ALGO=none
+
+     MCCL_ALGO defaults to a value naming AllReduce, and an MCCL_ALGO naming a
+     collective always outranks the tuner for it, so setting this alone leaves
+     the tuner unreachable. MCCL_ALGO=none is what yields the selection to it.
+
+     Even then the tuner decides only for communicators that reach it:
+     NCCL_ALLREDUCE_ALGO left at `orig`, and ppn == 1 (the shape every table was
+     swept in). Anything else is untouched, and off is not a degraded mode --
+     it is today's behaviour.
+
+     MUST be identical on every rank -- ranks that disagree would select
+     different algorithms and DEADLOCK. Read once when the communicator is
+     created.
+
+ - name        : MCCL_TUNER_LOG_SELECTION
+   type        : bool
+   default     : false
+   description : |-
+     Log every MCCL tuner decision at INFO -- the query (bytes, rank count,
+     requested block cap) and the resulting algorithm and protocol -- and also
+     log why the tuner was skipped when an explicit override or the envelope
+     gate suppressed it. Diagnostic only; noisy in steady state.
+
+ - name        : MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS
+   type        : int
+   default     : 64
+   description : |-
+     Rank floor of the AllReduce tuner's Tree region. Named per-collective on
+     purpose: the tuner covers AllReduce only today, and another collective
+     would get its own bounds rather than sharing these. The tuner selects
+     Tree/Simple only when the communicator has at least this many ranks AND
+     the message is at or below MCCL_TUNER_ALLREDUCE_TREE_MAX_BYTES; otherwise it selects
+     Ring/Simple.
+
+     The default 64 comes from the GB300 ppn-1 sweep (config_id ch20s10-nozc),
+     where the Tree->Ring crossover grows with rank count -- roughly 2 MiB at
+     16 ranks, 9 MiB at 64 -- so the pair of bounds describes a rectangle that
+     stays inside measured territory. Retuning one bound without the other
+     leaves that rectangle, and values far from the swept range are
+     extrapolation with no measurement behind them.
+
+     MUST be identical on every rank. The algorithm is never negotiated on the
+     wire, so ranks that disagree select different algorithms and DEADLOCK.
+     Read once when the communicator is created; later changes do not affect an
+     existing communicator.
+
+ - name        : MCCL_TUNER_ALLREDUCE_TREE_MAX_BYTES
+   type        : uint64_t
+   default     : 9437184
+   description : |-
+     Size ceiling of the AllReduce tuner's Tree region, in total message bytes
+     (the full buffer, not the per-rank share). See MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS
+     for how the two bounds combine and where the defaults come from; 9437184
+     is 9 MiB. Setting this to 0 disables the Tree region entirely -- including
+     for a zero-byte collective -- leaving Ring/Simple everywhere.
+
+     MUST be identical on every rank, and is read once at communicator
+     creation, for the same reasons as MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS.
+
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t
    default     : 0
