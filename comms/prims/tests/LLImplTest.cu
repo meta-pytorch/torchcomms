@@ -33,10 +33,11 @@ __global__ void pack_unpack_kernel(
       SyncScope::BLOCK};
 
   const typename P::FlagType flagVal = static_cast<typename P::FlagType>(7);
+  const AbortDevice abortDevice;
 
   LLImpl<P>::pack(g, staging, src, nbytes, flagVal);
   g.sync();
-  LLImpl<P>::unpack(g, dst, staging, nbytes, flagVal);
+  LLImpl<P>::unpack(g, dst, staging, nbytes, flagVal, abortDevice);
   g.sync();
 
   for (std::size_t i = threadIdx.x; i < nbytes; i += blockDim.x) {
@@ -174,13 +175,14 @@ __global__ void unpack_reduce_kernel(
 
   const std::size_t nbytes = nelems * sizeof(T);
   const typename P::FlagType flagVal = static_cast<typename P::FlagType>(7);
+  const AbortDevice abortDevice;
 
   LLImpl<P>::pack(
       g, staging, reinterpret_cast<const char*>(src), nbytes, flagVal);
   g.sync();
   // unpack_reduce polls each packet's flag itself and syncs on the way out.
   LLImpl<P>::template unpack_reduce<T, TestCombine<T, Op>>(
-      g, accum, staging, nbytes, flagVal);
+      g, accum, staging, nbytes, flagVal, abortDevice);
 }
 
 namespace {
@@ -265,6 +267,7 @@ __global__ void repack_kernel(
 
   const auto recvFlag = static_cast<typename P::FlagType>(7);
   const auto fwdFlag = static_cast<typename P::FlagType>(9);
+  const AbortDevice abortDevice;
 
   LLImpl<P>::pack(g, recvStaging, src, nbytes, recvFlag);
   g.sync();
@@ -291,7 +294,7 @@ __global__ void repack_kernel(
         fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes), fwdFlag);
   }
   g.sync();
-  LLImpl<P>::unpack(g, packetOut, fwdStaging, nbytes, fwdFlag);
+  LLImpl<P>::unpack(g, packetOut, fwdStaging, nbytes, fwdFlag, abortDevice);
 }
 
 void test_ll_repack(
