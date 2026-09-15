@@ -25,4 +25,5 @@ target_include_directories(uniflow_controller PUBLIC
 target_link_libraries(uniflow_controller PRIVATE
     uniflow_executor
     uniflow_logging
+    fmt::fmt
 )

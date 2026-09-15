@@ -67,7 +67,7 @@ jobs:
 
         ./build_rccl.sh
         pip install numpy
-        USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=1 USE_TRANSPORT=OFF pip install --no-build-isolation -v -e .
+        USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=1 USE_TRANSPORT=OFF USE_UNIFLOW=OFF pip install --no-build-isolation -v -e .
 
         python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
         python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"

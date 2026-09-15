@@ -31,4 +31,9 @@ constexpr std::string_view toStringView(TransportType t) noexcept {
   return "Unknown";
 }
 
+// ADL hook so fmt/spdlog (v10+) format TransportType by name.
+constexpr std::string_view format_as(TransportType t) noexcept {
+  return toStringView(t);
+}
+
 } // namespace uniflow

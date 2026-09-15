@@ -443,21 +443,25 @@ Status RdmaTransport::connect(std::span<const uint8_t> remoteInfo) {
   remoteDomainId_ = remote.header.domainId;
   remoteNumNics_ = remote.header.numNics;
 
-  if (remote.header.numQps != config_.numQps) {
+  // Copy packed fields to locals; GCC rejects binding them to references.
+  const uint32_t remoteNumQps = remote.header.numQps;
+  if (remoteNumQps != config_.numQps) {
     UNIFLOW_LOG_ERROR(
         "connect: QP count mismatch (local={}, remote={})",
         config_.numQps,
-        remote.header.numQps);
+        remoteNumQps);
     state_ = TransportState::Error;
     return Err(ErrCode::InvalidArgument, "QP count mismatch");
   }
-  if (remote.header.slabSize != info_.header.slabSize) {
+  const uint32_t localSlabSize = info_.header.slabSize;
+  const uint32_t remoteSlabSize = remote.header.slabSize;
+  if (remoteSlabSize != localSlabSize) {
     UNIFLOW_LOG_WARN(
         "connect: slab size mismatch (local={}, remote={})",
-        info_.header.slabSize,
-        remote.header.slabSize);
+        localSlabSize,
+        remoteSlabSize);
     remote.header.slabSize = info_.header.slabSize =
-        std::min(remote.header.slabSize, info_.header.slabSize);
+        std::min(remoteSlabSize, localSlabSize);
   }
 
   const uint32_t numNics = static_cast<uint32_t>(nics_.size());
@@ -2153,8 +2157,9 @@ RdmaTransportFactory::importSegment(
       rkeys.data(), payload.data() + offset, sizeof(uint32_t) * header.numMrs);
 
   uint64_t domainId = header.domainId;
+  uint64_t registrationBase = header.registrationBase;
   return std::make_unique<RdmaRemoteRegistrationHandle>(
-      std::move(rkeys), domainId, header.registrationBase, deviceAdapter_);
+      std::move(rkeys), domainId, registrationBase, deviceAdapter_);
 }
 
 Result<std::unique_ptr<Transport>> RdmaTransportFactory::createTransport(

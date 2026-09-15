@@ -10,7 +10,7 @@ class ErrCode:
     NotConnected: ErrCode
     TransportError: ErrCode
     ConnectionFailed: ErrCode
-    MemoryRegistrationFailed: ErrCode
+    MemoryRegistrationError: ErrCode
     Timeout: ErrCode
     ResourceExhausted: ErrCode
     @property

@@ -52,3 +52,10 @@ export TEST_BACKEND=gloo
 export TEST_DEVICE=cuda
 run_tests
 unset TEST_DEVICE
+
+# Uniflow (backend-independent, needs the uniflow._core extension)
+if [ "${USE_UNIFLOW}" = "0" ] || [ "${USE_UNIFLOW}" = "OFF" ]; then
+    echo "Skipping uniflow tests (USE_UNIFLOW=${USE_UNIFLOW})"
+else
+    pytest -v comms/uniflow/tests/py/test_uniflow.py
+fi
