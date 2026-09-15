@@ -808,15 +808,24 @@ P2pIbTransportDevice::progress_recv_acquire_once(
 }
 
 template <typename>
-__device__ __forceinline__ void
+[[nodiscard]] __device__ __forceinline__ bool
 P2pIbTransportDevice::progress_recv_release_once(
     ThreadGroup& group,
     const AbortDevice& abortDevice,
     const detail::RecvChunkAcquisition& view) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->progress_recv_release_once(group, abortDevice, view);
+    return ibrc->progress_recv_release_once(group, abortDevice, view);
+  }
+  return ibgda->progress_recv_release_once(group, abortDevice, view);
+}
+
+template <typename>
+__device__ __forceinline__ void P2pIbTransportDevice::abandon_recv_progress(
+    ThreadGroup& group) {
+  if (type == P2pIbBackendType::IBRC) {
+    detail::abandon_recv_progress_state<protocol::Simple>(*ibrc, group);
   } else {
-    ibgda->progress_recv_release_once(group, abortDevice, view);
+    detail::abandon_recv_progress_state<protocol::Simple>(*ibgda, group);
   }
 }
 

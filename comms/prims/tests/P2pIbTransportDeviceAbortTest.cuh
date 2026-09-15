@@ -34,6 +34,17 @@ struct VariableWaitAbortObservation {
   uint32_t waitBoundExpiredCount{0};
 };
 
+struct ProgressPostRefusalObservation {
+  uint32_t legacyPutCount{0};
+  uint32_t abortAwarePutCount{0};
+  uint32_t legacySignalCount{0};
+  uint32_t abortAwareSignalCount{0};
+  uint32_t completionRecordCount{0};
+  uint32_t status{0};
+  uint32_t finalStage{0};
+  uint32_t completed{0};
+};
+
 void launchPrepareSendSlotAbortForwarding(
     PrepareSendSlotAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort);
@@ -85,6 +96,16 @@ void launchIbWrapperTrySignal(
     uint32_t* postedCount,
     comms::fault_tolerance::AbortDevice abort);
 
+void launchIbWrapperRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchIbrcRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort);
+
 void launchVariableSendWaitAbort(
     VariableWaitAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort);
@@ -92,6 +113,31 @@ void launchVariableSendWaitAbort(
 void launchVariableRecvWaitAbort(
     VariableWaitAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort);
+
+void launchProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchRegisteredProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchProgressRecvCreditRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchProgressRecvReleaseSequence(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+uint32_t progressSendRecvDoneStatus();
+uint32_t progressSendRecvAbortedStatus();
+uint32_t registeredSendAbortedStatus();
+uint32_t progressDoneStage();
 
 /*
  * Depth of the command queue backing `launchIbrcPutUntilQueueFull`, so the test

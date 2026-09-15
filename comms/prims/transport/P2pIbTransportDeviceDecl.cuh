@@ -93,8 +93,13 @@ progress_recv_acquire_once(
     const AbortDevice& abortDevice,
     RecvChunkAcquisition& out);
 
+template <typename Proto, typename Transport>
+__device__ __forceinline__ void abandon_recv_progress_state(
+    Transport& transport,
+    ThreadGroup& group);
+
 template <typename Transport, typename Proto>
-__device__ __forceinline__ void progress_recv_release_once(
+[[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
     Transport& transport,
     ThreadGroup& group,
     const AbortDevice& abortDevice,
@@ -447,11 +452,21 @@ struct P2pIbTransportDevice {
       const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out);
 
+  /**
+   * Return one acquired receive chunk's credit.
+   *
+   * Returns true when no credit is needed or the credit was posted. A false
+   * result means publication was refused and the caller must not issue later
+   * peer-visible work for this operation.
+   */
   template <typename = void>
-  __device__ __forceinline__ void progress_recv_release_once(
+  [[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
       ThreadGroup& group,
       const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view);
+
+  template <typename = void>
+  __device__ __forceinline__ void abandon_recv_progress(ThreadGroup& group);
 
   template <
       typename CopyOp = Memcpy,
