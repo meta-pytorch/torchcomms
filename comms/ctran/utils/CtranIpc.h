@@ -3,6 +3,7 @@
 #ifndef CTRAN_IPC_H_
 #define CTRAN_IPC_H_
 
+#include <sys/syscall.h>
 #include <algorithm>
 #include <sstream>
 #include <vector>
@@ -12,7 +13,18 @@
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/utils/commSpecs.h"
 
-// TODO: remove this once we have a more portable way for CTRAN IPC
+// manylinux headers predate pidfd syscalls. Their numbers are shared by
+// Linux x86-64 and AArch64; availability is checked by syscall at runtime.
+#if defined(__linux__) && \
+    ((defined(__x86_64__) && !defined(__ILP32__)) || defined(__aarch64__))
+#ifndef SYS_pidfd_open
+#define SYS_pidfd_open 434
+#endif
+#ifndef SYS_pidfd_getfd
+#define SYS_pidfd_getfd 438
+#endif
+#endif
+
 #if (defined(SYS_pidfd_open) && defined(SYS_pidfd_getfd))
 #define IS_CTRAN_IPC_SUPPORTED
 #endif
