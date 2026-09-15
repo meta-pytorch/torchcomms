@@ -15,9 +15,8 @@
 #include <unistd.h>
 
 #include <cuda_runtime.h>
-#include <glog/logging.h>
-
 #include "comms/prims/topology/NvmlFabricInfo.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims {
 
@@ -125,9 +124,10 @@ TopologyResult TopologyDiscovery::classify(
   // (e.g. CtranPipes) and passed via TopologyConfig fields.
   if (topoConfig.mnnvlMode == MnnvlMode::kDisabled) {
     if (myInfo.fabricInfo.available) {
-      LOG(INFO) << "TopologyDiscovery: rank " << myRank
-                << " MNNVL disabled by config (MnnvlMode::kDisabled),"
-                << " ignoring available fabric info";
+      COMMS_LOG(
+          DBG,
+          "TopologyDiscovery: rank {} MNNVL disabled by config (MnnvlMode::kDisabled), ignoring available fabric info",
+          myRank);
     }
     myInfo.fabricInfo.available = false;
   } else if (topoConfig.mnnvlMode == MnnvlMode::kEnabled) {
@@ -157,18 +157,23 @@ TopologyResult TopologyDiscovery::classify(
       std::memcpy(myInfo.fabricInfo.clusterUuid, &uuid, sizeof(uuid));
       std::memcpy(
           myInfo.fabricInfo.clusterUuid + sizeof(uuid), &uuid, sizeof(uuid));
-      LOG(INFO) << "TopologyDiscovery: rank " << myRank
-                << " overriding MNNVL cluster UUID from " << oldUuid << " to "
-                << formatUuid(myInfo.fabricInfo.clusterUuid);
+      COMMS_LOG(
+          DBG,
+          "TopologyDiscovery: rank {} overriding MNNVL cluster UUID from {} to {}",
+          myRank,
+          oldUuid,
+          formatUuid(myInfo.fabricInfo.clusterUuid));
     }
     if (topoConfig.mnnvlCliqueId.has_value()) {
       unsigned int oldCliqueId = myInfo.fabricInfo.cliqueId;
       myInfo.fabricInfo.cliqueId =
           static_cast<unsigned int>(topoConfig.mnnvlCliqueId.value());
-      LOG(INFO) << "TopologyDiscovery: rank " << myRank
-                << " overriding MNNVL clique ID from 0x" << std::hex
-                << oldCliqueId << " to 0x" << myInfo.fabricInfo.cliqueId
-                << std::dec;
+      COMMS_LOG(
+          DBG,
+          "TopologyDiscovery: rank {} overriding MNNVL clique ID from {:#x} to {:#x}",
+          myRank,
+          oldCliqueId,
+          myInfo.fabricInfo.cliqueId);
     }
   }
 
@@ -222,12 +227,15 @@ TopologyResult TopologyDiscovery::classify(
     }
   }
 
-  LOG(INFO) << "TopologyDiscovery: rank " << myRank << " classified "
-            << result.nvlPeerRanks.size() << " NVL peers from " << (nRanks - 1)
-            << " total" << (topoConfig.p2pDisable ? " (p2p disabled)" : "")
-            << (myInfo.fabricInfo.available ? " (MNNVL)" : "")
-            << (logicalNvlRankSet.has_value() ? " (logical group constrained)"
-                                              : "");
+  COMMS_LOG(
+      DBG,
+      "TopologyDiscovery: rank {} classified {} NVL peers from {} total{}{}{}",
+      myRank,
+      result.nvlPeerRanks.size(),
+      nRanks - 1,
+      topoConfig.p2pDisable ? " (p2p disabled)" : "",
+      myInfo.fabricInfo.available ? " (MNNVL)" : "",
+      logicalNvlRankSet.has_value() ? " (logical group constrained)" : "");
 
   // Store fabric info in the result.
   if (myInfo.fabricInfo.available) {
