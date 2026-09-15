@@ -54,9 +54,9 @@ struct NicDeviceIbgdaResourcesBuildSpec {
  * for the device transport.
  *
  * Single-NIC callers populate `nicResources` with one element.
- * Multi-NIC callers populate `nicResources` with one element per NIC. qps and
- * companionQps both contain maxChannels * qpDirectionCount * qpsPerConnection
- * QPs.
+ * Multi-NIC callers populate `nicResources` with one element per NIC. `qps`
+ * contains maxChannels * qpDirectionCount * qpsPerConnection QPs;
+ * `companionQps` is either empty or has the same shape.
  */
 struct P2pIbgdaTransportBuildParams {
   P2pIbgdaTransportBuildParams() = default;

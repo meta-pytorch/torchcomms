@@ -130,6 +130,7 @@ MultipeerIbTransportConfig makeConfig() {
       .numSignalSlots = 1,
       .numCounterSlots = 1,
       .maxGroups = 64,
+      .enableCompanionQP = true,
   };
 }
 

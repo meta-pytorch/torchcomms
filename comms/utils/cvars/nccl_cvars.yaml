@@ -3479,6 +3479,14 @@ cvars:
    description : |-
      Enable the dedicated IBGDA warp-proxy send, receive, and forward path for
      fused Ring AllReduce. Disabled by default while the path is evaluated.
+ - name        : MCCL_IBGDA_ENABLE_COMPANION_QP
+   type        : bool
+   default     : false
+   description : |-
+     Create NVIDIA IBGDA companion QPs and their local loopback responders for
+     local completion-counter operations. Ordinary collectives use main-QP
+     completion tickets and leave this disabled. Transport-owned counter slots
+     require this setting. Ignored on AMD and IBRC.
  - name        : MCCL_IBGDA_QP_ORDERING_SEMANTIC
    type        : enum
    default     : auto
