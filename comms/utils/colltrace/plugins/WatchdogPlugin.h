@@ -4,6 +4,9 @@
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
+#include <chrono>
+#include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -16,7 +19,7 @@ class CommsSpdlogLogger;
 namespace meta::comms::colltrace {
 
 [[noreturn]] void logFatalError(
-    CollTraceEvent& curEvent,
+    const CollTraceEvent& curEvent,
     std::string_view errorType,
     std::string_view loggerName = "comms");
 
@@ -28,6 +31,34 @@ struct WatchdogPluginConfig {
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
   std::function<void(CollTraceEvent&)> funcTriggerOnError;
+  /*
+   * funcMarkError runs synchronously before a deferred trigger. The default
+   * marker is emitted synchronously so Analyzer can snapshot the failure state
+   * before bounded history advances and process teardown can discard it.
+   *
+   * An unset deferErrorTrigger defers the default fatal handler and keeps a
+   * custom handler synchronous. An explicit value always wins. The default
+   * deferred path writes its diagnostic marker synchronously, then delays only
+   * termination so process teardown cannot discard the marker.
+   *
+   * A custom deferred callback receives a point-in-time record snapshot plus
+   * replay, capture, and terminal identifiers. Its waitEvent is intentionally
+   * absent because wait events have unique ownership and no cloning contract.
+   * Deferred callbacks must own anything they capture.
+   */
+  std::function<void(const CollTraceEvent&)> funcMarkError;
+  std::chrono::milliseconds asyncErrorDelay{std::chrono::seconds{60}};
+  std::optional<bool> deferErrorTrigger;
+  /*
+   * The production default schedules on the process-lifetime watchdog
+   * scheduler. Tests may replace it to exercise scheduling failures without
+   * relying on timing or global scheduler state. If scheduling fails, the
+   * trigger runs synchronously: the default trigger terminates the process,
+   * while a custom deferred trigger executes inline. The error remains
+   * latched in either case.
+   */
+  std::function<void(std::function<void()>, std::chrono::milliseconds)>
+      funcScheduleAsyncError;
 
   // Timeout config
   bool checkTimeout{false};
@@ -55,6 +86,10 @@ class WatchdogPlugin : public ICollTracePlugin {
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
 
+  CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& curEvent,
+      CollTraceTerminalReason reason) noexcept override;
+
   static constexpr std::string_view kWatchdogPluginName = "WatchdogPlugin";
 
  private:
@@ -69,8 +104,13 @@ class WatchdogPlugin : public ICollTracePlugin {
   struct EventTimer {
     folly::stop_watch<> timer;
     ICollWaitEvent::system_clock_time_point startTs{};
+    bool timeoutTriggered{false};
   };
   std::unordered_map<CollTraceEvent*, EventTimer> eventTimers_;
+  bool asyncErrorTriggered_{false};
+  bool asyncErrorMarked_{false};
+
+  CommsMaybeVoid dispatchAsyncError(const CollTraceEvent& curEvent) noexcept;
 };
 
 } // namespace meta::comms::colltrace
