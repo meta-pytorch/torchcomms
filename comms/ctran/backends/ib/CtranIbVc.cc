@@ -514,14 +514,15 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
       FOLLY_EXPECTED_CHECK(ibvAtomicQpCreateResult);
       ibvAtomicQp_ = std::move(*ibvAtomicQpCreateResult);
 
-      FOLLY_EXPECTED_CHECK(
-          initQp(*ibvControlQp_, devices_[device].port, qpAccessFlags));
-      FOLLY_EXPECTED_CHECK(
-          initQp(*ibvNotifyQp_, devices_[device].port, qpAccessFlags));
+      FOLLY_EXPECTED_CHECK(initQp(
+          *ibvControlQp_, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
+      FOLLY_EXPECTED_CHECK(initQp(
+          *ibvNotifyQp_, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
       FOLLY_EXPECTED_CHECK(initQp(
           *ibvAtomicQp_,
           devices_[device].port,
-          qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC));
+          qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC,
+          NCCL_IB_PKEY));
     }
     // Data QPs may opt into OOO_DP when local caps confirm it (localOooRq_).
     // Control / notify / atomic QPs stay on the plain createRcQp path — their
@@ -536,7 +537,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
           localOooRq_);
       FOLLY_EXPECTED_CHECK(maybeQp);
       FOLLY_EXPECTED_CHECK(
-          initQp(*maybeQp, devices_[device].port, qpAccessFlags));
+          initQp(*maybeQp, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
       ibvDataQps_.emplace_back(std::move(*maybeQp));
     }
 
