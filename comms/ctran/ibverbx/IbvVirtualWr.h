@@ -3,9 +3,9 @@
 #pragma once
 
 #include <deque>
+#include <unordered_map>
 #include <vector>
 
-#include <folly/container/F14Map.h>
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
 namespace ibverbx {
@@ -44,7 +44,7 @@ struct IbvVirtualSendWr {
 
   // Per-device memory keys: maps deviceId -> {lkey, rkey}.
   // Mandatory field: 1 entry for single-NIC, N entries for multi-NIC.
-  folly::F14FastMap<int32_t, MemoryRegionKeys> deviceKeys;
+  std::unordered_map<int32_t, MemoryRegionKeys> deviceKeys;
 };
 
 // Custom recv work request (replaces ibv_recv_wr in IbvVirtualQp::postRecv
@@ -58,7 +58,7 @@ struct IbvVirtualRecvWr {
 
   // Per-device memory keys: maps deviceId -> {lkey, rkey}.
   // Mandatory field: 1 entry for single-NIC, N entries for multi-NIC.
-  folly::F14FastMap<int32_t, MemoryRegionKeys> deviceKeys;
+  std::unordered_map<int32_t, MemoryRegionKeys> deviceKeys;
 };
 
 // ============================================================
@@ -98,7 +98,7 @@ struct ActiveVirtualWr {
   uint64_t remoteAddr{0}; // Send only (0 for recv)
   ibv_wr_opcode opcode{IBV_WR_RDMA_WRITE}; // The operation type
   uint32_t immData{0}; // Send only (0 for recv)
-  folly::F14FastMap<int32_t, MemoryRegionKeys> deviceKeys;
+  std::unordered_map<int32_t, MemoryRegionKeys> deviceKeys;
 
   // Fragmentation progress
   uint32_t offset{0}; // Current offset; allFragmentsSent = (offset >= length)
@@ -132,7 +132,7 @@ template <typename ActiveVirtualWrT>
 struct WrTracker {
   // All active (not yet completed) WRs
   // Key = internalWrId (always unique), Value = active WR state
-  folly::F14FastMap<uint64_t, ActiveVirtualWrT> activeVirtualWrs_;
+  std::unordered_map<uint64_t, ActiveVirtualWrT> activeVirtualWrs_;
 
   // Pending queue: WRs not yet fully posted to physical QPs
   std::deque<uint64_t> pendingPostQue_;
