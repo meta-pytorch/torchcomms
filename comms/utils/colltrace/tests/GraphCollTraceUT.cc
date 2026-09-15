@@ -84,6 +84,14 @@ class CollTraceGraphReplayTestAccessor {
   }
 };
 
+class GraphRingLifetimeTestAccessor {
+ public:
+  static std::weak_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+  ring(const CollTrace& colltrace) {
+    return colltrace.ringBuffer_;
+  }
+};
+
 } // namespace meta::comms::colltrace
 
 namespace {
@@ -276,6 +284,41 @@ void CUDART_CB hostSleepCallback(void* userData) {
   auto durationMs = reinterpret_cast<uintptr_t>(userData);
   // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(durationMs));
+}
+
+struct BlockingHostCallbackState {
+  std::atomic_bool entered{false};
+  std::atomic_bool release{false};
+};
+
+class BlockingHostCallbackReleaseGuard {
+ public:
+  explicit BlockingHostCallbackReleaseGuard(BlockingHostCallbackState& state)
+      : state_(state) {}
+
+  ~BlockingHostCallbackReleaseGuard() {
+    state_.release.store(true, std::memory_order_release);
+    if (stream_ != nullptr) {
+      // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+      cudaStreamSynchronize(stream_);
+    }
+  }
+
+  void drainOnExit(cudaStream_t stream) {
+    stream_ = stream;
+  }
+
+ private:
+  BlockingHostCallbackState& state_;
+  cudaStream_t stream_{nullptr};
+};
+
+void CUDART_CB blockingHostCallback(void* userData) {
+  auto& state = *static_cast<BlockingHostCallbackState*>(userData);
+  state.entered.store(true, std::memory_order_release);
+  while (!state.release.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
 }
 
 } // namespace
@@ -663,6 +706,73 @@ TEST_F(
 
   ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
   colltrace_->waitFlush(colltrace_->requestFlush());
+}
+
+TEST_F(
+    GraphColltraceProgressingTest,
+    DestroyCollTraceWhileGraphReplayIsInFlight) {
+  BlockingHostCallbackState callbackState;
+  CapturedGraph graph;
+  BlockingHostCallbackReleaseGuard releaseGuard{callbackState};
+
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaStreamBeginCapture(stream_, cudaStreamCaptureModeGlobal),
+      cudaSuccess);
+  auto handle = colltrace_
+                    ->recordCollective(
+                        std::make_unique<SimpleMetadata>(),
+                        std::make_unique<GraphCudaWaitEvent>(stream_))
+                    .value();
+  const auto deviceHandle = handle->getColltraceDeviceHandle();
+  ASSERT_TRUE(deviceHandle.valid());
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel)
+                  .hasValue());
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kStart);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaLaunchHostFunc(stream_, blockingHostCallback, &callbackState),
+      cudaSuccess);
+  writeColltraceRing(deviceHandle, GraphCollTracePhase::kEnd);
+  ASSERT_TRUE(handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel)
+                  .hasValue());
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(cudaStreamEndCapture(stream_, &graph.graph), cudaSuccess);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  ASSERT_EQ(
+      cudaGraphInstantiate(&graph.instance, graph.graph, nullptr, nullptr, 0),
+      cudaSuccess);
+  auto ring =
+      meta::comms::colltrace::GraphRingLifetimeTestAccessor::ring(*colltrace_);
+  ASSERT_FALSE(ring.expired());
+
+  ASSERT_EQ(cudaGraphLaunch(graph.instance, stream_), cudaSuccess);
+  releaseGuard.drainOnExit(stream_);
+  const auto enteredDeadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{30};
+  while (!callbackState.entered.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < enteredDeadline) {
+    std::this_thread::yield();
+  }
+  ASSERT_TRUE(callbackState.entered.load(std::memory_order_acquire));
+
+  colltrace_.reset();
+  EXPECT_FALSE(ring.expired());
+
+  callbackState.release.store(true, std::memory_order_release);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  ASSERT_EQ(cudaGraphExecDestroy(graph.instance), cudaSuccess);
+  graph.instance = nullptr;
+  ASSERT_EQ(cudaGraphDestroy(graph.graph), cudaSuccess);
+  graph.graph = nullptr;
+
+  const auto releasedDeadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{30};
+  while (!ring.expired() &&
+         std::chrono::steady_clock::now() < releasedDeadline) {
+    std::this_thread::yield();
+  }
+  EXPECT_TRUE(ring.expired());
 }
 
 TEST_F(GraphColltraceProgressingTest, PreservesIdentityAcrossReplays) {

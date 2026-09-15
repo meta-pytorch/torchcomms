@@ -38,7 +38,12 @@ void
     graphCleanupCallback(void* userData) {
   auto* sp = static_cast<std::shared_ptr<GraphCollTraceState>*>(userData);
   (*sp)->graph_destructed.store(true, std::memory_order_relaxed);
-  delete sp;
+  try {
+    std::thread([sp] { delete sp; }).detach();
+  } catch (...) {
+    // CUDA user-object destructors must not call CUDA APIs. Leaking this final
+    // reference is safer than releasing the ring's pinned allocation here.
+  }
 }
 
 // Why graph colltrace cannot run here, or empty if it can. The input is fixed
@@ -158,7 +163,8 @@ CollTrace::CollTrace(
         maxRetention,
         kDefaultRingSize);
 
-    ringBuffer_.emplace(ringSize);
+    ringBuffer_ = std::make_shared<
+        ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>(ringSize);
     if (ringBuffer_->valid()) {
       ringReader_.emplace(*ringBuffer_);
     } else {
@@ -176,9 +182,8 @@ CollTrace::CollTrace(
     pluginByName_.emplace(plugin->getName(), *plugin);
   }
 
-  // Start the poll thread after ring buffer initialization to avoid a data
-  // race: the thread reads ringBuffer_.has_value() on its first iteration,
-  // and std::optional is not thread-safe for concurrent read/write.
+  // Start the poll thread after ring buffer initialization because it reads
+  // the shared pointer on its first iteration.
   traceCollThread_ =
       std::thread(&CollTrace::collTraceThread, this, threadSetupFunc);
 
@@ -294,6 +299,7 @@ std::shared_ptr<GraphCollTraceState> CollTrace::getOrCreateGraphState(
   }
 
   auto state = std::make_shared<GraphCollTraceState>();
+  state->ringBuffer = ringBuffer_;
 
   // heap alloc a copy s.t., the graph will keep the state alive until its
   // dtor flips the flag. the readers will see this and stop using
@@ -512,7 +518,7 @@ CollTrace::recordGraphCollectiveImpl(
   rawWaitEvent->setLogger(*logger_);
   rawWaitEvent->setCollId(collIdVal);
 
-  if (!ringBuffer_.has_value()) {
+  if (ringBuffer_ == nullptr) {
     return folly::makeUnexpected(CommsError(
         "Ringbuffer not initialized during recordGraphCollective",
         commInternalError));
@@ -527,7 +533,7 @@ CollTrace::recordGraphCollectiveImpl(
         commInternalError));
   }
 
-  rawWaitEvent->attachRingBuffer(&*ringBuffer_);
+  rawWaitEvent->attachRingBuffer(ringBuffer_.get());
 
   auto collRecord =
       std::make_shared<CollRecord>(collIdVal, std::move(metadata));
@@ -645,7 +651,7 @@ void CollTrace::expireAmbiguousGraphReplays(uint64_t consumedUpTo) noexcept {
 
 void CollTrace::pollGraphEvents(
     std::multiset<PendingAction>& actions) noexcept {
-  if (!ringBuffer_.has_value() || !ringReader_.has_value()) {
+  if (ringBuffer_ == nullptr || !ringReader_.has_value()) {
     return;
   }
 
@@ -1150,7 +1156,7 @@ void CollTrace::collTraceThread(
     if (NCCL_COLLTRACE_PERIODIC_REANCHOR) {
       auto now = std::chrono::steady_clock::now();
       if (now - lastReanchor >= kReanchorInterval) {
-        if (ringBuffer_.has_value()) {
+        if (ringBuffer_ != nullptr) {
           ::hrdw_ring_buffer::GlobaltimerCalibration::get().refresh();
         }
         if (auto* refpt = CudaReferencePoint::tryGet()) {

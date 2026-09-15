@@ -40,6 +40,7 @@ struct GraphCollectiveEntry;
 class GraphCancellationGate;
 class GraphCudaWaitEvent;
 class CollTraceGraphReplayTestAccessor;
+class GraphRingLifetimeTestAccessor;
 
 // Whether graph-captured collectives can be timed on the *current* device.
 // Requires both a compute capability of sm_90+ (the ring's 128b System-scope
@@ -160,6 +161,7 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& event,
       CollTraceTerminalReason reason) noexcept;
   friend class CollTraceGraphReplayTestAccessor;
+  friend class GraphRingLifetimeTestAccessor;
 
   // Internal impl for graph-captured collectives, called when
   // recordCollective detects a GraphCudaWaitEvent.
@@ -254,9 +256,10 @@ class CollTrace : public ICollTrace {
   std::shared_ptr<GraphCancellationGate> graphCancellationGate_;
   std::atomic<bool> hasCancelledGraphCollectives_{false};
 
-  // Single shared ring buffer for ALL cuda graphs. RAII-managed via
-  // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).
-  std::optional<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+  // Single shared ring buffer for ALL cuda graphs. Graph user objects retain
+  // shared ownership because their kernels may still write after CollTrace
+  // teardown has stopped the poller.
+  std::shared_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
       ringBuffer_;
   // CPU-side reader for the shared ring buffer (poll thread only).
   std::optional<::hrdw_ring_buffer::HRDWRingBufferReader<GraphCollTraceEvent>>
