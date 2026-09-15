@@ -2,10 +2,11 @@
 
 #pragma once
 
-#include <folly/dynamic.h>
 #include <deque>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "comms/ctran/ibverbx/DqplbSeqTracker.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
@@ -35,11 +36,6 @@ struct IbvVirtualQpBusinessCard {
   IbvVirtualQpBusinessCard(IbvVirtualQpBusinessCard&& other) = default;
   IbvVirtualQpBusinessCard& operator=(IbvVirtualQpBusinessCard&& other) =
       default;
-
-  // Convert to/from folly::dynamic for serialization
-  folly::dynamic toDynamic() const;
-  static Expected<IbvVirtualQpBusinessCard> fromDynamic(
-      const folly::dynamic& obj);
 
   // JSON serialization methods
   std::string serialize() const;

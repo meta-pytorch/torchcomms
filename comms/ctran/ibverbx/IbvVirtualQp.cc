@@ -2,7 +2,11 @@
 
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 
-#include <folly/json.h>
+#include <fmt/format.h>
+#include <algorithm>
+#include <limits>
+#include <optional>
+#include <string_view>
 #include <unordered_set>
 #include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
@@ -251,86 +255,179 @@ IbvVirtualQpBusinessCard::IbvVirtualQpBusinessCard(
     uint32_t notifyQpNum)
     : qpNums_(std::move(qpNums)), notifyQpNum_(notifyQpNum) {}
 
-folly::dynamic IbvVirtualQpBusinessCard::toDynamic() const {
-  folly::dynamic obj = folly::dynamic::object;
-  folly::dynamic qpNumsArray = folly::dynamic::array;
+namespace {
 
-  // Use fixed-width string formatting to ensure consistent size
-  // All uint32_t values will be formatted as 10-digit zero-padded strings
-  for (const auto& qpNum : qpNums_) {
-    std::string paddedQpNum = fmt::format("{:010d}", qpNum);
-    qpNumsArray.push_back(paddedQpNum);
+// The business card wire format is a fixed two-key JSON object whose values are
+// all 10-digit zero-padded decimal strings:
+//   {"notifyQpNum":"0000000777","qpNums":["0000000123","0000004567"]}
+// Key order and the absence of whitespace match what this exchange has always
+// produced, so a peer on either side of this change reads the other correctly.
+constexpr std::string_view kQpNumsKey = "qpNums";
+constexpr std::string_view kNotifyQpNumKey = "notifyQpNum";
+
+// Advances past JSON whitespace.
+size_t skipWs(std::string_view s, size_t pos) {
+  while (
+      pos < s.size() &&
+      (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\n' || s[pos] == '\r')) {
+    ++pos;
   }
-
-  obj["qpNums"] = std::move(qpNumsArray);
-  obj["notifyQpNum"] = fmt::format("{:010d}", notifyQpNum_);
-  return obj;
+  return pos;
 }
 
-Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::fromDynamic(
-    const folly::dynamic& obj) {
-  std::vector<uint32_t> qpNums;
+// Reads a double-quoted string with no escape handling: every value in this
+// schema is zero-padded digits, so an escape would already be malformed.
+std::optional<std::string_view> parseQuoted(std::string_view s, size_t& pos) {
+  pos = skipWs(s, pos);
+  if (pos >= s.size() || s[pos] != '"') {
+    return std::nullopt;
+  }
+  const size_t begin = ++pos;
+  const size_t close = s.find('"', begin);
+  if (close == std::string_view::npos) {
+    return std::nullopt;
+  }
+  pos = close + 1;
+  return s.substr(begin, close - begin);
+}
 
-  if (obj.count("qpNums") > 0 && obj["qpNums"].isArray()) {
-    const auto& qpNumsArray = obj["qpNums"];
-    qpNums.reserve(qpNumsArray.size());
-
-    for (const auto& qpNum : qpNumsArray) {
-      CTRAN_LOG_IF(
-          FATAL,
-          !qpNum.isString(),
-          "Check failed: qpNum.isString(): qp num is not string!");
-      try {
-        uint32_t qpNumValue =
-            static_cast<uint32_t>(std::stoul(qpNum.asString()));
-        qpNums.push_back(qpNumValue);
-      } catch (const std::exception& e) {
-        return makeUnexpected(Error(
-            EINVAL,
-            fmt::format(
-                "Invalid QP number string format: {}. Exception: {}",
-                qpNum.asString(),
-                e.what())));
-      }
+// Parses a zero-padded decimal into a uint32_t, rejecting anything non-numeric.
+std::optional<uint32_t> parseQpNum(std::string_view text) {
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  uint64_t value = 0;
+  for (const char c : text) {
+    if (c < '0' || c > '9') {
+      return std::nullopt;
     }
-  } else {
+    value = value * 10 + static_cast<uint64_t>(c - '0');
+    if (value > std::numeric_limits<uint32_t>::max()) {
+      return std::nullopt;
+    }
+  }
+  return static_cast<uint32_t>(value);
+}
+
+} // namespace
+
+std::string IbvVirtualQpBusinessCard::serialize() const {
+  // Fixed-width values keep every serialized card the same size for a given QP
+  // count, which the bootstrap exchange relies on.
+  std::string out = fmt::format(
+      "{{\"{}\":\"{:010d}\",\"{}\":[",
+      kNotifyQpNumKey,
+      notifyQpNum_,
+      kQpNumsKey);
+  for (size_t i = 0; i < qpNums_.size(); ++i) {
+    out += fmt::format("{}\"{:010d}\"", i == 0 ? "" : ",", qpNums_[i]);
+  }
+  out += "]}";
+  return out;
+}
+
+Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::deserialize(
+    const std::string& jsonStr) {
+  const std::string_view json{jsonStr};
+
+  const size_t objectStart = skipWs(json, 0);
+  if (objectStart >= json.size() || json[objectStart] != '{') {
+    return makeUnexpected(
+        Error(EINVAL, "Invalid business card received from remote side"));
+  }
+
+  // Keys are located by a plain substring search rather than by walking object
+  // members. That is only safe because every value in this schema is decimal
+  // digits, so no value can contain a key name. Adding a free-form string field
+  // would break this and require a real member scan.
+  const size_t qpNumsPos = json.find(kQpNumsKey, objectStart);
+  if (qpNumsPos == std::string_view::npos) {
     return makeUnexpected(
         Error(EINVAL, "Invalid qpNums array received from remote side"));
   }
+  size_t pos = json.find('[', qpNumsPos);
+  if (pos == std::string_view::npos) {
+    return makeUnexpected(
+        Error(EINVAL, "Invalid qpNums array received from remote side"));
+  }
+  ++pos;
 
-  uint32_t notifyQpNum = 0; // Default value for backwards compatibility
-  if (obj.count("notifyQpNum") > 0 && obj["notifyQpNum"].isString()) {
-    try {
-      notifyQpNum =
-          static_cast<uint32_t>(std::stoul(obj["notifyQpNum"].asString()));
-    } catch (const std::exception& e) {
-      return makeUnexpected(Error(
-          EINVAL,
-          fmt::format(
-              "Invalid notifyQpNum string format: {}. Exception: {}",
-              obj["notifyQpNum"].asString(),
-              e.what())));
+  std::vector<uint32_t> qpNums;
+  pos = skipWs(json, pos);
+  if (pos < json.size() && json[pos] == ']') {
+    ++pos;
+  } else {
+    while (true) {
+      const auto text = parseQuoted(json, pos);
+      if (!text) {
+        return makeUnexpected(
+            Error(EINVAL, "Invalid qpNums array received from remote side"));
+      }
+      const auto qpNum = parseQpNum(*text);
+      if (!qpNum) {
+        return makeUnexpected(Error(
+            EINVAL, fmt::format("Invalid QP number string format: {}", *text)));
+      }
+      qpNums.push_back(*qpNum);
+
+      pos = skipWs(json, pos);
+      if (pos >= json.size()) {
+        return makeUnexpected(
+            Error(EINVAL, "Invalid qpNums array received from remote side"));
+      }
+      if (json[pos] == ']') {
+        ++pos;
+        break;
+      }
+      if (json[pos] != ',') {
+        return makeUnexpected(
+            Error(EINVAL, "Invalid qpNums array received from remote side"));
+      }
+      ++pos;
     }
+  }
+
+  // A present notifyQpNum must parse; only a fully absent key falls back to 0,
+  // which is what older peers that never wrote the field send.
+  uint32_t notifyQpNum = 0;
+  size_t notifyEnd = objectStart;
+  const size_t notifyPos = json.find(kNotifyQpNumKey, objectStart);
+  if (notifyPos != std::string_view::npos) {
+    size_t valuePos = json.find(':', notifyPos + kNotifyQpNumKey.size());
+    if (valuePos == std::string_view::npos) {
+      return makeUnexpected(
+          Error(EINVAL, "Malformed notifyQpNum received from remote side"));
+    }
+    ++valuePos;
+    const auto text = parseQuoted(json, valuePos);
+    if (!text) {
+      return makeUnexpected(
+          Error(EINVAL, "Malformed notifyQpNum received from remote side"));
+    }
+    const auto parsed = parseQpNum(*text);
+    if (!parsed) {
+      return makeUnexpected(Error(
+          EINVAL, fmt::format("Invalid notifyQpNum string format: {}", *text)));
+    }
+    notifyQpNum = *parsed;
+    notifyEnd = valuePos;
+  }
+
+  // Because the keys are found by substring search, neither value necessarily
+  // ends at the last member, so the envelope is closed against whichever of the
+  // two ended later. Without this a truncated card or one with trailing bytes
+  // would be accepted, both of which the previous folly::parseJson rejected.
+  const size_t objectEnd = skipWs(json, std::max(pos, notifyEnd));
+  if (objectEnd >= json.size() || json[objectEnd] != '}') {
+    return makeUnexpected(
+        Error(EINVAL, "Unterminated business card received from remote side"));
+  }
+  if (skipWs(json, objectEnd + 1) != json.size()) {
+    return makeUnexpected(Error(
+        EINVAL, "Trailing data after business card received from remote side"));
   }
 
   return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQpNum);
 }
 
-std::string IbvVirtualQpBusinessCard::serialize() const {
-  return folly::toJson(toDynamic());
-}
-
-Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::deserialize(
-    const std::string& jsonStr) {
-  try {
-    folly::dynamic obj = folly::parseJson(jsonStr);
-    return fromDynamic(obj);
-  } catch (const std::exception& e) {
-    return makeUnexpected(Error(
-        EINVAL,
-        fmt::format(
-            "Failed to parse JSON in IbvVirtualQpBusinessCard Deserialize. Exception: {}",
-            e.what())));
-  }
-}
 } // namespace ibverbx
