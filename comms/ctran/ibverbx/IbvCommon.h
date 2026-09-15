@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/utils/Expected.h"
 
 namespace ibverbx {
 
@@ -31,11 +32,34 @@ struct Error {
   explicit Error(int errNum);
   Error(int errNum, std::string errStr);
 
-  const int errNum{0};
-  const std::string errStr;
+  // Non-const so that an Expected<T, Error> variable stays assignable; const
+  // members would implicitly delete copy assignment.
+  int errNum{0};
+  std::string errStr;
 };
 
 std::ostream& operator<<(std::ostream&, Error const&);
+
+// Thread-safe strerror, for log sites that report errno without building an
+// Error.
+std::string errnoStr(int errNum);
+
+// Result vocabulary for the ibverbx API. Aliased in one place so that swapping
+// the underlying implementation (e.g. for std::expected once the toolchain
+// provides it) stays a change to these lines only.
+template <typename T>
+using Expected = utils::Expected<T, Error>;
+
+using Unit = utils::Unit;
+
+// Result of a fallible operation that produces no value.
+using Status = Expected<Unit>;
+
+inline Status ok() {
+  return Unit{};
+}
+
+using utils::makeUnexpected;
 
 // QpId uniquely identifies a physical QP using both the device ID and QP
 // number. This is necessary because different NIC devices can have QPs with the
