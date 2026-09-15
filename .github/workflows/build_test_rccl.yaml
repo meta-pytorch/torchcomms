@@ -57,6 +57,9 @@ jobs:
         conda install conda-forge::libopenssl-static conda-forge::rsync -y
 
         pip install ${{ matrix.torch-spec }}
+        # Torch pulls rocm[libraries,device-all] but not devel. Headers, hipcc,
+        # and `rocm-sdk path --root` need the devel extra in this venv.
+        pip install --pre 'rocm[devel]==10.0.*' --index-url https://download.pytorch.org/whl/nightly/rocm10.0
 
         if [ "${{ matrix.cmake-version }}" = "latest" ]; then
           conda install -y cmake
@@ -67,17 +70,24 @@ jobs:
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
 
-        # ROCm 10.0 builders install TheRock wheels; the SDK root is not /opt/rocm.
-        # Prefer rocm-sdk (pulled in with the torch wheel), then the image env file,
-        # then a classic /opt/rocm layout.
+        # TheRock: SDK is under site-packages/_rocm_sdk_devel, not /opt/rocm.
+        # Prefer a working venv rocm-sdk; otherwise keep the image env or /opt/rocm.
+        # Do not clobber ROCM_HOME if `rocm-sdk path` fails (empty stdout).
         if [ -f /etc/rocm_env.sh ]; then
           # shellcheck source=/dev/null
           source /etc/rocm_env.sh
         fi
         if command -v rocm-sdk >/dev/null 2>&1; then
-          export ROCM_HOME="$(rocm-sdk path --root)"
-          export PATH="$(rocm-sdk path --bin):${PATH}"
-        elif [ -z "${ROCM_HOME:-}" ] && [ -d /opt/rocm ]; then
+          _rocm_root="$(rocm-sdk path --root 2>/dev/null || true)"
+          _rocm_bin="$(rocm-sdk path --bin 2>/dev/null || true)"
+          if [ -n "${_rocm_root}" ] && [ -f "${_rocm_root}/lib/librccl.so" ]; then
+            export ROCM_HOME="${_rocm_root}"
+            if [ -n "${_rocm_bin}" ]; then
+              export PATH="${_rocm_bin}:${PATH}"
+            fi
+          fi
+        fi
+        if [ -z "${ROCM_HOME:-}" ] && [ -f /opt/rocm/lib/librccl.so ]; then
           export ROCM_HOME=/opt/rocm
         fi
         if [ -z "${ROCM_HOME:-}" ] || [ ! -f "${ROCM_HOME}/lib/librccl.so" ]; then
