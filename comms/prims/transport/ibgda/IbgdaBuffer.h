@@ -474,6 +474,11 @@ struct IbChannelProgress {
 
 inline constexpr std::size_t kSendRecvSignalSlotStride = sizeof(SignalState);
 
+// Per-protocol resource slots reserved on every channel, indexed by a protocol
+// tag's kProtoSlot (Simple = 0, LL = 1). Protocols share the channel's QPs but
+// own separate staging, signal, counter, and progress state.
+inline constexpr int kNumProtoSlots = 2;
+
 IBGDA_HOST_DEVICE inline std::size_t sendRecvSignalSlotOffset(int slot) {
   assert(slot >= 0);
   return static_cast<std::size_t>(slot) * kSendRecvSignalSlotStride;
@@ -491,13 +496,12 @@ struct IbChannelLayout {
   IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
   IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
   IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
-  int maxChannels{0}; ///< Layout size for SLOT-indexed resources. Equals
-                      ///< numChannels today; the diff that adds a second
-                      ///< protocol makes it numChannels * kNumProtoSlots.
+  int maxChannels{0}; ///< Number of provisioned channel/protocol slots.
   int numChannels{0}; ///< Logical channels; a caller's group_id selects within
                       ///< [0, numChannels). Also the QP channel: protocols
                       ///< share a channel's QPs and are separated by resource
                       ///< slot, never by channel id.
+  int numProtocolSlots{kNumProtoSlots}; ///< Provisioned slots per channel.
   int numLanes{1}; ///< QP lanes = numNics * qpsPerConnection; each lane owns a
                    ///< single-writer DATA_READY slot per channel
   int pipelineDepth{0}; ///< Number of slots/chunks in one channel
@@ -588,17 +592,6 @@ enum class IbDirection : uint8_t {
 
 inline constexpr int kIbDirections = 2;
 inline constexpr int kIbMaxQpLanesPerChannelDirection = 64;
-
-// Per-protocol resource slots reserved on every channel, indexed by a protocol
-// tag's kProtoSlot (Simple = 0, LL = 1). The layout reserves this many
-// channels' worth of staging, signal, and counter slots per peer, so raising it
-// costs memory: at the default 128 KiB x 64 channels, each extra slot is
-// +8 MiB per peer of staging.
-//
-// It does NOT reserve more QPs: a channel is one QP pair regardless of how many
-// protocols address it, which is why IbQpState lives on the channel rather than
-// in a slot.
-inline constexpr int kNumProtoSlots = 2;
 
 // Identifies a lane-local completion threshold returned by put().
 // completionId is the send-lane ordinal; value is complete once that lane's
@@ -709,7 +702,9 @@ IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(
   // channelId is the LOGICAL channel; every protocol slot on it gets its own
   // views, resolved at that slot's flat index.
   IbLocalChannel channel{};
-  for (int protoSlot = 0; protoSlot < kNumProtoSlots; ++protoSlot) {
+  assert(layout.numProtocolSlots >= 1);
+  assert(layout.numProtocolSlots <= kNumProtoSlots);
+  for (int protoSlot = 0; protoSlot < layout.numProtocolSlots; ++protoSlot) {
     const int slot = layout.protoChannelSlot(channelId, protoSlot);
     IbChannelProtoSlot& proto = channel.protos[protoSlot];
     proto.dataReady = layout.localDataReadySignal(slot);

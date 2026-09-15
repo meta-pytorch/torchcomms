@@ -460,6 +460,7 @@ IbChannelLayout MultiPeerIbTransportBase::channelLayoutForPeer(
       .localCounterCompletionBuf = pb.counterCompletion,
       .maxChannels = config_.totalChannelSlots(),
       .numChannels = config_.max_num_channels,
+      .numProtocolSlots = config_.numProtocolSlots(),
       .numLanes = numNics_ * config_.qpsPerConnection,
       .pipelineDepth = config_.pipelineDepth,
       .perChannelSize = config_.perChannelSize,
@@ -2184,15 +2185,19 @@ void MultiPeerIbTransportBase::validatePeerTopology(
               expectedNumQpsPerPeerPerNic));
     }
     if (peerInfo.maxGroups != config_.max_num_channels ||
+        peerInfo.numProtocolSlots != config_.numProtocolSlots() ||
         peerInfo.qpsPerBlockPerNic != config_.qpsPerConnection) {
       throw std::runtime_error(
           fmt::format(
-              "Peer rank {} reports maxGroups={} qpsPerBlockPerNic={} but "
-              "mine are {} {}; all ranks must use the same IB QP shape",
+              "Peer rank {} reports maxGroups={} numProtocolSlots={} "
+              "qpsPerBlockPerNic={} but mine are {} {} {}; all ranks must use "
+              "the same IB channel shape",
               peerRank,
               peerInfo.maxGroups,
+              peerInfo.numProtocolSlots,
               peerInfo.qpsPerBlockPerNic,
               config_.max_num_channels,
+              config_.numProtocolSlots(),
               config_.qpsPerConnection));
     }
   }

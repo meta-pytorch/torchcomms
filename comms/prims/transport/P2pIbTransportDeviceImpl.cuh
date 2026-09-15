@@ -2752,6 +2752,15 @@ __device__ __forceinline__ ChannelSlotView acquire_channel(
     const IbChannelLayout& channelLayout,
     ThreadGroup& group) {
   validate_progress_group(channelLayout, group);
+  if (P::kProtoSlot >= channelLayout.numProtocolSlots) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: protocol slot %d is disabled (numProtocolSlots=%d)\n",
+          P::kProtoSlot,
+          channelLayout.numProtocolSlots);
+    }
+    PIPES_DEVICE_TRAP();
+  }
   const int channelId = static_cast<int>(group.group_id);
   const int slotIndex =
       channelLayout.protoChannelSlot(channelId, P::kProtoSlot);

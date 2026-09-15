@@ -228,6 +228,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     // IB config (ordered to match MultipeerIbTransportConfig fields)
     config.ibConfig.cudaDevice = comm->statex_->cudaDev();
+    config.ibConfig.enableLlProtocol = MCCL_ALLREDUCE_LL_MAX_BYTES != 0;
     if (NCCL_IB_GID_INDEX >= 0) {
       config.ibConfig.gidIndex = static_cast<int>(NCCL_IB_GID_INDEX);
     }
@@ -299,19 +300,21 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     const size_t perDirectionChannelBuffer = bufferFromHint
         ? static_cast<size_t>(pc.channelBufferSize)
         : static_cast<size_t>(MCCL_CHANNEL_BUFFER_SIZE);
+    const size_t ibChannelSlots = static_cast<size_t>(maxChannels) *
+        static_cast<size_t>(config.ibConfig.numProtocolSlots());
     if (perDirectionChannelBuffer >
-        std::numeric_limits<size_t>::max() / static_cast<size_t>(maxChannels)) {
+        std::numeric_limits<size_t>::max() / ibChannelSlots) {
       CTRAN_LOG(
           ERR,
-          "channel buffer size {} (from {}) overflows total size for {} channels (from {})",
+          "channel buffer size {} (from {}) overflows total size for {} channels (from {}) and {} protocol slots",
           perDirectionChannelBuffer,
           bufferSource,
           maxChannels,
-          channelsSource);
+          channelsSource,
+          config.ibConfig.numProtocolSlots());
       return commInvalidArgument;
     }
-    config.ibConfig.dataBufferSize =
-        perDirectionChannelBuffer * static_cast<size_t>(maxChannels);
+    config.ibConfig.dataBufferSize = perDirectionChannelBuffer * ibChannelSlots;
     config.ibConfig.qpDepth = MCCL_IB_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);
@@ -436,7 +439,7 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
 
     CTRAN_LOG(
         INFO,
-        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={}",
+        "CTRAN-PRIMS: config prepared rank={} nvlPipelineDepth={} nvlSharedDevbufSize={} nvlDataBufferSize={} nvlMaxNumChannels={} nvlPerChannelSize={} enableMultimem={} multimemPerChannelSize={} multimemPipelineDepth={} multimemMaxChannels={} multimemMaxBlocks={} hierAgOverlapEnabled={} disableIb={} p2pDisable={} mnnvlMode={} ibgdaDataBufferSize={} ibgdaQpDepth={} ibLazyConnect={} ibLlProtocolEnabled={}",
         comm->statex_->rank(),
         config.nvlConfig.pipelineDepth,
         nvlSharedDevbufSize,
@@ -460,7 +463,8 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
         static_cast<int>(config.topoConfig.mnnvlMode),
         config.ibConfig.dataBufferSize,
         config.ibConfig.qpDepth,
-        config.ibConfig.ibLazyConnect);
+        config.ibConfig.ibLazyConnect,
+        config.ibConfig.enableLlProtocol);
 
     CTRAN_LOG(
         INFO,

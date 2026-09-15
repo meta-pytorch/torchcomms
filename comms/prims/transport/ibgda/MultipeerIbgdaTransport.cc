@@ -1572,6 +1572,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
   payload.qpOrderingSemantic = static_cast<int>(qpOrderingSemantic_);
   payload.maxRdAtomic = static_cast<int>(maxRdAtomic_);
+  payload.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1679,15 +1680,19 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             static_cast<int>(maxRdAtomic_)));
   }
   if (remoteQp.maxGroups != config_.max_num_channels ||
+      remoteQp.numProtocolSlots != config_.numProtocolSlots() ||
       remoteQp.qpsPerBlockPerNic != config_.qpsPerConnection) {
     throw std::runtime_error(
         fmt::format(
-            "materializePeer: peer {} maxGroups={} qpsPerBlockPerNic={} "
-            "vs local maxGroups={} qpsPerBlockPerNic={}",
+            "materializePeer: peer {} maxGroups={} numProtocolSlots={} "
+            "qpsPerBlockPerNic={} vs local maxGroups={} numProtocolSlots={} "
+            "qpsPerBlockPerNic={}",
             peerRank,
             remoteQp.maxGroups,
+            remoteQp.numProtocolSlots,
             remoteQp.qpsPerBlockPerNic,
             config_.max_num_channels,
+            config_.numProtocolSlots(),
             config_.qpsPerConnection));
   }
   // dp_ordering has to match on both ends of a connection: fail closed and name
