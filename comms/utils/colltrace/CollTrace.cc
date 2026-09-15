@@ -3,6 +3,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <utility>
 
@@ -99,17 +100,38 @@ bool graphColltraceSupported(
 }
 
 template <auto Method>
+void reportPluginFailure(
+    logger::CommsSpdlogLogger& logger,
+    const ICollTracePlugin& plugin,
+    std::atomic<uint64_t>& pluginErrorCount,
+    std::string_view detail) noexcept {
+  pluginErrorCount.fetch_add(1, std::memory_order_relaxed);
+  try {
+    COMMS_LOGGER_STREAM_FIRST_N(logger, ERR, 10)
+        << "CollTrace plugin " << plugin.getName() << " failed in callback "
+        << typeid(Method).name() << ": " << detail;
+  } catch (...) {
+  }
+}
+
+template <auto Method>
 void triggerPlugins(
     logger::CommsSpdlogLogger& logger,
     std::vector<std::unique_ptr<ICollTracePlugin>>& plugins,
-    CollTraceEvent& curEvent) noexcept {
+    CollTraceEvent& curEvent,
+    std::atomic<uint64_t>& pluginErrorCount) noexcept {
   for (auto& plugin : plugins) {
-    CommsMaybeVoid res = ((*plugin).*Method)(curEvent);
-    if (res.hasError()) {
-      COMMS_LOGGER_STREAM_FIRST_N(logger, ERR, 10)
-          << "Exception thrown in plugin " << plugin->getName()
-          << " when calling method " << typeid(Method).name() << ": "
-          << res.error().message;
+    try {
+      const auto result = ((*plugin).*Method)(curEvent);
+      if (result.hasError()) {
+        reportPluginFailure<Method>(
+            logger, *plugin, pluginErrorCount, result.error().message);
+      }
+    } catch (const std::exception& ex) {
+      reportPluginFailure<Method>(logger, *plugin, pluginErrorCount, ex.what());
+    } catch (...) {
+      reportPluginFailure<Method>(
+          logger, *plugin, pluginErrorCount, "unknown exception");
     }
   }
 }
@@ -383,12 +405,16 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       this, pendingEnqueueColl_.get(), eagerCancellationGate_);
   eventToHandleMap_.emplace(pendingEnqueueColl_.get(), handle);
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
-      *logger_, plugins_, *pendingEnqueueColl_);
+      *logger_, plugins_, *pendingEnqueueColl_, pluginErrorCount_);
   return handle;
 }
 
 ICollTracePlugin* CollTrace::getPluginByName(std::string name) noexcept {
   return folly::get_ptr(pluginByName_, name);
+}
+
+uint64_t CollTrace::getPluginErrorCount() const noexcept {
+  return pluginErrorCount_.load(std::memory_order_relaxed);
 }
 
 CommsMaybeVoid CollTrace::cancelEvent(CollTraceEvent& collEvent) noexcept {
@@ -439,7 +465,10 @@ CommsMaybeVoid CollTrace::triggerEventState(
       }
       auto beforeKernelRes = collEvent.waitEvent->beforeCollKernelScheduled();
       triggerPlugins<&ICollTracePlugin::beforeCollKernelScheduled>(
-          *logger_, plugins_, collEvent); // Trigger after calling waitEvent
+          *logger_,
+          plugins_,
+          collEvent,
+          pluginErrorCount_); // Trigger after calling waitEvent
       /*
        * A wait-event setup failure leaves the handle and pending event intact.
        * Callers may retry this state; supersession or CollTrace teardown gives
@@ -454,7 +483,10 @@ CommsMaybeVoid CollTrace::triggerEventState(
             commInvalidUsage));
       }
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
-          *logger_, plugins_, collEvent); // Trigger before calling waitEvent
+          *logger_,
+          plugins_,
+          collEvent,
+          pluginErrorCount_); // Trigger before calling waitEvent
       /*
        * Preserve the same retry contract as BeforeEnqueueKernel. Moving the
        * event to the poll queue before wait-event setup succeeds would make a
@@ -564,7 +596,7 @@ CollTrace::recordGraphCollectiveImpl(
     graphState->collectives.emplace(collId, std::move(collectiveEntry));
   }
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
-      *logger_, plugins_, *registrationEvent);
+      *logger_, plugins_, *registrationEvent, pluginErrorCount_);
 
   return handle;
 }
@@ -1035,9 +1067,9 @@ void CollTrace::processCompletedEvents(
         // so we just fire the before/after callbacks here
         // in-case plugins depend on them
         triggerPlugins<&ICollTracePlugin::beforeCollKernelScheduled>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         [[fallthrough]];
       }
       case PendingActionType::kStart: {
@@ -1046,7 +1078,7 @@ void CollTrace::processCompletedEvents(
               lastCollEndTime_.value());
         }
         triggerPlugins<&ICollTracePlugin::afterCollKernelStart>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         break;
       }
       case PendingActionType::kEnd: {
@@ -1056,16 +1088,16 @@ void CollTrace::processCompletedEvents(
         // collEventProgressing was called unconditionally inside the
         // waitCollEnd loop.
         triggerPlugins<&ICollTracePlugin::collEventProgressing>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         triggerPlugins<&ICollTracePlugin::afterCollKernelEnd>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         lastCollEndTime_ =
             action.event->collRecord->getTimingInfo().getCollEndTs();
         break;
       }
       case PendingActionType::kProgressing: {
         triggerPlugins<&ICollTracePlugin::collEventProgressing>(
-            *logger_, plugins_, *action.event);
+            *logger_, plugins_, *action.event, pluginErrorCount_);
         break;
       }
       case PendingActionType::kTerminate: {

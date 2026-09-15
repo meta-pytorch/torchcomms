@@ -35,7 +35,7 @@ std::string_view LifecycleEventFeedPlugin::getName() const noexcept {
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollRecorded(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) {
     return folly::makeUnexpected(CommsError(
         "LifecycleEventFeedPlugin received an event without a collective record",
@@ -55,33 +55,33 @@ CommsMaybeVoid LifecycleEventFeedPlugin::afterCollRecorded(
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::beforeCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelScheduled(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kEnqueue);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelStart(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kStart);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::collEventProgressing(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelEnd(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kEnd);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
-    CollTraceEvent& curEvent,
-    LifecycleEventType eventType) noexcept {
+    const CollTraceEvent& curEvent,
+    LifecycleEventType eventType) {
   if (curEvent.collRecord == nullptr) {
     return folly::makeUnexpected(CommsError(
         "LifecycleEventFeedPlugin received an event without a collective record",

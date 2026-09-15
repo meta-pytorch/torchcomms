@@ -50,33 +50,33 @@ class MockCollTracePlugin : public ICollTracePlugin {
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollRecorded,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       beforeCollKernelScheduled,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollKernelScheduled,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollKernelStart,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       collEventProgressing,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollKernelEnd,
-      (CollTraceEvent & curEvent),
-      (noexcept, override));
+      (const CollTraceEvent& curEvent),
+      (override));
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollTerminated,
