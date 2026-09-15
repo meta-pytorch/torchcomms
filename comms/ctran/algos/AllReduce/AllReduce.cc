@@ -39,6 +39,21 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
   }
 }
 
+enum NCCL_ALLREDUCE_ALGO resolveCtranAllReduceAlgorithm(
+    enum NCCL_ALLREDUCE_ALGO requestedAlgorithm,
+    size_t count,
+    int numRanks,
+    bool forceSmallMessageRing) {
+  if (requestedAlgorithm != NCCL_ALLREDUCE_ALGO::ctring) {
+    return NCCL_ALLREDUCE_ALGO::ctdirect;
+  }
+  if (numRanks <= 1 ||
+      (count < static_cast<size_t>(numRanks) && !forceSmallMessageRing)) {
+    return NCCL_ALLREDUCE_ALGO::ctdirect;
+  }
+  return NCCL_ALLREDUCE_ALGO::ctring;
+}
+
 commResult_t ctranAllReduce(
     const void* sendbuff,
     void* recvbuff,
@@ -49,38 +64,12 @@ commResult_t ctranAllReduce(
     cudaStream_t stream,
     enum NCCL_ALLREDUCE_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
-  switch (algo) {
+  const auto selectedAlgorithm = resolveCtranAllReduceAlgorithm(
+      algo, count, comm->statex_->nRanks(), MCCL_FORCE_SMALL_MSG_AR_RING);
+  switch (selectedAlgorithm) {
     case NCCL_ALLREDUCE_ALGO::ctring:
-      if (comm->statex_->nRanks() == 1) {
-        // TODO(T242570177): this is a temp workaround for nRanks == 1. Remove
-        // the warning below if fixed.
-        CTRAN_LOG(
-            DBG,
-            "AllReduce ctring currently requires nRanks > 1, fallback to ctdirect");
-        return ctranAllReduceDirect(
-            sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
-      }
       if (count < comm->statex_->nRanks()) {
-        // Opt-in: pad the message up to nRanks and run the ring anyway. This
-        // unblocks TCPDM, which is only exposed to the ring path.
-        // TODO: remove once small messages are fully supported through TCPDM.
-        if (MCCL_FORCE_SMALL_MSG_AR_RING) {
-          return ctranAllReduceRingSmallMsg(
-              sendbuff,
-              recvbuff,
-              count,
-              datatype,
-              redOp,
-              comm,
-              stream,
-              timeout);
-        }
-        CTRAN_LOG(
-            DBG,
-            "AllReduce ctring requires count {} > nRanks {}, fallback to ctdirect",
-            count,
-            comm->statex_->nRanks());
-        return ctranAllReduceDirect(
+        return ctranAllReduceRingSmallMsg(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
       return ctranAllReduceRing(
@@ -91,6 +80,19 @@ commResult_t ctranAllReduce(
      */
     case NCCL_ALLREDUCE_ALGO::ctdirect:
     default:
+      if (algo == NCCL_ALLREDUCE_ALGO::ctring) {
+        if (comm->statex_->nRanks() == 1) {
+          CTRAN_LOG(
+              DBG,
+              "AllReduce ctring currently requires nRanks > 1, fallback to ctdirect");
+        } else {
+          CTRAN_LOG(
+              DBG,
+              "AllReduce ctring requires count {} >= nRanks {}, fallback to ctdirect",
+              count,
+              comm->statex_->nRanks());
+        }
+      }
       return ctranAllReduceDirect(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
   }

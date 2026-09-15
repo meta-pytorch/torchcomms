@@ -203,6 +203,13 @@ cudaError_t DefaultCudaApi::eventQuery(cudaEvent_t event) {
   return cudaEventQuery(event);
 }
 
+cudaError_t DefaultCudaApi::eventElapsedTime(
+    float* ms,
+    cudaEvent_t start,
+    cudaEvent_t end) {
+  return cudaEventElapsedTime(ms, start, end);
+}
+
 const char* DefaultCudaApi::getErrorString(cudaError_t error) {
   return cudaGetErrorString(error);
 }
