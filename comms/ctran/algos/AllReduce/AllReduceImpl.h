@@ -28,6 +28,12 @@ commResult_t ctranAllReduceRing(
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
+enum NCCL_ALLREDUCE_ALGO resolveCtranAllReduceAlgorithm(
+    enum NCCL_ALLREDUCE_ALGO requestedAlgorithm,
+    size_t count,
+    int numRanks,
+    bool forceSmallMessageRing);
+
 /**
  * Run the ctring AllReduce for messages whose element count is smaller than
  * nRanks (opt-in via MCCL_FORCE_SMALL_MSG_AR_RING; selected in ctranAllReduce).
