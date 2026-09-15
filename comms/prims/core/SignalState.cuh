@@ -180,12 +180,10 @@ struct alignas(128) SignalState {
    *
    * @param op The comparison operation (CMP_EQ, CMP_GT, CMP_LT, CMP_GE, etc.)
    * @param expected The expected value to compare against
-   * @param abortDevice Abort handle (default: disabled, infinite wait)
+   * @param abortDevice Caller-supplied abort handle
    */
-  __device__ __forceinline__ void wait_until(
-      CmpOp op,
-      uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ __forceinline__ void
+  wait_until(CmpOp op, uint64_t expected, const AbortDevice& abortDevice) {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
@@ -294,13 +292,13 @@ struct alignas(128) SignalState {
    * @param group ThreadGroup for cooperative processing
    * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
    * @param expected The expected value to compare against
-   * @param abortDevice Abort handle (default: disabled, infinite wait)
+   * @param abortDevice Caller-supplied abort handle
    */
   __device__ __forceinline__ void wait_until(
       ThreadGroup& group,
       CmpOp op,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     wait_until(op, expected, abortDevice);
   }
 };
