@@ -128,6 +128,11 @@ static std::string readenv(const char *str, const char *def) {
   return s;
 }
 
+bool isCvarExplicitlyConfigured(std::string_view name) {
+  const std::string key{name};
+  return getenv(key.c_str()) != nullptr || nccl_config().contains(key);
+}
+
 static bool env2bool(const char *str, const char *def) {
   std::string s = readenv(str, def);
   std::transform(s.cbegin(), s.cend(), s.begin(), [](unsigned char c) { return std::tolower(c); });
