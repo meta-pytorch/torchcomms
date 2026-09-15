@@ -183,7 +183,7 @@ commResult_t ctranInit(
   }
 
   for (const auto& opt : NCCL_COLLTRACE) {
-    if (opt == "algostat") {
+    if (opt == "algostat" || opt == "ALL" || opt == "all") {
       comm->algoStats_ = meta::comms::colltrace::AlgoStats::getOrCreate(
           comm->statex_->commHash(), comm->statex_->commDesc());
       break;
