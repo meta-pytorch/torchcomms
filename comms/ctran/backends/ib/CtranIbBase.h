@@ -3,7 +3,10 @@
 #ifndef CTRAN_IB_BASE_H_
 #define CTRAN_IB_BASE_H_
 
+#include <folly/Conv.h>
+#include <folly/Exception.h>
 #include <folly/String.h>
+#include <stdexcept>
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/utils/CtranLogUtils.h"

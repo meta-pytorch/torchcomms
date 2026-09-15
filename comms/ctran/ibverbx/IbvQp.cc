@@ -3,7 +3,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <fmt/format.h>
-#include <folly/json.h>
 
 #include "comms/ctran/ibverbx/IbvQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"

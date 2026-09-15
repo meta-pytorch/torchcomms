@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvCq.h"
 #include "comms/ctran/ibverbx/IbvPd.h"
