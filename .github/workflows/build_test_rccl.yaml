@@ -57,9 +57,6 @@ jobs:
         conda install conda-forge::libopenssl-static conda-forge::rsync -y
 
         pip install ${{ matrix.torch-spec }}
-        # Torch pulls rocm[libraries,device-all] but not devel. Headers, hipcc,
-        # and `rocm-sdk path --root` need the devel extra in this venv.
-        pip install --pre 'rocm[devel]==10.0.*' --index-url https://download.pytorch.org/whl/nightly/rocm10.0
 
         if [ "${{ matrix.cmake-version }}" = "latest" ]; then
           conda install -y cmake
@@ -70,9 +67,12 @@ jobs:
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
 
-        # TheRock: SDK is under site-packages/_rocm_sdk_devel, not /opt/rocm.
-        # Prefer a working venv rocm-sdk; otherwise keep the image env or /opt/rocm.
-        # Do not clobber ROCM_HOME if `rocm-sdk path` fails (empty stdout).
+        # TheRock: SDK is under site-packages/_rocm_sdk_devel, not /opt/rocm. The
+        # torch wheel only pulls rocm[libraries,device-all], which ships
+        # librccl.so.1 but no headers, so RCCL_INCLUDE has to come from the
+        # image's devel tree exported by /etc/rocm_env.sh. rocm-sdk-devel is not
+        # published on the nightly index, so `rocm-sdk path` can fail here; only
+        # take its answer when it resolves to a tree that actually has RCCL.
         if [ -f /etc/rocm_env.sh ]; then
           # shellcheck source=/dev/null
           source /etc/rocm_env.sh
@@ -92,6 +92,11 @@ jobs:
         fi
         if [ -z "${ROCM_HOME:-}" ] || [ ! -f "${ROCM_HOME}/lib/librccl.so" ]; then
           echo "Could not find librccl.so (ROCM_HOME=${ROCM_HOME:-unset})" >&2
+          find /opt /usr -name 'librccl.so*' 2>/dev/null >&2 || true
+          exit 1
+        fi
+        if [ ! -f "${ROCM_HOME}/include/rccl/rccl.h" ]; then
+          echo "Found librccl.so but no rccl.h under ${ROCM_HOME}/include/rccl" >&2
           exit 1
         fi
         export RCCL_INCLUDE="${ROCM_HOME}/include/rccl"
