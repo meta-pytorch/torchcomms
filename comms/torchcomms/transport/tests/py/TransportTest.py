@@ -111,6 +111,31 @@ class TransportTest(unittest.TestCase):
         self.check_multi_gpu()
         self.run_send_recv("cuda:0", "cuda:1")
 
+    def test_write_unaligned_cuda_tensors(self) -> None:
+        self.check_multi_gpu()
+        transport1 = RdmaTransport(torch.device("cuda:0"))
+        transport2 = RdmaTransport(torch.device("cuda:1"))
+        self.bind_and_connect(transport1, transport2)
+
+        source = torch.arange(8192, dtype=torch.uint8, device="cuda:0")
+        destination = torch.zeros(8192, dtype=torch.uint8, device="cuda:1")
+        torch.cuda.synchronize(0)
+        torch.cuda.synchronize(1)
+
+        source_mem = RdmaMemory(source[17:1041])
+        destination_mem = RdmaMemory(destination[4095:5119])
+        self.assertEqual(source_mem.to_view().size(), 1024)
+        self.assertEqual(destination_mem.to_view().size(), 1024)
+        self.assertEqual(
+            transport1.write(source_mem.to_view(), destination_mem.to_remote_buffer()),
+            0,
+        )
+        self.assertTrue(
+            torch.equal(source[17:1041].cpu(), destination[4095:5119].cpu())
+        )
+        self.assertEqual(torch.count_nonzero(destination[:4095]).item(), 0)
+        self.assertEqual(torch.count_nonzero(destination[5119:]).item(), 0)
+
     def test_write_gpu_to_gpu_2(self) -> None:
         self.check_multi_gpu()
         self.run_send_recv("cuda:0", "cuda:0")
