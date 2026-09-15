@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -43,6 +44,11 @@ template <>
 struct PollResult<MemoryCoherenceScope::System> {
   uint64_t entriesRead{0};
   uint64_t entriesLost{0};
+  /*
+   * The greatest logical slot skipped by this poll. Consumers can use this
+   * boundary to distinguish entries observed before and after the final loss.
+   */
+  std::optional<uint64_t> lastLostIndex;
   // True if poll() exited because the timeout elapsed before any new
   // entries arrived.
   bool timedOut{false};
@@ -246,7 +252,11 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System, W>
       return result;
     }
 
-    result.entriesLost += jumpToTail(head);
+    const auto entriesLostBeforeRead = jumpToTail(head);
+    result.entriesLost += entriesLostBeforeRead;
+    if (entriesLostBeforeRead > 0) {
+      result.lastLostIndex = lastReadIndex_ - 1;
+    }
 
     validEntries_.clear();
 
@@ -269,6 +279,7 @@ class HRDWRingBufferReader<DataT, MemoryCoherenceScope::System, W>
               lost = 1;
             }
             result.entriesLost += lost;
+            result.lastLostIndex = lastReadIndex_ - 1;
             if (timeout.count() > 0 &&
                 std::chrono::steady_clock::now() > deadline) {
               result.timedOut = true;
