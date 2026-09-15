@@ -437,6 +437,8 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
           .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
           .maxCheckCancelInterval =
               std::chrono::milliseconds{NCCL_COLLTRACE_WAKEUP_INTERVAL_MS},
+          .maxPendingQueueSize = static_cast<std::size_t>(
+              std::max(NCCL_COLLTRACE_PENDING_QUEUE_SIZE, 1)),
       },
       comm->logMetaData,
       [metadata = comm->logMetaData,

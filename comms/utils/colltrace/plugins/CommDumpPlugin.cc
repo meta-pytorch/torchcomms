@@ -15,18 +15,40 @@
 namespace meta::comms::colltrace {
 
 namespace {
+CommDumpConfig normalizeCommDumpConfig(CommDumpConfig config) {
+  config.pendingCollSize = std::max<int64_t>(1, config.pendingCollSize);
+  config.currentCollSize = std::max<int64_t>(1, config.currentCollSize);
+  config.terminalCollSize = std::max<int64_t>(1, config.terminalCollSize);
+  config.terminalCollIdSize = std::max(
+      {int64_t{1}, config.terminalCollSize, config.terminalCollIdSize});
+  config.deferredTerminalSize =
+      std::max<int64_t>(1, config.deferredTerminalSize);
+  if (config.pendingDrainBatchSize <= 0) {
+    config.pendingDrainBatchSize = config.pendingCollSize;
+  }
+  return config;
+}
+
 CommsMaybeVoid enqueuePendingColls(
     folly::MPMCQueue<std::shared_ptr<CollRecord>>& mpmcQueue,
-    std::deque<std::shared_ptr<CollRecord>>& pendingQueue,
+    CollTraceDump& dump,
     int64_t maxReadCount,
     logger::CommsSpdlogLogger& logger) noexcept {
   std::shared_ptr<CollRecord> nextEnqueue;
-  int readCount{0};
-  while (readCount < maxReadCount && mpmcQueue.read(nextEnqueue)) {
-    pendingQueue.emplace_back(std::move(nextEnqueue));
-    ++readCount;
+  if (!mpmcQueue.read(nextEnqueue)) {
+    return folly::unit;
   }
-  if (readCount == maxReadCount) {
+
+  int readCount{0};
+  do {
+    if (nextEnqueue != nullptr &&
+        !dump.terminalCollIds.contains(nextEnqueue->getCollId()) &&
+        dump.activeRecords.insert(nextEnqueue.get()).second) {
+      dump.pendingColls.emplace_back(nextEnqueue);
+    }
+    ++readCount;
+  } while (readCount < maxReadCount && mpmcQueue.read(nextEnqueue));
+  if (readCount == maxReadCount && !mpmcQueue.isEmpty()) {
     COMMS_LOGGER_STREAM_FIRST_N(logger, ERR, 2)
         << "CommDumpPlugin: Read " << readCount
         << " pending colls, but queue is still not empty";
@@ -40,16 +62,17 @@ CommsMaybeVoid enqueuePendingColls(
 } // namespace
 
 CommDumpPlugin::CommDumpPlugin(CommDumpConfig config)
-    : config_(std::move(config)),
+    : config_(normalizeCommDumpConfig(std::move(config))),
       logger_(&logger::getSpdlogLogger(config_.loggerName)),
-      newPendingColls_(config_.pendingCollSize) {}
+      newPendingColls_(config_.pendingCollSize),
+      deferredTerminalColls_(config_.deferredTerminalSize) {}
 
 std::string_view CommDumpPlugin::getName() const noexcept {
   return kCommDumpPluginName;
 }
 
 CommsMaybeVoid CommDumpPlugin::beforeCollKernelScheduled(
-    CollTraceEvent& curEvent) noexcept {
+    CollTraceEvent&) noexcept {
   // Dummy implementation - no-op
   return folly::unit;
 }
@@ -69,6 +92,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
   if (!success) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Failed to enqueue event in CommDumpPlugin";
+    enqueueDeferredTerminalDisposition(
+        curEvent.collRecord, CollTraceTerminalReason::TrackingOverflow);
     return folly::makeUnexpected(CommsError(
         "Failed to enqueue event in CommDumpPlugin", commInternalError));
   }
@@ -85,15 +110,18 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
         "CollTraceEvent does not contain valid record", commInternalError));
   }
 
-  auto lockedCollTraceDump = collTraceDump_.wlock();
+  auto lockedCollTraceDump =
+      collTraceDump_.wlock(config_.pollLockAcquireTimeout);
+  if (lockedCollTraceDump.isNull()) {
+    return deferTerminalDisposition(
+        curEvent.collRecord, CollTraceTerminalReason::PluginContention);
+  }
 
-  EXPECT_CHECK_LOG_FIRST_N(
-      2,
-      enqueuePendingColls(
-          newPendingColls_,
-          lockedCollTraceDump->pendingColls,
-          config_.pendingCollSize + 1,
-          *logger_));
+  auto pendingDrainResult = drainPendingState(*lockedCollTraceDump);
+
+  if (isTerminallyTracked(*lockedCollTraceDump, curEvent.collRecord)) {
+    return pendingDrainResult;
+  }
 
   // Find the matching pending collective.
   // With deferred graph polling, completions may arrive out of enqueue order
@@ -105,22 +133,33 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
       });
 
   if (it == lockedCollTraceDump->pendingColls.end()) [[unlikely]] {
+    if (lockedCollTraceDump->activeRecords.contains(
+            curEvent.collRecord.get())) {
+      return pendingDrainResult;
+    }
+
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Could not find matching collRecord in pendingColls in CommDumpPlugin";
+    lockedCollTraceDump->currentColls.push_back(curEvent.collRecord);
+    lockedCollTraceDump->activeRecords.insert(curEvent.collRecord.get());
+    enforceStateBounds(*lockedCollTraceDump);
+    if (pendingDrainResult.hasError()) {
+      return pendingDrainResult;
+    }
     return folly::makeUnexpected(CommsError(
-        "Could not find matching collRecord in pendingColls in CommDumpPlugin",
+        "Missing pending collRecord; retained it in currentColls in CommDumpPlugin",
         commInternalError));
   }
 
   // ----- Move to active collectives -----
   lockedCollTraceDump->currentColls.push_back(std::move(*it));
   lockedCollTraceDump->pendingColls.erase(it);
+  enforceStateBounds(*lockedCollTraceDump);
 
-  return folly::unit;
+  return pendingDrainResult;
 }
 
-CommsMaybeVoid CommDumpPlugin::collEventProgressing(
-    CollTraceEvent& curEvent) noexcept {
+CommsMaybeVoid CommDumpPlugin::collEventProgressing(CollTraceEvent&) noexcept {
   return folly::unit;
 }
 
@@ -133,15 +172,18 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
         "CollTraceEvent does not contain valid record", commInternalError));
   }
 
-  auto lockedCollTraceDump = collTraceDump_.wlock();
+  auto lockedCollTraceDump =
+      collTraceDump_.wlock(config_.pollLockAcquireTimeout);
+  if (lockedCollTraceDump.isNull()) {
+    return deferTerminalDisposition(
+        curEvent.collRecord, CollTraceTerminalReason::PluginContention);
+  }
 
-  EXPECT_CHECK_LOG_FIRST_N(
-      2,
-      enqueuePendingColls(
-          newPendingColls_,
-          lockedCollTraceDump->pendingColls,
-          config_.pendingCollSize + 1,
-          *logger_));
+  auto pendingDrainResult = drainPendingState(*lockedCollTraceDump);
+
+  if (isTerminallyTracked(*lockedCollTraceDump, curEvent.collRecord)) {
+    return pendingDrainResult;
+  }
 
   // ----- Find and move from currentColls to pastColls -----
   auto it = std::find_if(
@@ -154,6 +196,10 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   if (it == lockedCollTraceDump->currentColls.end()) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Could not find matching collRecord in currentColls during coll end";
+    applyTerminalDisposition(
+        *lockedCollTraceDump,
+        curEvent.collRecord,
+        CollTraceTerminalReason::TrackingOverflow);
     return folly::makeUnexpected(CommsError(
         "Could not find matching collRecord in currentColls during coll end",
         commInternalError));
@@ -162,6 +208,7 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   lockedCollTraceDump->pastCollsHeap.push(std::move(*it));
   evictPastColls(*lockedCollTraceDump);
   lockedCollTraceDump->currentColls.erase(it);
+  lockedCollTraceDump->activeRecords.erase(curEvent.collRecord.get());
 
   auto iterSnap = ncclxGetIterationSnapshot();
   if (iterSnap.iteration > lockedCollTraceDump->currentIteration) {
@@ -184,7 +231,192 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
         std::max(latencyUs, int64_t{0});
   }
 
-  return folly::unit;
+  return pendingDrainResult;
+}
+
+CommsMaybeVoid CommDumpPlugin::afterCollTerminated(
+    CollTraceEvent& curEvent,
+    CollTraceTerminalReason reason) noexcept {
+  if (curEvent.collRecord == nullptr) [[unlikely]] {
+    return folly::makeUnexpected(CommsError(
+        "CollTraceEvent does not contain valid record", commInternalError));
+  }
+
+  auto lockedCollTraceDump =
+      collTraceDump_.wlock(config_.pollLockAcquireTimeout);
+  if (lockedCollTraceDump.isNull()) {
+    return deferTerminalDisposition(curEvent.collRecord, reason);
+  }
+
+  auto pendingDrainResult = drainPendingState(*lockedCollTraceDump);
+  applyTerminalDisposition(*lockedCollTraceDump, curEvent.collRecord, reason);
+  return pendingDrainResult;
+}
+
+bool CommDumpPlugin::isTerminallyTracked(
+    const CollTraceDump& dump,
+    const std::shared_ptr<CollRecord>& record) const noexcept {
+  return record != nullptr &&
+      dump.terminalCollIds.contains(record->getCollId());
+}
+
+void CommDumpPlugin::applyTerminalDisposition(
+    CollTraceDump& dump,
+    std::shared_ptr<CollRecord> record,
+    CollTraceTerminalReason reason,
+    bool scrubTrackedState) noexcept {
+  if (record == nullptr ||
+      !dump.terminalCollIds.insert(record->getCollId()).second) {
+    return;
+  }
+  dump.activeRecords.erase(record.get());
+  dump.terminalCollIdOrder.push_back(record->getCollId());
+  while (static_cast<int64_t>(dump.terminalCollIdOrder.size()) >
+         config_.terminalCollIdSize) {
+    dump.terminalCollIds.erase(dump.terminalCollIdOrder.front());
+    dump.terminalCollIdOrder.pop_front();
+  }
+
+  if (scrubTrackedState) {
+    const auto matchesRecord =
+        [&record](const std::shared_ptr<CollRecord>& item) {
+          return item.get() == record.get();
+        };
+    std::erase_if(dump.pendingColls, matchesRecord);
+    std::erase_if(dump.currentColls, matchesRecord);
+  }
+
+  const auto reasonIndex = static_cast<std::size_t>(reason);
+  if (reasonIndex < dump.terminalReasonCounts.size()) {
+    ++dump.terminalReasonCounts[reasonIndex];
+  }
+  dump.terminalColls.push_back(TerminalCollRecord{std::move(record), reason});
+  while (static_cast<int64_t>(dump.terminalColls.size()) >
+         config_.terminalCollSize) {
+    dump.terminalColls.pop_front();
+  }
+}
+
+void CommDumpPlugin::enforceStateBounds(CollTraceDump& dump) noexcept {
+  /*
+   * Retain the oldest pending and active operations because they are the most
+   * useful hang context. Completed and terminal history uses the opposite
+   * policy and evicts its oldest entries as newer diagnostics arrive.
+   */
+  while (!dump.pendingColls.empty() &&
+         static_cast<int64_t>(dump.pendingColls.size()) >
+             config_.pendingCollSize) {
+    auto record = std::move(dump.pendingColls.back());
+    dump.pendingColls.pop_back();
+    applyTerminalDisposition(
+        dump,
+        std::move(record),
+        CollTraceTerminalReason::TrackingOverflow,
+        false);
+  }
+  while (!dump.currentColls.empty() &&
+         static_cast<int64_t>(dump.currentColls.size()) >
+             config_.currentCollSize) {
+    auto record = std::move(dump.currentColls.back());
+    dump.currentColls.pop_back();
+    applyTerminalDisposition(
+        dump,
+        std::move(record),
+        CollTraceTerminalReason::TrackingOverflow,
+        false);
+  }
+}
+
+CommsMaybeVoid CommDumpPlugin::drainPendingState(CollTraceDump& dump) noexcept {
+  std::vector<TerminalCollRecord> terminalWork;
+  folly::F14FastSet<uint64_t> terminalWorkIds;
+  const auto appendTerminal = [&terminalWork,
+                               &terminalWorkIds](TerminalCollRecord terminal) {
+    if (terminal.collRecord != nullptr &&
+        terminalWorkIds.insert(terminal.collRecord->getCollId()).second) {
+      terminalWork.push_back(std::move(terminal));
+    }
+  };
+
+  TerminalCollRecord terminal;
+  /*
+   * Deferred entries precede generic reconciliation entries, so the first
+   * concrete reason wins when the same collective appears in both sources.
+   */
+  while (deferredTerminalColls_.read(terminal)) {
+    appendTerminal(std::move(terminal));
+  }
+
+  /*
+   * Reading one full queue capacity consumes every entry that was present when
+   * this drain began, including a deferred terminal record's earlier schedule.
+   * Concurrent producers may leave newer entries for the next bounded drain.
+   */
+  const auto pendingDrainLimit = terminalWork.empty()
+      ? config_.pendingDrainBatchSize
+      : std::max(config_.pendingDrainBatchSize, config_.pendingCollSize);
+  auto result =
+      enqueuePendingColls(newPendingColls_, dump, pendingDrainLimit, *logger_);
+
+  const bool reconciliationRequired = reconciliationRequired_.exchange(false);
+  if (reconciliationRequired) {
+    terminalWork.reserve(
+        terminalWork.size() + dump.pendingColls.size() +
+        dump.currentColls.size());
+    terminalWorkIds.reserve(terminalWork.capacity());
+    for (auto& record : dump.pendingColls) {
+      appendTerminal(
+          TerminalCollRecord{
+              record, CollTraceTerminalReason::PluginContention});
+    }
+    for (auto& record : dump.currentColls) {
+      appendTerminal(
+          TerminalCollRecord{
+              record, CollTraceTerminalReason::PluginContention});
+    }
+    dump.pendingColls.clear();
+    dump.currentColls.clear();
+  }
+
+  for (auto& terminalRecord : terminalWork) {
+    applyTerminalDisposition(
+        dump,
+        std::move(terminalRecord.collRecord),
+        terminalRecord.reason,
+        false);
+  }
+  if (!terminalWork.empty() || reconciliationRequired) {
+    const auto reachedTerminal =
+        [&terminalWorkIds](const std::shared_ptr<CollRecord>& record) {
+          return record != nullptr &&
+              terminalWorkIds.contains(record->getCollId());
+        };
+    std::erase_if(dump.pendingColls, reachedTerminal);
+    std::erase_if(dump.currentColls, reachedTerminal);
+  }
+  enforceStateBounds(dump);
+  return result;
+}
+
+CommsMaybeVoid CommDumpPlugin::deferTerminalDisposition(
+    const std::shared_ptr<CollRecord>& record,
+    CollTraceTerminalReason reason) noexcept {
+  pollLockTimeouts_.fetch_add(1, std::memory_order_relaxed);
+  enqueueDeferredTerminalDisposition(record, reason);
+  return folly::makeUnexpected(CommsError(
+      "Timed out acquiring CollTrace dump state for plugin lifecycle callback",
+      commInternalError));
+}
+
+bool CommDumpPlugin::enqueueDeferredTerminalDisposition(
+    const std::shared_ptr<CollRecord>& record,
+    CollTraceTerminalReason reason) noexcept {
+  if (!deferredTerminalColls_.write(TerminalCollRecord{record, reason})) {
+    terminalTransitionDrops_.fetch_add(1, std::memory_order_relaxed);
+    reconciliationRequired_.store(true, std::memory_order_release);
+    return false;
+  }
+  return true;
 }
 
 void CommDumpPlugin::evictPastColls(CollTraceDump& dump) {
@@ -196,7 +428,8 @@ void CommDumpPlugin::evictPastColls(CollTraceDump& dump) {
 }
 
 CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
-  if (!newPendingColls_.isEmpty()) {
+  if (!newPendingColls_.isEmpty() || !deferredTerminalColls_.isEmpty() ||
+      reconciliationRequired_.load(std::memory_order_acquire)) {
     auto lockedCollTraceDump =
         collTraceDump_.wlock(config_.dumpLockAcquireTimeout);
 
@@ -208,13 +441,7 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
           commInternalError));
     }
 
-    EXPECT_CHECK_LOG_FIRST_N(
-        2,
-        enqueuePendingColls(
-            newPendingColls_,
-            lockedCollTraceDump->pendingColls,
-            config_.pendingCollSize + 1,
-            *logger_));
+    EXPECT_CHECK_LOG_FIRST_N(2, drainPendingState(*lockedCollTraceDump));
   }
 
   auto readLockedCollTraceDump =
@@ -230,6 +457,9 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
 
   // Create a copy of the current state of collTraceDump_
   CollTraceDump dumpCopy = *readLockedCollTraceDump;
+  dumpCopy.terminalTransitionDrops =
+      terminalTransitionDrops_.load(std::memory_order_relaxed);
+  dumpCopy.pollLockTimeouts = pollLockTimeouts_.load(std::memory_order_relaxed);
 
   // Drain the min-heap into pastColls deque in ascending collId order
   while (!dumpCopy.pastCollsHeap.empty()) {
@@ -296,6 +526,40 @@ std::unordered_map<std::string, std::string> commDumpToMap(
     map["CT_currentColls"] = folly::toJson(currentColls);
   }
 
+  if (isKeyReq(requestFields, "CT_terminalColls")) {
+    auto terminalColls = folly::dynamic::array();
+    for (const auto& terminal : dump.terminalColls) {
+      if (terminal.collRecord == nullptr) {
+        continue;
+      }
+      auto record = terminal.collRecord->toDynamic();
+      record["terminalReason"] =
+          collTraceTerminalReasonToString(terminal.reason);
+      terminalColls.push_back(std::move(record));
+    }
+    map["CT_terminalColls"] = folly::toJson(terminalColls);
+  }
+
+  if (isKeyReq(requestFields, "CT_terminalReasonCounts")) {
+    folly::dynamic counts = folly::dynamic::object();
+    for (std::size_t index = 0; index < dump.terminalReasonCounts.size();
+         ++index) {
+      const auto reason = static_cast<CollTraceTerminalReason>(index);
+      counts[collTraceTerminalReasonToString(reason)] =
+          dump.terminalReasonCounts[index];
+    }
+    map["CT_terminalReasonCounts"] = folly::toJson(counts);
+  }
+
+  if (isKeyReq(requestFields, "CT_terminalTransitionDrops")) {
+    map["CT_terminalTransitionDrops"] =
+        std::to_string(dump.terminalTransitionDrops);
+  }
+
+  if (isKeyReq(requestFields, "CT_pollLockTimeouts")) {
+    map["CT_pollLockTimeouts"] = std::to_string(dump.pollLockTimeouts);
+  }
+
   if (isKeyReq(requestFields, "CT_currentIteration")) {
     map["CT_currentIteration"] = std::to_string(dump.currentIteration);
   }
@@ -316,7 +580,18 @@ CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
   collTraceDump_.exchange(CollTraceDump{});
   newPendingColls_ =
       folly::MPMCQueue<std::shared_ptr<CollRecord>>(config_.pendingCollSize);
+  deferredTerminalColls_ =
+      folly::MPMCQueue<TerminalCollRecord>(config_.deferredTerminalSize);
+  terminalTransitionDrops_.store(0, std::memory_order_relaxed);
+  pollLockTimeouts_.store(0, std::memory_order_relaxed);
+  reconciliationRequired_.store(false, std::memory_order_relaxed);
   return folly::unit;
+}
+
+void CommDumpPlugin::testOnlyExecuteWithReadLock(
+    const std::function<void()>& fn) const {
+  auto locked = collTraceDump_.rlock();
+  fn();
 }
 
 } // namespace meta::comms::colltrace

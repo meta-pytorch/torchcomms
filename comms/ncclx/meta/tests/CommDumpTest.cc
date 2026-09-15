@@ -1192,7 +1192,7 @@ TEST_F(CommDumpTest, DumpAllGlobalInfoOnlySkipsPerCommDump) {
   EXPECT_EQ(dumpAll.at("GlobalInfo").count("totalCommDurPerIterationUs"), 1);
 }
 
-TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
+TEST_F(CommDumpTest, DumpAllSingleCollTraceDiagnosticKey) {
   ncclx::comms_monitor::CommsMonitor::testOnlyClearComms();
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
@@ -1219,16 +1219,18 @@ TEST_F(CommDumpTest, DumpAllSingleCollTraceKey) {
 
   std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
       dumpAll;
-  auto res =
-      ncclCommDumpAll(dumpAll, {{"comm_dump::requestFields", "CT_pastColls"}});
+  auto res = ncclCommDumpAll(
+      dumpAll, {{"comm_dump::requestFields", "CT_pollLockTimeouts"}});
   ASSERT_EQ(res, ncclSuccess);
 
   auto commHash = hashToHexStr(comm->commHash);
   ASSERT_TRUE(dumpAll.count(commHash));
   const auto& commDump = dumpAll.at(commHash);
 
-  // Only CT_pastColls should be present
-  EXPECT_EQ(commDump.count("CT_pastColls"), 1);
+  /* Only CT_pollLockTimeouts should be present. */
+  EXPECT_EQ(commDump.count("CT_pollLockTimeouts"), 1);
+  EXPECT_EQ(commDump.at("CT_pollLockTimeouts"), "0");
+  EXPECT_EQ(commDump.count("CT_pastColls"), 0);
   EXPECT_EQ(commDump.count("CT_pendingColls"), 0);
   EXPECT_EQ(commDump.count("CT_currentColls"), 0);
   EXPECT_EQ(commDump.count("CT_currentIteration"), 0);
