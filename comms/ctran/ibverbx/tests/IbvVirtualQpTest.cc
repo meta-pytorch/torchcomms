@@ -912,6 +912,92 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBuildPhysicalSendWr) {
   }
 }
 
+// The business card crosses hosts during bootstrap, so its encoding is a wire
+// format. These cases need no NIC and pin the exact bytes a peer will read.
+TEST(IbvVirtualQpBusinessCardWire, SerializesToTheEstablishedByteFormat) {
+  const IbvVirtualQpBusinessCard card({123u, 4567u, 89u}, 777u);
+
+  EXPECT_EQ(
+      card.serialize(),
+      R"({"notifyQpNum":"0000000777","qpNums":["0000000123","0000004567","0000000089"]})");
+}
+
+TEST(IbvVirtualQpBusinessCardWire, SerializesAnEmptyQpNumsArray) {
+  const IbvVirtualQpBusinessCard card({}, 0u);
+
+  EXPECT_EQ(card.serialize(), R"({"notifyQpNum":"0000000000","qpNums":[]})");
+}
+
+TEST(IbvVirtualQpBusinessCardWire, RoundTripsThroughSerialization) {
+  const IbvVirtualQpBusinessCard card({1u, 4294967295u}, 42u);
+
+  const auto parsed = IbvVirtualQpBusinessCard::deserialize(card.serialize());
+
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->qpNums_, card.qpNums_);
+  EXPECT_EQ(parsed->notifyQpNum_, card.notifyQpNum_);
+}
+
+// A peer predating notifyQpNum omits the key; it must read back as 0 rather
+// than failing the exchange.
+TEST(IbvVirtualQpBusinessCardWire, DefaultsNotifyQpNumWhenTheKeyIsAbsent) {
+  const auto parsed =
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":["0000000123"]})");
+
+  ASSERT_TRUE(parsed);
+  const std::vector<uint32_t> expected{123u};
+  EXPECT_EQ(parsed->qpNums_, expected);
+  EXPECT_EQ(parsed->notifyQpNum_, 0u);
+}
+
+TEST(IbvVirtualQpBusinessCardWire, RejectsMalformedInput) {
+  EXPECT_FALSE(IbvVirtualQpBusinessCard::deserialize(""));
+  EXPECT_FALSE(IbvVirtualQpBusinessCard::deserialize("{}"));
+  // qpNums present but not an array
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":"0000000123"})"));
+  // unterminated array
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":["0000000123")"));
+  // non-numeric QP number
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":["00000abcd"]})"));
+  // value exceeding uint32_t
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":["4294967296"]})"));
+  // notifyQpNum present but unparseable must fail rather than silently read 0,
+  // which is reserved for peers that omit the key entirely
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          R"({"notifyQpNum":"00000abcd","qpNums":["0000000123"]})"));
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          R"({"notifyQpNum":7,"qpNums":["0000000123"]})"));
+}
+
+// The object envelope is validated separately from the two values, so a
+// truncated card and one with trailing bytes each need their own case.
+TEST(IbvVirtualQpBusinessCardWire, RejectsAMalformedObjectEnvelope) {
+  // no opening brace
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"("qpNums":["0000000123"])"));
+  // missing closing brace
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          R"({"notifyQpNum":"0000000777","qpNums":["0000000123"])"));
+  // trailing garbage after the closing brace
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          R"({"notifyQpNum":"0000000777","qpNums":["0000000123"]}trailing)"));
+  // a second closing brace is still trailing garbage
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(R"({"qpNums":["0000000123"]}})"));
+  // surrounding whitespace is not garbage
+  EXPECT_TRUE(
+      IbvVirtualQpBusinessCard::deserialize(
+          "  {\"qpNums\":[\"0000000123\"]}  "));
+}
+
 } // namespace ibverbx
 
 int main(int argc, char* argv[]) {
