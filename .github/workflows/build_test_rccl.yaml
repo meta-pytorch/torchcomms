@@ -92,7 +92,6 @@ jobs:
         fi
         if [ -z "${ROCM_HOME:-}" ] || [ ! -f "${ROCM_HOME}/lib/librccl.so" ]; then
           echo "Could not find librccl.so (ROCM_HOME=${ROCM_HOME:-unset})" >&2
-          find /opt /usr -name 'librccl.so*' 2>/dev/null >&2 || true
           exit 1
         fi
         if [ ! -f "${ROCM_HOME}/include/rccl/rccl.h" ]; then
@@ -103,21 +102,6 @@ jobs:
         export LD_LIBRARY_PATH="${ROCM_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         echo "Using ROCM_HOME=${ROCM_HOME}"
 
-        # Diagnostics only; never fail the job here. The SDK ships as several
-        # wheels, so record which copy of RCCL we build against, whether its
-        # dependencies resolve, and which GPUs the runner exposes.
-        echo "::group::ROCm toolchain"
-        cat "${ROCM_HOME}/.info/version" 2>/dev/null || true
-        ls -l "${ROCM_HOME}"/lib/librccl.so* || true
-        grep -E '^#define (NCCL|RCCL)_(MAJOR|MINOR|PATCH)' "${RCCL_INCLUDE}/rccl.h" || true
-        ldd "${ROCM_HOME}/lib/librccl.so" | grep 'not found' || true
-        find /opt/conda -name 'librccl.so*' 2>/dev/null || true
-        hipcc --version 2>/dev/null | head -5 || true
-        rocm_agent_enumerator 2>/dev/null | sort -u || true
-        rocm-smi --showproductname 2>/dev/null | grep 'Card Series' || true
-        env | grep -iE 'rocm|hsa|hip|rccl' | sort || true
-        echo "::endgroup::"
-
         ./build_rccl.sh
         pip install numpy
         USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=1 USE_TRANSPORT=OFF pip install --no-build-isolation -v -e .
@@ -126,38 +110,15 @@ jobs:
         python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"
         python -c "import torchcomms; print('TorchComms imported successfully')"
 
-        # The integration tests need 4 visible GPUs, so report the devices and
-        # the RCCL the extension actually loaded before running them.
-        echo "::group::Runtime devices and linkage"
-        python -c "
-        import torch
-        print('hip', torch.version.hip, 'available', torch.cuda.is_available())
-        count = torch.cuda.device_count()
-        print('device_count', count)
-        for i in range(count):
-            p = torch.cuda.get_device_properties(i)
-            print(i, p.name, getattr(p, 'gcnArchName', '?'))
-        if count < 4:
-            print(f'WARNING: integration tests launch 4 ranks but only {count} GPUs are visible')
-        " || true
-        _tc_dir="$(python -c 'import os, torchcomms; print(os.path.dirname(torchcomms.__file__))' 2>/dev/null || true)"
-        echo "torchcomms: ${_tc_dir:-unknown}"
-        if [ -n "${_tc_dir}" ]; then
-          ldd "${_tc_dir}"/*.so 2>/dev/null | grep -iE 'rccl|amdhip|not found' | sort -u || true
-        fi
-        echo "::endgroup::"
-
         # Test RCCL backend availability
         python -c "
-        import traceback
         import torch
         import torchcomms
         try:
             comm = torchcomms.new_comm('rccl', torch.device('hip'), 'test_comm')
             print('RCCL backend available')
-        except Exception:
-            print('RCCL backend test failed:')
-            traceback.print_exc()
+        except Exception as e:
+            print(f'RCCL backend test failed: {e}')
         "
 
         # Run integration tests
