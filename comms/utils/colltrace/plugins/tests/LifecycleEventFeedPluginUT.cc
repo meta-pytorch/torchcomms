@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
 #include <barrier>
 #include <chrono>
 #include <cstddef>
@@ -155,6 +156,73 @@ TEST(LifecycleEventFeedPluginTest, PreservesBurstUntilDrained) {
   EXPECT_EQ(
       plugin.drainUnreadLifecycleEvents(),
       std::vector<LifecycleEventRecord>(kBurstSize, expected));
+}
+
+TEST(LifecycleEventFeedPluginTest, BoundsQueueAndAccountsForDroppedNewest) {
+  constexpr std::size_t kCapacity = 3;
+  LifecycleEventFeedPlugin plugin{LifecycleEventFeedConfig{
+      .commId = 1,
+      .maxUnreadEvents = kCapacity,
+  }};
+
+  for (uint64_t collId = 0; collId < kCapacity + 1; ++collId) {
+    auto event = makeEvent(collId);
+    EXPECT_TRUE(plugin.afterCollKernelStart(event).hasValue());
+  }
+  auto latestEvent = makeEvent(99);
+  EXPECT_TRUE(plugin.afterCollRecorded(latestEvent).hasValue());
+
+  const auto events = plugin.drainUnreadLifecycleEvents();
+  ASSERT_EQ(events.size(), kCapacity);
+  EXPECT_EQ(events[0].collId, 0);
+  EXPECT_EQ(events[1].collId, 1);
+  EXPECT_EQ(events[2].collId, 2);
+  EXPECT_EQ(plugin.getLatestLifecycleCollectiveId(), 100);
+
+  auto stats = plugin.getStats();
+  EXPECT_EQ(stats.latestAssignedSequence, 4);
+  EXPECT_EQ(stats.highestDrainedSequence, 3);
+  EXPECT_EQ(stats.droppedEventCount, 1);
+  EXPECT_EQ(stats.lowestDroppedSequence, 4);
+  EXPECT_EQ(stats.highestDroppedSequence, 4);
+  EXPECT_EQ(stats.depth, 0);
+  EXPECT_EQ(stats.reservationHighWaterMark, kCapacity);
+
+  auto resumedEvent = makeEvent(4);
+  EXPECT_TRUE(plugin.afterCollKernelStart(resumedEvent).hasValue());
+  ASSERT_EQ(plugin.drainUnreadLifecycleEvents().size(), 1);
+  stats = plugin.getStats();
+  EXPECT_EQ(stats.latestAssignedSequence, 5);
+  EXPECT_EQ(stats.highestDrainedSequence, 5);
+  EXPECT_EQ(stats.droppedEventCount, 1);
+  EXPECT_EQ(stats.depth, 0);
+}
+
+TEST(LifecycleEventFeedPluginTest, ConservesConcurrentProducerAttempts) {
+  constexpr std::size_t kCapacity = 64;
+  constexpr std::size_t kAttemptsPerProducer = 10'000;
+  LifecycleEventFeedPlugin plugin{LifecycleEventFeedConfig{
+      .commId = 1,
+      .maxUnreadEvents = kCapacity,
+  }};
+
+  auto produce = [&] {
+    auto event = makeEvent(1);
+    for (std::size_t i = 0; i < kAttemptsPerProducer; ++i) {
+      EXPECT_TRUE(plugin.afterCollKernelStart(event).hasValue());
+    }
+  };
+  std::thread first{produce};
+  std::thread second{produce};
+  first.join();
+  second.join();
+
+  const auto events = plugin.drainUnreadLifecycleEvents();
+  const auto stats = plugin.getStats();
+  EXPECT_EQ(events.size() + stats.droppedEventCount, 2 * kAttemptsPerProducer);
+  EXPECT_EQ(stats.latestAssignedSequence, 2 * kAttemptsPerProducer);
+  EXPECT_EQ(stats.depth, 0);
+  EXPECT_LE(stats.reservationHighWaterMark, kCapacity);
 }
 
 TEST(LifecycleEventFeedPluginTest, UsesCurrentTimeForUnsetTimestamps) {

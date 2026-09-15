@@ -3,7 +3,9 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,8 +39,25 @@ struct LifecycleEventRecord {
 };
 
 struct LifecycleEventFeedConfig {
+  static constexpr std::size_t kDefaultMaxUnreadEvents{16'384};
+
   uint64_t commId{0};
   std::string loggerName{"comms"};
+  std::size_t maxUnreadEvents{kDefaultMaxUnreadEvents};
+};
+
+struct LifecycleEventFeedStats {
+  // Sequence counters and depth are independently sampled. Counts are exact
+  // once producers and the consumer are quiescent; a live snapshot may span
+  // concurrent updates. The reservation high-water mark includes producers
+  // that reserved capacity but have not published their queue entry yet.
+  uint64_t latestAssignedSequence{0};
+  uint64_t highestDrainedSequence{0};
+  uint64_t droppedEventCount{0};
+  std::optional<uint64_t> lowestDroppedSequence;
+  std::optional<uint64_t> highestDroppedSequence;
+  std::size_t depth{0};
+  std::size_t reservationHighWaterMark{0};
 };
 
 uint64_t getNextLifecycleFeedCommId() noexcept;
@@ -60,6 +79,7 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
   CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
 
   std::vector<LifecycleEventRecord> drainUnreadLifecycleEvents() noexcept;
+  LifecycleEventFeedStats getStats() const noexcept;
   uint64_t getLatestLifecycleCollectiveId() const noexcept;
   uint64_t getCommId() const noexcept;
   static constexpr std::string_view kLifecycleEventFeedPluginName =
@@ -70,10 +90,24 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
       const CollTraceEvent& curEvent,
       LifecycleEventType eventType);
 
+  struct QueuedLifecycleEvent {
+    uint64_t sequence{0};
+    LifecycleEventRecord record;
+  };
+
   uint64_t commId_{0};
+  std::size_t maxUnreadEvents_{0};
   logger::CommsSpdlogLogger* logger_{nullptr};
-  folly::UMPMCQueue<LifecycleEventRecord, false> unreadEvents_;
+  folly::UMPMCQueue<QueuedLifecycleEvent, false> unreadEvents_;
   std::atomic<uint64_t> latestCollId_{0};
+  std::atomic<uint64_t> nextSequence_{1};
+  std::atomic<uint64_t> highestDrainedSequence_{0};
+  std::atomic<uint64_t> droppedEventCount_{0};
+  std::atomic<uint64_t> lowestDroppedSequence_{
+      std::numeric_limits<uint64_t>::max()};
+  std::atomic<uint64_t> highestDroppedSequence_{0};
+  std::atomic<std::size_t> depth_{0};
+  std::atomic<std::size_t> reservationHighWaterMark_{0};
 };
 
 } // namespace meta::comms::colltrace
