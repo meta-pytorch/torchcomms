@@ -2,10 +2,10 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <folly/container/F14Map.h>
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
+#include <unordered_map>
 #include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
@@ -277,7 +277,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
         BusinessCard localCard_,
         BusinessCard remoteCard_,
         IbvVirtualQpBusinessCard remoteVirtualQpBusinessCard_,
-        folly::F14FastMap<int32_t, MemoryRegionKeys> deviceIdToKeys_)
+        std::unordered_map<int32_t, MemoryRegionKeys> deviceIdToKeys_)
         : devices(std::move(devices_)),
           pds(std::move(pds_)),
           virtualCq(std::move(virtualCq_)),
@@ -300,7 +300,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
     BusinessCard localCard;
     BusinessCard remoteCard;
     IbvVirtualQpBusinessCard remoteVirtualQpBusinessCard;
-    folly::F14FastMap<int32_t, MemoryRegionKeys> deviceIdToKeys;
+    std::unordered_map<int32_t, MemoryRegionKeys> deviceIdToKeys;
   };
 
   // Common setup function for parameterized tests
@@ -502,7 +502,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
 
     // Construct deviceIdToKeys map for GB200
     // This maps device ID to the lkey/rkey pairs used for RDMA operations
-    folly::F14FastMap<int32_t, MemoryRegionKeys> deviceIdToKeys;
+    std::unordered_map<int32_t, MemoryRegionKeys> deviceIdToKeys;
     for (size_t i = 0; i < selectedDevices.size(); i++) {
       int32_t deviceId = selectedDevices.at(i).getDeviceId();
       deviceIdToKeys[deviceId] = MemoryRegionKeys{

@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include <folly/container/F14Map.h>
 #include <deque>
+#include <unordered_map>
 #include <vector>
 
 #include "comms/ctran/ibverbx/IbvCommon.h"
@@ -83,7 +83,7 @@ class IbvVirtualCq {
   };
 
   // Registration table: QpId → RegisteredQpInfo
-  folly::F14FastMap<QpId, RegisteredQpInfo, QpIdHash> registeredQps_;
+  std::unordered_map<QpId, RegisteredQpInfo, QpIdHash> registeredQps_;
 
   // Helper: Find registered QP info by physical QP num and device ID
   inline const RegisteredQpInfo* findRegisteredQpInfo(
