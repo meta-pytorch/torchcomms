@@ -3,6 +3,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <latch>
+#include <thread>
+
 #include <folly/MPMCQueue.h>
 #include <folly/Synchronized.h>
 #include <folly/Unit.h>
@@ -552,6 +555,57 @@ TEST_F(CommDumpPluginTest, TerminalDispositionIsIdempotentAndBounded) {
       terminalDump.value().terminalReasonCounts[static_cast<std::size_t>(
           CollTraceTerminalReason::GraphDestroyed)],
       0);
+  CollTraceStats aggregateStats;
+  plugin->collectStats(aggregateStats);
+  EXPECT_TRUE(aggregateStats.capabilities.commDumpSubscriberAttached);
+  EXPECT_FALSE(aggregateStats.capabilities.commDumpEverDroppedTerminal);
+  EXPECT_FALSE(aggregateStats.capabilities.commDumpSnapshotStale);
+  EXPECT_EQ(aggregateStats.commDump.trackingOverflowCount, 1);
+  EXPECT_EQ(aggregateStats.commDump.traceDestroyedCount, 1);
+  // event3 was already terminal when GraphDestroyed arrived, so the stats
+  // inherit the dump's idempotent suppression rather than double-counting it.
+  EXPECT_EQ(aggregateStats.commDump.graphDestroyedCount, 0);
+}
+
+// The acquire-timeout branch: the snapshot is marked stale rather than
+// reporting zeroed commDump counters as if they were current, and the latching
+// drop bit is left alone so a lock blip cannot be mistaken for lost data.
+TEST_F(CommDumpPluginTest, LockTimeoutReportsStaleRatherThanUnhealthy) {
+  plugin = std::make_unique<CommDumpPlugin>(CommDumpConfig{
+      .dumpLockAcquireTimeout = std::chrono::milliseconds{1},
+  });
+  auto event = createCollTraceEvent(1);
+  EXPECT_VALUE(plugin->afterCollKernelScheduled(event));
+  EXPECT_VALUE(plugin->afterCollKernelStart(event));
+  EXPECT_VALUE(plugin->afterCollKernelEnd(event));
+
+  CollTraceStats stats;
+  std::latch writerHoldsLock{1};
+  std::latch statsCollected{1};
+  std::thread writer([&] {
+    plugin->testOnlyExecuteWithWriteLock([&] {
+      writerHoldsLock.count_down();
+      statsCollected.wait();
+    });
+  });
+  writerHoldsLock.wait();
+  plugin->collectStats(stats);
+  statsCollected.count_down();
+  writer.join();
+
+  EXPECT_TRUE(stats.capabilities.commDumpSubscriberAttached);
+  EXPECT_TRUE(stats.capabilities.commDumpSnapshotStale);
+  EXPECT_FALSE(stats.capabilities.commDumpEverDroppedTerminal);
+  EXPECT_EQ(stats.commDump.pollLockTimeoutCount, 0);
+  // Absent, not zero-because-nothing-happened: the collective above did end,
+  // and its count is simply unreadable while the lock is held.
+  EXPECT_EQ(stats.commDump.traceDestroyedCount, 0);
+
+  // With the lock free again the same plugin reports a current, non-stale
+  // snapshot -- the staleness bit is transient, unlike the drop bit.
+  CollTraceStats afterStats;
+  plugin->collectStats(afterStats);
+  EXPECT_FALSE(afterStats.capabilities.commDumpSnapshotStale);
 }
 
 TEST_F(CommDumpPluginTest, TerminalIdentityOutlivesDiagnosticRecord) {

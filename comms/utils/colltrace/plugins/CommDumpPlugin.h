@@ -121,22 +121,21 @@ class CommDumpPlugin : public ICollTracePlugin {
   std::string_view getName() const noexcept override;
 
   CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelStart(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid collEventProgressing(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollTerminated(
       CollTraceEvent& curEvent,
       CollTraceTerminalReason reason) noexcept override;
+  void collectStats(CollTraceStats& stats) const override;
 
   int64_t maxEventRetention() const noexcept override;
 
@@ -150,6 +149,9 @@ class CommDumpPlugin : public ICollTracePlugin {
   // before calling this API. Otherwise, the result might be unexpected.
   CommsMaybeVoid testOnlyClearColls() noexcept;
   void testOnlyExecuteWithReadLock(const std::function<void()>& fn) const;
+  // Holds the dump lock exclusively, so a concurrent collectStats() takes the
+  // acquire-timeout branch deterministically instead of waiting on a race.
+  void testOnlyExecuteWithWriteLock(const std::function<void()>& fn);
 
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 

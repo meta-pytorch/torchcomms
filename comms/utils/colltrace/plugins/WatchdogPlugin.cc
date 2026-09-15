@@ -117,10 +117,10 @@ WatchdogPluginConfig normalizeWatchdogConfig(WatchdogPluginConfig config) {
     }
   }
   if (!config.funcTriggerOnTimeout) {
-    config.funcTriggerOnTimeout =
-        [loggerName = std::string{config.loggerName}](CollTraceEvent& event) {
-          logFatalError(event, "watchdog timeout", loggerName);
-        };
+    config.funcTriggerOnTimeout = [loggerName = std::string{config.loggerName}](
+                                      const CollTraceEvent& event) {
+      logFatalError(event, "watchdog timeout", loggerName);
+    };
   }
   return config;
 }
@@ -189,21 +189,20 @@ CommsMaybeVoid WatchdogPlugin::dispatchAsyncError(
 }
 
 CommsMaybeVoid WatchdogPlugin::beforeCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   return folly::unit;
 }
 
-CommsMaybeVoid WatchdogPlugin::afterCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+CommsMaybeVoid WatchdogPlugin::afterCollKernelScheduled(const CollTraceEvent&) {
   return folly::unit;
 }
 
-CommsMaybeVoid WatchdogPlugin::afterCollKernelStart(CollTraceEvent&) noexcept {
+CommsMaybeVoid WatchdogPlugin::afterCollKernelStart(const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid WatchdogPlugin::collEventProgressing(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   COMMS_LOG_IMPL(
       *logger_,
       ::spdlog::level::debug,
@@ -253,7 +252,7 @@ CommsMaybeVoid WatchdogPlugin::collEventProgressing(
 }
 
 CommsMaybeVoid WatchdogPlugin::afterCollKernelEnd(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   eventTimers_.erase(&curEvent);
   return folly::unit;
 }

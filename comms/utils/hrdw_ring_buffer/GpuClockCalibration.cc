@@ -183,7 +183,12 @@ bool GlobaltimerCalibration::refresh() {
         .host_time = ::meta::comms::precisionNow(),
     };
   }
+  has_valid_anchor_.store(true, std::memory_order_release);
   return true;
+}
+
+bool GlobaltimerCalibration::hasValidAnchor() const noexcept {
+  return has_valid_anchor_.load(std::memory_order_acquire);
 }
 
 std::chrono::system_clock::time_point GlobaltimerCalibration::toWallClock(
@@ -244,7 +249,8 @@ GlobaltimerCalibration::GlobaltimerCalibration(
     TestOnlyTag,
     uint64_t device_ns,
     std::chrono::system_clock::time_point host_time)
-    : anchor_{.device_ns = device_ns, .host_time = host_time} {}
+    : anchor_{.device_ns = device_ns, .host_time = host_time},
+      has_valid_anchor_{true} {}
 
 /* static */ std::unique_ptr<GlobaltimerCalibration>
 GlobaltimerCalibration::createForTest(

@@ -10,6 +10,8 @@
 #include <cuda_runtime.h>
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
+#include "comms/utils/colltrace/GraphCollTraceEvent.h"
+#include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
 
 namespace meta::comms::colltrace {
 
@@ -35,14 +37,20 @@ struct GraphCollectiveEntry {
 // Timestamp streams and dependency events are per-collective (owned by
 // GraphCudaWaitEvent) so concurrent collectives don't serialize.
 //
-// The ring buffer and write index are owned by the CollTrace instance and
-// shared across ALL graphs. Each collective atomically claims a slot during
-// replay so events are interleaved but never lost (as long as the poll thread
-// keeps up within ringSize replays).
+// The ring buffer and write index are shared by CollTrace and every captured
+// graph. Each collective atomically claims a slot during replay so events are
+// interleaved but never lost (as long as the poll thread keeps up within
+// ringSize replays).
 //
 // Ref-counted via shared_ptr — the CUDA graph destruction callback holds a
 // copy to keep this alive until it can set the released flag.
 struct GraphCollTraceState {
+  // CUDA graph kernels retain the ring's device handle after CollTrace itself
+  // is destroyed. The graph user object keeps this allocation alive until all
+  // graph executions that can write through that handle have been released.
+  std::shared_ptr<::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>>
+      ringBuffer;
+
   // Set by the CUDA graph destruction callback. The poll thread checks this
   // to detect when a graph has been destroyed and stop tracking it.
   std::atomic_bool graph_destructed{false};

@@ -72,13 +72,13 @@ std::string_view CommDumpPlugin::getName() const noexcept {
 }
 
 CommsMaybeVoid CommDumpPlugin::beforeCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   // Dummy implementation - no-op
   return folly::unit;
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";
@@ -102,7 +102,7 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";
@@ -159,12 +159,12 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
   return pendingDrainResult;
 }
 
-CommsMaybeVoid CommDumpPlugin::collEventProgressing(CollTraceEvent&) noexcept {
+CommsMaybeVoid CommDumpPlugin::collEventProgressing(const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";
@@ -489,6 +489,44 @@ IterationCommTime CommDumpPlugin::getCurrentIterationCommTime() const noexcept {
   return {locked->currentIteration, locked->currentIterationCommTimeUs};
 }
 
+void CommDumpPlugin::collectStats(CollTraceStats& stats) const {
+  stats.capabilities.commDumpSubscriberAttached = true;
+  const auto dump = collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
+  if (dump.isNull()) {
+    // Transient, and reported as such: the counters below are the two that can
+    // be read without the dump lock, so the rest of commDump is absent rather
+    // than zero. Note this does not touch commDumpEverDroppedTerminal.
+    stats.capabilities.commDumpSnapshotStale = true;
+    stats.commDump.pollLockTimeoutCount =
+        pollLockTimeouts_.load(std::memory_order_relaxed);
+    stats.commDump.terminalTransitionDropCount =
+        terminalTransitionDrops_.load(std::memory_order_relaxed);
+    return;
+  }
+
+  const auto reasonCount = [&dump](CollTraceTerminalReason reason) {
+    return dump->terminalReasonCounts[static_cast<std::size_t>(reason)];
+  };
+  const auto terminalTransitionDropCount =
+      terminalTransitionDrops_.load(std::memory_order_relaxed);
+  stats.capabilities.commDumpEverDroppedTerminal =
+      terminalTransitionDropCount != 0;
+  stats.commDump = CollTraceCommDumpStats{
+      .queueRejectedCount = reasonCount(CollTraceTerminalReason::QueueRejected),
+      .supersededBeforeScheduleCount =
+          reasonCount(CollTraceTerminalReason::SupersededBeforeSchedule),
+      .trackingOverflowCount =
+          reasonCount(CollTraceTerminalReason::TrackingOverflow),
+      .graphDestroyedCount =
+          reasonCount(CollTraceTerminalReason::GraphDestroyed),
+      .traceDestroyedCount =
+          reasonCount(CollTraceTerminalReason::TraceDestroyed),
+      .pluginContentionCount =
+          reasonCount(CollTraceTerminalReason::PluginContention),
+      .terminalTransitionDropCount = terminalTransitionDropCount,
+      .pollLockTimeoutCount = pollLockTimeouts_.load(std::memory_order_relaxed),
+  };
+}
 namespace {
 bool isKeyReq(
     const std::unordered_set<std::string>& fields,
@@ -591,6 +629,12 @@ CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
 void CommDumpPlugin::testOnlyExecuteWithReadLock(
     const std::function<void()>& fn) const {
   auto locked = collTraceDump_.rlock();
+  fn();
+}
+
+void CommDumpPlugin::testOnlyExecuteWithWriteLock(
+    const std::function<void()>& fn) {
+  auto locked = collTraceDump_.wlock();
   fn();
 }
 

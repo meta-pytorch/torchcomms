@@ -77,6 +77,9 @@ class GlobaltimerCalibration {
   // the next caller's wakeup, so no information is lost).
   bool refresh();
 
+  // Whether at least one calibration anchor has been published.
+  bool hasValidAnchor() const noexcept;
+
   // Process-global singleton.
   static GlobaltimerCalibration& get();
 
@@ -121,6 +124,7 @@ class GlobaltimerCalibration {
   // sync.
   mutable std::mutex anchor_mutex_;
   Anchor anchor_;
+  std::atomic_bool has_valid_anchor_{false};
   uint64_t* mapped_ptr_ = nullptr;
   cudaStream_t stream_ = nullptr;
   // Serializes refresh() callers without blocking: contenders that find the

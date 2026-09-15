@@ -2,6 +2,7 @@
 
 #include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -15,9 +16,6 @@ namespace meta::comms::colltrace {
 namespace {
 
 constexpr auto kEpoch = ICollWaitEvent::system_clock_time_point{};
-constexpr std::size_t kBacklogWarningThreshold = std::size_t{1} << 13;
-constexpr uint32_t kBacklogCheckPeriod = 256;
-
 } // namespace
 
 uint64_t getNextLifecycleFeedCommId() noexcept {
@@ -28,14 +26,20 @@ uint64_t getNextLifecycleFeedCommId() noexcept {
 LifecycleEventFeedPlugin::LifecycleEventFeedPlugin(
     const LifecycleEventFeedConfig& config)
     : commId_(config.commId),
-      logger_(&logger::getSpdlogLogger(config.loggerName)) {}
+      maxUnreadEvents_(std::max<std::size_t>(config.maxUnreadEvents, 1)),
+      logger_(&logger::getSpdlogLogger(config.loggerName)) {
+  if (config.maxUnreadEvents == 0) {
+    COMMS_LOGGER_STREAM_FIRST_N(*logger_, WARN, 1)
+        << "LifecycleEventFeedPlugin requires a nonzero queue capacity; using 1";
+  }
+}
 
 std::string_view LifecycleEventFeedPlugin::getName() const noexcept {
   return kLifecycleEventFeedPluginName;
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollRecorded(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) {
     return folly::makeUnexpected(CommsError(
         "LifecycleEventFeedPlugin received an event without a collective record",
@@ -55,33 +59,33 @@ CommsMaybeVoid LifecycleEventFeedPlugin::afterCollRecorded(
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::beforeCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelScheduled(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kEnqueue);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelStart(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kStart);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::collEventProgressing(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::afterCollKernelEnd(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   return recordEvent(curEvent, LifecycleEventType::kEnd);
 }
 
 CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
-    CollTraceEvent& curEvent,
-    LifecycleEventType eventType) noexcept {
+    const CollTraceEvent& curEvent,
+    LifecycleEventType eventType) {
   if (curEvent.collRecord == nullptr) {
     return folly::makeUnexpected(CommsError(
         "LifecycleEventFeedPlugin received an event without a collective record",
@@ -112,24 +116,51 @@ CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
     timestamp = std::chrono::system_clock::now();
   }
 
-  auto record = LifecycleEventRecord{
-      .replayId = curEvent.replayId,
-      .commId = commId_,
-      .collId = curEvent.collRecord->getCollId(),
-      .capturedCollId = curEvent.capturedCollId,
-      .eventType = eventType,
-      .timestamp = timestamp,
-  };
-  unreadEvents_.enqueue(std::move(record));
-  static thread_local uint32_t backlogCheckCounter = 0;
-  if (++backlogCheckCounter % kBacklogCheckPeriod == 0) {
-    const auto backlog = unreadEvents_.size();
-    if (backlog >= kBacklogWarningThreshold) [[unlikely]] {
-      COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
-          << "LifecycleEventFeedPlugin estimated unread backlog is " << backlog
-          << " events for comm " << commId_
-          << "; consumer may be stalled and memory will continue to grow";
+  const auto sequence = nextSequence_.fetch_add(1, std::memory_order_relaxed);
+  const auto reservedDepth = depth_.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (reservedDepth > maxUnreadEvents_) {
+    depth_.fetch_sub(1, std::memory_order_relaxed);
+    const auto dropped =
+        droppedEventCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+    auto lowestDropped = lowestDroppedSequence_.load(std::memory_order_relaxed);
+    while (lowestDropped > sequence &&
+           !lowestDroppedSequence_.compare_exchange_weak(
+               lowestDropped, sequence, std::memory_order_relaxed)) {
     }
+    auto highestDropped =
+        highestDroppedSequence_.load(std::memory_order_relaxed);
+    while (highestDropped < sequence &&
+           !highestDroppedSequence_.compare_exchange_weak(
+               highestDropped, sequence, std::memory_order_relaxed)) {
+    }
+    COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 60000)
+        << "LifecycleEventFeedPlugin dropped event sequence " << sequence
+        << " for comm " << commId_ << " because its " << maxUnreadEvents_
+        << "-event queue is full; cumulative dropped events=" << dropped;
+    return folly::unit;
+  }
+
+  auto queuedEvent = QueuedLifecycleEvent{
+      .sequence = sequence,
+      .record =
+          LifecycleEventRecord{
+              .replayId = curEvent.replayId,
+              .commId = commId_,
+              .collId = curEvent.collRecord->getCollId(),
+              .capturedCollId = curEvent.capturedCollId,
+              .eventType = eventType,
+              .timestamp = timestamp,
+          },
+  };
+  unreadEvents_.enqueue(std::move(queuedEvent));
+
+  const auto retainedDepth = std::min(reservedDepth, maxUnreadEvents_);
+  auto reservationHighWaterMark =
+      reservationHighWaterMark_.load(std::memory_order_relaxed);
+  while (
+      reservationHighWaterMark < retainedDepth &&
+      !reservationHighWaterMark_.compare_exchange_weak(
+          reservationHighWaterMark, retainedDepth, std::memory_order_relaxed)) {
   }
   return folly::unit;
 }
@@ -137,11 +168,56 @@ CommsMaybeVoid LifecycleEventFeedPlugin::recordEvent(
 std::vector<LifecycleEventRecord>
 LifecycleEventFeedPlugin::drainUnreadLifecycleEvents() noexcept {
   std::vector<LifecycleEventRecord> events;
-  LifecycleEventRecord event;
+  QueuedLifecycleEvent event;
   while (unreadEvents_.try_dequeue(event)) {
-    events.push_back(std::move(event));
+    depth_.fetch_sub(1, std::memory_order_relaxed);
+    auto highestDrained =
+        highestDrainedSequence_.load(std::memory_order_relaxed);
+    while (highestDrained < event.sequence &&
+           !highestDrainedSequence_.compare_exchange_weak(
+               highestDrained, event.sequence, std::memory_order_relaxed)) {
+    }
+    events.push_back(std::move(event.record));
   }
   return events;
+}
+
+LifecycleEventFeedStats LifecycleEventFeedPlugin::getStats() const noexcept {
+  const auto lowestDropped =
+      lowestDroppedSequence_.load(std::memory_order_relaxed);
+  const auto highestDropped =
+      highestDroppedSequence_.load(std::memory_order_relaxed);
+  return LifecycleEventFeedStats{
+      .latestAssignedSequence =
+          nextSequence_.load(std::memory_order_relaxed) - 1,
+      .highestDrainedSequence =
+          highestDrainedSequence_.load(std::memory_order_relaxed),
+      .droppedEventCount = droppedEventCount_.load(std::memory_order_relaxed),
+      .lowestDroppedSequence =
+          lowestDropped == std::numeric_limits<uint64_t>::max()
+          ? std::nullopt
+          : std::optional<uint64_t>{lowestDropped},
+      .highestDroppedSequence = highestDropped == 0
+          ? std::nullopt
+          : std::optional<uint64_t>{highestDropped},
+      .depth = depth_.load(std::memory_order_relaxed),
+      .reservationHighWaterMark =
+          reservationHighWaterMark_.load(std::memory_order_relaxed),
+  };
+}
+
+void LifecycleEventFeedPlugin::collectStats(CollTraceStats& stats) const {
+  const auto pluginStats = getStats();
+  stats.capabilities.lifecycleSubscriberAttached = true;
+  stats.lifecycle = CollTraceLifecycleStats{
+      .latestAssignedSequence = pluginStats.latestAssignedSequence,
+      .highestDrainedSequence = pluginStats.highestDrainedSequence,
+      .droppedEventCount = pluginStats.droppedEventCount,
+      .lowestDroppedSequence = pluginStats.lowestDroppedSequence,
+      .highestDroppedSequence = pluginStats.highestDroppedSequence,
+      .depth = pluginStats.depth,
+      .highWaterMark = pluginStats.reservationHighWaterMark,
+  };
 }
 
 uint64_t LifecycleEventFeedPlugin::getLatestLifecycleCollectiveId()
