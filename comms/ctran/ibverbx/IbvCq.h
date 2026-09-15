@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
-
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/device/structs.h"
@@ -28,12 +26,12 @@ class IbvCq {
   int32_t getDeviceId() const;
 
   // create device cq, map cq buffer to GPU
-  folly::Expected<struct device_cq, Error> getDeviceCq() const noexcept;
+  Expected<struct device_cq> getDeviceCq() const noexcept;
 
-  inline folly::Expected<std::vector<ibv_wc>, Error> pollCq(int numEntries);
+  inline Expected<std::vector<ibv_wc>> pollCq(int numEntries);
 
   // Request notification when the next completion is added to this CQ
-  folly::Expected<folly::Unit, Error> reqNotifyCq(int solicited_only) const;
+  Status reqNotifyCq(int solicited_only) const;
 
  private:
   friend class IbvDevice;
@@ -46,13 +44,12 @@ class IbvCq {
 };
 
 // IbvCq inline functions
-inline folly::Expected<std::vector<ibv_wc>, Error> IbvCq::pollCq(
-    int numEntries) {
+inline Expected<std::vector<ibv_wc>> IbvCq::pollCq(int numEntries) {
   std::vector<ibv_wc> wcs(numEntries);
   int numPolled = cq_->context->ops.poll_cq(cq_, numEntries, wcs.data());
   if (numPolled < 0) {
     wcs.clear();
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(EINVAL, fmt::format("Call to pollCq() returned {}", numPolled)));
   } else {
     wcs.resize(numPolled);

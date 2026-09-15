@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include <deque>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
@@ -28,23 +27,18 @@ class IbvQp {
   int32_t getDeviceId() const;
 
   // create device qp, map qp buffer to GPU
-  folly::Expected<struct device_qp, Error> getDeviceQp(
-      device_cq* cq) const noexcept;
+  Expected<struct device_qp> getDeviceQp(device_cq* cq) const noexcept;
 
-  folly::Expected<folly::Unit, Error> modifyQp(ibv_qp_attr* attr, int attrMask);
-  folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> queryQp(
+  Status modifyQp(ibv_qp_attr* attr, int attrMask);
+  Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>> queryQp(
       int attrMask) const;
 
   // Log QP details for debugging
   void logInfo() const;
 
   inline uint32_t getQpNum() const;
-  inline folly::Expected<folly::Unit, Error> postRecv(
-      ibv_recv_wr* recvWr,
-      ibv_recv_wr* recvWrBad);
-  inline folly::Expected<folly::Unit, Error> postSend(
-      ibv_send_wr* sendWr,
-      ibv_send_wr** sendWrBad);
+  inline Status postRecv(ibv_recv_wr* recvWr, ibv_recv_wr* recvWrBad);
+  inline Status postSend(ibv_send_wr* sendWr, ibv_send_wr** sendWrBad);
 
   void enquePhysicalSendWrStatus(int physicalWrId, int virtualWrId);
   void enquePhysicalRecvWrStatus(int physicalWrId, int virtualWrId);
@@ -81,24 +75,20 @@ inline uint32_t IbvQp::getQpNum() const {
   return qp_->qp_num;
 }
 
-inline folly::Expected<folly::Unit, Error> IbvQp::postRecv(
-    ibv_recv_wr* recvWr,
-    ibv_recv_wr* recvWrBad) {
+inline Status IbvQp::postRecv(ibv_recv_wr* recvWr, ibv_recv_wr* recvWrBad) {
   int rc = qp_->context->ops.post_recv(qp_, recvWr, &recvWrBad);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> IbvQp::postSend(
-    ibv_send_wr* sendWr,
-    ibv_send_wr** sendWrBad) {
+inline Status IbvQp::postSend(ibv_send_wr* sendWr, ibv_send_wr** sendWrBad) {
   int rc = qp_->context->ops.post_send(qp_, sendWr, sendWrBad);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
 } // namespace ibverbx

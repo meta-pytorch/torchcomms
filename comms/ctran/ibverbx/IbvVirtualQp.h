@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include <folly/dynamic.h>
 #include <deque>
 #include <optional>
@@ -39,12 +38,12 @@ struct IbvVirtualQpBusinessCard {
 
   // Convert to/from folly::dynamic for serialization
   folly::dynamic toDynamic() const;
-  static folly::Expected<IbvVirtualQpBusinessCard, Error> fromDynamic(
+  static Expected<IbvVirtualQpBusinessCard> fromDynamic(
       const folly::dynamic& obj);
 
   // JSON serialization methods
   std::string serialize() const;
-  static folly::Expected<IbvVirtualQpBusinessCard, Error> deserialize(
+  static Expected<IbvVirtualQpBusinessCard> deserialize(
       const std::string& jsonStr);
 
   // The qpNums_ vector is ordered: the ith QP in qpNums_ will be
@@ -105,7 +104,7 @@ class IbvVirtualQp {
   // If businessCard is provided, attr.qp_num for each physical QP will be set
   // individually to the corresponding qpNum stored in qpNums_ within
   // businessCard. This is typically used for changing the state to RTR.
-  folly::Expected<folly::Unit, Error> modifyVirtualQp(
+  Status modifyVirtualQp(
       ibv_qp_attr* attr,
       int attrMask,
       const IbvVirtualQpBusinessCard& businessCard =
@@ -115,23 +114,21 @@ class IbvVirtualQp {
 
   // post send: routes by opcode — single-QP passthrough for SEND/atomic
   // ops, multi-QP load-balanced fragmentation for RDMA ops.
-  inline folly::Expected<folly::Unit, Error> postSend(
-      const IbvVirtualSendWr& wr);
+  inline Status postSend(const IbvVirtualSendWr& wr);
 
   // post recv: routes by opcode - single-QP passthrough for data recvs, tracked
   // notification recv for multi-QP SPRAY/DQPLB modes.
-  inline folly::Expected<folly::Unit, Error> postRecv(
-      const IbvVirtualRecvWr& wr);
+  inline Status postRecv(const IbvVirtualRecvWr& wr);
 
   inline int findAvailableSendQp();
 
   // Completion processing: Route physical CQEs to virtual WR state.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error> processCompletion(
+  inline Expected<std::vector<IbvVirtualWc>> processCompletion(
       const ibv_wc& physicalWc,
       int32_t deviceId);
 
   // Completion processing: batch version
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error> processCompletions(
+  inline Expected<std::vector<IbvVirtualWc>> processCompletions(
       const ibv_wc* physicalWcs,
       int count,
       int32_t deviceId = 0);
@@ -192,18 +189,16 @@ class IbvVirtualQp {
   DqplbSeqTracker dqplbSeqTracker_;
   bool dqplbReceiverInitialized_{
       false}; // flag to indicate if dqplb receiver is initialized
-  inline folly::Expected<folly::Unit, Error> initializeDqplbReceiver();
+  inline Status initializeDqplbReceiver();
 
   // Send helper functions
   // Posts a send WR directly to physical QP 0 without fragmentation or
   // load balancing.
-  inline folly::Expected<folly::Unit, Error> postSendSingleQp(
-      const IbvVirtualSendWr& wr);
+  inline Status postSendSingleQp(const IbvVirtualSendWr& wr);
   // Iterates pending sends in the tracker, fragments them into maxMsgSize_
   // chunks, and posts each fragment to an available physical QP.
   // If freedQpIdx is provided, that QP is tried first.
-  inline folly::Expected<folly::Unit, Error> dispatchPendingSends(
-      int freedQpIdx = -1);
+  inline Status dispatchPendingSends(int freedQpIdx = -1);
   // Builds a physical ibv_send_wr and ibv_sge from an ActiveVirtualWr
   // fragment, applying the correct opcode and device-specific keys.
   // Caller must set sendWr.sg_list = &sendSge after destructuring.
@@ -217,73 +212,64 @@ class IbvVirtualQp {
   // Drains completed send WRs in order, emitting virtual completions into
   // results. For SPRAY mode, triggers notify posts when all data fragments
   // are done.
-  inline folly::Expected<folly::Unit, Error> reportSendCompletions(
-      std::vector<IbvVirtualWc>& results);
+  inline Status reportSendCompletions(std::vector<IbvVirtualWc>& results);
   // Posts a zero-byte RDMA_WRITE_WITH_IMM on the notify QP to signal the
   // receiver that all data fragments for this WR have been sent.
-  inline folly::Expected<folly::Unit, Error> postSendToNotifyQp(
-      uint64_t internalWrId);
+  inline Status postSendToNotifyQp(uint64_t internalWrId);
   // Drains the pendingSendNotifyQue_ by posting queued notify messages
   // whenever the notify QP has capacity.
-  inline folly::Expected<folly::Unit, Error> flushPendingSendNotifies();
+  inline Status flushPendingSendNotifies();
 
   // Recv helper functions
   // Posts a recv WR directly to physical QP 0 without tracking.
-  inline folly::Expected<folly::Unit, Error> postRecvSingleQp(
-      const IbvVirtualRecvWr& wr);
+  inline Status postRecvSingleQp(const IbvVirtualRecvWr& wr);
   // Posts a zero-length recv on the notify QP for SPRAY mode notification.
-  inline folly::Expected<folly::Unit, Error> postRecvToNotifyQp(
-      uint64_t internalWrId);
+  inline Status postRecvToNotifyQp(uint64_t internalWrId);
   // Drains the pendingRecvNotifyQue_ by posting queued recv notifications
   // whenever the notify QP has capacity.
-  inline folly::Expected<folly::Unit, Error> flushPendingRecvNotifies();
+  inline Status flushPendingRecvNotifies();
   // Re-posts a zero-length recv on the specified data QP after consuming
   // a DQPLB completion, keeping the recv pool at steady state.
-  inline folly::Expected<folly::Unit, Error> replenishDqplbRecv(int qpIdx);
+  inline Status replenishDqplbRecv(int qpIdx);
   // Drains completed recv WRs in order, emitting virtual completions
   // into results.
-  inline folly::Expected<folly::Unit, Error> reportRecvCompletions(
-      std::vector<IbvVirtualWc>& results);
+  inline Status reportRecvCompletions(std::vector<IbvVirtualWc>& results);
 
   // Completion processing handlers (2x2 matrix: QP type x direction).
   // Each handler pops the physical WR status, updates the virtual WR state,
   // and reports any completed virtual WRs.
   //
   // Handles notify QP send completion — SPRAY sender's notify is done.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-  processNotifyQpSendCompletion(
+  inline Expected<std::vector<IbvVirtualWc>> processNotifyQpSendCompletion(
       const ibv_wc& physicalWc,
       std::vector<IbvVirtualWc>& results);
   // Handles notify QP recv completion — SPRAY receiver's notify arrived.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-  processNotifyQpRecvCompletion(
+  inline Expected<std::vector<IbvVirtualWc>> processNotifyQpRecvCompletion(
       const ibv_wc& physicalWc,
       std::vector<IbvVirtualWc>& results);
   // Handles data QP send completion — a data fragment send finished,
   // dispatches more pending fragments if available.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-  processDataQpSendCompletion(
+  inline Expected<std::vector<IbvVirtualWc>> processDataQpSendCompletion(
       const ibv_wc& physicalWc,
       int qpIdx,
       std::vector<IbvVirtualWc>& results);
   // Handles data QP recv completion — processes DQPLB sequence numbers
   // and replenishes the recv pool.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-  processDataQpRecvCompletion(
+  inline Expected<std::vector<IbvVirtualWc>> processDataQpRecvCompletion(
       const ibv_wc& physicalWc,
       int qpIdx,
       std::vector<IbvVirtualWc>& results);
 
   // Pops and validates the front entry of a physical WR status queue,
   // returning the associated internal (virtual) WR ID.
-  inline folly::Expected<uint64_t, Error> popPhysicalQueueStatus(
+  inline Expected<uint64_t> popPhysicalQueueStatus(
       std::deque<IbvQp::PhysicalWrStatus>& queStatus,
       uint64_t expectedPhysicalWrId,
       const char* queueName);
 
   // Common helpers
   inline bool isSendOpcode(ibv_wc_opcode opcode) const;
-  inline folly::Expected<folly::Unit, Error> updateWrState(
+  inline Status updateWrState(
       WrTracker<ActiveVirtualWr>& tracker,
       uint64_t internalWrId,
       ibv_wc_status status,
@@ -318,8 +304,7 @@ inline int IbvVirtualQp::findAvailableSendQp() {
   return -1;
 }
 
-inline folly::Expected<folly::Unit, Error>
-IbvVirtualQp::initializeDqplbReceiver() {
+inline Status IbvVirtualQp::initializeDqplbReceiver() {
   ibv_recv_wr recvWr_{};
   ibv_recv_wr badRecvWr_{};
   ibv_sge recvSg_{};
@@ -331,14 +316,14 @@ IbvVirtualQp::initializeDqplbReceiver() {
       recvWr_.wr_id = nextPhysicalWrId_++;
       auto maybeRecv = physicalQps_.at(j).postRecv(&recvWr_, &badRecvWr_);
       if (maybeRecv.hasError()) {
-        return folly::makeUnexpected(maybeRecv.error());
+        return makeUnexpected(maybeRecv.error());
       }
       physicalQps_.at(j).physicalRecvWrStatus_.emplace_back(recvWr_.wr_id, -1);
     }
   }
 
   dqplbReceiverInitialized_ = true;
-  return folly::unit;
+  return ok();
 }
 
 // ============================================================
@@ -346,10 +331,9 @@ IbvVirtualQp::initializeDqplbReceiver() {
 // ============================================================
 
 // Helper: Single-QP fast path (pure passthrough, no tracking)
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendSingleQp(
-    const IbvVirtualSendWr& wr) {
+inline Status IbvVirtualQp::postSendSingleQp(const IbvVirtualSendWr& wr) {
   if (wr.length == 0) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         EINVAL,
         "[Ibverbx]IbvVirtualQp::postSendSingleQp, length cannot be zero"));
   }
@@ -387,14 +371,13 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendSingleQp(
   ibv_send_wr* badWr{nullptr};
   auto maybePost = physicalQps_.at(0).postSend(&sendWr, &badWr);
   if (maybePost.hasError()) {
-    return folly::makeUnexpected(maybePost.error());
+    return makeUnexpected(maybePost.error());
   }
 
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
-    const IbvVirtualSendWr& wr) {
+inline Status IbvVirtualQp::postSend(const IbvVirtualSendWr& wr) {
   // Opcode routing: route by opcode first, then check isMultiQp_ for RDMA ops
   switch (wr.opcode) {
     // Always single-QP pass-through (no load balancing)
@@ -413,7 +396,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
       break; // Fall through to multi-QP load balancing path
 
     default:
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           EINVAL,
           fmt::format(
               "[Ibverbx]IbvVirtualQp::postSend, unsupported opcode: {}",
@@ -426,13 +409,13 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
 
   // Parameter validation
   if (wr.length == 0) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         EINVAL, "[Ibverbx]IbvVirtualQp::postSend, RDMA length cannot be zero"));
   }
 
   if (!(wr.sendFlags & IBV_SEND_SIGNALED) &&
       wr.opcode != IBV_WR_RDMA_WRITE_WITH_IMM) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         EINVAL,
         "[Ibverbx]IbvVirtualQp::postSend, unsignaled operations not supported in multi-QP mode"));
   }
@@ -459,10 +442,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
 
   auto result = dispatchPendingSends();
   if (result.hasError()) {
-    return folly::makeUnexpected(result.error());
+    return makeUnexpected(result.error());
   }
 
-  return folly::unit;
+  return ok();
 }
 
 // ============================================================
@@ -470,8 +453,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
 // ============================================================
 
 // Helper: Single-QP recv fast path (pure passthrough, no tracking)
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvSingleQp(
-    const IbvVirtualRecvWr& wr) {
+inline Status IbvVirtualQp::postRecvSingleQp(const IbvVirtualRecvWr& wr) {
   ibv_recv_wr recvWr{};
   ibv_sge sge{};
 
@@ -492,14 +474,13 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvSingleQp(
   ibv_recv_wr badWr{};
   auto maybePost = physicalQps_[0].postRecv(&recvWr, &badWr);
   if (maybePost.hasError()) {
-    return folly::makeUnexpected(maybePost.error());
+    return makeUnexpected(maybePost.error());
   }
 
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
-    const IbvVirtualRecvWr& wr) {
+inline Status IbvVirtualQp::postRecv(const IbvVirtualRecvWr& wr) {
   // Fast path: Single physical QP (pure passthrough)
   if (!isMultiQp_) {
     return postRecvSingleQp(wr);
@@ -536,12 +517,12 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
     if (!dqplbReceiverInitialized_) {
       if (initializeDqplbReceiver().hasError()) {
-        return folly::makeUnexpected(Error(
+        return makeUnexpected(Error(
             errno,
             "[Ibverbx]IbvVirtualQp::postRecv, DQPLB receiver initialization failed"));
       }
     }
-    return folly::unit;
+    return ok();
   }
 
   // SPRAY mode: Post zero-length recv to notifyQp
@@ -550,21 +531,20 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   if (notifyQp_->physicalRecvWrStatus_.size() >=
       static_cast<size_t>(maxMsgCntPerQp_)) {
     pendingRecvNotifyQue_.push_back(internalId);
-    return folly::unit;
+    return ok();
   }
 
   if (postRecvToNotifyQp(internalId).hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         errno,
         "[Ibverbx]IbvVirtualQp::postRecv, failed to post recv to notifyQp"));
   }
 
-  return folly::unit;
+  return ok();
 }
 
 // Replenish a single DQPLB recv on the specified QP after consuming one
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::replenishDqplbRecv(
-    int qpIdx) {
+inline Status IbvVirtualQp::replenishDqplbRecv(int qpIdx) {
   CTRAN_LOG_IF(
       FATAL,
       qpIdx < 0 || qpIdx >= static_cast<int>(physicalQps_.size()),
@@ -581,17 +561,16 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::replenishDqplbRecv(
 
   auto maybeRecv = physicalQps_[qpIdx].postRecv(&recvWr, &badWr);
   if (maybeRecv.hasError()) {
-    return folly::makeUnexpected(maybeRecv.error());
+    return makeUnexpected(maybeRecv.error());
   }
 
   physicalQps_[qpIdx].physicalRecvWrStatus_.emplace_back(recvWr.wr_id, -1);
 
-  return folly::unit;
+  return ok();
 }
 
 // Post zero-length recv to notifyQp (SPRAY mode)
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvToNotifyQp(
-    uint64_t internalWrId) {
+inline Status IbvVirtualQp::postRecvToNotifyQp(uint64_t internalWrId) {
   CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   ibv_recv_wr recvWr{};
@@ -604,17 +583,16 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvToNotifyQp(
 
   auto maybeRecv = notifyQp_->postRecv(&recvWr, &badWr);
   if (maybeRecv.hasError()) {
-    return folly::makeUnexpected(maybeRecv.error());
+    return makeUnexpected(maybeRecv.error());
   }
 
   notifyQp_->physicalRecvWrStatus_.emplace_back(recvWr.wr_id, internalWrId);
 
-  return folly::unit;
+  return ok();
 }
 
 // Flush pending recv notifications when notifyQp backpressure clears
-inline folly::Expected<folly::Unit, Error>
-IbvVirtualQp::flushPendingRecvNotifies() {
+inline Status IbvVirtualQp::flushPendingRecvNotifies() {
   CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingRecvNotifyQue_.empty()) {
@@ -632,15 +610,14 @@ IbvVirtualQp::flushPendingRecvNotifies() {
     pendingRecvNotifyQue_.pop_front();
   }
 
-  return folly::unit;
+  return ok();
 }
 
 // ============================================================
 // Fragmentation Logic (dispatchPendingSends)
 // ============================================================
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
-    int freedQpIdx) {
+inline Status IbvVirtualQp::dispatchPendingSends(int freedQpIdx) {
   while (sendTracker_.hasPendingPost()) {
     uint64_t internalId = sendTracker_.frontPendingPost();
 
@@ -661,7 +638,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
       }
 
       if (qpIdx == -1) {
-        return folly::unit;
+        return ok();
       }
 
       int32_t deviceId = physicalQps_.at(qpIdx).getDeviceId();
@@ -675,7 +652,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
       ibv_send_wr* badWr{nullptr};
       auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
       if (maybePost.hasError()) {
-        return folly::makeUnexpected(maybePost.error());
+        return makeUnexpected(maybePost.error());
       }
 
       physicalQps_.at(qpIdx).physicalSendWrStatus_.emplace_back(
@@ -687,7 +664,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
     sendTracker_.popPendingPost();
   }
 
-  return folly::unit;
+  return ok();
 }
 
 inline std::pair<ibv_send_wr, ibv_sge> IbvVirtualQp::buildPhysicalSendWr(
@@ -735,7 +712,7 @@ inline bool IbvVirtualQp::hasQpCapacity(int qpIdx) const {
 // Send Completion Reporting
 // ============================================================
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
+inline Status IbvVirtualQp::reportSendCompletions(
     std::vector<IbvVirtualWc>& results) {
   while (sendTracker_.hasPendingCompletion()) {
     uint64_t frontId = sendTracker_.frontPendingCompletion();
@@ -761,7 +738,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
 
       auto maybePost = postSendToNotifyQp(frontId);
       if (maybePost.hasError()) {
-        return folly::makeUnexpected(maybePost.error());
+        return makeUnexpected(maybePost.error());
       }
       frontWr->notifyPosted = true;
       break;
@@ -776,11 +753,10 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
     sendTracker_.popPendingCompletion();
   }
 
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
-    uint64_t internalWrId) {
+inline Status IbvVirtualQp::postSendToNotifyQp(uint64_t internalWrId) {
   auto* pending = sendTracker_.find(internalWrId);
   CTRAN_LOG_IF(
       FATAL,
@@ -804,16 +780,15 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
   ibv_send_wr* badWr{nullptr};
   auto maybePost = notifyQp_->postSend(&sendWr, &badWr);
   if (maybePost.hasError()) {
-    return folly::makeUnexpected(maybePost.error());
+    return makeUnexpected(maybePost.error());
   }
 
   notifyQp_->physicalSendWrStatus_.emplace_back(sendWr.wr_id, internalWrId);
 
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error>
-IbvVirtualQp::flushPendingSendNotifies() {
+inline Status IbvVirtualQp::flushPendingSendNotifies() {
   CTRAN_LOG_IF(FATAL, !hasNotifyQp(), "Check failed: hasNotifyQp()");
 
   while (!pendingSendNotifyQue_.empty()) {
@@ -836,10 +811,10 @@ IbvVirtualQp::flushPendingSendNotifies() {
     pendingSendNotifyQue_.pop_front();
   }
 
-  return folly::unit;
+  return ok();
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportRecvCompletions(
+inline Status IbvVirtualQp::reportRecvCompletions(
     std::vector<IbvVirtualWc>& results) {
   while (recvTracker_.hasPendingCompletion()) {
     uint64_t frontId = recvTracker_.frontPendingCompletion();
@@ -859,7 +834,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportRecvCompletions(
     recvTracker_.popPendingCompletion();
   }
 
-  return folly::unit;
+  return ok();
 }
 
 // ============================================================
@@ -872,7 +847,7 @@ inline bool IbvVirtualQp::isSendOpcode(ibv_wc_opcode opcode) const {
       opcode == IBV_WC_COMP_SWAP;
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
+inline Status IbvVirtualQp::updateWrState(
     WrTracker<ActiveVirtualWr>& tracker,
     uint64_t internalWrId,
     ibv_wc_status status,
@@ -897,7 +872,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
         internalWrId);
   }
 
-  return folly::unit;
+  return ok();
 }
 
 inline IbvVirtualWc IbvVirtualQp::buildVirtualWc(
@@ -916,7 +891,7 @@ inline IbvVirtualWc IbvVirtualQp::buildVirtualWc(
 // Physical Queue Status Helper
 // ============================================================
 
-inline folly::Expected<uint64_t, Error> IbvVirtualQp::popPhysicalQueueStatus(
+inline Expected<uint64_t> IbvVirtualQp::popPhysicalQueueStatus(
     std::deque<IbvQp::PhysicalWrStatus>& queStatus,
     uint64_t expectedPhysicalWrId,
     const char* queueName) {
@@ -944,8 +919,9 @@ inline folly::Expected<uint64_t, Error> IbvVirtualQp::popPhysicalQueueStatus(
 // Completion Processing (processCompletion + 2x2 dispatch)
 // ============================================================
 
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-IbvVirtualQp::processCompletion(const ibv_wc& physicalWc, int32_t deviceId) {
+inline Expected<std::vector<IbvVirtualWc>> IbvVirtualQp::processCompletion(
+    const ibv_wc& physicalWc,
+    int32_t deviceId) {
   std::vector<IbvVirtualWc> results;
 
   // Step 1: Identify QP source (must check both qp_num AND deviceId for
@@ -975,8 +951,7 @@ IbvVirtualQp::processCompletion(const ibv_wc& physicalWc, int32_t deviceId) {
   }
 }
 
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-IbvVirtualQp::processCompletions(
+inline Expected<std::vector<IbvVirtualWc>> IbvVirtualQp::processCompletions(
     const ibv_wc* physicalWcs,
     int count,
     int32_t deviceId) {
@@ -986,7 +961,7 @@ IbvVirtualQp::processCompletions(
   for (int i = 0; i < count; i++) {
     auto result = processCompletion(physicalWcs[i], deviceId);
     if (result.hasError()) {
-      return folly::makeUnexpected(result.error());
+      return makeUnexpected(result.error());
     }
     for (auto& r : *result) {
       allResults.push_back(std::move(r));
@@ -997,69 +972,69 @@ IbvVirtualQp::processCompletions(
 }
 
 // NotifyQp Send completion (SPRAY sender's notify done)
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+inline Expected<std::vector<IbvVirtualWc>>
 IbvVirtualQp::processNotifyQpSendCompletion(
     const ibv_wc& physicalWc,
     std::vector<IbvVirtualWc>& results) {
   auto popResult = popPhysicalQueueStatus(
       notifyQp_->physicalSendWrStatus_, physicalWc.wr_id, "notifyQpSend");
   if (popResult.hasError()) {
-    return folly::makeUnexpected(popResult.error());
+    return makeUnexpected(popResult.error());
   }
   uint64_t internalWrId = popResult.value();
 
   auto updateResult = updateWrState(
       sendTracker_, internalWrId, physicalWc.status, physicalWc.opcode);
   if (updateResult.hasError()) {
-    return folly::makeUnexpected(updateResult.error());
+    return makeUnexpected(updateResult.error());
   }
 
   auto reportResult = reportSendCompletions(results);
   if (reportResult.hasError()) {
-    return folly::makeUnexpected(reportResult.error());
+    return makeUnexpected(reportResult.error());
   }
 
   auto flushResult = flushPendingSendNotifies();
   if (flushResult.hasError()) {
-    return folly::makeUnexpected(flushResult.error());
+    return makeUnexpected(flushResult.error());
   }
 
   return results;
 }
 
 // NotifyQp Recv completion (SPRAY receiver's notify arrived)
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+inline Expected<std::vector<IbvVirtualWc>>
 IbvVirtualQp::processNotifyQpRecvCompletion(
     const ibv_wc& physicalWc,
     std::vector<IbvVirtualWc>& results) {
   auto popResult = popPhysicalQueueStatus(
       notifyQp_->physicalRecvWrStatus_, physicalWc.wr_id, "notifyQpRecv");
   if (popResult.hasError()) {
-    return folly::makeUnexpected(popResult.error());
+    return makeUnexpected(popResult.error());
   }
   uint64_t internalWrId = popResult.value();
 
   auto updateResult = updateWrState(
       recvTracker_, internalWrId, physicalWc.status, physicalWc.opcode);
   if (updateResult.hasError()) {
-    return folly::makeUnexpected(updateResult.error());
+    return makeUnexpected(updateResult.error());
   }
 
   auto reportResult = reportRecvCompletions(results);
   if (reportResult.hasError()) {
-    return folly::makeUnexpected(reportResult.error());
+    return makeUnexpected(reportResult.error());
   }
 
   auto flushResult = flushPendingRecvNotifies();
   if (flushResult.hasError()) {
-    return folly::makeUnexpected(flushResult.error());
+    return makeUnexpected(flushResult.error());
   }
 
   return results;
 }
 
 // DataQp Send completion (data fragment completed)
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+inline Expected<std::vector<IbvVirtualWc>>
 IbvVirtualQp::processDataQpSendCompletion(
     const ibv_wc& physicalWc,
     int qpIdx,
@@ -1069,31 +1044,31 @@ IbvVirtualQp::processDataQpSendCompletion(
   auto popResult = popPhysicalQueueStatus(
       physicalQp.physicalSendWrStatus_, physicalWc.wr_id, "dataQpSend");
   if (popResult.hasError()) {
-    return folly::makeUnexpected(popResult.error());
+    return makeUnexpected(popResult.error());
   }
   uint64_t internalWrId = popResult.value();
 
   auto updateResult = updateWrState(
       sendTracker_, internalWrId, physicalWc.status, physicalWc.opcode);
   if (updateResult.hasError()) {
-    return folly::makeUnexpected(updateResult.error());
+    return makeUnexpected(updateResult.error());
   }
 
   auto reportResult = reportSendCompletions(results);
   if (reportResult.hasError()) {
-    return folly::makeUnexpected(reportResult.error());
+    return makeUnexpected(reportResult.error());
   }
 
   auto dispatchResult = dispatchPendingSends(qpIdx);
   if (dispatchResult.hasError()) {
-    return folly::makeUnexpected(dispatchResult.error());
+    return makeUnexpected(dispatchResult.error());
   }
 
   return results;
 }
 
 // DataQp Recv completion (DQPLB recv with sequence number)
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+inline Expected<std::vector<IbvVirtualWc>>
 IbvVirtualQp::processDataQpRecvCompletion(
     const ibv_wc& physicalWc,
     int qpIdx,
@@ -1103,7 +1078,7 @@ IbvVirtualQp::processDataQpRecvCompletion(
   auto popResult = popPhysicalQueueStatus(
       physicalQp.physicalRecvWrStatus_, physicalWc.wr_id, "dataQpRecv");
   if (popResult.hasError()) {
-    return folly::makeUnexpected(popResult.error());
+    return makeUnexpected(popResult.error());
   }
 
   int notifyCount = dqplbSeqTracker_.processReceivedImm(physicalWc.imm_data);
@@ -1133,13 +1108,13 @@ IbvVirtualQp::processDataQpRecvCompletion(
 
     auto reportResult = reportRecvCompletions(results);
     if (reportResult.hasError()) {
-      return folly::makeUnexpected(reportResult.error());
+      return makeUnexpected(reportResult.error());
     }
   }
 
   auto replenishResult = replenishDqplbRecv(qpIdx);
   if (replenishResult.hasError()) {
-    return folly::makeUnexpected(replenishResult.error());
+    return makeUnexpected(replenishResult.error());
   }
 
   return results;
