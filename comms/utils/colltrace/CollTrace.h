@@ -149,6 +149,7 @@ class CollTrace : public ICollTrace {
 
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
+  CollTraceStats getStats() const noexcept override;
   uint64_t getPluginErrorCount() const noexcept;
 
  private:
@@ -240,7 +241,16 @@ class CollTrace : public ICollTrace {
 
   std::unordered_map<std::string, ICollTracePlugin&> pluginByName_;
   std::vector<std::unique_ptr<ICollTracePlugin>> plugins_;
-  std::atomic<uint64_t> pluginErrorCount_{0};
+  mutable std::atomic<uint64_t> pluginErrorCount_{0};
+
+  std::atomic<uint64_t> graphRingOverwriteCount_{0};
+  std::atomic<uint64_t> unmappedGraphEventCount_{0};
+  std::atomic<uint64_t> graphStartWithoutEndCount_{0};
+  std::atomic<uint64_t> graphEndWithoutStartCount_{0};
+  std::atomic<uint64_t> supersededEnqueueCount_{0};
+  std::atomic<uint64_t> pendingTraceQueueFullCount_{0};
+  bool graphTracingRequested_{false};
+  bool graphTracingSupported_{false};
 
   // CollTrace internal collective id. Should always increment monotonically.
   // uint32_t to match GraphCollTraceEvent.collId without truncation.

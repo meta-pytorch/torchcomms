@@ -206,6 +206,20 @@ LifecycleEventFeedStats LifecycleEventFeedPlugin::getStats() const noexcept {
   };
 }
 
+void LifecycleEventFeedPlugin::collectStats(CollTraceStats& stats) const {
+  const auto pluginStats = getStats();
+  stats.capabilities.lifecycleSubscriberAttached = true;
+  stats.lifecycle = CollTraceLifecycleStats{
+      .latestAssignedSequence = pluginStats.latestAssignedSequence,
+      .highestDrainedSequence = pluginStats.highestDrainedSequence,
+      .droppedEventCount = pluginStats.droppedEventCount,
+      .lowestDroppedSequence = pluginStats.lowestDroppedSequence,
+      .highestDroppedSequence = pluginStats.highestDroppedSequence,
+      .depth = pluginStats.depth,
+      .highWaterMark = pluginStats.reservationHighWaterMark,
+  };
+}
+
 uint64_t LifecycleEventFeedPlugin::getLatestLifecycleCollectiveId()
     const noexcept {
   return latestCollId_.load(std::memory_order_relaxed);

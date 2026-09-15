@@ -188,6 +188,15 @@ TEST(LifecycleEventFeedPluginTest, BoundsQueueAndAccountsForDroppedNewest) {
   EXPECT_EQ(stats.depth, 0);
   EXPECT_EQ(stats.reservationHighWaterMark, kCapacity);
 
+  CollTraceStats aggregateStats;
+  plugin.collectStats(aggregateStats);
+  EXPECT_TRUE(aggregateStats.capabilities.lifecycleSubscriberAttached);
+  EXPECT_EQ(aggregateStats.lifecycle.latestAssignedSequence, 4);
+  EXPECT_EQ(aggregateStats.lifecycle.droppedEventCount, 1);
+  EXPECT_EQ(aggregateStats.lifecycle.lowestDroppedSequence, 4);
+  EXPECT_EQ(aggregateStats.lifecycle.highestDroppedSequence, 4);
+  EXPECT_EQ(aggregateStats.lifecycle.highWaterMark, kCapacity);
+
   auto resumedEvent = makeEvent(4);
   EXPECT_TRUE(plugin.afterCollKernelStart(resumedEvent).hasValue());
   ASSERT_EQ(plugin.drainUnreadLifecycleEvents().size(), 1);

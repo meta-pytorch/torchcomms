@@ -77,6 +77,7 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
   CommsMaybeVoid afterCollKernelStart(const CollTraceEvent& curEvent) override;
   CommsMaybeVoid collEventProgressing(const CollTraceEvent& curEvent) override;
   CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
+  void collectStats(CollTraceStats& stats) const override;
 
   std::vector<LifecycleEventRecord> drainUnreadLifecycleEvents() noexcept;
   LifecycleEventFeedStats getStats() const noexcept;

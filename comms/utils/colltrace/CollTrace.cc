@@ -153,13 +153,17 @@ CollTrace::CollTrace(
       pendingTraceColls_(
           folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
               config_.maxPendingQueueSize}),
-      plugins_(std::move(plugins)) {
+      plugins_(std::move(plugins)),
+      graphTracingRequested_(NCCL_COLLTRACE_TRACE_CUDA_GRAPH) {
   eagerCancellationGate_ = std::make_shared<EagerCancellationGate>(
       [this](CollTraceEvent& event) { return cancelEvent(event); });
   graphCancellationGate_ = std::make_shared<GraphCancellationGate>(
       [this](uint32_t collId) { return cancelGraphCollective(collId); });
-  if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH &&
-      graphColltraceSupported(logPrefix_, config_.loggerName)) {
+  if (graphTracingRequested_) {
+    graphTracingSupported_ =
+        graphColltraceSupported(logPrefix_, config_.loggerName);
+  }
+  if (graphTracingSupported_) {
     // Eagerly initialize the globaltimer calibration singleton now (outside
     // graph capture) so it is ready when GraphCudaWaitEvent is constructed
     // during capture.
@@ -381,6 +385,7 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
   }
 
   if (pendingEnqueueColl_ != nullptr) {
+    supersededEnqueueCount_.fetch_add(1, std::memory_order_relaxed);
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 1) << fmt::format(
         "{}: Got another collective enqueued when a previous one haven't finished, colltrace result would be inaccurate. Previous: {}, Next:{}",
         logPrefix_,
@@ -415,6 +420,53 @@ ICollTracePlugin* CollTrace::getPluginByName(std::string name) noexcept {
 
 uint64_t CollTrace::getPluginErrorCount() const noexcept {
   return pluginErrorCount_.load(std::memory_order_relaxed);
+}
+
+CollTraceStats CollTrace::getStats() const noexcept {
+  CollTraceStats stats{
+      .capabilities =
+          CollTraceCapabilityStats{
+              .pollerStopRequested =
+                  threadShouldStop_.test(std::memory_order_acquire),
+              .graphTracingRequested = graphTracingRequested_,
+              .graphTracingSupported = graphTracingSupported_,
+              .graphRingAllocated = ringBuffer_ != nullptr,
+              .gpuClockCalibrationAvailable = graphTracingSupported_ &&
+                  ::hrdw_ring_buffer::GlobaltimerCalibration::get()
+                      .hasValidAnchor(),
+          },
+      .core =
+          CollTraceCoreStats{
+              .graphRingOverwriteCount =
+                  graphRingOverwriteCount_.load(std::memory_order_relaxed),
+              .unmappedGraphEventCount =
+                  unmappedGraphEventCount_.load(std::memory_order_relaxed),
+              .graphStartWithoutEndCount =
+                  graphStartWithoutEndCount_.load(std::memory_order_relaxed),
+              .graphEndWithoutStartCount =
+                  graphEndWithoutStartCount_.load(std::memory_order_relaxed),
+              .supersededEnqueueCount =
+                  supersededEnqueueCount_.load(std::memory_order_relaxed),
+              .pendingTraceQueueFullCount =
+                  pendingTraceQueueFullCount_.load(std::memory_order_relaxed),
+          },
+  };
+  for (const auto& plugin : plugins_) {
+    try {
+      auto pluginStats = stats;
+      plugin->collectStats(pluginStats);
+      stats = std::move(pluginStats);
+    } catch (const std::exception& ex) {
+      reportPluginFailure<&ICollTracePlugin::collectStats>(
+          *logger_, *plugin, pluginErrorCount_, ex.what());
+    } catch (...) {
+      reportPluginFailure<&ICollTracePlugin::collectStats>(
+          *logger_, *plugin, pluginErrorCount_, "unknown exception");
+    }
+  }
+  stats.core.pluginErrorCount =
+      pluginErrorCount_.load(std::memory_order_relaxed);
+  return stats;
 }
 
 CommsMaybeVoid CollTrace::cancelEvent(CollTraceEvent& collEvent) noexcept {
@@ -501,6 +553,7 @@ CommsMaybeVoid CollTrace::triggerEventState(
         // If the write fails, pendingEnqueueColl_ will not be moved. Do a
         // check for nullptr as sanity check
       } else if (pendingEnqueueColl_ != nullptr) {
+        pendingTraceQueueFullCount_.fetch_add(1, std::memory_order_relaxed);
         // TODO: This is not safe. But I could not find a better way to do it
         // as the caller of triggerEventState (which is CollTraceHandle itself)
         // holds its write lock and calling invalidate here will cause deadlock.
@@ -778,6 +831,7 @@ void CollTrace::pollGraphEvents(
 
         auto it = collIdMap_.find(collId);
         if (it == collIdMap_.end()) {
+          unmappedGraphEventCount_.fetch_add(1, std::memory_order_relaxed);
           return;
         }
 
@@ -801,6 +855,7 @@ void CollTrace::pollGraphEvents(
               replayIt != inFlightReplays_.end() ||
               ambiguousIt != ambiguousGraphReplays_.end();
           if (correlationIsAmbiguous) {
+            graphStartWithoutEndCount_.fetch_add(1, std::memory_order_relaxed);
             COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
                 << logPrefix_ << ": graph collective " << collId
                 << " saw a new start before prior end markers were correlated;"
@@ -895,6 +950,7 @@ void CollTrace::pollGraphEvents(
             graphReplayEvents_.push_back(std::move(replayIt->second));
             inFlightReplays_.erase(replayIt);
           } else {
+            graphEndWithoutStartCount_.fetch_add(1, std::memory_order_relaxed);
             COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
                 << logPrefix_ << ": graph collective " << collId
                 << " end event without matching start — dropped";
@@ -904,6 +960,8 @@ void CollTrace::pollGraphEvents(
       /*timeout=*/config_.maxCheckCancelInterval);
 
   if (pollResult.entriesLost > 0) {
+    graphRingOverwriteCount_.fetch_add(
+        pollResult.entriesLost, std::memory_order_relaxed);
     COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
         << logPrefix_ << ": missed " << pollResult.entriesLost
         << " graph replay timestamp(s) (overwritten)";

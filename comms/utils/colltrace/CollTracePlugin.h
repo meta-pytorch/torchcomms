@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
+#include "comms/utils/colltrace/CollTraceStats.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms::colltrace {
@@ -86,6 +87,20 @@ class ICollTracePlugin {
   virtual int64_t maxEventRetention() const noexcept {
     return 0;
   }
+
+  /*
+   * Add this plugin's cumulative counters and current capability state to a
+   * point-in-time CollTrace snapshot. Implementations may sample concurrent
+   * atomics independently.
+   *
+   * Despite sitting below the "colltrace thread" banner above, this runs on
+   * whatever thread called CollTrace::getStats() -- including a Python thread,
+   * since the Cython binding calls it under `with nogil` -- concurrently with
+   * the poll thread. Implementations must synchronize accordingly and must not
+   * assume poll-thread ownership of the state they read. (`maxEventRetention`
+   * above is likewise off-thread: it is called from the constructor.)
+   */
+  virtual void collectStats(CollTraceStats& /* stats */) const {}
 };
 
 } // namespace meta::comms::colltrace

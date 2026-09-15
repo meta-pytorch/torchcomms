@@ -155,6 +155,7 @@ TEST(CollTraceSetupFailureTest, FlushReturnsAfterThreadSetupFailure) {
   trace.waitFlush(firstGeneration);
 
   EXPECT_EQ(trace.requestFlush(), firstGeneration + 1);
+  EXPECT_TRUE(trace.getStats().capabilities.pollerStopRequested);
 }
 
 TEST(CollTraceGraphReplayStateTest, AmbiguityExpiresAfterFixedSlotWindow) {
@@ -200,6 +201,52 @@ TEST_F(CollTraceTest, GetPluginByName) {
   EXPECT_EQ(nonExistentPlugin, nullptr);
 }
 
+TEST_F(CollTraceTest, ReportsCapabilitiesAndPluginStats) {
+  EXPECT_CALL(*mockPluginPtr, collectStats(_))
+      .WillOnce([](CollTraceStats& stats) {
+        stats.capabilities.lifecycleSubscriberAttached = true;
+        stats.lifecycle.droppedEventCount = 7;
+      });
+
+  const auto stats = collTrace->getStats();
+
+  EXPECT_EQ(stats.schemaVersion, CollTraceStats::kSchemaVersion);
+  EXPECT_FALSE(stats.capabilities.pollerStopRequested);
+  EXPECT_TRUE(stats.capabilities.lifecycleSubscriberAttached);
+  EXPECT_EQ(stats.lifecycle.droppedEventCount, 7);
+}
+
+TEST(CollTraceStatsTest, IsolatesThrowingPluginAndContinuesSnapshot) {
+  auto throwingPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  auto observerPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  ON_CALL(*throwingPlugin, getName()).WillByDefault(Return("ThrowingPlugin"));
+  ON_CALL(*observerPlugin, getName()).WillByDefault(Return("ObserverPlugin"));
+  EXPECT_CALL(*throwingPlugin, collectStats(_))
+      .WillOnce([](CollTraceStats& stats) {
+        stats.capabilities.commDumpSubscriberAttached = true;
+        throw std::runtime_error("expected stats exception");
+      });
+  EXPECT_CALL(*observerPlugin, collectStats(_))
+      .WillOnce([](CollTraceStats& stats) {
+        stats.capabilities.lifecycleSubscriberAttached = true;
+      });
+
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins;
+  plugins.push_back(std::move(throwingPlugin));
+  plugins.push_back(std::move(observerPlugin));
+  CollTrace trace(
+      CollTraceConfig{},
+      CommLogData{},
+      []() -> CommsMaybeVoid { return folly::unit; },
+      std::move(plugins));
+
+  const auto stats = trace.getStats();
+
+  EXPECT_EQ(stats.core.pluginErrorCount, 1);
+  EXPECT_TRUE(stats.capabilities.lifecycleSubscriberAttached);
+  EXPECT_FALSE(stats.capabilities.commDumpSubscriberAttached);
+}
+
 TEST(CollTracePluginFailureTest, IsolatesFailuresAndContinuesOtherPlugins) {
   auto stdExceptionPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
   auto unknownExceptionPlugin =
@@ -243,6 +290,7 @@ TEST(CollTracePluginFailureTest, IsolatesFailuresAndContinuesOtherPlugins) {
 
   EXPECT_TRUE(result.hasValue());
   EXPECT_EQ(trace.getPluginErrorCount(), 3);
+  EXPECT_EQ(trace.getStats().core.pluginErrorCount, 3);
 }
 
 // Test recordCollective method
@@ -826,6 +874,8 @@ TEST_F(CollTraceTest, CheckHandleValidityOverMultipleEnqueues) {
       EXPECT_NE(res.value(), nullptr);
     }
   }
+
+  EXPECT_EQ(collTrace->getStats().core.supersededEnqueueCount, 9);
 }
 
 // Test that collEventProgressing fires only for the collective that has

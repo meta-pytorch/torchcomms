@@ -135,6 +135,7 @@ class CommDumpPlugin : public ICollTracePlugin {
   CommsMaybeVoid afterCollTerminated(
       CollTraceEvent& curEvent,
       CollTraceTerminalReason reason) noexcept override;
+  void collectStats(CollTraceStats& stats) const override;
 
   int64_t maxEventRetention() const noexcept override;
 
@@ -148,6 +149,9 @@ class CommDumpPlugin : public ICollTracePlugin {
   // before calling this API. Otherwise, the result might be unexpected.
   CommsMaybeVoid testOnlyClearColls() noexcept;
   void testOnlyExecuteWithReadLock(const std::function<void()>& fn) const;
+  // Holds the dump lock exclusively, so a concurrent collectStats() takes the
+  // acquire-timeout branch deterministically instead of waiting on a race.
+  void testOnlyExecuteWithWriteLock(const std::function<void()>& fn);
 
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 

@@ -46,7 +46,10 @@ class MockCollTrace : public ICollTrace {
 // Mock ICollTracePlugin for testing
 class MockCollTracePlugin : public ICollTracePlugin {
  public:
+  MockCollTracePlugin();
+
   MOCK_METHOD(std::string_view, getName, (), (const, noexcept, override));
+  MOCK_METHOD(void, collectStats, (CollTraceStats & stats), (const, override));
   MOCK_METHOD(
       CommsMaybeVoid,
       afterCollRecorded,
@@ -83,6 +86,11 @@ class MockCollTracePlugin : public ICollTracePlugin {
       (CollTraceEvent & curEvent, CollTraceTerminalReason reason),
       (noexcept, override));
 };
+
+inline MockCollTracePlugin::MockCollTracePlugin() {
+  ON_CALL(*this, afterCollTerminated(::testing::_, ::testing::_))
+      .WillByDefault(::testing::Return(folly::unit));
+}
 
 // Mock CollWaitEvent for testing
 class MockCollWaitEvent : public ICollWaitEvent {

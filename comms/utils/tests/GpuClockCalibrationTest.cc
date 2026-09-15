@@ -44,6 +44,7 @@ TEST(GpuClockCalibrationTest, ToWallClock64BitIdentity) {
   const auto kHostTime = std::chrono::system_clock::now();
   auto cal = GlobaltimerCalibration::createForTest(kDeviceNs, kHostTime);
 
+  EXPECT_TRUE(cal->hasValidAnchor());
   EXPECT_EQ(cal->toWallClock(kDeviceNs), kHostTime);
 }
 
