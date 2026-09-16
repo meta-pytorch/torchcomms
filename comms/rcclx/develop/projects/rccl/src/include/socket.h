@@ -64,6 +64,7 @@ struct ncclSocket {
   uint64_t magic;
   enum ncclSocketType type;
   int customRetry;
+  char bindToDevice[MAX_IF_NAME_SIZE]; // Optional SO_BINDTODEVICE interface, reapplied after connect retries.
   int finalizeCounter; // Used to keep track of initial handshake for async sockets.
   char finalizeBuffer[sizeof(uint64_t)]; // Used to keep track of initial handshake for async sockets.
 };
@@ -82,6 +83,8 @@ ncclResult_t ncclSocketListen(struct ncclSocket* sock);
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr);
 // Connect to sock->addr. sock->fd is set after a successful call.
 ncclResult_t ncclSocketConnect(struct ncclSocket* sock);
+// Bind this socket's egress to devName via SO_BINDTODEVICE, reapplied if a connect retry recreates the fd. Call after ncclSocketInit, before ncclSocketConnect.
+ncclResult_t ncclSocketBindToDevice(struct ncclSocket* sock, const char* devName);
 // Return socket connection state.
 ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running);
 // Accept an incoming connection from listenSock->fd and keep the file descriptor in sock->fd, with the remote side IP/port in sock->addr.

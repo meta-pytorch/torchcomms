@@ -991,6 +991,13 @@ cvars:
    default     : ""
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-ifname
 
+ - name        : NCCL_SOCKET_BINDTODEVICE
+   type        : int64_t
+   default     : 0
+   description : |-
+     Bind each outgoing Socket transport connection to its selected network
+     interface. Disabled by default.
+
  - name        : NCCL_COMM_ID
    type        : string
    default     : ""
