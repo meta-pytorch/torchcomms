@@ -366,6 +366,100 @@ TEST_F(GpuMemHandlerTestFixture, VmmExportFailurePropagatesToEveryRank) {
 #endif
 }
 
+TEST_F(GpuMemHandlerTestFixture, CudaIpcLegacyExchangeUsesOneAllGather) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Test requires exactly two ranks";
+  }
+
+  using meta::comms::testing::MockBootstrap;
+  using ::testing::_;
+
+  auto realBootstrap = std::make_shared<MpiBootstrap>();
+  auto bootstrap = std::make_shared<::testing::NiceMock<MockBootstrap>>();
+  int allGatherCalls = 0;
+  ON_CALL(*bootstrap, allGather(_, _, _, _))
+      .WillByDefault([&](void* buf, int len, int rank, int nRanks) {
+        ++allGatherCalls;
+        return realBootstrap->allGather(buf, len, rank, nRanks);
+      });
+
+  GpuMemHandler handler(
+      bootstrap, globalRank, numRanks, 4096, MemSharingMode::kCudaIpc);
+  EXPECT_NO_THROW(handler.exchangeMemPtrs());
+  EXPECT_EQ(allGatherCalls, 1);
+}
+
+TEST_F(
+    GpuMemHandlerTestFixture,
+    CudaIpcPreparedImportFailureRollsBackAndRejectsWorkspaceReuse) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Test requires exactly two ranks";
+  }
+
+  using meta::comms::testing::MockBootstrap;
+  using ::testing::_;
+
+  auto realBootstrap = std::make_shared<MpiBootstrap>();
+  auto bootstrap = std::make_shared<::testing::NiceMock<MockBootstrap>>();
+  int allGatherCalls = 0;
+  cudaIpcMemHandle_t peerHandle{};
+  bool capturedPeerHandle = false;
+  ON_CALL(*bootstrap, allGather(_, _, _, _))
+      .WillByDefault([&](void* buf, int len, int rank, int nRanks) {
+        auto result = realBootstrap->allGather(buf, len, rank, nRanks);
+        if (allGatherCalls++ == 0) {
+          const int peer = globalRank == 0 ? 1 : 0;
+          auto* peerRecord = static_cast<std::byte*>(buf) + peer * len;
+          std::memcpy(&peerHandle, peerRecord, sizeof(peerHandle));
+          capturedPeerHandle = true;
+          if (globalRank == 0) {
+            std::memset(peerRecord, 0, sizeof(cudaIpcMemHandle_t));
+          }
+        }
+        return result;
+      });
+
+  GpuMemHandler handler(
+      bootstrap, globalRank, numRanks, 4096, MemSharingMode::kCudaIpc);
+  NvlMemExchangeWorkspace workspace(
+      globalRank, numRanks, handler.getLocalDeviceMemPtr());
+  std::string error;
+  try {
+    static_cast<void>(nvlMemExchangeCudaIpcPrepared(
+        *bootstrap,
+        globalRank,
+        numRanks,
+        handler.getLocalDeviceMemPtr(),
+        handler.getLocalIpcHandle(),
+        workspace));
+  } catch (const std::exception& ex) {
+    error = ex.what();
+  }
+
+  EXPECT_THAT(error, ::testing::HasSubstr("peer import failed on rank 0"));
+  EXPECT_EQ(allGatherCalls, 2);
+
+  EXPECT_THROW(
+      static_cast<void>(nvlMemExchangeCudaIpcPrepared(
+          *bootstrap,
+          globalRank,
+          numRanks,
+          handler.getLocalDeviceMemPtr(),
+          handler.getLocalIpcHandle(),
+          workspace)),
+      std::logic_error);
+  EXPECT_EQ(allGatherCalls, 2);
+
+  ASSERT_TRUE(capturedPeerHandle);
+  void* reopenedPeer = nullptr;
+  EXPECT_EQ(
+      cudaIpcOpenMemHandle(
+          &reopenedPeer, peerHandle, cudaIpcMemLazyEnablePeerAccess),
+      cudaSuccess);
+  ASSERT_NE(reopenedPeer, nullptr);
+  EXPECT_EQ(cudaIpcCloseMemHandle(reopenedPeer), cudaSuccess);
+}
+
 } // namespace comms::prims::tests
 
 int main(int argc, char** argv) {

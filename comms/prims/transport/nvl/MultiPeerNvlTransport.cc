@@ -107,8 +107,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       multimemCudaDevice_(multimemCudaDevice),
       bootstrap_(std::move(bootstrap)),
       config_(normalizeChannelConfig(multiPeerNvlTransportConfig)),
-      memSharingMode_(
-          config_.memSharingMode.value_or(GpuMemHandler::detectBestMode())) {
+      memSharingMode_(config_.memSharingMode.value_or(
+          GpuMemHandler::detectBestMode(multimemCudaDevice))) {
   // ===========================================================================
   // Buffer Allocation
   // ===========================================================================
@@ -292,17 +292,18 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
 }
 
 void MultiPeerNvlTransport::exchange() {
-  // Allocate and exchange data buffers when:
-  // - No external buffers were provided, AND
-  // - dataBufferSize_ > 0 (staging buffers needed for send/recv)
-  if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+
+  if (!externalStagingBuffers_ && !dataBufferHandler_ && dataBufferSize_ > 0) {
     const std::size_t totalDataBufferSize =
         perPeerDataBufferSize_ * (nRanks_ - 1);
     dataBufferHandler_ = std::make_unique<GpuMemHandler>(
         bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
   }
 
-  // Exchange buffer pointers across all ranks
   if (dataBufferHandler_) {
     dataBufferHandler_->exchangeMemPtrs();
   }
@@ -320,10 +321,108 @@ void MultiPeerNvlTransport::exchange() {
   if (llBufferHandler_) {
     llBufferHandler_->exchangeMemPtrs();
   }
+  exchangeState_ = ExchangeState::kExchanged;
 
   // Multimem NVL is intentionally not initialized here. Most collectives only
   // need the peer-to-peer NVLink transport. Multimem collectives invoke the
   // explicit collective initializer before reading the cached device handle.
+}
+
+void MultiPeerNvlTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (externalStagingBuffers_.has_value()) {
+    throw std::invalid_argument(
+        "prepared NVLink exchange does not accept legacy external staging buffers");
+  }
+
+  try {
+    if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
+      const std::size_t totalDataBufferSize =
+          perPeerDataBufferSize_ * (nRanks_ - 1);
+      dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+          bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+    }
+
+    if (dataBufferHandler_) {
+      dataBufferHandler_->prepareExchange();
+    }
+    signalBufferHandler_->prepareExchange();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->prepareExchange();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->prepareExchange();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->prepareExchange();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->prepareExchange();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultiPeerNvlTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultiPeerNvlTransport::exchangePrepared called before prepareExchange");
+  }
+
+  try {
+    if (dataBufferHandler_) {
+      dataBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    signalBufferHandler_->exchangeMemPtrsPrepared();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->exchangeMemPtrsPrepared();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->exchangeMemPtrsPrepared();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kExchanged;
+}
+
+void MultiPeerNvlTransport::rollbackExchange() noexcept {
+  llBufferHandler_.reset();
+  channelStateHandler_.reset();
+  barrierBufferHandler_.reset();
+  ll128BufferHandler_.reset();
+  signalBufferHandler_.reset();
+  dataBufferHandler_.reset();
+  transportsDevice_.reset();
+  progressBase_.reset();
+  externalStagingBuffers_.reset();
+  multiPeerInitialized_ = false;
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
