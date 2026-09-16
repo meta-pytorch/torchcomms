@@ -89,7 +89,7 @@ class EpollEventBase : public EventBase {
   /// which matters because it's the hot path on every loop iteration.
   void loop() override {
     assert(stop_.load(std::memory_order_acquire));
-    loopThreadId_ = std::this_thread::get_id();
+    loopThreadId_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     stop_.store(false, std::memory_order_release);
 
     while (!stop_.load(std::memory_order_acquire)) {
@@ -133,8 +133,8 @@ class EpollEventBase : public EventBase {
       {
         std::lock_guard<std::mutex> lock(m);
         done = true;
+        cv.notify_one();
       }
-      cv.notify_one();
     });
 
     std::unique_lock<std::mutex> lock(m);
@@ -142,7 +142,8 @@ class EpollEventBase : public EventBase {
   }
 
   bool inLoopThread() const noexcept override {
-    return std::this_thread::get_id() == loopThreadId_;
+    return std::this_thread::get_id() ==
+        loopThreadId_.load(std::memory_order_relaxed);
   }
 
   bool isLoopRunning() const noexcept override {
@@ -265,7 +266,10 @@ class EpollEventBase : public EventBase {
   const int epollFd_{-1};
   std::atomic<bool> wakeupPending_{false};
   std::atomic<bool> stop_{true};
-  std::thread::id loopThreadId_;
+  static_assert(
+      std::atomic<std::thread::id>::is_always_lock_free,
+      "inLoopThread() must not become lock-based");
+  std::atomic<std::thread::id> loopThreadId_{};
   std::unordered_map<int, IOEntry> ioEntries_;
 };
 
