@@ -10,6 +10,7 @@
 
 #include <glog/logging.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -17,10 +18,12 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 #include <sys/syscall.h>
@@ -305,7 +308,164 @@ void importAndMapPeerMemory(
 #endif
 }
 
+struct LegacyVmmExchangeData {
+  ShareableHandle handle{};
+  std::size_t allocatedSize{};
+  detail::TeamStatus status{};
+};
+
+constexpr std::size_t kWireHandleSize = 64;
+
+struct alignas(8) PreparedVmmExchangeData {
+  std::array<std::uint8_t, kWireHandleSize> handle{};
+  std::uint64_t allocatedSize{0};
+  std::int32_t pid{-1};
+  std::int32_t fd{-1};
+  std::uint8_t handleType{0};
+  std::array<std::uint8_t, 3> padding{};
+  detail::TeamStatus status{};
+};
+
+struct alignas(8) PreparedCudaIpcExchangeData {
+  std::array<std::uint8_t, kWireHandleSize> handle{};
+  detail::TeamStatus status{};
+  std::array<std::uint8_t, 4> padding{};
+};
+
+static_assert(sizeof(FabricHandle) == kWireHandleSize);
+static_assert(sizeof(cudaIpcMemHandle_t) == kWireHandleSize);
+static_assert(sizeof(detail::TeamStatus) == 4);
+static_assert(std::is_standard_layout_v<PreparedVmmExchangeData>);
+static_assert(std::is_trivially_copyable_v<PreparedVmmExchangeData>);
+static_assert(sizeof(PreparedVmmExchangeData) == 88);
+static_assert(offsetof(PreparedVmmExchangeData, handle) == 0);
+static_assert(offsetof(PreparedVmmExchangeData, allocatedSize) == 64);
+static_assert(offsetof(PreparedVmmExchangeData, pid) == 72);
+static_assert(offsetof(PreparedVmmExchangeData, fd) == 76);
+static_assert(offsetof(PreparedVmmExchangeData, handleType) == 80);
+static_assert(offsetof(PreparedVmmExchangeData, padding) == 81);
+static_assert(offsetof(PreparedVmmExchangeData, status) == 84);
+static_assert(std::is_standard_layout_v<PreparedCudaIpcExchangeData>);
+static_assert(std::is_trivially_copyable_v<PreparedCudaIpcExchangeData>);
+static_assert(sizeof(PreparedCudaIpcExchangeData) == 72);
+static_assert(offsetof(PreparedCudaIpcExchangeData, handle) == 0);
+static_assert(offsetof(PreparedCudaIpcExchangeData, status) == 64);
+static_assert(offsetof(PreparedCudaIpcExchangeData, padding) == 68);
+
+std::size_t checkedRankCount(int32_t rank, int32_t nRanks) {
+  if (nRanks <= 0 || rank < 0 || rank >= nRanks) {
+    throw std::invalid_argument("invalid NVLink exchange rank or rank count");
+  }
+  return static_cast<std::size_t>(nRanks);
+}
+
+std::uint64_t checkedWireSize(std::size_t size) {
+  if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+    if (size > std::numeric_limits<std::uint64_t>::max()) {
+      throw std::overflow_error("NVLink allocation size exceeds wire range");
+    }
+  }
+  return static_cast<std::uint64_t>(size);
+}
+
+std::size_t checkedHostSize(std::uint64_t size) {
+  if constexpr (sizeof(std::size_t) < sizeof(std::uint64_t)) {
+    if (size > std::numeric_limits<std::size_t>::max()) {
+      throw std::overflow_error("NVLink wire size exceeds host range");
+    }
+  }
+  return static_cast<std::size_t>(size);
+}
+
+ShareableHandle decodePreparedVmmHandle(const PreparedVmmExchangeData& wire) {
+  if (wire.handleType >
+          static_cast<std::uint8_t>(ShareableHandleType::kPosixFd) ||
+      wire.padding != std::array<std::uint8_t, 3>{}) {
+    throw std::runtime_error("invalid prepared VMM exchange record");
+  }
+  ShareableHandle handle{};
+  handle.type = static_cast<ShareableHandleType>(wire.handleType);
+  std::memcpy(&handle.fabric, wire.handle.data(), sizeof(handle.fabric));
+  handle.pid = wire.pid;
+  handle.fd = wire.fd;
+  return handle;
+}
+
+cudaIpcMemHandle_t decodePreparedCudaIpcHandle(
+    const PreparedCudaIpcExchangeData& wire) {
+  if (wire.padding != std::array<std::uint8_t, 4>{}) {
+    throw std::runtime_error("invalid prepared cudaIpc exchange record");
+  }
+  cudaIpcMemHandle_t handle{};
+  std::memcpy(&handle, wire.handle.data(), sizeof(handle));
+  return handle;
+}
+
+void closeCudaIpcPeerMappings(NvlPeerMem& result, int32_t rank) noexcept {
+  for (std::size_t peer = 0; peer < result.peerPtrs.size(); ++peer) {
+    if (peer == static_cast<std::size_t>(rank)) {
+      continue;
+    }
+    auto& peerPtr = result.peerPtrs[peer];
+    if (peerPtr == nullptr) {
+      continue;
+    }
+    const auto error = cudaIpcCloseMemHandle(peerPtr);
+    if (error != cudaSuccess) {
+      LOG(ERROR) << "cudaIpcCloseMemHandle failed during exchange rollback for "
+                 << "rank " << peer << ": " << cudaGetErrorString(error);
+    }
+    peerPtr = nullptr;
+  }
+}
+
 } // namespace
+
+struct NvlMemExchangeWorkspace::Impl {
+  Impl(int32_t rank, int32_t nRanks, void* localPtr)
+      : rank(rank),
+        nRanks(nRanks),
+        localPtr(localPtr),
+        vmmData(checkedRankCount(rank, nRanks)),
+        cudaIpcData(checkedRankCount(rank, nRanks)),
+        importStatus(checkedRankCount(rank, nRanks)) {
+    peerMem.peerPtrs.assign(checkedRankCount(rank, nRanks), nullptr);
+    peerMem.peerPtrs.at(static_cast<std::size_t>(rank)) = localPtr;
+    peerMem.vmmMappings.reserve(static_cast<std::size_t>(nRanks - 1));
+  }
+
+  const int32_t rank;
+  const int32_t nRanks;
+  void* const localPtr;
+  NvlPeerMem peerMem;
+  std::vector<PreparedVmmExchangeData> vmmData;
+  std::vector<PreparedCudaIpcExchangeData> cudaIpcData;
+  std::vector<detail::TeamStatus> importStatus;
+  bool consumed{false};
+};
+
+NvlMemExchangeWorkspace::NvlMemExchangeWorkspace(
+    int32_t rank,
+    int32_t nRanks,
+    void* localPtr)
+    : impl_(std::make_unique<Impl>(rank, nRanks, localPtr)) {}
+
+NvlMemExchangeWorkspace::~NvlMemExchangeWorkspace() = default;
+
+void NvlMemExchangeWorkspace::consume(
+    int32_t rank,
+    int32_t nRanks,
+    void* localPtr) {
+  if (rank != impl_->rank || nRanks != impl_->nRanks ||
+      localPtr != impl_->localPtr) {
+    throw std::invalid_argument(
+        "NVLink exchange workspace identity does not match its construction");
+  }
+  if (impl_->consumed) {
+    throw std::logic_error("NVLink exchange workspace was already consumed");
+  }
+  impl_->consumed = true;
+}
 
 CUmemAllocationHandleType toCudaHandleType(ShareableHandleType type) {
 #if CUDART_VERSION < 12030
@@ -380,22 +540,16 @@ ShareableHandleType selectShareableHandleType(int cudaDevice) {
     }
     return selectShareableHandleTypeUncached(cudaDevice);
   }
-  // Pack the resolved type + a "computed" sentinel into a single atomic; -1
-  // means uncomputed, otherwise the lower 8 bits hold the ShareableHandleType.
+  // Encode the resolved type plus one so zero remains the value-initialized
+  // uncomputed sentinel.
   static std::array<std::atomic<int>, kSelectCacheSize> cache{};
-  static std::once_flag initFlag;
-  std::call_once(initFlag, [] {
-    for (auto& slot : cache) {
-      slot.store(-1, std::memory_order_relaxed);
-    }
-  });
   auto& slot = cache[static_cast<std::size_t>(cudaDevice)];
   const int cached = slot.load(std::memory_order_acquire);
-  if (cached >= 0) {
-    return static_cast<ShareableHandleType>(cached);
+  if (cached != 0) {
+    return static_cast<ShareableHandleType>(cached - 1);
   }
   const auto resolved = selectShareableHandleTypeUncached(cudaDevice);
-  slot.store(static_cast<int>(resolved), std::memory_order_release);
+  slot.store(static_cast<int>(resolved) + 1, std::memory_order_release);
   return resolved;
 }
 
@@ -483,21 +637,9 @@ NvlPeerMem nvlMemExchangeVmm(
   const ShareableHandleType exportType = preferFabric
       ? ShareableHandleType::kFabric
       : ShareableHandleType::kPosixFd;
-
-  struct ExchangeData {
-    ShareableHandle handle{};
-    std::size_t allocatedSize{};
-    detail::TeamStatus status{};
-  };
-
-  std::vector<ExchangeData> allData(static_cast<std::size_t>(nRanks));
+  std::vector<LegacyVmmExchangeData> allData(static_cast<std::size_t>(nRanks));
   std::vector<detail::TeamStatus> importStatus(
       static_cast<std::size_t>(nRanks));
-  // ExchangeData has padding between ShareableHandle (mixed enum + union +
-  // ints) and allocatedSize (size_t). Value-init does not guarantee zeroed
-  // padding bytes, and the buffer is broadcast verbatim via allGather — zero
-  // it out before filling so peers don't receive uninitialized stack bytes.
-  std::memset(allData.data(), 0, allData.size() * sizeof(ExchangeData));
   FdGuard localFdGuard;
   std::exception_ptr exportError;
   try {
@@ -506,6 +648,94 @@ NvlPeerMem nvlMemExchangeVmm(
     localData.allocatedSize = allocatedSize;
     if (localData.handle.type == ShareableHandleType::kPosixFd) {
       localFdGuard.reset(localData.handle.fd);
+    }
+  } catch (...) {
+    exportError = std::current_exception();
+  }
+  detail::allGatherAndAgree(
+      bootstrap,
+      rank,
+      nRanks,
+      allData,
+      exportError,
+      "nvlMemExchangeVmm handle export");
+
+  std::exception_ptr importError;
+  try {
+    for (int32_t peer = 0; peer < nRanks; ++peer) {
+      if (peer == rank) {
+        continue;
+      }
+      const auto peerIdx = static_cast<std::size_t>(peer);
+      importAndMapPeerMemory(
+          peer,
+          allData[peerIdx].handle,
+          allData[peerIdx].allocatedSize,
+          cuDev,
+          result);
+    }
+  } catch (...) {
+    importError = std::current_exception();
+  }
+  try {
+    detail::allGatherAndAgree(
+        bootstrap,
+        rank,
+        nRanks,
+        importStatus,
+        importError,
+        "nvlMemExchangeVmm peer import");
+  } catch (...) {
+    result.vmmMappings.clear();
+    throw;
+  }
+  return result;
+#endif
+}
+
+NvlPeerMem nvlMemExchangeVmmPrepared(
+    meta::comms::IBootstrap& bootstrap,
+    int32_t rank,
+    int32_t nRanks,
+    CUdevice cuDev,
+    CUmemGenericAllocationHandle localHandle,
+    void* localPtr,
+    std::size_t allocatedSize,
+    bool preferFabric,
+    NvlMemExchangeWorkspace& workspace) {
+  workspace.consume(rank, nRanks, localPtr);
+  auto& result = workspace.impl_->peerMem;
+  result.vmmMappings.clear();
+  std::fill(result.peerPtrs.begin(), result.peerPtrs.end(), nullptr);
+  result.peerPtrs.at(static_cast<std::size_t>(rank)) = localPtr;
+
+#if CUDART_VERSION < 12030
+  (void)bootstrap;
+  (void)cuDev;
+  (void)localHandle;
+  (void)allocatedSize;
+  (void)preferFabric;
+  throw std::runtime_error("nvlMemExchangeVmm requires CUDA 12.3+");
+#else
+  const ShareableHandleType exportType = preferFabric
+      ? ShareableHandleType::kFabric
+      : ShareableHandleType::kPosixFd;
+  auto& allData = workspace.impl_->vmmData;
+  auto& importStatus = workspace.impl_->importStatus;
+  std::fill(allData.begin(), allData.end(), PreparedVmmExchangeData{});
+  std::fill(importStatus.begin(), importStatus.end(), detail::TeamStatus{});
+  FdGuard localFdGuard;
+  std::exception_ptr exportError;
+  try {
+    auto& localData = allData[static_cast<std::size_t>(rank)];
+    const auto handle = exportShareableHandle(localHandle, exportType);
+    std::memcpy(localData.handle.data(), &handle.fabric, sizeof(handle.fabric));
+    localData.allocatedSize = checkedWireSize(allocatedSize);
+    localData.pid = handle.pid;
+    localData.fd = handle.fd;
+    localData.handleType = static_cast<std::uint8_t>(handle.type);
+    if (handle.type == ShareableHandleType::kPosixFd) {
+      localFdGuard.reset(handle.fd);
     }
   } catch (...) {
     exportError = std::current_exception();
@@ -528,25 +758,33 @@ NvlPeerMem nvlMemExchangeVmm(
         continue;
       }
       const auto peerIdx = static_cast<std::size_t>(peer);
+      const auto handle = decodePreparedVmmHandle(allData[peerIdx]);
       importAndMapPeerMemory(
           peer,
-          allData[peerIdx].handle,
-          allData[peerIdx].allocatedSize,
+          handle,
+          checkedHostSize(allData[peerIdx].allocatedSize),
           cuDev,
           result);
     }
   } catch (...) {
     importError = std::current_exception();
   }
-  detail::allGatherAndAgree(
-      bootstrap,
-      rank,
-      nRanks,
-      importStatus,
-      importError,
-      "nvlMemExchangeVmm peer import");
+  try {
+    detail::allGatherAndAgree(
+        bootstrap,
+        rank,
+        nRanks,
+        importStatus,
+        importError,
+        "nvlMemExchangeVmm peer import");
+  } catch (...) {
+    result.vmmMappings.clear();
+    std::fill(result.peerPtrs.begin(), result.peerPtrs.end(), nullptr);
+    result.peerPtrs.at(static_cast<std::size_t>(rank)) = localPtr;
+    throw;
+  }
 
-  return result;
+  return std::move(result);
 #endif
 }
 
@@ -590,6 +828,75 @@ NvlPeerMem nvlMemExchangeCudaIpc(
   }
 
   return result;
+}
+
+NvlPeerMem nvlMemExchangeCudaIpcPrepared(
+    meta::comms::IBootstrap& bootstrap,
+    int32_t rank,
+    int32_t nRanks,
+    void* localPtr,
+    const cudaIpcMemHandle_t& localHandle,
+    NvlMemExchangeWorkspace& workspace) {
+  workspace.consume(rank, nRanks, localPtr);
+  auto& result = workspace.impl_->peerMem;
+  closeCudaIpcPeerMappings(result, rank);
+  std::fill(result.peerPtrs.begin(), result.peerPtrs.end(), nullptr);
+  result.peerPtrs.at(static_cast<std::size_t>(rank)) = localPtr;
+
+  auto& allData = workspace.impl_->cudaIpcData;
+  auto& importStatus = workspace.impl_->importStatus;
+  std::fill(allData.begin(), allData.end(), PreparedCudaIpcExchangeData{});
+  std::fill(importStatus.begin(), importStatus.end(), detail::TeamStatus{});
+  std::memcpy(
+      allData.at(static_cast<std::size_t>(rank)).handle.data(),
+      &localHandle,
+      sizeof(localHandle));
+
+  // A nonzero bootstrap return can itself be observed asymmetrically; callers
+  // must treat that as terminal and abort the communicator. Local export and
+  // import failures are different: they are carried by these two agreements so
+  // every team member remains on the same collective sequence.
+  detail::allGatherAndAgree(
+      bootstrap,
+      rank,
+      nRanks,
+      allData,
+      std::exception_ptr{},
+      "nvlMemExchangeCudaIpc handle export");
+
+  std::exception_ptr importError;
+  try {
+    for (int32_t peer = 0; peer < nRanks; ++peer) {
+      if (peer == rank) {
+        continue;
+      }
+      const auto peerIdx = static_cast<std::size_t>(peer);
+      const auto peerHandle = decodePreparedCudaIpcHandle(allData[peerIdx]);
+      checkCudaError(
+          cudaIpcOpenMemHandle(
+              &result.peerPtrs[peerIdx],
+              peerHandle,
+              cudaIpcMemLazyEnablePeerAccess),
+          "cudaIpcOpenMemHandle failed");
+    }
+  } catch (...) {
+    importError = std::current_exception();
+  }
+
+  try {
+    detail::allGatherAndAgree(
+        bootstrap,
+        rank,
+        nRanks,
+        importStatus,
+        importError,
+        "nvlMemExchangeCudaIpc peer import");
+  } catch (...) {
+    closeCudaIpcPeerMappings(result, rank);
+    throw;
+  }
+
+  return std::move(result);
 }
 
 } // namespace comms::prims
