@@ -75,6 +75,9 @@ std::optional<TopologyResult> loadTopology(
   bool isBackendTopologyValid = false;
 
   while (std::getline(file, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
     size_t pos = line.find('=');
     if (pos == std::string::npos) {
       // skip if no "=" found
