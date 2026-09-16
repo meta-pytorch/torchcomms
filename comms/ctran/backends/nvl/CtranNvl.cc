@@ -15,21 +15,24 @@ CtranNvl::CtranNvl(CtranComm* comm) {
   int myRank = statex->rank();
   int myLocalRank = statex->localRank();
   int nLocalRanks = statex->nLocalRanks();
-  // Exchange device IDs used by each local rank
-  std::vector<int> peerDevs(nLocalRanks, 0);
+  const bool precomputedTopology = statex->hasPrecomputedTopology();
   std::vector<std::string> supportedInraHostRanksStr;
   std::vector<std::string> nvlFabricSupportedRanksStr;
 
-  peerDevs[myLocalRank] = statex->cudaDev();
-  auto resFuture = comm->bootstrap_->allGatherNvlDomain(
-      peerDevs.data(),
-      sizeof(int),
-      myLocalRank,
-      nLocalRanks,
-      statex->localRankToRanks());
-  FB_COMMCHECKTHROW_EX(
-      static_cast<commResult_t>(std::move(resFuture).get()),
-      comm->logMetaData_);
+  std::vector<int> peerDevs;
+  if (!precomputedTopology) {
+    peerDevs.resize(nLocalRanks, 0);
+    peerDevs[myLocalRank] = statex->cudaDev();
+    auto resFuture = comm->bootstrap_->allGatherNvlDomain(
+        peerDevs.data(),
+        sizeof(int),
+        myLocalRank,
+        nLocalRanks,
+        statex->localRankToRanks());
+    FB_COMMCHECKTHROW_EX(
+        static_cast<commResult_t>(std::move(resFuture).get()),
+        comm->logMetaData_);
+  }
 
   this->pimpl_ = std::make_unique<Impl>();
   this->pimpl_->comm = comm;
@@ -37,31 +40,45 @@ CtranNvl::CtranNvl(CtranComm* comm) {
 
   // Check IPC support for each peer
   for (int i = 0; i < nLocalRanks; ++i) {
+    const int peerRank = statex->localRankToRank(i);
+    if (precomputedTopology) {
+      const bool sameHost = statex->host(myRank) == statex->host(peerRank);
+      if (sameHost) {
+        this->pimpl_->nvlRankSupportMode[peerRank].nvlIntraHost = true;
+        supportedInraHostRanksStr.push_back(std::to_string(peerRank));
+      } else if (statex->nvlFabricEnabled()) {
+        this->pimpl_->nvlRankSupportMode[peerRank].nvlFabric = true;
+        nvlFabricSupportedRanksStr.push_back(std::to_string(peerRank));
+      } else {
+        FB_ERRORTHROW_EX(
+            commInternalError,
+            comm->logMetaData_,
+            "CTRAN-NVL: precomputed non-fabric domain crosses hosts for rank {}",
+            peerRank);
+      }
+      continue;
+    }
     // if supported, update nvlFabric support mode for each peer
     if (statex->nvlFabricEnabled()) {
       if (NCCL_MNNVL_TRUNK_DISABLE) {
-        bool p2pAccess = comm->statex_->isSameDeviceRack(
-            comm->logMetaData_.rank, statex->localRankToRank(i));
+        bool p2pAccess =
+            comm->statex_->isSameDeviceRack(comm->logMetaData_.rank, peerRank);
         if (!p2pAccess) {
           CTRAN_LOG_SUBSYS(
               INFO,
               INIT,
               "NCCL_MNNVL_TRUNK_DISABLE set to True. P2P disabled between rank1: {} rank2: {} because rackserial mismatch",
               comm->logMetaData_.rank,
-              statex->localRankToRank(i));
+              peerRank);
           continue;
         }
       }
-      this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)].nvlFabric =
-          true;
-      nvlFabricSupportedRanksStr.push_back(
-          std::to_string(statex->localRankToRank(i)));
+      this->pimpl_->nvlRankSupportMode[peerRank].nvlFabric = true;
+      nvlFabricSupportedRanksStr.push_back(std::to_string(peerRank));
     } else {
       if (myLocalRank == i) {
-        this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
-            .nvlIntraHost = true;
-        supportedInraHostRanksStr.push_back(
-            std::to_string(statex->localRankToRank(i)));
+        this->pimpl_->nvlRankSupportMode[peerRank].nvlIntraHost = true;
+        supportedInraHostRanksStr.push_back(std::to_string(peerRank));
         continue;
       }
       int canAccessPeer = 1;
@@ -70,10 +87,8 @@ CtranNvl::CtranNvl(CtranComm* comm) {
               &canAccessPeer, statex->cudaDev(), peerDevs[i]),
           comm->logMetaData_);
       if (canAccessPeer) {
-        this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
-            .nvlIntraHost = true;
-        supportedInraHostRanksStr.push_back(
-            std::to_string(statex->localRankToRank(i)));
+        this->pimpl_->nvlRankSupportMode[peerRank].nvlIntraHost = true;
+        supportedInraHostRanksStr.push_back(std::to_string(peerRank));
       } else {
         CTRAN_LOG_SUBSYS(
             INFO,
@@ -82,7 +97,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
             myRank,
             myLocalRank,
             statex->cudaDev(),
-            statex->localRankToRank(i),
+            peerRank,
             i,
             peerDevs[i]);
       }

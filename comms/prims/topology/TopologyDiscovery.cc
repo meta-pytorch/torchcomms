@@ -230,9 +230,20 @@ void validateCanonicalConfig(
     throw std::invalid_argument(
         "TopologyDiscovery: MNNVL clique ID must be non-negative");
   }
-  if (config.localDeviceRack.size() >= kCanonicalTopologyNameLength) {
+  const auto validateLocalString = [](std::string_view value,
+                                      std::string_view name) {
+    if (value.size() >= kCanonicalTopologyNameLength) {
+      throw std::invalid_argument(
+          "TopologyDiscovery: " + std::string{name} + " exceeds wire capacity");
+    }
+  };
+  validateLocalString(config.localHostname, "hostname");
+  validateLocalString(config.localZone, "zone");
+  validateLocalString(config.localDc, "data center");
+  validateLocalString(config.localDeviceRack, "device rack");
+  if (config.localPid != -1 && config.localPid <= 0) {
     throw std::invalid_argument(
-        "TopologyDiscovery: device rack exceeds wire capacity");
+        "TopologyDiscovery: process ID must be positive or unspecified");
   }
   if (config.domainMode == TopologyDomainMode::kVirtual) {
     if (config.virtualDomainSize <= 0 ||
@@ -273,6 +284,11 @@ void validateCanonicalRankInfo(
           "TopologyDiscovery: gathered invalid CUDA device at rank " +
           std::to_string(rank));
     }
+    if (info.pid <= 0) {
+      throw std::runtime_error(
+          "TopologyDiscovery: gathered invalid process ID at rank " +
+          std::to_string(rank));
+    }
     if (info.fabricInfoAvailable > 1 || info.fabricHandleAvailable > 1) {
       throw std::runtime_error(
           "TopologyDiscovery: gathered invalid capability flag at rank " +
@@ -284,7 +300,11 @@ void validateCanonicalRankInfo(
           std::to_string(rank));
     }
     if (info.reserved[0] != 0 || info.reserved[1] != 0 ||
-        info.policy.reserved != 0) {
+        info.policy.reserved != 0 ||
+        std::any_of(
+            info.metadataReserved.begin(),
+            info.metadataReserved.end(),
+            [](std::uint8_t value) { return value != 0; })) {
       throw std::runtime_error(
           "TopologyDiscovery: gathered nonzero reserved wire field at rank " +
           std::to_string(rank));
@@ -299,6 +319,8 @@ void validateCanonicalRankInfo(
           std::to_string(rank));
     }
     (void)fixedStringView(info.deviceRack);
+    (void)fixedStringView(info.zone);
+    (void)fixedStringView(info.dc);
   }
 }
 
@@ -868,6 +890,7 @@ CanonicalTopologyResult TopologyDiscovery::classifyCanonical(
       .rankInfo = std::move(rankInfo),
       .ranksByDomain = std::move(ranksByDomain),
       .mptTopology = std::move(mptTopology),
+      .fabricActive = fabricActive,
   };
 }
 
@@ -916,8 +939,22 @@ CanonicalTopologyResult TopologyDiscovery::discoverCanonical(
       throw std::runtime_error(
           "local topology returned an invalid CUDA device");
     }
-    copyFixedString(localWire.hostname, legacyHostname(localInfo));
+    const auto processId = topoConfig.localPid != -1
+        ? static_cast<std::int64_t>(topoConfig.localPid)
+        : static_cast<std::int64_t>(getpid());
+    if (processId <= 0 ||
+        processId > std::numeric_limits<std::int32_t>::max()) {
+      throw std::runtime_error("local topology returned an invalid process ID");
+    }
+    localWire.pid = static_cast<std::int32_t>(processId);
+    copyFixedString(
+        localWire.hostname,
+        topoConfig.localHostname.empty()
+            ? legacyHostname(localInfo)
+            : std::string_view{topoConfig.localHostname});
     copyFixedString(localWire.deviceRack, topoConfig.localDeviceRack);
+    copyFixedString(localWire.zone, topoConfig.localZone);
+    copyFixedString(localWire.dc, topoConfig.localDc);
     if (localInfo.fabricInfo.available) {
       std::copy_n(
           localInfo.fabricInfo.clusterUuid,

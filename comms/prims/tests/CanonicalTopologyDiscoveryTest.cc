@@ -58,6 +58,7 @@ CanonicalRankTopologyInfo makeCanonicalRank(
   CanonicalRankTopologyInfo info;
   info.rank = rank;
   info.cudaDevice = rank;
+  info.pid = 1000 + rank;
   info.policy = makePolicy(config);
   setWireString(info.hostname, hostname);
   setWireString(info.deviceRack, rack);
@@ -196,6 +197,7 @@ TEST(CanonicalTopologyDiscoveryTest, UsesUuidAndCliqueAsFabricIdentity) {
       result.ranksByDomain, (std::vector<std::vector<int>>{{0, 1}, {2}, {3}}));
   EXPECT_EQ(result.mptTopology.nvlPeerRanks, (std::vector<int>{1}));
   EXPECT_TRUE(result.mptTopology.fabricAvailable);
+  EXPECT_TRUE(result.fabricActive);
 }
 
 TEST(CanonicalTopologyDiscoveryTest, SameHostP2pBridgesDifferentFabricIds) {
@@ -473,7 +475,13 @@ TEST(CanonicalTopologyDiscoveryTest, PacksRanksAcrossByteBoundaries) {
 
 TEST(CanonicalTopologyDiscoveryTest, DiscoverUsesThreeValidatedGatherPhases) {
   constexpr int kNRanks = 2;
-  const CanonicalTopologyConfig config;
+  const CanonicalTopologyConfig config{
+      .localPid = 4321,
+      .localHostname = "host-a",
+      .localZone = "zone-a",
+      .localDc = "dc-a",
+      .localDeviceRack = "rack-a",
+  };
   const auto remote = makeCanonicalRank(1, "host-a", config);
   MockBootstrap bootstrap;
   InSequence sequence;
@@ -494,6 +502,11 @@ TEST(CanonicalTopologyDiscoveryTest, DiscoverUsesThreeValidatedGatherPhases) {
         auto* ranks = static_cast<CanonicalRankTopologyInfo*>(buffer);
         EXPECT_EQ(ranks[0].rank, 0);
         EXPECT_EQ(ranks[0].cudaDevice, 0);
+        EXPECT_EQ(ranks[0].pid, 4321);
+        EXPECT_STREQ(ranks[0].hostname.data(), "host-a");
+        EXPECT_STREQ(ranks[0].zone.data(), "zone-a");
+        EXPECT_STREQ(ranks[0].dc.data(), "dc-a");
+        EXPECT_STREQ(ranks[0].deviceRack.data(), "rack-a");
         ranks[1] = remote;
         return folly::makeSemiFuture(0);
       });
@@ -598,6 +611,39 @@ TEST(CanonicalTopologyDiscoveryTest, PreambleRejectsIncompatibleRecordSize) {
         ++preambles[1].recordSize;
         return folly::makeSemiFuture(0);
       });
+  const auto localInfo = make_rank_info("host-a", /*cudaDevice=*/0);
+  TopologyDiscovery discovery(
+      [](int, int) { return true; },
+      [localInfo](int) { return localInfo; },
+      [](int) { return false; });
+
+  EXPECT_THROW(
+      discovery.discoverCanonical(
+          /*myRank=*/0,
+          kNRanks,
+          /*deviceId=*/0,
+          bootstrap,
+          CanonicalTopologyConfig{}),
+      std::runtime_error);
+}
+
+TEST(CanonicalTopologyDiscoveryTest, PreambleRejectsVersionOneBeforePayload) {
+  constexpr int kNRanks = 2;
+  MockBootstrap bootstrap;
+  EXPECT_CALL(
+      bootstrap,
+      allGather(
+          _, kCanonicalTopologyPreambleSize, /*rank=*/0, /*nranks=*/kNRanks))
+      .WillOnce([](void* buffer, int, int, int) {
+        auto* preambles = static_cast<CanonicalTopologyPreamble*>(buffer);
+        preambles[1] = preambles[0];
+        preambles[1].rank = 1;
+        preambles[1].version = 1;
+        preambles[1].recordSize = 192;
+        return folly::makeSemiFuture(0);
+      });
+  EXPECT_CALL(bootstrap, allGather(_, kCanonicalTopologyWireSize, 0, kNRanks))
+      .Times(0);
   const auto localInfo = make_rank_info("host-a", /*cudaDevice=*/0);
   TopologyDiscovery discovery(
       [](int, int) { return true; },
