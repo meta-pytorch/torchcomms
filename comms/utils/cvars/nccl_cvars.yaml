@@ -2020,7 +2020,7 @@ cvars:
 
  - name        : MCCL_PRIMS_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Select PRiMS transport ownership for MCCL communicators. Set true to use
      the MCCL-owned direct runtime, or false to use the legacy CTRAN-owned PRiMS
