@@ -164,6 +164,15 @@ class GpuMemHandler {
    */
   void exchangeMemPtrs();
 
+  /** Allocate exchange scratch without performing bootstrap communication. */
+  void prepareExchange();
+
+  /**
+   * Run the failure-safe exchange after prepareExchange() and an external team
+   * readiness agreement. A failure poisons this handler and cannot be retried.
+   */
+  void exchangeMemPtrsPrepared();
+
   /**
    * Get pointer to local memory (this rank's allocation).
    *
@@ -265,6 +274,9 @@ class GpuMemHandler {
    */
   static MemSharingMode detectBestMode();
 
+  /** Get the best available sharing mode for `cudaDevice`. */
+  static MemSharingMode detectBestMode(int cudaDevice);
+
   /**
    * Returns whether multicast/multimem is supported on `cudaDevice`. Delegates
    * to MultimemHandler::isMultimemSupported.
@@ -287,11 +299,13 @@ class GpuMemHandler {
   // shareable-handle type is chosen at exchange time via supportsFabric().
   void allocateVmmMemory(size_t size, std::size_t alignFloor);
   void exchangeVmmHandles();
+  void exchangeVmmHandlesPrepared();
   void cleanupVmm();
 
   // CudaIpc mode methods
   void allocateCudaIpcMemory(size_t size);
   void exchangeCudaIpcHandles();
+  void exchangeCudaIpcHandlesPrepared();
   void cleanupCudaIpc();
 
   // True for the VMM-backed modes (kFabric / kPosixFd), which share the same
@@ -321,6 +335,9 @@ class GpuMemHandler {
   // exchangeMemPtrs(). For VMM modes the peer mappings co-own their imported
   // allocations; for cudaIpc only the peer pointers (owned by the IPC runtime).
   NvlPeerMem peers_;
+  std::unique_ptr<NvlMemExchangeWorkspace> exchangeWorkspace_;
+  bool exchangePrepared_{false};
+  bool exchangeFailed_{false};
 #ifndef __HIP_PLATFORM_AMD__
   // Optional NVSwitch multicast overlay over allocation_, created lazily by
   // exchangeMulticast(). NVIDIA-only; forward-declared, destroyed via the
