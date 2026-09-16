@@ -154,6 +154,41 @@ bool ctranAllToAllvSupport(CtranComm* comm);
 
 bool ctranDeviceAllToAllvSupport(CtranComm* comm);
 
+enum class IbImplType {
+  // Use the NCCL socket to bootstrap compressed buffer sizes. This is slower
+  // but permits efficient memory sizing.
+  Bootstrap,
+  // Embed the compressed buffer in the IB control message. This is faster but
+  // may fragment memory because it assumes a fixed size for each rank.
+  IbExchange,
+};
+
+constexpr std::optional<IbImplType> ctranAllToAllvIbImplType(
+    enum NCCL_ALLTOALLV_ALGO algo) {
+  switch (algo) {
+    case NCCL_ALLTOALLV_ALGO::compCtran:
+      return IbImplType::IbExchange;
+    case NCCL_ALLTOALLV_ALGO::bsCompCtran:
+      return IbImplType::Bootstrap;
+    default:
+      return std::nullopt;
+  }
+}
+
+constexpr bool ctranAllToAllvIbImplAllowed(
+    std::optional<IbImplType> ibImplType,
+    bool allowBootstrapTransport) {
+  return allowBootstrapTransport ||
+      ibImplType != std::optional{IbImplType::Bootstrap};
+}
+
+static_assert(ctranAllToAllvIbImplAllowed(
+    ctranAllToAllvIbImplType(NCCL_ALLTOALLV_ALGO::compCtran),
+    false));
+static_assert(!ctranAllToAllvIbImplAllowed(
+    ctranAllToAllvIbImplType(NCCL_ALLTOALLV_ALGO::bsCompCtran),
+    false));
+
 commResult_t ctranDeviceAllToAllv(
     const void* sendbuff,
     void* recvbuff,
@@ -175,7 +210,9 @@ commResult_t ctranAllToAllv(
     const size_t rdispls[],
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_ALLTOALLV_ALGO algo = NCCL_ALLTOALLV_ALGO,
+    bool allowBootstrapTransport = true);
 
 bool ctranBroadcastSupport(
     CtranComm* comm,
