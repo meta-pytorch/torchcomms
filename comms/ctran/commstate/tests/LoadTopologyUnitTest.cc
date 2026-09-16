@@ -35,6 +35,23 @@ TEST(TopologyTest, LoadTopologySuccess) {
   EXPECT_EQ(topo->networkTopo, "/nha1.1D//rtsw098.c084.f00.nha1");
 }
 
+TEST(TopologyTest, LoadTopologyNormalizesCrLfLines) {
+  const std::string filepath = "/tmp/ut-topology-crlf.txt";
+  std::ofstream file(filepath, std::ios::binary);
+  file << "DEVICE_NAME=twshared3075.01.oce1.facebook.com\r\n"
+       << "DEVICE_BACKEND_NETWORK_TOPOLOGY=uco1/uco1.z086//\r\n"
+       << "DEVICE_RACK_SERIAL=C1507842765072\r\n";
+  file.close();
+
+  auto topo = ctran::commstate::loadTopology(0, filepath);
+  ASSERT_TRUE(topo);
+  EXPECT_STREQ(topo->rankTopology.host, "twshared3075.01.oce1.facebook.com");
+  EXPECT_STREQ(topo->rankTopology.dc, "uco1");
+  EXPECT_STREQ(topo->rankTopology.zone, "uco1.z086");
+  EXPECT_STREQ(topo->rankTopology.rackSerial, "C1507842765072");
+  EXPECT_EQ(topo->networkTopo, "uco1/uco1.z086//");
+}
+
 TEST(TopologyTest, LoadTopologyFallsBackToHostnameWhenFileIsEmpty) {
   const std::string filepath = "/tmp/ut-topology.txt";
   std::ofstream file(filepath);

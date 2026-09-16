@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -8,7 +9,10 @@
 #include <stdlib.h>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
@@ -55,6 +59,65 @@ TEST_P(CtranNvlTestSuite, NormalInitialize) {
     auto ctranNvl = std::make_unique<CtranNvl>(this->comm);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "NVL backend failed to allocate. Skip test";
+  }
+}
+
+TEST_F(CtranNvlTest, PrecomputedPhysicalDomainIsTrusted) {
+  auto rankTopologies = comm->statex_->rankTopologiesRef();
+  std::vector<std::vector<int>> domains;
+  for (int rank = 0; rank < comm->statex_->nRanks(); ++rank) {
+    const std::string host = rankTopologies[rank].host;
+    auto domain = domains.begin();
+    for (; domain != domains.end(); ++domain) {
+      if (std::string{rankTopologies[domain->front()].host} == host) {
+        break;
+      }
+    }
+    if (domain == domains.end()) {
+      domains.push_back({rank});
+    } else {
+      domain->push_back(rank);
+    }
+  }
+  comm->statex_->setPrecomputedTopology(
+      std::move(rankTopologies),
+      std::move(domains),
+      /*fabricActive=*/false);
+
+  auto bootstrap = std::move(comm->bootstrap_);
+  auto restoreBootstrap =
+      folly::makeGuard([&] { comm->bootstrap_ = std::move(bootstrap); });
+  CtranNvl ctranNvl{comm};
+  for (int rank = 0; rank < comm->statex_->nRanks(); ++rank) {
+    const bool sameHost = comm->statex_->host() == comm->statex_->host(rank);
+    EXPECT_EQ(ctranNvl.isSupported(rank), sameHost);
+    EXPECT_FALSE(ctranNvl.isNvlFabric(rank));
+  }
+}
+
+TEST_F(CtranNvlTest, PrecomputedFabricDomainIsTrusted) {
+  std::vector<int> ranks;
+  auto rankTopologies = comm->statex_->rankTopologiesRef();
+  for (int rank = 0; rank < comm->statex_->nRanks(); ++rank) {
+    ranks.push_back(rank);
+    std::snprintf(
+        rankTopologies[rank].host,
+        sizeof(rankTopologies[rank].host),
+        "precomputed-host-%d",
+        rank);
+  }
+  comm->statex_->setPrecomputedTopology(
+      std::move(rankTopologies),
+      {std::move(ranks)},
+      /*fabricActive=*/true);
+
+  auto bootstrap = std::move(comm->bootstrap_);
+  auto restoreBootstrap =
+      folly::makeGuard([&] { comm->bootstrap_ = std::move(bootstrap); });
+  CtranNvl ctranNvl{comm};
+  for (int rank = 0; rank < comm->statex_->nRanks(); ++rank) {
+    EXPECT_TRUE(ctranNvl.isSupported(rank));
+    EXPECT_EQ(ctranNvl.isNvlFabric(rank), rank != comm->statex_->rank());
   }
 }
 
