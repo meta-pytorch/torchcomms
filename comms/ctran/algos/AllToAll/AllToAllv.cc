@@ -3,6 +3,7 @@
 #include <cuda_fp16.h>
 #include <cstddef>
 
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
@@ -256,7 +257,17 @@ commResult_t ctranAllToAllv(
     const size_t rdispls[],
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_ALLTOALLV_ALGO algo,
+    bool allowBootstrapTransport) {
+  const auto ibImplType = ctranAllToAllvIbImplType(algo);
+  if (!ctranAllToAllvIbImplAllowed(ibImplType, allowBootstrapTransport)) {
+    CTRAN_LOG(
+        ERR,
+        "bootstrap-backed compressed AllToAllv is incompatible with this caller");
+    return commInvalidArgument;
+  }
+
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_COLL_INFO(
       allToAllvAlgoName(myAlgo).c_str(),
@@ -286,31 +297,31 @@ commResult_t ctranAllToAllv(
   }
 
 #ifdef ENABLE_META_COMPRESSION
-  if ((NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::compCtran) &&
-      ctranCompressedAllToAllvSupport(comm)) {
-    return ctranCompressedAllToAllv(
-        sendbuff,
-        sendcounts,
-        sdispls,
-        recvbuff,
-        recvcounts,
-        rdispls,
-        datatype,
-        comm,
-        stream);
-  } else if (
-      (NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::bsCompCtran) &&
-      ctranCompressedAllToAllvSupport(comm)) {
-    return ctranBootstrapCompressedAllToAllv(
-        sendbuff,
-        sendcounts,
-        sdispls,
-        recvbuff,
-        recvcounts,
-        rdispls,
-        datatype,
-        comm,
-        stream);
+  if (ibImplType.has_value() && ctranCompressedAllToAllvSupport(comm)) {
+    switch (*ibImplType) {
+      case IbImplType::IbExchange:
+        return ctranCompressedAllToAllv(
+            sendbuff,
+            sendcounts,
+            sdispls,
+            recvbuff,
+            recvcounts,
+            rdispls,
+            datatype,
+            comm,
+            stream);
+      case IbImplType::Bootstrap:
+        return ctranBootstrapCompressedAllToAllv(
+            sendbuff,
+            sendcounts,
+            sdispls,
+            recvbuff,
+            recvcounts,
+            rdispls,
+            datatype,
+            comm,
+            stream);
+    }
   }
 #endif
 
