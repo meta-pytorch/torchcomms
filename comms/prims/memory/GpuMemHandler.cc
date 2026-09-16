@@ -172,7 +172,16 @@ MemSharingMode GpuMemHandler::detectBestMode() {
   if (cudaGetDevice(&cudaDev) != cudaSuccess) {
     return MemSharingMode::kCudaIpc;
   }
-  switch (selectShareableHandleType(cudaDev)) {
+  return detectBestMode(cudaDev);
+#endif
+}
+
+MemSharingMode GpuMemHandler::detectBestMode(int cudaDevice) {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  (void)cudaDevice;
+  return MemSharingMode::kCudaIpc;
+#else
+  switch (selectShareableHandleType(cudaDevice)) {
     case ShareableHandleType::kFabric:
       return MemSharingMode::kFabric;
     case ShareableHandleType::kPosixFd:
@@ -285,6 +294,10 @@ void* GpuMemHandler::getPeerDeviceMemPtr(int32_t rank) const {
 }
 
 void GpuMemHandler::exchangeMemPtrs() {
+  if (exchangeFailed_) {
+    throw std::runtime_error(
+        "GpuMemHandler: prepared exchange previously failed");
+  }
   if (exchanged_) {
     return;
   }
@@ -302,6 +315,56 @@ void GpuMemHandler::exchangeMemPtrs() {
   }
 
   exchanged_ = true;
+  exchangeWorkspace_.reset();
+}
+
+void GpuMemHandler::prepareExchange() {
+  if (exchangeFailed_) {
+    throw std::runtime_error(
+        "GpuMemHandler: prepared exchange previously failed");
+  }
+  if (exchanged_ || exchangePrepared_) {
+    return;
+  }
+  if (nRanks_ > 1) {
+    exchangeWorkspace_ = std::make_unique<NvlMemExchangeWorkspace>(
+        selfRank_, nRanks_, getLocalDeviceMemPtr());
+  }
+  exchangePrepared_ = true;
+}
+
+void GpuMemHandler::exchangeMemPtrsPrepared() {
+  if (exchangeFailed_) {
+    throw std::runtime_error(
+        "GpuMemHandler: prepared exchange previously failed");
+  }
+  if (exchanged_) {
+    return;
+  }
+  if (!exchangePrepared_) {
+    throw std::logic_error(
+        "GpuMemHandler::exchangeMemPtrsPrepared called before prepareExchange");
+  }
+  if (nRanks_ == 1) {
+    exchanged_ = true;
+    exchangeWorkspace_.reset();
+    return;
+  }
+
+  try {
+    if (isVmmMode()) {
+      exchangeVmmHandlesPrepared();
+    } else {
+      exchangeCudaIpcHandlesPrepared();
+    }
+  } catch (...) {
+    exchangeFailed_ = true;
+    exchangeWorkspace_.reset();
+    throw;
+  }
+
+  exchanged_ = true;
+  exchangeWorkspace_.reset();
 }
 
 const cudaIpcMemHandle_t& GpuMemHandler::getLocalIpcHandle() const {
@@ -465,6 +528,23 @@ void GpuMemHandler::exchangeVmmHandles() {
 #endif
 }
 
+void GpuMemHandler::exchangeVmmHandlesPrepared() {
+#if defined(__HIP_PLATFORM_AMD__) || CUDART_VERSION < 12030
+  throw std::runtime_error("VMM shareable handles require CUDA 12.3+");
+#else
+  peers_ = nvlMemExchangeVmmPrepared(
+      *bootstrap_,
+      selfRank_,
+      nRanks_,
+      allocation_->device(),
+      allocation_->handle(),
+      getLocalDeviceMemPtr(),
+      allocation_->size(),
+      mode_ == MemSharingMode::kFabric,
+      *exchangeWorkspace_);
+#endif
+}
+
 void GpuMemHandler::cleanupVmm() {
 #if !defined(__HIP_PLATFORM_AMD__) && CUDART_VERSION >= 12030
   // RAII teardown: unicast VA first, then peer VAs (each co-owns its imported
@@ -495,15 +575,31 @@ void GpuMemHandler::allocateCudaIpcMemory(size_t size) {
   }
   // Cache the local IPC handle for getLocalIpcHandle(). It depends only on the
   // local allocation, so deriving it here makes it valid before exchange too.
-  checkCudaError(
-      cudaIpcGetMemHandle(&cudaIpcLocalHandle_, cudaIpcLocalPtr_),
-      "cudaIpcGetMemHandle failed");
+  try {
+    checkCudaError(
+        cudaIpcGetMemHandle(&cudaIpcLocalHandle_, cudaIpcLocalPtr_),
+        "cudaIpcGetMemHandle failed");
+  } catch (...) {
+    static_cast<void>(cudaFree(cudaIpcLocalPtr_));
+    cudaIpcLocalPtr_ = nullptr;
+    throw;
+  }
   allocatedSize_ = size;
 }
 
 void GpuMemHandler::exchangeCudaIpcHandles() {
   peers_ =
       nvlMemExchangeCudaIpc(*bootstrap_, selfRank_, nRanks_, cudaIpcLocalPtr_);
+}
+
+void GpuMemHandler::exchangeCudaIpcHandlesPrepared() {
+  peers_ = nvlMemExchangeCudaIpcPrepared(
+      *bootstrap_,
+      selfRank_,
+      nRanks_,
+      cudaIpcLocalPtr_,
+      cudaIpcLocalHandle_,
+      *exchangeWorkspace_);
 }
 
 void GpuMemHandler::cleanupCudaIpc() {

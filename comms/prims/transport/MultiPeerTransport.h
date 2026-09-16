@@ -107,6 +107,24 @@ class MultiPeerTransport {
    */
   void exchange();
 
+  /**
+   * Perform all rank-local allocation required by exchangePrepared().
+   *
+   * This operation is idempotent and performs no bootstrap communication. A
+   * caller coordinating failure across the communicator must run its readiness
+   * agreement after every rank has attempted this method.
+   */
+  void prepareExchange();
+
+  /**
+   * Complete the failure-safe exchange after prepareExchange() has succeeded
+   * and the caller has agreed readiness across the full communicator.
+   *
+   * Unlike exchange(), the CUDA-IPC path includes a post-import team agreement.
+   * A failure poisons this transport and cannot be retried.
+   */
+  void exchangePrepared();
+
   // --- Topology queries ---
 
   /** @return Preferred transport type for the given peer rank. */
@@ -384,14 +402,19 @@ class MultiPeerTransport {
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
+  std::vector<Transport> transportsHost_;
   bool deviceHandleBuilt_{false};
+
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
 
   // --- Private helpers ---
   void initFromTopology(
       TopologyResult topo,
       const MultiPeerTransportConfig& config);
-  void build_device_handle();
+  void build_device_handle(bool allowAllocation);
   void free_device_handle();
+  void rollbackPreparedExchange() noexcept;
 
   // Memory type detection for exchangeNvlBuffer tri-path support.
   enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };

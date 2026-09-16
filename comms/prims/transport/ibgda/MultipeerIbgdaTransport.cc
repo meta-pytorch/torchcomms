@@ -1485,20 +1485,63 @@ void MultipeerIbgdaTransport::cleanup() {
 }
 
 void MultipeerIbgdaTransport::exchange() {
+  prepareExchange();
+  exchangePrepared();
+}
+
+void MultipeerIbgdaTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultipeerIbgdaTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+
   const int numPeers = nRanks_ - 1;
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
   const std::size_t totalBytes = numPeers * peerTransportSize_;
-  cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
-  if (err != cudaSuccess) {
+  try {
+    cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
+    if (err != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate on-demand device transport array: " +
+          std::string(cudaGetErrorString(err)));
+    }
+    try {
+      gpuAllocations_.push_back(peerTransportsGpu_);
+    } catch (...) {
+      static_cast<void>(cudaFree(peerTransportsGpu_));
+      peerTransportsGpu_ = nullptr;
+      throw;
+    }
+    err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
+    if (err != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to zero on-demand device transport array");
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    cleanup();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultipeerIbgdaTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
     throw std::runtime_error(
-        "Failed to allocate on-demand device transport array: " +
-        std::string(cudaGetErrorString(err)));
+        "MultipeerIbgdaTransport: exchange previously failed");
   }
-  gpuAllocations_.push_back(peerTransportsGpu_);
-  err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
-  if (err != cudaSuccess) {
-    throw std::runtime_error("Failed to zero on-demand device transport array");
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
   }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultipeerIbgdaTransport::exchangePrepared called before prepareExchange");
+  }
+  exchangeState_ = ExchangeState::kExchanged;
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " exchange complete (per-peer state deferred to materializePeer)";
 }

@@ -19,6 +19,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -163,6 +164,54 @@ struct NvlPeerMem {
 };
 
 /**
+ * Scratch storage allocated before a failure-safe NVLink memory exchange.
+ *
+ * Construct this during the caller's local preparation phase, before the
+ * communicator-wide readiness agreement. The prepared exchange entry points
+ * below then perform no host-vector allocation before their first collective.
+ * A workspace is one-shot: either prepared helper consumes it on entry, and a
+ * later call fails locally without touching bootstrap. The helper arguments
+ * must also match the rank, rank count, and local pointer supplied here.
+ * The workspace does not own `localPtr`; its allocation must remain alive
+ * through the prepared collective. GpuMemHandler provides that ownership in
+ * production.
+ */
+class NvlMemExchangeWorkspace {
+ public:
+  NvlMemExchangeWorkspace(int32_t rank, int32_t nRanks, void* localPtr);
+  ~NvlMemExchangeWorkspace();
+
+  NvlMemExchangeWorkspace(const NvlMemExchangeWorkspace&) = delete;
+  NvlMemExchangeWorkspace& operator=(const NvlMemExchangeWorkspace&) = delete;
+  NvlMemExchangeWorkspace(NvlMemExchangeWorkspace&&) = delete;
+  NvlMemExchangeWorkspace& operator=(NvlMemExchangeWorkspace&&) = delete;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+
+  void consume(int32_t rank, int32_t nRanks, void* localPtr);
+
+  friend NvlPeerMem nvlMemExchangeVmmPrepared(
+      meta::comms::IBootstrap&,
+      int32_t,
+      int32_t,
+      CUdevice,
+      CUmemGenericAllocationHandle,
+      void*,
+      std::size_t,
+      bool,
+      NvlMemExchangeWorkspace&);
+  friend NvlPeerMem nvlMemExchangeCudaIpcPrepared(
+      meta::comms::IBootstrap&,
+      int32_t,
+      int32_t,
+      void*,
+      const cudaIpcMemHandle_t&,
+      NvlMemExchangeWorkspace&);
+};
+
+/**
  * VMM (fabric / POSIX FD) peer exchange.
  *
  * Exports `localHandle` (as fabric when `preferFabric`, else POSIX FD) and
@@ -184,6 +233,17 @@ NvlPeerMem nvlMemExchangeVmm(
     std::size_t allocatedSize,
     bool preferFabric);
 
+NvlPeerMem nvlMemExchangeVmmPrepared(
+    meta::comms::IBootstrap& bootstrap,
+    int32_t rank,
+    int32_t nRanks,
+    CUdevice cuDev,
+    CUmemGenericAllocationHandle localHandle,
+    void* localPtr,
+    std::size_t allocatedSize,
+    bool preferFabric,
+    NvlMemExchangeWorkspace& workspace);
+
 /**
  * cudaIpc peer exchange.
  *
@@ -198,5 +258,20 @@ NvlPeerMem nvlMemExchangeCudaIpc(
     int32_t rank,
     int32_t nRanks,
     void* localPtr);
+
+/**
+ * Failure-safe cudaIpc exchange using storage and the local handle prepared
+ * before the caller's communicator-wide readiness agreement.
+ *
+ * Handle exchange and peer import each end in a team status agreement. Any
+ * failure closes peer mappings opened by this attempt before it is propagated.
+ */
+NvlPeerMem nvlMemExchangeCudaIpcPrepared(
+    meta::comms::IBootstrap& bootstrap,
+    int32_t rank,
+    int32_t nRanks,
+    void* localPtr,
+    const cudaIpcMemHandle_t& localHandle,
+    NvlMemExchangeWorkspace& workspace);
 
 } // namespace comms::prims
