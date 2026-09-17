@@ -2027,12 +2027,12 @@ cvars:
 
  - name        : MCCL_PRIMS_ENABLE
    type        : bool
-   default     : true
+   default     : false
    description : |-
-     Enable Prims transports for MCCL communicators. This is independent of
-     NCCL_CTRAN_USE_PIPES so enabling Prims in MCCL does not enable Pipes for
-     NCCLX or standalone Ctran users. Set false to roll MCCL communicators back
-     to the legacy transport policy.
+     Select PRiMS transport ownership for MCCL communicators. Set true to use
+     the MCCL-owned direct runtime, or false to use the legacy CTRAN-owned PRiMS
+     route. This selector does not provide a PRiMS-disabled MCCL mode and does
+     not change NCCLX or standalone CTRAN policy.
 
  - name        : MCCL_SENDRECV_BLOCKING
    type        : bool
