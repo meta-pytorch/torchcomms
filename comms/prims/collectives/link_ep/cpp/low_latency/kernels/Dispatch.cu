@@ -96,6 +96,7 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
   const int warp_group_id = warp_id / kNumWarpsPerGroup;
   const int sub_warp_id = warp_id % kNumWarpsPerGroup;
   const int responsible_expert_idx = sm_id * kNumWarpGroups + warp_group_id;
+  const AbortDevice abortDevice{};
 
   // BF16 mode: hidden bytes = kHidden * 2 (bf16 = 2 bytes)
   constexpr int kNumElemsPerRead = sizeof(int4) / sizeof(uint16_t); // 8
@@ -217,7 +218,8 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
                 local_buf,
                 remote_slot,
                 num_bytes_per_msg,
-                IbgdaRemoteBuffer{}); // no signal; count put below, same QP
+                IbgdaRemoteBuffer{},
+                abortDevice); // no signal; count put below, same QP
           } else {
             // Should be unreachable in well-formed runs (caller passes
             // either valid IBGDA or all peers same-node). Trap to surface
@@ -361,7 +363,8 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_dis
           local_buf,
           remote_slot,
           sizeof(int64_t),
-          comms::prims::IbgdaRemoteBuffer{});
+          comms::prims::IbgdaRemoteBuffer{},
+          abortDevice);
     } else {
       printf(
           "link_ep LL dispatch count signal: cross-node peer with no IBGDA "

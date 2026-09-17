@@ -75,10 +75,11 @@ testWaitSignalGE(uint64_t* d_signalBuf, uint64_t targetValue, bool* success) {
       localSigBuf,
       IbgdaLocalBuffer{},
       1);
+  const AbortDevice abortDevice{};
 
   // Signal buffer is pre-set to a value >= targetValue by host
   // wait_signal should return immediately (slot 0)
-  transport.wait_signal(0, targetValue);
+  transport.wait_signal(0, targetValue, abortDevice);
 
   // If we get here, the wait completed successfully
   *success = true;
@@ -96,6 +97,7 @@ __global__ void testWaitSignalMultipleSlots(
       localSigBuf,
       IbgdaLocalBuffer{},
       numSignals);
+  const AbortDevice abortDevice{};
 
   *success = true;
 
@@ -103,7 +105,7 @@ __global__ void testWaitSignalMultipleSlots(
   // Test wait_signal on each slot with matching GE condition
   for (int i = 0; i < numSignals; ++i) {
     uint64_t expectedValue = static_cast<uint64_t>(i + 1) * 100;
-    transport.wait_signal(i, expectedValue);
+    transport.wait_signal(i, expectedValue, abortDevice);
 
     // Verify read_signal returns the same value
     uint64_t readValue = transport.read_signal(i);
