@@ -82,6 +82,7 @@ class P2pIbrcTransportDevice {
       uint32_t maxChannels,
       uint32_t qpsPerConnection,
       DeviceSpan<IbLocalChannel> localChannels,
+      AbortDevice abort,
       IbgdaRemoteBuffer ownedRemoteSignalBuf = {},
       IbgdaLocalBuffer ownedLocalSignalBuf = {},
       IbgdaLocalBuffer ownedCounterDeviceBuf = {},
@@ -89,7 +90,6 @@ class P2pIbrcTransportDevice {
       int numSignalSlots = 0,
       int numCounterSlots = 0,
       IbChannelLayout channelLayout = {},
-      AbortDevice abort = {},
       int myRank = -1,
       int peerRank = -1)
       : cmdQueues(queues),
