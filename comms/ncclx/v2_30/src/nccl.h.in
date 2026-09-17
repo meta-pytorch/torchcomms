@@ -986,13 +986,10 @@ ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, vo
  */
 ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
-#if defined(ENABLE_PRIMS)
 /*
- * Create a DeviceWindow in device memory from a ctran-registered ncclWindow_t.
- * COLLECTIVE on first call — all ranks must call together.
- * Subsequent calls return cached results (config parameters ignored).
- *
- * The returned device pointer must be freed via ncclWinDestroyDeviceWin().
+ * Retained ABI entry points for the retired CTRAN PRiMS device surface.
+ * These functions return ncclInvalidUsage without allocating resources or
+ * entering communicator collectives.
  */
 ncclResult_t ncclWinCreateDeviceWin(
     ncclWindow_t win,
@@ -1001,20 +998,11 @@ ncclResult_t ncclWinCreateDeviceWin(
     int barrier_count,
     void** outDevicePtr);
 
-/*
- * Free device memory allocated by ncclWinCreateDeviceWin.
- */
+/* Retired compatibility stub; returns ncclInvalidUsage. */
 ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr);
 
 /*
- * Get the MultiPeerDeviceHandle components from the communicator's
- * pipes transport. NON-COLLECTIVE — reads already-exchanged state.
- *
- * Returns the device pointer to the Transport[] array and metadata.
- * The caller assembles a MultiPeerDeviceHandle from these fields.
- *
- * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
- * Returns ncclInternalError if pipes transport is not initialized.
+ * Retained for source and symbol compatibility only.
  */
 ncclResult_t ncclGetMultiPeerDeviceHandle(
     ncclComm_t comm,
@@ -1025,27 +1013,20 @@ ncclResult_t ncclGetMultiPeerDeviceHandle(
     int* outNumIbPeers);
 
 /*
- * NCCLX_MAX_NICS_PER_GPU — maximum number of IBGDA NICs per GPU exposed to
- * ncclWinLocalRegisterBuffer. Must match comms::prims::kMaxNicsPerGpu and
- * torch::comms::kMaxNicsPerGpu (verified by static_assert in
- * PipesDeviceBackend.cpp). Increase only if a future platform supports
- * > 2 NICs per GPU; update all three constants in lockstep.
+ * Layout retained for source and ABI compatibility with callers compiled
+ * against the former device surface.
  */
 #define NCCLX_MAX_NICS_PER_GPU 2
 
 /*
- * Per-NIC lkey result for ncclWinLocalRegisterBuffer.
+ * Retained per-NIC lkey layout for source and ABI compatibility.
  *
  *   values[0..size) — per-NIC RDMA local keys in network byte order.
  *   size            — actual NIC count populated [0, NCCLX_MAX_NICS_PER_GPU].
  *                     0 indicates no IBGDA peers (NVL-only topology); the
  *                     caller must NOT index into values[] in that case.
  *
- * The device-side put selects values[nic] based on the slot it dispatches
- * on, so consumers MUST forward all `size` per-NIC keys to
- * LocalBufferRegistration. Populating only values[0] would corrupt WQEs
- * for any slot landing on NIC[1..size-1] on multi-NIC hardware
- * (GB200/GB300).
+ * The retired registration API no longer populates this record.
  */
 typedef struct {
   uint32_t values[NCCLX_MAX_NICS_PER_GPU];
@@ -1053,17 +1034,8 @@ typedef struct {
 } ncclLkeyPerDevice;
 
 /*
- * Register a local buffer for use as source in device-side RDMA put operations.
- * NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only, no
- * rkey exchange).
- *
- * Fills *outLkeys with per-NIC lkeys + populated NIC count. See
- * ncclLkeyPerDevice for layout.
- *
- * Deregister with ncclWinLocalDeregisterBuffer() when no longer needed.
- *
- * Requires NCCL_CTRAN_USE_PIPES=1 during communicator init.
- * Returns ncclInternalError if pipes transport is not initialized.
+ * Retired compatibility stub; returns ncclInvalidUsage without registering
+ * the buffer.
  */
 ncclResult_t ncclWinLocalRegisterBuffer(
     ncclComm_t comm,
@@ -1071,15 +1043,10 @@ ncclResult_t ncclWinLocalRegisterBuffer(
     size_t size,
     ncclLkeyPerDevice* outLkeys);
 
-/*
- * Deregister a buffer previously registered with ncclWinLocalRegisterBuffer().
- * NON-COLLECTIVE.
- */
+/* Retired compatibility stub; returns ncclInvalidUsage. */
 ncclResult_t ncclWinLocalDeregisterBuffer(
     ncclComm_t comm,
     void* ptr);
-#endif // ENABLE_PRIMS
-
 /*
  * Free the window object and free the allocated memory
  */
@@ -1370,14 +1337,9 @@ ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSp
     ncclComm_t comm, cudaStream_t stream);
 
 /*
- * Device AllToAllv: AllToAllv where split sizes are device tensors.
- * Unlike regular AllToAllv where counts/displacements are host arrays,
- * this variant takes device pointers for sendcounts and recvcounts.
- * Displacements are computed internally as exclusive prefix sums of
- * the counts. This is useful when split sizes are computed on the GPU
- * and not known on the host beforehand.
+ * Retained for source and symbol compatibility with the retired device-count
+ * AllToAllv surface. Returns ncclInvalidUsage without entering a collective.
  */
-// Per-collective hint keys: numBlocks, numThreads, blockScheduling
 ncclResult_t deviceAllToAllv(const void* sendbuff, void* recvbuff,
     const int64_t* sendcounts_d, const int64_t* recvcounts_d,
     ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream,

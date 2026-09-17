@@ -39,11 +39,9 @@ struct Transport;
 
 using meta::comms::CommBackend;
 
-// Per-communicator Prims transport overrides.
-// -1 means use CVAR default.
+// Retained PRiMS configuration shape for source compatibility. CTRAN no longer
+// consumes these fields to create a transport.
 struct ctranPrimsConfig {
-  // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
-  // policy does not affect NCCLX or standalone Ctran communicators.
   int64_t enablePrims{-1};
   int64_t nvlChunkSize{-1};
   bool ibLazyConnect{true};
@@ -72,12 +70,7 @@ struct ctranPrimsConfig {
   }
 };
 
-// Per-communicator override first, global CVAR second. Both the transport
-// (comm init) and the collective launch geometry (per call) must resolve these
-// the same way, so they share these helpers rather than reading the CVAR
-// directly. NOTE: mccl's own launch-geometry validation still reads
-// MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS globally; a communicator that overrides
-// these and also runs mccl collectives would be validated against the global.
+// Compatibility geometry helpers used by the retained implementation.
 inline int64_t ctranPrimsResolvedMaxChannels(const ctranPrimsConfig& pc) {
   return pc.maxChannels > 0 ? pc.maxChannels
                             : static_cast<int64_t>(MCCL_MAX_NCHANNELS);

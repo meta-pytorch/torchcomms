@@ -449,38 +449,6 @@ ncclResult_t ncclAllToAllv(
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PRIMS)
-__attribute__((visibility("default")))
-ncclResult_t ncclx::deviceAllToAllv(
-    const void* sendbuff,
-    void* recvbuff,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream,
-    int64_t sendcountsMultiplier,
-    int64_t recvcountsMultiplier,
-    const std::unordered_map<std::string, std::string>& hints) {
-  if (!ctranDeviceAllToAllvSupport(comm->ctranComm_.get())) {
-    ERR(
-        ncclInvalidUsage,
-        "deviceAllToAllv requires ctran with pipes transport support");
-    return ncclInvalidUsage;
-  }
-  return metaCommToNccl(ctranDeviceAllToAllv(
-      sendbuff,
-      recvbuff,
-      sendcounts_d,
-      recvcounts_d,
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      sendcountsMultiplier,
-      recvcountsMultiplier,
-      hints));
-}
-#else
 __attribute__((visibility("default")))
 ncclResult_t ncclx::deviceAllToAllv(
     const void* /*sendbuff*/,
@@ -495,7 +463,6 @@ ncclResult_t ncclx::deviceAllToAllv(
     const std::unordered_map<std::string, std::string>& /*hints*/) {
   return ncclInvalidUsage;
 }
-#endif // ENABLE_PRIMS
 
 __attribute__((visibility("default")))
 ncclResult_t ncclx::alltoallvDynamic(
