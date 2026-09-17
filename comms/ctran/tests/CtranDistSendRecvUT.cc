@@ -43,9 +43,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
-      return;
-    }
     ASSERT_NE(profiler, nullptr);
     EXPECT_EQ(profiler->getOpCount(), opCount);
     uint64_t oneMinUs = 1000 * 1000 * 60;
@@ -277,8 +274,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     }
 
     if (!useGraph) {
-      if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
+      if (globalRank == sendRank) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
       }
@@ -317,9 +313,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           }
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
-          // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctp2p kernel, the opGroup is empty
-          // so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
             if (globalRank == sendRank) {

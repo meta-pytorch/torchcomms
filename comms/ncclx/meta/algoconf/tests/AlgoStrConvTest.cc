@@ -19,9 +19,6 @@ void checkAlgoStrToVal(enum NCCL_SENDRECV_ALGO algo) {
     case NCCL_SENDRECV_ALGO::ctzcopy:
       str = "ctzcopy";
       break;
-    case NCCL_SENDRECV_ALGO::ctp2p:
-      str = "ctp2p";
-      break;
     case NCCL_SENDRECV_ALGO::ctgraph:
       str = "ctgraph";
       break;
@@ -194,7 +191,6 @@ TEST(AlgoStrConvTest, SendRecvCompleteness) {
   checkAlgoStrToVal(NCCL_SENDRECV_ALGO::orig);
   checkAlgoStrToVal(NCCL_SENDRECV_ALGO::ctran);
   checkAlgoStrToVal(NCCL_SENDRECV_ALGO::ctzcopy);
-  checkAlgoStrToVal(NCCL_SENDRECV_ALGO::ctp2p);
   checkAlgoStrToVal(NCCL_SENDRECV_ALGO::ctgraph);
 }
 

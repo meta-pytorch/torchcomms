@@ -191,18 +191,6 @@ CollectiveMetadata getCollectiveMetadata(
           .count = allToAllArgs.count,
       };
     }
-    case KernelConfig::KernelType::DEVICE_ALLTOALLV: {
-      auto* pipesArgs =
-          static_cast<const ctran::device_alltoallv_pipes::KernArgs*>(
-              kernelConfig.algoArgs);
-      return CollectiveMetadata{
-          .opName = "DeviceAllToAllv_Prims",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-          .sendbuff = reinterpret_cast<uintptr_t>(pipesArgs->sendbuff),
-          .recvbuff = reinterpret_cast<uintptr_t>(pipesArgs->recvbuff),
-      };
-    }
     case KernelConfig::KernelType::ALLTOALLV: {
       auto allToAllvArgs = kernelConfig.args.collective.alltoallv;
       return CollectiveMetadata{
@@ -312,7 +300,6 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::SENDRECV:
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
-    case KernelConfig::KernelType::SENDRECV_P2P:
       CTRAN_LOG_FIRST_N(
           ERR, 3, "P2P kernel types being handled by collective path");
       break;
@@ -329,10 +316,8 @@ bool isP2PKernel(KernelConfig::KernelType kernelType) {
       KernelConfig::KernelType::SEND,
       KernelConfig::KernelType::RECV,
       KernelConfig::KernelType::SENDRECV,
-      KernelConfig::KernelType::SENDRECV_P2P,
       KernelConfig::KernelType::RECV_UNPACK,
       KernelConfig::KernelType::SENDRECV_UNPACK,
-      KernelConfig::KernelType::SENDRECV_P2P,
   };
 
   return p2pKernels.contains(kernelType);

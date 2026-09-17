@@ -10,7 +10,7 @@
 
 #include "comms/ncclx/meta/tests/NcclCommUtils.h"
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
-#ifdef TEST_RSQ_DIRECT_IB
+#ifdef TEST_RSQ_CTRAN_PAT
 #include "comms/ncclx/meta/tests/VerifyAlgoStatsUtil.h"
 #endif
 #include "comms/testinfra/TestUtils.h"
@@ -70,18 +70,17 @@ class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
  public:
   ReduceScatterQuantizeTest() = default;
   void SetUp() override {
-#ifdef TEST_RSQ_DIRECT_IB
+#ifdef TEST_RSQ_CTRAN_PAT
     NcclxBaseTestFixture::SetUp({
         {"NCCL_PAT_ENABLE", "1"},
         {"NCCL_ALGO", "PAT"},
         {"NCCL_CTRAN_ENABLE", "1"},
-        {"NCCL_CTRAN_USE_PIPES", "1"},
         {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
         {"NCCL_MNNVL_ENABLE", "0"},
         {"NCCL_P2P_DISABLE", "1"},
         {"NCCL_SHM_DISABLE", "1"},
         {"NCCL_REDUCESCATTER_ALGO", "orig"},
-        {"NCCL_REDUCESCATTER_QUANTIZED_ALGO", "ctdirect_ib"},
+        {"NCCL_REDUCESCATTER_QUANTIZED_ALGO", "pat"},
     });
     algoStats_.enable();
     ncclx::Hints hints{{"useCtran", "1"}};
@@ -101,7 +100,7 @@ class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
   }
 
   void TearDown() override {
-#ifdef TEST_RSQ_DIRECT_IB
+#ifdef TEST_RSQ_CTRAN_PAT
     algoStats_.verify(commRAII_->get(), "ReduceScatter", "PAT");
     algoStats_.verifyNot(
         commRAII_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
@@ -114,7 +113,7 @@ class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
  protected:
   std::optional<ncclx::test::NcclCommRAII> commRAII_;
   cudaStream_t stream;
-#ifdef TEST_RSQ_DIRECT_IB
+#ifdef TEST_RSQ_CTRAN_PAT
   ncclx::test::VerifyAlgoStatsHelper algoStats_;
 #endif
 };

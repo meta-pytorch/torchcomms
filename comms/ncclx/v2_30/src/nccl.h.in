@@ -669,8 +669,7 @@ ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
  * transportType: must be BF16, provided to make extension easier.
  * op: Only supports ncclSum and ncclAvg operations.
  * seedPtr: must be a GPU MEMORY pointer. The pointer must outlive the collective.
- * algo: Set NCCL_REDUCESCATTER_QUANTIZED_ALGO=ctdirect_ib to use DirectIB
- *       for ncclSum when supported. The default and fallback algorithm is PAT.
+ * The operation uses the PAT algorithm.
  */
 ncclResult_t  ncclReduceScatterQuantize(const void* sendbuff, void* recvbuff,
     size_t recvcount, ncclDataType_t inputType, ncclDataType_t transportType,

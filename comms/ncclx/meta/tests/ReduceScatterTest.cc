@@ -244,30 +244,6 @@ class ReduceScatterTestParam : public ReduceScatterTest,
   }
 };
 
-class ReduceScatterRetiredDirectIbTest : public ReduceScatterTest {
- protected:
-  void SetUp() override {
-    ReduceScatterTest::setUpWithEnvs(
-        {{"NCCL_PAT_ENABLE", "1"}, {"NCCL_ALGO", "PAT"}});
-  }
-};
-
-TEST_F(ReduceScatterRetiredDirectIbTest, FallsBackToPat) {
-  auto rsAlgoGuard =
-      EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::ctdirect_ib);
-  run<int>(
-      ReduceScatterTestParams{
-          .algo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib,
-          .memType = kMemNcclMemAlloc,
-          .count = 8192,
-          .op = ncclSum,
-          .datatype = ncclInt,
-      },
-      "PAT",
-      "CtranReduceScatterDirectIb",
-      true);
-}
-
 TEST_P(ReduceScatterTestParam, Test) {
   auto [envs_, algo, inplace, registFlag, memType, count] = GetParam();
   (void)envs_; // applied in SetUp

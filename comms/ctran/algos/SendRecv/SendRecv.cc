@@ -4,10 +4,6 @@
 #include <deque>
 #include <optional>
 
-#if !defined(ENABLE_PRIMS)
-#include <mutex> // std::once_flag/std::call_once for the prims-off fallback warn
-#endif
-
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -46,10 +42,6 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
-#if defined(ENABLE_PRIMS)
-    {KernelConfig::KernelType::SENDRECV_P2P,
-     reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
-#endif // defined(ENABLE_PRIMS)
 };
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
@@ -63,28 +55,10 @@ bool ctranSendRecvSupport(
     return false;
   }
 
-#if !defined(ENABLE_PRIMS)
-  // ctp2p/ctgraph are prims-backed and not compiled in; decline so the caller
-  // falls back to baseline send/recv.
-  if (algo == NCCL_SENDRECV_ALGO::ctp2p ||
-      algo == NCCL_SENDRECV_ALGO::ctgraph) {
-    static std::once_flag warnedOnce;
-    std::call_once(warnedOnce, []() {
-      CTRAN_LOG_SUBSYS(
-          WARN,
-          COLL,
-          "CTRAN SendRecv: ctp2p/ctgraph requires comms::prims device transports "
-          "(ENABLE_PRIMS), which are not compiled in this build; falling back to "
-          "baseline send/recv.");
-    });
-    return false;
-  }
-#endif // !defined(ENABLE_PRIMS)
-
   const auto statex = comm->statex_.get();
 
   if (algo == NCCL_SENDRECV_ALGO::ctgraph) {
-    // TODO: skip NVL peers for now; will add support based on window
+    // The graph-aware path supports IB peers only.
     if (peer != statex->rank() &&
         comm->ctran_->mapper->getBackend(peer) != CtranMapperBackend::IB) {
       return false;
@@ -178,16 +152,11 @@ commResult_t ctranRecv(
 
 commResult_t ctranGroupEndHookImpl(
     std::deque<OpElem*>& opGroup,
-    enum NCCL_SENDRECV_ALGO algo,
+    enum NCCL_SENDRECV_ALGO /*algo*/,
     std::optional<std::chrono::milliseconds> timeout) {
-  // By default, use zero-copy kernel for sendrecv.
-  if (algo == NCCL_SENDRECV_ALGO::ctran) {
-    algo = NCCL_SENDRECV_ALGO::ctzcopy;
-  }
   while (!opGroup.empty()) {
-    // TODO: clean up duplicate info in allops, nvlOps and ibOps
     std::vector<OpElem*> allOps;
-    std::vector<OpElem*> selfSends, selfRecvs, nvlOps, ibOps;
+    std::vector<OpElem*> selfSends, selfRecvs;
     std::deque<OpElem*> pending;
     bool hasSend = false;
     bool hasRecv = false;
@@ -229,12 +198,6 @@ commResult_t ctranGroupEndHookImpl(
           //   cost has to be exposed similar to lazy registatration mode.
           size_t nbytes = op->send.count * commTypeSize(op->send.datatype);
           FB_COMMCHECK(mapper->regAsync(op->send.sendbuff, nbytes));
-          if (comm->ctran_->mapper->getBackend(op->send.peerRank) ==
-              CtranMapperBackend::NVL) {
-            nvlOps.push_back(op);
-          } else {
-            ibOps.push_back(op);
-          }
         } else if (op->type == OpElem::opType::RECV) {
           hasRecv = true;
           if (op->recv.peerRank == statex->rank()) {
@@ -251,12 +214,6 @@ commResult_t ctranGroupEndHookImpl(
 
           size_t nbytes = op->recv.count * commTypeSize(op->recv.datatype);
           FB_COMMCHECK(mapper->regAsync(op->recv.recvbuff, nbytes));
-          if (comm->ctran_->mapper->getBackend(op->recv.peerRank) ==
-              CtranMapperBackend::NVL) {
-            nvlOps.push_back(op);
-          } else {
-            ibOps.push_back(op);
-          }
         }
 
         allOps.push_back(op);
@@ -274,23 +231,18 @@ commResult_t ctranGroupEndHookImpl(
     if (!allOps.empty()) {
       // host side
       std::vector<std::unique_ptr<struct OpElem>> gpeOpGroup;
-      FB_COMMCHECK(
-          ctran::sendrecv::setupGpeOp(
-              comm, allOps, nvlOps, ibOps, gpeOpGroup, algo));
+      FB_COMMCHECK(ctran::sendrecv::setupGpeOp(allOps, gpeOpGroup));
 
       // device side
       KernelConfig::KernelType kernelType =
-          ctran::sendrecv::getKernelType(hasSend, hasRecv, hasTcpDmRecv, algo);
+          ctran::sendrecv::getKernelType(hasSend, hasRecv, hasTcpDmRecv);
       auto config = KernelConfig(
           kernelType,
           stream,
           sendRecvAlgoName(myAlgo, allOps),
           allOps.front()->opCount);
 
-      ctran::sendrecv::KernArgs kernArgs;
-      FB_COMMCHECK(
-          ctran::sendrecv::setupKernelConfig(
-              comm, allOps, nvlOps, config, kernArgs));
+      FB_COMMCHECK(ctran::sendrecv::setupKernelConfig(comm, allOps, config));
 
       FB_COMMCHECK(comm->ctran_->gpe->submit(
           std::move(gpeOpGroup),

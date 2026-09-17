@@ -356,66 +356,6 @@ TEST_F(SendRecvTestParam, GroupedSendRecvWithHintOverride) {
   }
 }
 
-TEST_F(SendRecvTest, Ctp2pFallsBackToBaseline) {
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints hints({{"sendrecvAlgo", "ctp2p"}});
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-  hints.set("noLocal", "1");
-#endif
-  config.hints = &hints;
-  ncclx::test::NcclCommRAII commRaii(
-      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
-  this->comm = commRaii.get();
-
-  expectCtranAlgo_ = false;
-  runGroupedSendRecv();
-}
-
-TEST_F(SendRecvTest, CtgraphFallsBackToBaselineDuringCapture) {
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints hints({{"sendrecvAlgo", "ctgraph"}});
-#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
-  hints.set("noLocal", "1");
-#endif
-  config.hints = &hints;
-  ncclx::test::NcclCommRAII commRaii(
-      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
-  this->comm = commRaii.get();
-
-  if (comm->nRanks < 2) {
-    GTEST_SKIP() << "Need at least 2 ranks";
-  }
-
-  constexpr int count = 1048576;
-  constexpr int commCount = 1024;
-  prepareBufs(count, true);
-
-  const int sendPeer = (comm->rank + 1) % comm->nRanks;
-  const int recvPeer = (comm->rank + comm->nRanks - 1) % comm->nRanks;
-  // Capture
-  cudaGraph_t graph;
-  cudaGraphExec_t exec;
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-  ncclGroupStart();
-  NCCLCHECK_TEST(ncclSend(sendBuf, commCount, ncclInt, sendPeer, comm, stream));
-  NCCLCHECK_TEST(ncclRecv(recvBuf, commCount, ncclInt, recvPeer, comm, stream));
-  ncclGroupEnd();
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
-  CUDACHECK_TEST(cudaGraphInstantiate(&exec, graph, 0));
-
-  // Replay
-  CUDACHECK_TEST(cudaGraphLaunch(exec, stream));
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
-
-  checkResults(recvPeer, commCount);
-
-  ctranAlgoStats_.verifyNot(comm->ctranComm_.get(), "SendRecv", "Ctran");
-
-  CUDACHECK_TEST(cudaGraphExecDestroy(exec));
-  CUDACHECK_TEST(cudaGraphDestroy(graph));
-  releaseBufs(true);
-}
-
 INSTANTIATE_TEST_SUITE_P(
     SendRecvTest,
     SendRecvTestParam,

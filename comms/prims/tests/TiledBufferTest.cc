@@ -1,4 +1,4 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <gtest/gtest.h>
 
@@ -25,7 +25,7 @@ tileView(char* base, std::size_t totalBytes, int numTiles, int tileId) {
   };
 }
 
-TEST(AllReduceFusedTiledBuffer, BlockTileSplitUsesNativeTiledBufferStride) {
+TEST(TiledBuffer, BlockTileSplitUsesNativeTiledBufferStride) {
   std::array<char, 1000> buffer{};
   const auto tile0 = tileView(buffer.data(), buffer.size(), 3, 0);
   const auto tile1 = tileView(buffer.data(), buffer.size(), 3, 1);
@@ -40,7 +40,7 @@ TEST(AllReduceFusedTiledBuffer, BlockTileSplitUsesNativeTiledBufferStride) {
   EXPECT_EQ(tile2.bytes, 328);
 }
 
-TEST(AllReduceFusedTiledBuffer, BlockTileSplitKeepsDegenerateCases) {
+TEST(TiledBuffer, BlockTileSplitKeepsDegenerateCases) {
   std::array<char, 1040> buffer{};
   EXPECT_EQ(tileView(buffer.data(), 0, 8, 0).bytes, 0);
   EXPECT_EQ(tileView(buffer.data(), 1025, 1, 0).offsetBytes, 0);
@@ -49,7 +49,7 @@ TEST(AllReduceFusedTiledBuffer, BlockTileSplitKeepsDegenerateCases) {
   EXPECT_EQ(tileView(buffer.data(), 1000, 3, 3).bytes, 0);
 }
 
-TEST(AllReduceFusedTiledBuffer, LaneSplitUsesNestedTiledBuffer) {
+TEST(TiledBuffer, LaneSplitUsesNestedTiledBuffer) {
   std::array<char, 1000> buffer{};
   const auto blockTile = tileView(buffer.data(), buffer.size(), 3, 0);
   const auto lane0 =
@@ -65,7 +65,7 @@ TEST(AllReduceFusedTiledBuffer, LaneSplitUsesNestedTiledBuffer) {
   EXPECT_EQ(lane0.bytes + lane1.bytes, blockTile.bytes);
 }
 
-TEST(AllReduceFusedTiledBuffer, LaneSplitKeepsTailInSecondLane) {
+TEST(TiledBuffer, LaneSplitKeepsTailInSecondLane) {
   std::array<char, 1000> buffer{};
   const auto blockTail = tileView(buffer.data(), buffer.size(), 3, 2);
   const auto lane0 =
@@ -79,7 +79,7 @@ TEST(AllReduceFusedTiledBuffer, LaneSplitKeepsTailInSecondLane) {
   EXPECT_EQ(lane0.bytes + lane1.bytes, blockTail.bytes);
 }
 
-TEST(AllReduceFusedTiledBuffer, CoversUnalignedNear64MiBPayload) {
+TEST(TiledBuffer, CoversUnalignedNear64MiBPayload) {
   constexpr std::size_t kUnaligned64MiBBytes =
       64UL * 1024 * 1024 + sizeof(float);
   constexpr int kNumPartitions = 8;

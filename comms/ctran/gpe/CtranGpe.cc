@@ -30,12 +30,10 @@ std::string kernelTypeToOpName(KernelConfig::KernelType type) {
     case KernelConfig::SEND:
     case KernelConfig::RECV:
     case KernelConfig::SENDRECV:
-    case KernelConfig::SENDRECV_P2P:
     case KernelConfig::RECV_UNPACK:
     case KernelConfig::SENDRECV_UNPACK:
       return "SendRecv";
     case KernelConfig::ALLTOALL:
-    case KernelConfig::DEVICE_ALLTOALLV:
     case KernelConfig::ALLTOALLV:
     case KernelConfig::ALLTOALLV_DEDUP:
       return "AllToAll";
@@ -259,12 +257,10 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::ALLGATHER, "ALLGATHER"},
         {KernelConfig::KernelType::ALLREDUCE, "ALLREDUCE"},
         {KernelConfig::KernelType::ALLTOALL, "ALLTOALL"},
-        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DEVICE_ALLTOALLV"},
         {KernelConfig::KernelType::ALLTOALLV, "ALLTOALLV"},
         {KernelConfig::KernelType::SENDRECV, "SENDRECV"},
         {KernelConfig::KernelType::SEND, "SEND"},
         {KernelConfig::KernelType::RECV, "RECV"},
-        {KernelConfig::KernelType::SENDRECV_P2P, "SENDRECV_P2P"},
         {KernelConfig::KernelType::BROADCAST, "BROADCAST"},
         {KernelConfig::KernelType::REDUCESCATTER, "REDUCESCATTER"},
         {KernelConfig::KernelType::PUTNOTIFY, "PUTNOTIFY"},

@@ -72,9 +72,6 @@ ShortNameMap buildShortNames() {
   add(reduceScatterAlgoName(NCCL_REDUCESCATTER_ALGO::ctdirect), "ctdirect");
   add(reduceScatterAlgoName(NCCL_REDUCESCATTER_ALGO::ctring), "ctring");
   add(reduceScatterAlgoName(NCCL_REDUCESCATTER_ALGO::ctrhd), "ctrhd");
-  add(reduceScatterAlgoName(NCCL_REDUCESCATTER_ALGO::ctdirect_ib),
-      "ctdirect_ib");
-
   add(broadcastAlgoName(NCCL_BROADCAST_ALGO::ctran), "ctran");
   add(broadcastAlgoName(NCCL_BROADCAST_ALGO::ctdirect), "ctdirect");
   add(broadcastAlgoName(NCCL_BROADCAST_ALGO::ctbtree), "ctbtree");
