@@ -3383,11 +3383,12 @@ cvars:
    type        : string
    default     : "allreduce:ring"
    description : |-
-     MCCL-native collective algorithm override. Use "none" or leave unset to
-     preserve the collective's existing selection. Prefer qualified selectors
-     such as allreduce:tree or allreduce:ring; unqualified tree, ring, and
-     direct are accepted as AllReduce aliases for compatibility with the
-     initial AllReduce-only rollout.
+     MCCL-native algorithm override: [<collective>:]<algorithm>[:<protocol>].
+     "none" keeps the collective's existing selection; bare tree/ring/direct
+     are AllReduce aliases. The protocol token (simple, ll) is AllReduce-only,
+     requires the collective token, and defaults to simple. Pinning :ll bypasses
+     the LL size threshold but still requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0,
+     which is what arms the LL path.
 
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t
