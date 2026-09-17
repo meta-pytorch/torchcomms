@@ -3440,6 +3440,16 @@ cvars:
      not necessarily map one-to-one to CUDA blocks; for example, ctree uses
      two channels per block.
 
+ - name        : MCCL_HOSTRING_QPS_PER_NIC
+   type        : int
+   default     : 4
+   description : |-
+     Number of IB QP lanes hostring AllGather stripes one ring transfer across,
+     per NIC. The total lane count is this times the number of NICs discovered
+     for the GPU, clamped to the QPs the transport actually allocated for the
+     peer -- so raising it past that clamp has no effect. Must be set
+     identically on every rank.
+
  - name        : MCCL_IB_MODE
    type        : enum
    default     : ibgda
