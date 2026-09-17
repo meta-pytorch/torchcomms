@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
-#include "comms/ctran/algos/SendRecv/SendRecvP2pImpl.h"
 namespace {
 
 unsigned int bestThreadBlockSize = 0;
@@ -38,18 +37,9 @@ inline unsigned int getThreadBlockSize() {
 } // namespace
 
 namespace ctran::sendrecv {
-KernelConfig::KernelType getKernelType(
-    bool hasSend,
-    bool hasRecv,
-    bool hasTcpDmRecv,
-    enum NCCL_SENDRECV_ALGO algo) {
+KernelConfig::KernelType
+getKernelType(bool hasSend, bool hasRecv, bool hasTcpDmRecv) {
   KernelConfig::KernelType kernelType = KernelConfig::KernelType::SENDRECV;
-#if defined(ENABLE_PRIMS)
-  if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
-    kernelType = KernelConfig::KernelType::SENDRECV_P2P;
-    return kernelType;
-  }
-#endif // defined(ENABLE_PRIMS)
   if (hasSend && hasRecv) {
     if (hasTcpDmRecv) {
       kernelType = KernelConfig::KernelType::SENDRECV_UNPACK;
@@ -67,28 +57,11 @@ KernelConfig::KernelType getKernelType(
 }
 
 commResult_t setupGpeOp(
-    CtranComm* comm,
     std::vector<OpElem*>& allOps,
-    std::vector<OpElem*>& nvlOps,
-    std::vector<OpElem*>& ibOps,
-    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
-    enum NCCL_SENDRECV_ALGO algo) {
-  // If kernel is copy-based, GPE deals with IB ops only.
-  if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
-    // next, deal with IB ops
-    if (!ibOps.empty()) {
-      gpeOpGroup.reserve(ibOps.size());
-      for (auto x : ibOps) {
-        gpeOpGroup.push_back(std::unique_ptr<OpElem>(x));
-      }
-      ibOps.clear();
-    }
-  } else {
-    // otherwise, submit all ops to GPE
-    gpeOpGroup.reserve(allOps.size());
-    for (auto x : allOps) {
-      gpeOpGroup.push_back(std::unique_ptr<OpElem>(x));
-    }
+    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup) {
+  gpeOpGroup.reserve(allOps.size());
+  for (auto x : allOps) {
+    gpeOpGroup.push_back(std::unique_ptr<OpElem>(x));
   }
   return commSuccess;
 }
@@ -96,14 +69,9 @@ commResult_t setupGpeOp(
 commResult_t setupKernelConfig(
     CtranComm* comm,
     const std::vector<OpElem*>& opGroup,
-    const std::vector<OpElem*>& nvlOps,
-    KernelConfig& config,
-    ctran::sendrecv::KernArgs& kernArgs) {
+    KernelConfig& config) {
   const auto statex = comm->statex_.get();
   config.args.devState_d = comm->ctran_->algo->getDevState();
-  if (config.type == KernelConfig::KernelType::SENDRECV_P2P) {
-    return setupP2pKernelConfig(comm, nvlOps, config, kernArgs);
-  }
   auto putNotifyList = CommonList<KernelElem>();
   auto waitNotifyList = CommonList<KernelElem>();
   int maxNumBlocks = 1;

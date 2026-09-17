@@ -2,22 +2,10 @@
 
 #pragma once
 
-#include "comms/ctran/algos/CtranAlgoDev.h" // for CTRAN_MAX_NVL_PEERS
 #include "comms/utils/commSpecs.h"
 
 // Forward declarations
 struct KernelElem;
-
-namespace comms::prims {
-struct Transport;
-}
-
-#define CTRAN_MAX_TOTAL_RANK (128)
-
-// Compile-time protocol selection for DeviceAllToAllv kernel.
-// Simple: standard send/recv via NVLink staging buffers.
-// LL128: 128-byte cache-line-atomic packets with inline flag signaling.
-enum class PipeProtocol { Simple, LL128 };
 
 namespace ctran {
 
@@ -33,46 +21,6 @@ struct KernelArgs {
 };
 
 } // namespace alltoall
-
-namespace device_alltoallv_pipes {
-
-struct KernArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  int nLocalRanks; // number of ranks on this node
-  int myRank; // global rank of this process
-  size_t elementSize; // bytes per element (commTypeSize(datatype))
-
-  // Device pointers to split sizes (int64_t, indexed by global rank)
-  const int64_t* sendcounts_d; // [nRanks] send counts per rank
-  const int64_t* recvcounts_d; // [nRanks] recv counts per rank
-
-  // Scaling factors for multi-dimensional tensors. For a tensor with shape
-  // [N, D1, D2, ..., Dk], the split sizes are in units of dim-0 slices (rows),
-  // and each row contains D1*D2*...*Dk elements. The kernel multiplies counts
-  // by these factors to get actual element counts. Default is 1 (1D tensors).
-  int64_t sendcountsMultiplier;
-  int64_t recvcountsMultiplier;
-
-  // Maps local rank index [0..nLocalRanks) to global rank
-  int localRankToGlobalRank[CTRAN_MAX_NVL_PEERS];
-
-  // Transport array from MultiPeerTransport, indexed by global rank
-  comms::prims::Transport* transports;
-
-  // If true, use block-level scheduling (make_block_group) instead of
-  // warp-level scheduling (make_warp_group). Block scheduling dedicates
-  // all threads in a block to one peer; warp scheduling distributes
-  // warps across peers for chunk-level pipelining.
-  bool useBlockGroup;
-
-  // Per-peer byte threshold for LL128 vs Simple protocol selection.
-  // When > 0, use LL128 for transfers <= this size (if alignment is met),
-  // Simple otherwise. When 0, always use Simple.
-  size_t ll128ThresholdBytes;
-};
-
-} // namespace device_alltoallv_pipes
 
 namespace alltoallv {
 

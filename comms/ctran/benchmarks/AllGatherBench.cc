@@ -23,12 +23,6 @@ int gBenchIters = 50;
 std::string gCtranAlgo = "ctdirect";
 std::optional<size_t> gSizeBytes;
 bool gTotalSizeBytes = false;
-// When 0, the bench does not touch NCCL_CTRAN_PIPES_TRACE_ENABLE (so an
-// explicit env override still traces every iteration). When > 0, the bench owns
-// the cvar, enables tracing during warmup, and sets it to (i % gTraceEvery ==
-// 0) before each timed ctranAllGather call.
-int gTraceEvery = 0;
-
 #define NCCLCHECK_TEST(cmd)                  \
   do {                                       \
     ncclResult_t r = cmd;                    \
@@ -138,10 +132,6 @@ void parseBenchmarkFlags(int* argc, char** argv) {
       gTotalSizeBytes = parseBoolValue(*value);
       continue;
     }
-    if (auto value = parseFlagValue(arg, "trace_every")) {
-      gTraceEvery = std::stoi(*value);
-      continue;
-    }
     argv[write++] = argv[read];
   }
   *argc = write;
@@ -164,9 +154,6 @@ void parseBenchmarkEnv() {
           std::getenv("CTRAN_ALLGATHER_BENCH_TOTAL_SIZE_BYTES")) {
     gTotalSizeBytes = parseBoolValue(value);
   }
-  if (const char* value = std::getenv("CTRAN_ALLGATHER_BENCH_TRACE_EVERY")) {
-    gTraceEvery = std::stoi(value);
-  }
 }
 
 bool validateBenchmarkConfig() {
@@ -179,12 +166,6 @@ bool validateBenchmarkConfig() {
   if (gBenchIters <= 0) {
     std::cerr << "--bench_iters / CTRAN_ALLGATHER_BENCH_ITERS must be > 0"
               << std::endl;
-    return false;
-  }
-  if (gTraceEvery < 0) {
-    std::cerr
-        << "--trace_every / CTRAN_ALLGATHER_BENCH_TRACE_EVERY must be >= 0"
-        << std::endl;
     return false;
   }
   return true;
@@ -210,7 +191,6 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
  public:
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    setenv("NCCL_CTRAN_USE_PIPES", "1", 0);
     setenv("MCCL_CHANNEL_BUFFER_SIZE", "131072", 0);
     setenv("NCCL_DEBUG", "WARN", 0);
 
@@ -241,8 +221,6 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
     {
       ScopedEnvVar disableCtran(
           "NCCL_CTRAN_ENABLE", std::optional<std::string>{"0"});
-      ScopedEnvVar disablePipes(
-          "NCCL_CTRAN_USE_PIPES", std::optional<std::string>{"0"});
       ScopedEnvVar unsetAllGatherAlgo("NCCL_ALLGATHER_ALGO", std::nullopt);
       ncclCvarInit();
       NCCLCHECK_TEST(
@@ -320,9 +298,6 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
     CUDACHECK_TEST(cudaStreamSynchronize(stream_));
 
     barrier();
-    if (gTraceEvery > 0) {
-      NCCL_CTRAN_PIPES_TRACE_ENABLE = true;
-    }
     for (int i = 0; i < gWarmupIters; ++i) {
       COMMCHECK_TEST(ctranAllGather(
           sendbuf,
@@ -341,9 +316,6 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
     CUDACHECK_TEST(cudaEventCreate(&stop));
     CUDACHECK_TEST(cudaEventRecord(start, stream_));
     for (int i = 0; i < gBenchIters; ++i) {
-      if (gTraceEvery > 0) {
-        NCCL_CTRAN_PIPES_TRACE_ENABLE = (i % gTraceEvery == 0);
-      }
       COMMCHECK_TEST(ctranAllGather(
           sendbuf,
           recvbuf,
@@ -387,12 +359,6 @@ class CtranAllGatherBenchmark : public ctran::CtranDistTestFixture {
   }
 
   void runBenchmark() {
-    if (globalRank == 0 && gTraceEvery > 0) {
-      std::cout << "Pipes trace sampling: every " << gTraceEvery
-                << " timed iterations (algo=" << allGatherAlgoName(ctranAlgo_)
-                << ")\n"
-                << std::flush;
-    }
     const auto sizes = benchmarkSizes();
     const auto sendSizeBytes = [&](size_t sizeBytes) {
       if (!gTotalSizeBytes) {

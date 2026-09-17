@@ -111,7 +111,6 @@ void CtranDistTestFixture::TearDown() {
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
     bool noLocal,
-    bool ibLazyConnect,
     bool tmpbufEagerAlloc) {
   const std::string uuid{"0"};
   uint64_t commHash =
@@ -163,9 +162,6 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
       std::move(commBootstrap));
 
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
-  // Preserve the compatibility setting through the standalone Ctran path.
-  // Peer materialization remains on demand for either value.
-  comm->config_.primsConfig.ibLazyConnect = ibLazyConnect;
   // Consumed during ctranInit (inside CtranAlgo's ctor), so must be set on the
   // comm before ctranInit runs.
   comm->tmpbufEagerAlloc_ = tmpbufEagerAlloc;

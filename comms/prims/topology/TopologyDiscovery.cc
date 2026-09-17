@@ -666,7 +666,7 @@ TopologyResult TopologyDiscovery::classify(
 
   // Handle MnnvlMode (following NCCL's NCCL_MNNVL_ENABLE semantics).
   // Env vars (NCCL_MNNVL_ENABLE, NCCL_P2P_DISABLE) are read by the caller
-  // (e.g. CtranPipes) and passed via TopologyConfig fields.
+  // (e.g. PrimsConfig) and passed via TopologyConfig fields.
   if (topoConfig.mnnvlMode == MnnvlMode::kDisabled) {
     if (myInfo.fabricInfo.available) {
       COMMS_LOG(

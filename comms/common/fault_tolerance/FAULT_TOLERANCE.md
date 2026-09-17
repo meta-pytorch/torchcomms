@@ -583,7 +583,6 @@ aborts but no deadline would ever fire.
 | SendRecv | `SendRecvLauncher.cu` | `abort.start()` at entry, threaded into every send/recv | onboarded |
 | ReduceScatter Ring | `RingReduceScatterKernel.cuh` | kernel entry | onboarded |
 | ReduceScatter Direct / DirectIbV2 | `prims/collectives/ReduceScatterDirect*.cu` | kernel entry | onboarded |
-| ReduceScatter DirectIb (`ctdirect_ib`) | `ctran/algos/ReduceScatterDirectIb.cc` | **none — `params.abort` is left default-constructed** | **not onboarded** |
 | AllGather Direct | `prims/collectives/AllGatherDirect.cu` | kernel entry, once in each of the three kernels | onboarded |
 | AllGather Ring | `prims/collectives/RingAllgather.cu` | kernel entry | onboarded |
 | AllToAllv (+ Ll128) | `prims/collectives/AllToAllv*.cu` | kernel entry | onboarded |
@@ -615,23 +614,6 @@ Two things this audit turned up that are worth keeping written down:
 Fault tolerance is a **MCCL-communicator** feature. Communicators created
 through the NCCLX/CTRAN factory get a disabled `Abort`, so they have no device
 deadline and no abort observation.
-
-`ctdirect_ib` ReduceScatter is unbounded on **more than those comms**, and the
-earlier wording here understated it. `McclComm::reduceScatter()` intercepts only
-`ctring_ib`, so an ordinary **FT-enabled** MCCL communicator that selects
-`ctdirect_ib` — via `NCCL_REDUCESCATTER_ALGO` or `ncclReduceScatterQuantize` —
-falls through to `ctranReduceScatter()` and reaches
-`ReduceScatterDirectIb.cc`, which deliberately leaves `params.abort`
-default-constructed. The kernel therefore arms a disabled handle and has neither
-the communicator's abort state nor its deadline, so peer loss is unbounded on a
-communicator whose owner asked for fault tolerance. Thanks to @benrcarver for
-catching that the status table and this section contradicted each other.
-
-Until that route is either plumbed or rejected under FT, the table above marks
-it **not onboarded**. This is a regression against the pre-migration code, which
-applied `MCCL_ABORT_TIMEOUT_MS` unconditionally on that path. The debug diagnostic above
-is scoped to FT-enabled communicators so it stays silent here and under
-`MCCL_ABORT_MODE=none`.
 
 ## Usage Examples
 

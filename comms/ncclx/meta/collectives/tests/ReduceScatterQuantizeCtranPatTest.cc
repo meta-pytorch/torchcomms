@@ -14,18 +14,17 @@
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 #include "comms/ncclx/meta/tests/VerifyAlgoStatsUtil.h"
 
-class ReduceScatterQuantizeDirectIbTest : public NcclxBaseTestFixture {
+class ReduceScatterQuantizeCtranPatTest : public NcclxBaseTestFixture {
  protected:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp({
         {"NCCL_CTRAN_ENABLE", "1"},
-        {"NCCL_CTRAN_USE_PIPES", "1"},
         {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
         {"MCCL_CHANNEL_BUFFER_SIZE", "4194304"},
         {"NCCL_MNNVL_ENABLE", "0"},
         {"NCCL_P2P_DISABLE", "1"},
-        {"NCCL_REDUCESCATTER_ALGO", "ctdirect_ib"},
-        {"NCCL_REDUCESCATTER_QUANTIZED_ALGO", "ctdirect_ib"},
+        {"NCCL_REDUCESCATTER_ALGO", "orig"},
+        {"NCCL_REDUCESCATTER_QUANTIZED_ALGO", "pat"},
     });
     algoStats_.enable();
     ncclx::Hints hints{{"useCtran", "1"}};
@@ -305,7 +304,7 @@ class ReduceScatterQuantizeDirectIbTest : public NcclxBaseTestFixture {
   ncclx::test::VerifyAlgoStatsHelper algoStats_;
 };
 
-class ReduceScatterQuantizePatTest : public ReduceScatterQuantizeDirectIbTest {
+class ReduceScatterQuantizePatTest : public ReduceScatterQuantizeCtranPatTest {
  protected:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp({{"NCCL_CTRAN_ENABLE", "0"}});
@@ -316,12 +315,11 @@ class ReduceScatterQuantizePatTest : public ReduceScatterQuantizeDirectIbTest {
 };
 
 class ReduceScatterQuantizeDefaultPatTest
-    : public ReduceScatterQuantizeDirectIbTest {
+    : public ReduceScatterQuantizeCtranPatTest {
  protected:
   void SetUp() override {
     NcclxBaseTestFixture::SetUp({
         {"NCCL_CTRAN_ENABLE", "1"},
-        {"NCCL_CTRAN_USE_PIPES", "1"},
         {"NCCL_COMM_STATE_DEBUG_TOPO", "nolocal"},
         {"NCCL_MNNVL_ENABLE", "0"},
         {"NCCL_P2P_DISABLE", "1"},
@@ -336,14 +334,14 @@ class ReduceScatterQuantizeDefaultPatTest
   }
 };
 
-TEST_F(ReduceScatterQuantizeDirectIbTest, SumFallsBackToPatForOddTail) {
+TEST_F(ReduceScatterQuantizeCtranPatTest, SumUsesPatForOddTail) {
   run(ncclSum, 1025);
   algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
   algoStats_.verifyNot(
       comm_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 }
 
-TEST_F(ReduceScatterQuantizeDirectIbTest, ZeroCountSucceeds) {
+TEST_F(ReduceScatterQuantizeCtranPatTest, ZeroCountSucceeds) {
   run(ncclSum, 0);
 }
 
@@ -362,7 +360,7 @@ TEST_F(ReduceScatterQuantizeDefaultPatTest, DefaultUsesPat) {
 }
 
 TEST_F(
-    ReduceScatterQuantizeDirectIbTest,
+    ReduceScatterQuantizeCtranPatTest,
     QuantizedCallsAreOrderedAcrossStreams) {
   runOnTwoStreams(true);
   algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
@@ -371,7 +369,7 @@ TEST_F(
 }
 
 TEST_F(
-    ReduceScatterQuantizeDirectIbTest,
+    ReduceScatterQuantizeCtranPatTest,
     UnquantizedCallsAreOrderedAcrossStreams) {
   runOnTwoStreams(false);
   algoStats_.verifyNot(
@@ -379,7 +377,7 @@ TEST_F(
 }
 
 TEST_F(
-    ReduceScatterQuantizeDirectIbTest,
+    ReduceScatterQuantizeCtranPatTest,
     CapturedCallsAreOrderedAcrossStreamsAndEagerWork) {
   runCapturedOnTwoStreams();
   algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
