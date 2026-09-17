@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD: use the HIP runtime for the cuda* API calls below (HIPify
@@ -53,6 +54,18 @@ constexpr int kHopLimit = 255;
 // mainAttr and therefore uses config_.qpDepth.
 constexpr uint32_t kLoopbackCompanionQpDepth = 32;
 constexpr uint32_t kCollapsedCqProbeDepth = 32;
+
+#ifndef __HIP_PLATFORM_AMD__
+bool allQpsErrorBeforeDestroyEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY");
+    // Keep this fail-stop mitigation an explicit opt-in; only the documented
+    // canonical value enables it.
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+#endif
 } // namespace
 
 namespace {
@@ -121,6 +134,65 @@ const char* docaErrorToString(doca_error_t err) {
 }
 
 #ifndef __HIP_PLATFORM_AMD__
+doca_error_t transitionQpToError(doca_gpu_verbs_qp_hl* qp) {
+  if (qp == nullptr || qp->qp == nullptr) {
+    return DOCA_SUCCESS;
+  }
+
+  doca_verbs_qp_attr* qpAttr = nullptr;
+  doca_error_t status = doca_verbs_qp_attr_create(&qpAttr);
+  if (status == DOCA_SUCCESS) {
+    auto* const createdQpAttr = CHECK_NOTNULL(qpAttr);
+    status = doca_verbs_qp_attr_set_next_state(
+        createdQpAttr, DOCA_VERBS_QP_STATE_ERR);
+    if (status == DOCA_SUCCESS) {
+      status = doca_verbs_qp_modify(
+          qp->qp, createdQpAttr, DOCA_VERBS_QP_ATTR_NEXT_STATE);
+    }
+  }
+  if (qpAttr != nullptr) {
+    const doca_error_t destroyStatus = doca_verbs_qp_attr_destroy(qpAttr);
+    if (destroyStatus != DOCA_SUCCESS) {
+      LOG(ERROR) << "Failed to destroy DOCA verbs QP attributes: "
+                 << static_cast<int>(destroyStatus) << " ("
+                 << docaErrorToString(destroyStatus) << ")";
+    }
+  }
+  return status;
+}
+
+doca_error_t transitionQpGroupToError(doca_gpu_verbs_qp_group_hl* group) {
+  if (group == nullptr) {
+    return DOCA_ERROR_INVALID_VALUE;
+  }
+
+  const doca_error_t mainStatus = transitionQpToError(&group->qp_main);
+  const doca_error_t companionStatus =
+      transitionQpToError(&group->qp_companion);
+  return mainStatus != DOCA_SUCCESS ? mainStatus : companionStatus;
+}
+
+} // namespace
+
+void detail::requireQpTransitionSuccess(
+    doca_error_t status,
+    const char* qpKind,
+    std::size_t nicIndex,
+    std::size_t qpIndex) {
+  if (status == DOCA_SUCCESS) {
+    return;
+  }
+  LOG(FATAL) << "MultipeerIbgdaTransport: QP transition failed; refusing to "
+                "release memory that may still be referenced by outstanding "
+                "WQEs"
+             << " qp_kind=" << qpKind << " nic_index=" << nicIndex
+             << " qp_index=" << qpIndex
+             << " status=" << static_cast<int>(status) << " ("
+             << docaErrorToString(status) << ")";
+}
+
+namespace {
+
 const char* reliableDoorbellModeName(const std::optional<bool>& enabled) {
   if (!enabled.has_value()) {
     return "auto";
@@ -1370,24 +1442,44 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
 
-  // Free all GPU memory (transport objects + QP pointer arrays)
-  for (auto* ptr : gpuAllocations_) {
-    if (ptr != nullptr) {
-      cudaError_t err = cudaFree(ptr);
-      if (err != cudaSuccess) {
-        LOG(WARNING) << "Failed to free GPU memory: "
-                     << cudaGetErrorString(err);
+  auto releaseGpuAllocations = [&]() {
+    // Free all GPU memory (transport objects + QP pointer arrays).
+    for (auto* ptr : gpuAllocations_) {
+      if (ptr != nullptr) {
+        cudaError_t err = cudaFree(ptr);
+        if (err != cudaSuccess) {
+          LOG(WARNING) << "Failed to free GPU memory: "
+                       << cudaGetErrorString(err);
+        }
       }
     }
-  }
-  gpuAllocations_.clear();
-  peerTransportsGpu_ = nullptr;
+    gpuAllocations_.clear();
+    peerTransportsGpu_ = nullptr;
+  };
 
-  // Free send/recv staging buffers (eager bulks + any lazy per-peer
-  // allocations) via the shared base cleanup.
-  cleanupSendRecvBuffers();
+  auto releaseSendRecvBuffers = [&]() {
+    // Free send/recv staging buffers (eager bulks + any lazy per-peer
+    // allocations) via the shared base cleanup.
+    cleanupSendRecvBuffers();
+  };
 
-  // Destroy per-NIC QP slots.
+  // Quiesce every QP before either class of referenced buffer is released.
+#ifndef __HIP_PLATFORM_AMD__
+  detail::quiesceQpsThenReleaseBuffers(
+      allQpsErrorBeforeDestroyEnabled(),
+      nicDoca_,
+      [](doca_gpu_verbs_qp_group_hl* group) {
+        return transitionQpGroupToError(group);
+      },
+      [](doca_gpu_verbs_qp_hl* qp) { return transitionQpToError(qp); },
+      releaseGpuAllocations,
+      releaseSendRecvBuffers);
+#else
+  releaseGpuAllocations();
+  releaseSendRecvBuffers();
+#endif
+
+  // Destroy per-NIC QPs and loopback responders.
   for (auto& nic : nicDoca_) {
     for (auto& resources : nic.qpSlots) {
       if (resources.group != nullptr) {
