@@ -10,6 +10,7 @@
 #include <folly/init/Init.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -21,9 +22,9 @@
 
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
-#include "comms/prims/memory/MultimemHandler.h"
 #include "comms/prims/tests/MultimemNvlTransportTest.cuh"
 #include "comms/prims/transport/nvl/MultiPeerNvlTransport.h"
 #include "comms/prims/transport/nvl/MultimemNvlRegistered.cuh"
@@ -1821,21 +1822,26 @@ TEST_F(
 
   int32_t* deviceReducedValues = nullptr;
   uint64_t* deviceSignalValues = nullptr;
+  uint32_t* deviceBarrierResults = nullptr;
   constexpr std::size_t kSignalValueCount = 2 * kChannels * kPipelineDepth;
   CUDACHECK_TEST(
       cudaMalloc(&deviceReducedValues, kElementCount * sizeof(int32_t)));
   CUDACHECK_TEST(
       cudaMalloc(&deviceSignalValues, kSignalValueCount * sizeof(uint64_t)));
+  CUDACHECK_TEST(
+      cudaMalloc(&deviceBarrierResults, kChannels * sizeof(uint32_t)));
   test::launchBlockAggregateBarrier(
       transport.getDeviceTransport(),
       kChannels,
       kEpochs,
       deviceReducedValues,
-      deviceSignalValues);
+      deviceSignalValues,
+      deviceBarrierResults);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   std::vector<int32_t> reducedValues(kElementCount);
   std::vector<uint64_t> signalValues(kSignalValueCount);
+  std::vector<uint32_t> barrierResults(kChannels);
   CUDACHECK_TEST(cudaMemcpy(
       reducedValues.data(),
       deviceReducedValues,
@@ -1846,8 +1852,16 @@ TEST_F(
       deviceSignalValues,
       kSignalValueCount * sizeof(uint64_t),
       cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      barrierResults.data(),
+      deviceBarrierResults,
+      kChannels * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
   CUDACHECK_TEST(cudaFree(deviceReducedValues));
   CUDACHECK_TEST(cudaFree(deviceSignalValues));
+  CUDACHECK_TEST(cudaFree(deviceBarrierResults));
+
+  EXPECT_EQ(barrierResults, std::vector<uint32_t>(kChannels, 1));
 
   const int32_t rankSum = numRanks * (numRanks + 1) / 2;
   for (uint32_t epoch = 0; epoch < kEpochs; ++epoch) {
@@ -1875,6 +1889,159 @@ TEST_F(
       EXPECT_EQ(signalValues[outputBase + kPipelineDepth + lane], 0);
     }
   }
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    BlockAggregateBarrierSkipsWithoutAdvancingEpoch) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_block_barrier_abort");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          /*dataBufferSize=*/4096,
+          /*userSignalCount=*/0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1));
+  transport.exchange();
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  uint32_t* deviceBarrierResult = nullptr;
+  uint64_t* deviceBarrierEpoch = nullptr;
+  uint32_t* deviceFollowup = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&deviceBarrierResult, sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMalloc(&deviceBarrierEpoch, sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMalloc(&deviceFollowup, sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(deviceBarrierResult, 0xFF, sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(deviceBarrierEpoch, 0xFF, sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMemset(deviceFollowup, 0, sizeof(uint32_t)));
+
+  constexpr std::chrono::milliseconds kTimeout{500};
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setDefaultTimeout(kTimeout);
+  const bool participate = globalRank != numRanks - 1;
+  test::launchBlockAggregateBarrierAbort(
+      transport.getDeviceTransport(),
+      participate,
+      abort.getDeviceHandle(),
+      /*startTimeout=*/true,
+      deviceBarrierResult,
+      /*barrierCounter=*/nullptr,
+      deviceBarrierEpoch);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  if (participate) {
+    uint32_t barrierResult = 0;
+    uint64_t barrierEpoch = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &barrierResult,
+        deviceBarrierResult,
+        sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        &barrierEpoch,
+        deviceBarrierEpoch,
+        sizeof(uint64_t),
+        cudaMemcpyDeviceToHost));
+    EXPECT_EQ(
+        barrierResult, static_cast<uint32_t>(NvlBlockBarrierResult::Aborted));
+    EXPECT_EQ(barrierEpoch, 0);
+    EXPECT_TRUE(abort.isTimedOut());
+  }
+
+  test::launchWriteValue(deviceFollowup, 1);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  uint32_t followup = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &followup, deviceFollowup, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(followup, 1);
+
+  CUDACHECK_TEST(cudaFree(deviceBarrierResult));
+  CUDACHECK_TEST(cudaFree(deviceBarrierEpoch));
+  CUDACHECK_TEST(cudaFree(deviceFollowup));
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+}
+
+TEST_F(
+    MultimemNvlTransportTestFixture,
+    BlockAggregateBarrierSkipsPublishWhenAlreadyAborted) {
+  if (numRanks < 3) {
+    GTEST_SKIP() << "MultimemNvlTransport requires 3+ ranks";
+  }
+  auto bootstrap = makeBootstrap("mmnvl_block_barrier_pre_aborted");
+  if (!allRanksMultimemEligible(bootstrap, globalRank, numRanks, localRank)) {
+    GTEST_SKIP() << "CUDA multimem/NVLS multicast is not eligible";
+  }
+  MultimemNvlTransport transport(
+      bootstrap,
+      globalRank,
+      identityRankMap(numRanks),
+      makeConfig(
+          /*dataBufferSize=*/4096,
+          /*userSignalCount=*/0,
+          /*pipelineDepth=*/1,
+          /*maxChannels=*/1));
+  transport.exchange();
+  ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
+
+  uint32_t* deviceBarrierResult = nullptr;
+  uint64_t* deviceBarrierCounter = nullptr;
+  uint64_t* deviceBarrierEpoch = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&deviceBarrierResult, sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMalloc(&deviceBarrierCounter, sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMalloc(&deviceBarrierEpoch, sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMemset(deviceBarrierResult, 0xFF, sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(deviceBarrierCounter, 0xFF, sizeof(uint64_t)));
+  CUDACHECK_TEST(cudaMemset(deviceBarrierEpoch, 0xFF, sizeof(uint64_t)));
+
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  ASSERT_TRUE(abort.setAbort(
+      comms::fault_tolerance::AbortReason::ABORTED,
+      "pre-aborted block barrier test"));
+  test::launchBlockAggregateBarrierAbort(
+      transport.getDeviceTransport(),
+      /*participate=*/true,
+      abort.getDeviceHandle(),
+      /*startTimeout=*/false,
+      deviceBarrierResult,
+      deviceBarrierCounter,
+      deviceBarrierEpoch);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t barrierResult = 0;
+  uint64_t barrierCounter = 0;
+  uint64_t barrierEpoch = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &barrierResult,
+      deviceBarrierResult,
+      sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      &barrierCounter,
+      deviceBarrierCounter,
+      sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      &barrierEpoch,
+      deviceBarrierEpoch,
+      sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(
+      barrierResult, static_cast<uint32_t>(NvlBlockBarrierResult::Aborted));
+  EXPECT_EQ(barrierCounter, 0);
+  EXPECT_EQ(barrierEpoch, 0);
+
+  CUDACHECK_TEST(cudaFree(deviceBarrierResult));
+  CUDACHECK_TEST(cudaFree(deviceBarrierCounter));
+  CUDACHECK_TEST(cudaFree(deviceBarrierEpoch));
   ASSERT_EQ(bootstrap->barrier(globalRank, numRanks).get(), 0);
 }
 
