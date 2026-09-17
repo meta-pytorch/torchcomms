@@ -143,6 +143,9 @@ class MultipeerIbgdaTransport
    */
   void exchange();
 
+  void prepareExchange();
+  void exchangePrepared();
+
   /**
    * getDeviceTransport - Get multi-peer device transport wrapper
    *
@@ -345,6 +348,9 @@ class MultipeerIbgdaTransport
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
 
   // Per-peer send/recv buffer views (IbSendRecvPeerBuffers) and the eager-mode
   // bulk allocations now live in MultiPeerIbTransportBase

@@ -279,6 +279,11 @@ class MultiPeerNvlTransport {
    */
   void exchange();
 
+  // Local-only preparation and the failure-safe collective phase used by
+  // MultiPeerTransport's coordinated initialization path.
+  void prepareExchange();
+  void exchangePrepared();
+
   /**
    * getP2pTransportDevice - Get device handle for P2P communication with a peer
    *
@@ -499,8 +504,13 @@ class MultiPeerNvlTransport {
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};
 
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
+
   // Cached memory sharing mode (detected once in constructor)
   MemSharingMode memSharingMode_;
+
+  void rollbackExchange() noexcept;
 };
 
 } // namespace comms::prims
