@@ -4,6 +4,7 @@
 // gethostname, and MPI-based bootstrap. Requires GPU hardware and MPI.
 
 #include <unistd.h>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -62,36 +63,29 @@ class TopologyDiscoveryE2eFixture : public MpiBaseTestFixture {
         MPI_BYTE,
         MPI_COMM_WORLD);
 
-    // Count same-hostname ranks (= local node size).
-    localSize_ = 0;
+    expectedNvlPeerRanks_.clear();
     for (int r = 0; r < numRanks; ++r) {
-      if (std::strcmp(myLoc.hostname, allLocs[r].hostname) == 0) {
-        ++localSize_;
+      if (r == globalRank) {
+        continue;
       }
-    }
-
-    // Check if ALL ranks share the same MNNVL fabric.
-    isMnnvl_ = myLoc.fabricInfo.available;
-    if (isMnnvl_) {
-      for (int r = 0; r < numRanks; ++r) {
-        if (!allLocs[r].fabricInfo.available ||
-            std::memcmp(
-                myLoc.fabricInfo.clusterUuid,
-                allLocs[r].fabricInfo.clusterUuid,
-                NvmlFabricInfo::kUuidLen) != 0 ||
-            myLoc.fabricInfo.cliqueId != allLocs[r].fabricInfo.cliqueId) {
-          isMnnvl_ = false;
-          break;
-        }
+      const bool sameHost =
+          std::strcmp(myLoc.hostname, allLocs[r].hostname) == 0;
+      const bool sameFabric = myLoc.fabricInfo.available &&
+          allLocs[r].fabricInfo.available &&
+          std::equal(myLoc.fabricInfo.clusterUuid,
+                     myLoc.fabricInfo.clusterUuid + NvmlFabricInfo::kUuidLen,
+                     allLocs[r].fabricInfo.clusterUuid) &&
+          myLoc.fabricInfo.cliqueId == allLocs[r].fabricInfo.cliqueId;
+      if (sameHost || sameFabric) {
+        expectedNvlPeerRanks_.push_back(r);
       }
     }
 
     COMMS_LOG(
         INFO,
-        "Rank {} platform detection: isMnnvl={}, localSize={}",
+        "Rank {} platform detection: expected NVL peers={}",
         globalRank,
-        isMnnvl_,
-        localSize_);
+        expectedNvlPeerRanks_.size());
   }
 
   TopologyResult run_discover() {
@@ -100,8 +94,13 @@ class TopologyDiscoveryE2eFixture : public MpiBaseTestFixture {
     return topo.discover(globalRank, numRanks, localRank, *bootstrap);
   }
 
-  bool isMnnvl_{false};
-  int localSize_{0};
+  CanonicalTopologyResult run_canonical_discover() {
+    auto bootstrap = std::make_shared<MpiBootstrap>();
+    TopologyDiscovery topo;
+    return topo.discoverCanonical(globalRank, numRanks, localRank, *bootstrap);
+  }
+
+  std::vector<int> expectedNvlPeerRanks_;
 };
 
 // NVL peers should be populated and self should NOT appear in nvlPeerRanks.
@@ -181,30 +180,67 @@ TEST_F(TopologyDiscoveryE2eFixture, NvlLocalIndicesDense) {
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify NVL peer count matches the platform: on MNNVL all ranks in the
-// same clique are NVL peers, on non-MNNVL only same-host ranks are NVL peers.
+// Verify NVL peer count matches the union of same-host and same-fabric peers.
 TEST_F(TopologyDiscoveryE2eFixture, PlatformNvlPeerCount) {
   auto result = run_discover();
 
-  int nvlPeerCount = static_cast<int>(result.nvlPeerRanks.size());
-
-  if (isMnnvl_) {
-    // All ranks share the same NVLink fabric → every peer is NVL.
-    EXPECT_EQ(nvlPeerCount, numRanks - 1) << "MNNVL: all peers should be NVL";
-  } else {
-    // Same-host peers only.
-    EXPECT_EQ(nvlPeerCount, localSize_ - 1)
-        << "Non-MNNVL: NVL peers should be same-host only";
-  }
+  EXPECT_EQ(result.nvlPeerRanks, expectedNvlPeerRanks_);
 
   COMMS_LOG(
       INFO,
-      "Rank {} (localRank {}): isMnnvl={}, {} NVL peers (expected {})",
+      "Rank {} (localRank {}): {} NVL peers (expected {})",
       globalRank,
       localRank,
-      isMnnvl_,
-      nvlPeerCount,
-      isMnnvl_ ? numRanks - 1 : localSize_ - 1);
+      result.nvlPeerRanks.size(),
+      expectedNvlPeerRanks_.size());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(TopologyDiscoveryE2eFixture, CanonicalSnapshotMatchesLocalProjection) {
+  const auto legacy = run_discover();
+  const auto result = run_canonical_discover();
+  std::vector<int> domainByRank(static_cast<std::size_t>(numRanks), -1);
+  for (std::size_t domain = 0; domain < result.ranksByDomain.size(); ++domain) {
+    for (int rank : result.ranksByDomain[domain]) {
+      ASSERT_GE(rank, 0);
+      ASSERT_LT(rank, numRanks);
+      ASSERT_EQ(domainByRank[static_cast<std::size_t>(rank)], -1);
+      domainByRank[static_cast<std::size_t>(rank)] = static_cast<int>(domain);
+    }
+  }
+  for (int rank = 0; rank < numRanks; ++rank) {
+    ASSERT_GE(domainByRank[static_cast<std::size_t>(rank)], 0);
+  }
+
+  std::vector<int> allDomainByRank(
+      static_cast<std::size_t>(numRanks) * numRanks);
+  MPI_Allgather(
+      domainByRank.data(),
+      numRanks,
+      MPI_INT,
+      allDomainByRank.data(),
+      numRanks,
+      MPI_INT,
+      MPI_COMM_WORLD);
+  for (int rank = 0; rank < numRanks; ++rank) {
+    const auto first =
+        allDomainByRank.begin() + static_cast<std::size_t>(rank) * numRanks;
+    EXPECT_TRUE(std::equal(first, first + numRanks, domainByRank.begin()))
+        << "rank " << rank << " derived a different canonical partition";
+  }
+
+  const auto& localDomain = result.ranksByDomain.at(
+      static_cast<std::size_t>(domainByRank[globalRank]));
+  ASSERT_EQ(result.mptTopology.globalToNvlLocal.size(), localDomain.size());
+  for (std::size_t local = 0; local < localDomain.size(); ++local) {
+    EXPECT_EQ(
+        result.mptTopology.globalToNvlLocal.at(localDomain[local]),
+        static_cast<int>(local));
+  }
+  EXPECT_EQ(result.mptTopology.nvlPeerRanks, legacy.nvlPeerRanks);
+  EXPECT_EQ(result.mptTopology.globalToNvlLocal, legacy.globalToNvlLocal);
+  EXPECT_EQ(result.mptTopology.nvlPeerRanks, expectedNvlPeerRanks_);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
