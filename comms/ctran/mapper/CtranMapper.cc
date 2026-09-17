@@ -471,7 +471,7 @@ void CtranMapper::setAtDestruction() {
 
 CtranMapper::~CtranMapper() {
 #ifdef ENABLE_META_COMPRESSION
-  compressionManagerDestroy(this);
+  ctran::utils::compressionManagerDestroy(this);
 #endif
 
   // Should already be set in ~Ctran()
