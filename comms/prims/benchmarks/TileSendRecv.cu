@@ -24,8 +24,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes) {
   abortDevice.start();
 
   auto group = make_block_group();
@@ -60,8 +60,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice timeout) {
+    AbortDevice timeout,
+    std::size_t max_signal_bytes) {
   timeout.start();
 
   auto group = make_block_group();
@@ -225,8 +225,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes) {
   abortDevice.start();
 
   auto group = make_multiwarp_group(blockDim.x / 2);
@@ -255,8 +255,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressDrainSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice timeout) {
+    AbortDevice timeout,
+    std::size_t max_signal_bytes) {
   timeout.start();
 
   auto group = make_block_group();
@@ -304,8 +304,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecvBidirCta(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice timeout) {
+    AbortDevice timeout,
+    std::size_t max_signal_bytes) {
   timeout.start();
 
   auto group = make_multiwarp_group(blockDim.x / 2);
@@ -336,8 +336,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
     P2pNvlTransportDevice p2p_pred,
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
-    std::size_t max_signal_bytes,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    std::size_t max_signal_bytes) {
   abortDevice.start();
 
   auto group = make_block_group();

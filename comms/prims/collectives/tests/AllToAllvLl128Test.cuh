@@ -20,6 +20,6 @@ void test_all_to_allv_ll128(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 } // namespace comms::prims::test

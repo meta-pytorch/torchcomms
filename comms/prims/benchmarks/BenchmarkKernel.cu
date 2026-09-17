@@ -15,8 +15,8 @@ __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
   TiledBuffer<char> tiles(static_cast<char*>(srcBuff), nBytes, group);
@@ -32,8 +32,8 @@ __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
   TiledBuffer<char> tiles(static_cast<char*>(dstBuff), nBytes, group);
@@ -112,8 +112,8 @@ __global__ __launch_bounds__(512, 1) void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
 

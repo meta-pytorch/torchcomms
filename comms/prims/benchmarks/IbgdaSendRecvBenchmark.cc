@@ -762,20 +762,39 @@ class IbgdaSendRecvBenchmarkContext {
     // bidirectional Progress, so that combination is Simple-only below.
     const bool useLL = (proto == SendRecvProto::LL);
     (void)copyOp;
+    const AbortDevice abortDevice{};
 
     if (direction == SendRecvDirection::Bidirectional) {
       if (api == SendRecvApi::Blocking) {
         if (useLL) {
           launch_ibgda_send_recv_ll(
-              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              recvBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         } else {
           launch_ibgda_send_recv(
-              deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              recvBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         }
       } else {
         CHECK(api == SendRecvApi::Progress);
         launch_ibgda_progress_send_recv(
-            deviceTransport_, sendBuf, recvBuf, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            sendBuf,
+            recvBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       }
       return;
     }
@@ -784,26 +803,56 @@ class IbgdaSendRecvBenchmarkContext {
       if (api == SendRecvApi::Blocking) {
         if (useLL) {
           launch_ibgda_send_ll(
-              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         } else {
           launch_ibgda_send(
-              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         }
       } else if (api == SendRecvApi::RegisteredProgress) {
         CHECK(!useLL);
         CHECK(registeredEnabled_);
         launch_ibgda_registered_progress_send(
-            deviceTransport_, registeredSendBuf_, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            registeredSendBuf_,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       } else if (api == SendRecvApi::Progress) {
         if (useLL) {
           launch_ibgda_progress_send_ll(
-              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         } else if (registeredEnabled_) {
           launch_ibgda_progress_send_complete(
-              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         } else {
           launch_ibgda_progress_send(
-              deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
+              deviceTransport_,
+              sendBuf,
+              nbytes,
+              numBlocks_,
+              stream_,
+              abortDevice);
         }
       } else if (api == SendRecvApi::WarpProxy) {
         CHECK(!useLL);
@@ -813,8 +862,8 @@ class IbgdaSendRecvBenchmarkContext {
             nbytes,
             numBlocks_,
             stream_,
+            abortDevice,
             /*maxSignalBytes=*/0,
-            AbortDevice(),
             FLAGS_ibgda_warp_proxy_queue_depth);
       } else {
         LOG(FATAL) << "unsupported send/recv API";
@@ -825,24 +874,44 @@ class IbgdaSendRecvBenchmarkContext {
     if (api == SendRecvApi::Blocking) {
       if (useLL) {
         launch_ibgda_recv_ll(
-            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            recvBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       } else {
         launch_ibgda_recv(
-            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            recvBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       }
     } else if (api == SendRecvApi::Progress) {
       if (useLL) {
         launch_ibgda_progress_recv_ll(
-            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            recvBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       } else {
         launch_ibgda_progress_recv(
-            deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+            deviceTransport_,
+            recvBuf,
+            nbytes,
+            numBlocks_,
+            stream_,
+            abortDevice);
       }
     } else if (api == SendRecvApi::RegisteredProgress) {
       CHECK(!useLL);
       CHECK(registeredEnabled_);
       launch_ibgda_progress_recv(
-          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
+          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_, abortDevice);
     } else if (api == SendRecvApi::WarpProxy) {
       CHECK(!useLL);
       launch_ibgda_warp_proxy_recv(
@@ -851,8 +920,8 @@ class IbgdaSendRecvBenchmarkContext {
           nbytes,
           numBlocks_,
           stream_,
+          abortDevice,
           /*maxSignalBytes=*/0,
-          AbortDevice(),
           FLAGS_ibgda_warp_proxy_queue_depth);
     } else {
       LOG(FATAL) << "unsupported send/recv API";
