@@ -1127,7 +1127,8 @@ set(COMMON_FILES
   comms/utils/logger/LoggingFormat.h
   comms/utils/logger/LogTypes.cc
   comms/utils/logger/LogTypes.h
-  comms/utils/logger/LogUtils.cc
+  comms/utils/logger/GpuLogUtils.cc
+  comms/utils/logger/GpuLogUtils.h
   comms/utils/logger/LogUtils.h
   comms/utils/logger/NcclScubaSample.cc
   comms/utils/logger/NcclScubaSample.h

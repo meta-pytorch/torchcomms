@@ -2,7 +2,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/GpuLogUtils.h"
 
 #include <folly/synchronization/CallOnce.h>
 
