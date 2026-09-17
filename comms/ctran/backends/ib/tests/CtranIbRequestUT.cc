@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <string>
