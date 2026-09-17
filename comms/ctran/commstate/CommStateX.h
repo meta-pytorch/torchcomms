@@ -114,6 +114,9 @@ class CommStateX {
   // get cuda device index
   int cudaDev() const;
 
+  // Query the CUDA architecture for the specified device.
+  static int getCudaArch(int cudaDev);
+
   int cudaArch() const;
 
   int64_t busId() const;

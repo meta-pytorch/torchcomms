@@ -9,6 +9,7 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
+#include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ncclx {
@@ -559,6 +560,15 @@ int CommStateX::nRanks() const {
 
 int CommStateX::cudaDev() const {
   return cudaDev_;
+}
+
+int CommStateX::getCudaArch(int cudaDev) {
+  const auto cudaArch = ctran::utils::getCudaArch(cudaDev);
+  if (cudaArch.hasError()) {
+    CTRAN_ERR(commUnhandledCudaError, "{}", cudaArch.error());
+    throw ctran::utils::Exception(cudaArch.error(), commUnhandledCudaError);
+  }
+  return cudaArch.value();
 }
 
 int CommStateX::cudaArch() const {
