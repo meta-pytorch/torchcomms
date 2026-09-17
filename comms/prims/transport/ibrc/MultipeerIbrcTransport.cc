@@ -308,6 +308,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   }
   peerResources_.resize(nRanks_ - 1);
   peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
+  hostLanesIssued_.resize(nRanks_ - 1);
 
   try {
     // Pin GPU work to config_.cudaDevice.
@@ -1595,6 +1596,70 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
   return reinterpret_cast<P2pIbrcTransportDevice*>(
       static_cast<char*>(p2pTransportDevices_.device) +
       peerIndex * ibrcDeviceSlotSize());
+}
+
+std::size_t MultipeerIbrcTransport::hostLaneCapacity(int peerRank) const {
+  // Validated before rankToPeerIndex(), which otherwise turns a bad rank into
+  // an out-of-bounds read of peerResources_ rather than an error.
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format("hostLaneCapacity: invalid peerRank={}", peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const PeerResources& peer = peerResources_[peerIndex];
+  /*
+   * The same acquire gate getHostWriter() uses, and for the same reason:
+   * cmdQueuesAllocated is a plain bool set BEFORE the release store that
+   * publishes the queues, so gating on it lets a concurrent lazy
+   * materialization expose cmdQueues while it is still being built.
+   */
+  if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        fmt::format(
+            "hostLaneCapacity: peerRank={} command queues not published (materialize the peer first)",
+            peerRank));
+  }
+  return peer.cmdQueues.size();
+}
+
+P2pIbrcHostLanes MultipeerIbrcTransport::getHostLanes(
+    int peerRank,
+    int numLanes) const {
+  const std::size_t capacity = hostLaneCapacity(peerRank);
+  if (numLanes < 1 || static_cast<std::size_t>(numLanes) > capacity) {
+    throw std::runtime_error(
+        fmt::format(
+            "getHostLanes: numLanes={} out of range for peerRank={} (capacity {})",
+            numLanes,
+            peerRank,
+            capacity));
+  }
+  /*
+   * Claim the peer's rings before building anything. Refusing here is the
+   * point: the alternative is two lanes objects driving [0, numLanes) at once,
+   * which corrupts in-flight descriptors rather than failing.
+   */
+  std::shared_ptr<void> owner;
+  {
+    const int peerIndex = rankToPeerIndex(peerRank);
+    const std::lock_guard<std::mutex> lock(hostLanesMutex_);
+    if (!hostLanesIssued_[peerIndex].expired()) {
+      throw std::runtime_error(
+          fmt::format(
+              "getHostLanes: peerRank={} rings are already held by another "
+              "lanes object; one logical producer per ring",
+              peerRank));
+    }
+    owner = std::make_shared<char>();
+    hostLanesIssued_[peerIndex] = owner;
+  }
+
+  std::vector<P2pIbrcHostWriter> writers;
+  writers.reserve(static_cast<std::size_t>(numLanes));
+  for (int l = 0; l < numLanes; ++l) {
+    writers.push_back(getHostWriter(peerRank, static_cast<uint32_t>(l)));
+  }
+  return P2pIbrcHostLanes(std::move(writers), std::move(owner));
 }
 
 P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
