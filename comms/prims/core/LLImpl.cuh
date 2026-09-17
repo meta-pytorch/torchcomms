@@ -232,7 +232,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
 #ifdef __CUDA_ARCH__
     const std::size_t nPackets = P::packet_count(nbytes);
     const auto* base = reinterpret_cast<const char*>(staging);
@@ -420,7 +420,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
 #ifdef __CUDA_ARCH__
     constexpr std::size_t kData = static_cast<std::size_t>(P::kData);
     constexpr std::size_t kPacket = static_cast<std::size_t>(P::kPacketBytes);
