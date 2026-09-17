@@ -1,8 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 //
 // Shared CUDA device helpers for stress device API tests.
-// These are __device__ functions that can be called from both NCCLx and Pipes
-// test kernels.
 
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once

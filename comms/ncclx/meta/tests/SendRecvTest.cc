@@ -356,10 +356,22 @@ TEST_F(SendRecvTestParam, GroupedSendRecvWithHintOverride) {
   }
 }
 
-// Cudagraph-aware SendRecv: capture grouped send/recv in a CUDA graph,
-// replay, and verify correctness. Uses ctgraph algo which pre-registers
-// buffers during capture.
-TEST_F(SendRecvTest, CtgraphGroupedSendRecv) {
+TEST_F(SendRecvTest, Ctp2pFallsBackToBaseline) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  ncclx::Hints hints({{"sendrecvAlgo", "ctp2p"}});
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  hints.set("noLocal", "1");
+#endif
+  config.hints = &hints;
+  ncclx::test::NcclCommRAII commRaii(
+      globalRank, numRanks, localRank, bootstrap_.get(), false, &config);
+  this->comm = commRaii.get();
+
+  expectCtranAlgo_ = false;
+  runGroupedSendRecv();
+}
+
+TEST_F(SendRecvTest, CtgraphFallsBackToBaselineDuringCapture) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   ncclx::Hints hints({{"sendrecvAlgo", "ctgraph"}});
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
@@ -397,13 +409,7 @@ TEST_F(SendRecvTest, CtgraphGroupedSendRecv) {
 
   checkResults(recvPeer, commCount);
 
-  if (comm->noLocal_) {
-    // nolocal: IB backend → ctgraph routes to ctran
-    ctranAlgoStats_.verify(comm->ctranComm_.get(), "SendRecv", "Ctran");
-  } else {
-    // default: NVL peers → ctgraph falls back to baseline
-    ctranAlgoStats_.verifyNot(comm->ctranComm_.get(), "SendRecv", "Ctran");
-  }
+  ctranAlgoStats_.verifyNot(comm->ctranComm_.get(), "SendRecv", "Ctran");
 
   CUDACHECK_TEST(cudaGraphExecDestroy(exec));
   CUDACHECK_TEST(cudaGraphDestroy(graph));

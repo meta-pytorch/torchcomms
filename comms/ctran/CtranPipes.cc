@@ -17,9 +17,8 @@
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-bool ctranPrimsEnabled(const CtranComm* comm) {
-  const auto enablePrims = comm->config_.primsConfig.enablePrims;
-  return enablePrims < 0 ? NCCL_CTRAN_USE_PIPES : enablePrims != 0;
+bool ctranPrimsEnabled(const CtranComm* /*comm*/) {
+  return false;
 }
 
 #if defined(ENABLE_PRIMS)

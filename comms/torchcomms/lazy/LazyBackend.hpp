@@ -532,10 +532,6 @@ class LazyBackend : public TorchCommBackend {
     }
   }
 
-  int64_t get_device_transport() override {
-    return primary_->get_device_transport();
-  }
-
   // ---------------------------------------------------------------
   // Test / introspection helpers
   // ---------------------------------------------------------------

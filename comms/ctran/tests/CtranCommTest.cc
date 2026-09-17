@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranPipes.h"
 #if defined(ENABLE_PRIMS)
@@ -110,18 +111,27 @@ TEST(CtranCommTest, ctranCommConfigTest) {
   EXPECT_EQ(comm2.config_.backends.size(), 0);
 }
 
-TEST(CtranCommTest, PrimsPolicyIsPerCommunicator) {
+TEST(CtranCommTest, PrimsPolicyIsPermanentlyDisabled) {
   auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
   const bool savedUsePipes = NCCL_CTRAN_USE_PIPES;
-  NCCL_CTRAN_USE_PIPES = false;
+  NCCL_CTRAN_USE_PIPES = true;
   auto restoreUsePipes = folly::makeGuard(
       [savedUsePipes] { NCCL_CTRAN_USE_PIPES = savedUsePipes; });
+  CtranComm enabled(abort, ctranConfig{.primsConfig = {.enablePrims = 1}});
+  CtranComm defaulted(abort);
 
-  CtranComm mcclComm(abort, ctranConfig{.primsConfig = {.enablePrims = 1}});
-  CtranComm ncclxComm(abort);
+  EXPECT_FALSE(ctranPrimsEnabled(&enabled));
+  EXPECT_FALSE(ctranPrimsEnabled(&defaulted));
+  EXPECT_EQ(ctranInitializePipes(&enabled), commSuccess);
+  EXPECT_EQ(enabled.getMultiPeerTransportsPtr({}), nullptr);
+}
 
-  EXPECT_TRUE(ctranPrimsEnabled(&mcclComm));
-  EXPECT_FALSE(ctranPrimsEnabled(&ncclxComm));
+TEST(CtranCommTest, DeviceAllToAllvIsRetired) {
+  EXPECT_FALSE(ctranDeviceAllToAllvSupport(nullptr));
+  EXPECT_EQ(
+      ctranDeviceAllToAllv(
+          nullptr, nullptr, nullptr, nullptr, commInt32, nullptr, nullptr),
+      commInvalidUsage);
 }
 
 // The transport binds its staging geometry at comm init while the collective
@@ -158,20 +168,6 @@ TEST(CtranCommTest, PrimsGeometryResolvesHintBeforeCvar) {
   both.maxBlocks = 12;
   EXPECT_EQ(ctranPrimsResolvedMaxChannels(both), 8);
   EXPECT_EQ(ctranPrimsResolvedMaxBlocks(both), 12);
-}
-
-TEST(CtranCommTest, ExplicitPrimsDisableDoesNotAffectLegacyPolicy) {
-  auto abort = comms::fault_tolerance::createAbort(/*enabled=*/true);
-  const bool savedUsePipes = NCCL_CTRAN_USE_PIPES;
-  NCCL_CTRAN_USE_PIPES = true;
-  auto restoreUsePipes = folly::makeGuard(
-      [savedUsePipes] { NCCL_CTRAN_USE_PIPES = savedUsePipes; });
-
-  CtranComm mcclComm(abort, ctranConfig{.primsConfig = {.enablePrims = 0}});
-  CtranComm ncclxComm(abort);
-
-  EXPECT_FALSE(ctranPrimsEnabled(&mcclComm));
-  EXPECT_TRUE(ctranPrimsEnabled(&ncclxComm));
 }
 
 #if defined(ENABLE_PRIMS)

@@ -102,7 +102,8 @@ class ReduceScatterQuantizeTest : public NcclxBaseTestFixture {
 
   void TearDown() override {
 #ifdef TEST_RSQ_DIRECT_IB
-    algoStats_.verify(
+    algoStats_.verify(commRAII_->get(), "ReduceScatter", "PAT");
+    algoStats_.verifyNot(
         commRAII_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 #endif
     CUDACHECK_TEST(cudaStreamDestroy(stream));
