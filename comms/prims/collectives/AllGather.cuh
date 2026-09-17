@@ -195,8 +195,8 @@ __device__ __forceinline__ void all_gather(
         group_per_peer,
         tiles.tile_data(group_per_peer.group_id),
         tiles.tile_bytes(group_per_peer.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   } else {
     // Receive peer's data into my recvbuff at appropriate offset
     TiledBuffer<char> tiles(
@@ -207,8 +207,8 @@ __device__ __forceinline__ void all_gather(
         group_per_peer,
         tiles.tile_data(group_per_peer.group_id),
         tiles.tile_bytes(group_per_peer.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 
 #endif

@@ -52,7 +52,7 @@ __global__ void multiPeerBarrierKernel(DeviceWindow dw, int nSteps) {
   int slotId = computeSlotIndex<G>();
 
   for (int step = 0; step < nSteps; ++step) {
-    dw.barrier(group, slotId);
+    dw.barrier(group, slotId, dw.abortDevice());
   }
 }
 
@@ -82,7 +82,8 @@ multiPeerSignalPingPongKernel(DeviceWindow dw, int targetRank, int nSteps) {
     } else {
       // Wait for (step/2 + 1) signals from peer
       uint64_t expectedValue = (step / 2) + 1;
-      dw.wait_signal(group, slotId, CmpOp::CMP_GE, expectedValue);
+      dw.wait_signal(
+          group, slotId, CmpOp::CMP_GE, expectedValue, dw.abortDevice());
     }
   }
 }
@@ -109,7 +110,8 @@ __global__ void multiPeerSignalAllKernel(DeviceWindow dw, int nSteps) {
         group,
         slotId,
         CmpOp::CMP_GE,
-        static_cast<uint64_t>(nPeers * (step + 1)));
+        static_cast<uint64_t>(nPeers * (step + 1)),
+        dw.abortDevice());
   }
 }
 
@@ -177,7 +179,8 @@ __global__ void multiPeerPutPingPongKernel(
     } else {
       // Wait for (step/2 + 1) signals from peer
       uint64_t expectedValue = (step / 2) + 1;
-      dw.wait_signal(group, slotId, CmpOp::CMP_GE, expectedValue);
+      dw.wait_signal(
+          group, slotId, CmpOp::CMP_GE, expectedValue, dw.abortDevice());
     }
   }
 }
@@ -212,7 +215,8 @@ __global__ void multiPeerPutSignalPingPongKernel(
     } else {
       // Wait for (step/2 + 1) signals from peer
       uint64_t expectedValue = (step / 2) + 1;
-      dw.wait_signal(group, slotId, CmpOp::CMP_GE, expectedValue);
+      dw.wait_signal(
+          group, slotId, CmpOp::CMP_GE, expectedValue, dw.abortDevice());
     }
   }
 }

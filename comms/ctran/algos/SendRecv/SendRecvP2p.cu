@@ -21,7 +21,8 @@ __device__ __forceinline__ void sendImpl(
     ctran::sendrecv::SendRecvOp* sends,
     size_t numSends,
     comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
-    comms::prims::ThreadGroup& group) {
+    comms::prims::ThreadGroup& group,
+    const comms::prims::AbortDevice& abortDevice) {
   for (auto i = 0; i < numSends; i++) {
     if (group.group_id >= sends[i].nGroups) {
       continue;
@@ -41,6 +42,7 @@ __device__ __forceinline__ void sendImpl(
         opGroup,
         tiles.data(),
         tiles.bytes(),
+        abortDevice,
         /*max_signal_bytes=*/0);
   }
 }
@@ -49,7 +51,8 @@ __device__ __forceinline__ void recvImpl(
     ctran::sendrecv::SendRecvOp* recvs,
     size_t numRecvs,
     comms::prims::P2pNvlTransportDevice* nvlTransportsBase,
-    comms::prims::ThreadGroup& group) {
+    comms::prims::ThreadGroup& group,
+    const comms::prims::AbortDevice& abortDevice) {
   for (auto i = 0; i < numRecvs; i++) {
     if (group.group_id >= recvs[i].nGroups) {
       continue;
@@ -69,6 +72,7 @@ __device__ __forceinline__ void recvImpl(
         opGroup,
         tiles.data(),
         tiles.bytes(),
+        abortDevice,
         /*max_signal_bytes=*/0);
   }
 }
@@ -98,6 +102,7 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
       static_cast<uint32_t>(args.numRecvBlocks)};
   auto [partition_id, subgroup] =
       group.partition(comms::prims::make_device_span(weights, 2u));
+  const comms::prims::AbortDevice abortDevice;
 
   // Use list format if enabled (fallback for > kCtranMaxNvlSendRecvOps),
   // otherwise use static arrays (fast path for common cases)
@@ -107,9 +112,11 @@ __global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
       args.useList ? args.recvsList : args.recvs;
 
   if (partition_id == 0) {
-    sendImpl(sends, args.numSends, args.nvlTransportsBase, subgroup);
+    sendImpl(
+        sends, args.numSends, args.nvlTransportsBase, subgroup, abortDevice);
   } else {
-    recvImpl(recvs, args.numRecvs, args.nvlTransportsBase, subgroup);
+    recvImpl(
+        recvs, args.numRecvs, args.nvlTransportsBase, subgroup, abortDevice);
   }
 
   if (flag && gtIdx == 0) {

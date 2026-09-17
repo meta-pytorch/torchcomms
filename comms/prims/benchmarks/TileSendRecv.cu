@@ -38,15 +38,15 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        max_signal_bytes,
-        abortDevice);
+        abortDevice,
+        max_signal_bytes);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        max_signal_bytes,
-        abortDevice);
+        abortDevice,
+        max_signal_bytes);
   }
 }
 
@@ -160,15 +160,15 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -239,15 +239,15 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
         sub,
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
-        max_signal_bytes,
-        abortDevice);
+        abortDevice,
+        max_signal_bytes);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
-        max_signal_bytes,
-        abortDevice);
+        abortDevice,
+        max_signal_bytes);
   }
 }
 
@@ -348,8 +348,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
       dstTiles.tile_data(blockId),
       dstTiles.tile_bytes(blockId),
       p2p_succ,
-      max_signal_bytes,
-      abortDevice);
+      abortDevice,
+      max_signal_bytes);
 }
 
 } // namespace comms::prims::benchmark

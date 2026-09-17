@@ -56,7 +56,7 @@ __global__ void waitAndReadUserSignalKernel(
     uint64_t expected,
     uint64_t* out) {
   auto group = make_warp_group();
-  transport.wait_signal_until(group, signalId, op, expected);
+  transport.wait_signal_until(group, signalId, op, expected, AbortDevice{});
   if (group.is_leader()) {
     *out = transport.read_signal(signalId);
   }
@@ -69,7 +69,8 @@ __global__ void waitAndReadInternalSignalKernel(
     uint64_t expected,
     uint64_t* out) {
   auto group = make_warp_group();
-  transport.wait_internal_signal_until(group, signalId, op, expected);
+  transport.wait_internal_signal_until(
+      group, signalId, op, expected, AbortDevice{});
   if (group.is_leader()) {
     *out = transport.read_internal_signal(signalId);
   }
@@ -410,23 +411,34 @@ __global__ void blockAggregateBarrierKernel(
     MultimemNvlTransportDevice transport,
     uint32_t epochs,
     int32_t* reducedValues,
-    uint64_t* signalValues) {
+    uint64_t* signalValues,
+    uint32_t* barrierResults) {
   auto block = make_block_group();
   auto* local = reinterpret_cast<int32_t*>(transport.localData);
   const auto* multicast =
       reinterpret_cast<const int32_t*>(transport.multimemData);
+  bool completed = true;
   for (uint32_t epoch = 0; epoch < epochs; ++epoch) {
     const std::size_t offset =
         (static_cast<std::size_t>(epoch) * gridDim.x + blockIdx.x) * blockDim.x;
     local[offset + threadIdx.x] = transport.nvlRank + 1 +
         static_cast<int32_t>(10 * epoch + 100 * blockIdx.x);
-    nvl_block_barrier(
-        transport, static_cast<uint32_t>(blockIdx.x), block, AbortDevice{});
+    completed = nvl_block_barrier(
+                    transport,
+                    static_cast<uint32_t>(blockIdx.x),
+                    block,
+                    AbortDevice{}) == NvlBlockBarrierResult::Completed;
+    if (!completed) {
+      break;
+    }
     multimem::load_reduce_at<int32_t>(
         block, reducedValues + offset, multicast + offset, blockDim.x);
   }
 
   block.sync();
+  if (block.is_leader()) {
+    barrierResults[blockIdx.x] = completed ? 1 : 0;
+  }
   if (threadIdx.x < transport.pipelineDepth) {
     const uint64_t signalId =
         static_cast<uint64_t>(blockIdx.x) * transport.signalsPerChannel +
@@ -438,6 +450,41 @@ __global__ void blockAggregateBarrierKernel(
         transport.internalLocalSignals[signalId].load();
     signalValues[outputBase + transport.pipelineDepth + threadIdx.x] =
         transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
+__global__ void blockAggregateBarrierAbortKernel(
+    MultimemNvlTransportDevice transport,
+    bool participate,
+    AbortDevice abortDevice,
+    bool startTimeout,
+    uint32_t* barrierResult,
+    uint64_t* barrierCounter,
+    uint64_t* barrierEpoch) {
+  if (!participate) {
+    return;
+  }
+
+  if (startTimeout) {
+    abortDevice.startTimeout();
+  }
+  auto block = make_block_group();
+  const auto result = nvl_block_barrier(transport, 0, block, abortDevice);
+  if (block.is_leader()) {
+    *barrierResult = static_cast<uint32_t>(result);
+    const uint64_t signalId =
+        nvl_signal_detail::aggregate_counter_id<NvlSignalPhase::Ready>(
+            transport, StageRound{.channel = 0, .value = 1}, /*lane=*/0);
+    if (barrierCounter != nullptr) {
+      *barrierCounter = transport.internalLocalSignals[signalId].load();
+    }
+    *barrierEpoch = transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
+__global__ void writeValueKernel(uint32_t* output, uint32_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    *output = value;
   }
 }
 
@@ -583,10 +630,10 @@ __global__ void reduceBroadcastKernel(
   const auto* source =
       reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
 
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
   multimem::reduce_broadcast_at<T, 4, kAccF32>(
       block, destination + first, source + first, count);
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 }
 
 template <int kUnroll>
@@ -609,14 +656,14 @@ __global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
     local[threadIdx.x] =
         reductionValue<T>(phasedReduceBlockRankValue(transport.nvlRank));
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 
   uint4 reduced{};
   if (block.is_leader()) {
     reduced = multimem::load_reduce_block16<T, kAccF32>(
         reinterpret_cast<const T*>(transport.multimemData));
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 
   if (block.is_leader()) {
     const std::size_t ownedFirstLane = kElements *
@@ -631,7 +678,7 @@ __global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
         ownedFirstLane,
         ownedEndLane - ownedFirstLane);
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 }
 
 __global__ void stageLayoutKernel(
@@ -975,9 +1022,35 @@ void launchBlockAggregateBarrier(
     uint32_t epochs,
     int32_t* reducedValues,
     uint64_t* signalValues,
+    uint32_t* barrierResults,
     cudaStream_t stream) {
   blockAggregateBarrierKernel<<<channels, 128, 0, stream>>>(
-      transport, epochs, reducedValues, signalValues);
+      transport, epochs, reducedValues, signalValues, barrierResults);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchBlockAggregateBarrierAbort(
+    MultimemNvlTransportDevice transport,
+    bool participate,
+    AbortDevice abortDevice,
+    bool startTimeout,
+    uint32_t* barrierResult,
+    uint64_t* barrierCounter,
+    uint64_t* barrierEpoch,
+    cudaStream_t stream) {
+  blockAggregateBarrierAbortKernel<<<1, 128, 0, stream>>>(
+      transport,
+      participate,
+      abortDevice,
+      startTimeout,
+      barrierResult,
+      barrierCounter,
+      barrierEpoch);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchWriteValue(uint32_t* output, uint32_t value, cudaStream_t stream) {
+  writeValueKernel<<<1, 1, 0, stream>>>(output, value);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
