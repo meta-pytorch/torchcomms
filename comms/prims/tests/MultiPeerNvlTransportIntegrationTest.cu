@@ -46,7 +46,7 @@ __global__ void signalWaitKernel(
     dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
     *result = 1;
   } else {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1, dw.abortDevice());
     *result = 1;
   }
 }
@@ -68,7 +68,7 @@ void testSignalWait(
 __global__ void barrierKernel(DeviceWindow& dw, int barrierIdx, int* result) {
   auto group = make_warp_group();
 
-  dw.barrier(group, barrierIdx);
+  dw.barrier(group, barrierIdx, dw.abortDevice());
 
   *result = 1;
 }
@@ -96,7 +96,7 @@ __global__ void concurrentSignalMultiBlockKernel(
   if (isSignaler) {
     dw.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1, dw.abortDevice());
   }
 
   // Record success for this block
@@ -134,7 +134,7 @@ __global__ void putOperationKernel(
   if (isWriter) {
     dw.put_signal(group, targetRank, 0, srcBuf, 0, nbytes, signalId, 1);
   } else {
-    dw.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalId, CmpOp::CMP_GE, 1, dw.abortDevice());
   }
 
   if (threadIdx.x == 0) {
@@ -211,7 +211,7 @@ __global__ void concurrentSignalWaitMultiWarpKernel(
   if (isSignaler) {
     dw.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1, dw.abortDevice());
   }
 
   // Record success for this warp
@@ -248,7 +248,7 @@ __global__ void signalAllKernel(
   if (myRank == signalerRank) {
     dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
   } else {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1, dw.abortDevice());
   }
 
   *result = 1;
@@ -310,7 +310,8 @@ __global__ void waitSignalFromAllKernel(
 
   if (myRank == targetRank) {
     int nRanks = dw.n_ranks();
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+    dw.wait_signal(
+        group, signalIdx, CmpOp::CMP_GE, nRanks - 1, dw.abortDevice());
   } else {
     dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
   }
@@ -344,7 +345,8 @@ __global__ void waitWithCmpEqKernel(
     dw.signal_peer(
         group, targetRank, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
   } else {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
+    dw.wait_signal(
+        group, signalIdx, CmpOp::CMP_EQ, expectedValue, dw.abortDevice());
   }
 
   *result = 1;
@@ -379,7 +381,7 @@ __global__ void monotonicWaitValuesKernel(
     if (isSignaler) {
       dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
     } else {
-      dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
+      dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1, dw.abortDevice());
     }
     group.sync();
   }
@@ -416,7 +418,7 @@ __global__ void signalWithSetKernel(
     dw.signal_peer(
         group, targetRank, signalIdx, SignalOp::SIGNAL_SET, setValue);
   } else {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue, dw.abortDevice());
   }
 
   *result = 1;
@@ -446,7 +448,7 @@ __global__ void barrierMonotonicKernel(
   auto group = make_warp_group();
 
   for (int phase = 0; phase < numPhases; ++phase) {
-    dw.barrier(group, barrierIdx);
+    dw.barrier(group, barrierIdx, dw.abortDevice());
   }
 
   if (threadIdx.x == 0) {
@@ -473,7 +475,7 @@ barrierMultiBlockStressKernel(DeviceWindow& dw, int numSlots, int* results) {
 
   uint32_t slotId = blockIdx.x % numSlots;
 
-  dw.barrier(group, slotId);
+  dw.barrier(group, slotId, dw.abortDevice());
 
   if (threadIdx.x == 0) {
     results[blockIdx.x] = 1;
@@ -500,7 +502,7 @@ __global__ void barrierPeerKernel(
     int* result) {
   auto group = make_warp_group();
 
-  dw.barrier_peer(targetRank, group, barrierIdx);
+  dw.barrier_peer(targetRank, group, barrierIdx, dw.abortDevice());
 
   if (threadIdx.x == 0) {
     *result = 1;
@@ -531,7 +533,8 @@ __global__ void waitSignalFromPeerKernel(
   if (isSignaler) {
     dw.signal_peer(group, peerRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
   } else {
-    dw.wait_signal_from(group, peerRank, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal_from(
+        group, peerRank, signalIdx, CmpOp::CMP_GE, 1, dw.abortDevice());
     uint64_t val = dw.read_signal_from(peerRank, signalIdx);
     if (val < 1) {
       *result = 0;
@@ -572,7 +575,8 @@ __global__ void waitSignalFromMultiPeerIsolationKernel(
         continue;
       }
       uint64_t expectedValue = static_cast<uint64_t>(r + 1);
-      dw.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, expectedValue);
+      dw.wait_signal_from(
+          group, r, signalIdx, CmpOp::CMP_GE, expectedValue, dw.abortDevice());
       uint64_t val = dw.read_signal_from(r, signalIdx);
       if (val != expectedValue) {
         *result = 0;
@@ -612,13 +616,15 @@ __global__ void waitSignalAndWaitSignalFromBothWorkKernel(
   int nRanks = dw.n_ranks();
 
   if (myRank == targetRank) {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+    dw.wait_signal(
+        group, signalIdx, CmpOp::CMP_GE, nRanks - 1, dw.abortDevice());
 
     for (int r = 0; r < nRanks; ++r) {
       if (r == myRank) {
         continue;
       }
-      dw.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, 1);
+      dw.wait_signal_from(
+          group, r, signalIdx, CmpOp::CMP_GE, 1, dw.abortDevice());
     }
   } else {
     dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
@@ -655,7 +661,7 @@ __global__ void signalWaitBlockScopeKernel(
       *result = 1;
     }
   } else {
-    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1, dw.abortDevice());
     if (threadIdx.x == 0) {
       *result = 1;
     }

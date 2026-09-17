@@ -30,7 +30,9 @@ __global__ void nvlProgressTrapKernel(
     NvlProgressTrapCase testCase,
     char* src,
     AbortDevice abort) {
-  abort.start();
+  if (testCase != NvlProgressTrapCase::AbortTrapBehavior) {
+    abort.start();
+  }
   auto group = make_block_group();
 
   switch (testCase) {

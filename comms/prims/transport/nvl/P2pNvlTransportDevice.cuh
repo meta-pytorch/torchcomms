@@ -407,7 +407,7 @@ class P2pNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     localState_.signalBuffer[signal_id].wait_until(
         group, op, value, abortDevice);
   }
@@ -458,7 +458,7 @@ class P2pNvlTransportDevice {
   __device__ __forceinline__ void barrier_sync(
       ThreadGroup& group,
       uint64_t barrier_id,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     // Ensure all prior memory operations are complete
     group.sync();
 
@@ -497,7 +497,7 @@ class P2pNvlTransportDevice {
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
@@ -529,7 +529,7 @@ class P2pNvlTransportDevice {
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
@@ -564,7 +564,7 @@ class P2pNvlTransportDevice {
       char* dst,
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
 #if PIPES_IS_DEVICE_COMPILE
     PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(successor_transport.remoteState_.ll128Buffer != nullptr);
@@ -610,8 +610,8 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      std::size_t max_signal_bytes = 0) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
@@ -692,8 +692,8 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
+      [[maybe_unused]] const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const AbortDevice& abortDevice = AbortDevice(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -861,9 +861,8 @@ class P2pNvlTransportDevice {
    *         short by the abort handle, Progressed when a chunk was published,
    *         Waiting when backpressure blocked this call.
    */
-  __device__ __forceinline__ NvlSendRecvProgressStatus progress_send_once(
-      ThreadGroup& group,
-      const AbortDevice& timeout = AbortDevice()) {
+  __device__ __forceinline__ NvlSendRecvProgressStatus
+  progress_send_once(ThreadGroup& group, const AbortDevice& timeout) {
 #if PIPES_IS_DEVICE_COMPILE
     // Before the send_progress_ index below, check this group has a channel
     // to use.
@@ -1048,7 +1047,7 @@ class P2pNvlTransportDevice {
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ NvlSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      const AbortDevice& timeout = AbortDevice(),
+      const AbortDevice& timeout,
       Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     // Before the recv_progress_ index below, check this group has a channel
@@ -1184,8 +1183,8 @@ class P2pNvlTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       P2pNvlTransportDevice& successor,
+      [[maybe_unused]] const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      [[maybe_unused]] const AbortDevice& abortDevice = AbortDevice(),
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -1357,8 +1356,8 @@ class P2pNvlTransportDevice {
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
-      int active_groups = 0,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      int active_groups = 0) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(remoteState_.llBuffer != nullptr);
@@ -1415,8 +1414,8 @@ class P2pNvlTransportDevice {
       const ThreadGroup& group,
       char* dst,
       size_t nbytes,
-      int active_groups = 0,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      int active_groups = 0) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
@@ -1476,8 +1475,8 @@ class P2pNvlTransportDevice {
       char* dst,
       size_t nbytes,
       const P2pNvlTransportDevice& successor_transport,
-      int active_groups = 0,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      int active_groups = 0) {
 #ifdef __CUDA_ARCH__ // NVIDIA-only: depends on ll_send/ll_recv/ll128_* not yet
                      // ported to AMD
     PIPES_DEVICE_CHECK(localState_.llBuffer != nullptr);
