@@ -270,17 +270,12 @@ owns. Two layout regimes are supported:
 Any other `(numNics, maxVcsPerPeer)` pair is rejected at init by the
 `VcLayout` ctor with `commInvalidArgument`.
 
-**Per-VC data-QP count is computed at bootstrap by
-`CtranIb::Bootstrap` via the static helper
-`CtranIbVirtualConn::computeMaxQpsPerVc(comm, peer, numVcs)`** and passed
-to the VC ctor as a plain `maxQpsPerVc` int. The helper resolves the
-per-peer MAX_QPS for the peer's connection class (cvar default,
-optionally overridden by
-`NCCL_CTRAN_IB_QP_CONFIG_XRACK / XZONE / XDC / NCCL_CTRAN_EX_IB_QP_CONFIG`)
-and divides evenly across `numVcs` (must divide exactly; checked with
-`FB_CHECKABORT`). The VC itself has **no notion of "vcs per peer"** —
-it just stores the per-VC budget and clamps / rounds it to the active
-device count inside `setDefaultQPConfig`. For the default cvar path:
+**Per-VC configuration is resolved by the `CtranIbVirtualConn` constructor.**
+The resolver applies the peer's connection-class override to the cvar defaults and divides
+MAX_QPS evenly across `numVcs` (must divide exactly; checked with
+`FB_CHECKABORT`). Bootstrap passes the resulting concrete configuration
+to every VC. Each VC then clamps or rounds its per-VC QP budget to the
+active device count. For the default cvar path:
 
 ```
 maxQpsPerVc = NCCL_CTRAN_IB_MAX_QPS / numVcs
@@ -415,9 +410,8 @@ derived from cvars at init time):
   if A and B disagree the loop terminates early on one side and the
   rendezvous fails. After the swaps, A constructs the per-peer VC
   vector (each VC built with `activeDevices =
-  vcLayout_.vcToActiveDevices[vcId]` and a `maxQpsPerVc` budget that
-  `Bootstrap` computes once per peer via
-  `CtranIbVirtualConn::computeMaxQpsPerVc(comm, peer, numVcs)`),
+  vcLayout_.vcToActiveDevices[vcId]` and `numVcs`; each VC resolves its
+  concrete per-peer configuration during construction),
   inserts the QPs into `qpToVcMap`, and publishes the vector into
   `vcStateMaps.rankToVcs[B]`.
 - **Larger rank B**: the CtranIb listen thread accepts the TCP
@@ -591,13 +585,12 @@ vcLayout_.maxVcsPerNic        // 1 in striped regime; maxVcsPerPeer/numNics in p
 vcLayout_.vcToActiveDevices   // per-VC NIC vector consumed by CtranIbVirtualConn
 ```
 
-The per-VC data-QP count is resolved per peer at bootstrap time by
-`CtranIb::Bootstrap` calling
-`CtranIbVirtualConn::computeMaxQpsPerVc(comm, peer, numVcs)`. For the
-default cvar path it is `NCCL_CTRAN_IB_MAX_QPS / maxVcsPerPeer`; for an
+The concrete per-VC configuration is resolved by each VC at connection time.
+For the default
+cvar path its QP count is `NCCL_CTRAN_IB_MAX_QPS / maxVcsPerPeer`; for an
 overridden connection class it is the overridden MAX_QPS divided by
-`maxVcsPerPeer`. When `maxVcsPerPeer == 1` this division is a no-op
-and the VC owns the full MAX_QPS.
+`maxVcsPerPeer`. When `maxVcsPerPeer == 1` this division is a no-op and the
+VC owns the full MAX_QPS.
 
 Both endpoints must agree on the three input cvars; mismatch is
 detected at the first `connectVcs(peer)` rendezvous (§ 4) by the

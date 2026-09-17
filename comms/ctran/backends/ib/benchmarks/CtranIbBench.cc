@@ -340,8 +340,8 @@ static void BM_CtranIb_IGet(benchmark::State& state, CtranIbConfig config) {
 // CtranIb iput/progress/checkNotify API on the simple kExternal setup -- no
 // multi-VC / control-message transport.
 //
-// Purpose: expose NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE, which only has an
-// effect when the VC spans >1 NIC (DEVICES_PER_RANK=2, default on GB200). With
+// Purpose: expose multi-NIC QP interleaving, which only has an effect when the
+// VC spans >1 NIC (DEVICES_PER_RANK=2, default on GB200). With
 // K = MAX_QPS/devices QPs per NIC and a chunk whose QP-scaling sub-chunks
 // number <= K, interleave OFF packs each put onto a single NIC (consecutive
 // small puts can pile onto the same NIC, leaving the other idle), while
@@ -436,7 +436,7 @@ static void benchmarkMultiPut(benchmark::State& state, int numPuts) {
       benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   // Self-document the resolved config in the output row.
   state.counters["interleave"] =
-      NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE ? 1 : 0;
+      NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE > 0 ? 1 : 0;
   state.counters["devs"] = NCCL_CTRAN_IB_DEVICES_PER_RANK;
 
   cleanupBenchmarkContext(ctx);
@@ -538,7 +538,7 @@ static auto* registered_iget_512k = benchmark::RegisterBenchmark(
 
 // Multi-put per-arrival: 2 and 4 concurrent puts across the
 // interleave-sensitive chunk-size range. Run twice -- with
-// NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE 0 then 1 (and
+// NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE 0 then 65536 (and
 // NCCL_CTRAN_IB_DEVICES_PER_RANK=2) -- and compare the notify*_us columns.
 const size_t kMultiPut32K = 32 * 1024;
 const size_t kMultiPut64K = 64 * 1024;
