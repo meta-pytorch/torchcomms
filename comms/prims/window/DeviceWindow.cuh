@@ -324,6 +324,10 @@ class DeviceWindow {
     return handle_.nRanks - 1;
   }
 
+  __device__ __forceinline__ AbortDevice abortDevice() const {
+    return handle_.abort;
+  }
+
   __device__ __forceinline__ int num_nvl_peers() const {
     return nNvlPeers_;
   }
@@ -530,14 +534,14 @@ class DeviceWindow {
    * @param signal_id    Signal slot index in [0, peerSignalCount).
    * @param cmp          Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value        Threshold value for comparison.
-   * @param abortDevice      Optional abort handle (traps on expiry).
+   * @param abortDevice      Caller-supplied abort handle.
    */
   __device__ __forceinline__ void wait_signal_from(
       int source_rank,
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     DEVICE_WINDOW_CHECK_RANK(source_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(source_rank, handle_.myRank);
     DEVICE_WINDOW_CHECK_SIGNAL_ID(signal_id, peerSignalCount_);
@@ -585,7 +589,7 @@ class DeviceWindow {
    * @param signal_id    Signal slot index in [0, peerSignalCount).
    * @param cmp          Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value        Threshold value for comparison.
-   * @param abortDevice      Optional abort handle (traps on expiry).
+   * @param abortDevice      Caller-supplied abort handle.
    */
   __device__ __forceinline__ void wait_signal_from(
       ThreadGroup& group,
@@ -593,7 +597,7 @@ class DeviceWindow {
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       wait_signal_from(source_rank, signal_id, cmp, value, abortDevice);
     }
@@ -613,14 +617,14 @@ class DeviceWindow {
    * @param signal_id  Signal slot index in [0, peerSignalCount).
    * @param cmp        Comparison operator (CMP_GE, CMP_EQ, etc.).
    * @param value      Threshold value for the aggregate sum.
-   * @param abortDevice    Optional abort handle (traps on expiry).
+   * @param abortDevice    Caller-supplied abort handle.
    */
   __device__ __forceinline__ void wait_signal(
       ThreadGroup& group,
       int signal_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     DEVICE_WINDOW_CHECK_SIGNAL_ID(signal_id, peerSignalCount_);
     if (group.is_leader()) {
       int nPeers = num_peers();
@@ -726,14 +730,14 @@ class DeviceWindow {
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param abortDevice     Optional abort handle (traps on expiry).
+   * @param abortDevice     Caller-supplied abort handle.
    */
   __device__ __forceinline__ void wait_counter(
       int peer_rank,
       int counter_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     DEVICE_WINDOW_CHECK_RANK(peer_rank, handle_.nRanks);
     DEVICE_WINDOW_CHECK_NOT_SELF(peer_rank, handle_.myRank);
     // Counter operations are IB-only; no-op for NVL peers
@@ -768,7 +772,7 @@ class DeviceWindow {
    * @param counter_id  Counter slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param abortDevice     Optional abort handle (traps on expiry).
+   * @param abortDevice     Caller-supplied abort handle.
    */
   __device__ __forceinline__ void wait_counter(
       ThreadGroup& group,
@@ -776,7 +780,7 @@ class DeviceWindow {
       int counter_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       wait_counter(peer_rank, counter_id, cmp, value, abortDevice);
     }
@@ -841,12 +845,10 @@ class DeviceWindow {
    *
    * @param group       ThreadGroup for group coordination.
    * @param barrier_id  Barrier slot index.
-   * @param abortDevice     Optional abort handle (traps on expiry).
+   * @param abortDevice     Caller-supplied abort handle.
    */
-  __device__ __forceinline__ void barrier(
-      ThreadGroup& group,
-      int barrier_id,
-      const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ __forceinline__ void
+  barrier(ThreadGroup& group, int barrier_id, const AbortDevice& abortDevice) {
     barrier_arrive(group, barrier_id);
     // Only one thread updates barrierExpected_ to avoid races when
     // DeviceWindow is accessed via pointer (shared mutable state).
@@ -869,13 +871,13 @@ class DeviceWindow {
    * @param target_rank  Peer rank to barrier with (must not be self).
    * @param group        ThreadGroup for group coordination.
    * @param barrier_id   Barrier slot index.
-   * @param abortDevice      Optional abort handle (traps on expiry).
+   * @param abortDevice      Caller-supplied abort handle.
    */
   __device__ __forceinline__ void barrier_peer(
       int target_rank,
       ThreadGroup& group,
       int barrier_id,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     barrier_arrive_peer(group, target_rank, barrier_id);
     if (group.is_leader()) {
       barrierExpected_ += 1;
@@ -960,14 +962,14 @@ class DeviceWindow {
    * @param barrier_id  Barrier slot index.
    * @param cmp         Comparison operator.
    * @param value       Threshold value for comparison.
-   * @param abortDevice     Optional abort handle (traps on expiry).
+   * @param abortDevice     Caller-supplied abort handle.
    */
   __device__ __forceinline__ void barrier_wait(
       ThreadGroup& group,
       int barrier_id,
       CmpOp cmp,
       uint64_t value,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     DEVICE_WINDOW_CHECK_BARRIER_ID(barrier_id, barrierCount_);
     if (group.is_leader()) {
       while (true) {

@@ -16,8 +16,9 @@ namespace comms::prims::benchmark {
 __global__ void
 barrierBenchKernel(P2pNvlTransportDevice p2p, int nSteps, bool useBlockGroups) {
   auto group = useBlockGroups ? make_block_group() : make_warp_group();
+  const AbortDevice abortDevice;
   for (int step = 0; step < nSteps; ++step) {
-    p2p.barrier_sync(group, group.group_id);
+    p2p.barrier_sync(group, group.group_id, abortDevice);
   }
 }
 
