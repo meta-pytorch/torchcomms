@@ -24,6 +24,9 @@ enum class NvlSignalPhase { Ready, Ack, Consumed };
 /** Selects how a per-peer waiter combines peer completion state. */
 enum class NvlPerPeerWaitPolicy { WaitAll, SerialMin, TreeMin, ButterflyMin };
 
+/** Reports whether an NVL block barrier completed or observed an abort. */
+enum class NvlBlockBarrierResult : uint8_t { Completed, Aborted };
+
 inline constexpr uint32_t kMaxNvlSignalRanks = 72;
 inline constexpr uint32_t kNvlSignalRanksPerMaskWord =
     std::numeric_limits<uint64_t>::digits;
@@ -202,7 +205,7 @@ __device__ __forceinline__ void validate_protocol() {
 // IB waits print the communicator rank, 0..95 on the same host. Printing both
 // under one label made grepping a global rank silently match another rank's NVL
 // lines, which is the correlation these messages exist to support.
-__device__ __forceinline__ void wait_until_reached(
+__device__ __forceinline__ bool wait_until_reached_or_aborted(
     const SignalState& signal,
     uint64_t expected,
     int nvlRank,
@@ -215,8 +218,21 @@ __device__ __forceinline__ void wait_until_reached(
             nvlRank,
             peer,
             static_cast<unsigned long long>(expected))) {
-      FT_DEVICE_TRAP();
+      return false;
     }
+  }
+  return true;
+}
+
+__device__ __forceinline__ void wait_until_reached(
+    const SignalState& signal,
+    uint64_t expected,
+    int nvlRank,
+    int peer,
+    const AbortDevice& abortDevice) {
+  if (!wait_until_reached_or_aborted(
+          signal, expected, nvlRank, peer, abortDevice)) {
+    FT_DEVICE_TRAP();
   }
 }
 
@@ -837,35 +853,58 @@ __device__ __forceinline__ void signal_publish_and_wait(
  *
  * The first block synchronization makes every thread's prior writes visible
  * to the leader. The leader publishes one release-add through lane zero of the
- * channel's aggregate counter, waits for every NVL rank, and advances the
- * local epoch. The final block synchronization makes the acquire wait visible
- * to the remaining threads.
+ * channel's aggregate counter and waits for every NVL rank. A completed wait
+ * advances the local epoch; an aborted wait leaves it unchanged and returns
+ * Aborted uniformly to the block. Because the leader may already have
+ * published its arrival, an aborted transport must not be reused. The final
+ * block synchronization makes the acquire wait or abort verdict visible to
+ * the remaining threads.
  */
-__device__ __forceinline__ void nvl_block_barrier(
+[[nodiscard]] __device__ __forceinline__ NvlBlockBarrierResult
+nvl_block_barrier(
     const MultimemNvlTransportDevice& transport,
     uint32_t channel,
-    ThreadGroup& block,
-    const AbortDevice& abortDevice = AbortDevice{}) {
-  nvl_signal_detail::validate_block_barrier(transport, channel, block);
+    ThreadGroup& group,
+    const AbortDevice& abortDevice) {
+  nvl_signal_detail::validate_block_barrier(transport, channel, group);
 
   comms::device::fence_acq_rel_sys();
-  block.sync();
-  if (block.is_leader()) {
-    const StageRound round{.channel = channel, .value = 1};
-    const uint64_t signalId =
-        nvl_signal_detail::aggregate_counter_id<NvlSignalPhase::Ready>(
-            transport, round, /*lane=*/0);
-    auto* counter = transport.internalLocalSignals.data() + signalId;
-    auto* epoch = counter + 1;
-    const uint64_t expected =
-        epoch->load() + static_cast<uint64_t>(transport.nvlRanks);
-    transport.template signal_internal_scalar_prefenced<SignalOp::SIGNAL_ADD>(
-        signalId, 1);
-    nvl_signal_detail::wait_until_reached(
-        *counter, expected, transport.nvlRank, /*peer=*/-1, abortDevice);
-    epoch->store(expected);
+  group.sync();
+  uint32_t completed = 1;
+  if (group.is_leader()) {
+    if (FT_ABORT_CHECK(
+            abortDevice,
+            "NVL block barrier before publish for channel=%u",
+            channel)) {
+      completed = 0;
+    } else {
+      const StageRound round{.channel = channel, .value = 1};
+      const uint64_t signalId =
+          nvl_signal_detail::aggregate_counter_id<NvlSignalPhase::Ready>(
+              transport, round, /*lane=*/0);
+      auto* counter = transport.internalLocalSignals.data() + signalId;
+      auto* epoch = counter + 1;
+      const uint64_t expected =
+          epoch->load() + static_cast<uint64_t>(transport.nvlRanks);
+      transport.template signal_internal_scalar_prefenced<SignalOp::SIGNAL_ADD>(
+          signalId, 1);
+      completed = nvl_signal_detail::wait_until_reached_or_aborted(
+                      *counter,
+                      expected,
+                      transport.nvlRank,
+                      /*peer=*/-1,
+                      abortDevice)
+          ? 1
+          : 0;
+      if (completed != 0) {
+        epoch->store(expected);
+      }
+    }
   }
-  block.sync();
+  completed = group.broadcast(completed);
+  group.sync();
+  return completed != 0 ? NvlBlockBarrierResult::Completed
+                        : NvlBlockBarrierResult::Aborted;
 }
 
 } // namespace comms::prims
