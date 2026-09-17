@@ -5,9 +5,12 @@
 #include <folly/init/Init.h>
 
 #include <cstddef>
+#include <memory>
 
 #include "comms/prims/memory/CuMemAllocation.h"
+#include "comms/prims/memory/CuMemMapping.h"
 #include "comms/prims/platform/CudaDriverLazy.h"
+#include "comms/utils/memtrace/GpuMemoryTracker.h"
 
 namespace comms::prims::tests {
 namespace {
@@ -101,6 +104,47 @@ TEST(CuMemAllocationTest, MoveLeavesSourceInert) {
   EXPECT_EQ(b.handle(), handle);
   // NOLINTNEXTLINE(bugprone-use-after-move): intentionally checking moved-from
   EXPECT_EQ(a->handle(), 0u);
+}
+
+TEST(CuMemAllocationTest, RetainedReferenceDoesNotReleaseAccounting) {
+  CUdevice cuDev = 0;
+  if (!vmmDevice(cuDev)) {
+    GTEST_SKIP() << "VMM / CUDA 12.3+ unavailable";
+  }
+
+  auto tracker = std::make_shared<meta::comms::memtrace::GpuMemoryTracker>(
+      meta::comms::memtrace::GpuMemoryContext{});
+  meta::comms::memtrace::ScopedGpuMemoryContext scope{tracker.get()};
+  std::size_t accountedBytes = 0;
+  {
+    std::shared_ptr<CuMemAllocation> allocation = CuMemAllocation::create(
+        cuDev,
+        4096,
+        requestMask(),
+        0,
+        {
+            .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                kNvlP2pDataStaging,
+        });
+    accountedBytes = allocation->size();
+    auto mapping = CuMemMapping::overAllocation(
+        allocation, accountedBytes, allocation->granularity());
+    {
+      auto retained =
+          CuMemAllocation::retain(reinterpret_cast<void*>(mapping.devicePtr()));
+      EXPECT_EQ(retained->handle(), allocation->handle());
+    }
+
+    const auto snapshot = tracker->snapshot();
+    EXPECT_EQ(snapshot.total.currentBytes, accountedBytes);
+    EXPECT_EQ(snapshot.total.totalFreedBytes, 0);
+    EXPECT_EQ(snapshot.activeAllocations, 1);
+  }
+
+  const auto snapshot = tracker->snapshot();
+  EXPECT_EQ(snapshot.total.currentBytes, 0);
+  EXPECT_EQ(snapshot.total.totalFreedBytes, accountedBytes);
+  EXPECT_EQ(snapshot.activeAllocations, 0);
 }
 
 } // namespace comms::prims::tests

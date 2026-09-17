@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <memory>
 
+#include "comms/utils/memtrace/McclCudaMemory.h"
+
 namespace comms::prims {
 
 #if defined(__HIP_PLATFORM_AMD__)
@@ -96,7 +98,8 @@ class CuMemAllocation {
       CUdevice cuDev,
       std::size_t size,
       unsigned int requestedHandleTypesMask,
-      std::size_t alignFloor = 0);
+      std::size_t alignFloor = 0,
+      const meta::comms::memtrace::GpuMemoryAllocationMetadata& metadata = {});
 
   /**
    * Retain the physical handle backing an existing VMM device pointer via
@@ -147,6 +150,11 @@ class CuMemAllocation {
   bool supportsFabric() const;
 
  private:
+  enum class HandleOrigin {
+    kCreated,
+    kReferenceOnly,
+  };
+
   // Pure scalar field init — cannot throw. Marked noexcept so the factories'
   // release-on-throw try/catch only has to worry about the `new` storage
   // allocation (the only remaining throw window), not the construction itself.
@@ -155,7 +163,8 @@ class CuMemAllocation {
       CUdevice device,
       std::size_t size,
       std::size_t granularity,
-      unsigned int supportedHandleTypes) noexcept;
+      unsigned int supportedHandleTypes,
+      HandleOrigin handleOrigin) noexcept;
 
   void release() noexcept;
 
@@ -164,6 +173,7 @@ class CuMemAllocation {
   std::size_t size_{0};
   std::size_t granularity_{0};
   unsigned int supportedHandleTypes_{0};
+  HandleOrigin handleOrigin_{HandleOrigin::kReferenceOnly};
 };
 
 } // namespace comms::prims
