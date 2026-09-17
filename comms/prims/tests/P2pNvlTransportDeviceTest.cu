@@ -189,7 +189,8 @@ __global__ void testRawWaitSignalKernel(
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  signal_d->wait_until(group, op, value);
+  const AbortDevice abortDevice;
+  signal_d->wait_until(group, op, value, abortDevice);
 }
 
 __global__ void testReadSignalKernel(
