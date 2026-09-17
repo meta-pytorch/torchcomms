@@ -31,9 +31,7 @@ namespace comms::prims {
  *
  * Lives in its own minimal header (no doca/ibverbs deps) so lightweight
  * device-side headers like IbgdaBuffer.h can include it without dragging
- * in NicDiscovery's heavyweight transitive deps. The C-side mirror for
- * the NCCLx ABI is `NCCLX_MAX_NICS_PER_GPU` in nccl.h, kept in lockstep
- * via static_assert at the bridge layer.
+ * in NicDiscovery's heavyweight transitive deps.
  */
 constexpr int kMaxNicsPerGpu = 2;
 

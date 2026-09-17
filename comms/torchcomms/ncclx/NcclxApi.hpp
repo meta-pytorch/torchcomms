@@ -256,20 +256,6 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  [[nodiscard]] virtual ncclResult_t deviceAllToAllv(
-      const void* sendbuff,
-      void* recvbuff,
-      const int64_t* sendcounts_d,
-      const int64_t* recvcounts_d,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1,
-      const std::unordered_map<std::string, std::string>& hints = {}) {
-    return ncclInvalidUsage;
-  }
-
   // Persistent AllGather operations
   [[nodiscard]] virtual ncclResult_t allGatherInit(
       void* recvbuff,
@@ -358,51 +344,6 @@ class NcclxApi {
   // Query the best GIN connection type supported by the communicator.
   [[nodiscard]] virtual ncclGinConnectionType_t ginConnectionSupport(
       ncclComm_t comm) = 0;
-#endif
-
-#if defined(ENABLE_PRIMS)
-  // Create a DeviceWindow in device memory from a ctran-registered NcclxWindow.
-  // COLLECTIVE on first call — all ranks must call together.
-  // Returns opaque device pointer via outDevicePtr; free with
-  // winDestroyDeviceWin.
-  virtual ncclResult_t winCreateDeviceWin(
-      NcclxWindow win,
-      int signal_count,
-      int counter_count,
-      int barrier_count,
-      void** outDevicePtr) = 0;
-
-  // Free device memory allocated by winCreateDeviceWin.
-  virtual ncclResult_t winDestroyDeviceWin(void* devicePtr) = 0;
-
-  // Get pipes transport device handle components from the communicator.
-  // NON-COLLECTIVE — reads already-exchanged state.
-  // Returns ncclInternalError if pipes transport is not initialized.
-  virtual ncclResult_t getMultiPeerDeviceHandle(
-      ncclComm_t comm,
-      void** outTransportsPtr,
-      int* outMyRank,
-      int* outNRanks,
-      int* outNumNvlPeers,
-      int* outNumIbPeers) = 0;
-
-  // Register a local buffer for device-side RDMA put operations.
-  // NON-COLLECTIVE — purely local memory registration (per-NIC lkeys only).
-  // Fills *outLkeys with per-NIC lkeys + populated NIC count. Multi-NIC:
-  // device put selects outLkeys->values[nic] based on slot dispatch —
-  // populating only values[0] would corrupt WQEs for slots landing on
-  // NIC[1..size-1] on GB200/GB300.
-  [[nodiscard]] virtual ncclResult_t winLocalRegisterBuffer(
-      ncclComm_t comm,
-      void* ptr,
-      size_t size,
-      ncclLkeyPerDevice* outLkeys) = 0;
-
-  // Deregister a buffer previously registered with winLocalRegisterBuffer.
-  // NON-COLLECTIVE.
-  [[nodiscard]] virtual ncclResult_t winLocalDeregisterBuffer(
-      ncclComm_t comm,
-      void* ptr) = 0;
 #endif
 
   // Group operations
@@ -606,18 +547,6 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  [[nodiscard]] ncclResult_t deviceAllToAllv(
-      const void* sendbuff,
-      void* recvbuff,
-      const int64_t* sendcounts_d,
-      const int64_t* recvcounts_d,
-      ncclDataType_t datatype,
-      ncclComm_t comm,
-      cudaStream_t stream,
-      int64_t sendcountsMultiplier = 1,
-      int64_t recvcountsMultiplier = 1,
-      const std::unordered_map<std::string, std::string>& hints = {}) override;
-
   // Persistent AllGather operations
   [[nodiscard]] ncclResult_t allGatherInit(
       void* recvbuff,
@@ -700,31 +629,6 @@ class DefaultNcclxApi : public NcclxApi {
 
   [[nodiscard]] ncclGinConnectionType_t ginConnectionSupport(
       ncclComm_t comm) override;
-#endif
-
-#if defined(ENABLE_PRIMS)
-  ncclResult_t winCreateDeviceWin(
-      NcclxWindow win,
-      int signal_count,
-      int counter_count,
-      int barrier_count,
-      void** outDevicePtr) override;
-  ncclResult_t winDestroyDeviceWin(void* devicePtr) override;
-  ncclResult_t getMultiPeerDeviceHandle(
-      ncclComm_t comm,
-      void** outTransportsPtr,
-      int* outMyRank,
-      int* outNRanks,
-      int* outNumNvlPeers,
-      int* outNumIbPeers) override;
-  [[nodiscard]] ncclResult_t winLocalRegisterBuffer(
-      ncclComm_t comm,
-      void* ptr,
-      size_t size,
-      ncclLkeyPerDevice* outLkeys) override;
-  [[nodiscard]] ncclResult_t winLocalDeregisterBuffer(
-      ncclComm_t comm,
-      void* ptr) override;
 #endif
 
   // Group operations

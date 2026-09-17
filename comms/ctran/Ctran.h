@@ -170,9 +170,11 @@ constexpr std::optional<IbImplType> ctranAllToAllvIbImplType(
       return IbImplType::IbExchange;
     case NCCL_ALLTOALLV_ALGO::bsCompCtran:
       return IbImplType::Bootstrap;
-    default:
+    case NCCL_ALLTOALLV_ALGO::orig:
+    case NCCL_ALLTOALLV_ALGO::ctran:
       return std::nullopt;
   }
+  return std::nullopt;
 }
 
 constexpr bool ctranAllToAllvIbImplAllowed(

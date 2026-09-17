@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
+#include "comms/ncclx/headers/nccl.h"
+
 #include <folly/debugging/symbolizer/Symbolizer.h>
 
 // Check NCCL version at compile time
@@ -317,31 +319,6 @@ ncclResult_t DefaultNcclxApi::allToAllv(
       stream);
 }
 
-ncclResult_t DefaultNcclxApi::deviceAllToAllv(
-    const void* sendbuff,
-    void* recvbuff,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    ncclDataType_t datatype,
-    ncclComm_t comm,
-    cudaStream_t stream,
-    int64_t sendcountsMultiplier,
-    int64_t recvcountsMultiplier,
-    const std::unordered_map<std::string, std::string>& hints) {
-  std::lock_guard<std::mutex> lock(api_mutex_);
-  return ncclx::deviceAllToAllv(
-      sendbuff,
-      recvbuff,
-      sendcounts_d,
-      recvcounts_d,
-      datatype,
-      comm,
-      stream,
-      sendcountsMultiplier,
-      recvcountsMultiplier,
-      hints);
-}
-
 ncclResult_t DefaultNcclxApi::allGatherInit(
     void* recvbuff,
     size_t maxRecvCount,
@@ -497,52 +474,6 @@ ncclResult_t DefaultNcclxApi::commDump(
   std::lock_guard<std::mutex> lock(api_mutex_);
   return ::ncclCommDump(comm, map);
 }
-
-#if defined(ENABLE_PRIMS)
-ncclResult_t DefaultNcclxApi::winCreateDeviceWin(
-    NcclxWindow win,
-    int signal_count,
-    int counter_count,
-    int barrier_count,
-    void** outDevicePtr) {
-  return ncclWinCreateDeviceWin(
-      win, signal_count, counter_count, barrier_count, outDevicePtr);
-}
-
-ncclResult_t DefaultNcclxApi::winDestroyDeviceWin(void* devicePtr) {
-  return ncclWinDestroyDeviceWin(devicePtr);
-}
-
-ncclResult_t DefaultNcclxApi::getMultiPeerDeviceHandle(
-    ncclComm_t comm,
-    void** outTransportsPtr,
-    int* outMyRank,
-    int* outNRanks,
-    int* outNumNvlPeers,
-    int* outNumIbPeers) {
-  return ncclGetMultiPeerDeviceHandle(
-      comm,
-      outTransportsPtr,
-      outMyRank,
-      outNRanks,
-      outNumNvlPeers,
-      outNumIbPeers);
-}
-
-ncclResult_t DefaultNcclxApi::winLocalRegisterBuffer(
-    ncclComm_t comm,
-    void* ptr,
-    size_t size,
-    ncclLkeyPerDevice* outLkeys) {
-  return ncclWinLocalRegisterBuffer(comm, ptr, size, outLkeys);
-}
-
-ncclResult_t DefaultNcclxApi::winLocalDeregisterBuffer(
-    ncclComm_t comm,
-    void* ptr) {
-  return ncclWinLocalDeregisterBuffer(comm, ptr);
-}
-#endif // ENABLE_PRIMS
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 ncclResult_t DefaultNcclxApi::devCommCreate(

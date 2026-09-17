@@ -12,17 +12,20 @@ bool ctranReduceScatterSupport(
   if (!ctranInitialized(comm)) {
     return false;
   }
+  if (algo == NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
+    CTRAN_LOG_EVERY_MS(
+        WARN,
+        60000,
+        "ctranReduceScatterSupport: ctdirect_ib is retired; falling back to baseline");
+    return false;
+  }
 
   const int nRanks = comm->statex_->nRanks();
   const int rank = comm->statex_->rank();
   const int nNodes = comm->statex_->nNodes();
   const int nLocalRanks = comm->statex_->nLocalRanks();
-  const bool directIbReduceScatter =
-      algo == NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
-
   // Check backend availability (except for single rank case)
-  if (nRanks > 1 && !directIbReduceScatter &&
-      !comm->ctran_->mapper->hasBackend()) {
+  if (nRanks > 1 && !comm->ctran_->mapper->hasBackend()) {
     CTRAN_LOG_EVERY_MS(
         WARN,
         60000,
@@ -83,11 +86,7 @@ bool ctranReduceScatterSupport(
       }
       break;
     case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-#if defined(ENABLE_PRIMS)
-      return ctranReduceScatterDirectIbSupport(comm);
-#else
       return false;
-#endif
     case NCCL_REDUCESCATTER_ALGO::ctring_ib:
       // Hosted by MCCL; CTRAN reports unsupported so non-MCCL callers fall
       // back.
@@ -144,8 +143,7 @@ commResult_t ctranReduceScatter(
       return ctranReduceScatterRHD(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
     case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-      return ctranReduceScatterDirectIb(
-          sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
+      return commInvalidUsage;
     default:
       CTRAN_ERR(
           commInternalError,
@@ -157,27 +155,15 @@ commResult_t ctranReduceScatter(
 }
 
 commResult_t ctranReduceScatterQuantize(
-    const void* sendbuff,
-    void* recvbuff,
-    size_t recvcount,
-    commDataType_t inputType,
-    commDataType_t transportType,
-    commRedOp_t redOp,
-    const uint64_t* seedPtr,
-    CtranComm* comm,
-    cudaStream_t stream,
-    enum NCCL_REDUCESCATTER_ALGO algo) {
-  if (algo != NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
-    return commInvalidArgument;
-  }
-  return ctranReduceScatterQuantizeDirectIb(
-      sendbuff,
-      recvbuff,
-      recvcount,
-      inputType,
-      transportType,
-      redOp,
-      seedPtr,
-      comm,
-      stream);
+    const void* /*sendbuff*/,
+    void* /*recvbuff*/,
+    size_t /*recvcount*/,
+    commDataType_t /*inputType*/,
+    commDataType_t /*transportType*/,
+    commRedOp_t /*redOp*/,
+    const uint64_t* /*seedPtr*/,
+    CtranComm* /*comm*/,
+    cudaStream_t /*stream*/,
+    enum NCCL_REDUCESCATTER_ALGO /*algo*/) {
+  return commInvalidUsage;
 }

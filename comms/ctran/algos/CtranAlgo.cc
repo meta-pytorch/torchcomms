@@ -325,7 +325,7 @@ commResult_t CtranAlgo::initKernelResources() {
       cudaMemcpyHostToDevice));
 
 #if defined(ENABLE_PRIMS)
-  if (this->sharedRes_) {
+  if (ctranPrimsEnabled(this->comm_) && this->sharedRes_) {
     // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
     FB_COMMCHECK(
         ctran::utils::commCudaMalloc(

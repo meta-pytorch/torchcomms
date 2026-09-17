@@ -82,22 +82,10 @@ else()
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
 
-# Check if ENABLE_PRIMS is requested via environment variable.
-# When enabled, compiles prims device backend support into _comms_ncclx.
-# Requires NCCL built with ENABLE_PRIMS=1 (prims transport in libnccl.so).
 if("$ENV{ENABLE_PRIMS}" STREQUAL "1")
     set(TORCHCOMMS_ENABLE_PRIMS ON)
-    message(STATUS "ENABLE_PRIMS=1 set, building with prims support")
-    if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
-        file(GLOB TORCHCOMMS_DEVICE_PRIMS_SOURCE
-            "comms/torchcomms/device/prims/*.cpp")
-    else()
-        set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
-    endif()
 else()
     set(TORCHCOMMS_ENABLE_PRIMS OFF)
-    set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
-    message(STATUS "ENABLE_PRIMS not set, building without prims support")
 endif()
 
 set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
@@ -124,7 +112,6 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
-    ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
     ${TORCHCOMMS_NCCLX_LOGGER_SOURCES}
@@ -156,12 +143,6 @@ target_compile_definitions(torchcomms_comms_ncclx PRIVATE
 if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
     target_compile_definitions(torchcomms_comms_ncclx
         PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
-endif()
-
-# Add ENABLE_PRIMS compile definition for prims device backend
-if(TORCHCOMMS_ENABLE_PRIMS)
-    target_compile_definitions(torchcomms_comms_ncclx
-        PRIVATE ENABLE_PRIMS=1)
 endif()
 
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
