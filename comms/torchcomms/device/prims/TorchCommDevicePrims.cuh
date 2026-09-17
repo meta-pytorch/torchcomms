@@ -349,7 +349,7 @@ __device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::flush(
   for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
     int r = win.peer_index_to_rank(peer_index);
     if (win.get_type(r) == comms::prims::TransportType::P2P_IBGDA) {
-      win.get_ibgda(r).fence(group);
+      win.get_ibgda(r).fence(group, win.abortDevice());
     }
   }
 

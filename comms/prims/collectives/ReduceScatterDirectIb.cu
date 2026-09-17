@@ -114,10 +114,10 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             .logical_element_base = 0,
         };
         transport.template recv<QuantOp>(
-            group, output_bytes, wire_bytes, max_sig, abortDevice, copy_args);
+            group, output_bytes, wire_bytes, abortDevice, max_sig, copy_args);
       } else {
         transport.template recv<ReduceOp>(
-            group, output_bytes, tile_bytes, max_sig, abortDevice, local_input);
+            group, output_bytes, tile_bytes, abortDevice, max_sig, local_input);
       }
     }
   } else {
@@ -159,16 +159,16 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             group,
             reinterpret_cast<const char*>(send_tile.data()),
             wire_bytes,
-            max_sig,
             abortDevice,
+            max_sig,
             copy_args);
       } else {
         transport.send(
             group,
             reinterpret_cast<const char*>(send_tile.data()),
             send_tile.bytes(),
-            max_sig,
-            abortDevice);
+            abortDevice,
+            max_sig);
       }
     }
   }

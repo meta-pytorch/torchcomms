@@ -36,9 +36,10 @@ __global__ void ibgdaPutSignalWaitCounterKernel(
     int counterId) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     transport.reset_counter(counterId);
     transport.put(localBuf, remoteBuf, nbytes, signalId, 1, counterId, 1);
-    transport.wait_counter(counterId, 1);
+    transport.wait_counter(counterId, 1, abortDevice);
   }
 }
 
@@ -56,6 +57,7 @@ __global__ void ibgdaPutWaitCounterBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     transport.reset_counter(counterId);
     uint64_t expected = 1;
 
@@ -64,7 +66,7 @@ __global__ void ibgdaPutWaitCounterBatchKernel(
     // Warmup - do a few iterations to warm up the path
     for (int i = 0; i < 10; i++) {
       transport.put(localBuf, remoteBuf, nbytes, -1, 0, counterId, 1);
-      transport.wait_counter(counterId, expected);
+      transport.wait_counter(counterId, expected, abortDevice);
       expected++;
     }
 
@@ -73,7 +75,7 @@ __global__ void ibgdaPutWaitCounterBatchKernel(
 
     for (int i = 0; i < numIters; i++) {
       transport.put(localBuf, remoteBuf, nbytes, -1, 0, counterId, 1);
-      transport.wait_counter(counterId, expected);
+      transport.wait_counter(counterId, expected, abortDevice);
       expected++;
     }
 
@@ -91,19 +93,20 @@ __global__ void ibgdaPutWaitLocalBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     auto solo = make_thread_solo();
 
     for (int i = 0; i < 10; i++) {
       const auto ticket =
           transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
-      transport.wait_local(solo, ticket);
+      transport.wait_local(solo, ticket, abortDevice);
     }
 
     const unsigned long long startCycle = BENCHMARK_CLOCK64();
     for (int i = 0; i < numIters; i++) {
       const auto ticket =
           transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
-      transport.wait_local(solo, ticket);
+      transport.wait_local(solo, ticket, abortDevice);
     }
     const unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
@@ -121,6 +124,7 @@ __global__ void ibgdaPutSignalFlushBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     // Write + signal on the same QP (no counter, hence no companion QP),
     // completion observed via flush(). Pairs with ibgdaPutFlushBatchKernel,
     // which is identical except that it issues no signal, so the latency
@@ -130,14 +134,14 @@ __global__ void ibgdaPutSignalFlushBatchKernel(
 
     for (int i = 0; i < 10; i++) {
       transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     const unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     const unsigned long long endCycle = BENCHMARK_CLOCK64();
@@ -156,6 +160,7 @@ __global__ void ibgdaPutSignalWaitLocalFlushBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     auto solo = make_thread_solo();
     const auto resolvedSignalBuf =
         remoteSignalBuf.subBuffer(signalId * sizeof(uint64_t));
@@ -163,16 +168,16 @@ __global__ void ibgdaPutSignalWaitLocalFlushBatchKernel(
     for (int i = 0; i < 10; ++i) {
       const auto ticket =
           transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
-      transport.wait_local(solo, ticket);
-      transport.flush();
+      transport.wait_local(solo, ticket, abortDevice);
+      transport.flush(abortDevice);
     }
 
     const unsigned long long startCycle = BENCHMARK_CLOCK64();
     for (int i = 0; i < numIters; ++i) {
       const auto ticket =
           transport.put(localBuf, remoteBuf, nbytes, resolvedSignalBuf, 1);
-      transport.wait_local(solo, ticket);
-      transport.flush();
+      transport.wait_local(solo, ticket, abortDevice);
+      transport.flush(abortDevice);
     }
     const unsigned long long endCycle = BENCHMARK_CLOCK64();
     *totalCycles = endCycle - startCycle;
@@ -188,17 +193,18 @@ __global__ void ibgdaPutFlushBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     // Raw write (no signal, no counter), completion observed via flush().
     for (int i = 0; i < 10; i++) {
       transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport.put(localBuf, remoteBuf, nbytes, IbgdaRemoteBuffer{}, 0);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     unsigned long long endCycle = BENCHMARK_CLOCK64();
@@ -214,20 +220,21 @@ __global__ void ibgdaThreadScopeMultiBlockPutFlushBatchKernel(
     int numIters,
     unsigned long long* blockCycles) {
   if (threadIdx.x == 0) {
+    const AbortDevice abortDevice{};
     const std::size_t offset = blockIdx.x * nbytesPerBlock;
     IbgdaLocalBuffer blockLocalBuf = localBuf.subBuffer(offset);
     IbgdaRemoteBuffer blockRemoteBuf = remoteBuf.subBuffer(offset);
 
     for (int i = 0; i < 10; i++) {
       transport->put(blockLocalBuf, blockRemoteBuf, nbytesPerBlock);
-      transport->flush();
+      transport->flush(abortDevice);
     }
 
     unsigned long long startCycle = BENCHMARK_CLOCK64();
 
     for (int i = 0; i < numIters; i++) {
       transport->put(blockLocalBuf, blockRemoteBuf, nbytesPerBlock);
-      transport->flush();
+      transport->flush(abortDevice);
     }
 
     unsigned long long endCycle = BENCHMARK_CLOCK64();
@@ -246,13 +253,14 @@ __global__ void ibgdaPutSignalWaitCounterBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     transport.reset_counter(counterId);
     uint64_t expected = 1;
 
     // Warmup - do a few iterations to warm up the path
     for (int i = 0; i < 10; i++) {
       transport.put(localBuf, remoteBuf, nbytes, signalId, 1, counterId, 1);
-      transport.wait_counter(counterId, expected);
+      transport.wait_counter(counterId, expected, abortDevice);
       expected++;
     }
 
@@ -261,7 +269,7 @@ __global__ void ibgdaPutSignalWaitCounterBatchKernel(
 
     for (int i = 0; i < numIters; i++) {
       transport.put(localBuf, remoteBuf, nbytes, signalId, 1, counterId, 1);
-      transport.wait_counter(counterId, expected);
+      transport.wait_counter(counterId, expected, abortDevice);
       expected++;
     }
 
@@ -278,13 +286,14 @@ __global__ void ibgdaSignalOnlyBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     auto resolvedSignalBuf =
         remoteSignalBuf.subBuffer(signalId * sizeof(uint64_t));
 
     // Warmup - do a few iterations to warm up the path
     for (int i = 0; i < 10; i++) {
       transport.signal(resolvedSignalBuf, 1);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     // Timed iterations using GPU cycle counter
@@ -292,7 +301,7 @@ __global__ void ibgdaSignalOnlyBatchKernel(
 
     for (int i = 0; i < numIters; i++) {
       transport.signal(resolvedSignalBuf, 1);
-      transport.flush();
+      transport.flush(abortDevice);
     }
 
     unsigned long long endCycle = BENCHMARK_CLOCK64();
@@ -317,6 +326,7 @@ __global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     // Per-peer handle accessor (returns a copy of the handle for peer p).
     auto T = [&](int peerIdx) -> P2pIbTransportDevice {
       return transports[peerIdx];
@@ -343,7 +353,7 @@ __global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
       }
       // O(N) waits — one wait_counter per peer
       for (int p = 0; p < numPeers; p++) {
-        T(p).wait_counter(perPeerCounter(p), expected);
+        T(p).wait_counter(perPeerCounter(p), expected, abortDevice);
       }
       expected++;
     }
@@ -365,7 +375,7 @@ __global__ void ibgdaMultiPeerSerialCounterFanOutBatchKernel(
       }
       // O(N) waits — one wait_counter per peer
       for (int p = 0; p < numPeers; p++) {
-        T(p).wait_counter(perPeerCounter(p), expected);
+        T(p).wait_counter(perPeerCounter(p), expected, abortDevice);
       }
       expected++;
     }
@@ -389,6 +399,7 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
     unsigned long long* totalCycles) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
+    const AbortDevice abortDevice{};
     auto T = [&](int peerIdx) -> P2pIbTransportDevice {
       return transports[peerIdx];
     };
@@ -411,7 +422,7 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
       }
       // Single wait — all numPeers completions increment the same slot.
       // Any handle works (counter buf is local); use peer 0.
-      T(0).wait_counter(resolvedCounterBuf, expected);
+      T(0).wait_counter(resolvedCounterBuf, expected, abortDevice);
       expected += numPeers;
     }
 
@@ -431,7 +442,7 @@ __global__ void ibgdaMultiPeerCounterFanOutBatchKernel(
             1);
       }
       // O(1) wait — single counter wait until it reaches expected
-      T(0).wait_counter(resolvedCounterBuf, expected);
+      T(0).wait_counter(resolvedCounterBuf, expected, abortDevice);
       expected += numPeers;
     }
 

@@ -96,6 +96,7 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
   const int warp_group_id = warp_id / kNumWarpsPerGroup;
   const int sub_warp_id = warp_id % kNumWarpsPerGroup;
   const int responsible_expert_idx = sm_id * kNumWarpGroups + warp_group_id;
+  const AbortDevice abortDevice{};
 
   constexpr int kNumElemsPerInt4 = sizeof(int4) / sizeof(uint16_t);
   const size_t hidden_bf16_int4 = kHidden / kNumElemsPerInt4;
@@ -215,7 +216,8 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
             local_buf,
             remote_slot,
             kHidden * sizeof(uint16_t),
-            IbgdaRemoteBuffer{}); // flag write below, same QP, ordered after
+            IbgdaRemoteBuffer{},
+            abortDevice); // flag write below, same QP, ordered after
       } else {
         if (lane_id == 0) {
           printf(
@@ -288,7 +290,8 @@ __launch_bounds__(kNumWarpGroups * kNumWarpsPerGroup * kWarpSize, 1) void ll_com
             local_buf,
             remote_slot,
             sizeof(int64_t),
-            comms::prims::IbgdaRemoteBuffer{});
+            comms::prims::IbgdaRemoteBuffer{},
+            abortDevice);
       } else {
         printf(
             "link_ep LL combine flag: cross-node peer with no IBGDA "

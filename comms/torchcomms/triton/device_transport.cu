@@ -90,6 +90,7 @@ __device__ __noinline__ int torchcomms_transport_send(
           group,
           src_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:
@@ -122,6 +123,7 @@ __device__ __noinline__ int torchcomms_transport_recv(
           group,
           dst_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:
