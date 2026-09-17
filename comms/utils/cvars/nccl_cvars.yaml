@@ -2029,10 +2029,10 @@ cvars:
    type        : bool
    default     : true
    description : |-
-     Select PRiMS transport ownership for MCCL communicators. Set true to use
-     the MCCL-owned direct runtime, or false to use the legacy CTRAN-owned PRiMS
-     route. This selector does not provide a PRiMS-disabled MCCL mode and does
-     not change NCCLX or standalone CTRAN policy.
+     Enable the MCCL-owned direct PRiMS runtime. When false, MCCL does not
+     construct a PRiMS runtime or MultiPeerTransport; operations requiring
+     PRiMS may be unsupported. This setting does not change NCCLX or standalone
+     CTRAN policy.
 
  - name        : MCCL_SENDRECV_BLOCKING
    type        : bool
