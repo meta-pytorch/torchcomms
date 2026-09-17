@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
     // Step 0: Send own chunk to next.
     char* send_src = args.recvbuf + my_rank * chunk_bytes + ring_offset +
         io_tile_offset + off;
-    next.send(group, send_src, window, max_sig, abortDevice);
+    next.send(group, send_src, window, abortDevice, max_sig);
 
     // Steps 1..W-1: receive and forward (or just receive on last step).
     int current_rank = my_rank;
@@ -66,9 +66,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(group, dst, next, window, max_sig, abortDevice);
+        prev.forward(group, dst, next, window, abortDevice, max_sig);
       } else {
-        prev.recv(group, dst, window, max_sig, abortDevice);
+        prev.recv(group, dst, window, abortDevice, max_sig);
       }
     }
   }

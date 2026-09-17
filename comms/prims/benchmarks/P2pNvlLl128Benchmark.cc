@@ -196,7 +196,7 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
     AbortDevice abortDevice;
-    void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope, &abortDevice};
+    void* args[] = {&p2p, &devicePtr, &nBytes, &abortDevice, &groupScope};
     void* kernelFunc = isSend ? (void*)comms::prims::benchmark::p2pSend
                               : (void*)comms::prims::benchmark::p2pRecv;
 
@@ -414,7 +414,7 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     SyncScope groupScope = config.groupScope;
     AbortDevice abortDevice;
     void* args[] = {
-        &p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &abortDevice};
+        &p2p, &sendPtr, &recvPtr, &nBytes, &abortDevice, &groupScope};
     void* kernelFunc = (void*)comms::prims::benchmark::p2pBidirectional;
 
     bootstrap->barrierAll();

@@ -15,8 +15,8 @@ __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
   TiledBuffer<char> tiles(static_cast<char*>(srcBuff), nBytes, group);
@@ -24,16 +24,16 @@ __global__ void p2pSend(
       group,
       tiles.tile_data(group.group_id),
       tiles.tile_bytes(group.group_id),
-      /*max_signal_bytes=*/0,
-      abortDevice);
+      abortDevice,
+      /*max_signal_bytes=*/0);
 }
 
 __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
   TiledBuffer<char> tiles(static_cast<char*>(dstBuff), nBytes, group);
@@ -41,8 +41,8 @@ __global__ void p2pRecv(
       group,
       tiles.tile_data(group.group_id),
       tiles.tile_bytes(group.group_id),
-      /*max_signal_bytes=*/0,
-      abortDevice);
+      abortDevice,
+      /*max_signal_bytes=*/0);
 }
 
 __global__ void p2pSendTimed(
@@ -52,6 +52,7 @@ __global__ void p2pSendTimed(
     TimingStats* stats,
     SyncScope groupScope) {
   auto group = make_thread_group(groupScope);
+  const AbortDevice abortDevice;
   unsigned int globalThreadId = getGlobalThreadId();
 
   // Only first thread globally records start time
@@ -64,6 +65,7 @@ __global__ void p2pSendTimed(
       group,
       tiles.tile_data(group.group_id),
       tiles.tile_bytes(group.group_id),
+      abortDevice,
       /*max_signal_bytes=*/0);
 
   // Only first thread globally records end time
@@ -81,6 +83,7 @@ __global__ void p2pRecvTimed(
     TimingStats* stats,
     SyncScope groupScope) {
   auto group = make_thread_group(groupScope);
+  const AbortDevice abortDevice;
   unsigned int globalThreadId = getGlobalThreadId();
 
   // Only first thread globally records start time
@@ -93,6 +96,7 @@ __global__ void p2pRecvTimed(
       group,
       tiles.tile_data(group.group_id),
       tiles.tile_bytes(group.group_id),
+      abortDevice,
       /*max_signal_bytes=*/0);
 
   // Only first thread globally records end time
@@ -108,8 +112,8 @@ __global__ __launch_bounds__(512, 1) void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    SyncScope groupScope,
-    AbortDevice abortDevice) {
+    AbortDevice abortDevice,
+    SyncScope groupScope) {
   abortDevice.start();
   auto group = make_thread_group(groupScope);
 
@@ -121,16 +125,16 @@ __global__ __launch_bounds__(512, 1) void p2pBidirectional(
         subgroup,
         tiles.tile_data(subgroup.group_id),
         tiles.tile_bytes(subgroup.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   } else {
     TiledBuffer<char> tiles(static_cast<char*>(recvBuff), nBytes, subgroup);
     p2p.recv(
         subgroup,
         tiles.tile_data(subgroup.group_id),
         tiles.tile_bytes(subgroup.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -139,6 +143,7 @@ __global__ void p2pSignalBenchKernel(
     int nSteps,
     SyncScope groupScope) {
   auto group = make_thread_group(groupScope);
+  const AbortDevice abortDevice;
 
   // Each group operates on its own signal slot for parallelism
   uint64_t signal_id = group.group_id;
@@ -150,7 +155,11 @@ __global__ void p2pSignalBenchKernel(
   for (int step = 1; step <= nSteps; ++step) {
     p2p.signal(group, signal_id, SignalOp::SIGNAL_ADD, 1);
     p2p.wait_signal_until(
-        group, signal_id, CmpOp::CMP_EQ, static_cast<uint64_t>(step));
+        group,
+        signal_id,
+        CmpOp::CMP_EQ,
+        static_cast<uint64_t>(step),
+        abortDevice);
   }
 }
 
@@ -200,7 +209,7 @@ __global__ void p2pLlSend(
     AbortDevice abortDevice) {
   abortDevice.start();
   auto group = make_warp_group();
-  p2p.ll_send(group, static_cast<const char*>(srcBuff), nBytes, 1, abortDevice);
+  p2p.ll_send(group, static_cast<const char*>(srcBuff), nBytes, abortDevice, 1);
 }
 
 __global__ void p2pLlRecv(
@@ -210,7 +219,7 @@ __global__ void p2pLlRecv(
     AbortDevice abortDevice) {
   abortDevice.start();
   auto group = make_warp_group();
-  p2p.ll_recv(group, static_cast<char*>(dstBuff), nBytes, 1, abortDevice);
+  p2p.ll_recv(group, static_cast<char*>(dstBuff), nBytes, abortDevice, 1);
 }
 
 __global__ void p2pLlBidirectional(
@@ -224,9 +233,9 @@ __global__ void p2pLlBidirectional(
   auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
     p2p.ll_send(
-        subgroup, static_cast<const char*>(sendBuff), nBytes, 1, abortDevice);
+        subgroup, static_cast<const char*>(sendBuff), nBytes, abortDevice, 1);
   } else {
-    p2p.ll_recv(subgroup, static_cast<char*>(recvBuff), nBytes, 1, abortDevice);
+    p2p.ll_recv(subgroup, static_cast<char*>(recvBuff), nBytes, abortDevice, 1);
   }
 }
 

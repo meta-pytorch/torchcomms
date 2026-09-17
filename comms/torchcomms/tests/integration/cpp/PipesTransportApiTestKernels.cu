@@ -51,7 +51,7 @@ __global__ void transportStressSignalKernel(
     nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
     // Wait for peer's signal: expect monotonically increasing value
     nvl.wait_signal_until(
-        group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
+        group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1), handle.abort);
   }
 }
 
@@ -102,7 +102,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = pattern;
       }
       __syncthreads();
-      nvl.ll128_send_group(group, buf, nbytes);
+      nvl.ll128_send_group(group, buf, nbytes, handle.abort);
       if (threadIdx.x == 0) {
         results[iter] = 1;
       }
@@ -112,7 +112,7 @@ __global__ void transportStressLl128Kernel(
         buf[i] = 0;
       }
       __syncthreads();
-      nvl.ll128_recv_group(group, buf, nbytes);
+      nvl.ll128_recv_group(group, buf, nbytes, handle.abort);
       // Verify
       __shared__ int any_mismatch;
       if (threadIdx.x == 0) {
@@ -134,7 +134,7 @@ __global__ void transportStressLl128Kernel(
     // available via get_device_transport())
     nvl.signal(group, 0, SignalOp::SIGNAL_ADD, 1);
     nvl.wait_signal_until(
-        group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1));
+        group, 0, CmpOp::CMP_GE, static_cast<uint64_t>(iter + 1), handle.abort);
   }
 }
 

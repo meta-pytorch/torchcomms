@@ -29,8 +29,8 @@ inline constexpr uint32_t kDefaultIbgdaWarpProxyQueueDepth = 16;
  * @param nbytes     Total bytes to transfer
  * @param numBlocks  Number of send blocks (= number of recv blocks)
  * @param stream     CUDA stream
+ * @param abortDevice    Caller-supplied abort handle for wait operations
  * @param maxSignalBytes Max bytes per signaled sub-chunk
- * @param abortDevice    Optional abortDevice for wait operations
  */
 void launch_ibgda_send_recv(
     P2pIbgdaTransportDevice* transport,
@@ -39,8 +39,8 @@ void launch_ibgda_send_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch bidirectional progress-send/recv kernel for IBGDA transport.
@@ -55,8 +55,8 @@ void launch_ibgda_progress_send_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch bidirectional tile sendrecv kernel that performs two back-to-back
@@ -72,7 +72,7 @@ void launch_ibgda_send_recv_two_call(
     std::size_t firstMaxSignalBytes,
     std::size_t secondMaxSignalBytes,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 /**
  * Launch unidirectional tile send kernel. All blocks send.
@@ -83,8 +83,8 @@ void launch_ibgda_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch NVIDIA-only unidirectional send with one IB service warp per block.
@@ -95,8 +95,8 @@ void launch_ibgda_warp_proxy_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
+    AbortDevice abortDevice,
     std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice(),
     uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
 
 /**
@@ -108,8 +108,8 @@ void launch_ibgda_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch NVIDIA-only unidirectional receive with one IB service warp per block.
@@ -120,8 +120,8 @@ void launch_ibgda_warp_proxy_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
+    AbortDevice abortDevice,
     std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice(),
     uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
 
 /**
@@ -136,8 +136,8 @@ void launch_ibgda_send_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 void launch_ibgda_send_ll(
     P2pIbgdaTransportDevice* transport,
@@ -145,8 +145,8 @@ void launch_ibgda_send_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 void launch_ibgda_recv_ll(
     P2pIbgdaTransportDevice* transport,
@@ -154,8 +154,8 @@ void launch_ibgda_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Drain outstanding bidirectional send/recv transport work for benchmark
@@ -167,7 +167,7 @@ void launch_ibgda_drain_send_recv(
     std::size_t totalBytes,
     int iterations,
     cudaStream_t stream,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice);
 
 /**
  * Reset benchmark-owned send/recv transport state after outstanding work has
@@ -187,8 +187,8 @@ void launch_ibgda_progress_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch the staged progress sender and wait for the receiver's final credit.
@@ -199,8 +199,8 @@ void launch_ibgda_progress_send_complete(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch a unidirectional registered-source progress send kernel.
@@ -214,8 +214,8 @@ void launch_ibgda_registered_progress_send(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch unidirectional progress recv kernel. All blocks receive.
@@ -226,8 +226,8 @@ void launch_ibgda_progress_recv(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch unidirectional LL progress send kernel. All blocks send.
@@ -238,8 +238,8 @@ void launch_ibgda_progress_send_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Launch unidirectional LL progress recv kernel. All blocks receive.
@@ -250,8 +250,8 @@ void launch_ibgda_progress_recv_ll(
     std::size_t nbytes,
     int numBlocks,
     cudaStream_t stream,
-    std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice());
+    AbortDevice abortDevice,
+    std::size_t maxSignalBytes = 0);
 
 /**
  * Snapshot the transport send/recv byte cursors into device memory.

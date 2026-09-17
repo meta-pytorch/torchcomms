@@ -60,7 +60,8 @@ __device__ int torchcomms_transport_wait_signal(
       group,
       static_cast<uint64_t>(signal_id),
       static_cast<CmpOp>(op),
-      static_cast<uint64_t>(value));
+      static_cast<uint64_t>(value),
+      handle->abort);
   return 0;
 }
 
@@ -81,6 +82,7 @@ __device__ __noinline__ int torchcomms_transport_send(
           group,
           src_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     case TransportType::P2P_IBGDA:
@@ -88,6 +90,7 @@ __device__ __noinline__ int torchcomms_transport_send(
           group,
           src_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:
@@ -112,6 +115,7 @@ __device__ __noinline__ int torchcomms_transport_recv(
           group,
           dst_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     case TransportType::P2P_IBGDA:
@@ -119,6 +123,7 @@ __device__ __noinline__ int torchcomms_transport_recv(
           group,
           dst_ptr,
           static_cast<std::size_t>(nbytes),
+          handle->abort,
           static_cast<std::size_t>(max_signal_bytes));
       break;
     default:
@@ -134,7 +139,8 @@ __device__ int
 torchcomms_transport_barrier(void* handle_ptr, int peer, int barrier_id) {
   auto* handle = reinterpret_cast<MultiPeerDeviceHandle*>(handle_ptr);
   auto group = make_block_group();
-  handle->get_nvl(peer).barrier_sync(group, static_cast<uint64_t>(barrier_id));
+  handle->get_nvl(peer).barrier_sync(
+      group, static_cast<uint64_t>(barrier_id), handle->abort);
   return 0;
 }
 
