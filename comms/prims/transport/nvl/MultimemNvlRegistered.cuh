@@ -29,7 +29,7 @@ __host__ __device__ constexpr bool is_reduce_broadcast_valid(
 
 } // namespace comms::prims::detail
 
-#if defined(ENABLE_PRIMS)
+#if defined(MCCL_BUILD_PRIMS)
 
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
@@ -186,4 +186,4 @@ __device__ __forceinline__ void reduce_broadcast_at(
 
 } // namespace comms::prims::multimem
 
-#endif // ENABLE_PRIMS
+#endif // MCCL_BUILD_PRIMS

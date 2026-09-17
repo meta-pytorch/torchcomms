@@ -42,7 +42,6 @@ generate_sym_kernels=false
 warp_speed_enabled=true # note that this flag will be overridden to false for non MI350/MI300 platforms
 quiet_warnings=false
 build_rocshmem_support=false
-enable_prims=false
 
 # #################################################
 # helper functions
@@ -85,7 +84,6 @@ function display_help()
     echo "       --generate-sym-kernels  Generate symmetric memory kernels"
     echo "    -q|--quiet-warnings        Suppress majority of compiler warnings (not recommended)"
     echo "       --rocshmem              Build with rocSHMEM support"
-    echo "       --enable-prims          Compile comms/prims (pipes) into RCCLX (default: off)"
     echo "       --disable-warp-speed    Build without WARP_SPEED kernels"
 }
 
@@ -96,7 +94,7 @@ function display_help()
 # check if we have a modern version of getopt that can handle whitespace and long parameters
 getopt -T
 if [[ "$?" -eq 4 ]]; then
-    GETOPT_PARSE=$(getopt --name "${0}" --options cdfhij:lprtq --longoptions address-sanitizer,dependencies,debug,dump-asm,enable-code-coverage,enable_backtrace,disable-colltrace,disable-msccl-kernel,enable-mscclpp,fast,help,install,jobs:,kernel-resource-use,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,force-reduce-pipeline,generate-sym-kernels,quiet-warnings,disable-warp-speed,verbose,rocshmem,enable-prims -- "$@")
+    GETOPT_PARSE=$(getopt --name "${0}" --options cdfhij:lprtq --longoptions address-sanitizer,dependencies,debug,dump-asm,enable-code-coverage,enable_backtrace,disable-colltrace,disable-msccl-kernel,enable-mscclpp,fast,help,install,jobs:,kernel-resource-use,local_gpu_only,amdgpu_targets:,no_clean,npkit-enable,log-trace,openmp-test-enable,roctx-enable,package_build,prefix:,rm-legacy-include-dir,run_tests_all,run_tests_quick,static,tests_build,time-trace,force-reduce-pipeline,generate-sym-kernels,quiet-warnings,disable-warp-speed,verbose,rocshmem -- "$@")
 else
     echo "Need a new version of getopt"
     exit 1
@@ -146,7 +144,6 @@ while true; do
          --disable-warp-speed)       warp_speed_enabled=false;                                                                         shift ;;
     -q | --quiet-warnings)           quiet_warnings=true;                                                                              shift ;;
          --rocshmem)                 build_rocshmem_support=true;                                                                      shift ;;
-         --enable-prims)             enable_prims=true;                                                                                shift ;;
     --) shift ; break ;;
     *)  echo "Unexpected command line parameter received; aborting";
         exit 1
@@ -342,14 +339,6 @@ if [[ "${build_rocshmem_support}" == true ]]; then
     cmake_common_options="${cmake_common_options} -DROCSHMEM_INSTALL_DIR=${ROCSHMEM_INSTALL_DIR}"
 else
     cmake_common_options="${cmake_common_options} -DENABLE_ROCSHMEM=OFF"
-fi
-
-# Compile comms/prims (pipes) into RCCLX. Default OFF shields the AMD/ROCm build
-# from comms/prims churn; pass --enable-prims to opt in (e.g. for local eval).
-if [[ "${enable_prims}" == true ]]; then
-    cmake_common_options="${cmake_common_options} -DENABLE_PRIMS=ON"
-else
-    cmake_common_options="${cmake_common_options} -DENABLE_PRIMS=OFF"
 fi
 
 check_exit_code "$?"

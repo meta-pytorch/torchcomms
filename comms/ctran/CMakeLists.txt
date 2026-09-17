@@ -63,12 +63,6 @@ target_include_directories(ctran PRIVATE
     ${CUDA_INCLUDE_DIRS}/cccl
 )
 
-# Transitional compatibility definition retained until the build dependency
-# cleanup; CTRAN no longer contains PRiMS-backed runtime code.
-if(MCCL_ENABLE_PRIMS)
-    target_compile_definitions(ctran PRIVATE ENABLE_PRIMS=1)
-endif()
-
 if(TARGET mccl_rdma_core)
     # This directory's ctran target is the sole CMake owner of this source.
     # Keep this source-local define and the provider link together if that

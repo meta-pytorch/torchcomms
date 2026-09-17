@@ -410,7 +410,7 @@ MCCL_IB_MODE=ibrc
 MCCL_ALGO=allgather:hostring
 ```
 
-`NCCL_CTRAN_ENABLE` and `NCCL_CTRAN_USE_PIPES` are not required for dispatch.
+`NCCL_CTRAN_ENABLE` is not required for dispatch.
 The implementation stack has used the legacy `NCCL_ALLGATHER_ALGO=mcclhostring`
 selector during development; the intended public spelling is the MCCL-native
 `MCCL_ALGO=allgather:hostring`, with the algorithm name shortened to
