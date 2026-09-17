@@ -205,6 +205,22 @@ void launchBlockAggregateBarrier(
     uint32_t epochs,
     int32_t* reducedValues,
     uint64_t* signalValues,
+    uint32_t* barrierResults,
+    cudaStream_t stream = nullptr);
+
+void launchBlockAggregateBarrierAbort(
+    MultimemNvlTransportDevice transport,
+    bool participate,
+    AbortDevice abortDevice,
+    bool startTimeout,
+    uint32_t* barrierResult,
+    uint64_t* barrierCounter,
+    uint64_t* barrierEpoch,
+    cudaStream_t stream = nullptr);
+
+void launchWriteValue(
+    uint32_t* output,
+    uint32_t value,
     cudaStream_t stream = nullptr);
 
 void launchFillReductionInput(
