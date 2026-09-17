@@ -48,8 +48,8 @@ __device__ __forceinline__ void send_peer(
           group,
           tiles.tile_data(group.group_id),
           tiles.tile_bytes(group.group_id),
-          /*max_signal_bytes=*/0,
-          abortDevice);
+          abortDevice,
+          /*max_signal_bytes=*/0);
     }
   } else {
     comms::prims::TiledBuffer<char> tiles(const_cast<char*>(src), bytes, group);
@@ -57,8 +57,8 @@ __device__ __forceinline__ void send_peer(
         group,
         tiles.tile_data(group.group_id),
         tiles.tile_bytes(group.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 }
 
@@ -82,8 +82,8 @@ __device__ __forceinline__ void recv_peer(
           group,
           tiles.tile_data(group.group_id),
           tiles.tile_bytes(group.group_id),
-          /*max_signal_bytes=*/0,
-          abortDevice);
+          abortDevice,
+          /*max_signal_bytes=*/0);
     }
   } else {
     comms::prims::TiledBuffer<char> tiles(dst, bytes, group);
@@ -91,8 +91,8 @@ __device__ __forceinline__ void recv_peer(
         group,
         tiles.tile_data(group.group_id),
         tiles.tile_bytes(group.group_id),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 }
 

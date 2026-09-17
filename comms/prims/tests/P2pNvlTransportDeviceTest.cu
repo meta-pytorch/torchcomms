@@ -41,7 +41,8 @@ __global__ void testDeviceWaitSignalKernel(
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p->wait_signal_until(group, signalId, op, value);
+  const AbortDevice abortDevice;
+  p2p->wait_signal_until(group, signalId, op, value, abortDevice);
 }
 
 __global__ void testDeviceSignalThenWaitKernel(
@@ -53,8 +54,9 @@ __global__ void testDeviceSignalThenWaitKernel(
     uint64_t waitValue,
     GroupType groupType) {
   auto group = make_group(groupType);
+  const AbortDevice abortDevice;
   p2p->signal(group, signalId, signalOp, signalValue);
-  p2p->wait_signal_until(group, signalId, waitOp, waitValue);
+  p2p->wait_signal_until(group, signalId, waitOp, waitValue, abortDevice);
 }
 
 __global__ void testDeviceSignalThenWaitWithDisabledAbortKernel(
@@ -189,7 +191,8 @@ __global__ void testRawWaitSignalKernel(
     uint64_t value,
     GroupType groupType) {
   auto group = make_group(groupType);
-  signal_d->wait_until(group, op, value);
+  const AbortDevice abortDevice;
+  signal_d->wait_until(group, op, value, abortDevice);
 }
 
 __global__ void testReadSignalKernel(
@@ -298,7 +301,7 @@ __global__ void testLlTiledSendKernel(
   if (dir == 0) {
     for (int i = 0; i < num_steps; i++) {
       TiledBuffer<char> tile(const_cast<char*>(src), nbytes, subgroup);
-      p2p.ll_send(subgroup, tile.data(), tile.bytes(), active, abortDevice);
+      p2p.ll_send(subgroup, tile.data(), tile.bytes(), abortDevice, active);
     }
   }
 }
@@ -316,7 +319,7 @@ __global__ void testLlTiledRecvKernel(
   if (dir == 1) {
     for (int i = 0; i < num_steps; i++) {
       TiledBuffer<char> tile(dst, nbytes, subgroup);
-      p2p.ll_recv(subgroup, tile.data(), tile.bytes(), active, abortDevice);
+      p2p.ll_recv(subgroup, tile.data(), tile.bytes(), abortDevice, active);
     }
   }
 }

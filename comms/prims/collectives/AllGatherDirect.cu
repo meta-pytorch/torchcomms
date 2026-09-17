@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
         continue;
       }
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, max_sig, abortDevice);
+      peer.send(group, send_src, window, abortDevice, max_sig);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -65,7 +65,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
       }
       char* dst = args.recvbuf + peer_rank * sendcount + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.recv(group, dst, window, max_sig, abortDevice);
+      peer.recv(group, dst, window, abortDevice, max_sig);
     }
   }
 #endif
@@ -130,7 +130,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
 
     const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
-        group, send_src, window, max_sig, abortDevice, own_dst + off);
+        group, send_src, window, abortDevice, max_sig, own_dst + off);
 
     int fwd_current_rank = args.ib_rank;
     for (int step = 0; step < W - 1; step++) {
@@ -142,9 +142,9 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(group, dst, next, window, max_sig, abortDevice);
+        prev.forward(group, dst, next, window, abortDevice, max_sig);
       } else {
-        prev.recv(group, dst, window, max_sig, abortDevice);
+        prev.recv(group, dst, window, abortDevice, max_sig);
       }
     }
   }
@@ -443,8 +443,8 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             group,
             send_src + chunk_off,
             window,
-            args.nvl_signaling_data_size,
-            abortDevice);
+            abortDevice,
+            args.nvl_signaling_data_size);
       }
 
       for (int peer_rank = 0; peer_rank < args.nvl_size; ++peer_rank) {
@@ -457,7 +457,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             off + chunk_off;
         auto peer = args.nvl_peers[peer_rank];
         peer.recv(
-            group, dst, window, args.nvl_signaling_data_size, abortDevice);
+            group, dst, window, abortDevice, args.nvl_signaling_data_size);
       }
     }
     trace_hierarchical_allgather(

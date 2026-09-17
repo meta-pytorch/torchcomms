@@ -199,7 +199,7 @@ __device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::wait_signal(
   auto& win = *window_;
   auto prims_cmp = detail::to_prims_cmp_op(cmp);
   auto group = detail::make_prims_thread_group(scope);
-  win.wait_signal(group, signal_id, prims_cmp, value);
+  win.wait_signal(group, signal_id, prims_cmp, value, win.abortDevice());
   return 0;
 }
 
@@ -214,7 +214,8 @@ TorchCommDeviceWindow<PrimsDeviceBackend>::wait_signal_from(
   auto& win = *window_;
   auto prims_cmp = detail::to_prims_cmp_op(cmp);
   auto group = detail::make_prims_thread_group(scope);
-  win.wait_signal_from(group, peer, signal_id, prims_cmp, value);
+  win.wait_signal_from(
+      group, peer, signal_id, prims_cmp, value, win.abortDevice());
   return 0;
 }
 
@@ -348,7 +349,7 @@ __device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::flush(
   for (int peer_index = 0; peer_index < nPeers; ++peer_index) {
     int r = win.peer_index_to_rank(peer_index);
     if (win.get_type(r) == comms::prims::TransportType::P2P_IBGDA) {
-      win.get_ibgda(r).fence(group);
+      win.get_ibgda(r).fence(group, win.abortDevice());
     }
   }
 
@@ -363,7 +364,7 @@ __device__ inline int TorchCommDeviceWindow<PrimsDeviceBackend>::barrier(
   // arrive + wait protocol across NVL and IBGDA peers.
   auto& win = *window_;
   auto group = detail::make_prims_thread_group(scope);
-  win.barrier(group, barrier_id);
+  win.barrier(group, barrier_id, win.abortDevice());
   return 0;
 }
 

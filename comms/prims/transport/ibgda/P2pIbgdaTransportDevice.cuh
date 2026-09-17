@@ -464,6 +464,7 @@ class P2pIbgdaTransportDevice {
         remoteBuf,
         nbytes,
         sigSlot,
+        AbortDevice{},
         signalVal,
         ctrSlot,
         counterVal);
@@ -572,15 +573,13 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     wait_signal(group, local_signal_slot(signalId), expected, abortDevice);
   }
 
   /** wait_signal (thread-scope, slot-index) - Single-thread variant. */
-  __device__ void wait_signal(
-      int signalId,
-      uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ void
+  wait_signal(int signalId, uint64_t expected, const AbortDevice& abortDevice) {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalId, expected, abortDevice);
   }
@@ -598,7 +597,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     wait_counter(group, counter_slot(counterId), expected, abortDevice);
   }
 
@@ -606,7 +605,7 @@ class P2pIbgdaTransportDevice {
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterId, expected, abortDevice);
   }
@@ -710,11 +709,11 @@ class P2pIbgdaTransportDevice {
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
       const IbgdaRemoteBuffer& signalBuf,
+      const AbortDevice& abortDevice,
       uint64_t signalVal = 1,
       const IbgdaLocalBuffer& counterBuf = {},
       uint64_t counterVal = 1,
-      bool signalPerLane = false,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      bool signalPerLane = false) {
     return put_impl(
         group,
         localBuf,
@@ -750,6 +749,7 @@ class P2pIbgdaTransportDevice {
         remoteBuf,
         nbytes,
         signalBuf,
+        AbortDevice{},
         signalVal,
         counterBuf,
         counterVal);
@@ -877,7 +877,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     wait_signal_impl(group, signalBuf, expected, abortDevice);
   }
 
@@ -885,7 +885,7 @@ class P2pIbgdaTransportDevice {
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     ThreadGroup solo = make_thread_solo();
     wait_signal(solo, signalBuf, expected, abortDevice);
   }
@@ -902,7 +902,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     wait_counter_impl(group, counterBuf, expected, abortDevice);
   }
 
@@ -913,7 +913,7 @@ class P2pIbgdaTransportDevice {
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       IbgdaLane lane = lane_from_ordinal(
           group.group_id, IbDirection::Send, ticket.completionId);
@@ -925,7 +925,7 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     IbgdaLane lane =
         lane_from_ordinal(channelId, IbDirection::Send, ticket.completionId);
     const int status =
@@ -991,7 +991,7 @@ class P2pIbgdaTransportDevice {
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     ThreadGroup solo = make_thread_solo();
     wait_counter(solo, counterBuf, expected, abortDevice);
   }
@@ -1010,8 +1010,8 @@ class P2pIbgdaTransportDevice {
    */
   __device__ void flush(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      IbDirection direction = IbDirection::Send) {
     if (group.is_leader()) {
       validate_group_scope(group);
       drain_flush_lanes(group, direction, abortDevice);
@@ -1028,9 +1028,9 @@ class P2pIbgdaTransportDevice {
    * pending lanes and can return with those WQEs still in flight. See
    * "Partitioned groups alias channel ids" in comms/prims/docs/Channels.md.
    */
-  __device__ void flush(const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ void flush(const AbortDevice& abortDevice) {
     ThreadGroup solo = make_thread_solo();
-    flush(solo, IbDirection::Send, abortDevice);
+    flush(solo, abortDevice, IbDirection::Send);
   }
 
   /**
@@ -1043,9 +1043,9 @@ class P2pIbgdaTransportDevice {
    */
   __device__ void fence(
       ThreadGroup& group,
-      IbDirection direction = IbDirection::Send,
-      const AbortDevice& abortDevice = AbortDevice()) {
-    flush(group, direction, abortDevice);
+      const AbortDevice& abortDevice,
+      IbDirection direction = IbDirection::Send) {
+    flush(group, abortDevice, direction);
   }
 
   /**
@@ -1054,7 +1054,7 @@ class P2pIbgdaTransportDevice {
    * Drains Send unconditionally; same shared-`IbQpState` caveat as the
    * thread-scope flush() above.
    */
-  __device__ void fence(const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ void fence(const AbortDevice& abortDevice) {
     flush(abortDevice);
   }
 
@@ -1376,7 +1376,7 @@ class P2pIbgdaTransportDevice {
       doca_gpu_dev_verbs_ticket_t ticket,
       // By reference: a copy resets the poll throttle, and `wait_lanes()` calls
       // this once per QP lane.
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (!abortDevice.isEnabled()) {
       const int status = wait_cq(qp, ticket);
       if (status != 0) {
@@ -1442,7 +1442,7 @@ class P2pIbgdaTransportDevice {
       IbDirection direction,
       uint64_t mask,
       const uint64_t* tickets,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     const uint32_t numLanes = num_qp_lanes();
     for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
       if ((mask & (1ULL << laneId)) == 0) {
@@ -1456,7 +1456,7 @@ class P2pIbgdaTransportDevice {
   __device__ void drain_flush_lanes(
       ThreadGroup& group,
       IbDirection direction,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     auto& state = qp_state(group.group_id, direction);
     const uint64_t mask = atomic_exchange_u64(&state.pendingFlushLanesMask, 0);
     wait_lanes(
@@ -1625,7 +1625,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(signalBuf.ptr);
       while (current < expected) {
@@ -1650,7 +1650,7 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       uint64_t current = load_acquire_system_u64(counterBuf.ptr);
       while (current < expected) {
@@ -2860,7 +2860,7 @@ class P2pIbgdaTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice(),
+      const AbortDevice& abortDevice,
       Args... args) {
     return detail::progress_send_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, abortDevice, args...);
@@ -2874,7 +2874,7 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     return detail::progress_registered_send_once(*this, group, abortDevice);
   }
 
@@ -2886,7 +2886,7 @@ class P2pIbgdaTransportDevice {
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_drain_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     return detail::progress_registered_send_drain_once(
         *this, group, abortDevice);
   }
@@ -2936,7 +2936,7 @@ class P2pIbgdaTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice(),
+      const AbortDevice& abortDevice,
       Args... args) {
     return detail::progress_recv_once<P2pIbgdaTransportDevice, CopyOp, Proto>(
         *this, group, abortDevice, args...);
@@ -3030,7 +3030,8 @@ class P2pIbgdaTransportDevice {
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
    *                        perBlockSlot. 0 means one signal per
    * perBlockSlot.
-   * @param abortDevice         Optional abortDevice for wait operations.
+   * @param abortDevice         Caller-supplied abort handle for wait
+   * operations.
    */
   template <
       typename CopyOp = Memcpy,
@@ -3040,8 +3041,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const void* __restrict__ src,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     sendWithTrace<CopyOp, Proto>(
         group, src, nbytes, max_signal_bytes, abortDevice, {}, 0, args...);
@@ -3055,10 +3056,10 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& src,
       std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice,
+      std::size_t max_signal_bytes = 0) {
     detail::send_registered(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice);
+        *this, group, src, nbytes, abortDevice, max_signal_bytes);
   }
 
   template <
@@ -3095,7 +3096,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
     detail::send<P2pIbgdaTransportDevice, CopyOp, Proto>(
-        *this, group, src, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, src, nbytes, abortDevice, max_signal_bytes, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -3152,7 +3153,8 @@ class P2pIbgdaTransportDevice {
    * @param max_signal_bytes Max bytes per signaled sub-chunk within one
    *                        perBlockSlot. 0 means one signal per
    * perBlockSlot. Must match the sender's value.
-   * @param abortDevice         Optional abortDevice for wait operations.
+   * @param abortDevice         Caller-supplied abort handle for wait
+   * operations.
    */
   template <
       typename CopyOp = Memcpy,
@@ -3162,8 +3164,8 @@ class P2pIbgdaTransportDevice {
       ThreadGroup& group,
       void* __restrict__ dst,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     recvWithTrace<CopyOp, Proto>(
         group, dst, nbytes, max_signal_bytes, abortDevice, {}, 0, args...);
@@ -3203,7 +3205,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
     detail::recv<P2pIbgdaTransportDevice, CopyOp, Proto>(
-        *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, dst, nbytes, abortDevice, max_signal_bytes, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,
@@ -3284,7 +3286,8 @@ class P2pIbgdaTransportDevice {
    *                        protocol byte count is rounded up to 16 bytes.
    * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 =
    * perBlockSlot.
-   * @param abortDevice         Optional abortDevice for wait operations.
+   * @param abortDevice         Caller-supplied abort handle for wait
+   * operations.
    * @param args            Extra args forwarded to CopyOp::forward.
    */
   template <
@@ -3296,8 +3299,8 @@ class P2pIbgdaTransportDevice {
       void* __restrict__ dst,
       P2pIbgdaTransportDevice& fwd,
       std::size_t nbytes,
+      const AbortDevice& abortDevice,
       std::size_t max_signal_bytes = 0,
-      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     forwardWithTrace<CopyOp, Proto>(
         group, dst, fwd, nbytes, max_signal_bytes, abortDevice, {}, 0, args...);
@@ -3330,7 +3333,7 @@ class P2pIbgdaTransportDevice {
           static_cast<uint16_t>(group.group_id));
     }
     detail::forward<CopyOp, P2pIbgdaTransportDevice, Proto>(
-        *this, group, dst, fwd, nbytes, max_signal_bytes, abortDevice, args...);
+        *this, group, dst, fwd, nbytes, abortDevice, max_signal_bytes, args...);
     if (group.is_leader()) {
       trace_ibgda_event(
           trace,

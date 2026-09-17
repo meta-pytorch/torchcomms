@@ -244,8 +244,8 @@ __device__ __forceinline__ void all_to_allv(
         peer_channel_group,
         tiles.data(),
         tiles.bytes(),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   } else {
     TiledBuffer<char> tiles(
         static_cast<char*>(recvbuff_d) + recv_info.offset,
@@ -255,8 +255,8 @@ __device__ __forceinline__ void all_to_allv(
         peer_channel_group,
         tiles.data(),
         tiles.bytes(),
-        /*max_signal_bytes=*/0,
-        abortDevice);
+        abortDevice,
+        /*max_signal_bytes=*/0);
   }
 
 #endif

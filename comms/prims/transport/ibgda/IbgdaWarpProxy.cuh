@@ -174,8 +174,8 @@ class IbgdaWarpProxy {
           this,
           src,
           nbytes,
-          maxSignalBytes,
           timeout_,
+          maxSignalBytes,
           nullptr,
           args...);
     }
@@ -197,8 +197,8 @@ class IbgdaWarpProxy {
           this,
           dst,
           nbytes,
-          maxSignalBytes,
           timeout_,
+          maxSignalBytes,
           nullptr,
           args...);
     }
@@ -223,8 +223,8 @@ class IbgdaWarpProxy {
           dst,
           next,
           nbytes,
-          maxSignalBytes,
           timeout_,
+          maxSignalBytes,
           nullptr,
           nullptr,
           args...);
@@ -796,11 +796,11 @@ class IbgdaWarpProxy {
         remote.recvStaging.subBuffer(command.remoteOffset),
         command.bytes,
         remote.dataReady,
+        abortDevice,
         command.protocolBytes,
         /*counterBuf=*/{},
         /*counterVal=*/0,
-        /*signalPerLane=*/true,
-        abortDevice);
+        /*signalPerLane=*/true);
     if (!ticket.posted) {
       return;
     }
