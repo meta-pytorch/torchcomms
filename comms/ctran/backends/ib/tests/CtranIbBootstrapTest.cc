@@ -1778,8 +1778,43 @@ TEST_F(CtranIbBootstrapCommonTest, MaxNumNic) {
   // valid since default init already uses device 0.
   EXPECT_EQ(makeIb(1)->getNumNics(), 1);
 
-  // Override equal to the cvar keeps all NICs; an override larger than the cvar
-  // is clamped down to NCCL_CTRAN_IB_DEVICES_PER_RANK.
+  // Override equal to the cvar keeps all NICs.
   EXPECT_EQ(makeIb(defaultNumNics)->getNumNics(), defaultNumNics);
-  EXPECT_EQ(makeIb(defaultNumNics + 100)->getNumNics(), defaultNumNics);
+
+  const int invalidMaxNumNic = defaultNumNics + 1;
+  try {
+    makeIb(invalidMaxNumNic);
+    FAIL() << "Expected an invalid maxNumNic override to fail";
+  } catch (const ctran::utils::Exception& ex) {
+    EXPECT_EQ(ex.result(), commInvalidArgument);
+  }
+}
+
+TEST_F(CtranIbBootstrapCommonTest, MaxNumNicPreservesGlobalDeviceSelection) {
+  EnvRAII envNumNics(NCCL_CTRAN_IB_DEVICES_PER_RANK, 2);
+  EnvRAII envDeviceStride(NCCL_CTRAN_IB_DEVICE_STRIDE, 2);
+
+  auto singleton = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(singleton);
+  constexpr size_t kExpectedIbvDevice = 4;
+  const size_t requiredIbvDevices =
+      kExpectedIbvDevice + NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  if (singleton->ibvDevices.size() < requiredIbvDevices) {
+    GTEST_SKIP() << "Test requires at least " << requiredIbvDevices
+                 << " IB devices";
+  }
+
+  auto ctranIb = ::createCtranIb(
+      /*rank=*/1,
+      CtranIb::BootstrapMode::kExternal,
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      /*qpServerAddr=*/std::nullopt,
+      /*socketFactory=*/nullptr,
+      /*maxNumCqe=*/std::nullopt,
+      /*maxNumNic=*/1);
+
+  EXPECT_EQ(ctranIb->getNumNics(), 1);
+  EXPECT_EQ(
+      ctranIb->getIbDevName(),
+      singleton->ibvDevices[kExpectedIbvDevice].device()->name);
 }
