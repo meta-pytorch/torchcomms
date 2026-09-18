@@ -255,6 +255,19 @@ __device__ __forceinline__ void P2pIbTransportDevice::signal(
   }
 }
 
+[[nodiscard]] __device__ __forceinline__ bool P2pIbTransportDevice::try_signal(
+    ThreadGroup& group,
+    const IbgdaRemoteBuffer& signalBuf,
+    uint64_t signalVal,
+    IbDirection direction,
+    const AbortDevice& abortDevice) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->try_signal(
+        group, signalBuf, signalVal, direction, abortDevice);
+  }
+  return ibgda->try_signal(group, signalBuf, signalVal, direction, abortDevice);
+}
+
 __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
     ThreadGroup& group,
     const IbgdaLocalBuffer& localBuf,
@@ -288,6 +301,60 @@ __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
         counterVal,
         signalPerLane);
   }
+}
+
+__device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& signalBuf,
+    uint64_t signalVal,
+    const IbgdaLocalBuffer& counterBuf,
+    uint64_t counterVal,
+    bool signalPerLane,
+    const AbortDevice& abortDevice) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        signalBuf,
+        signalVal,
+        counterBuf,
+        counterVal,
+        signalPerLane);
+  }
+  return ibgda->put(
+      group,
+      localBuf,
+      remoteBuf,
+      nbytes,
+      signalBuf,
+      signalVal,
+      counterBuf,
+      counterVal,
+      signalPerLane,
+      abortDevice);
+}
+
+template <bool HasSignal>
+__device__ __forceinline__ IbLocalCompletionTicket
+P2pIbTransportDevice::put_staged(
+    ThreadGroup& group,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& signalBuf,
+    uint64_t signalVal,
+    const AbortDevice& abortDevice) {
+  if (type == P2pIbBackendType::IBRC) {
+    return ibrc->template put_staged<HasSignal>(
+        group, localBuf, remoteBuf, nbytes, signalBuf, signalVal, abortDevice);
+  }
+  return ibgda->template put_staged<HasSignal>(
+      group, localBuf, remoteBuf, nbytes, signalBuf, signalVal, abortDevice);
 }
 
 __device__ __forceinline__ IbLocalCompletionTicket P2pIbTransportDevice::put(
@@ -741,15 +808,24 @@ P2pIbTransportDevice::progress_recv_acquire_once(
 }
 
 template <typename>
-__device__ __forceinline__ void
+[[nodiscard]] __device__ __forceinline__ bool
 P2pIbTransportDevice::progress_recv_release_once(
     ThreadGroup& group,
     const AbortDevice& abortDevice,
     const detail::RecvChunkAcquisition& view) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->progress_recv_release_once(group, abortDevice, view);
+    return ibrc->progress_recv_release_once(group, abortDevice, view);
+  }
+  return ibgda->progress_recv_release_once(group, abortDevice, view);
+}
+
+template <typename>
+__device__ __forceinline__ void P2pIbTransportDevice::abandon_recv_progress(
+    ThreadGroup& group) {
+  if (type == P2pIbBackendType::IBRC) {
+    detail::abandon_recv_progress_state<protocol::Simple>(*ibrc, group);
   } else {
-    ibgda->progress_recv_release_once(group, abortDevice, view);
+    detail::abandon_recv_progress_state<protocol::Simple>(*ibgda, group);
   }
 }
 

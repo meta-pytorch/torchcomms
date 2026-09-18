@@ -3,12 +3,14 @@
 #include "comms/prims/tests/P2pIbTransportDeviceAbortTest.cuh"
 
 #include <cstddef>
+#include <type_traits>
 
 #include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/common/fault_tolerance/AbortMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/P2pIbTransportDevice.cuh"
+#include "comms/prims/transport/P2pIbTransportProgressImpl.cuh"
 #include "comms/prims/transport/ibrc/P2pIbrcTransportDevice.cuh"
 
 namespace comms::prims::test {
@@ -103,13 +105,606 @@ struct IbrcScratch {
   IbLocalChannel channels[1];
 };
 
-__device__ void zeroScratch(ThreadGroup& group, IbrcScratch& scratch) {
+template <typename Scratch>
+__device__ void zeroScratch(ThreadGroup& group, Scratch& scratch) {
   auto* raw = reinterpret_cast<char*>(&scratch);
-  for (std::size_t i = group.thread_id_in_group; i < sizeof(IbrcScratch);
+  for (std::size_t i = group.thread_id_in_group; i < sizeof(Scratch);
        i += group.group_size) {
     raw[i] = 0;
   }
   group.sync();
+}
+
+struct VariableWaitScratch {
+  IbChannelLayout layout;
+  IbLocalChannel channel;
+  IbSendCompletionSlot sendCompletions[1];
+  alignas(512) char staging[1024];
+  alignas(8) char signals[4 * kSendRecvSignalSlotStride];
+  alignas(8) char counters[2 * kSendRecvSignalSlotStride];
+};
+
+__device__ void initializeVariableWaitScratch(
+    ThreadGroup& group,
+    VariableWaitScratch& scratch) {
+  zeroScratch(group, scratch);
+  if (group.is_leader()) {
+    scratch.layout.sendStagingBuf =
+        IbgdaLocalBuffer{scratch.staging, NetworkLKeys{}};
+    scratch.layout.recvStagingBuf =
+        IbgdaRemoteBuffer{scratch.staging, NetworkRKeys{}};
+    scratch.layout.sendStagingPtr = scratch.staging;
+    scratch.layout.recvStagingPtr = scratch.staging;
+    scratch.layout.localSignalBuf =
+        IbgdaLocalBuffer{scratch.signals, NetworkLKeys{}};
+    scratch.layout.remoteSignalBuf =
+        IbgdaRemoteBuffer{scratch.signals, NetworkRKeys{}};
+    scratch.layout.localCounterBuf =
+        IbgdaLocalBuffer{scratch.counters, NetworkLKeys{}};
+    scratch.layout.localCounterCompletionBuf =
+        IbgdaLocalBuffer{scratch.counters, NetworkLKeys{}};
+    scratch.layout.maxChannels = kNumProtoSlots;
+    scratch.layout.numChannels = 1;
+    scratch.layout.numProtocolSlots = kNumProtoSlots;
+    scratch.layout.numLanes = 1;
+    scratch.layout.pipelineDepth = 1;
+    scratch.layout.perChannelSize = 512;
+    scratch.layout.perChannelBufferSize = 512;
+    scratch.channel = makeIbLocalChannel(
+        scratch.layout, /*channelId=*/0, scratch.sendCompletions);
+  }
+  group.sync();
+}
+
+class VariableWaitProbeTransport {
+ public:
+  __device__ VariableWaitProbeTransport(
+      VariableWaitScratch* scratch,
+      VariableWaitAbortObservation* observation)
+      : scratch_(scratch), observation_(observation) {}
+
+  __device__ const IbChannelLayout& channel_layout() const {
+    return scratch_->layout;
+  }
+
+  __device__ IbLocalChannel& local_channel(uint32_t /*channelId*/) {
+    return scratch_->channel;
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(uint32_t /*channelId*/) {
+    return scratch_->channel.protos[P::kProtoSlot];
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(ThreadGroup& group) {
+    return local_channel_slot<P>(group.group_id);
+  }
+
+  __device__ uint32_t send_completion_lane_count() const {
+    return 1;
+  }
+
+  __device__ void wait_local_completion(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {}
+
+  __device__ bool is_local_completion_ready(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    return true;
+  }
+
+  __device__ void wait_signal(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    if (group.is_leader()) {
+      abort.setAbort();
+      // This is far above the mapped-state polling interval but still turns a
+      // broken probe into an observation failure instead of a wedged test.
+      constexpr uint64_t kObservationBoundCycles = 10'000'000'000ULL;
+      const uint64_t start = clock64();
+      ++observation_->waitCallCount;
+      bool observedAbort = false;
+      while (clock64() - start < kObservationBoundCycles) {
+        if (abort.checkExpired()) {
+          observedAbort = true;
+          break;
+        }
+      }
+      if (observedAbort) {
+        ++observation_->waitObservedAbortCount;
+      } else {
+        ++observation_->waitBoundExpiredCount;
+      }
+    }
+    group.sync();
+  }
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& /*localBuf*/,
+      const IbgdaRemoteBuffer& /*remoteBuf*/,
+      std::size_t /*nbytes*/,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const IbgdaLocalBuffer& /*counterBuf*/,
+      uint64_t /*counterVal*/,
+      bool /*signalPerLane*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    if (group.is_leader()) {
+      ++observation_->putCount;
+    }
+    return IbLocalCompletionTicket{
+        .completionId = 0, .posted = true, .value = 1};
+  }
+
+  template <bool HasSignal>
+  __device__ IbLocalCompletionTicket put_staged(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& signalBuf,
+      uint64_t signalVal,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    return put(
+        group,
+        localBuf,
+        remoteBuf,
+        nbytes,
+        HasSignal ? signalBuf : IbgdaRemoteBuffer{},
+        HasSignal ? signalVal : 0,
+        /*counterBuf=*/{},
+        /*counterVal=*/0,
+        /*signalPerLane=*/true,
+        abort);
+  }
+
+  __device__ bool try_signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      IbDirection /*direction*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    if (group.is_leader()) {
+      ++observation_->signalCount;
+    }
+    return group.broadcast<uint32_t>(1U) != 0U;
+  }
+
+ private:
+  VariableWaitScratch* scratch_{nullptr};
+  VariableWaitAbortObservation* observation_{nullptr};
+};
+
+struct VariableWaitProbeCopyOp {
+  static constexpr bool kVariableSize = true;
+
+  __device__ static std::size_t max_safe_chunk_size_for_slot(
+      std::size_t slotBytes) {
+    return slotBytes;
+  }
+
+  __device__ static std::size_t worst_case_chunk_stride(
+      std::size_t chunkBytes) {
+    return chunkBytes;
+  }
+
+  __device__ static std::size_t send(
+      char* /*dst*/,
+      const char* /*src*/,
+      std::size_t nbytes,
+      ThreadGroup& group,
+      std::size_t /*dataOff*/,
+      VariableWaitAbortObservation* observation) {
+    if (group.is_leader()) {
+      ++observation->sendCopyCount;
+    }
+    return nbytes;
+  }
+
+  __device__ static void recv(
+      char* /*dst*/,
+      const char* /*src*/,
+      std::size_t /*nbytes*/,
+      ThreadGroup& group,
+      std::size_t /*dataOff*/,
+      VariableWaitAbortObservation* observation) {
+    if (group.is_leader()) {
+      ++observation->recvCopyCount;
+    }
+  }
+};
+
+class ProgressPostRefusalProbeTransport {
+ public:
+  __device__ ProgressPostRefusalProbeTransport(
+      VariableWaitScratch* scratch,
+      ProgressPostRefusalObservation* observation,
+      bool refuseDataPost,
+      bool refuseCreditPost)
+      : scratch_(scratch),
+        observation_(observation),
+        refuseDataPost_(refuseDataPost),
+        refuseCreditPost_(refuseCreditPost) {}
+
+  __device__ const IbChannelLayout& channel_layout() const {
+    return scratch_->layout;
+  }
+
+  __device__ IbLocalChannel& local_channel(uint32_t /*channelId*/) {
+    return scratch_->channel;
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(uint32_t /*channelId*/) {
+    return scratch_->channel.protos[P::kProtoSlot];
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(ThreadGroup& group) {
+    return local_channel_slot<P>(group.group_id);
+  }
+
+  __device__ uint32_t send_completion_lane_count() const {
+    return 1;
+  }
+
+  __device__ void wait_local_completion(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {}
+
+  __device__ bool is_local_completion_ready(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    return true;
+  }
+
+  __device__ uint64_t read_signal(const IbgdaLocalBuffer& /*signalBuf*/) {
+    return UINT64_MAX;
+  }
+
+  __device__ IbLocalCompletionTicket
+  put(ThreadGroup& group,
+      const IbgdaLocalBuffer& /*localBuf*/,
+      const IbgdaRemoteBuffer& /*remoteBuf*/,
+      std::size_t /*nbytes*/,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const IbgdaLocalBuffer& /*counterBuf*/,
+      uint64_t /*counterVal*/,
+      bool /*signalPerLane*/) {
+    if (group.is_leader()) {
+      ++observation_->legacyPutCount;
+    }
+    return IbLocalCompletionTicket{
+        .completionId = 0, .posted = true, .value = 9};
+  }
+
+  template <bool HasSignal>
+  __device__ IbLocalCompletionTicket put_staged(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& /*localBuf*/,
+      const IbgdaRemoteBuffer& /*remoteBuf*/,
+      std::size_t /*nbytes*/,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    if (group.is_leader()) {
+      ++observation_->abortAwarePutCount;
+      if (refuseDataPost_) {
+        abort.setAbort();
+      }
+    }
+    const uint32_t posted =
+        group.broadcast<uint32_t>(refuseDataPost_ ? 0U : 1U);
+    return IbLocalCompletionTicket{
+        .completionId = 0, .posted = posted != 0U, .value = 9};
+  }
+
+  __device__ void signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      IbDirection /*direction*/) {
+    if (group.is_leader()) {
+      ++observation_->legacySignalCount;
+    }
+    group.sync();
+  }
+
+  __device__ bool try_signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      IbDirection /*direction*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    if (group.is_leader()) {
+      ++observation_->abortAwareSignalCount;
+      if (refuseCreditPost_) {
+        abort.setAbort();
+      }
+    }
+    return group.broadcast<uint32_t>(refuseCreditPost_ ? 0U : 1U) != 0U;
+  }
+
+ private:
+  VariableWaitScratch* scratch_{nullptr};
+  ProgressPostRefusalObservation* observation_{nullptr};
+  bool refuseDataPost_{false};
+  bool refuseCreditPost_{false};
+};
+
+template <typename Transport>
+__device__ bool releaseProgressChunk(
+    Transport& transport,
+    ThreadGroup& group,
+    const comms::fault_tolerance::AbortDevice& abort,
+    const detail::RecvChunkAcquisition& view) {
+  using Result =
+      decltype(detail::progress_recv_release_once<Transport, protocol::Simple>(
+          transport, group, abort, view));
+  if constexpr (std::is_same_v<Result, bool>) {
+    return detail::progress_recv_release_once<Transport, protocol::Simple>(
+        transport, group, abort, view);
+  } else {
+    detail::progress_recv_release_once<Transport, protocol::Simple>(
+        transport, group, abort, view);
+    return true;
+  }
+}
+
+struct LlForwardProbeScratch {
+  VariableWaitScratch recv;
+  VariableWaitScratch fwd;
+};
+
+__device__ __align__(512) char gLlForwardRecvStaging[1024];
+__device__ __align__(512) char gLlForwardSendStaging[1024];
+
+class LlForwardProbeTransport {
+ public:
+  __device__ LlForwardProbeTransport(
+      VariableWaitScratch* scratch,
+      PrepareSendSlotAbortObservation* observation,
+      bool refuseCompletion)
+      : scratch_(scratch),
+        observation_(observation),
+        refuseCompletion_(refuseCompletion) {}
+
+  __device__ const IbChannelLayout& channel_layout() const {
+    return scratch_->layout;
+  }
+
+  __device__ IbLocalChannel& local_channel(uint32_t /*channelId*/) {
+    return scratch_->channel;
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(uint32_t /*channelId*/) {
+    return scratch_->channel.protos[P::kProtoSlot];
+  }
+
+  template <typename P>
+  __device__ IbChannelProtoSlot& local_channel_slot(ThreadGroup& group) {
+    return local_channel_slot<P>(group.group_id);
+  }
+
+  __device__ uint32_t send_completion_lane_count() const {
+    return 1;
+  }
+
+  __device__ void wait_local_completion(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    if (refuseCompletion_) {
+      abort.setAbort();
+      observation_->waitReason = static_cast<uint32_t>(abort.reason());
+    }
+  }
+
+  __device__ bool is_local_completion_ready(
+      uint32_t /*channelId*/,
+      const IbLocalCompletionTicket& /*ticket*/,
+      const comms::fault_tolerance::AbortDevice& abort) {
+    observation_->confirmationReason = static_cast<uint32_t>(abort.reason());
+    return !refuseCompletion_;
+  }
+
+  __device__ void wait_signal(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    group.sync();
+  }
+
+  __device__ bool try_signal(
+      ThreadGroup& group,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      IbDirection /*direction*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    if (group.is_leader()) {
+      ++observation_->predecessorCreditCount;
+    }
+    return group.broadcast<uint32_t>(1U) != 0U;
+  }
+
+  template <bool HasSignal>
+  __device__ IbLocalCompletionTicket put_staged(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& /*localBuf*/,
+      const IbgdaRemoteBuffer& /*remoteBuf*/,
+      std::size_t /*nbytes*/,
+      const IbgdaRemoteBuffer& /*signalBuf*/,
+      uint64_t /*signalVal*/,
+      const comms::fault_tolerance::AbortDevice& /*abort*/) {
+    static_assert(!HasSignal, "LL forwarding carries no DATA_READY signal");
+    if (group.is_leader()) {
+      ++observation_->successorPutCount;
+    }
+    return IbLocalCompletionTicket{
+        .completionId = 0, .posted = true, .value = kPostedCompletionValue};
+  }
+
+  static constexpr uint64_t kPostedCompletionValue = 9;
+
+ private:
+  VariableWaitScratch* scratch_{nullptr};
+  PrepareSendSlotAbortObservation* observation_{nullptr};
+  bool refuseCompletion_{false};
+};
+
+struct LlForwardProbeCopyOp {
+  template <typename P>
+  __device__ static void forwardLL(
+      ThreadGroup& group,
+      char* /*dst*/,
+      char* /*fwdStaging*/,
+      const char* /*recvStaging*/,
+      std::size_t /*nbytes*/,
+      std::size_t /*dataOff*/,
+      typename P::FlagType /*recvFlagVal*/,
+      typename P::FlagType /*fwdFlagVal*/,
+      PrepareSendSlotAbortObservation* observation = nullptr) {
+    if (group.is_leader() && observation != nullptr) {
+      ++observation->llForwardCount;
+    }
+  }
+};
+
+__global__ void llForwardPreparationRetirementRefusalKernel(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  using P = LlxPacket<4, 4>;
+  auto group = make_block_group();
+  __shared__ LlForwardProbeScratch scratch;
+  initializeVariableWaitScratch(group, scratch.recv);
+  initializeVariableWaitScratch(group, scratch.fwd);
+
+  constexpr uint64_t kUnretiredGeneration = 1;
+  if (group.is_leader()) {
+    scratch.recv.layout.sendStagingBuf =
+        IbgdaLocalBuffer{gLlForwardRecvStaging, NetworkLKeys{}};
+    scratch.recv.layout.recvStagingBuf =
+        IbgdaRemoteBuffer{gLlForwardRecvStaging, NetworkRKeys{}};
+    scratch.recv.layout.sendStagingPtr = gLlForwardRecvStaging;
+    scratch.recv.layout.recvStagingPtr = gLlForwardRecvStaging;
+    scratch.fwd.layout.sendStagingBuf =
+        IbgdaLocalBuffer{gLlForwardSendStaging, NetworkLKeys{}};
+    scratch.fwd.layout.recvStagingBuf =
+        IbgdaRemoteBuffer{gLlForwardSendStaging, NetworkRKeys{}};
+    scratch.fwd.layout.sendStagingPtr = gLlForwardSendStaging;
+    scratch.fwd.layout.recvStagingPtr = gLlForwardSendStaging;
+    auto& completion = scratch.fwd.sendCompletions[0];
+    completion.generation = kUnretiredGeneration;
+    completion.laneMask = 1;
+    completion.values[0] = 1;
+    char* recvStaging = gLlForwardRecvStaging +
+        static_cast<std::size_t>(protocol::LL::kProtoSlot) *
+            detail::pipeline_window(scratch.recv.layout);
+    for (std::size_t packet = 0; packet < 2; ++packet) {
+      LLImpl<P>::store_flag(
+          recvStaging + packet * static_cast<std::size_t>(P::kPacketBytes),
+          static_cast<typename P::FlagType>(1));
+    }
+  }
+  group.sync();
+
+  if (group.is_leader()) {
+    (void)abort.checkExpired();
+  }
+  group.sync();
+
+  LlForwardProbeTransport recvTransport(
+      &scratch.recv, observation, /*refuseCompletion=*/false);
+  LlForwardProbeTransport fwdTransport(
+      &scratch.fwd, observation, /*refuseCompletion=*/true);
+  detail::forward<LlForwardProbeCopyOp, LlForwardProbeTransport, protocol::LL>(
+      recvTransport,
+      group,
+      /*dst=*/nullptr,
+      fwdTransport,
+      /*nbytes=*/8,
+      /*max_signal_bytes=*/0,
+      abort,
+      observation);
+
+  if (group.is_leader()) {
+    const auto& completion = scratch.fwd.sendCompletions[0];
+    observation->slotUnretired =
+        completion.generation == kUnretiredGeneration &&
+            completion.laneMask == 1
+        ? 1U
+        : 0U;
+    observation->completionRecordCount =
+        completion.values[0] == LlForwardProbeTransport::kPostedCompletionValue
+        ? 1U
+        : 0U;
+    observation->remainingLaneMask = completion.laneMask;
+    observation->generation = completion.generation;
+  }
+}
+
+__global__ void llForwardPreparationDataReadyAbortKernel(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  using P = LlxPacket<4, 4>;
+  auto group = make_block_group();
+  __shared__ LlForwardProbeScratch scratch;
+  initializeVariableWaitScratch(group, scratch.recv);
+  initializeVariableWaitScratch(group, scratch.fwd);
+
+  if (group.is_leader()) {
+    scratch.recv.layout.sendStagingBuf =
+        IbgdaLocalBuffer{gLlForwardRecvStaging, NetworkLKeys{}};
+    scratch.recv.layout.recvStagingBuf =
+        IbgdaRemoteBuffer{gLlForwardRecvStaging, NetworkRKeys{}};
+    scratch.recv.layout.sendStagingPtr = gLlForwardRecvStaging;
+    scratch.recv.layout.recvStagingPtr = gLlForwardRecvStaging;
+    scratch.fwd.layout.sendStagingBuf =
+        IbgdaLocalBuffer{gLlForwardSendStaging, NetworkLKeys{}};
+    scratch.fwd.layout.recvStagingBuf =
+        IbgdaRemoteBuffer{gLlForwardSendStaging, NetworkRKeys{}};
+    scratch.fwd.layout.sendStagingPtr = gLlForwardSendStaging;
+    scratch.fwd.layout.recvStagingPtr = gLlForwardSendStaging;
+    char* recvStaging = gLlForwardRecvStaging +
+        static_cast<std::size_t>(protocol::LL::kProtoSlot) *
+            detail::pipeline_window(scratch.recv.layout);
+    for (std::size_t packet = 0; packet < 2; ++packet) {
+      LLImpl<P>::store_flag(
+          recvStaging + packet * static_cast<std::size_t>(P::kPacketBytes),
+          static_cast<typename P::FlagType>(0));
+    }
+  }
+  group.sync();
+
+  LlForwardProbeTransport recvTransport(
+      &scratch.recv, observation, /*refuseCompletion=*/false);
+  LlForwardProbeTransport fwdTransport(
+      &scratch.fwd, observation, /*refuseCompletion=*/false);
+  detail::forward<LlForwardProbeCopyOp, LlForwardProbeTransport, protocol::LL>(
+      recvTransport,
+      group,
+      /*dst=*/nullptr,
+      fwdTransport,
+      /*nbytes=*/8,
+      /*max_signal_bytes=*/0,
+      abort,
+      observation);
+
+  if (group.is_leader()) {
+    observation->recvLaneCursor = scratch.recv.channel.recvDataReadyLaneCursor;
+  }
 }
 
 __device__ P2pIbrcTransportDevice makeLocalIbrcTransport(
@@ -127,7 +722,7 @@ __device__ P2pIbrcTransportDevice makeLocalIbrcTransport(
       /*ownedCounterHostBuf=*/{},
       /*numSignalSlots=*/0,
       /*numCounterSlots=*/0,
-      /*channelLayout=*/{},
+      /*channelLayout=*/IbChannelLayout{.numChannels = 1},
       abort);
 }
 
@@ -143,6 +738,22 @@ __device__ uint64_t gTestCi;
 
 // Which of the two production call paths reaches the same IBRC wait.
 enum class IbEntryPoint { Wrapper, Ibrc };
+
+template <typename Transport>
+__device__ bool releaseMemberProgressChunk(
+    Transport& transport,
+    ThreadGroup& group,
+    const comms::fault_tolerance::AbortDevice& abort,
+    const detail::RecvChunkAcquisition& view) {
+  using Result =
+      decltype(transport.progress_recv_release_once(group, abort, view));
+  if constexpr (std::is_same_v<Result, bool>) {
+    return transport.progress_recv_release_once(group, abort, view);
+  } else {
+    transport.progress_recv_release_once(group, abort, view);
+    return true;
+  }
+}
 
 template <IbEntryPoint kEntry>
 __global__ void waitSignalKernel(
@@ -223,8 +834,8 @@ __device__ void runPutUntilQueueFull(
   // abort alone.
   uint32_t posted = 0;
   for (uint32_t i = 0; i < attempts; ++i) {
-    // A skipped put returns the default ticket, whose value is 0; a posted one
-    // is always seq + 1, so a nonzero value means the descriptor was published.
+    // A skipped put returns an unposted ticket; a successful enqueue marks it
+    // posted before the descriptor can be tracked as an outstanding send.
     const IbLocalCompletionTicket ticket = ibrc.put(
         group,
         localBuf,
@@ -232,7 +843,7 @@ __device__ void runPutUntilQueueFull(
         sizeof(uint64_t),
         /*signalBuf=*/IbgdaRemoteBuffer{},
         /*signalVal=*/0);
-    if (ticket.value != 0) {
+    if (ticket.posted) {
       ++posted;
     }
   }
@@ -250,6 +861,259 @@ __global__ void putUntilQueueFullKernel(
   __shared__ IbrcScratch scratch;
   zeroScratch(group, scratch);
   runPutUntilQueueFull(group, scratch, dataBuf, postedOut, attempts, abort);
+}
+
+__global__ void wrapperTrySignalKernel(
+    uint64_t* signal,
+    uint32_t* postedCount,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  __shared__ IbrcScratch scratch;
+  zeroScratch(group, scratch);
+
+  if (group.is_leader()) {
+    gTestPi = 0;
+    gTestCi = 0;
+    for (uint32_t i = 0; i < kIbrcTestQueueDepth; ++i) {
+      gTestDescs[i].ready_seq = kIbrcInvalidReadySeq;
+    }
+    // Recv-direction control traffic uses queue 1 in this one-channel fixture.
+    scratch.queues[1].descs = gTestDescs;
+    scratch.queues[1].pi = &gTestPi;
+    scratch.queues[1].ci = &gTestCi;
+    scratch.queues[1].status = nullptr;
+    scratch.queues[1].depth = kIbrcTestQueueDepth;
+    scratch.queues[1].mask = kIbrcTestQueueDepth - 1;
+  }
+  group.sync();
+
+  P2pIbrcTransportDevice ibrc = makeLocalIbrcTransport(scratch, abort);
+  P2pIbTransportDevice transport(&ibrc);
+  IbgdaRemoteBuffer remoteSignal{signal, NetworkRKeys{/*n=*/1}};
+  const bool result = transport.try_signal(
+      group,
+      remoteSignal,
+      /*signalVal=*/1,
+      IbDirection::Recv,
+      abort);
+  if (result) {
+    atomicAdd(postedCount, 1U);
+  }
+}
+
+template <IbEntryPoint kEntry>
+__global__ void recvReleaseKernel(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  __shared__ IbrcScratch scratch;
+  zeroScratch(group, scratch);
+  P2pIbrcTransportDevice ibrc = makeLocalIbrcTransport(scratch, abort);
+  const detail::RecvChunkAcquisition view{
+      .staging = reinterpret_cast<const char*>(data),
+      .validBytes = sizeof(*data),
+      .dataOff = 0,
+      .protocolBytes = sizeof(*data),
+  };
+  bool result = false;
+  if constexpr (kEntry == IbEntryPoint::Wrapper) {
+    P2pIbTransportDevice transport(&ibrc);
+    result = releaseMemberProgressChunk(transport, group, abort, view);
+  } else {
+    result = releaseMemberProgressChunk(ibrc, group, abort, view);
+  }
+  if (group.is_leader()) {
+    *releaseResult = result;
+  }
+}
+
+__global__ void variableSendWaitAbortKernel(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+
+  VariableWaitProbeTransport transport(&scratch, observation);
+  detail::send_impl<
+      VariableWaitProbeTransport,
+      VariableWaitProbeCopyOp,
+      void,
+      protocol::Simple>(
+      transport,
+      group,
+      nullptr,
+      scratch.staging,
+      /*nbytes=*/1024,
+      /*max_signal_bytes=*/512,
+      abort,
+      nullptr,
+      observation);
+}
+
+__global__ void variableRecvWaitAbortKernel(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+
+  VariableWaitProbeTransport transport(&scratch, observation);
+  detail::recv_impl<
+      VariableWaitProbeTransport,
+      VariableWaitProbeCopyOp,
+      void,
+      protocol::Simple>(
+      transport,
+      group,
+      nullptr,
+      scratch.staging,
+      /*nbytes=*/512,
+      /*max_signal_bytes=*/512,
+      abort,
+      nullptr,
+      observation);
+  if (group.is_leader()) {
+    observation->recvLaneCursor = scratch.channel.recvDataReadyLaneCursor;
+  }
+}
+
+__global__ void progressSendPostRefusalKernel(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+  ProgressPostRefusalProbeTransport transport(
+      &scratch,
+      observation,
+      /*refuseDataPost=*/refuse,
+      /*refuseCreditPost=*/false);
+
+  detail::
+      init_send_progress<ProgressPostRefusalProbeTransport, protocol::Simple>(
+          transport,
+          group,
+          scratch.staging,
+          /*nbytes=*/64,
+          /*max_signal_bytes=*/64);
+  const auto status = detail::progress_send_once<
+      ProgressPostRefusalProbeTransport,
+      Memcpy,
+      protocol::Simple>(transport, group, abort);
+  if (group.is_leader()) {
+    const auto& slot = scratch.channel.protos[protocol::Simple::kProtoSlot];
+    observation->status = static_cast<uint32_t>(status);
+    observation->finalStage =
+        static_cast<uint32_t>(slot.sendProgress.activeStage);
+    observation->completionRecordCount =
+        slot.sendCompletionSlots[0].laneMask != 0 ? 1U : 0U;
+    observation->completed = 1U;
+  }
+}
+
+__global__ void registeredProgressSendPostRefusalKernel(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+  ProgressPostRefusalProbeTransport transport(
+      &scratch,
+      observation,
+      /*refuseDataPost=*/refuse,
+      /*refuseCreditPost=*/false);
+
+  detail::init_registered_send_progress(
+      transport,
+      group,
+      IbgdaLocalBuffer{scratch.staging, NetworkLKeys{}},
+      /*nbytes=*/64,
+      /*max_signal_bytes=*/64);
+  const auto status =
+      detail::progress_registered_send_once(transport, group, abort);
+  if (group.is_leader()) {
+    const auto& slot = scratch.channel.protos[protocol::Simple::kProtoSlot];
+    observation->status = static_cast<uint32_t>(status);
+    observation->finalStage =
+        static_cast<uint32_t>(slot.sendProgress.activeStage);
+    observation->completionRecordCount =
+        slot.sendCompletionSlots[0].laneMask != 0 ? 1U : 0U;
+    observation->completed = 1U;
+  }
+}
+
+__global__ void progressRecvCreditRefusalKernel(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+  ProgressPostRefusalProbeTransport transport(
+      &scratch,
+      observation,
+      /*refuseDataPost=*/false,
+      /*refuseCreditPost=*/refuse);
+
+  detail::
+      init_recv_progress<ProgressPostRefusalProbeTransport, protocol::Simple>(
+          transport,
+          group,
+          scratch.staging,
+          /*nbytes=*/64,
+          /*max_signal_bytes=*/64);
+  const auto status = detail::progress_recv_once<
+      ProgressPostRefusalProbeTransport,
+      Memcpy,
+      protocol::Simple>(transport, group, abort);
+  if (group.is_leader()) {
+    const auto& slot = scratch.channel.protos[protocol::Simple::kProtoSlot];
+    observation->status = static_cast<uint32_t>(status);
+    observation->finalStage =
+        static_cast<uint32_t>(slot.recvProgress.activeStage);
+    observation->completed = 1U;
+  }
+}
+
+__global__ void progressRecvReleaseSequenceKernel(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  auto group = make_block_group();
+  __shared__ VariableWaitScratch scratch;
+  initializeVariableWaitScratch(group, scratch);
+  ProgressPostRefusalProbeTransport transport(
+      &scratch,
+      observation,
+      /*refuseDataPost=*/false,
+      /*refuseCreditPost=*/refuse);
+  if (group.is_leader()) {
+    scratch.channel.protos[protocol::Simple::kProtoSlot]
+        .recvProgress.activeStage =
+        detail::IbSendRecvProgressStage::WaitDataReady;
+  }
+  group.sync();
+  const detail::RecvChunkAcquisition view{
+      .staging = scratch.staging,
+      .validBytes = 64,
+      .dataOff = 0,
+      .protocolBytes = 64,
+  };
+  const bool firstPosted = releaseProgressChunk(transport, group, abort, view);
+  if (firstPosted) {
+    (void)releaseProgressChunk(transport, group, abort, view);
+  }
+  if (group.is_leader()) {
+    const auto& slot =
+        scratch.channel.protos[protocol::Simple::kProtoSlot].recvProgress;
+    observation->status = firstPosted ? 1U : 0U;
+    observation->finalStage = static_cast<uint32_t>(slot.activeStage);
+    observation->completed = 1U;
+  }
 }
 
 // The division of labour the FT contract actually specifies, in one kernel.
@@ -330,10 +1194,41 @@ uint32_t ibrcTestQueueDepth() {
   return kIbrcTestQueueDepth;
 }
 
+uint32_t progressSendRecvDoneStatus() {
+  return static_cast<uint32_t>(IbgdaSendRecvProgressStatus::Done);
+}
+
+uint32_t progressSendRecvAbortedStatus() {
+  return static_cast<uint32_t>(IbgdaSendRecvProgressStatus::Aborted);
+}
+
+uint32_t registeredSendAbortedStatus() {
+  return static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Aborted);
+}
+
+uint32_t progressDoneStage() {
+  return static_cast<uint32_t>(detail::IbSendRecvProgressStage::Done);
+}
+
 void launchPrepareSendSlotAbortForwarding(
     PrepareSendSlotAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort) {
-  prepareSendSlotAbortForwardingKernel<<<1, 32>>>(observation, abort);
+  prepareSendSlotAbortForwardingKernel<<<1, kTestBlockSize>>>(
+      observation, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchLlForwardPreparationRetirementRefusal(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  llForwardPreparationRetirementRefusalKernel<<<1, 32>>>(observation, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchLlForwardPreparationDataReadyAbort(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  llForwardPreparationDataReadyAbortKernel<<<1, 32>>>(observation, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -342,7 +1237,8 @@ void launchIbrcPutUntilQueueFull(
     uint32_t* postedOut,
     uint32_t attempts,
     comms::fault_tolerance::AbortDevice abort) {
-  putUntilQueueFullKernel<<<1, 32>>>(dataBuf, postedOut, attempts, abort);
+  putUntilQueueFullKernel<<<1, kTestBlockSize>>>(
+      dataBuf, postedOut, attempts, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -350,7 +1246,7 @@ void launchIbrcFlushNeverDrains(
     uint64_t* dataBuf,
     uint32_t* postedOut,
     comms::fault_tolerance::AbortDevice abort) {
-  flushNeverDrainsKernel<<<1, 32>>>(dataBuf, postedOut, abort);
+  flushNeverDrainsKernel<<<1, kTestBlockSize>>>(dataBuf, postedOut, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -360,7 +1256,7 @@ void launchIbrcQueueFullReleasedByCollectiveDeadline(
     uint32_t attempts,
     uint64_t* signal,
     comms::fault_tolerance::AbortDevice abort) {
-  queueFullReleasedByCollectiveDeadlineKernel<<<2, 32>>>(
+  queueFullReleasedByCollectiveDeadlineKernel<<<2, kTestBlockSize>>>(
       dataBuf, postedOut, attempts, signal, abort);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
@@ -372,7 +1268,7 @@ void launchIbWrapperWaitSignal(
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait) {
   waitSignalKernel<IbEntryPoint::Wrapper>
-      <<<1, 32>>>(signal, waitResult, expected, abort, enteredWait);
+      <<<1, kTestBlockSize>>>(signal, waitResult, expected, abort, enteredWait);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -383,7 +1279,83 @@ void launchIbrcWaitSignal(
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait) {
   waitSignalKernel<IbEntryPoint::Ibrc>
-      <<<1, 32>>>(signal, waitResult, expected, abort, enteredWait);
+      <<<1, kTestBlockSize>>>(signal, waitResult, expected, abort, enteredWait);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchIbWrapperTrySignal(
+    uint64_t* signal,
+    uint32_t* postedCount,
+    comms::fault_tolerance::AbortDevice abort) {
+  wrapperTrySignalKernel<<<1, kTestBlockSize>>>(signal, postedCount, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchIbWrapperRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort) {
+  recvReleaseKernel<IbEntryPoint::Wrapper>
+      <<<1, kTestBlockSize>>>(data, releaseResult, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchIbrcRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort) {
+  recvReleaseKernel<IbEntryPoint::Ibrc>
+      <<<1, kTestBlockSize>>>(data, releaseResult, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchVariableSendWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  variableSendWaitAbortKernel<<<1, kTestBlockSize>>>(observation, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchVariableRecvWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort) {
+  variableRecvWaitAbortKernel<<<1, kTestBlockSize>>>(observation, abort);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  progressSendPostRefusalKernel<<<1, kTestBlockSize>>>(
+      observation, abort, refuse);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchRegisteredProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  registeredProgressSendPostRefusalKernel<<<1, kTestBlockSize>>>(
+      observation, abort, refuse);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchProgressRecvCreditRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  progressRecvCreditRefusalKernel<<<1, kTestBlockSize>>>(
+      observation, abort, refuse);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchProgressRecvReleaseSequence(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse) {
+  progressRecvReleaseSequenceKernel<<<1, kTestBlockSize>>>(
+      observation, abort, refuse);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

@@ -110,6 +110,15 @@ void testBurstPutAndFlush(
     int numBlocks,
     int blockSize);
 
+void testBurstPutAndFlushWithAbort(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    comms::fault_tolerance::AbortDevice abort,
+    uint32_t* postedCount);
+
 /**
  * Test kernel: Send signal only (no data, slot-index)
  */
@@ -307,6 +316,30 @@ void launchWarpProxyStalledSend(
     std::size_t maxSignalBytes,
     uint32_t queueDepth,
     comms::fault_tolerance::AbortDevice abort);
+
+enum class WarpProxyRefusalStep : uint8_t {
+  RecvCredit,
+  RecvReadiness,
+  SendRecvCredit,
+  SendSlotFree,
+  SendData,
+};
+
+struct WarpProxyRefusalResult {
+  uint64_t reservedIndex{0};
+  uint64_t sendTail{0};
+  uint64_t sendPosted{0};
+  uint64_t recvReady{0};
+  uint64_t recvCopied{0};
+  uint64_t recvCredited{0};
+  uint32_t kernelExited{0};
+  uint32_t stepStopped{0};
+};
+
+cudaError_t runWarpProxyStepRefusal(
+    WarpProxyRefusalStep step,
+    comms::fault_tolerance::AbortDevice abort,
+    WarpProxyRefusalResult* result);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.

@@ -300,6 +300,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
         if (group.thread_id_in_group == 0) {
           int c = 0;
           int released = -1;
+          bool releaseAborted = false;
           while (true) {
             const int s = c % kSlots;
             // Acquire chunk c from every peer. Each call is non-blocking, so a
@@ -340,6 +341,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
               }
             }
             if (finished || aborted) {
+              releaseAborted = aborted;
               s_nchunks = c;
               __threadfence_block();
               s_published = c;
@@ -357,27 +359,54 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
               const int ps = (c - 1) % kSlots;
               for (int i = 0; i < count; ++i) {
                 auto transport = args.peers[rpeer_of[i]];
-                transport.progress_recv_release_once(
-                    solo, abortDevice, rviews[ps][i]);
+                if (!transport.progress_recv_release_once(
+                        solo, abortDevice, rviews[ps][i])) {
+                  releaseAborted = true;
+                  break;
+                }
                 rviews[ps][i] = detail::RecvChunkAcquisition{};
+              }
+              if (releaseAborted) {
+                // The refused credit belongs to chunk c-1. Chunk c is already
+                // acquired and published, so reducers may consume it before
+                // terminating even though no further slots may be released.
+                s_nchunks = c + 1;
+                __threadfence_block();
+                s_published = c;
+                break;
               }
               released = c - 1;
             }
             ++c;
           }
           // Drain the slots the reducers still hold.
-          while (released < c - 1) {
+          while (!releaseAborted && released < c - 1) {
             const int d = released + 1;
             while (s_consumed < d) {
             }
             const int ds = d % kSlots;
             for (int i = 0; i < count; ++i) {
               auto transport = args.peers[rpeer_of[i]];
-              transport.progress_recv_release_once(
-                  solo, abortDevice, rviews[ds][i]);
+              if (!transport.progress_recv_release_once(
+                      solo, abortDevice, rviews[ds][i])) {
+                releaseAborted = true;
+                break;
+              }
               rviews[ds][i] = detail::RecvChunkAcquisition{};
             }
+            if (releaseAborted) {
+              break;
+            }
             released = d;
+          }
+          if (releaseAborted) {
+            // Every peer may have an acquired chunk in flight. Retire only the
+            // local progress state; publishing more SLOT_FREE credits after
+            // abort would incorrectly release the senders.
+            for (int i = 0; i < count; ++i) {
+              auto transport = args.peers[rpeer_of[i]];
+              transport.abandon_recv_progress(solo);
+            }
           }
         }
       } else {
