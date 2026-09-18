@@ -106,7 +106,16 @@ TEST(CtranCommTest, DeviceAllToAllvIsRetired) {
   EXPECT_FALSE(ctranDeviceAllToAllvSupport(nullptr));
   EXPECT_EQ(
       ctranDeviceAllToAllv(
-          nullptr, nullptr, nullptr, nullptr, commInt32, nullptr, nullptr),
+          nullptr,
+          nullptr,
+          nullptr,
+          nullptr,
+          commInt32,
+          nullptr,
+          nullptr,
+          1,
+          1,
+          {}),
       commInvalidUsage);
 }
 

@@ -16,7 +16,6 @@ namespace meta::comms {
  * The NVL domain may span multiple nodes when NVL fabric is enabled.
  *
  * Production implementations: BaselineBootstrap (ncclx), CtranAdapter (mccl).
- * Pipes will use this interface too.
  */
 class ICtranBootstrap : public IBootstrap {
  public:

@@ -4,12 +4,62 @@
 
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
 #include "comms/ctran/transport/ib/HostTransportDev.cuh"
-#include "comms/prims/core/CopyUtils.cuh"
-#include "comms/prims/core/ThreadGroup.cuh"
+
+#include <cstddef>
+#include <cstdint>
 
 namespace ctran::transport::ib {
 
 namespace {
+
+template <typename VecType, int kUnroll = 8>
+__device__ __forceinline__ void
+copyAligned(VecType* dst, const VecType* src, std::size_t nelems) {
+  const std::size_t groupSize = blockDim.x;
+  const std::size_t loopStride = groupSize * kUnroll;
+  const std::size_t numVecsAligned = nelems / loopStride * loopStride;
+
+  for (std::size_t i = threadIdx.x; i < numVecsAligned; i += loopStride) {
+    VecType values[kUnroll];
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      values[j] = src[i + j * groupSize];
+    }
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst[i + j * groupSize] = values[j];
+    }
+  }
+
+  for (std::size_t i = numVecsAligned + threadIdx.x; i < nelems;
+       i += groupSize) {
+    dst[i] = src[i];
+  }
+}
+
+__device__ __forceinline__ void
+copyVectorized(char* dst, const char* src, std::size_t len) {
+  if (len == 0 || dst == src) {
+    return;
+  }
+
+  constexpr std::size_t kAlignment = sizeof(uint4);
+  if (reinterpret_cast<std::uintptr_t>(dst) % kAlignment == 0 &&
+      reinterpret_cast<std::uintptr_t>(src) % kAlignment == 0) {
+    const std::size_t nelems = len / kAlignment;
+    auto* dstVec = reinterpret_cast<uint4*>(dst);
+    const auto* srcVec = reinterpret_cast<const uint4*>(src);
+    copyAligned(dstVec, srcVec, nelems);
+    len -= nelems * kAlignment;
+    if (len == 0) {
+      return;
+    }
+    dst = reinterpret_cast<char*>(dstVec + nelems);
+    src = reinterpret_cast<const char*>(srcVec + nelems);
+  }
+
+  copyAligned(dst, src, len);
+}
 
 // Device-side D2D copy state machine.
 //
@@ -26,8 +76,6 @@ __device__ __forceinline__ void ibCopyStagingChunked(
     bool isSend,
     int myBlockIdx,
     int numBlocks) {
-  auto block = comms::prims::make_block_group();
-
   const size_t chunkSize = dt->chunkSize;
   const int pipelineDepth = dt->pipelineDepth;
   const int totalChunks =
@@ -58,11 +106,9 @@ __device__ __forceinline__ void ibCopyStagingChunked(
       char* staging = desc.stagingSlot;
       char* user = userBuf + offset;
       if (isSend) {
-        comms::prims::memcpy_vectorized(
-            staging + myStart, user + myStart, myLen, block);
+        copyVectorized(staging + myStart, user + myStart, myLen);
       } else {
-        comms::prims::memcpy_vectorized(
-            user + myStart, staging + myStart, myLen, block);
+        copyVectorized(user + myStart, staging + myStart, myLen);
       }
     }
 
@@ -134,7 +180,6 @@ __global__ void ibRecvPerSlotKernel(IbRecvPerSlotKernelArgs args) {
   const size_t chunkSize = dt->chunkSize;
   const int totalChunks = args.totalChunks;
 
-  auto block = comms::prims::make_block_group();
   DeviceChunkDesc& desc = dt->recvChunks[slot];
 
   for (int c = slot; c < totalChunks; c += pipelineDepth) {
@@ -147,8 +192,7 @@ __global__ void ibRecvPerSlotKernel(IbRecvPerSlotKernelArgs args) {
         ? chunkSize
         : (args.recvTotalSize - offset);
     if (len > 0) {
-      comms::prims::memcpy_vectorized(
-          args.recvBuf + offset, desc.stagingSlot, len, block);
+      copyVectorized(args.recvBuf + offset, desc.stagingSlot, len);
     }
     ctran::algos::GpeKernelSyncDev::complete(desc.sync, 0, round);
   }

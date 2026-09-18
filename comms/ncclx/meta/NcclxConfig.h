@@ -55,15 +55,6 @@ class Config {
   enum NCCL_ALLTOALLV_ALGO alltoallvAlgo = NCCL_ALLTOALLV_ALGO::orig;
   enum NCCL_RMA_ALGO rmaAlgo = NCCL_RMA_ALGO::orig;
 
-  // Deprecated compatibility hints. They are parsed and serialized but no
-  // longer affect CTRAN communicator construction.
-  std::optional<size_t> pipesNvlChunkSize;
-  std::optional<int64_t> enablePrims;
-  // Retained in the serialized compatibility shape only.
-  std::optional<size_t> primsChannelBufferSize;
-  std::optional<int64_t> primsChannelPipelineDepth;
-  std::optional<int64_t> primsMaxChannels;
-  std::optional<int64_t> primsMaxBlocks;
   int vCliqueSize = 0;
 
   // Per-communicator buffer size override (Simple protocol).
@@ -75,9 +66,6 @@ class Config {
   std::optional<int> ibSplitDataOnQps;
   std::optional<int> ibQpsPerConnection;
 
-  // Deprecated compatibility hint. Peer IB state is always initialized on
-  // demand; false no longer restores eager initialization.
-  bool deviceIbLazyConnect = true;
   // Eagerly allocate ctran tmpbuf/NVL staging/bcast buffers at init.
   // When false, ctran skips those allocations to save memory (per-comm only).
   bool tmpbufEagerAlloc = true;
@@ -101,17 +89,10 @@ inline const std::vector<std::string>& knownHintKeys() {
       "alltoallAlgo",
       "alltoallvAlgo",
       "rmaAlgo",
-      "pipesNvlChunkSize",
-      "enablePrims",
-      "primsChannelBufferSize",
-      "primsChannelPipelineDepth",
-      "primsMaxChannels",
-      "primsMaxBlocks",
       "vCliqueSize",
       "ncclBuffSize",
       "ibSplitDataOnQps",
       "ibQpsPerConnection",
-      "deviceIbLazyConnect",
       "ctranTmpbufEagerAlloc",
       "win_register_ipc_only",
       "win_register_enable_signal",
