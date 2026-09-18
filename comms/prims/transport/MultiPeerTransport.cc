@@ -117,7 +117,7 @@ void MultiPeerTransport::initFromTopology(
             "MultiPeerTransport: IBGDA disabled but rank " + std::to_string(r) +
             " is not NVL-reachable from rank " + std::to_string(myRank_) +
             ". All ranks must be in the same NVL domain when "
-            "NCCL_CTRAN_PIPES_DISABLE_IB=1.");
+            "IB transport is disabled.");
       }
     }
     // ibPeerRanks_ stays empty; ibgdaTransport_ stays nullptr.
