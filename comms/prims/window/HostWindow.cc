@@ -8,6 +8,7 @@
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/memory/GpuMemHandler.h"
 #include "comms/prims/transport/MultiPeerTransport.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 #include "comms/prims/window/DeviceWindow.cuh"
 #include "comms/utils/checks.h"
 
@@ -136,36 +137,41 @@ HostWindow::HostWindow(
 }
 
 HostWindow::~HostWindow() {
-  // Free IBGDA buffers: deregister (only if registered) then cudaFree.
-  // lkey is only populated during exchange() via registerIbgdaBuffer(),
-  // so check lkey != NetworkLKey{} to avoid deregistering unregistered buffers.
-  if (ibgdaBarrierLocalBuf_.ptr) {
-    if (ibgdaBarrierLocalBuf_.lkey_per_device.size > 0) {
-      transport_.localDeregisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr);
-    }
-    cudaFree(ibgdaBarrierLocalBuf_.ptr);
-  }
-  if (ibgdaPeerSignalLocalBuf_.ptr) {
-    if (ibgdaPeerSignalLocalBuf_.lkey_per_device.size > 0) {
-      transport_.localDeregisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr);
-    }
-    cudaFree(ibgdaPeerSignalLocalBuf_.ptr);
-  }
-  if (ibgdaPeerCounterLocalBuf_.ptr) {
-    transport_.freeIbCounterBuffer(
-        ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_);
-  }
+  detail::releaseUnlessProcessLifetimeQuarantined(
+      requiresProcessLifetimeQuarantine(), [&]() {
+        // lkey is populated only during exchange().
+        if (ibgdaBarrierLocalBuf_.ptr) {
+          if (ibgdaBarrierLocalBuf_.lkey_per_device.size > 0) {
+            transport_.localDeregisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr);
+          }
+          static_cast<void>(cudaFree(ibgdaBarrierLocalBuf_.ptr));
+        }
+        if (ibgdaPeerSignalLocalBuf_.ptr) {
+          if (ibgdaPeerSignalLocalBuf_.lkey_per_device.size > 0) {
+            transport_.localDeregisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr);
+          }
+          static_cast<void>(cudaFree(ibgdaPeerSignalLocalBuf_.ptr));
+        }
+        if (ibgdaPeerCounterLocalBuf_.ptr) {
+          transport_.freeIbCounterBuffer(
+              ibgdaPeerCounterLocalBuf_, ibgdaPeerCounterHostPtr_);
+        }
 
-  // Clean up IBGDA buffer registrations
-  for (auto* ptr : registeredLocalBuffers_) {
-    transport_.localDeregisterIbgdaBuffer(ptr);
-  }
+        for (auto* ptr : registeredLocalBuffers_) {
+          transport_.localDeregisterIbgdaBuffer(ptr);
+        }
+      });
+
   if (!exchangedNvlMappedPtrs_.empty()) {
     transport_.unmapNvlBuffers(exchangedNvlMappedPtrs_);
   }
 
   // NVL signal/barrier buffers are freed by GpuMemHandler destructors (RAII)
   // DeviceBuffers are freed by DeviceBuffer destructors (RAII)
+}
+
+bool HostWindow::requiresProcessLifetimeQuarantine() const noexcept {
+  return transport_.ibgda_resources_quarantined();
 }
 
 void* HostWindow::get_nvlink_address(int peer, std::size_t offset) const {
@@ -190,6 +196,15 @@ void HostWindow::exchange() {
     throw std::runtime_error("HostWindow::exchange() called more than once");
   }
 
+  detail::runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+      ibgdaRkeysPossiblyExposed_,
+      [this]() { exchangeImpl(); },
+      [this](std::string_view context) {
+        transport_.quarantineIbgdaTransport(context);
+      });
+}
+
+void HostWindow::exchangeImpl() {
   int nNvlPeers = static_cast<int>(nvlPeerRanks_.size());
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
 
@@ -254,6 +269,7 @@ void HostWindow::exchange() {
     auto size = config_.barrierCount * sizeof(uint64_t);
     ibgdaBarrierLocalBuf_ =
         transport_.localRegisterIbgdaBuffer(ibgdaBarrierLocalBuf_.ptr, size);
+    ibgdaRkeysPossiblyExposed_ = true;
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBarrierLocalBuf_);
 
     CUDA_CHECK(cudaMemcpy(
@@ -271,6 +287,7 @@ void HostWindow::exchange() {
         config_.peerSignalCount * sizeof(uint64_t);
     ibgdaPeerSignalLocalBuf_ =
         transport_.localRegisterIbgdaBuffer(ibgdaPeerSignalLocalBuf_.ptr, size);
+    ibgdaRkeysPossiblyExposed_ = true;
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaPeerSignalLocalBuf_);
 
     // Pre-offset each peer's remote buffer to point to "my row" in their
@@ -340,6 +357,16 @@ void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
         "HostWindow::registerAndExchangeBuffer() called more than once. "
         "Each DeviceWindow supports exactly one exchanged dst buffer.");
   }
+
+  detail::runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+      ibgdaRkeysPossiblyExposed_,
+      [this, ptr, size]() { registerAndExchangeBufferImpl(ptr, size); },
+      [this](std::string_view context) {
+        transport_.quarantineIbgdaTransport(context);
+      });
+}
+
+void HostWindow::registerAndExchangeBufferImpl(void* ptr, std::size_t size) {
   userBufferRegistered_ = true;
 
   int nIbgdaPeers = static_cast<int>(ibgdaPeerRanks_.size());
@@ -349,6 +376,7 @@ void HostWindow::registerAndExchangeBuffer(void* ptr, std::size_t size) {
   if (nIbgdaPeers > 0) {
     auto ibgdaBuf = transport_.localRegisterIbgdaBuffer(ptr, size);
     registeredLocalBuffers_.push_back(ptr);
+    ibgdaRkeysPossiblyExposed_ = true;
     auto remoteBufs = transport_.exchangeIbgdaBuffer(ibgdaBuf);
     for (const auto& remoteBuf : remoteBufs) {
       remoteRegistrations_.emplace_back(

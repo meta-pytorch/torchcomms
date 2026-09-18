@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -959,6 +960,12 @@ class MultiPeerIbTransportBase {
   /** Release an exact-range registration and invalidate it. */
   void deregisterIbBufferRange(IbBufferRegistration& registration);
 
+  /** Invalidate the handle without deregistering its process-lifetime MR. */
+  void retainIbBufferRangeForProcessLifetime(
+      IbBufferRegistration& registration) noexcept {
+    registration.reset();
+  }
+
   /**
    * exchangeBuffer - COLLECTIVE. allGather a registered buffer's addr + per-NIC
    * rkeys; return one IbgdaRemoteBuffer per peer (indexed by peerIndexToRank).
@@ -1037,12 +1044,17 @@ class MultiPeerIbTransportBase {
   // payload types); the heavy logic (lower-rank-recvs-first to avoid deadlock)
   // lives in exchangeRawWithPeer in the .cc. The bootstrap implementation owns
   // timeout and cancellation so caller-owned payloads remain live until the
-  // exchange completes.
+  // exchange completes. beforeSend runs immediately before the local payload
+  // is handed to bootstrap_->send.
   template <typename T>
-  T exchangeWithPeer(int peerRank, const T& localPayload, int tag) {
+  T exchangeWithPeer(
+      int peerRank,
+      const T& localPayload,
+      int tag,
+      const std::function<void()>& beforeSend = {}) {
     T remotePayload{};
     exchangeRawWithPeer(
-        peerRank, &localPayload, &remotePayload, sizeof(T), tag);
+        peerRank, &localPayload, &remotePayload, sizeof(T), tag, beforeSend);
     return remotePayload;
   }
   void exchangeRawWithPeer(
@@ -1050,7 +1062,8 @@ class MultiPeerIbTransportBase {
       const void* localPayload,
       void* remotePayload,
       std::size_t bytes,
-      int tag);
+      int tag,
+      const std::function<void()>& beforeSend);
 
   // ---- shared send/recv staging-ring lifecycle (eager mode) ----
   // Backend-agnostic host send/recv buffer management, shared by IBGDA (Device
@@ -1091,6 +1104,11 @@ class MultiPeerIbTransportBase {
   // Per-peer teardown: deregister + free this peer's lazy allocation and reset
   // its views. Safe on an unmaterialized peer.
   void cleanupSendRecvBufferForPeer(int peerIndex) noexcept;
+
+  // Detach RAII-owned buffers before an unwrapped backend object is destroyed
+  // after ambiguous rkey exposure. The backend leaves its raw QP/MR resources
+  // allocated, so these referenced buffers must outlive the C++ object too.
+  void retainOwnedBuffersForProcessLifetime() noexcept;
 
   void validateSendRecvConfig() const;
   std::size_t sendRecvStagingBytesPerPeer() const;

@@ -2,9 +2,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -39,6 +41,7 @@ namespace comms::prims {
 // Forward declaration — include MultiPeerDeviceHandle.cuh to use
 // get_device_handle(peers).
 struct MultiPeerDeviceHandle;
+class HostWindow;
 
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
@@ -250,9 +253,9 @@ class MultiPeerTransport {
   /**
    * @param globalPeerRank Global rank of the IBGDA peer.
    * @return Non-owning pointer to GPU-allocated P2pIbgdaTransportDevice.
+   * Materializes the peer on demand and may perform bootstrap communication.
    */
-  P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(
-      int globalPeerRank) const;
+  P2pIbgdaTransportDevice* get_p2p_ibgda_transport_device(int globalPeerRank);
 
   /** @return A stateless P2pSelfTransportDevice handle. */
   P2pSelfTransportDevice get_p2p_self_transport_device() const;
@@ -270,6 +273,15 @@ class MultiPeerTransport {
   MultiPeerDeviceHandle get_device_handle(const std::vector<int>& peers);
 
   bool is_lazy_mode() const;
+
+  /**
+   * Returns true when an ambiguous IBGDA failure requires every locally owned
+   * or caller-owned registered target allocation to remain alive until process
+   * exit.
+   */
+  bool ibgda_resources_quarantined() const noexcept {
+    return ibgdaResourcesQuarantined_.load(std::memory_order_acquire);
+  }
 
   /*
    * Actual channel capacity of the configured IBGDA transport.
@@ -318,10 +330,17 @@ class MultiPeerTransport {
 
   IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
 
+  /**
+   * Deregister an exact-range buffer. After process-lifetime quarantine, the
+   * MR is retained and the caller must keep the allocation alive until exit.
+   */
   void deregisterIbBufferRange(IbBufferRegistration& registration);
 
   /**
    * Deregister a previously registered IBGDA buffer.
+   *
+   * After process-lifetime quarantine, the MR is retained and the caller must
+   * keep the allocation alive until exit.
    *
    * @param ptr Pointer to the buffer to deregister
    */
@@ -407,6 +426,8 @@ class MultiPeerTransport {
   void unmapNvlBuffers(const std::vector<void*>& mappedPtrs);
 
  private:
+  friend class HostWindow;
+
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
@@ -437,6 +458,9 @@ class MultiPeerTransport {
   Transport* transportsGpu_{nullptr};
   std::vector<Transport> transportsHost_;
   bool deviceHandleBuilt_{false};
+  // Once set, the destructor detaches the IBGDA transport instead of releasing
+  // resources that a remote peer may still address.
+  std::atomic<bool> ibgdaResourcesQuarantined_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
   ExchangeState exchangeState_{ExchangeState::kUnprepared};
@@ -448,6 +472,9 @@ class MultiPeerTransport {
   void build_device_handle(bool allowAllocation);
   void free_device_handle();
   void rollbackPreparedExchange() noexcept;
+  void requireIbTransportUsable() const;
+  void connectIbgdaPeers();
+  void quarantineIbgdaTransport(std::string_view context) noexcept;
 
   // Memory type detection for exchangeNvlBuffer tri-path support.
   enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };
