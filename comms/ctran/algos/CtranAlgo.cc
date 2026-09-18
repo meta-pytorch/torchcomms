@@ -95,13 +95,8 @@ size_t alignUp(size_t value, size_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
 
-size_t effectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
-  uint64_t size = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
-  if (NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE && nLocalRanks > 1 &&
-      NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE > 0) {
-    size = std::max(size, NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE);
-  }
-  return static_cast<size_t>(size);
+size_t effectiveP2pNvlSharedDevbufSize() {
+  return static_cast<size_t>(NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE);
 }
 
 inline size_t getBcastBufOffset(int nLocalRanks, size_t nvlSharedDevbufSize) {
@@ -147,8 +142,7 @@ commResult_t CtranAlgo::initKernelResources() {
   scubaEvent.startAndRecord();
 
   memset(&devState_, 0, sizeof(CtranAlgoDeviceState));
-  const size_t nvlSharedDevbufSize =
-      effectiveP2pNvlSharedDevbufSize(nLocalRanks);
+  const size_t nvlSharedDevbufSize = effectiveP2pNvlSharedDevbufSize();
 
   // Initialize inter-process shared device buffer
   // FIXME: NVL per-peer staging and the bcast buffer have no on-demand support
@@ -271,8 +265,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   this->comm_ = comm;
   int localRank = statex->localRank();
   int nLocalRanks = statex->nLocalRanks();
-  const size_t nvlSharedDevbufSize =
-      effectiveP2pNvlSharedDevbufSize(nLocalRanks);
+  const size_t nvlSharedDevbufSize = effectiveP2pNvlSharedDevbufSize();
 
   // Create local shared memory region
   // The memory region on each owner rank is divided to (localRanks -1) sets of
