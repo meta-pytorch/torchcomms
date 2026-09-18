@@ -3,6 +3,8 @@
 #include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 
+#include "comms/ncclx/headers/nccl.h"
+
 namespace torch::comms {
 
 const char* DefaultNcclxGlobalApi::getErrorString(ncclResult_t result) {

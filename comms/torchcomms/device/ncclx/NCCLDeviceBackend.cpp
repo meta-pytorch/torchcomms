@@ -265,8 +265,6 @@ RegisteredBuffer NCCLDeviceBackend::register_local_buffer(
       << "[NCCLDeviceBackend]: Local buffer registration failed";
 
   // GIN put uses backend_window (ncclWindow_t) for RDMA/NVLink transfers.
-  // lkeys are unused by GIN — only the Pipes (IBGDA) backend needs them.
-  // Default-constructed RegisteredBuffer zero-initializes the lkeys array.
   buf.backend_window = static_cast<void*>(local_win);
   return buf;
 }
