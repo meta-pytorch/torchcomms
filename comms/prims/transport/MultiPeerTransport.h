@@ -350,6 +350,28 @@ class MultiPeerTransport {
    */
   P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
 
+  /**
+   * Number of NICs the IB transport opened for this GPU -- the best-affinity
+   * tier, or config.gpuNicMap when set. A host-driven collective needs this to
+   * size its lane count: one writer reaches one NIC, so pinning a transfer
+   * to queue 0 uses a single port of however many the topology provides.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  int ibNumNics() const;
+
+  /** Largest lane count getHostLanes() accepts for this peer. */
+  std::size_t hostLaneCapacity(int peerRank) const;
+
+  /**
+   * Lanes onto one peer for splitting a single transfer across NICs and QPs.
+   * See P2pIbrcHostLanes for the per-lane signalling contract -- each lane
+   * must signal its own counter, and the receiver must wait on all of them.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  P2pIbrcHostLanes getHostLanes(int peerRank, int numLanes) const;
+
   IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
   IbgdaLocalBuffer registerIbCounterBuffer(
       const IbgdaLocalBuffer& buffer,

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "comms/prims/transport/MultiPeerIbTransport.h"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 #include "comms/prims/transport/ibrc/IbrcTypes.h"
+#include "comms/prims/transport/ibrc/P2pIbrcHostLanes.h"
 #include "comms/prims/transport/ibrc/P2pIbrcHostWriter.h"
 
 namespace comms::prims {
@@ -103,6 +105,23 @@ class MultipeerIbrcTransport
   // queue's mapped host memory. Do not concurrently drive the same ring from
   // device code.
   P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
+
+  /**
+   * How many command-queue rings this peer has, i.e. the largest lane count
+   * getHostLanes() will accept. Equals numNics() * the per-NIC QP count, so
+   * callers clamp against it rather than probing until getHostWriter throws.
+   */
+  std::size_t hostLaneCapacity(int peerRank) const;
+
+  /**
+   * Lanes 0..numLanes-1 onto one peer, for splitting a single transfer across
+   * NICs. Because queues are [qpSlot * numNics + nic], lane l lands on NIC
+   * l % numNics, so consecutive lanes alternate NICs before reusing one.
+   *
+   * @throws std::runtime_error if numLanes is not in [1,
+   * hostLaneCapacity].
+   */
+  P2pIbrcHostLanes getHostLanes(int peerRank, int numLanes) const;
 
  private:
   // Lazy per-peer materialization hook. The shared base owns queueing,
@@ -238,6 +257,22 @@ class MultipeerIbrcTransport
   // progressOnce) so the progress thread never reads a half-moved cmdQueues.
   // Separate array: std::atomic can't live in the movable PeerResources vector.
   std::unique_ptr<std::atomic<bool>[]> peerQueuesPublished_;
+  /*
+   * Non-expired while a P2pIbrcHostLanes owns that peer's rings.
+   *
+   * getHostLanes() always hands out command queues [0, numLanes), so a second
+   * issue for the same peer overlaps completely, and two producers on one ring
+   * break P2pIbrcHostWriter's backpressure check -- it reads the free space
+   * before a fetch-add it cannot roll back, which is only sound with a single
+   * producer. A weak_ptr rather than a flag the lanes object clears: it cannot
+   * dangle, and it needs no cooperation from an object that outlives the call
+   * that built it.
+   *
+   * Guarded by its own mutex because getHostLanes() is const and the check and
+   * the claim have to be one step. Taken once per communicator, not per call.
+   */
+  mutable std::mutex hostLanesMutex_;
+  mutable std::vector<std::weak_ptr<void>> hostLanesIssued_;
   MappedAllocation statusControl_;
   MappedAllocation p2pTransportDevices_;
   std::vector<IbrcNicStatus*> statusHostByNic_;

@@ -565,6 +565,31 @@ P2pIbrcHostWriter MultiPeerTransport::getHostWriter(
       "getHostWriter: IBRC transport not available (build with ibMode=kIbrc)");
 }
 
+int MultiPeerTransport::ibNumNics() const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->numNics();
+  }
+  throw std::runtime_error(
+      "ibNumNics: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
+std::size_t MultiPeerTransport::hostLaneCapacity(int peerRank) const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->hostLaneCapacity(peerRank);
+  }
+  throw std::runtime_error(
+      "hostLaneCapacity: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
+P2pIbrcHostLanes MultiPeerTransport::getHostLanes(int peerRank, int numLanes)
+    const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->getHostLanes(peerRank, numLanes);
+  }
+  throw std::runtime_error(
+      "getHostLanes: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
 IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     std::size_t size,
     void** hostPtr) {
