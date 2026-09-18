@@ -37,6 +37,15 @@ target_compile_options(prims PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-compress-all>
 )
 
+# The 1024-thread DirectIB-v2 specialization permits at most 64 registers.
+# With relocatable device code, ptxas does not propagate that launch-bound
+# budget to noinline device functions, so cap those without constraining the
+# kernels in this translation unit.
+set_source_files_properties(
+    collectives/ReduceScatterDirectIbV2.cu
+    PROPERTIES COMPILE_OPTIONS "-Xptxas=-func-maxrregcount=64"
+)
+
 set_target_properties(prims PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
