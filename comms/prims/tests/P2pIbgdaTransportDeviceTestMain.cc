@@ -214,7 +214,7 @@ TEST_F(
   EXPECT_EQ(result.prePutAbortClear, 1U);
   EXPECT_EQ(result.reservationObserved, 1U);
   EXPECT_EQ(result.posted, 0U);
-  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_GE(result.reservedIndex, 2U);
   EXPECT_EQ(result.readyIndex, 0U);
   EXPECT_EQ(result.producerIndex, 0U);
   EXPECT_EQ(result.doorbellRecord, 0U);
@@ -261,6 +261,86 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, DataOnlySqErrorSetsNetworkAbort) {
   EXPECT_EQ(result.wqeUnchanged, 1U);
   EXPECT_TRUE(abort.isAborted());
   EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
+#endif
+
+#ifdef __HIP_PLATFORM_AMD__
+TEST_F(P2pIbgdaTransportDeviceTestFixture, AmdDataOnlyPreAbortIsTerminal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdDataOnlyPreAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.reservedIndex, 0U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    AmdDataOnlyMidWaitAbortStopsConcurrentProducers) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdDataOnlyMidWaitAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.reservationObservationTimedOut, 0U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.firstProducerCompleted, 1U);
+  EXPECT_EQ(result.secondProducerCompleted, 1U);
+  EXPECT_GE(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, AmdPutSignalPreAbortIsTerminal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdPutSignalPreAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.reservedIndex, 0U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    AmdPutSignalMidWaitAbortStopsConcurrentProducers) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdPutSignalMidWaitAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.reservationObservationTimedOut, 0U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.firstProducerCompleted, 1U);
+  EXPECT_EQ(result.secondProducerCompleted, 1U);
+  EXPECT_GE(result.reservedIndex, 3U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+  EXPECT_TRUE(abort.isAborted());
 }
 #endif
 

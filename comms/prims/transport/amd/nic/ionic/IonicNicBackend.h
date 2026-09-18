@@ -50,6 +50,12 @@ static_assert(
     "ionic_v1_wqe must be 64 bytes for the assumed SQ stride");
 
 struct IonicNicBackend {
+  __device__ __forceinline__ bool qpTerminal(
+      prims_amd_gda_gpu_dev_verbs_qp* qp) const {
+    return __hip_atomic_load(
+               &qp->terminal, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) != 0;
+  }
+
   static constexpr const char* vendorPrefix() {
     return "ionic";
   }
@@ -99,9 +105,34 @@ struct IonicNicBackend {
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp)) {
+        return;
+      }
+    }
+    if (qpTerminal(qp)) {
+      return;
     }
     amd_fence_release_device();
     amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+  }
+
+  template <typename ContinuePolicy>
+  __device__ bool tryMarkWqesReady(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      uint64_t firstIdx,
+      uint64_t lastIdx,
+      const ContinuePolicy& shouldContinue) {
+    while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp) || !shouldContinue()) {
+        return false;
+      }
+    }
+    if (qpTerminal(qp) || !shouldContinue()) {
+      return false;
+    }
+    amd_fence_release_device();
+    amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -305,6 +336,9 @@ struct IonicNicBackend {
   __device__ void ringDoorbell(
       prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t nextWqeIdx) {
+    if (qpTerminal(qp)) {
+      return;
+    }
     auto& io = qp->nic.ionic;
 
     // All WQE bytes (and the release-stored COLOR flags) must be globally
@@ -381,6 +415,9 @@ struct IonicNicBackend {
       uint64_t consIndex) {
     constexpr uint64_t kMaxSpins = 10000000ULL;
     for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
+      if (qpTerminal(qp)) {
+        return ECANCELED;
+      }
       int rc = pollOneCqAt(cq, consIndex);
       if (rc == EBUSY) {
         continue;

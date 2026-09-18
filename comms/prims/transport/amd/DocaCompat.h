@@ -51,6 +51,7 @@ using doca_gpu_dev_verbs_cq = ::prims_amd_gda_gpu_dev_verbs_cq;
 using doca_gpu_dev_verbs_ticket_t = uint64_t;
 using doca_gpu_dev_verbs_wqe_ctrl_flags = uint8_t;
 using doca_gpu_dev_verbs_resource_sharing_mode = int;
+using doca_gpu_dev_verbs_put_result = prims_amd_gda::AmdGdaPutResult;
 
 // The shims below all carry the `ACQ` acquire-scope template parameter, so
 // declare the same capability the vendored DOCA header declares. Without this
@@ -211,6 +212,18 @@ __device__ __forceinline__ void doca_gpu_dev_verbs_put(
     uint64_t* out_ticket) {
   prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put<MODE, HANDLER, EXEC>(
       qp, raddr, laddr, size, out_ticket);
+}
+
+template <typename ContinuePolicy>
+__device__ __forceinline__ doca_gpu_dev_verbs_put_result
+try_doca_gpu_dev_verbs_put(
+    doca_gpu_dev_verbs_qp* qp,
+    doca_gpu_dev_verbs_addr raddr,
+    doca_gpu_dev_verbs_addr laddr,
+    std::size_t size,
+    const ContinuePolicy& shouldContinue) {
+  return prims_amd_gda::try_prims_amd_gda_gpu_dev_verbs_put(
+      qp, raddr, laddr, size, shouldContinue);
 }
 
 template <int OP = 0, int MODE = 0, int HANDLER = 0>

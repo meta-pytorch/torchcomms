@@ -372,6 +372,18 @@ struct NicDeviceIbgdaResources {
  *      Buffer ptr==nullptr means "disabled" (no signal/counter).
  */
 class P2pIbgdaTransportDevice {
+ private:
+#ifdef __HIP_PLATFORM_AMD__
+  struct AmdAbortContinuePolicy {
+    const AbortDevice& abortDevice;
+
+    __device__ __forceinline__ bool operator()() const {
+      return !FT_ABORT_CHECK(
+          abortDevice, "AMD staged data post on an aborted communicator");
+    }
+  };
+#endif
+
  public:
   // Default ctor required so an array of these can be cudaMemcpy'd from host
   // (see MultipeerIbgdaTransportCuda.cu::buildDeviceTransportsOnGpu). Do not
@@ -1978,11 +1990,19 @@ class P2pIbgdaTransportDevice {
       std::size_t nbytes,
       const AbortDevice& abortDevice) {
 #ifdef __HIP_PLATFORM_AMD__
-    (void)abortDevice;
-    return {
-        .put_wqe = put_single_impl(lane, localBuf, remoteBuf, nbytes),
-        .posted = true,
-    };
+    doca_gpu_dev_verbs_addr localAddr = {
+        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
+        .key = localBuf.lkey_per_device[lane.nic_id].value};
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
+        .key = remoteBuf.rkey_per_device[lane.nic_id].value};
+    const auto result = try_doca_gpu_dev_verbs_put(
+        lane.qp,
+        remoteAddr,
+        localAddr,
+        nbytes,
+        AmdAbortContinuePolicy{abortDevice});
+    return {.put_wqe = result.ticket, .posted = result.posted};
 #else
     doca_gpu_dev_verbs_addr localAddr = {
         .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
@@ -2312,20 +2332,21 @@ class P2pIbgdaTransportDevice {
 
 #ifdef __HIP_PLATFORM_AMD__
     prims_amd_gda::ActiveNicBackend amdNic{};
-    uint64_t ticket = 0;
-    prims_amd_gda::prims_amd_gda_gpu_dev_verbs_put_signal(
-        amdNic,
-        lane.qp,
-        remoteAddr,
-        localAddr,
-        nbytes,
-        sigRemoteAddr,
-        sigSinkAddr,
-        signalVal,
-        &ticket);
-    (void)abortDevice;
+    const auto result =
+        prims_amd_gda::try_prims_amd_gda_gpu_dev_verbs_put_signal(
+            amdNic,
+            lane.qp,
+            remoteAddr,
+            localAddr,
+            nbytes,
+            sigRemoteAddr,
+            sigSinkAddr,
+            signalVal,
+            AmdAbortContinuePolicy{abortDevice});
     return IbgdaPutSignalTickets{
-        .put_wqe = ticket, .signal_wqe = ticket, .posted = true};
+        .put_wqe = result.ticket,
+        .signal_wqe = result.ticket,
+        .posted = result.posted};
 #else
     uint64_t numChunks = doca_gpu_dev_verbs_div_ceil_aligned_pow2(
         nbytes, DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE_SHIFT);
