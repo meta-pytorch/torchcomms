@@ -263,12 +263,6 @@ commResult_t Bootstrap::exchangeAndPublish(
   vcs.reserve(numVcs);
   remoteBusCards.reserve(numVcs);
 
-  // Resolve the per-VC MAX_QPS slice for this peer (cvar/configList /
-  // numVcs). Different peers may resolve to different values depending
-  // on their connection class.
-  int maxQpsPerVc =
-      CtranIbVirtualConn::computeMaxQpsPerVc(comm_, peerRank, numVcs);
-
   for (int vcIdx = 0; vcIdx < numVcs; ++vcIdx) {
     // Create a new VC for the peer
     auto vc = std::make_shared<CtranIbVirtualConn>(
@@ -278,7 +272,7 @@ commResult_t Bootstrap::exchangeAndPublish(
         trafficClass_,
         cudaDev_,
         vcLayout_.vcToActiveDevices[vcIdx],
-        maxQpsPerVc);
+        numVcs);
 
     std::string localBusCard, remoteBusCard;
     {

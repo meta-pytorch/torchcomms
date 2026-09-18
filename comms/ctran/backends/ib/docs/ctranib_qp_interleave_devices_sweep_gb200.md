@@ -1,11 +1,12 @@
 # CTRAN-IB NIC-interleaved QP round-robin — GB200 sweep
 
-`NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE` distributes a single op's QP-scaling
-sub-chunks round-robin across a VC's NICs. Data QPs are stored device-major
+Multi-NIC QP interleaving distributes a single op's QP-scaling sub-chunks
+round-robin across a VC's NICs. Data QPs are stored device-major
 (`[NIC0: qp0..K-1, NIC1: qpK..2K-1, ...]`), so the default walk fills one NIC's
 K QPs before the next; interleaving remaps the visit order to
-`qp0, qpK, qp2K, ..., qp1, qpK+1, ...` so an op fans out across all NICs. Gated
-by `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE` (default 64K). Change under test:
+`qp0, qpK, qp2K, ..., qp1, qpK+1, ...` so an op fans out across all NICs. It is
+controlled by `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE` (default 64K; zero
+disables interleaving). Change under test:
 D108913561. GB200 (`b200a`, CUDA 12.8, 2 NICs/rank), ppn=2 nolocal, gated fbpkg
 `nccl_tests_suite:8e4174e24577b70749b8013f56765893`.
 
@@ -50,8 +51,8 @@ not needed.
 
 `BM_CtranIb_MultiPut2` / `BM_CtranIb_MultiPut4` in
 `fbcode/comms/ctran/backends/ib/benchmarks/CtranIbBench.cc` measure the effect of
-`NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE`, which a single large put cannot
-reveal. Each issues N concurrent `CtranIb::iput`s (distinct offsets), drives
+multi-NIC QP interleaving, which a single large put cannot reveal. Each issues
+N concurrent `CtranIb::iput`s (distinct offsets), drives
 `progress()` while polling `checkNotify()`, and timestamps each put's notify
 arrival (`notify1_us` … `notifyN_us`) plus aggregate `BW_GBps`. High-level iput
 API only, on the existing `kExternal` single-VC setup.
@@ -104,12 +105,11 @@ slightly negative at 2-put 64K) — the latency-bound region the gate excludes.
 ### Reproduce
 
 ```bash
-# interleave OFF, then re-run with ...ENABLE=1
-NCCL_CTRAN_IB_DEVICES_PER_RANK=2 NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=0 \
+# interleave OFF, then re-run with ...MIN_WQE_SIZE=65536
+NCCL_CTRAN_IB_DEVICES_PER_RANK=2 NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE=0 \
   buck2 run @fbcode//mode/opt -c fbcode.arch=aarch64 \
   -c fbcode.platform010-aarch64_clang=17 -c fbcode.nvcc_arch=b200 \
-  -m ovr_config//third-party/cuda/constraints:12.8 \
-  -m ovr_config//third-party/cuda/constraints:12.8 \
+  -m ovr_config//third-party/cuda/constraints:13.3 \
   fbcode//comms/ctran/backends/ib/benchmarks:ctranib_bench -- \
   --benchmark_filter=BM_CtranIb_MultiPut
 ```
@@ -123,11 +123,11 @@ NCCL_CTRAN_IB_DEVICES_PER_RANK=2 NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=0 \
 | Sweep | Collective | Algo | Interleave |
 |---|---|---|---|
 | `ag ctring OFF` | AllGather | `ctring` | off |
-| `ag ctring ON`  | AllGather | `ctring` | `NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=1` |
+| `ag ctring ON`  | AllGather | `ctring` | `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE=65536` |
 | `ag ctsrd OFF`  | AllGather | `ctsrd`  | off |
-| `ag ctsrd ON`   | AllGather | `ctsrd`  | `NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=1` |
+| `ag ctsrd ON`   | AllGather | `ctsrd`  | `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE=65536` |
 | `ar ctring OFF` | AllReduce | `ctring` | off |
-| `ar ctring ON`  | AllReduce | `ctring` | `NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE=1` |
+| `ar ctring ON`  | AllReduce | `ctring` | `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE=65536` |
 
 Interleave ON additionally requires each posted WQE to exceed
 `NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE` (default 64K); WQEs at or below it

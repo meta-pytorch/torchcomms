@@ -190,37 +190,20 @@ class CtranIbVirtualConn {
   // Actual connection happens only when setupVc is called.
   //
   // activeDevices: the set of IB device indices (active NICs) this VC owns.
-  // Must be non-empty and every entry must be in
-  // [0, NCCL_CTRAN_IB_DEVICES_PER_RANK). The first entry is taken as the
+  // Must be non-empty and every entry must index the supplied devices. The
+  // first entry is taken as the
   // ctrl/notify/atomic device (`ctrlDevice_ = activeDevices.front()`); all
   // data QPs are distributed across the listed devices.
-  // maxQpsPerVc: per-VC data-QP budget. Callers compute this via
-  // computeMaxQpsPerVc(comm, peerRank, numVcsPerPeer); the VC then clamps
-  // it to CTRAN_HARDCODED_MAX_QPS and rounds up to a multiple of
-  // activeDevices.size(). The VC itself has no concept of "vcs per peer".
+  // numVcs: number of VCs sharing the per-peer QP budget.
   CtranIbVirtualConn(
       std::vector<CtranIbDevice>& devices,
       int peerRank,
       CtranComm* comm,
-      uint32_t pgTrafficClass,
+      uint32_t trafficClass,
       int cudaDev,
       std::vector<int> activeDevices,
-      int maxQpsPerVc);
+      int numVcs);
   ~CtranIbVirtualConn();
-
-  // Return the cvar/configList-resolved per-VC MAX_QPS budget:
-  //   per-peer-MAX_QPS (cvar default or NCCL_CTRAN_IB_QP_CONFIG_* override
-  //   for the peer's connection class) divided evenly across numVcs.
-  // Used by CtranIb / Bootstrap to compute the maxQpsPerVc ctor argument
-  // without leaking vcs-per-peer semantics into this class. Aborts if
-  // the per-peer MAX_QPS is not a multiple of numVcs.
-  //
-  // TODO: move off `static` once per-CtranIb-instance QP config is
-  // introduced. With per-comm QP config, maxQps can differ per CtranIb
-  // instance, so the answer will no longer be a pure function of
-  // globals + (comm, peerRank, numVcs) and should be resolved against
-  // the owning CtranIb's instance state instead.
-  static int computeMaxQpsPerVc(CtranComm* comm, int peerRank, int numVcs);
 
   // The data channel may be temporarily unavailable due to run out of local
   // send queue WQE. VC has already internally scheduled an implicit signal to
@@ -415,11 +398,6 @@ class CtranIbVirtualConn {
 
   commResult_t iflush(CtranIbRequest* req);
 
-  // Set the default QP configs, i.e., max number of QPs, QP scaling
-  // threshold, and VC mode, for a given peer based on topology or
-  // user-specified config, if provided
-  inline commResult_t setDefaultQPConfig();
-
   // Getter function for maxNumQps_
   inline int getMaxNumQp() {
     return maxNumQps_;
@@ -590,6 +568,7 @@ class CtranIbVirtualConn {
   std::mutex mutex;
 
  private:
+  commResult_t resolveVcConfig(CtranComm* comm, int peerRank, int numVcs);
   commResult_t prepCtrlMsgs();
   commResult_t prepIbvWrs();
 
@@ -1960,16 +1939,10 @@ class CtranIbVirtualConn {
   int numQpsPerDevice_{0};
   size_t qpScalingTh_{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
   enum NCCL_CTRAN_IB_VC_MODE vcMode_ { NCCL_CTRAN_IB_VC_MODE };
-  // When true and the VC spans multiple NICs, tryToPostOp interleaves a single
-  // op's QP-scaling sub-chunks across all NICs (visit order qp0, qpK, qp2K, ...
-  // advancing the device first, where K = maxNumQps_ / numActiveDevices)
-  // instead of filling one NIC's QPs first. Read from
-  // NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE in setDefaultQPConfig. No effect
-  // when activeDevices_.size() == 1 (the mapping is the identity).
+  // Interleave one operation's QP-scaled chunks across active NICs.
+  // This is a no-op for a single-NIC VC.
   bool qpInterleaveDevices_{false};
-  // Minimum per-WQE size for interleaving to kick in. WQEs at or below this are
-  // latency-bound; interleaving them regresses (the 64K-per-put AllGather
-  // case). Read from NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE.
+  // Do not interleave latency-bound WQEs at or below this size.
   uint64_t qpInterleaveMinWqeSize_{NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE};
   int maxQpMsgs_;
   uint64_t mtu_{4096};
@@ -1990,7 +1963,7 @@ class CtranIbVirtualConn {
   std::string connTypeName(ConnectionType typ);
   std::string vcModeName(enum NCCL_CTRAN_IB_VC_MODE mode);
   void logConnectionConfig(ConnectionType typ);
-  uint32_t pgTrafficClass_;
+  uint32_t trafficClass_;
   int cudaDev_;
   static constexpr int kNotifyBit = 31;
   static constexpr int kFastPutBit = 30;
