@@ -89,6 +89,13 @@
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+// CUDA only: there is no hipify mapping for fp8, and AMD's MI300 formats are
+// the FNUZ variants, which differ from these OCP ones in exponent bias and in
+// NaN/infinity encoding. This header is also what defines
+// __CUDA_FP8_TYPES_EXIST__, which every fp8 guard below keys on.
+#if !defined(__HIP_PLATFORM_AMD__)
+#include <cuda_fp8.h>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -124,7 +131,8 @@ struct MinOp {};
 // SIX functions -- one reduce() per op tag, operating on a uint4 pair, plus one
 // reduce_scalar() per op tag for the tail element. Supplying only the vector
 // forms compiles until the first tail-handling call site. For 16-bit types that
-// use the __hadd2/__hmax2/__hmin2 intrinsics, inherit from HalfPrecisionVecOps.
+// use the __hadd2/__hmax2/__hmin2 intrinsics, inherit from HalfPrecisionVecOps;
+// for the 8-bit float formats, from Fp8VecOps.
 // ============================================================================
 
 template <typename T>
@@ -349,6 +357,111 @@ struct VecOps<__nv_bfloat16>
 
 template <>
 struct VecOps<__half> : HalfPrecisionVecOps<__half, __half2> {};
+
+// ============================================================================
+// Fp8VecOps: the 8-bit float formats.
+//
+// Structurally parallel to HalfPrecisionVecOps, deliberately kept separate
+// rather than merged with it. The 16-bit version applies __hadd2 to its packed
+// type directly; fp8 has no native pair arithmetic on any architecture, so
+// every body converts to __half2, operates, and converts back. That round trip
+// is the whole difference between the two, and merging them would hide it.
+//
+// The accumulator is __half, not float, following NCCL
+// (ncclx .../device/reduce_kernel.h). Widening further would diverge from it
+// silently.
+//
+// CONTRACT: results saturate to the format maximum; they do not carry
+// infinities. Every body narrows through the fp8 constructors, which are
+// SATFINITE, so an e5m2 +INF operand comes back as 0x7B (57344) rather than
+// 0x7C. That is visible on MAX/MIN, where the winning operand is a value the
+// format could have represented exactly: max(+INF, 1.0) is 57344, not +INF.
+// e4m3 has no infinities at all, so only e5m2 can raise the question.
+//
+// This follows NCCL, which narrows the same way, and preserving the operand
+// would mean selecting it by raw bits instead of arithmetic -- a different
+// primitive, not a fix to this one. Pinned by Fp8SpecialValuesSaturate.
+//
+// kElemsPerVec is 16 -- the widest of any supported type, since a uint4 holds
+// sixteen 1-byte elements. Note tile_load_2d static_asserts
+// kCols % kElemsPerVec == 0, so a 2D tile instantiated at fp8 with a kCols that
+// is not a multiple of 16 fails to compile rather than degrading quietly.
+//
+// The struct and kElemsPerVec stay outside the device guard: host template
+// parsing needs them, and hiding the whole specialization yields
+// incomplete-type errors instead of a clean exclusion.
+//
+// The device guard carries no architecture floor, matching HalfPrecisionVecOps.
+// Adding one would make these members absent on lower-architecture passes, so a
+// consumer built for several architectures fails to compile as soon as it
+// instantiates an fp8 reduction -- on every pass, not just the excluded one.
+// The intrinsics are the ones the 16-bit path already uses unguarded, and CUDA
+// supplies the fp8 conversions at every architecture. Restricting which
+// architectures offer fp8 belongs in the caller's dispatch, not in whether
+// these members exist.
+// ============================================================================
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+
+template <typename ScalarT, typename PackedT>
+struct Fp8VecOps {
+  static constexpr int kElemsPerVec = sizeof(uint4) / sizeof(ScalarT);
+  static constexpr int kPairsPerVec = kElemsPerVec / 2;
+
+#if defined(__CUDA_ARCH__)
+  __device__ __forceinline__ static void
+  reduce(SumOp, uint4& a, const uint4& b) {
+    PackedT* va = reinterpret_cast<PackedT*>(&a);
+    const PackedT* vb = reinterpret_cast<const PackedT*>(&b);
+#pragma unroll
+    for (int i = 0; i < kPairsPerVec; i++) {
+      va[i] = PackedT(__hadd2(__half2(va[i]), __half2(vb[i])));
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MaxOp, uint4& a, const uint4& b) {
+    PackedT* va = reinterpret_cast<PackedT*>(&a);
+    const PackedT* vb = reinterpret_cast<const PackedT*>(&b);
+#pragma unroll
+    for (int i = 0; i < kPairsPerVec; i++) {
+      va[i] = PackedT(__hmax2(__half2(va[i]), __half2(vb[i])));
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce(MinOp, uint4& a, const uint4& b) {
+    PackedT* va = reinterpret_cast<PackedT*>(&a);
+    const PackedT* vb = reinterpret_cast<const PackedT*>(&b);
+#pragma unroll
+    for (int i = 0; i < kPairsPerVec; i++) {
+      va[i] = PackedT(__hmin2(__half2(va[i]), __half2(vb[i])));
+    }
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(SumOp, ScalarT& a, const ScalarT& b) {
+    a = ScalarT(__hadd(__half(a), __half(b)));
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MaxOp, ScalarT& a, const ScalarT& b) {
+    a = ScalarT(__hmax(__half(a), __half(b)));
+  }
+
+  __device__ __forceinline__ static void
+  reduce_scalar(MinOp, ScalarT& a, const ScalarT& b) {
+    a = ScalarT(__hmin(__half(a), __half(b)));
+  }
+#endif
+};
+
+template <>
+struct VecOps<__nv_fp8_e4m3> : Fp8VecOps<__nv_fp8_e4m3, __nv_fp8x2_e4m3> {};
+
+template <>
+struct VecOps<__nv_fp8_e5m2> : Fp8VecOps<__nv_fp8_e5m2, __nv_fp8x2_e5m2> {};
+
+#endif // __CUDA_FP8_TYPES_EXIST__
 
 // ============================================================================
 // Storage policies
