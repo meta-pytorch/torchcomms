@@ -44,7 +44,7 @@ class SetConfigTest(unittest.TestCase):
             {
                 "allgatherAlgo": "ctdirect",
                 "allreduceAlgo": "ctdirect",
-                "sendrecvAlgo": "ctp2p",
+                "sendrecvAlgo": "ctzcopy",
             }
         )
 
@@ -68,7 +68,7 @@ class SetConfigTest(unittest.TestCase):
         self.ncclx_backend.set_config({"sendrecvAlgo": "orig"})
         recv1 = self._do_sendrecv()
 
-        self.ncclx_backend.set_config({"sendrecvAlgo": "ctp2p"})
+        self.ncclx_backend.set_config({"sendrecvAlgo": "ctzcopy"})
         recv2 = self._do_sendrecv()
 
         expected_rank = (self.rank - 1 + self.size) % self.size

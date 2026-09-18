@@ -93,7 +93,7 @@ std::future<Status> NVLinkTransport::transfer(
                   cudaStream]() mutable noexcept {
     CudaDeviceGuard deviceGuard(*cudaApi, deviceId);
 
-#if CUDART_VERSION >= 12080
+#if UNIFLOW_NVLINK_MEMCPY_BATCH
     if (ops.size() > 1) {
       // Small inline buffer avoids heap allocation for typical batch sizes.
       // Falls back to vector for larger batches.
@@ -210,7 +210,7 @@ std::future<Status> NVLinkTransport::put(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteDst = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.nvlinkOffset_;
+        req.remote.remoteOffset_;
     ops.emplace_back(remoteDst, req.local.data(), req.local.size());
   }
 
@@ -253,7 +253,7 @@ std::future<Status> NVLinkTransport::get(
       return make_ready_future<Status>(std::move(remoteHandle).error());
     }
     auto* remoteSrc = static_cast<uint8_t*>(remoteHandle.value()->mappedPtr()) +
-        req.remote.nvlinkOffset_;
+        req.remote.remoteOffset_;
     ops.emplace_back(req.local.mutable_data(), remoteSrc, req.remote.size());
   }
 

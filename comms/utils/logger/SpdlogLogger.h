@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <ostream>
 #include <sstream>
 #include <string>
@@ -30,6 +32,8 @@
 namespace meta::comms::logger {
 
 inline constexpr std::string_view kCommsLoggerName{"comms"};
+
+class CommsDistSink;
 
 class CommsSpdlogLogger {
  public:
@@ -97,6 +101,7 @@ class CommsSpdlogLogger {
 
   bool should_log(spdlog::level::level_enum level) const;
   const std::string& name() const;
+  std::string outputPath() const;
   void set_level(spdlog::level::level_enum level);
   bool usesAsyncLogging() const;
   void flush();
@@ -107,8 +112,29 @@ class CommsSpdlogLogger {
       std::function<void(std::string_view)> errorCallback = {},
       bool asyncLogging = true);
   void configureOutput(std::string_view logFilePath);
+  void reconfigure(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging);
+  void reconfigure(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging,
+      spdlog::level::level_enum logLevel);
+
+  /*
+   * Test-only: appends to the dist sink so a test can observe delivery from
+   * inside the sink call. Test sinks must not re-enter comms fatal logging.
+   */
+  void addSinkForTesting(std::shared_ptr<spdlog::sinks::sink> sink);
 
  private:
+  friend void shutdownSpdlogForFatal();
+
   struct Configuration {
     std::string prefix{"COMMS"};
     std::function<int(void)> threadContextFn{[]() { return 0; }};
@@ -116,19 +142,41 @@ class CommsSpdlogLogger {
     bool asyncLogging{true};
   };
 
+  struct Backend {
+    std::string outputPath;
+    std::shared_ptr<spdlog::logger> logger;
+    std::shared_ptr<CommsDistSink> outputSink;
+    std::shared_ptr<spdlog::logger> synchronousLogger;
+  };
+
+  struct State {
+    std::shared_ptr<const Configuration> configuration;
+    std::shared_ptr<Backend> backend;
+  };
+
 #if defined(__cpp_lib_atomic_shared_ptr) && \
     __cpp_lib_atomic_shared_ptr >= 201711L
-  using ConfigurationStorage =
-      std::atomic<std::shared_ptr<const Configuration>>;
+  using StateStorage = std::atomic<std::shared_ptr<const State>>;
 #else
   // NCCLX also builds this target as C++17, before atomic<shared_ptr> exists.
-  using ConfigurationStorage = std::shared_ptr<const Configuration>;
+  using StateStorage = std::shared_ptr<const State>;
 #endif
 
   static std::string_view getLevelName(spdlog::level::level_enum level);
 
-  std::shared_ptr<const Configuration> loadConfiguration() const;
-  void storeConfiguration(std::shared_ptr<const Configuration> configuration);
+  std::shared_ptr<const State> loadState() const;
+  void storeState(std::shared_ptr<const State> state);
+  std::shared_ptr<Backend> createBackend(
+      std::shared_ptr<CommsDistSink> outputSink,
+      std::string outputPath,
+      bool asyncLogging) const;
+  void reconfigureImpl(
+      std::string prefix,
+      std::string_view logFilePath,
+      std::function<int(void)> threadContextFn,
+      std::function<void(std::string_view)> errorCallback,
+      bool asyncLogging,
+      std::optional<spdlog::level::level_enum> logLevel);
 
   void logFormatted(
       spdlog::source_loc location,
@@ -136,11 +184,12 @@ class CommsSpdlogLogger {
       std::string_view levelName,
       std::string_view message,
       bool bypassLevelGate);
+  void tryFlushForFatal() noexcept;
 
-  std::shared_ptr<spdlog::logger> logger_;
-  std::shared_ptr<spdlog::sinks::dist_sink_mt> outputSink_;
-  std::shared_ptr<spdlog::logger> synchronousLogger_;
-  ConfigurationStorage configuration_;
+  std::string name_;
+  std::atomic<spdlog::level::level_enum> logLevel_{spdlog::level::info};
+  mutable std::mutex reconfigurationMutex_;
+  StateStorage state_;
 };
 
 class CommsLogStreamBase {
@@ -192,6 +241,26 @@ CommsSpdlogLogger& getSpdlogLogger(std::string_view loggerName);
 
 void reportCommsLoggingFailureToStderr(const char* level) noexcept;
 [[noreturn]] void abortAfterCommsLoggingFailure() noexcept;
+
+namespace detail {
+template <typename LoggerFactory>
+CommsSpdlogLogger& resolveLoggerForFatal(
+    LoggerFactory&& loggerFactory) noexcept {
+  try {
+    return std::forward<LoggerFactory>(loggerFactory)();
+  } catch (...) {
+    abortAfterCommsLoggingFailure();
+  }
+}
+} // namespace detail
+
+void shutdownSpdlogForFatal();
+/*
+ * Terminal barrier for the comms logger state in this linkage image. It drains
+ * queued records, best-effort flushes every existing logger, and makes later
+ * delivery synchronous. The function is idempotent and does not call fsync().
+ */
+void shutdownCommsLogging() noexcept;
 CommsSpdlogLogger& getSpdlogLoggerForFatal(
     std::string_view loggerName) noexcept;
 
@@ -235,18 +304,24 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
 
 #define COMMS_LOGGER_DEBUG(logger, ...) \
   SPDLOG_LOGGER_CALL(logger, ::spdlog::level::debug, __VA_ARGS__)
+#define COMMS_LOGGER_TRACE(logger, ...) \
+  SPDLOG_LOGGER_CALL(logger, ::spdlog::level::trace, __VA_ARGS__)
 
 /*
- * shutdown() drains the async queue before the synchronous fatal message.
- * CommsSpdlogLogger owns that synchronous logger and its output sinks outside
- * spdlog's registry, so they remain valid after registry shutdown.
+ * shutdownSpdlogForFatal() drains the library-owned async pool before
+ * best-effort flushing initialized logger sinks. It does not join the periodic
+ * sink worker because that worker may already be waiting behind an unrelated
+ * blocked sink. It skips the named registry or a distribution sink when its
+ * outer lock is busy. Child-sink mutexes, I/O, and the final synchronous FATAL
+ * delivery may still block. spdlog's global registry pool is left running:
+ * registry::instance() may already be gone when a FATAL fires during static
+ * destruction.
  */
 #define COMMS_LOG_FATAL_IMPL(logger_expression, ...)                 \
   do {                                                               \
     try {                                                            \
       auto& _comms_logger = (logger_expression);                     \
-      _comms_logger.flush();                                         \
-      ::spdlog::shutdown();                                          \
+      ::meta::comms::logger::shutdownSpdlogForFatal();               \
       _comms_logger.logFatal(                                        \
           ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
           __VA_ARGS__);                                              \
@@ -324,12 +399,44 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   COMMS_LOG_FATAL_IMPL(                         \
       ::meta::comms::logger::getSpdlogLogger(logger_name), __VA_ARGS__)
 
+/*
+ * Logs an ERR synchronously and terminates with SIGABRT. Termination still
+ * occurs when ERR logging is disabled or the logging operation fails.
+ */
+// @lint-ignore CLANGTIDY facebook-modularize-issue-check
+#if SPDLOG_ACTIVE_LEVEL <= SPDLOG_LEVEL_ERROR
+#define COMMS_ABORT_IMPL(logger_name, ...)                             \
+  do {                                                                 \
+    try {                                                              \
+      auto& _comms_logger =                                            \
+          ::meta::comms::logger::getSpdlogLogger(logger_name);         \
+      if (_comms_logger.should_log(::spdlog::level::err)) {            \
+        _comms_logger.logSynchronous(                                  \
+            ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, \
+            ::spdlog::level::err,                                      \
+            __VA_ARGS__);                                              \
+      }                                                                \
+    } catch (...) {                                                    \
+      ::meta::comms::logger::reportCommsLoggingFailureToStderr("ERR"); \
+    }                                                                  \
+    std::abort();                                                      \
+  } while (false)
+#else
+#define COMMS_ABORT_IMPL(logger_name, ...) \
+  do {                                     \
+    std::abort();                          \
+  } while (false)
+#endif
+
+#define COMMS_ABORT(...) \
+  COMMS_ABORT_IMPL(::meta::comms::logger::kCommsLoggerName, __VA_ARGS__)
+
 #define COMMS_LOG(level, ...) COMMS_LOG_##level(__VA_ARGS__)
 #define COMMS_LOG_NAMED(logger_name, level, ...) \
   COMMS_LOG_NAMED_##level(logger_name, __VA_ARGS__)
 
 #define COMMS_LOG_NAMED_STREAM_IMPL(logger_name, spdlog_level, condition) \
-  if (static auto& _comms_stream_logger =                                 \
+  if (auto& _comms_stream_logger =                                        \
           ::meta::comms::logger::getSpdlogLogger(logger_name);            \
       !_comms_stream_logger.should_log(spdlog_level) || !(condition)) {   \
   } else                                                                  \
@@ -340,7 +447,7 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
         .stream()
 
 #define COMMS_LOG_NAMED_FATAL_STREAM_IMPL(logger_name, condition)      \
-  if (static auto& _comms_stream_logger =                              \
+  if (auto& _comms_stream_logger =                                     \
           ::meta::comms::logger::getSpdlogLoggerForFatal(logger_name); \
       !(condition)) {                                                  \
   } else                                                               \
@@ -372,8 +479,9 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
   COMMS_LOG_NAMED_STREAM_IF_IMPL(logger_name, level, condition)
 #define COMMS_LOG_NAMED_STREAM(logger_name, level) \
   COMMS_LOG_NAMED_STREAM_IF(logger_name, level, true)
+
 #define COMMS_LOG_STREAM(level) \
-  COMMS_LOG_NAMED_STREAM(::meta::comms::logger::kCommsLoggerName, level)
+  COMMS_LOGGER_STREAM(::meta::comms::logger::getSpdlogLogger(), level)
 
 #define COMMS_LOG_RATE_LIMITABLE_DBG true
 #define COMMS_LOG_RATE_LIMITABLE_DBG5 true
@@ -400,8 +508,8 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
         return comms_log_stream_rate_limiter.check();                      \
       }())
 #define COMMS_LOG_STREAM_EVERY_MS(level, ms) \
-  COMMS_LOG_NAMED_STREAM_EVERY_MS(           \
-      ::meta::comms::logger::kCommsLoggerName, level, ms)
+  COMMS_LOGGER_STREAM_EVERY_MS(              \
+      ::meta::comms::logger::getSpdlogLogger(), level, ms)
 
 #define COMMS_LOGGER_STREAM_IMPL(logger_expression, spdlog_level, condition) \
   if (auto& _comms_stream_logger = (logger_expression);                      \
@@ -413,12 +521,17 @@ bool shouldWriteCommsLogToStderr(std::string_view formattedMessage);
         spdlog_level)                                                        \
         .stream()
 
-#define COMMS_LOGGER_FATAL_STREAM_IMPL(logger_expression, condition)    \
-  if (auto& _comms_stream_logger = (logger_expression); !(condition)) { \
-  } else                                                                \
-    ::meta::comms::logger::CommsFatalLogStream(                         \
-        _comms_stream_logger,                                           \
-        ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION})      \
+#define COMMS_LOGGER_FATAL_STREAM_IMPL(logger_expression, condition) \
+  if (auto& _comms_stream_logger =                                   \
+          ::meta::comms::logger::detail::resolveLoggerForFatal(      \
+              [&]() -> ::meta::comms::logger::CommsSpdlogLogger& {   \
+                return (logger_expression);                          \
+              });                                                    \
+      !(condition)) {                                                \
+  } else                                                             \
+    ::meta::comms::logger::CommsFatalLogStream(                      \
+        _comms_stream_logger,                                        \
+        ::spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION})   \
         .stream()
 
 #define COMMS_LOGGER_STREAM_DBG_IF(logger_expression, condition) \

@@ -11,8 +11,10 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <folly/String.h>
 #include <folly/Synchronized.h>
 #include <folly/container/F14Set.h>
 #include "comms/common/fault_tolerance/Abort.h"
@@ -20,82 +22,31 @@
 #include "comms/ctran/bootstrap/ICtranBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/window/WinCache.h"
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
-#include "comms/utils/cvars/nccl_cvars.h"
-
-namespace comms::prims {
-class MultiPeerTransport;
-class PipesTrace;
-struct Transport;
-} // namespace comms::prims
 
 using meta::comms::CommBackend;
-
-// Per-communicator Prims transport overrides.
-// -1 means use CVAR default.
-struct ctranPrimsConfig {
-  // -1 uses NCCL_CTRAN_USE_PIPES. MCCL sets this explicitly so its Prims
-  // policy does not affect NCCLX or standalone Ctran communicators.
-  int64_t enablePrims{-1};
-  int64_t nvlChunkSize{-1};
-  bool ibLazyConnect{true};
-  // Per-channel, per-direction IB staging size. Same unit as
-  // MCCL_CHANNEL_BUFFER_SIZE, which it overrides for this communicator.
-  int64_t channelBufferSize{-1};
-  // -1 uses MCCL_CHANNEL_PIPELINE_DEPTH. Together with channelBufferSize this
-  // fixes the per-chunk size: chunk = channelBufferSize / channelPipelineDepth.
-  int64_t channelPipelineDepth{-1};
-  // -1 uses MCCL_MAX_NCHANNELS. Total IB staging for this communicator is
-  // channelBufferSize * maxChannels per peer per direction. Multimem staging
-  // capacity is also provisioned for this many channels.
-  int64_t maxChannels{-1};
-  // -1 uses MCCL_MAX_NBLOCKS. This is the collective launch-geometry block
-  // cap. Multimem requires it not to exceed maxChannels because a launch
-  // cannot consume more blocks than the provisioned channel capacity.
-  int64_t maxBlocks{-1};
-
-  bool operator==(const ctranPrimsConfig& other) const {
-    return enablePrims == other.enablePrims &&
-        nvlChunkSize == other.nvlChunkSize &&
-        ibLazyConnect == other.ibLazyConnect &&
-        channelBufferSize == other.channelBufferSize &&
-        channelPipelineDepth == other.channelPipelineDepth &&
-        maxChannels == other.maxChannels && maxBlocks == other.maxBlocks;
-  }
-};
-
-// Per-communicator override first, global CVAR second. Both the transport
-// (comm init) and the collective launch geometry (per call) must resolve these
-// the same way, so they share these helpers rather than reading the CVAR
-// directly. NOTE: mccl's own launch-geometry validation still reads
-// MCCL_MAX_NCHANNELS / MCCL_MAX_NBLOCKS globally; a communicator that overrides
-// these and also runs mccl collectives would be validated against the global.
-inline int64_t ctranPrimsResolvedMaxChannels(const ctranPrimsConfig& pc) {
-  return pc.maxChannels > 0 ? pc.maxChannels
-                            : static_cast<int64_t>(MCCL_MAX_NCHANNELS);
-}
-
-inline int64_t ctranPrimsResolvedMaxBlocks(const ctranPrimsConfig& pc) {
-  return pc.maxBlocks > 0 ? pc.maxBlocks
-                          : static_cast<int64_t>(MCCL_MAX_NBLOCKS);
-}
 
 struct ctranConfig {
   int blocking{-1};
   std::string commDesc;
+  // Per-comm traffic class hint sourced from ncclConfig_t.trafficClass.
+  // Negative means "hint not set"; consumers fall back to env/default.
+  int trafficClass{-1};
   std::vector<enum CommBackend> backends = {};
-  ctranPrimsConfig primsConfig;
-  bool enableProfiler{NCCL_CTRAN_TRANSPORT_PROFILER};
+  // The creator supplies this; ctran does not read the sampling cvar
+  // itself, so a comm-split child inherits the parent's decision.
+  bool enableProfiler{false};
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        backends == other.backends && primsConfig == other.primsConfig &&
+        backends == other.backends && trafficClass == other.trafficClass &&
         enableProfiler == other.enableProfiler);
   }
 };
@@ -106,14 +57,8 @@ class CtranGpe;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
-namespace comms::prims {
-class MultiPeerTransport;
-}
 namespace ctran {
 struct CtranWin;
-namespace algos {
-class OrderedWorkStreamGuard;
-}
 } // namespace ctran
 
 using comms::fault_tolerance::Abort;
@@ -169,8 +114,26 @@ class CtranComm {
     return abort_->isEnabled();
   }
 
-  inline void setAbort() {
-    abort_->setAbort();
+  inline void setAbort(const comms::fault_tolerance::AbortInfo& info = {}) {
+    abort_->setAbort(info.reason, info.context);
+  }
+
+  // This query may materialize an expired timeout as TIMED_OUT.
+  inline std::optional<comms::fault_tolerance::AbortInfo> getAbortInfo() const {
+    return abort_->getAbortInfo();
+  }
+
+  inline std::string abortMessage() const {
+    const auto info = getAbortInfo();
+    if (!info.has_value()) {
+      return "comm aborted";
+    }
+    auto message = "comm aborted reason=" + std::string{info->reasonString()};
+    if (!info->context.empty()) {
+      message +=
+          " context=\"" + folly::cEscape<std::string>(info->context) + "\"";
+    }
+    return message;
   }
 
   inline bool testAbort() const {
@@ -221,14 +184,16 @@ class CtranComm {
     return parentRanks_;
   }
 
-  // Materializes `peers` and returns the Transport array indexed by global
-  // rank. An empty peer list initializes no IB transport slots.
-  comms::prims::Transport* getMultiPeerTransportsPtr(
-      const std::vector<int>& peers);
-
   // Returns a snapshot of the algo stats, or std::nullopt if stats are
   // disabled.
   std::optional<meta::comms::colltrace::AlgoStatDump> dumpAlgoStats() const;
+
+  // True when algo-stat recording is on (NCCL_COLLTRACE carries algostat or
+  // ALL). Exposed so callers can skip building the op/algo strings when
+  // nothing will consume them, without re-deriving the mode vocabulary.
+  bool algoStatsEnabled() const {
+    return algoStats_ != nullptr;
+  }
 
   void recordAlgoStats(
       const std::string& opName,
@@ -292,17 +257,6 @@ class CtranComm {
   void* smallMsgStageSrc_{nullptr};
   void* smallMsgStageDst_{nullptr};
   size_t smallMsgStageBytes_{0};
-
-  // AMD carve-out only: ENABLE_PRIMS is on for every non-AMD build (see
-  // comms/ctran/def_build.bzl), so these members exist everywhere except AMD.
-  // The guard changes CtranComm's layout, so consumers must compile with a
-  // consistent macro (the OSS build propagates it via MCCL_ENABLE_PRIMS).
-#if defined(ENABLE_PRIMS)
-  std::unique_ptr<comms::prims::MultiPeerTransport> multiPeerTransport_;
-  std::unique_ptr<comms::prims::PipesTrace> pipesTrace_;
-  std::unique_ptr<ctran::algos::OrderedWorkStreamGuard>
-      primsOrderedWorkStreamGuard_;
-#endif // defined(ENABLE_PRIMS)
 
   // Deferred cleanup for CUDA graph resources. CUDA user-object destructor
   // callbacks cannot call CUDA APIs, so cleanup is enqueued here and

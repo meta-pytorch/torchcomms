@@ -2,7 +2,10 @@
 
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <queue>
 #include <string>
@@ -12,6 +15,7 @@
 
 #include <folly/MPMCQueue.h>
 #include <folly/Synchronized.h>
+#include <folly/container/F14Set.h>
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
@@ -29,6 +33,10 @@ struct CommDumpConfig {
   // 1024 elements should be sufficiently large to handle the number of
   // collective calls that is hanging when we dump the trace.
   static constexpr int kCommDumpQueueSize = 1024;
+  static constexpr int kCurrentCollQueueSize = 1024;
+  static constexpr int kTerminalQueueSize = 128;
+  static constexpr int kTerminalIdQueueSize =
+      2 * kCommDumpQueueSize + kTerminalQueueSize;
   // Default timeout for waiting for the lock to be acquired for dump. We don't
   // want to block the dump thread if there is any issue with the lock.
   static constexpr auto kDumpLockAcquireTimeout = std::chrono::seconds(1);
@@ -43,6 +51,22 @@ struct CommDumpConfig {
   // (defaults to kCommDumpQueueSize). Any further collective operations will be
   // dropped if the queue is full.
   int64_t pendingCollSize{kCommDumpQueueSize};
+  /*
+   * Active-operation capacity is independent of producer queue capacity.
+   * Tuning enqueue backpressure must not discard already-started operations.
+   */
+  int64_t currentCollSize{kCurrentCollQueueSize};
+  int64_t terminalCollSize{kTerminalQueueSize};
+  /*
+   * The tombstone window is finite by design: a callback delayed beyond this
+   * window may be counted again, but cannot make retained plugin state
+   * unbounded. Normalization keeps every retained terminal record covered.
+   */
+  int64_t terminalCollIdSize{kTerminalIdQueueSize};
+  int64_t deferredTerminalSize{kTerminalQueueSize};
+  int64_t pendingDrainBatchSize{0};
+  std::chrono::milliseconds pollLockAcquireTimeout{
+      std::chrono::milliseconds{1}};
   std::chrono::milliseconds dumpLockAcquireTimeout{kDumpLockAcquireTimeout};
 };
 
@@ -59,11 +83,26 @@ using PastCollsHeap = std::priority_queue<
     std::vector<std::shared_ptr<CollRecord>>,
     CollRecordGreaterCollId>;
 
+struct TerminalCollRecord {
+  std::shared_ptr<CollRecord> collRecord;
+  CollTraceTerminalReason reason{CollTraceTerminalReason::Count};
+};
+
+constexpr auto kNumTerminalReasons =
+    static_cast<std::size_t>(CollTraceTerminalReason::Count);
+
 struct CollTraceDump {
   PastCollsHeap pastCollsHeap;
   std::deque<std::shared_ptr<CollRecord>> pastColls;
   std::deque<std::shared_ptr<CollRecord>> currentColls;
   std::deque<std::shared_ptr<CollRecord>> pendingColls;
+  std::deque<TerminalCollRecord> terminalColls;
+  std::deque<uint64_t> terminalCollIdOrder;
+  folly::F14FastSet<uint64_t> terminalCollIds;
+  folly::F14FastSet<const CollRecord*> activeRecords;
+  std::array<uint64_t, kNumTerminalReasons> terminalReasonCounts{};
+  uint64_t terminalTransitionDrops{0};
+  uint64_t pollLockTimeouts{0};
 
   int64_t currentIteration{-1};
   int64_t currentIterationCommTimeUs{0};
@@ -95,6 +134,10 @@ class CommDumpPlugin : public ICollTracePlugin {
 
   CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
 
+  CommsMaybeVoid afterCollTerminated(
+      CollTraceEvent& curEvent,
+      CollTraceTerminalReason reason) noexcept override;
+
   int64_t maxEventRetention() const noexcept override;
 
   // CommDump specific API, supposed to be called by the dump (user) thread
@@ -106,11 +149,28 @@ class CommDumpPlugin : public ICollTracePlugin {
   // recorded colls. Please make sure all the previous colls are processed
   // before calling this API. Otherwise, the result might be unexpected.
   CommsMaybeVoid testOnlyClearColls() noexcept;
+  void testOnlyExecuteWithReadLock(const std::function<void()>& fn) const;
 
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 
  private:
   void evictPastColls(CollTraceDump& dump);
+  CommsMaybeVoid drainPendingState(CollTraceDump& dump) noexcept;
+  void applyTerminalDisposition(
+      CollTraceDump& dump,
+      std::shared_ptr<CollRecord> record,
+      CollTraceTerminalReason reason,
+      bool scrubTrackedState = true) noexcept;
+  CommsMaybeVoid deferTerminalDisposition(
+      const std::shared_ptr<CollRecord>& record,
+      CollTraceTerminalReason reason) noexcept;
+  bool enqueueDeferredTerminalDisposition(
+      const std::shared_ptr<CollRecord>& record,
+      CollTraceTerminalReason reason) noexcept;
+  bool isTerminallyTracked(
+      const CollTraceDump& dump,
+      const std::shared_ptr<CollRecord>& record) const noexcept;
+  void enforceStateBounds(CollTraceDump& dump) noexcept;
 
   CommDumpConfig config_;
   logger::CommsSpdlogLogger* logger_{nullptr};
@@ -129,6 +189,10 @@ class CommDumpPlugin : public ICollTracePlugin {
   // consuming APIs: dump/ afterCollKernelStart / afterCollKernelEnd /
   //                 whenCollKernelHang
   folly::MPMCQueue<std::shared_ptr<CollRecord>> newPendingColls_;
+  folly::MPMCQueue<TerminalCollRecord> deferredTerminalColls_;
+  std::atomic<uint64_t> terminalTransitionDrops_{0};
+  std::atomic<uint64_t> pollLockTimeouts_{0};
+  std::atomic_bool reconciliationRequired_{false};
 };
 
 // ------------------------------------------------------------------------

@@ -1,10 +1,11 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 /*
- * Cost of the DOCA GPU verbs object creation behind createPeerQps(), which is
- * ~75% of per-peer materialization (0.86s of 1.15s measured on GB300). Creates
- * the same shape createPeerQps() does -- one QP group plus one loopback
- * companion QP per channel slot -- and reports per-slot cost.
+ * Cost of the companion-enabled DOCA GPU verbs object creation behind
+ * createPeerQps(), measured as ~75% of per-peer materialization (0.86s of
+ * 1.15s on GB300). Creates one QP group plus one loopback companion QP per
+ * channel slot and reports per-slot cost. The default main-only shape is
+ * intentionally cheaper and is not represented by this benchmark.
  *
  * WARNING on --unsafe_threads: creating DOCA objects concurrently against one
  * doca_gpu context is NOT SAFE and this mode exists only to measure what a

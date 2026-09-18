@@ -1,0 +1,279 @@
+=======================================================
+Sharded Relay ALLREDUCE — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 2-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 2-rank NCCL collective, other 6 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.043      0.033     1.28x
+      9 KB |      0.045      0.034     1.33x
+     18 KB |      0.047      0.035     1.34x
+     36 KB |      0.053      0.035     1.50x
+     72 KB |      0.054      0.036     1.48x
+    144 KB |      0.056      0.037     1.51x
+    288 KB |      0.054      0.040     1.35x
+    576 KB |      0.060      0.046     1.31x
+    4.5 MB |      0.136      0.090     1.51x
+      9 MB |      0.226      0.115     1.97x
+   13.5 MB |      0.314      0.141     2.23x
+     27 MB |      0.579      0.206     2.81x
+   31.5 MB |      0.660      0.227     2.91x
+     32 MB |      0.677      0.231     2.93x
+     36 MB |      0.746      0.250     2.99x
+     40 MB |      0.819      0.266     3.07x
+     63 MB |      1.275      0.376     3.39x
+   67.5 MB |      1.350      0.399     3.38x
+     72 MB |      1.435      0.417     3.44x
+    135 MB |      2.635      0.672     3.92x
+    144 MB |      2.809      0.704     3.99x
+    256 MB |      4.942      1.178     4.19x
+    512 MB |      9.825      2.149     4.57x
+      1 GB |     19.606      4.126     4.75x
+=======================================================
+
+=======================================================
+Sharded Relay ALLREDUCE — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 4-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 4-rank NCCL collective, other 4 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.047      0.037     1.26x
+      9 KB |      0.050      0.038     1.32x
+     18 KB |      0.051      0.038     1.34x
+     36 KB |      0.051      0.039     1.30x
+     72 KB |      0.053      0.040     1.30x
+    144 KB |      0.059      0.041     1.42x
+    288 KB |      0.064      0.048     1.32x
+    576 KB |      0.066      0.061     1.08x
+    4.5 MB |      0.103      0.089     1.15x
+      9 MB |      0.148      0.117     1.26x
+   13.5 MB |      0.188      0.144     1.30x
+     27 MB |      0.323      0.226     1.43x
+   31.5 MB |      0.368      0.254     1.45x
+     32 MB |      0.373      0.259     1.44x
+     36 MB |      0.412      0.279     1.48x
+     40 MB |      0.449      0.301     1.49x
+     63 MB |      0.682      0.436     1.56x
+   67.5 MB |      0.730      0.460     1.59x
+     72 MB |      0.776      0.484     1.60x
+    135 MB |      1.396      0.833     1.68x
+    144 MB |      1.486      0.878     1.69x
+    256 MB |      2.617      1.411     1.85x
+    512 MB |      5.229      2.591     2.02x
+      1 GB |     10.470      4.985     2.10x
+=======================================================
+
+=======================================================
+Sharded Relay REDUCE-SCATTER — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 2-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 2-rank NCCL collective, other 6 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.038      0.035     1.10x
+      9 KB |      0.035      0.034     1.02x
+     18 KB |      0.038      0.034     1.12x
+     36 KB |      0.036      0.035     1.03x
+     72 KB |      0.039      0.035     1.11x
+    144 KB |      0.038      0.036     1.06x
+    288 KB |      0.042      0.037     1.14x
+    576 KB |      0.048      0.041     1.19x
+    4.5 MB |      0.087      0.075     1.16x
+      9 MB |      0.138      0.087     1.58x
+   13.5 MB |      0.187      0.101     1.85x
+     27 MB |      0.344      0.141     2.44x
+   31.5 MB |      0.392      0.153     2.56x
+     32 MB |      0.400      0.158     2.53x
+     36 MB |      0.443      0.167     2.65x
+     40 MB |      0.484      0.177     2.74x
+     63 MB |      0.755      0.233     3.24x
+   67.5 MB |      0.807      0.246     3.29x
+     72 MB |      0.859      0.259     3.31x
+    135 MB |      1.557      0.419     3.72x
+    144 MB |      1.633      0.433     3.77x
+    256 MB |      2.712      0.690     3.93x
+    512 MB |      5.165      1.214     4.25x
+      1 GB |     10.045      2.128     4.72x
+=======================================================
+
+=======================================================
+Sharded Relay REDUCE-SCATTER — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 4-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 4-rank NCCL collective, other 4 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.039      0.037     1.04x
+      9 KB |      0.041      0.037     1.10x
+     18 KB |      0.042      0.038     1.10x
+     36 KB |      0.040      0.039     1.03x
+     72 KB |      0.041      0.039     1.05x
+    144 KB |      0.043      0.039     1.09x
+    288 KB |      0.042      0.041     1.02x
+    576 KB |      0.045      0.044     1.03x
+    4.5 MB |      0.070      0.068     1.03x
+      9 MB |      0.091      0.093     0.98x
+   13.5 MB |      0.115      0.108     1.07x
+     27 MB |      0.191      0.181     1.05x
+   31.5 MB |      0.216      0.208     1.04x
+     32 MB |      0.219      0.214     1.02x
+     36 MB |      0.243      0.233     1.04x
+     40 MB |      0.266      0.245     1.09x
+     63 MB |      0.390      0.327     1.19x
+   67.5 MB |      0.414      0.352     1.18x
+     72 MB |      0.436      0.368     1.18x
+    135 MB |      0.786      0.536     1.47x
+    144 MB |      0.838      0.569     1.47x
+    256 MB |      1.461      0.911     1.60x
+    512 MB |      2.762      1.703     1.62x
+      1 GB |      5.409      3.210     1.69x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-TO-ALL — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 2-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 2-rank NCCL collective, other 6 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.047      0.038     1.26x
+      9 KB |      0.044      0.038     1.15x
+     18 KB |      0.045      0.039     1.16x
+     36 KB |      0.045      0.039     1.16x
+     72 KB |      0.050      0.039     1.29x
+    144 KB |      0.047      0.041     1.13x
+    288 KB |      0.051      0.043     1.20x
+    576 KB |      0.059      0.045     1.29x
+    4.5 MB |      0.097      0.069     1.40x
+      9 MB |      0.149      0.080     1.85x
+   13.5 MB |      0.189      0.097     1.94x
+     27 MB |      0.301      0.149     2.01x
+   31.5 MB |      0.349      0.143     2.45x
+     32 MB |      0.345      0.146     2.36x
+     36 MB |      0.386      0.156     2.48x
+     40 MB |      0.420      0.167     2.51x
+     63 MB |      0.656      0.229     2.86x
+   67.5 MB |      0.707      0.242     2.92x
+     72 MB |      0.745      0.254     2.93x
+    135 MB |      1.352      0.428     3.16x
+    144 MB |      1.438      0.456     3.15x
+    256 MB |      2.503      0.779     3.21x
+    512 MB |      4.934      1.496     3.30x
+      1 GB |      9.841      2.901     3.39x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-TO-ALL — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 4-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 4-rank NCCL collective, other 4 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.054      0.038     1.43x
+      9 KB |      0.055      0.039     1.41x
+     18 KB |      0.058      0.039     1.48x
+     36 KB |      0.056      0.039     1.43x
+     72 KB |      0.055      0.039     1.40x
+    144 KB |      0.058      0.041     1.41x
+    288 KB |      0.060      0.043     1.41x
+    576 KB |      0.062      0.043     1.47x
+    4.5 MB |      0.080      0.062     1.30x
+      9 MB |      0.106      0.088     1.20x
+   13.5 MB |      0.131      0.107     1.23x
+     27 MB |      0.201      0.160     1.25x
+   31.5 MB |      0.225      0.177     1.27x
+     32 MB |      0.227      0.181     1.25x
+     36 MB |      0.246      0.195     1.26x
+     40 MB |      0.267      0.214     1.25x
+     63 MB |      0.381      0.299     1.27x
+   67.5 MB |      0.379      0.312     1.21x
+     72 MB |      0.411      0.328     1.25x
+    135 MB |      0.728      0.536     1.36x
+    144 MB |      0.798      0.582     1.37x
+    256 MB |      1.389      0.931     1.49x
+    512 MB |      2.709      1.786     1.52x
+      1 GB |      5.366      3.401     1.58x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-GATHER — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  2 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 2-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 2-rank NCCL collective, other 6 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.042      0.038     1.11x
+      9 KB |      0.043      0.038     1.12x
+     18 KB |      0.042      0.038     1.11x
+     36 KB |      0.043      0.039     1.11x
+     72 KB |      0.045      0.041     1.09x
+    144 KB |      0.048      0.042     1.16x
+    288 KB |      0.051      0.045     1.15x
+    576 KB |      0.058      0.049     1.18x
+    4.5 MB |      0.138      0.086     1.61x
+      9 MB |      0.232      0.110     2.10x
+   13.5 MB |      0.324      0.140     2.32x
+     27 MB |      0.599      0.210     2.86x
+   31.5 MB |      0.689      0.230     3.00x
+     32 MB |      0.701      0.236     2.96x
+     36 MB |      0.781      0.255     3.06x
+     40 MB |      0.862      0.273     3.16x
+     63 MB |      1.333      0.380     3.51x
+   67.5 MB |      1.416      0.408     3.47x
+     72 MB |      1.488      0.421     3.54x
+    135 MB |      2.699      0.712     3.79x
+    144 MB |      2.833      0.747     3.79x
+    256 MB |      5.033      1.239     4.06x
+    512 MB |     10.004      2.260     4.43x
+      1 GB |     19.770      4.357     4.54x
+=======================================================
+
+=======================================================
+Sharded Relay ALL-GATHER — Single-Group Best-Case Sweep (MI350X, 8 GPUs, torch.float32)
+  4 active ranks/group; times = best-of-N (min), barrier-aligned + hipEvent-timed
+  SINGLE GROUP = one 4-rank relay on a full 8-rank comm, no co-resident jobs (best case)
+  NCCL baseline = one 4-rank NCCL collective, other 4 ranks idle
+=======================================================
+           |       SINGLE GROUP (1 job)
+  Msg Size |   NCCL(ms)  Relay(ms)   Speedup
+-------------------------------------------------------
+      4 KB |      0.045      0.039     1.14x
+      9 KB |      0.047      0.040     1.18x
+     18 KB |      0.046      0.039     1.16x
+     36 KB |      0.045      0.041     1.09x
+     72 KB |      0.045      0.044     1.04x
+    144 KB |      0.054      0.043     1.25x
+    288 KB |      0.057      0.049     1.16x
+    576 KB |      0.062      0.051     1.20x
+    4.5 MB |      0.141      0.122     1.15x
+      9 MB |      0.229      0.172     1.33x
+   13.5 MB |      0.323      0.224     1.44x
+     27 MB |      0.592      0.381     1.56x
+   31.5 MB |      0.681      0.428     1.59x
+     32 MB |      0.688      0.436     1.58x
+     36 MB |      0.771      0.479     1.61x
+     40 MB |      0.853      0.518     1.65x
+     63 MB |      1.315      0.773     1.70x
+   67.5 MB |      1.403      0.819     1.71x
+     72 MB |      1.493      0.870     1.72x
+    135 MB |      2.719      1.552     1.75x
+    144 MB |      2.898      1.642     1.77x
+    256 MB |      5.088      2.783     1.83x
+    512 MB |     10.075      5.374     1.87x
+      1 GB |     20.073     10.455     1.92x
+=======================================================

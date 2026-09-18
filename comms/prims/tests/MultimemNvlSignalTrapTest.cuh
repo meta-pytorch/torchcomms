@@ -27,6 +27,12 @@ enum class NvlSignalTrapCase : uint32_t {
   AggregateNon1DGrid,
   PerPeerDuplicateChannelOwner,
   PerPeerNon1DBlock,
+  BlockBarrierNon1DBlock,
+  BlockBarrierDuplicateChannelOwner,
+  BlockBarrierNon1DGrid,
+  BlockBarrierSignalsPerChannelMismatch,
+  ReducedBlockRangeOutOfBounds,
+  ReduceBlock16MisalignedSource,
 };
 
 enum class NvlSignalRankBoundaryWaitPolicy : uint32_t {

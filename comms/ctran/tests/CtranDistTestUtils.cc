@@ -2,7 +2,7 @@
 
 #include "CtranDistTestUtils.h"
 
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/tests/bootstrap/CtranTestBootstrap.h"
 #include "comms/ctran/utils/CudaUtils.h"
@@ -38,10 +38,6 @@ void CtranDistEnvironment::SetUp() {
 #if defined(TEST_ENABLE_LOCAL_REGISTER)
   setenv("NCCL_LOCAL_REGISTER", "1", 1);
 #endif
-
-#if defined(TEST_CUDA_GRAPH_MODE)
-  setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
-#endif
 }
 
 // ============================================================================
@@ -71,8 +67,8 @@ void CtranDistTestFixture::SetUp(const CtranEnvs& envs) {
   setenv("RANK", std::to_string(globalRank).c_str(), 1);
 
   if (globalRank == 0) {
-    XLOG(DBG) << "Testing with NCCL_COMM_STATE_DEBUG_TOPO="
-              << (isNolocalTopo() ? "nolocal" : "default");
+    CTRAN_LOG_STREAM(DBG) << "Testing with NCCL_COMM_STATE_DEBUG_TOPO="
+                          << (isNolocalTopo() ? "nolocal" : "default");
   }
 
   stream.emplace(cudaStreamNonBlocking);
@@ -115,7 +111,6 @@ void CtranDistTestFixture::TearDown() {
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
     bool noLocal,
-    bool ibLazyConnect,
     bool tmpbufEagerAlloc) {
   const std::string uuid{"0"};
   uint64_t commHash =
@@ -129,6 +124,8 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
   comm->logMetaData_.commDesc = commDesc;
   comm->logMetaData_.rank = globalRank;
   comm->logMetaData_.nRanks = numRanks;
+  // Mirrors the standalone-ctran-comm creator policy.
+  comm->config_.enableProfiler = NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT > 0;
 
   int cudaDev;
   CUDACHECK_TEST(cudaGetDevice(&cudaDev));
@@ -165,9 +162,6 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm(
       std::move(commBootstrap));
 
   comm->config_.commDesc = comm->statex_->commDesc().c_str();
-  // Preserve the compatibility setting through the standalone Ctran path.
-  // Peer materialization remains on demand for either value.
-  comm->config_.primsConfig.ibLazyConnect = ibLazyConnect;
   // Consumed during ctranInit (inside CtranAlgo's ctor), so must be set on the
   // comm before ctranInit runs.
   comm->tmpbufEagerAlloc_ = tmpbufEagerAlloc;

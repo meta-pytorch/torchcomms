@@ -7,6 +7,13 @@
 
 #include "comms/utils/commSpecs.h"
 
+namespace meta::comms::colltrace {
+
+folly::dynamic commLogDataToDynamic(const CommLogData& metadata);
+CommLogData commLogDataFromDynamic(const folly::dynamic& dynamic);
+
+} // namespace meta::comms::colltrace
+
 namespace folly {
 
 // Defines dynamic constructor for ICollMetadata so we can use it during

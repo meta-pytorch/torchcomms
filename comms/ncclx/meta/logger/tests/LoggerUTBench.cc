@@ -11,10 +11,11 @@
 #include "debug.h" // @manual
 
 #include "comms/testinfra/TestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventMgr.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggerRuntime.h"
 
 static constexpr int kGlobalRank = 5;
 static constexpr int kNranks = 16;
@@ -29,8 +30,6 @@ const static std::vector<std::string> keventStage = {
     "Init START",
     "Bootstrap start",
     "Bootstrap Complete"};
-
-static std::string scubaLogFile{};
 
 class NcclLoggerBenchEnv : public testing::Environment,
                            public ScubaLoggerTestMixin {
@@ -54,8 +53,7 @@ class NcclLoggerBenchEnv : public testing::Environment,
     // Set up dummy values for environment variables for Scuba test and also
     // call initEnv.
     ScubaLoggerTestMixin::SetUp();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
+    meta::comms::logger::shutdownCommLoggerRuntime();
   }
 
   void TearDown() override {}
@@ -69,9 +67,11 @@ class NcclLoggerBenchTest : public ::testing::Test {
   void SetUp() override {
     totalRecords = 0;
     logTmpFile = std::make_unique<folly::test::TemporaryFile>();
+    meta::comms::logger::initCommLoggerRuntime();
   }
 
   void TearDown() override {
+    meta::comms::logger::shutdownCommLoggerRuntime();
     auto logBytesEnd = getLogFileSize();
     auto loggedBytes = getLogFileSize() - logBytesStart;
     LOG(INFO) << "====== Total records ("
@@ -91,10 +91,6 @@ class NcclLoggerBenchTest : public ::testing::Test {
     return logTmpFile->path().string();
   }
 
-  void finishLogging() {
-    NcclLogger::close();
-  }
-
   void setLogType(LogType type) {
     this->logType = type;
   }
@@ -112,6 +108,7 @@ class NcclLoggerBenchTest : public ::testing::Test {
     std::atomic<bool> run_threads(true);
 
     std::vector<std::thread> threads;
+    threads.reserve(numThreads);
     std::cout << "Starting concurrent threads to log\n";
 
     for (int i = 0; i < numThreads; ++i) {
@@ -157,6 +154,7 @@ class NcclLoggerBenchTest : public ::testing::Test {
       });
     }
 
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
     std::this_thread::sleep_for(std::chrono::seconds(5));
     run_threads = false;
     for (auto& thread : threads) {
@@ -177,25 +175,23 @@ TEST_F(NcclLoggerBenchTest, CommBenchScubaLog) {
   setLogType(LogType::SCUBA);
   initNcclLogger();
   ncclLoggerBenchTest();
-  finishLogging();
 }
 
 TEST_F(NcclLoggerBenchTest, CommBenchScubaLogWithEventApi) {
   setLogType(LogType::SCUBA);
   initNcclLogger();
   ncclLoggerBenchTest(true);
-  finishLogging();
 }
 
 TEST_F(NcclLoggerBenchTest, CommBenchDebugLog) {
   folly::test::TemporaryFile tmpFile;
   setLogType(LogType::FILE);
   EnvRAII env(NCCL_DEBUG_FILE, getTmpLogFile());
+  SysEnvRAII sysEnv{"NCCL_DEBUG_FILE", getTmpLogFile()};
   // Reset ncclDebugLevel to force debug sub-system to be re-initialized
   ncclDebugLevel = -1;
   initNcclLogger();
   ncclLoggerBenchTest();
-  finishLogging();
 }
 
 int main(int argc, char** argv) {

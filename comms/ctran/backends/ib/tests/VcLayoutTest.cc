@@ -59,6 +59,24 @@ TEST(VcLayoutTest, FutureMode_1VcPer4Nics) {
   EXPECT_EQ(layout.vcToActiveDevices, expected);
 }
 
+TEST(VcLayoutTest, PinnedMode_4VcsPer4Nics) {
+  // The GB300 4-NIC deployment: one VC per NIC, so every VC is pinned to a
+  // distinct non-zero NIC for three of the four VCs.
+  const VcLayout layout(/*numNics=*/4, /*maxVcsPerPeer=*/4);
+  const Devs expected{{0}, {1}, {2}, {3}};
+  EXPECT_EQ(layout.maxVcsPerPeer, 4);
+  EXPECT_EQ(layout.maxVcsPerNic, 1);
+  EXPECT_EQ(layout.vcToActiveDevices, expected);
+}
+
+TEST(VcLayoutTest, PinnedMode_8VcsPer4Nics) {
+  const VcLayout layout(/*numNics=*/4, /*maxVcsPerPeer=*/8);
+  const Devs expected{{0}, {0}, {1}, {1}, {2}, {2}, {3}, {3}};
+  EXPECT_EQ(layout.maxVcsPerPeer, 8);
+  EXPECT_EQ(layout.maxVcsPerNic, 2);
+  EXPECT_EQ(layout.vcToActiveDevices, expected);
+}
+
 TEST(VcLayoutTest, InvalidConfig_NotDivisible_4VcsPer3Nics) {
   // 4 % 3 != 0, and 4 < 3 doesn't hold either.
   EXPECT_THROW(

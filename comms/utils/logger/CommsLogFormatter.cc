@@ -3,11 +3,39 @@
 #include "comms/utils/logger/CommsLogFormatter.h"
 
 #include <algorithm>
+#include <type_traits>
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
 
 namespace meta::comms::logger {
+namespace {
+
+/*
+ * Logging may continue after non-trivial TLS destructors have run. Constant
+ * initialization avoids dynamic initialization, while trivial destruction
+ * avoids registering a TLS destructor. Store the length to avoid scanning the
+ * buffer for every log line.
+ */
+struct LogThreadName {
+  char data[kMaxLogThreadNameLength + 1];
+  size_t size;
+};
+static_assert(std::is_trivially_destructible_v<LogThreadName>);
+
+thread_local LogThreadName logThreadName{"main", sizeof("main") - 1};
+
+} // namespace
+
+void setLogThreadName(std::string_view name) {
+  const auto size = name.copy(logThreadName.data, kMaxLogThreadNameLength);
+  logThreadName.data[size] = '\0';
+  logThreadName.size = size;
+}
+
+std::string_view getLogThreadName() {
+  return std::string_view{logThreadName.data, logThreadName.size};
+}
 
 std::string formatCommsLogMessage(
     std::string_view levelName,

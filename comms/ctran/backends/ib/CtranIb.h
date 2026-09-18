@@ -51,15 +51,15 @@ class CtranIb {
   // to the local rank.
   // Input arguments:
   //   - comm: the Ctran communicator
-  //   - enableLocalFlush: whether to support local flush. If not specified, use
-  //              default config based on cuda arch.
+  //   - ibConfig: optional per-field IB overrides.
   CtranIb(
       CtranComm* comm,
-      std::optional<bool> enableLocalFlush = std::nullopt,
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt);
+      const CtranIbConfig& ibConfig = {},
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
 
-  static bool shouldEnableLocalFlushByDefault(int cudaArch);
+  bool shouldEnableLocalFlushByDefault(
+      std::optional<int> cudaArch = std::nullopt) const;
 
   // Creates local IB resources without pre-existing communicator.
   // Supports three types of bootstrap mode as defined below.
@@ -70,7 +70,7 @@ class CtranIb {
   //              mapping NIC
   //   - commHash: for logging only.
   //   - commDesc: for logging only.
-  //   - enableLocalFlush: whether to support local flush.
+  //   - ibConfig: optional per-field IB overrides.
   //   - bootstrapMode: defines the needed bootstrap mode. If kDefaultServer,
   //                    it launches internal listen thread which binds and
   //                    listens to the default server address and port as
@@ -85,14 +85,13 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      bool enableLocalFlush,
+      const CtranIbConfig& ibConfig = {},
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
           ::comms::fault_tolerance::createAbort(/*enabled=*/false),
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt,
-      std::optional<int> maxNumNic = std::nullopt);
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
 
   ~CtranIb();
 
@@ -571,6 +570,10 @@ class CtranIb {
     return numNics;
   }
 
+  uint32_t getTrafficClass() const {
+    return trafficClass_;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -579,18 +582,26 @@ class CtranIb {
       int cudaDev,
       uint64_t commHash,
       const std::string& commDesc,
-      bool enableLocalFlush,
+      const CtranIbConfig& ibConfig,
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
           ::comms::fault_tolerance::createAbort(/*enabled=*/false),
-      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt,
-      std::optional<int> maxNumNic = std::nullopt);
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
 
-  commResult_t setPgToTrafficClassMap();
+  // Resolve the effective traffic class once from:
+  //   explicit CtranIbConfig override
+  //   > per-comm NcclConfig.traffic_class hint (0..255)
+  //   > NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map (matched on commDesc prefix)
+  //   > NCCL_IB_TC global fallback
+  // Called once from init(); result stored in trafficClass_.
+  commResult_t resolveTrafficClass(const CtranIbConfig& ibConfig);
 
-  uint32_t getPgToTrafficClassValue() const;
+  // Map cudaDev to its first IB device using the global device count and
+  // stride.
+  commResult_t resolveFirstIbvDevice(int maxNumNic, size_t& firstIbvDevice)
+      const;
 
   const char* ibv_wc_status_str(enum ibverbx::ibv_wc_status status);
 
@@ -1072,7 +1083,7 @@ class CtranIb {
             // First check if it is a local flush CQE
             if (wc.qp_num == vc->qpNum(device)) {
               CQE_ERROR_CHECK(wc, rank, "localFlush");
-              FB_COMMCHECK(vc->processCqe(wc.opcode));
+              FB_COMMCHECK(vc->processCqe(wc.opcode, device));
               continue;
             }
           });
@@ -1134,8 +1145,8 @@ class CtranIb {
   // is populated.
   ::ctran::ib::VcState vcState_;
 
-  // Derived from cvars at init() via the ctran::ib::VcLayout(numNics,
-  // NCCL_CTRAN_IB_NUM_VCS_PER_RANK) ctor. Drives both legacy
+  // Derived from cvars for internal bootstrap and fixed to one VC for external
+  // bootstrap. Drives both legacy
   // (maxVcsPerPeer == 1, all NICs per VC) and multi-VC
   // (maxVcsPerPeer >= numNics, one NIC per VC) modes uniformly.
   ::ctran::ib::VcLayout vcLayout_;
@@ -1165,7 +1176,9 @@ class CtranIb {
   folly::F14FastMap<int, PendingOpQueue> rankToPendingOpsMap;
   std::mutex pendingOpsMutex;
 
-  std::unordered_map<std::string, uint32_t> pgToTrafficClassMap_;
+  // Traffic class resolved once at init from hint > env-map > NCCL_IB_TC.
+  // Used for all QPs on this CtranIb / comm.
+  uint32_t trafficClass_{0};
 
   std::shared_ptr<::comms::fault_tolerance::Abort> abortCtrl_{nullptr};
 };

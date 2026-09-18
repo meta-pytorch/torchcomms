@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <vector>
 
 namespace uniflow {
 namespace {
@@ -58,6 +59,44 @@ TEST(CudaApiTest, IpcGetMemHandleReturnsNonZeroHandle) {
   // A valid exported IPC handle is not all-zero.
   const CudaApi::IpcMemHandle zero{};
   EXPECT_NE(handle.value(), zero);
+}
+
+TEST(CudaApiTest, EventSynchronizeReturnsOnlyOnceTheEventCompleted) {
+  CudaApi api;
+  if (!hasGpu(api)) {
+    GTEST_SKIP() << "no GPU available";
+  }
+  ASSERT_FALSE(api.setDevice(0).hasError());
+
+  void* devPtr = nullptr;
+  ASSERT_EQ(cudaMalloc(&devPtr, 4096), cudaSuccess);
+  std::unique_ptr<void, void (*)(void*)> devGuard(devPtr, [](void* p) {
+    if (p != nullptr) {
+      (void)cudaFree(p);
+    }
+  });
+  std::vector<uint8_t> host(4096, 0);
+
+  cudaEvent_t event{};
+  ASSERT_FALSE(api.eventCreate(&event).hasError());
+
+  ASSERT_FALSE(api.memcpyAsync(
+                      host.data(),
+                      devPtr,
+                      host.size(),
+                      cudaMemcpyDeviceToHost,
+                      /*stream=*/nullptr)
+                   .hasError());
+  ASSERT_FALSE(api.eventRecord(event, /*stream=*/nullptr).hasError());
+
+  EXPECT_FALSE(api.eventSynchronize(event).hasError());
+  // The point of the blocking wait: the copy is done by the time it returns, so
+  // a caller does not have to poll to know that.
+  auto done = api.eventQuery(event);
+  ASSERT_FALSE(done.hasError());
+  EXPECT_TRUE(done.value());
+
+  EXPECT_FALSE(api.eventDestroy(event).hasError());
 }
 
 } // namespace

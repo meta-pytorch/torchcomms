@@ -2,9 +2,8 @@
 
 #pragma once
 
-#include <folly/Expected.h>
-#include <folly/container/F14Map.h>
 #include <deque>
+#include <unordered_map>
 #include <vector>
 
 #include "comms/ctran/ibverbx/IbvCommon.h"
@@ -46,7 +45,7 @@ class IbvVirtualCq {
   // (isMultiQp=false) or Multi-QP Send/Recv cases, pass CQE through directly as
   // IbvVirtualWc; in Multi-QP RDMA cases, route to
   // VirtualQp::processCompletion.
-  inline folly::Expected<std::vector<IbvVirtualWc>, Error> pollCq();
+  inline Expected<std::vector<IbvVirtualWc>> pollCq();
 
   // Registration API (called by VirtualQp constructor/destructor)
   void registerPhysicalQp(
@@ -84,7 +83,7 @@ class IbvVirtualCq {
   };
 
   // Registration table: QpId → RegisteredQpInfo
-  folly::F14FastMap<QpId, RegisteredQpInfo, QpIdHash> registeredQps_;
+  std::unordered_map<QpId, RegisteredQpInfo, QpIdHash> registeredQps_;
 
   // Helper: Find registered QP info by physical QP num and device ID
   inline const RegisteredQpInfo* findRegisteredQpInfo(
@@ -97,8 +96,7 @@ class IbvVirtualCq {
 // pollCq: Drain all physical CQEs and route them.
 // TODO: Accept a numEntries parameter like original pollCq() and return at most
 // that many completions, instead of draining all physical CQEs unconditionally.
-inline folly::Expected<std::vector<IbvVirtualWc>, Error>
-IbvVirtualCq::pollCq() {
+inline Expected<std::vector<IbvVirtualWc>> IbvVirtualCq::pollCq() {
   std::vector<IbvVirtualWc> results;
 
   for (size_t cqIdx = 0; cqIdx < physicalCqs_.size(); cqIdx++) {
@@ -109,7 +107,7 @@ IbvVirtualCq::pollCq() {
     while (true) {
       auto maybeWcs = cq.pollCq(kPollCqBatchSize);
       if (maybeWcs.hasError()) {
-        return folly::makeUnexpected(maybeWcs.error());
+        return makeUnexpected(maybeWcs.error());
       }
       auto& physicalWcs = *maybeWcs;
       if (physicalWcs.empty()) {
@@ -138,7 +136,7 @@ IbvVirtualCq::pollCq() {
               info->vqp->processCompletion(physicalWc, deviceId);
 
           if (maybeVirtualWcs.hasError()) {
-            return folly::makeUnexpected(maybeVirtualWcs.error());
+            return makeUnexpected(maybeVirtualWcs.error());
           }
 
           for (auto& virtualWc : *maybeVirtualWcs) {

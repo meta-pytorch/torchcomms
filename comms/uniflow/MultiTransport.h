@@ -12,6 +12,10 @@
 
 namespace uniflow {
 
+// Defined in transport/tcp/TcpTransport.h, which this header cannot include:
+// TCP is AMD-only, so the type is not available on every platform.
+struct TcpTransportConfig;
+
 enum class CpuNicSelectionPolicy {
   kAll,
   kNumaLocalBounded,
@@ -29,9 +33,44 @@ struct MultiTransportFactoryOptions {
   // the on-host interconnect tier (NVLink on NVIDIA, P2P/XGMI on AMD). Set this
   // to flip that choice -- e.g. TransportType::RDMA to route intra-node traffic
   // over RDMA instead. Both tiers stay registered, so this is a selection
-  // override, not a kill-switch; inter-node stays RDMA. Caller-owned (no
-  // transport-internal config-system dependency).
+  // override, not a kill-switch. Caller-owned (no transport-internal
+  // config-system dependency).
   std::optional<TransportType> intraNodeTransport;
+  // preferredTransport: global force, checked first in selectTransport --
+  // applies to both intra- and inter-node. interNodeTransport: inter-node
+  // override (default RDMA). Each falls through to the remaining tiers if the
+  // chosen transport is unavailable on all requests.
+  std::optional<TransportType> preferredTransport;
+  std::optional<TransportType> interNodeTransport;
+  // The TCP data transport auto-registers whenever a routable bind address is
+  // available (tcpBindHost if set, else resolveTcpBindHost: netdevPrefix match,
+  // else first global address). It is skipped when only loopback resolves,
+  // since advertising loopback in the connect handshake breaks cross-host
+  // connections for all transports. Set enableTcp to force-register even on
+  // loopback (e.g. same-host testing).
+  bool enableTcp{false};
+  std::string tcpBindHost{};
+  // Overrides for the TCP data transport: socket options, lane count
+  // (numSocketsPerDevice, applied per device), and the devices lanes bind to.
+  // Null keeps the
+  // TcpTransportConfig defaults, so this is an override seam rather than
+  // required config, and it is the only way to reach lane striping from outside
+  // the transport.
+  //
+  // Held by pointer, and the type only forward-declared, because TCP is
+  // AMD-only (see the ovr_config//gpu:amd deps in BUCK): a by-value member
+  // would drag TcpTransport.h into every consumer of this header and fail to
+  // compile where the transport is not built. The struct layout stays
+  // platform-independent this way, so callers need no #ifdef to leave it unset.
+  std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
+  // Frontend NIC name prefix for TCP lane striping. Must match
+  // kDefaultFrontendDevicePrefix in TcpTransport.h, which owns the discovery;
+  // this header cannot include that one (see tcpTransportConfig above), so the
+  // value is repeated rather than shared. Devices are discovered by
+  // name because link speed does not distinguish them -- every candidate here
+  // is 200G -- and the backend fabric (beth*) is addressed identically; "eth"
+  // is the frontend convention.
+  std::string tcpDevicePrefix{"eth"};
 };
 
 class MultiTransport {
@@ -39,9 +78,13 @@ class MultiTransport {
   explicit MultiTransport(
       int deviceId,
       std::shared_ptr<ScopedEventBaseThread> evbThread = nullptr,
-      std::optional<TransportType> intraNodeTransport = std::nullopt)
+      std::optional<TransportType> intraNodeTransport = std::nullopt,
+      std::optional<TransportType> preferredTransport = std::nullopt,
+      std::optional<TransportType> interNodeTransport = std::nullopt)
       : deviceId_(deviceId),
+        preferredTransport_(preferredTransport),
         intraNodeTransport_(intraNodeTransport),
+        interNodeTransport_(interNodeTransport),
         evbThread_(std::move(evbThread)) {
     if (!evbThread_) {
       evbThread_ = std::make_shared<ScopedEventBaseThread>();
@@ -108,7 +151,9 @@ class MultiTransport {
   Transport* findTransport(TransportType type) const;
 
   const int deviceId_;
+  std::optional<TransportType> preferredTransport_;
   std::optional<TransportType> intraNodeTransport_;
+  std::optional<TransportType> interNodeTransport_;
   // Prevents destruction of the shared EventBase while transports are live.
   // Transports hold raw EventBase* borrowed from the ScopedEventBaseThread
   // owned by MultiTransportFactory; this shared_ptr ensures the thread (and

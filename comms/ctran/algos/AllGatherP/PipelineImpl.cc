@@ -150,6 +150,11 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   for (auto& putReq : putReqs) {
     FB_COMMCHECK(mapper->waitRequest(&putReq));
   }
+  // Steps >= 1 put from recvbuff. Release the end kernel now that they drained.
+  // Do not move into a scope guard. It fires after waitPipeEnd and deadlocks.
+  if (nLocalRanks > 1 && resource->pipeSync != nullptr) {
+    resource->pipeSync->post(nNodes - 1);
+  }
   waitPipeEnd(*resource, comm);
   CTRAN_PROFILER_IF(
       profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
@@ -377,6 +382,9 @@ commResult_t AlgoImpl::execPipeline(
     PipeEndKernArgs kernArgs = {
         // Pass pipeSync to reset the flag before starting the next pipeline
         .pipeSync = resource_.pipeSync,
+        // The GPE worker posts steps 0..nNodes-2, so nNodes-1 is one past the
+        // last and cannot be satisfied by an ordinary step post.
+        .endSyncStep = nNodes > 1 ? nNodes - 1 : -1,
     };
     config.algoArgs = reinterpret_cast<void*>(&kernArgs);
     if (colltraceGroupOpen) {

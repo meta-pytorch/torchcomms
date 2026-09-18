@@ -4,8 +4,8 @@
 
 #include <fmt/format.h>
 
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LogTypes.h"
-#include "comms/utils/logger/LoggingFormat.h"
 #include "meta/NcclxLogger.h"
 
 #define NCCLX_LOG_SUBSYS(level, subsys, ...)            \
@@ -19,7 +19,7 @@
       __VA_ARGS__)
 
 #define NCCLX_LOG_STREAM_EVERY_MS(level, ms) \
-  COMMS_LOG_NAMED_STREAM_EVERY_MS(::ncclx::logging::kNcclxLoggerName, level, ms)
+  COMMS_LOGGER_STREAM_EVERY_MS(::ncclx::logging::getNcclxLogger(), level, ms)
 
 #define NCCLX_ERR(code, ...)                                                  \
   do {                                                                        \

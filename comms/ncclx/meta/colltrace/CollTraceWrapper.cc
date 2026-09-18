@@ -75,11 +75,6 @@ void deregisterLifecycleFeed(ncclComm_t comm) {
       registry->end());
 }
 
-uint64_t getNextLifecycleFeedCommId() {
-  static std::atomic<uint64_t> nextCommId{1};
-  return nextCommId.fetch_add(1, std::memory_order_relaxed);
-}
-
 enum class KernelPlanType { none, single, multiple };
 
 template <typename T, T* T::* next>
@@ -401,7 +396,7 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
     plugins.push_back(
         std::make_unique<meta::comms::colltrace::LifecycleEventFeedPlugin>(
             meta::comms::colltrace::LifecycleEventFeedConfig{
-                .commId = getNextLifecycleFeedCommId(),
+                .commId = meta::comms::colltrace::getNextLifecycleFeedCommId(),
                 .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
             }));
   }
@@ -442,6 +437,8 @@ ncclResult_t newCollTraceInit(ncclComm* comm) {
           .loggerName = std::string{::ncclx::logging::kNcclxLoggerName},
           .maxCheckCancelInterval =
               std::chrono::milliseconds{NCCL_COLLTRACE_WAKEUP_INTERVAL_MS},
+          .maxPendingQueueSize = static_cast<std::size_t>(
+              std::max(NCCL_COLLTRACE_PENDING_QUEUE_SIZE, 1)),
       },
       comm->logMetaData,
       [metadata = comm->logMetaData,

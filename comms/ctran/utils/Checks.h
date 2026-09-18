@@ -501,13 +501,13 @@
     }                                                  \
   } while (0)
 
-#define FB_CHECKABORT(statement, ...)                     \
-  do {                                                    \
-    if (!(statement)) {                                   \
-      CTRAN_LOG_SYNC_ERR("Check failed: {}", #statement); \
-      CTRAN_LOG_SYNC_ERR(__VA_ARGS__);                    \
-      abort();                                            \
-    }                                                     \
+#define FB_CHECKABORT(statement, ...)                          \
+  do {                                                         \
+    if (!(statement)) {                                        \
+      CTRAN_LOG_SYNC_ERR_IMPL("Check failed: {}", #statement); \
+      CTRAN_LOG_SYNC_ERR_IMPL(__VA_ARGS__);                    \
+      abort();                                                 \
+    }                                                          \
   } while (0);
 
 #define FB_CHECKTHROW_EX_DIRECT(statement, rank, commHash, commDesc, msg)     \

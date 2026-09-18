@@ -29,6 +29,24 @@ _PROGRESS_ONLY_FUNCTIONS = (
 
 _PROGRESS_ONLY_TYPES = ("ProgressChunk", "ProgressGeometry")
 
+# Markers for "this transport reads NIC-written memory after a completion".
+#
+# Regexes, not substrings. `doca_gpu_dev_verbs_get` is a real RDMA READ -- the
+# generic entry point in `device/doca_gpunetio_dev_verbs_onesided.cuh`, of which
+# `_get_thread`/`_get_warp` are the exec-scope implementations, and the one
+# ncclx GIN calls -- so it has to trip this. But `doca_gpu_dev_verbs_get_wqe_ptr`
+# (used at every WQE build site), `_get_lane_id` and `_get_counter` are
+# unrelated and must not. A plain substring cannot separate them, so require a
+# call or template-argument list immediately after the generic name.
+_NIC_READ_MARKERS = (
+    r"DOCA_GPUNETIO_IB_MLX5_OPCODE_RDMA_READ",
+    r"doca_gpu_dev_verbs_get\s*[<(]",
+    r"doca_gpu_dev_verbs_get_wait",
+    r"doca_gpu_dev_verbs_get_thread",
+    r"doca_gpu_dev_verbs_get_warp",
+    r"wqe_prepare_read",
+)
+
 
 class P2pIbTransportBuildContractTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -81,6 +99,47 @@ class P2pIbTransportBuildContractTest(unittest.TestCase):
             1,
         )
         self.assertIn('":p2p_ib_transport_device_impl"', progress_target)
+
+    def test_cta_cq_acquire_scope_implies_no_rdma_read(self) -> None:
+        """Guards the CTA-scope CQ acquire fence.
+
+        On Blackwell the SYS-scope acquire DOCA runs after a completion lowers
+        to CCTL.IVALL, a whole-L1 invalidate; CTA lowers to a NOP. Dropping it
+        is only sound while this transport never reads NIC-written memory
+        through L1 after a completion -- today it issues no RDMA READ, atomic
+        results go to a discard sink, and the signal is read via a system-scope
+        atomic load that carries its own invalidate.
+
+        Adding an RDMA READ breaks that silently: no crash, no wrong return
+        code, just stale data under a timing window a short test will not hit.
+        So fail loudly here instead.
+        """
+        ibgda = (self.transport / "ibgda/P2pIbgdaTransportDevice.cuh").read_text()
+        scope = re.search(
+            r"kCqAcquireScope\s*=\s*(DOCA_GPUNETIO_VERBS_SYNC_SCOPE_\w+)", ibgda
+        )
+        self.assertIsNotNone(
+            scope,
+            "kCqAcquireScope is not declared in P2pIbgdaTransportDevice.cuh. It was "
+            "renamed, moved or deleted; this guard cannot tell whether the CTA fence "
+            "is live, so it must not pass by default. Re-point the guard at wherever "
+            "the acquire scope is now decided.",
+        )
+        assert scope is not None  # for the type checker
+        if scope.group(1) != "DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA":
+            self.skipTest(
+                f"CQ acquire scope is {scope.group(1)}; invariant not required"
+            )
+        for marker in _NIC_READ_MARKERS:
+            self.assertIsNone(
+                re.search(marker, ibgda),
+                f"{marker} matches an RDMA-read path here. Reading NIC-written "
+                "memory is incompatible with kCqAcquireScope == "
+                "DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA. Either set kCqAcquireScope "
+                "back to DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS or give the new read "
+                "path its own system-scope acquire. See "
+                "third-party/nvidia-doca/patches/README.md.",
+            )
 
 
 if __name__ == "__main__":

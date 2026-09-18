@@ -5,7 +5,7 @@
 #include <chrono>
 
 #include <fmt/format.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
@@ -24,14 +24,14 @@ std::ostream& operator<<(std::ostream& out, DcBusinessCard const& card) {
   return out;
 }
 
-folly::Expected<IbvSrq, Error> createSRQ(IbvPd& pd, int maxWr, int maxSge) {
+Expected<IbvSrq> createSRQ(IbvPd& pd, int maxWr, int maxSge) {
   ibv_srq_init_attr srqAttr{};
   srqAttr.attr.max_wr = maxWr;
   srqAttr.attr.max_sge = maxSge;
   return pd.createSrq(&srqAttr);
 }
 
-folly::Expected<IbvQp, Error> createDCI(IbvPd& pd, IbvCq& cq) {
+Expected<IbvQp> createDCI(IbvPd& pd, IbvCq& cq) {
   mlx5dv_qp_init_attr dvInitAttr{};
   ibv_qp_init_attr_ex initAttr{};
 
@@ -51,7 +51,7 @@ folly::Expected<IbvQp, Error> createDCI(IbvPd& pd, IbvCq& cq) {
   return pd.createDcQp(&initAttr, &dvInitAttr);
 }
 
-folly::Expected<IbvQp, Error> createDCIWithStreams(
+Expected<IbvQp> createDCIWithStreams(
     IbvPd& pd,
     IbvCq& cq,
     uint8_t logNumConcurrent,
@@ -78,27 +78,24 @@ folly::Expected<IbvQp, Error> createDCIWithStreams(
   return pd.createDcQp(&initAttr, &dvInitAttr);
 }
 
-folly::Expected<folly::Unit, Error> resetDciStream(
-    IbvQp& qp,
-    uint16_t streamId) {
+Status resetDciStream(IbvQp& qp, uint16_t streamId) {
   if (ibvSymbols.mlx5dv_internal_dci_stream_id_reset == nullptr) {
-    return folly::makeUnexpected(
+    return makeUnexpected(
         Error(ENOTSUP, "mlx5dv_dci_stream_id_reset not available"));
   }
   int ret = ibvSymbols.mlx5dv_internal_dci_stream_id_reset(qp.qp(), streamId);
   if (ret != 0) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         ret,
         fmt::format(
             "mlx5dv_dci_stream_id_reset failed for stream_id={}: errno={}",
             streamId,
             ret)));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<IbvQp, Error>
-createDCT(IbvPd& pd, IbvCq& cq, IbvSrq& srq, uint64_t dcKey) {
+Expected<IbvQp> createDCT(IbvPd& pd, IbvCq& cq, IbvSrq& srq, uint64_t dcKey) {
   mlx5dv_qp_init_attr dvInitAttr{};
   ibv_qp_init_attr_ex initAttr{};
 
@@ -115,8 +112,7 @@ createDCT(IbvPd& pd, IbvCq& cq, IbvSrq& srq, uint64_t dcKey) {
   return pd.createDcQp(&initAttr, &dvInitAttr);
 }
 
-folly::Expected<folly::Unit, Error>
-transitionDCIToRts(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
+Status transitionDCIToRts(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
   ibv_qp_attr qpAttr{};
 
   // RESET -> INIT
@@ -126,7 +122,7 @@ transitionDCIToRts(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
   auto initResult =
       qp.modifyQp(&qpAttr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT);
   if (initResult.hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         initResult.error().errNum,
         fmt::format(
             "Failed to transition DCI to INIT: {}",
@@ -143,7 +139,7 @@ transitionDCIToRts(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
   auto rtrResult =
       qp.modifyQp(&qpAttr, IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_AV);
   if (rtrResult.hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         rtrResult.error().errNum,
         fmt::format(
             "Failed to transition DCI to RTR: {}", rtrResult.error().errStr)));
@@ -162,17 +158,16 @@ transitionDCIToRts(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
       IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
           IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
   if (rtsResult.hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         rtsResult.error().errNum,
         fmt::format(
             "Failed to transition DCI to RTS: {}", rtsResult.error().errStr)));
   }
 
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<folly::Unit, Error>
-transitionDCTToRtr(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
+Status transitionDCTToRtr(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
   ibv_qp_attr qpAttr{};
 
   // RESET -> INIT (DCT needs access flags for remote operations)
@@ -185,7 +180,7 @@ transitionDCTToRtr(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
       &qpAttr,
       IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
   if (initResult.hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         initResult.error().errNum,
         fmt::format(
             "Failed to transition DCT to INIT: {}",
@@ -208,16 +203,16 @@ transitionDCTToRtr(IbvQp& qp, uint8_t port, ibv_mtu mtu) {
       &qpAttr,
       IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_MIN_RNR_TIMER | IBV_QP_AV);
   if (rtrResult.hasError()) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         rtrResult.error().errNum,
         fmt::format(
             "Failed to transition DCT to RTR: {}", rtrResult.error().errStr)));
   }
 
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<IbvAh, Error> createAddressHandle(
+Expected<IbvAh> createAddressHandle(
     IbvPd& pd,
     const DcBusinessCard& remoteCard,
     uint8_t sgidIndex) {
@@ -236,7 +231,7 @@ folly::Expected<IbvAh, Error> createAddressHandle(
   return pd.createAh(&ahAttr);
 }
 
-folly::Expected<folly::Unit, Error> pollCqForCompletions(
+Status pollCqForCompletions(
     int rank,
     IbvCq& cq,
     int expectedCompletions,
@@ -247,7 +242,7 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
   while (completedCount < expectedCompletions) {
     auto maybeWcsVector = cq.pollCq(expectedCompletions);
     if (maybeWcsVector.hasError()) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           maybeWcsVector.error().errNum,
           fmt::format(
               "rank {}: CQ poll failed: {}",
@@ -259,7 +254,7 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
     for (size_t i = 0; i < numWc; ++i) {
       const auto& wc = maybeWcsVector->at(i);
       if (wc.status != IBV_WC_SUCCESS) {
-        return folly::makeUnexpected(Error(
+        return makeUnexpected(Error(
             static_cast<int>(wc.status),
             fmt::format(
                 "rank {} got WC status {}, opcode={}, wr_id={}, vendor_err={}",
@@ -270,8 +265,8 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
                 wc.vendor_err)));
       }
       completedCount++;
-      XLOGF(
-          DBG1,
+      CTRAN_LOG(
+          DBG5,
           "Rank {} got WC {}/{}: wr_id={}, opcode={}",
           rank,
           completedCount,
@@ -286,7 +281,7 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
           std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
               .count();
       if (elapsedMs >= timeoutMs) {
-        return folly::makeUnexpected(Error(
+        return makeUnexpected(Error(
             ETIMEDOUT,
             fmt::format(
                 "rank {}: CQ poll timed out after {}ms, got {}/{} completions",
@@ -298,7 +293,7 @@ folly::Expected<folly::Unit, Error> pollCqForCompletions(
     }
   }
 
-  return folly::unit;
+  return ok();
 }
 
 } // namespace ibverbx

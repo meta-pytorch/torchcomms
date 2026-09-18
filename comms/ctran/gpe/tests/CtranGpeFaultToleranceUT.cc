@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/gpe/tests/CtranGpeFaultToleranceUTBase.h"
+#include "comms/ctran/utils/CtranLogger.h"
 
 namespace ctran::fttesting {
 
@@ -193,7 +194,7 @@ void CtranGpeFTEnabledAbortTest::runTestWillAbort(
   auto waitMs = tryQueryStreamFor(stream, /*patience=*/statusCheckDelay);
 
   if (activeAbort) {
-    CLOGF(INFO, "host active abort");
+    CTRAN_LOG(INFO, "host active abort");
     ctranComm->setAbort();
     ASSERT_TRUE(ctranComm->testAbort());
     EXPECT_GE(waitMs, statusCheckDelay) << "kernel unblocked too early";

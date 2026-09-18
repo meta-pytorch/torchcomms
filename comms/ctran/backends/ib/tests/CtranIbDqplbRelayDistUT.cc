@@ -13,7 +13,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
@@ -49,8 +49,9 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
-    XLOG_IF(WARN, globalRank == 0) << testName << " numRanks " << numRanks
-                                   << ". Description: " << testDesc;
+    CTRAN_LOG_STREAM_IF(WARN, globalRank == 0)
+        << testName << " numRanks " << numRanks
+        << ". Description: " << testDesc;
   }
 
   size_t getIbRegCount() {
@@ -216,7 +217,7 @@ class CtranIbDqplbRelayTest : public ctran::CtranDistTestFixture {
       }
     }
 
-    XLOG_IF(WARN, globalRank == kSinkRank)
+    CTRAN_LOG_STREAM_IF(WARN, globalRank == kSinkRank)
         << "dqplb relay " << (notifyAll ? "notify-all" : "notify-last")
         << " rank1SinkFirstUnexpectedOffset="
         << observation->firstUnexpectedOffset
@@ -386,7 +387,7 @@ TEST_F(CtranIbDqplbRelayTest, DqplbGpuRelayNotifyLastOrderingObservation) {
   Observation observation;
   runRelayOrderingCase(/*notifyAll*/ false, &observation);
   if (globalRank == kSinkRank) {
-    XLOG_IF(WARN, observation.firstUnexpectedOffset >= 0)
+    CTRAN_LOG_STREAM_IF(WARN, observation.firstUnexpectedOffset >= 0)
         << "rank 1 received bytes other than rank 0 data after notify-last "
            "relay: firstUnexpectedOffset="
         << observation.firstUnexpectedOffset
@@ -394,7 +395,7 @@ TEST_F(CtranIbDqplbRelayTest, DqplbGpuRelayNotifyLastOrderingObservation) {
         << static_cast<int>(observation.firstUnexpectedValue)
         << " rank0ByteCount=" << observation.rank0ByteCount
         << " rank2InitByteCount=" << observation.rank2InitByteCount;
-    XLOG_IF(WARN, observation.firstUnexpectedOffset < 0)
+    CTRAN_LOG_STREAM_IF(WARN, observation.firstUnexpectedOffset < 0)
         << "notify-last relay did not reproduce stale rank 2 bytes in this "
            "run: rank0ByteCount="
         << observation.rank0ByteCount

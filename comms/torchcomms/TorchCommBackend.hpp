@@ -18,7 +18,7 @@
 
 namespace torch::comms {
 
-inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.3";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.4";
 
 /**
  * TorchCommBackend - Abstract base class for communication backends.
@@ -382,16 +382,6 @@ class TorchCommBackend {
         std::string(getCommName()));
   }
 
-  // Device Transport API
-  // Returns a device pointer (as int64) to a transport handle for use in
-  // Triton/CUDA kernels. Only supported by backends with pipes transport.
-  virtual int64_t get_device_transport() {
-    throw std::runtime_error(
-        "[TorchCommBackend]: get_device_transport not implemented for "
-        "communicator:" +
-        std::string(getCommName()));
-  }
-
   /**
    * Register a tensor's memory with the backend for optimized data transfer.
    *
@@ -422,6 +412,21 @@ class TorchCommBackend {
         "[TorchCommBackend]: tensor_deregister not implemented for "
         "communicator:" +
         std::string(getCommName()));
+  }
+
+  // ABI 1.4 additions are appended so existing virtual slots retain their
+  // ordering. The version check rejects backends built against older layouts.
+  // The default preserves compatibility with backends that only expose the
+  // legacy boolean state by synthesizing an ABORTED reason with empty context.
+  virtual std::optional<AbortInfo> getAbortInfo() const {
+    return isAborted() ? std::optional<AbortInfo>{AbortInfo{}} : std::nullopt;
+  }
+
+  // Callers must supply a terminal reason. Legacy backends still receive the
+  // abort even when they cannot retain its diagnostic information.
+  virtual void abort(const AbortInfo& info) {
+    validateTerminalAbortReason(info.reason);
+    abort();
   }
 
  protected:

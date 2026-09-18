@@ -401,7 +401,7 @@ inline void progressRecvPostFlush(
   char* tmpRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
-  CtranMapperRequest* req;
+  CtranMapperRequest* req = nullptr;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
@@ -1032,17 +1032,15 @@ inline commResult_t completeHostResourceSetup(
 
 } // namespace
 
-#define HOST_ABORT(desc)                                                       \
-  if (comm->testAbort()) {                                                     \
-    auto _abort = comm->getAbort();                                            \
-    std::string _ctx =                                                         \
-        _abort->isTimedOut() ? "comm aborted due to timeout" : "comm aborted"; \
-    throw ctran::utils::Exception(                                             \
-        _ctx,                                                                  \
-        commRemoteError,                                                       \
-        comm->logMetaData_.rank,                                               \
-        comm->logMetaData_.commHash,                                           \
-        std::string(desc));                                                    \
+#define HOST_ABORT(desc)                     \
+  if (comm->testAbort()) {                   \
+    std::string _ctx = comm->abortMessage(); \
+    throw ctran::utils::Exception(           \
+        _ctx,                                \
+        commRemoteError,                     \
+        comm->logMetaData_.rank,             \
+        comm->logMetaData_.commHash,         \
+        std::string(desc));                  \
   }
 
 static commResult_t impl(
@@ -1164,6 +1162,9 @@ static commResult_t impl(
           op->allreduce.datatype == commUint64 ||
           op->allreduce.datatype == commFloat16 ||
           op->allreduce.datatype == commHalf ||
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+          op->allreduce.datatype == commBfloat16 ||
+#endif
           op->allreduce.datatype == commFloat32 ||
           op->allreduce.datatype == commFloat ||
           op->allreduce.datatype == commFloat64 ||

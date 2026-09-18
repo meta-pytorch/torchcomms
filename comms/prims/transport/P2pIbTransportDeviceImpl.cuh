@@ -5,6 +5,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "comms/common/fault_tolerance/AbortMacros.cuh"
+#include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/trace/PipesTraceTypes.h"
@@ -124,7 +126,7 @@ struct Simple {
 // (8 B packet = 4 B data + 4 B flag), so wire == 2x payload; readiness is the
 // inline flag (no DATA_READY -- see consumeRecvBuf(LL)). LL reuses the same
 // channel/state as Simple (shared IbChannelLayout, staging, and progress
-// cursor); forward is not implemented for LL yet.
+// cursor).
 namespace protocol {
 struct LL {
   // Slot 1: LL owns its own per-channel resource slot. The two protocols must
@@ -216,12 +218,12 @@ __device__ __forceinline__ void assert_progress_slot_idle(
     const char* opName);
 
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& abortDevice = AbortDevice());
 
 template <typename P, typename Transport>
 __device__ __forceinline__ void record_send_completion(
@@ -235,6 +237,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -242,6 +245,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -253,10 +257,7 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     Args... args);
 
 template <
@@ -267,10 +268,7 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     Args... args);
 
 template <typename Transport, typename CopyOp, typename... Args>
@@ -278,10 +276,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args);
@@ -326,7 +321,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     std::size_t chunkBytes,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   const uint32_t numLanes =
       static_cast<uint32_t>(transport.channel_layout().numLanes);
@@ -349,7 +344,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
         sendRecvSignalSlotOffset(static_cast<int>(lane)));
     ThreadGroup solo{
         0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
-    transport.wait_signal(solo, laneBuf, expected, timeout);
+    transport.wait_signal(solo, laneBuf, expected, abortDevice);
     protoSlot.recvLaneExpected[lane] = expected;
     ++localChannel.recvDataReadyLaneCursor;
   }
@@ -360,7 +355,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
   (void)localChannel;
   (void)localDataReady;
   (void)chunkBytes;
-  (void)timeout;
+  (void)abortDevice;
 #endif
 }
 
@@ -401,7 +396,7 @@ __device__ __forceinline__ void wait_recv_data_ready(
  *                        when max_signal_bytes is set.
  * @param max_signal_bytes Max bytes per signaled sub-chunk within one
  *                        perBlockSlot. 0 means one signal per perBlockSlot.
- * @param timeout         Optional timeout for wait operations.
+ * @param abortDevice         Optional abortDevice for wait operations.
  */
 // Per-call geometry for the blocking send()/recv() loops. One definition serves
 // both directions -- send and recv share the same layout, so the caller
@@ -576,7 +571,7 @@ __device__ __forceinline__ void consumeRecvBuf(
     std::size_t dataOff,
     uint64_t /*flagVal*/,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
@@ -592,7 +587,7 @@ __device__ __forceinline__ void consumeRecvBuf(
         waitCredit);
   }
   wait_recv_data_ready(
-      transport, group, localChannel, localDataReady, waitCredit, timeout);
+      transport, group, localChannel, localDataReady, waitCredit, abortDevice);
   if (group.is_leader()) {
     trace_allreduce_event(
         traceContext,
@@ -631,7 +626,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)nbytes;
   (void)dataOff;
   (void)waitCredit;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
   ((void)args, ...);
 #endif
@@ -643,6 +638,10 @@ __device__ __forceinline__ void consumeRecvBuf(
 // analog of consumeRecvBuf (recv-side readiness) fused with prepareSendBuf
 // (relay signal); LL later overrides it to poll inline flags, repack the fwd
 // staging, and return an empty signal.
+//
+// `recvFlagVal` / `fwdFlagVal` are the two ring generations, unused by Simple
+// (which has no inline flag) but part of the shared seam so forward_impl keeps
+// a single tag-dispatched call site.
 template <
     typename CopyOp = Memcpy,
     typename Transport,
@@ -662,14 +661,18 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
     std::size_t nbytes,
     std::size_t dataOff,
     uint64_t recvWaitCredit,
+    uint64_t recvFlagVal,
+    uint64_t fwdFlagVal,
     const IbRemoteChannel& fwdRemoteChannel,
     uint64_t fwdSignalVal,
     uint32_t fwdSlot,
     uint64_t fwdPipelineCycle,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* recvTraceContext,
     const PipesTraceAllReduceContext* sendTraceContext,
     Args... args) {
+  (void)recvFlagVal;
+  (void)fwdFlagVal;
 #if PIPES_IS_DEVICE_COMPILE
   // Both waits must clear before CopyOp::forward, which reads recvStaging and
   // writes fwdStaging; they are independent, so the order is a latency choice,
@@ -698,7 +701,7 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
       recvLocalChannel,
       recvDataReady,
       recvWaitCredit,
-      timeout);
+      abortDevice);
   if (group.is_leader()) {
     trace_allreduce_event(
         recvTraceContext,
@@ -711,8 +714,25 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
         static_cast<uint8_t>(kPipesTraceQpLaneMask),
         fwdSignalVal);
   }
-  prepare_send_slot<protocol::Simple>(
-      fwdTransport, group, fwdSlot, fwdPipelineCycle, timeout);
+  // Each protocol owns its own resource slot (Simple kProtoSlot 0, LL 1), so
+  // the slot template argument must be THIS overload's tag, not a fixed
+  // protocol -- an LL overload that copies this body must swap it for LL.
+  if (prepare_send_slot<protocol::Simple>(
+          fwdTransport, group, fwdSlot, fwdPipelineCycle, abortDevice)) {
+    // Slot not retired: a lane's completion was never observed, so the NIC may
+    // still be reading this staging. Staging over it is the memory hazard the
+    // retirement guard exists to prevent, so stop before CopyOp::forward.
+    //
+    // An empty signal is the "nothing to piggyback" value -- the same one the
+    // host-compile arm below returns. On this Simple overload the success path
+    // always returns a real `fwdRemoteChannel.dataReady`, so an empty `buf` is
+    // an unambiguous "this chunk was abandoned" marker for the caller; on LL it
+    // is the normal case, which is why the caller tests it only for Simple.
+    //
+    // `prepare_send_slot()` broadcasts its verdict, so this return is
+    // group-uniform and barrier-safe.
+    return SendSignal{};
+  }
   if (group.is_leader()) {
     trace_allreduce_event(
         sendTraceContext,
@@ -759,13 +779,209 @@ __device__ __forceinline__ SendSignal prepareForwardBuf(
   (void)fwdSignalVal;
   (void)fwdSlot;
   (void)fwdPipelineCycle;
-  (void)timeout;
+  (void)abortDevice;
   (void)recvTraceContext;
   (void)sendTraceContext;
   ((void)args, ...);
   return SendSignal{};
 #endif
 }
+
+// LL forward: poll the upstream chunk's inline packet flags, then a single
+// fused CopyOp::forwardLL re-stamps recvStaging -> dst + fwdStaging with the
+// DOWNSTREAM ring's generation, and the relay put carries no DATA_READY. The
+// LL analog of consumeRecvBuf(LL) fused with prepareSendBuf(LL).
+//
+// Both this and consumeRecvBuf(LL) poll the whole chunk before decoding, but
+// only here is the poll load-bearing. On the recv side a codec that spins per
+// packet would also be correct, and the seam's poll is there so correctness
+// does not depend on which CopyOp turns up. The fused hook has no such
+// fallback: it writes fwdStaging as it reads recvStaging, so a spin partway
+// through would already have emitted packets built from not-yet-arrived data,
+// with nothing to roll back. Confirm the whole chunk first, then transform in
+// one non-spinning pass -- which is why CopyOp::forwardLL takes no AbortDevice.
+template <
+    typename CopyOp = Memcpy,
+    typename Transport,
+    typename FwdTransport,
+    typename... Args>
+__device__ __forceinline__ SendSignal prepareForwardBuf(
+    protocol::LL,
+    Transport& transport,
+    FwdTransport& fwdTransport,
+    ThreadGroup& group,
+    IbLocalChannel& recvLocalChannel,
+    const IbgdaLocalBuffer& recvDataReady,
+    char* dst,
+    char* fwdStaging,
+    const char* recvStaging,
+    std::size_t payloadBytes,
+    std::size_t nbytes,
+    std::size_t dataOff,
+    uint64_t recvWaitCredit,
+    uint64_t recvFlagVal,
+    uint64_t fwdFlagVal,
+    const IbRemoteChannel& fwdRemoteChannel,
+    uint64_t fwdSignalVal,
+    uint32_t fwdSlot,
+    uint64_t fwdPipelineCycle,
+    const AbortDevice& abortDevice,
+    const PipesTraceAllReduceContext* recvTraceContext,
+    const PipesTraceAllReduceContext* sendTraceContext,
+    Args... args) {
+  using P = LlxPacket<4, 4>;
+  static_assert(
+      has_forwardLL_v<CopyOp, P>,
+      "LL forward path requires a CopyOp with a packet-aware forwardLL<P>(); "
+      "Memcpy provides one. A reduce/convert CopyOp must supply its own -- "
+      "neither a contiguous copy nor a verbatim packet copy works, because the "
+      "relayed packets must carry the downstream ring's generation");
+#if PIPES_IS_DEVICE_COMPILE
+  // LL carries no DATA_READY and no slot-free credit on the recv side, so the
+  // signal-driven parameters Simple uses are inert here.
+  (void)recvDataReady;
+  (void)recvWaitCredit;
+  (void)fwdRemoteChannel;
+  (void)fwdSignalVal;
+  (void)recvTraceContext;
+
+  // Readiness first, for the same latency reason as the Simple overload: the
+  // upstream wait is the remote-dependent one, so by the time it clears the
+  // local NIC has usually already released this fwdStaging slot.
+  const auto recvFlag = static_cast<typename P::FlagType>(recvFlagVal);
+  while (
+      !LLImpl<P>::all_flags_set(group, recvStaging, payloadBytes, recvFlag)) {
+    // The loop condition itself is a group barrier (all_flags_set ends in
+    // group.all()), so the exit has to be group-uniform: a bare FT_ABORT_BREAK
+    // would let the threads that saw the abort leave while the rest block
+    // forever in that barrier. Check, then agree, then leave together.
+    const bool stop = FT_ABORT_CHECK(
+        abortDevice,
+        "forward(LL) waiting for packet flags flagVal=%llu, payloadBytes=%llu",
+        static_cast<unsigned long long>(recvFlagVal),
+        static_cast<unsigned long long>(payloadBytes));
+    if (group.all(stop)) {
+      break;
+    }
+  }
+  if (group.is_leader()) {
+    // LL carries no DATA_READY, but the upstream put still advanced the
+    // sender's IbQpState::cursor -- select_put_lane_ordinal() increments it on
+    // every put regardless of protocol, and it is channel-scoped, not
+    // slot-scoped. recvDataReadyLaneCursor mirrors it, so consuming an LL chunk
+    // here without the matching bump leaves the two one chunk apart per
+    // transfer and Simple's next receive on this channel waits on a lane the
+    // sender never wrote. Matches progress_recv_ready(LL) and
+    // consumeRecvBuf(LL).
+    ++recvLocalChannel.recvDataReadyLaneCursor;
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitBegin,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdFlagVal);
+  }
+  // LL owns kProtoSlot 1: the slot template argument must be this overload's
+  // tag, not Simple's.
+  if (prepare_send_slot<protocol::LL>(
+          fwdTransport, group, fwdSlot, fwdPipelineCycle, abortDevice)) {
+    // Slot not retired -- same memory hazard the Simple overload guards
+    // against: the NIC may still be reading this staging, so stop before
+    // CopyOp::forwardLL writes over it.
+    //
+    // KNOWN GAP, deferred to a follow-up: this abandonment is not reported
+    // precisely to the caller. Simple marks it with an empty SendSignal, but
+    // LL's success path returns an empty signal too (the inline flag IS the
+    // readiness mark), so forward_impl's `if constexpr (Simple)` test cannot
+    // cover us. That leaves only its `groupAborted()` break, which is amortized
+    // behind `nextPollCycles_` and so can answer false on the very iteration
+    // this guard fired -- exactly the staleness the Simple empty-signal test
+    // exists to close.
+    //
+    // The consequence is worse than a stall and is FAULT_TOLERANCE.md
+    // principle 4: continuing would ACK the predecessor for a chunk we never
+    // consumed and hand the successor a fused DATA_READY for data we never
+    // wrote, releasing two correctly-blocked peers and stopping them reaching
+    // their own deadlines -- one rank's abort silently suppressing fault
+    // detection on the rest.
+    //
+    // The guard still belongs here: dropping it would stage over live NIC
+    // reads, which is silent data corruption rather than a detection gap. The
+    // fix is a precise out-param (the `bool& abandoned` idiom LLImpl already
+    // uses in load_ready_payload) plus an LL arm in forward_impl's test.
+    return SendSignal{};
+  }
+  if (group.is_leader()) {
+    trace_allreduce_event(
+        sendTraceContext,
+        PipesTraceEventType::kAllReduceLocalCompletionWaitEnd,
+        static_cast<uint8_t>(kPipesTraceQpLaneMask),
+        fwdFlagVal);
+  }
+
+  // Clamp to the REAL payload before the codec, exactly as prepareSendBuf(LL)
+  // does: payloadBytes is rounded up to kData for the wire/credit stream, and
+  // both hops derive validBytes from values they already agree on, so
+  // packet_count() matches on each side.
+  const std::size_t validBytes =
+      valid_payload_bytes(dataOff, payloadBytes, nbytes);
+  if (validBytes > 0) {
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyBegin,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          validBytes);
+    }
+    CopyOp::template forwardLL<P>(
+        group,
+        dst,
+        fwdStaging,
+        recvStaging,
+        validBytes,
+        dataOff,
+        recvFlag,
+        static_cast<typename P::FlagType>(fwdFlagVal),
+        args...);
+    if (group.is_leader()) {
+      trace_allreduce_event(
+          sendTraceContext,
+          PipesTraceEventType::kAllReduceStageCopyEnd,
+          static_cast<uint8_t>(kPipesTraceQpLaneMask),
+          validBytes);
+    }
+  }
+  group.sync();
+  // No DATA_READY: the inline flag the transform just stamped is the readiness
+  // mark. An empty IbgdaRemoteBuffer makes the put carry data only, exactly as
+  // prepareSendBuf(LL) / progress_send_signal(LL) do.
+  return SendSignal{IbgdaRemoteBuffer{}, /*val=*/0};
+#else
+  (void)transport;
+  (void)fwdTransport;
+  (void)group;
+  (void)recvLocalChannel;
+  (void)recvDataReady;
+  (void)dst;
+  (void)fwdStaging;
+  (void)recvStaging;
+  (void)payloadBytes;
+  (void)nbytes;
+  (void)dataOff;
+  (void)recvWaitCredit;
+  (void)recvFlagVal;
+  (void)fwdFlagVal;
+  (void)fwdRemoteChannel;
+  (void)fwdSignalVal;
+  (void)fwdSlot;
+  (void)fwdPipelineCycle;
+  (void)abortDevice;
+  (void)recvTraceContext;
+  (void)sendTraceContext;
+  ((void)args, ...);
+  return SendSignal{};
+#endif
+}
+
 // LL encode: pack payload + trailing flag=flagVal into staging via
 // LLImpl::pack; the put carries NO DATA_READY (empty signal) -- the inline
 // flag is the readiness mark. Ignores the remote signal slot/value that
@@ -844,7 +1060,7 @@ __device__ __forceinline__ void consumeRecvBuf(
     std::size_t dataOff,
     uint64_t flagVal,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     Args... args) {
   using P = LlxPacket<4, 4>;
@@ -873,7 +1089,7 @@ __device__ __forceinline__ void consumeRecvBuf(
         validBytes,
         dataOff,
         static_cast<typename P::FlagType>(flagVal),
-        timeout,
+        abortDevice,
         args...);
   }
   if (group.is_leader()) {
@@ -899,7 +1115,7 @@ __device__ __forceinline__ void consumeRecvBuf(
   (void)dataOff;
   (void)flagVal;
   (void)waitCredit;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
   ((void)args, ...);
 #endif
@@ -918,7 +1134,7 @@ __device__ __forceinline__ void send_impl(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
@@ -944,7 +1160,7 @@ __device__ __forceinline__ void send_impl(
   (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
 #else
   (void)ibOps;
@@ -1120,8 +1336,14 @@ __device__ __forceinline__ void send_impl(
           (dataOff + chunkSize <= nbytes) ? chunkSize : (nbytes - dataOff);
 
       // (1) Wait for NIC to finish with this slot's local sendStaging.
-      prepare_send_slot<Proto>(
-          transport, group, ringSlot, pipelineCycle, timeout);
+      if (prepare_send_slot<Proto>(
+              transport, group, ringSlot, pipelineCycle, abortDevice)) {
+        // Unretired slot -- see prepare_send_slot. Breaking rather than
+        // continuing keeps this loop from staging over a buffer the NIC may
+        // still be reading, and from publishing chunks for an operation that
+        // has already given up.
+        break;
+      }
 
       // (2) Cooperative compress: src -> local sendStaging via CopyOp. The
       //     return value is the compressed byte count the leader uses to size
@@ -1138,7 +1360,10 @@ __device__ __forceinline__ void send_impl(
       // (3) Backpressure: wait for receiver to free this slot's recvStaging.
       if (protocolStreamEnd > pipelineBytes) {
         transport.wait_signal(
-            group, localSlotFree, protocolStreamEnd - pipelineBytes, timeout);
+            group,
+            localSlotFree,
+            protocolStreamEnd - pipelineBytes,
+            abortDevice);
       }
 
       // (4) Leader-only RDMA put with fused signal. The put length is the
@@ -1239,12 +1464,17 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint8_t>(kPipesTraceQpLaneMask),
             bytesThis);
       }
-      if constexpr (std::is_void_v<IbOps>) {
-        prepare_send_slot<Proto>(
-            transport, group, slot, pipelineCycle, timeout);
-      } else {
-        ibOps->prepare_send_slot(
-            transport, group, slot, pipelineCycle, timeout);
+      const bool slotUnretired = [&] {
+        if constexpr (std::is_void_v<IbOps>) {
+          return prepare_send_slot<Proto>(
+              transport, group, slot, pipelineCycle, abortDevice);
+        } else {
+          return ibOps->prepare_send_slot(
+              transport, group, slot, pipelineCycle, abortDevice);
+        }
+      }();
+      if (slotUnretired) {
+        break;
       }
       if (group.is_leader()) {
         trace_allreduce_event(
@@ -1297,7 +1527,7 @@ __device__ __forceinline__ void send_impl(
                 protocolBytesThis);
           }
           transport.wait_signal(
-              group, localSlotFree, slotFreeExpected, timeout);
+              group, localSlotFree, slotFreeExpected, abortDevice);
           if (group.is_leader()) {
             trace_allreduce_event(
                 traceContext,
@@ -1312,7 +1542,7 @@ __device__ __forceinline__ void send_impl(
         // that is correctly blocked and preventing it from ever reaching its
         // own deadline. The slot epilogue after this loop still runs, so the
         // progress slot is left idle for the next op.
-        if (groupAborted(group, timeout)) {
+        if (groupAborted(group, abortDevice)) {
           break;
         }
 
@@ -1392,7 +1622,7 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint32_t>(slot),
             pipelineCycle,
             /*requiredRecvCredit=*/0,
-            timeout);
+            abortDevice);
       }
       dataOff += payloadBytes;
     }
@@ -1420,7 +1650,7 @@ __device__ __forceinline__ void send(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   send_impl<Transport, CopyOp, void, Proto>(
       transport,
@@ -1429,7 +1659,7 @@ __device__ __forceinline__ void send(
       src,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       nullptr,
       args...);
 }
@@ -1445,7 +1675,7 @@ __device__ __forceinline__ void send_with_fine_trace(
     const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     Args... args) {
   send_impl<Transport, CopyOp, void, Proto>(
@@ -1455,7 +1685,7 @@ __device__ __forceinline__ void send_with_fine_trace(
       src,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       &traceContext,
       args...);
 }
@@ -1485,7 +1715,7 @@ __device__ __forceinline__ void send_with_fine_trace(
  * @param max_signal_bytes Max bytes per signaled sub-chunk within one
  *                        perBlockSlot. 0 means one signal per perBlockSlot.
  *                        Must match the sender's value.
- * @param timeout         Optional timeout for wait operations.
+ * @param abortDevice         Optional abortDevice for wait operations.
  */
 template <
     typename Transport,
@@ -1500,7 +1730,7 @@ __device__ __forceinline__ void recv_impl(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* traceContext = nullptr,
     Args... args) {
   // The variable-size (compressed) loop below keeps its encode inline rather
@@ -1526,7 +1756,7 @@ __device__ __forceinline__ void recv_impl(
   (void)dst;
   (void)nbytes;
   (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
 #else
   (void)ibOps;
@@ -1679,7 +1909,7 @@ __device__ __forceinline__ void recv_impl(
           localChannel,
           localDataReady,
           protocolBytesThis,
-          timeout);
+          abortDevice);
 
       // (2) Cooperative decompress: local recvStaging -> dst via CopyOp.
       CopyOp::recv(
@@ -1756,7 +1986,7 @@ __device__ __forceinline__ void recv_impl(
             dataOff,
             flagVal,
             protocolBytesThis,
-            timeout,
+            abortDevice,
             traceContext,
             args...);
         // The DATA_READY wait inside consumeRecvBuf may have given up rather
@@ -1764,7 +1994,7 @@ __device__ __forceinline__ void recv_impl(
         // Leave before the SLOT_FREE credit below: signalling it would tell the
         // sender we consumed a chunk it never sent, releasing a peer that is
         // correctly blocked and preventing it from reaching its own deadline.
-        if (groupAborted(group, timeout)) {
+        if (groupAborted(group, abortDevice)) {
           break;
         }
 
@@ -1789,7 +2019,10 @@ __device__ __forceinline__ void recv_impl(
         }
       } else {
         const uint64_t recvToken =
-            ibOps->wait_recv(transport, group, protocolBytesThis, timeout);
+            ibOps->wait_recv(transport, group, protocolBytesThis, abortDevice);
+        if (!ibOps->recv_token_valid(recvToken)) {
+          break;
+        }
         const std::size_t validBytes =
             valid_payload_bytes(dataOff, payloadBytes, nbytes);
         if (validBytes > 0) {
@@ -1830,7 +2063,7 @@ __device__ __forceinline__ void recv(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   recv_impl<Transport, CopyOp, void, Proto>(
       transport,
@@ -1839,7 +2072,7 @@ __device__ __forceinline__ void recv(
       dst,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       nullptr,
       args...);
 }
@@ -1855,7 +2088,7 @@ __device__ __forceinline__ void recv_with_fine_trace(
     void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     Args... args) {
   recv_impl<Transport, CopyOp, void, Proto>(
@@ -1865,7 +2098,7 @@ __device__ __forceinline__ void recv_with_fine_trace(
       dst,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       &traceContext,
       args...);
 }
@@ -1919,7 +2152,7 @@ __device__ __forceinline__ void recv_with_fine_trace(
  * @param nbytes          Bytes to receive and forward.
  * @param max_signal_bytes Max bytes per signaled sub-chunk. 0 =
  * perBlockSlot.
- * @param timeout         Optional timeout for wait operations.
+ * @param abortDevice         Optional abortDevice for wait operations.
  * @param args            Extra args forwarded to CopyOp::forward.
  */
 template <
@@ -1936,7 +2169,7 @@ __device__ __forceinline__ void forward_impl(
     Transport& fwdTransport,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     const PipesTraceAllReduceContext* recvTraceContext = nullptr,
     const PipesTraceAllReduceContext* sendTraceContext = nullptr,
     Args... args) {
@@ -1946,6 +2179,12 @@ __device__ __forceinline__ void forward_impl(
   static_assert(
       std::is_void_v<IbOps> || std::is_same_v<Proto, protocol::Simple>,
       "IB operation policies support protocol::Simple only");
+  static_assert(
+      !detail::copyop_variable_size_v<CopyOp> ||
+          std::is_same_v<Proto, protocol::Simple>,
+      "variable-size CopyOps (e.g. AnsCompress) are supported on "
+      "protocol::Simple only; the compressed loop is not behind the "
+      "prepareForwardBuf seam.");
 #if PIPES_IS_DEVICE_COMPILE
 #ifdef __HIP_PLATFORM_AMD__
   static_assert(
@@ -2072,6 +2311,15 @@ __device__ __forceinline__ void forward_impl(
         ? fwdProtocolStreamEnd - fwdGeo.pipelineBytesWire
         : 0;
     if constexpr (std::is_void_v<IbOps>) {
+      // Per-ring-pass packet generations, one per side. They are NOT the same
+      // value: the two cursors advance independently and the two channels can
+      // have different pipeline windows, so the relayed packets must be
+      // re-stamped from recvFlagVal to fwdFlagVal. Same expression the blocking
+      // send/recv paths and next_chunk() use. Ignored by Simple.
+      const uint64_t recvFlagVal =
+          recvStreamPayload / recvGeo.pipelineBytesPayload + 1;
+      const uint64_t fwdFlagVal = fwdPipelineCycle + 1;
+
       // (1) prepareForwardBuf: fwd slot-reuse backpressure + recv-side
       // readiness
       //     + fused transform recvStaging -> dst + fwdStaging, returning the
@@ -2090,20 +2338,34 @@ __device__ __forceinline__ void forward_impl(
           nbytes,
           dataOff,
           recvProtocolBytesThis,
+          recvFlagVal,
+          fwdFlagVal,
           fwdRemoteChannel,
           fwdProtocolBytesThis,
           static_cast<uint32_t>(fwdSlot),
           fwdPipelineCycle,
-          timeout,
+          abortDevice,
           recvTraceContext,
           sendTraceContext,
           args...);
-      // The DATA_READY wait inside prepareForwardBuf may have given up, so this
-      // chunk was never written. Forward is the worst of the three paths to get
-      // wrong on abort: continuing would ACK the predecessor for a chunk we
-      // never consumed *and* hand the successor data that never arrived,
-      // releasing two correctly-blocked peers at once.
-      if (groupAborted(group, timeout)) {
+      // The DATA_READY wait inside prepareForwardBuf may have given up, or the
+      // fwd slot may not have retired, so this chunk was never written. Forward
+      // is the worst of the three paths to get wrong on abort: continuing would
+      // ACK the predecessor for a chunk we never consumed *and* hand the
+      // successor data that never arrived, releasing two correctly-blocked
+      // peers at once.
+      //
+      // The empty-signal test is not redundant with `groupAborted()`. That read
+      // is amortized behind `nextPollCycles_`, so it can still answer false on
+      // the iteration where slot preparation gave up; the signal is derived
+      // from the broadcast verdict itself and cannot be stale. Simple only --
+      // LL returns an empty signal on its success path.
+      if constexpr (std::is_same_v<Proto, protocol::Simple>) {
+        if (sig.buf.ptr == nullptr) {
+          break;
+        }
+      }
+      if (groupAborted(group, abortDevice)) {
         break;
       }
 
@@ -2124,7 +2386,7 @@ __device__ __forceinline__ void forward_impl(
               fwdProtocolBytesThis);
         }
         fwdTransport.wait_signal(
-            group, fwdSlotFree, fwdSlotFreeExpected, timeout);
+            group, fwdSlotFree, fwdSlotFreeExpected, abortDevice);
         if (group.is_leader()) {
           trace_allreduce_event(
               sendTraceContext,
@@ -2136,7 +2398,7 @@ __device__ __forceinline__ void forward_impl(
       // As in send_impl: the successor backpressure wait may have given up, and
       // the put below carries a fused DATA_READY that would release the
       // successor on data we never wrote.
-      if (groupAborted(group, timeout)) {
+      if (groupAborted(group, abortDevice)) {
         break;
       }
 
@@ -2201,14 +2463,21 @@ __device__ __forceinline__ void forward_impl(
       }
       group.sync();
     } else {
-      const uint64_t recvToken =
-          ibOps->wait_recv(transport, group, recvProtocolBytesThis, timeout);
-      ibOps->prepare_send_slot(
-          fwdTransport,
-          group,
-          static_cast<uint32_t>(fwdSlot),
-          fwdPipelineCycle,
-          timeout);
+      const uint64_t recvToken = ibOps->wait_recv(
+          transport, group, recvProtocolBytesThis, abortDevice);
+      if (!ibOps->recv_token_valid(recvToken)) {
+        break;
+      }
+      if (ibOps->prepare_send_slot(
+              fwdTransport,
+              group,
+              static_cast<uint32_t>(fwdSlot),
+              fwdPipelineCycle,
+              abortDevice)) {
+        // Unretired forward slot -- stop before CopyOp::forward stages into a
+        // buffer the NIC may still be reading.
+        break;
+      }
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, payloadBytes, nbytes);
       if (validBytes > 0) {
@@ -2238,7 +2507,7 @@ __device__ __forceinline__ void forward_impl(
           static_cast<uint32_t>(fwdSlot),
           fwdPipelineCycle,
           recvToken + 1,
-          timeout);
+          abortDevice);
     }
     dataOff += payloadBytes;
   }
@@ -2267,7 +2536,7 @@ __device__ __forceinline__ void forward_impl(
   (void)fwdTransport;
   (void)nbytes;
   (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)recvTraceContext;
   (void)sendTraceContext;
 #endif
@@ -2285,7 +2554,7 @@ __device__ __forceinline__ void forward(
     Transport& fwdTransport,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout(),
+    const AbortDevice& abortDevice = AbortDevice(),
     Args... args) {
   forward_impl<CopyOp, Transport, void, Proto>(
       transport,
@@ -2295,7 +2564,7 @@ __device__ __forceinline__ void forward(
       fwdTransport,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       nullptr,
       nullptr,
       args...);
@@ -2313,7 +2582,7 @@ __device__ __forceinline__ void forward_with_fine_trace(
     Transport& fwdTransport,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& recvTraceContext,
     const PipesTraceAllReduceContext& sendTraceContext,
     Args... args) {
@@ -2325,7 +2594,7 @@ __device__ __forceinline__ void forward_with_fine_trace(
       fwdTransport,
       nbytes,
       max_signal_bytes,
-      timeout,
+      abortDevice,
       &recvTraceContext,
       &sendTraceContext,
       args...);
@@ -2483,6 +2752,15 @@ __device__ __forceinline__ ChannelSlotView acquire_channel(
     const IbChannelLayout& channelLayout,
     ThreadGroup& group) {
   validate_progress_group(channelLayout, group);
+  if (P::kProtoSlot >= channelLayout.numProtocolSlots) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: protocol slot %d is disabled (numProtocolSlots=%d)\n",
+          P::kProtoSlot,
+          channelLayout.numProtocolSlots);
+    }
+    PIPES_DEVICE_TRAP();
+  }
   const int channelId = static_cast<int>(group.group_id);
   const int slotIndex =
       channelLayout.protoChannelSlot(channelId, P::kProtoSlot);
@@ -2533,36 +2811,68 @@ __device__ __forceinline__ void assert_progress_slot_idle(
 #endif
 }
 
+/*
+ * Returns true when the slot could NOT be retired, so the caller must stop
+ * before staging or putting anything.
+ *
+ * `wait_local_completion()` is `void` and stays that way (FT principle 3): on
+ * abort or an expired deadline it exits its spin through `FT_ABORT_BREAK`,
+ * leaving that lane's completion unobserved. Clearing the whole mask and
+ * advancing the generation regardless -- which is what this used to do -- tells
+ * a later `try_prepare_send_slot()` that those completions landed when they did
+ * not, dropping the one guard that stops the next operation overwriting
+ * send-staging while the NIC is still reading out of it.
+ *
+ * The drain path already states this invariant in
+ * `P2pIbTransportProgressImpl.cuh` ("The masks are deliberately left ALONE
+ * rather than cleared"); the blocking path did not honour it. So each lane is
+ * re-checked after its wait and only *observed* completions are cleared, and
+ * the generation advances only once the mask actually reaches zero.
+ *
+ * The verdict leaves through the `group.sync()` that already terminated this
+ * function, now a broadcast, so making it group-uniform costs no extra barrier.
+ */
 template <typename P, typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
+  uint32_t unretired = 0;
   if (group.is_leader()) {
     auto& slot = transport.template local_channel_slot<P>(group.group_id)
                      .sendCompletionSlots[slotId];
     if (slot.generation != generation) {
-      const uint64_t pending = slot.laneMask;
+      uint64_t pending = slot.laneMask;
       const uint32_t numLanes = transport.send_completion_lane_count();
       for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
-        if ((pending & (1ULL << laneId)) == 0) {
+        const uint64_t laneBit = 1ULL << laneId;
+        if ((pending & laneBit) == 0) {
           continue;
         }
-        transport.wait_local_completion(
-            group.group_id,
-            IbLocalCompletionTicket{
-                .completionId = laneId,
-                .value = slot.values[laneId],
-            },
-            timeout);
+        const IbLocalCompletionTicket ticket{
+            .completionId = laneId,
+            .value = slot.values[laneId],
+        };
+        transport.wait_local_completion(group.group_id, ticket, abortDevice);
+        // Confirm rather than assume: the wait above cannot report that it gave
+        // up, and a lane earlier in this loop may already have latched the
+        // abort, so later lanes can fall straight through it.
+        if (transport.is_local_completion_ready(
+                group.group_id, ticket, abortDevice)) {
+          pending &= ~laneBit;
+        }
       }
-      slot.laneMask = 0;
-      slot.generation = generation;
+      slot.laneMask = pending;
+      if (pending == 0) {
+        slot.generation = generation;
+      } else {
+        unretired = 1U;
+      }
     }
   }
-  group.sync();
+  return group.broadcast<uint32_t>(unretired) != 0U;
 }
 
 template <typename P, typename Transport>
@@ -2573,6 +2883,9 @@ __device__ __forceinline__ void record_send_completion(
     uint64_t generation,
     const IbLocalCompletionTicket& ticket) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (!ticket.posted) {
+    return;
+  }
   auto& slot = transport.template local_channel_slot<P>(channelId)
                    .sendCompletionSlots[slotId];
   slot.generation = generation;
@@ -2588,14 +2901,14 @@ __device__ __forceinline__ void record_send_completion(
 }
 
 template <typename Transport>
-__device__ __forceinline__ void prepare_send_slot(
+[[nodiscard]] __device__ __forceinline__ bool prepare_send_slot(
     Transport& transport,
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
-  prepare_send_slot<protocol::Simple>(
-      transport, group, slotId, generation, timeout);
+    const AbortDevice& abortDevice) {
+  return prepare_send_slot<protocol::Simple>(
+      transport, group, slotId, generation, abortDevice);
 }
 
 template <typename Transport>

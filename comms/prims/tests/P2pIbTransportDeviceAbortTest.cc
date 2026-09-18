@@ -250,7 +250,65 @@ class PutFixture {
   uint32_t* posted_{nullptr};
 };
 
+class PrepareSendSlotObservationFixture {
+ public:
+  PrepareSendSlotObservationFixture() {
+    CUDACHECK_TEST(cudaSetDevice(0));
+    CUDACHECK_TEST(cudaMalloc(&device_, sizeof(*device_)));
+    CUDACHECK_TEST(cudaMemset(device_, 0, sizeof(*device_)));
+  }
+
+  ~PrepareSendSlotObservationFixture() {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaFree(device_);
+  }
+
+  PrepareSendSlotObservationFixture(const PrepareSendSlotObservationFixture&) =
+      delete;
+  PrepareSendSlotObservationFixture& operator=(
+      const PrepareSendSlotObservationFixture&) = delete;
+  PrepareSendSlotObservationFixture(PrepareSendSlotObservationFixture&&) =
+      delete;
+  PrepareSendSlotObservationFixture& operator=(
+      PrepareSendSlotObservationFixture&&) = delete;
+
+  test::PrepareSendSlotAbortObservation* device() {
+    return device_;
+  }
+
+  test::PrepareSendSlotAbortObservation read() const {
+    test::PrepareSendSlotAbortObservation observation;
+    CUDACHECK_TEST(cudaMemcpy(
+        &observation, device_, sizeof(observation), cudaMemcpyDeviceToHost));
+    return observation;
+  }
+
+ private:
+  test::PrepareSendSlotAbortObservation* device_{nullptr};
+};
+
 } // namespace
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    PrepareSendSlotForwardsAbortToConfirmation) {
+  PrepareSendSlotObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+
+  test::launchPrepareSendSlotAbortForwarding(
+      fixture.device(), abort.getDeviceHandle());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  const auto expectedReason =
+      static_cast<uint32_t>(comms::fault_tolerance::AbortReason::ABORTED);
+  EXPECT_EQ(observation.waitReason, expectedReason);
+  EXPECT_EQ(observation.confirmationReason, expectedReason);
+  EXPECT_EQ(observation.slotUnretired, 1U);
+  EXPECT_EQ(observation.remainingLaneMask, 1U);
+  EXPECT_EQ(observation.generation, 0U);
+}
 
 // A put that finds the ring full has to unwind, not trap: under fault tolerance
 // a device trap takes down the CUDA context for the whole process, which is the
@@ -265,19 +323,24 @@ TEST(P2pIbTransportDeviceAbortTest, IbrcPutSkipsWhenQueueFullAndAborted) {
       fixture.posted(),
       /*attempts=*/depth + 2,
       abort.getDeviceHandle());
-  // Deliberate, and not replaceable by a condition variable: the abort has to
-  // land *while* the kernel is spinning on the full ring, and the only signal
-  // that it got there is the device-side posted counter, which the host cannot
-  // read mid-kernel without serialising behind the very kernel it is waiting
-  // on. 200 ms is two orders of magnitude above the launch it is covering.
+  // Deliberate: the abort has to land while the kernel is still inside the
+  // ring-full spin, and the only signal that it got there is the device-side
+  // posted counter, which the host cannot read mid-kernel without serialising
+  // behind the very kernel it is waiting on. 200 ms is two orders of magnitude
+  // above the launch it is covering.
   // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   abort.setAbort();
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  // Exactly the puts that fit are posted. The one that blocked on the full ring
-  // is dropped by the abort, and the one after it is dropped without ever
-  // touching the ring because the abort is already latched.
+  // Exactly the puts that fit are posted, but note *which* mechanism does what.
+  // `reserve()` does not read the abort inside its spin -- by design, so the
+  // stall path costs no mapped-host traffic -- so the parked put is released by
+  // the fixed proxy watchdog, not by this `setAbort()`. What the host abort
+  // does is make the *next* `reserve()` fail its one-shot entry check, so that
+  // put never touches the ring. Both leave `posted == depth`, which is why this
+  // assertion holds either way; the synchronize therefore also carries the
+  // watchdog's latency rather than returning as soon as the abort lands.
   EXPECT_EQ(fixture.readPosted(), depth);
   EXPECT_TRUE(abort.isAborted());
 }

@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/Transport.cuh"
 
@@ -78,7 +78,7 @@ __device__ __forceinline__ void printAllGatherOperation(
  * @param my_rank_id Current rank ID
  * @param transports_per_rank Array of transport objects, one per rank
  *                            (self-transport for my_rank, P2P for others)
- * @param timeout Optional timeout for wait operations
+ * @param abortDevice Optional abortDevice for wait operations
  *
  * Buffer Layout:
  *   sendbuff_d: [my_data]
@@ -96,10 +96,11 @@ __device__ __forceinline__ void all_gather(
     std::size_t sendcount,
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
-    Timeout timeout = Timeout()) {
+    AbortDevice abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__
-  // Start the timeout timer - must be called once before any wait operations
-  timeout.start();
+  // Start the abortDevice timer - must be called once before any wait
+  // operations
+  abortDevice.start();
 
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
@@ -195,7 +196,7 @@ __device__ __forceinline__ void all_gather(
         tiles.tile_data(group_per_peer.group_id),
         tiles.tile_bytes(group_per_peer.group_id),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   } else {
     // Receive peer's data into my recvbuff at appropriate offset
     TiledBuffer<char> tiles(
@@ -207,7 +208,7 @@ __device__ __forceinline__ void all_gather(
         tiles.tile_data(group_per_peer.group_id),
         tiles.tile_bytes(group_per_peer.group_id),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 
 #endif

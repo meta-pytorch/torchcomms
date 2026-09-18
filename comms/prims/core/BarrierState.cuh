@@ -4,9 +4,9 @@
 
 #include <cstdint>
 #include "comms/common/BitOps.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -72,16 +72,17 @@ struct alignas(128) BarrierState {
    * - 2nd wait: expects current_counter >= 2
    * - etc.
    *
-   * Blocking: Spins until the condition is met (or timeout expires).
+   * Blocking: Spins until the condition is met (or abortDevice expires).
    * Warning: Only one thread should call wait() per synchronization round.
    *
-   * @param timeout Optional timeout (default: no timeout, infinite wait)
+   * @param abortDevice Optional abort handle (default: disabled, infinite wait)
    */
-  __device__ __forceinline__ void wait(const Timeout& timeout = Timeout()) {
+  __device__ __forceinline__ void wait(
+      const AbortDevice& abortDevice = AbortDevice()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
       FT_ABORT_BREAK(
-          timeout,
+          abortDevice,
           "BarrierState::wait timed out (expected=%llu, current=%llu)",
           static_cast<unsigned long long>(expected),
           static_cast<unsigned long long>(current_counter_.load()));
@@ -114,15 +115,15 @@ struct alignas(128) BarrierState {
    * barrier before proceeding.
    *
    * @param group ThreadGroup for cooperative synchronization
-   * @param timeout Optional timeout (default: no timeout, infinite wait)
+   * @param abortDevice Optional abort handle (default: disabled, infinite wait)
    *
    * All threads in the group must call this function (collective operation).
    */
   __device__ __forceinline__ void wait(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
     if (group.is_leader()) {
-      wait(timeout);
+      wait(abortDevice);
     }
     group.sync();
   }

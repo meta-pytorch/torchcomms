@@ -2,6 +2,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -20,6 +21,25 @@ inline std::string hashToHexStr(const uint64_t hash) {
   std::stringstream ss;
   ss << std::hex << hash;
   return ss.str();
+}
+
+/**
+ * Return the symbolic name of an errno value, e.g. "EINVAL".
+ * strerrorname_np was added in glibc 2.32 and is declared only under
+ * _GNU_SOURCE, so it is unavailable on some OSS toolchains. Returns "UNKNOWN"
+ * there and for unrecognized errno values.
+ */
+inline std::string errnoToNameStr([[maybe_unused]] const int errnoValue) {
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ) && defined(_GNU_SOURCE)
+#if __GLIBC_PREREQ(2, 32)
+  const char* name = ::strerrorname_np(errnoValue);
+  return name != nullptr ? name : "UNKNOWN";
+#else
+  return "UNKNOWN";
+#endif
+#else
+  return "UNKNOWN";
+#endif
 }
 
 template <typename T>

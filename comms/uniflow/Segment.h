@@ -192,6 +192,7 @@ class RegisteredSegment : public SegmentBase<RegisteredSegment> {
         : TSpan(segment, offset, length), handles_(segment.handles_) {}
 
     friend class MultiTransport;
+    friend class TcpTransport;
     friend class NvLinkTransport;
     friend class RdmaTransport;
 
@@ -237,16 +238,20 @@ class RemoteRegisteredSegment : public SegmentBase<RemoteRegisteredSegment> {
     Span(RemoteRegisteredSegment& segment, size_t offset, size_t length)
         : TSpan(segment, offset, length),
           handles_(segment.handles_),
-          nvlinkOffset_(offset) {}
+          remoteOffset_(offset) {}
 
     friend class MultiTransport;
+    friend class TcpTransport;
     friend class NVLinkTransport;
     friend class RdmaTransport;
     friend class P2pTransport;
 
    private:
     std::span<const std::unique_ptr<RemoteRegistrationHandle>> handles_;
-    size_t nvlinkOffset_;
+    /// Byte offset of this span within the remote registered segment.
+    /// Transport-agnostic: NVLink and P2P add it to a mapped base pointer,
+    /// TCP sends it alongside the segId for the peer to resolve.
+    size_t remoteOffset_;
   };
 
   friend class SegmentTest;

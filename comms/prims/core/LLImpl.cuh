@@ -6,11 +6,11 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/LlxPacket.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -33,8 +33,8 @@ template <typename P>
 struct LLImpl {
   using FlagType = typename P::FlagType;
 
-  // Spins between timeout clock reads. A power-of-two minus one so the check
-  // is a mask, not a modulo.
+  // Spins between abortDevice clock reads. A power-of-two minus one so the
+  // check is a mask, not a modulo.
   static constexpr uint32_t kTimeoutPollMask = 1023;
 
   // Replicate the (32-bit) flagVal across a 64-bit flag word, so an 8 B flag
@@ -212,11 +212,11 @@ struct LLImpl {
   /// Wait until every packet covering `nbytes` carries flag == `flagVal`, then
   /// decode its payload into `dst`. Cooperative across `group`; each thread
   /// spins only on the packets it owns.
-  // `timeout` bounds the readiness spin. Unlike Simple, LL's readiness lives in
-  // the payload, so the wait happens HERE rather than in wait_signal -- without
-  // a deadline a lost WQE, a dead peer, or a flagVal desync spins forever and
-  // then holds the whole group at the group.sync() below. Each thread polls
-  // only the packets it owns, so the check is per-thread
+  // `abortDevice` bounds the readiness spin. Unlike Simple, LL's readiness
+  // lives in the payload, so the wait happens HERE rather than in wait_signal
+  // -- without a deadline a lost WQE, a dead peer, or a flagVal desync spins
+  // forever and then holds the whole group at the group.sync() below. Each
+  // thread polls only the packets it owns, so the check is per-thread
   // (FT_ABORT_BREAK) and not the leader-only group form. The
   // clock is read once per kTimeoutPollMask+1 spins: LL is the latency path,
   // and a clock64() on every poll is a measurable cost on a hot loop.
@@ -232,7 +232,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__
     const std::size_t nPackets = P::packet_count(nbytes);
     const auto* base = reinterpret_cast<const char*>(staging);
@@ -249,7 +249,7 @@ struct LLImpl {
         // single abort-aware spin loop in this file.
         bool abandoned = false;
         const uint32_t data =
-            load_ready_payload(pkt, flagVal, timeout, abandoned);
+            load_ready_payload(pkt, flagVal, abortDevice, abandoned);
         // Leaves the packet loop as well: load_ready_payload only exits its own
         // spin. `dst` is undefined from here, which the abort contract permits.
         if (abandoned) {
@@ -270,7 +270,7 @@ struct LLImpl {
           // Spin until this packet's flag reaches the current flagVal.
           if ((++spins & kTimeoutPollMask) == 0) {
             FT_ABORT_BREAK(
-                timeout,
+                abortDevice,
                 "LLImpl::unpack waiting for LL flag %u on packet %llu",
                 (unsigned)flagVal,
                 (unsigned long long)i);
@@ -278,7 +278,7 @@ struct LLImpl {
         }
         if (spins >= kTimeoutPollMask) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "LLImpl::unpack abandoning decode at packet %llu",
               (unsigned long long)i);
         }
@@ -324,7 +324,7 @@ struct LLImpl {
   __device__ __forceinline__ static uint32_t load_ready_payload(
       const char* pkt,
       FlagType flagVal,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       bool& abandoned) {
 #ifdef __CUDA_ARCH__
     const auto* p = reinterpret_cast<const volatile uint64_t*>(pkt);
@@ -337,7 +337,7 @@ struct LLImpl {
         // unwind, not kill the CUDA context from inside LL decode. CHECK rather
         // than BREAK so the flag can be raised before leaving the spin.
         if (FT_ABORT_CHECK(
-                timeout,
+                abortDevice,
                 "LLImpl::load_ready_payload waiting for LL flag %u",
                 (unsigned)flagVal)) {
           abandoned = true;
@@ -350,9 +350,37 @@ struct LLImpl {
 #else
     (void)pkt;
     (void)flagVal;
-    (void)timeout;
+    (void)abortDevice;
     (void)abandoned;
     return 0;
+#endif
+  }
+
+  /// Read a packet's data half without polling its flag, for callers that have
+  /// already confirmed readiness (the forward seams). Same wide load as
+  /// load_ready_payload, minus the spin.
+  __device__ __forceinline__ static uint32_t load_payload(const char* pkt) {
+#ifdef __CUDA_ARCH__
+    return static_cast<uint32_t>(comms::device::ld_volatile_global(
+        reinterpret_cast<const volatile uint64_t*>(pkt)));
+#else
+    (void)pkt;
+    return 0;
+#endif
+  }
+
+  /// Write payload and flag as one wide store, so a reader never observes the
+  /// new flag over the previous pass's data.
+  __device__ __forceinline__ static void
+  store_payload(char* pkt, uint32_t data, FlagType flagVal) {
+#ifdef __CUDA_ARCH__
+    comms::device::st_volatile_global(
+        reinterpret_cast<volatile uint64_t*>(pkt),
+        (static_cast<uint64_t>(flagVal) << 32) | static_cast<uint64_t>(data));
+#else
+    (void)pkt;
+    (void)data;
+    (void)flagVal;
 #endif
   }
 
@@ -392,7 +420,7 @@ struct LLImpl {
       const void* staging,
       std::size_t nbytes,
       FlagType flagVal,
-      const Timeout& timeout = Timeout()) {
+      const AbortDevice& abortDevice = AbortDevice()) {
 #ifdef __CUDA_ARCH__
     constexpr std::size_t kData = static_cast<std::size_t>(P::kData);
     constexpr std::size_t kPacket = static_cast<std::size_t>(P::kPacketBytes);
@@ -404,8 +432,8 @@ struct LLImpl {
       for (std::size_t i = group.thread_id_in_group; i < nPackets;
            i += group.group_size) {
         bool abandoned = false;
-        const uint32_t data =
-            load_ready_payload(base + i * kPacket, flagVal, timeout, abandoned);
+        const uint32_t data = load_ready_payload(
+            base + i * kPacket, flagVal, abortDevice, abandoned);
         // `accum` is undefined from here, which the abort contract permits.
         if (abandoned) {
           break;
@@ -450,7 +478,7 @@ struct LLImpl {
           const uint32_t word = load_ready_payload(
               base + (e * kPacketsPerElem + k) * kPacket,
               flagVal,
-              timeout,
+              abortDevice,
               abandoned);
           if (abandoned) {
             break;
@@ -477,7 +505,227 @@ struct LLImpl {
     (void)staging;
     (void)nbytes;
     (void)flagVal;
-    (void)timeout;
+    (void)abortDevice;
+#endif
+  }
+
+  /// Reduce a contiguous `local` operand into the relayed packet stream:
+  /// `fwdStaging[i] = Combine(recvStaging[i], local[i])`, stamped with the
+  /// DOWNSTREAM generation `fwdFlagVal`. The reducing counterpart of repack(),
+  /// which relays verbatim, and the forward-side counterpart of
+  /// unpack_reduce(), which accumulates into plain memory instead of
+  /// re-encoding.
+  ///
+  /// Element tilings and the scalar-granularity note are unpack_reduce()'s; the
+  /// same 8 B `{data:4, flag:4}` packet assumption applies. Like repack() this
+  /// never spins -- the caller has already confirmed every flag, and a partial
+  /// pass has already written `fwdStaging`, so a mid-pass wait is
+  /// unrecoverable.
+  ///
+  /// No `dst`: a reducing relay has nothing to land locally. The running
+  /// partial belongs to the next hop, and the local operand is an input here,
+  /// not an accumulator -- unlike the plain repack, where `dst` is the
+  /// receiving side of the same bytes being forwarded.
+  template <typename T, typename Combine, typename Group>
+  __device__ __forceinline__ static void repack_reduce(
+      Group& group,
+      void* fwdStaging,
+      const void* recvStaging,
+      const T* local,
+      std::size_t nbytes,
+      FlagType fwdFlagVal) {
+#ifdef __CUDA_ARCH__
+    // load_payload/store_payload hardcode the 8 B {data:4, flag:4} layout (one
+    // 64-bit access, flag in the high half). repack() guards them behind an
+    // `if constexpr` and falls back to a word-wise path; this codec uses them
+    // unconditionally, so a wider geometry has to fail here rather than
+    // silently read and write the wrong bytes.
+    static_assert(
+        P::kPacketBytes == static_cast<int>(sizeof(uint64_t)) && P::kData == 4,
+        "LLImpl::repack_reduce requires the 8 B {data:4, flag:4} packet");
+
+    constexpr std::size_t kData = static_cast<std::size_t>(P::kData);
+    constexpr std::size_t kPacket = static_cast<std::size_t>(P::kPacketBytes);
+    const auto* recvBase = reinterpret_cast<const char*>(recvStaging);
+    auto* fwdBase = reinterpret_cast<char*>(fwdStaging);
+
+    // Whole elements only, for both tilings. The wide branch would drop a
+    // partial trailing element out of `nElems` and then never write its
+    // packets at all, leaving the previous generation's contents in
+    // `fwdStaging` for the next hop to spin on or consume as stale data. The
+    // narrow branch reaches the same bytes through valid_payload, but a caller
+    // that bypasses the chunk sizing is a bug either way. Chunk sizing already
+    // guarantees this (calcGeometry/make_progress_geometry align chunkPayload
+    // to lcm(kData, 8)); this is the backstop.
+    PIPES_DEVICE_CHECK_MSG(
+        nbytes % sizeof(T) == 0,
+        "LL relay-reduce chunk must hold whole elements");
+
+    if constexpr (kData % sizeof(T) == 0) {
+      constexpr std::size_t kElemsPerPacket = kData / sizeof(T);
+      const std::size_t nPackets = P::packet_count(nbytes);
+      for (std::size_t i = group.thread_id_in_group; i < nPackets;
+           i += group.group_size) {
+        uint32_t data = load_payload(recvBase + i * kPacket);
+        // Reduce through a real T[] rather than a T* punned onto `data`.
+        // Writing a T into a uint32_t does not begin a T's lifetime there, so
+        // reading `data` back afterwards is undefined and TBAA is free to
+        // forward the pre-reduce value into store_payload -- which would relay
+        // the upstream payload unreduced. memcpy both ways is the defined
+        // spelling and costs nothing: nvcc folds it into the same registers.
+        T payload[kElemsPerPacket];
+        __builtin_memcpy(payload, &data, kData);
+        const std::size_t nElem = P::valid_payload(i, nbytes) / sizeof(T);
+        const std::size_t baseElem = i * kElemsPerPacket;
+#pragma unroll
+        for (std::size_t e = 0; e < kElemsPerPacket; ++e) {
+          // Past `nElem` the packet holds the upstream packer's zero padding;
+          // leaving it untouched carries it through to the next hop.
+          if (e < nElem) {
+            Combine{}(payload[e], local[baseElem + e]);
+          }
+        }
+        __builtin_memcpy(&data, payload, kData);
+        store_payload(fwdBase + i * kPacket, data, fwdFlagVal);
+      }
+    } else {
+      // Entered when kData % sizeof(T) != 0, but the reassembly below needs
+      // the stronger property: an element must be a whole number of packets.
+      // Without it kPacketsPerElem truncates and each element is silently
+      // under-filled -- at sizeof(T) == 3 it would be zero packets and `val`
+      // would be reduced wholly uninitialized. Mirrors unpack_reduce.
+      static_assert(
+          sizeof(T) % kData == 0,
+          "LL wide-element relay-reduce needs sizeof(T) to be a whole number "
+          "of packet payloads");
+      constexpr std::size_t kPacketsPerElem = sizeof(T) / kData;
+      const std::size_t nElems = nbytes / sizeof(T);
+      for (std::size_t e = group.thread_id_in_group; e < nElems;
+           e += group.group_size) {
+        T val;
+        auto* valBytes = reinterpret_cast<char*>(&val);
+#pragma unroll
+        for (std::size_t k = 0; k < kPacketsPerElem; ++k) {
+          const uint32_t word =
+              load_payload(recvBase + (e * kPacketsPerElem + k) * kPacket);
+          const auto* wordBytes = reinterpret_cast<const char*>(&word);
+#pragma unroll
+          for (std::size_t b = 0; b < kData; ++b) {
+            valBytes[k * kData + b] = wordBytes[b];
+          }
+        }
+        Combine{}(val, local[e]);
+#pragma unroll
+        for (std::size_t k = 0; k < kPacketsPerElem; ++k) {
+          uint32_t word = 0;
+          auto* wordBytes = reinterpret_cast<char*>(&word);
+#pragma unroll
+          for (std::size_t b = 0; b < kData; ++b) {
+            wordBytes[b] = valBytes[k * kData + b];
+          }
+          store_payload(
+              fwdBase + (e * kPacketsPerElem + k) * kPacket, word, fwdFlagVal);
+        }
+      }
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)fwdStaging;
+    (void)recvStaging;
+    (void)local;
+    (void)nbytes;
+    (void)fwdFlagVal;
+#endif
+  }
+
+  /// Relay one already-ready chunk: decode `recvStaging`'s payload into `dst`
+  /// (when non-null) AND re-encode it into `fwdStaging` stamped with
+  /// `fwdFlagVal`, in a single pass. Cooperative across `group`.
+  ///
+  /// This is the LL counterpart of a fused forward, and it cannot be a
+  /// packet-to-packet copy: the two staging rings advance on independent
+  /// cursors, so the outbound packets need the DOWNSTREAM ring's generation,
+  /// not the one the upstream sender stamped. Copying the packets verbatim
+  /// would ship a stale flag and the next hop would either accept the previous
+  /// pass's data or wait forever.
+  ///
+  /// Unlike `unpack` this never spins: the caller confirms every packet's flag
+  /// before invoking it (blocking `prepareForwardBuf(LL)` polls, the resumable
+  /// path uses `progress_recv_ready(LL)`). A spin here would be unrecoverable
+  /// anyway -- a partial pass has already written `fwdStaging`.
+  template <typename Group>
+  __device__ __forceinline__ static void repack(
+      Group& group,
+      void* dst,
+      void* fwdStaging,
+      const void* recvStaging,
+      std::size_t nbytes,
+      FlagType fwdFlagVal) {
+#ifdef __CUDA_ARCH__
+    const std::size_t nPackets = P::packet_count(nbytes);
+    const auto* recvBase = reinterpret_cast<const char*>(recvStaging);
+    auto* fwdBase = reinterpret_cast<char*>(fwdStaging);
+    auto* d = reinterpret_cast<char*>(dst);
+    for (std::size_t i = group.thread_id_in_group; i < nPackets;
+         i += group.group_size) {
+      const char* recvPkt =
+          recvBase + i * static_cast<std::size_t>(P::kPacketBytes);
+      char* fwdPkt = fwdBase + i * static_cast<std::size_t>(P::kPacketBytes);
+      const std::size_t valid = P::valid_payload(i, nbytes);
+      const std::size_t off = i * static_cast<std::size_t>(P::kData);
+
+      if constexpr (P::kPacketBytes == static_cast<int>(sizeof(uint64_t))) {
+        // 8 B packet: {data:4, flag:4}. One wide load pulls both halves; one
+        // wide store re-stamps the payload with the downstream generation.
+        // Bytes past `valid` are the upstream packer's zero padding, so
+        // carrying the whole data half through preserves it.
+        const uint32_t data = load_payload(recvPkt);
+        store_payload(fwdPkt, data, fwdFlagVal);
+        if (d != nullptr) {
+          const auto* db = reinterpret_cast<const char*>(&data);
+#pragma unroll
+          for (int b = 0; b < P::kData; ++b) {
+            if (static_cast<std::size_t>(b) < valid) {
+              d[off + b] = db[b];
+            }
+          }
+        }
+      } else {
+        // Large packet: copy the data region word-wise, then stamp the flag
+        // last, mirroring pack()'s ordering.
+        constexpr int kDataWords =
+            P::kData / static_cast<int>(sizeof(uint64_t));
+        const auto* sp = reinterpret_cast<const volatile uint64_t*>(recvPkt);
+        auto* fp = reinterpret_cast<volatile uint64_t*>(fwdPkt);
+#pragma unroll
+        for (int w = 0; w < kDataWords; ++w) {
+          const uint64_t word = comms::device::ld_volatile_global(sp + w);
+          comms::device::st_volatile_global(fp + w, word);
+          if (d != nullptr) {
+            const auto* wb = reinterpret_cast<const char*>(&word);
+#pragma unroll
+            for (int b = 0; b < static_cast<int>(sizeof(uint64_t)); ++b) {
+              const std::size_t gb =
+                  static_cast<std::size_t>(w) * sizeof(uint64_t) +
+                  static_cast<std::size_t>(b);
+              if (gb < valid) {
+                d[off + gb] = wb[b];
+              }
+            }
+          }
+        }
+        store_flag(fwdPkt, fwdFlagVal);
+      }
+    }
+    group.sync();
+#else
+    (void)group;
+    (void)dst;
+    (void)fwdStaging;
+    (void)recvStaging;
+    (void)nbytes;
+    (void)fwdFlagVal;
 #endif
   }
 };

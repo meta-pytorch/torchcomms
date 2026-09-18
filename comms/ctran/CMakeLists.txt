@@ -15,13 +15,6 @@ if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")
 endif()
 
-list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_50,code=sm_50")
-list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_60,code=sm_60")
-list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_70,code=sm_70")
-list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_75,code=sm_75")
-
-message(status "CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
-
 # genctran.py generates source files (*.cu) for template instantiations across
 # different algorithms, data types, and operations.
 execute_process(
@@ -70,10 +63,13 @@ target_include_directories(ctran PRIVATE
     ${CUDA_INCLUDE_DIRS}/cccl
 )
 
-# ctran is the primary prims consumer: enabling this activates the (otherwise
-# compiled-out) prims-backed code — CtranPipes, CtranAlgo, AllToAll/SendRecv,
-# window, hierarchical ring — which #include "comms/prims/..." (resolved via
-# ROOT) and link against the prims OBJECT library.
-if(MCCL_ENABLE_PRIMS)
-    target_compile_definitions(ctran PRIVATE ENABLE_PRIMS=1)
+if(TARGET mccl_rdma_core)
+    # This directory's ctran target is the sole CMake owner of this source.
+    # Keep this source-local define and the provider link together if that
+    # ownership changes; other ibverbx translation units use wrapper types.
+    set_property(SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ibverbx/IbverbxSymbols.cc"
+        APPEND PROPERTY COMPILE_DEFINITIONS IBVERBX_BUILD_RDMA_CORE=1
+    )
+    target_link_libraries(ctran PRIVATE mccl_rdma_core)
 endif()

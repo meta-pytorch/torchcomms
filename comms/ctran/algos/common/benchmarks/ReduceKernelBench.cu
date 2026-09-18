@@ -39,6 +39,9 @@ __global__ void __launch_bounds__(1024, 1)
 // Template Instantiations
 //------------------------------------------------------------------------------
 
-template __global__ void LocalReduceKernel<int, commSum>(
-    ReduceKernelBenchArg arg,
-    int iters);
+template <typename T, commRedOp_t redOp>
+void* getLocalReduceKernelFn() {
+  return reinterpret_cast<void*>(LocalReduceKernel<T, redOp>);
+}
+
+template void* getLocalReduceKernelFn<int, commSum>();

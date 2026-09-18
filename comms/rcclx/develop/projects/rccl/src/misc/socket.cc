@@ -477,6 +477,13 @@ static ncclResult_t socketSetFlags(struct ncclSocket* sock) {
     SYSCHECK(flags = fcntl(sock->fd, F_GETFL), "fcntl");
     SYSCHECK(fcntl(sock->fd, F_SETFL, flags | O_NONBLOCK), "fcntl");
   }
+  // Reapply the egress bind: socketResetFd() makes a fresh fd on every connect retry,
+  // and an unbound retry would silently fall back to the default route.
+  if (sock->bindToDevice[0] != '\0') {
+    SYSCHECK(setsockopt(sock->fd, SOL_SOCKET, SO_BINDTODEVICE, sock->bindToDevice,
+                        strlen(sock->bindToDevice) + 1), "setsockopt SO_BINDTODEVICE");
+    INFO(NCCL_NET, "socketSetFlags: reapplied egress bind to %s after fd reset", sock->bindToDevice);
+  }
   SYSCHECK(setsockopt(sock->fd, IPPROTO_TCP, TCP_NODELAY, (char*)&one, sizeof(int)), "setsockopt TCP NODELAY");
   // setsockopt should not fail even if the sizes are too large, do not change the default if unset by the user (=-1)
   int rcvBuf = ncclParamSocketMaxRecvBuff(), sndBuf = ncclParamSocketMaxSendBuff();
@@ -708,6 +715,32 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running) {
   return ncclSuccess;
 }
 
+ncclResult_t ncclSocketBindToDevice(struct ncclSocket* sock, const char* devName) {
+  if (sock == NULL) {
+    WARN("ncclSocketBindToDevice: pass NULL socket");
+    return ncclInvalidArgument;
+  }
+  if (sock->fd == -1) {
+    WARN("ncclSocketBindToDevice: file descriptor is -1");
+    return ncclInvalidArgument;
+  }
+  if (devName == NULL) {
+    WARN("ncclSocketBindToDevice: pass NULL device name");
+    return ncclInvalidArgument;
+  }
+  int len = strnlen(devName, sizeof(sock->bindToDevice));
+  if (len == 0 || len >= MAX_IF_NAME_SIZE) {
+    WARN("ncclSocketBindToDevice: device name length %d is invalid (max %d)", len, MAX_IF_NAME_SIZE-1);
+    return ncclInvalidArgument;
+  }
+  SYSCHECK(setsockopt(sock->fd, SOL_SOCKET, SO_BINDTODEVICE, devName, len + 1),
+           "setsockopt SO_BINDTODEVICE");
+  // Remembered so socketSetFlags() can reapply the bind when socketResetFd() rebuilds the fd on a connect retry.
+  memcpy(sock->bindToDevice, devName, len + 1);
+  INFO(NCCL_INIT|NCCL_NET, "ncclSocketBindToDevice: bound socket egress to %s", devName);
+  return ncclSuccess;
+}
+
 ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
 #ifdef ENABLE_TRACE
   char line[SOCKET_NAME_MAXLEN+1];
@@ -823,6 +856,7 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
   sock->fd = -1;
   sock->acceptFd = -1;
   sock->customRetry = customRetry;
+  sock->bindToDevice[0] = '\0';
 
   if (addr) {
     /* IPv4/IPv6 support */

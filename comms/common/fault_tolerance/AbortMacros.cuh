@@ -16,10 +16,14 @@
  * Under `AbortBehavior::TRAP` all three log the *site* -- file, line and
  * function -- alongside the caller's message, so a log line says where the
  * abort or the timeout was observed rather than only that one happened. Under
- * the default `AbortBehavior::SKIP` they stay silent: a wait that aborts does
- * so on every thread that reached it, and one printf per thread per site would
- * bury the host-side diagnosis under device output. SKIP is the production
- * path; the reason is already recorded on the `Abort` for the host to report.
+ * the default `AbortBehavior::SKIP`, only the call that wins the shared reason
+ * CAS logs. Every later observer stays silent, avoiding one printf per thread
+ * while preserving the device callsite that first declared the abort.
+ *
+ * The site line is separate from, and additional to, the first-writer line the
+ * transition emits for itself in `AbortDevice.cuh`. Two markers because they
+ * answer two questions -- what declared the abort, and where it was seen -- and
+ * only the first is once-per-communicator by construction.
  *
  * These live in the fault-tolerance module and deliberately depend on nothing
  * from Prims, so CTRAN and MCCL device code can use the same checks.
@@ -42,27 +46,46 @@
 namespace comms::fault_tolerance::detail {
 
 /*
- * Shared body behind the macros. `fmt` already carries the caller's message
- * plus the source location; the function name arrives as the last argument and
- * is consumed by the trailing `%s`.
+ * Shared body behind the macros. Both formats already carry the caller's
+ * message plus the source location; the function name arrives as the last
+ * argument and is consumed by the trailing `%s`.
+ *
+ * This no longer emits the first-writer marker. `abort.check()` reaches
+ * `markTimedOutIfExpired`, which records the reason through
+ * `detail::deviceTrySetAbort` and logs the transition from inside it, so by the
+ * time `flippedHere` comes back true the line has already been printed. All
+ * this adds is where the abort was noticed.
  */
 template <typename... Args>
-__device__ __forceinline__ bool
-abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
+__device__ __forceinline__ bool abortCheckAndLog(
+    const AbortDevice& abort,
+    const char* fmt,
+    const char* siteFmt,
+    Args... args) {
 #if FT_IS_DEVICE_COMPILE
-  const auto result = abort.check();
+  bool flippedHere = false;
+  const auto result = abort.check(&flippedHere);
   if (result == AbortCheckResult::CONTINUE) {
     return false;
   }
-  if (result == AbortCheckResult::TRAP) {
+  if (flippedHere) {
+    // Gated on winning the CAS, which happens exactly once per communicator, so
+    // this is one line per abort rather than one per observing thread. Printed
+    // regardless of behavior so the production SKIP path keeps the callsite.
+    // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
+    printf(siteFmt, args...);
+  } else if (result == AbortCheckResult::TRAP) {
     // NOLINTNEXTLINE(facebook-security-vulnerable-printf)
     printf(fmt, args...);
+  }
+  if (result == AbortCheckResult::TRAP) {
     FT_DEVICE_TRAP();
   }
   return true;
 #else
   (void)abort;
   (void)fmt;
+  (void)siteFmt;
   ((void)args, ...);
   return false;
 #endif
@@ -85,9 +108,11 @@ abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
  * it at compile time. `__func__` is expanded here, at the call site, so it
  * names the function containing the wait.
  *
- * Under `AbortBehavior::TRAP` this prints the message and the site, traps, and
- * still reports true, so a caller that survives the trap still terminates.
- * Under the default `AbortBehavior::SKIP` it reports true without printing.
+ * The call that wins the deadline CAS prints an `FT_ABORT_SITE_` line in either
+ * behavior, naming the wait that noticed it; the transition's own first-writer
+ * line is emitted separately, from inside the CAS. Other TRAP observations
+ * print the legacy CUDA abort message before trapping; other SKIP observations
+ * stay silent.
  *
  * Use this where the exit needs more than a bare `break` or `return` -- for
  * example when the decision must be made warp-uniform before a barrier:
@@ -101,6 +126,7 @@ abortCheckAndLog(const AbortDevice& abort, const char* fmt, Args... args) {
   ::comms::fault_tolerance::detail::abortCheckAndLog( \
       (abort),                                        \
       "CUDA ABORT ERROR: " fmt FT_ABORT_SITE_SUFFIX_, \
+      FT_ABORT_SITE_ fmt FT_ABORT_SITE_SUFFIX_,       \
       ##__VA_ARGS__,                                  \
       __func__)
 

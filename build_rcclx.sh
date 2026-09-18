@@ -147,6 +147,29 @@ function build_openssl() {
   popd
 }
 
+function strip_folly_exception_tracer {
+  # folly's monolithic libfolly.a bundles ExceptionTracerLib.cpp.o, which DEFINES
+  # __cxa_throw as an interposer that forwards via dlsym(RTLD_NEXT, ...). Any
+  # throwing code needs __cxa_throw, so the linker resolves it out of libfolly.a
+  # (searched before libstdc++) and pulls the interposer into librccl.so, which
+  # then exports it and hijacks throws for the whole process. Inside a dlopen'd
+  # .so that RTLD_NEXT lookup finds nothing (libstdc++ is already loaded), so
+  # orig_cxa_throw is NULL and the first throw jumps to address 0. Nothing in
+  # rccl uses the tracer; drop the object so __cxa_throw resolves from libstdc++.
+  # The opt-in libfolly_debugging_exception_tracer_*.a archives are untouched.
+  local folly_a="${CONDA_PREFIX}/lib/libfolly.a"
+  [ -f "$folly_a" ] || return 0
+  if ar t "$folly_a" | grep -qx "ExceptionTracerLib.cpp.o"; then
+    echo "Removing ExceptionTracerLib.cpp.o (__cxa_throw interposer) from libfolly.a"
+    ar d "$folly_a" ExceptionTracerLib.cpp.o
+    ranlib "$folly_a"
+  fi
+  if nm "$folly_a" 2>/dev/null | grep -qw "T __cxa_throw"; then
+    echo "ERROR: libfolly.a still defines __cxa_throw after stripping" >&2
+    exit 1
+  fi
+}
+
 function build_third_party {
   # build third-party libraries
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
@@ -178,9 +201,8 @@ function build_third_party {
     build_fb_oss_library "https://github.com/google/snappy.git" "1.2.1" snappy "-DSNAPPY_BUILD_TESTS=OFF -DSNAPPY_BUILD_BENCHMARKS=OFF"
     build_automake_library "https://github.com/jedisct1/libsodium.git" "1.0.20-RELEASE" sodium
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
-    # Abseil provides absl::log / absl::check used by
-    # comms/utils/hrdw_ring_buffer/GpuClockCalibration.cc, which is pulled into
-    # librccl via comms/prims/trace/PipesTrace.cc and comms/utils/colltrace/CollTrace.cc.
+    # Abseil provides absl::log / absl::check used by the comms utilities
+    # compiled into librccl.
     build_fb_oss_library "https://github.com/abseil/abseil-cpp.git" "20240722.0" abseil-cpp "-DABSL_PROPAGATE_CXX_STD=ON -DABSL_ENABLE_INSTALL=ON -DABSL_BUILD_TESTING=OFF"
     # Build libevent as both static and shared (thrift needs .a, others may need .so)
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event "-DEVENT__LIBRARY_TYPE=BOTH"
@@ -190,6 +212,7 @@ function build_third_party {
     export CXXFLAGS="${CXXFLAGS_SAVED} -DSO_INCOMING_NAPI_ID=56 -msse4.2"
     build_fb_oss_library "https://github.com/facebook/folly.git" "$folly_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON -DLIBEVENT_INCLUDE_DIR=${CONDA_PREFIX}/include -DLIBEVENT_LIB=${CONDA_PREFIX}/lib/libevent.a"
     export CXXFLAGS="${CXXFLAGS_SAVED}"
+    strip_folly_exception_tracer
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
       DEPS=(
@@ -376,8 +399,8 @@ fi
 # hipify-perl (ROCm 7.0) doesn't map cudaEventWait/Record flags, so they pass
 # through unchanged into hipified source. Define them directly.
 # CUDART_CB (the CUDA host-callback calling-convention macro, empty on Linux)
-# is likewise not mapped by hipify; define it empty so callbacks like
-# drainPipesTraceCallback in comms/prims/trace/PipesTrace.cc parse correctly.
+# is likewise not mapped by hipify; define it empty for CTRAN and colltrace
+# callbacks.
 #
 # ${BASE_DIR} (fbsource/fbcode) must be searched for comms/* headers, but it also
 # contains fbcode's in-tree copies of OSS third-party (folly, snappy, ...). Those
@@ -423,20 +446,12 @@ esac
 
 
 function build_rccl {
-  # Opt in to compiling comms/prims into librccl only when ENABLE_PRIMS is set
-  # to a truthy value in the environment. Default (unset) keeps prims out of the
-  # build, shielding librccl from comms/prims churn.
-  local prims_flag=""
-  case "${ENABLE_PRIMS:-}" in
-    1 | ON | on | true | TRUE | yes | YES) prims_flag="--enable-prims" ;;
-  esac
   ./install.sh \
     --prefix "$BUILDDIR" \
     --amdgpu_targets "$AMDGPU_TARGETS" \
     --disable-colltrace \
     --disable-msccl-kernel \
-    --disable-warp-speed \
-    ${prims_flag}
+    --disable-warp-speed
 }
 
 build_rccl

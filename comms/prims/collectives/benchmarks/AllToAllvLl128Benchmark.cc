@@ -78,8 +78,7 @@ class AllToAllvLl128BenchmarkFixture
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
-        std::abort();
+        COMMS_ABORT("ncclGetUniqueId failed: {}", ncclGetErrorString(res));
       }
     }
     std::vector<ncclUniqueId> allIds(worldSize);
@@ -90,8 +89,7 @@ class AllToAllvLl128BenchmarkFixture
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
-      std::abort();
+      COMMS_ABORT("Bootstrap allGather for NCCL ID failed");
     }
     id = allIds[0];
     return id;
@@ -264,7 +262,7 @@ class AllToAllvLl128BenchmarkFixture
         ? std::optional{defaultClusterDim}
         : std::nullopt;
 
-    Timeout timeout_config;
+    AbortDevice timeout_config;
 
     CudaEvent start, stop;
     constexpr int kNIter = 100;
@@ -373,7 +371,7 @@ class AllToAllvLl128BenchmarkFixture
 
     comms::fault_tolerance::Abort abort{/*enabled=*/true};
     abort.setDefaultTimeout(std::chrono::milliseconds{5000});
-    Timeout timeout_config = abort.getDeviceHandle();
+    AbortDevice timeout_config = abort.getDeviceHandle();
 
     // Warmup: per-iteration sync to ensure each iteration completes
     bootstrap->barrierAll();
@@ -1063,6 +1061,6 @@ int main(int argc, char* argv[]) {
   folly::Init init(&argc, &argv);
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }

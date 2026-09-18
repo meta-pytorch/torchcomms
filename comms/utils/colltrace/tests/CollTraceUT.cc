@@ -1,7 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
+#include <future>
+#include <optional>
 #include <set>
+#include <utility>
 
+#include <folly/ScopeGuard.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -20,33 +25,69 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::StrictMock;
 
+namespace meta::comms::colltrace {
+
+class CollTraceGraphReplayTestAccessor {
+ public:
+  static void markAmbiguous(
+      CollTrace& trace,
+      uint32_t collId,
+      uint64_t additionalMarkers,
+      uint64_t currentSlot,
+      uint64_t recoveryWindow) {
+    trace.markAmbiguousGraphReplay(
+        collId, additionalMarkers, currentSlot, recoveryWindow);
+  }
+
+  static void expireAmbiguous(CollTrace& trace, uint64_t consumedUpTo) {
+    trace.expireAmbiguousGraphReplays(consumedUpTo);
+  }
+
+  static std::optional<std::pair<uint64_t, uint64_t>> ambiguity(
+      const CollTrace& trace,
+      uint32_t collId) {
+    const auto it = trace.ambiguousGraphReplays_.find(collId);
+    if (it == trace.ambiguousGraphReplays_.end()) {
+      return std::nullopt;
+    }
+    return std::pair{
+        it->second.outstandingEndMarkers, it->second.clearAfterSlot};
+  }
+};
+
+} // namespace meta::comms::colltrace
+
 #define EXPECT_VALUE(cmd)                               \
   {                                                     \
     const auto& res = cmd;                              \
     EXPECT_TRUE(res.hasValue()) << res.error().message; \
   }
 
+namespace {
+
+std::unique_ptr<NiceMock<MockCollTracePlugin>> makeDefaultMockPlugin() {
+  auto plugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  ON_CALL(*plugin, getName()).WillByDefault(Return("MockPlugin"));
+  ON_CALL(*plugin, afterCollRecorded(_)).WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, beforeCollKernelScheduled(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, afterCollKernelScheduled(_))
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, afterCollKernelStart(_)).WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, collEventProgressing(_)).WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, afterCollKernelEnd(_)).WillByDefault(Return(folly::unit));
+  ON_CALL(*plugin, afterCollTerminated(_, _))
+      .WillByDefault(Return(folly::unit));
+  return plugin;
+}
+
+} // namespace
+
 // Test fixture for CollTrace tests
 class CollTraceTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Create mock plugin
-    auto mockPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
-    ON_CALL(*mockPlugin, getName()).WillByDefault(Return("MockPlugin"));
-
-    // Set default actions for CommsMaybeVoid methods to return folly::unit
-    ON_CALL(*mockPlugin, afterCollRecorded(_))
-        .WillByDefault(Return(folly::unit));
-    ON_CALL(*mockPlugin, beforeCollKernelScheduled(_))
-        .WillByDefault(Return(folly::unit));
-    ON_CALL(*mockPlugin, afterCollKernelScheduled(_))
-        .WillByDefault(Return(folly::unit));
-    ON_CALL(*mockPlugin, afterCollKernelStart(_))
-        .WillByDefault(Return(folly::unit));
-    ON_CALL(*mockPlugin, collEventProgressing(_))
-        .WillByDefault(Return(folly::unit));
-    ON_CALL(*mockPlugin, afterCollKernelEnd(_))
-        .WillByDefault(Return(folly::unit));
+    auto mockPlugin = makeDefaultMockPlugin();
 
     // Store a raw pointer to the mock plugin before moving it
     mockPluginPtr = mockPlugin.get();
@@ -73,7 +114,7 @@ class CollTraceTest : public ::testing::Test {
   }
 
   std::unique_ptr<CollTrace> collTrace;
-  MockCollTracePlugin* mockPluginPtr;
+  MockCollTracePlugin* mockPluginPtr{};
 };
 
 // Test constructor and destructor
@@ -112,6 +153,38 @@ TEST(CollTraceSetupFailureTest, FlushReturnsAfterThreadSetupFailure) {
   trace.waitFlush(firstGeneration);
 
   EXPECT_EQ(trace.requestFlush(), firstGeneration + 1);
+}
+
+TEST(CollTraceGraphReplayStateTest, AmbiguityExpiresAfterFixedSlotWindow) {
+  CollTrace trace(
+      CollTraceConfig{},
+      CommLogData{},
+      []() -> CommsMaybeVoid {
+        return folly::makeUnexpected(
+            CommsError("test setup failure", commInternalError));
+      },
+      {});
+  constexpr uint32_t kCollId = 7;
+  constexpr uint64_t kInitialSlot = 10;
+  constexpr uint64_t kRecoveryWindow = 4;
+
+  CollTraceGraphReplayTestAccessor::markAmbiguous(
+      trace, kCollId, 1, kInitialSlot, kRecoveryWindow);
+  CollTraceGraphReplayTestAccessor::markAmbiguous(
+      trace, kCollId, 1, kInitialSlot + 2, kRecoveryWindow);
+
+  EXPECT_EQ(
+      CollTraceGraphReplayTestAccessor::ambiguity(trace, kCollId),
+      std::make_pair(uint64_t{2}, kInitialSlot + kRecoveryWindow));
+  CollTraceGraphReplayTestAccessor::expireAmbiguous(
+      trace, kInitialSlot + kRecoveryWindow);
+  EXPECT_TRUE(
+      CollTraceGraphReplayTestAccessor::ambiguity(trace, kCollId).has_value());
+
+  CollTraceGraphReplayTestAccessor::expireAmbiguous(
+      trace, kInitialSlot + kRecoveryWindow + 1);
+  EXPECT_FALSE(
+      CollTraceGraphReplayTestAccessor::ambiguity(trace, kCollId).has_value());
 }
 
 // Test getPluginByName method
@@ -156,6 +229,67 @@ TEST_F(CollTraceTest, RecordCollective) {
   EXPECT_TRUE(registrationObserved);
 }
 
+TEST_F(CollTraceTest, SupersededNeverScheduledEventIsTerminallyDisposed) {
+  std::optional<uint64_t> terminatedCollId;
+  EXPECT_CALL(
+      *mockPluginPtr,
+      afterCollTerminated(_, CollTraceTerminalReason::SupersededBeforeSchedule))
+      .WillOnce([&](CollTraceEvent& event, CollTraceTerminalReason) {
+        terminatedCollId = event.collRecord->getCollId();
+        return folly::unit;
+      });
+
+  const auto makeMetadata = [] {
+    auto metadata = std::make_unique<NiceMock<MockCollMetadata>>();
+    ON_CALL(*metadata, toDynamic())
+        .WillByDefault(
+            Return(static_cast<folly::dynamic>(folly::dynamic::object())));
+    return metadata;
+  };
+  auto first = collTrace->recordCollective(
+      makeMetadata(), std::make_unique<NiceMock<MockCollWaitEvent>>());
+  ASSERT_TRUE(first.hasValue());
+  auto firstRecord = first.value()->getCollRecord();
+  ASSERT_TRUE(firstRecord.hasValue());
+  ASSERT_NE(firstRecord.value(), nullptr);
+  const auto firstCollId = firstRecord.value()->getCollId();
+
+  auto second = collTrace->recordCollective(
+      makeMetadata(), std::make_unique<NiceMock<MockCollWaitEvent>>());
+  ASSERT_TRUE(second.hasValue());
+
+  ASSERT_TRUE(terminatedCollId.has_value());
+  EXPECT_EQ(*terminatedCollId, firstCollId);
+  EXPECT_TRUE(first.value()->getCollRecord().hasError());
+  ::testing::Mock::VerifyAndClearExpectations(mockPluginPtr);
+}
+
+TEST_F(CollTraceTest, DestructionTerminatesNeverScheduledEvent) {
+  std::optional<uint64_t> terminatedCollId;
+  EXPECT_CALL(
+      *mockPluginPtr,
+      afterCollTerminated(_, CollTraceTerminalReason::TraceDestroyed))
+      .WillOnce([&](CollTraceEvent& event, CollTraceTerminalReason) {
+        terminatedCollId = event.collRecord->getCollId();
+        return folly::unit;
+      });
+
+  auto handle = collTrace->recordCollective(
+      std::make_unique<NiceMock<MockCollMetadata>>(),
+      std::make_unique<NiceMock<MockCollWaitEvent>>());
+  ASSERT_TRUE(handle.hasValue());
+  auto record = handle.value()->getCollRecord();
+  ASSERT_TRUE(record.hasValue());
+  ASSERT_NE(record.value(), nullptr);
+  const auto collId = record.value()->getCollId();
+
+  collTrace.reset();
+
+  ASSERT_TRUE(terminatedCollId.has_value());
+  EXPECT_EQ(*terminatedCollId, collId);
+  EXPECT_TRUE(handle.value()->getCollRecord().hasError());
+}
+
 // Test triggerEventState method
 TEST_F(CollTraceTest, TriggerEventState) {
   // Create metadata and wait event
@@ -182,6 +316,19 @@ TEST_F(CollTraceTest, TriggerEventState) {
   // Trigger the AfterEnqueueKernel state
   EXPECT_VALUE(
       handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
+}
+
+TEST_F(CollTraceTest, CancelPendingCollectiveAllowsNextRecord) {
+  auto firstHandle = collTrace->recordCollective(
+      std::make_unique<StrictMock<MockCollMetadata>>(),
+      std::make_unique<NiceMock<MockCollWaitEvent>>());
+  ASSERT_TRUE(firstHandle.hasValue());
+  EXPECT_VALUE(firstHandle.value()->cancel());
+
+  auto secondHandle = collTrace->recordCollective(
+      std::make_unique<StrictMock<MockCollMetadata>>(),
+      std::make_unique<NiceMock<MockCollWaitEvent>>());
+  EXPECT_VALUE(secondHandle);
 }
 
 // Test complete workflow with multiple collectives
@@ -489,6 +636,105 @@ TEST_F(CollTraceTest, CheckHandleValidityWhenPendingQueueFull) {
   }
 }
 
+TEST(CollTraceQueueFullTest, QueueRejectionHasTerminalDisposition) {
+  auto mockPlugin = makeDefaultMockPlugin();
+  auto* mockPluginPtr = mockPlugin.get();
+
+  std::optional<uint64_t> rejectedCollId;
+  EXPECT_CALL(
+      *mockPluginPtr,
+      afterCollTerminated(_, CollTraceTerminalReason::QueueRejected))
+      .WillOnce([&](CollTraceEvent& event, CollTraceTerminalReason) {
+        rejectedCollId = event.collRecord->getCollId();
+        return folly::unit;
+      });
+
+  std::promise<void> pollBlocked;
+  auto pollBlockedFuture = pollBlocked.get_future();
+  std::promise<void> releasePoll;
+  auto releasePollFuture = releasePoll.get_future();
+  std::atomic_bool signaled{false};
+
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins;
+  plugins.push_back(std::move(mockPlugin));
+  auto trace = std::make_unique<CollTrace>(
+      CollTraceConfig{
+          .maxCheckCancelInterval = std::chrono::milliseconds{1},
+          .maxPendingQueueSize = 1,
+      },
+      CommLogData{},
+      []() -> CommsMaybeVoid { return folly::unit; },
+      std::move(plugins));
+  auto releasePollGuard = folly::makeGuard([&] {
+    releasePoll.set_value();
+    trace.reset();
+  });
+
+  auto enqueue = [&](std::unique_ptr<MockCollWaitEvent> waitEvent,
+                     bool afterEnqueue = true) {
+    auto result = trace->recordCollective(
+        std::make_unique<NiceMock<MockCollMetadata>>(), std::move(waitEvent));
+    EXPECT_TRUE(result.hasValue());
+    if (!result.hasValue()) {
+      return std::shared_ptr<ICollTraceHandle>{};
+    }
+    auto handle = result.value();
+    EXPECT_VALUE(
+        handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel));
+    if (afterEnqueue) {
+      EXPECT_VALUE(
+          handle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
+    }
+    return handle;
+  };
+
+  auto blockingWaitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+  ON_CALL(*blockingWaitEvent, beforeCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*blockingWaitEvent, afterCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*blockingWaitEvent, waitCollStart(_))
+      .WillByDefault([&](std::chrono::milliseconds) {
+        if (!signaled.exchange(true)) {
+          pollBlocked.set_value();
+        }
+        releasePollFuture.wait();
+        return CommsMaybe<bool>{false};
+      });
+  auto handle1 = enqueue(std::move(blockingWaitEvent));
+  ASSERT_NE(handle1, nullptr);
+  if (pollBlockedFuture.wait_for(std::chrono::seconds{1}) !=
+      std::future_status::ready) {
+    ADD_FAILURE() << "Timed out waiting for the poll thread to block";
+    return;
+  }
+
+  auto makeReadyWaitEvent = [] {
+    auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+    ON_CALL(*waitEvent, beforeCollKernelScheduled())
+        .WillByDefault(Return(folly::unit));
+    ON_CALL(*waitEvent, afterCollKernelScheduled())
+        .WillByDefault(Return(folly::unit));
+    ON_CALL(*waitEvent, waitCollStart(_))
+        .WillByDefault(Return(CommsMaybe<bool>{false}));
+    return waitEvent;
+  };
+  auto handle2 = enqueue(makeReadyWaitEvent());
+  auto handle3 = enqueue(makeReadyWaitEvent(), false);
+
+  EXPECT_NE(handle2, nullptr);
+  ASSERT_NE(handle3, nullptr);
+  auto rejectedRecord = handle3->getCollRecord();
+  ASSERT_TRUE(rejectedRecord.hasValue());
+  ASSERT_NE(rejectedRecord.value(), nullptr);
+  const auto expectedRejectedCollId = rejectedRecord.value()->getCollId();
+  EXPECT_TRUE(handle3->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel)
+                  .hasError());
+  ASSERT_TRUE(rejectedCollId.has_value());
+  EXPECT_EQ(*rejectedCollId, expectedRejectedCollId);
+  ::testing::Mock::VerifyAndClearExpectations(mockPluginPtr);
+}
+
 // If multiple enqueue happened at the same time, colltrace would not be able
 // to handle them as there is only one slot for pending enqueue collectives.
 // We will change the behavior later to make sure we can enqueue from multiple
@@ -631,9 +877,9 @@ TEST(PendingActionOrdering, SortsByTimestamp) {
 
   std::multiset<PendingAction> actions;
   // Insert out of order.
-  actions.insert({nullptr, PendingActionType::kEnd, t3});
-  actions.insert({nullptr, PendingActionType::kStart, t1});
-  actions.insert({nullptr, PendingActionType::kProgressing, t2});
+  actions.insert({nullptr, PendingActionType::kEnd, t3, std::nullopt});
+  actions.insert({nullptr, PendingActionType::kStart, t1, std::nullopt});
+  actions.insert({nullptr, PendingActionType::kProgressing, t2, std::nullopt});
 
   std::vector<PendingActionType> order;
   for (const auto& a : actions) {
@@ -652,10 +898,11 @@ TEST(PendingActionOrdering, SameTimestampOrderedByType) {
 
   std::multiset<PendingAction> actions;
   // All same timestamp, insert in reverse type order.
-  actions.insert({nullptr, PendingActionType::kEnd, t});
-  actions.insert({nullptr, PendingActionType::kProgressing, t});
-  actions.insert({nullptr, PendingActionType::kStart, t});
-  actions.insert({nullptr, PendingActionType::kScheduleAndStart, t});
+  actions.insert({nullptr, PendingActionType::kEnd, t, std::nullopt});
+  actions.insert({nullptr, PendingActionType::kProgressing, t, std::nullopt});
+  actions.insert({nullptr, PendingActionType::kStart, t, std::nullopt});
+  actions.insert(
+      {nullptr, PendingActionType::kScheduleAndStart, t, std::nullopt});
 
   std::vector<PendingActionType> order;
   for (const auto& a : actions) {
@@ -677,12 +924,13 @@ TEST(PendingActionOrdering, MixedTimestampsAndTypes) {
 
   std::multiset<PendingAction> actions;
   // Graph start at t1, eager start at t1 (same timestamp — graph first).
-  actions.insert({nullptr, PendingActionType::kStart, t1});
-  actions.insert({nullptr, PendingActionType::kScheduleAndStart, t1});
+  actions.insert({nullptr, PendingActionType::kStart, t1, std::nullopt});
+  actions.insert(
+      {nullptr, PendingActionType::kScheduleAndStart, t1, std::nullopt});
   // Eager end at t2, graph end at t2 (same timestamp — same type, either
   // order).
-  actions.insert({nullptr, PendingActionType::kEnd, t2});
-  actions.insert({nullptr, PendingActionType::kEnd, t2});
+  actions.insert({nullptr, PendingActionType::kEnd, t2, std::nullopt});
+  actions.insert({nullptr, PendingActionType::kEnd, t2, std::nullopt});
 
   std::vector<PendingActionType> order;
   std::vector<std::chrono::system_clock::time_point> times;

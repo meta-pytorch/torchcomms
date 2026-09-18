@@ -18,10 +18,6 @@
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #endif
 
-#if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
-#endif
-
 namespace torch::comms {
 
 namespace {
@@ -78,14 +74,11 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
   }
   registered_local_buffers_.clear();
 
-  // Destroy backend-specific device communicator state.
-  // GIN: devCommDestroy. Pipes: no-op (cleanup via deleter).
   Backend::destroy_device_comm(device_window_);
 
   // device_window_ unique_ptr destructor calls cudaFree via custom deleter
   device_window_.reset();
 
-  // Deregister extra window (GIN nccl_orig_win_; Pipes: no-op).
   Backend::deregister_extra_window(nccl_api_, nccl_comm_, &nccl_orig_win_);
 
 #endif
@@ -179,8 +172,6 @@ void TorchCommWindowNCCLX<Backend>::tensor_register(
         << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-    // GIN: register a second window with NCCL_WIN_DEVICE_API flag.
-    // Pipes: no-op (device window creation deferred to get_device_window).
     Backend::register_extra_window(
         nccl_api_, nccl_comm_, &nccl_orig_win_, tensor.data_ptr(), win_size_);
 #endif
@@ -231,7 +222,6 @@ void TorchCommWindowNCCLX<Backend>::tensor_deregister() {
   win_size_ = 0;
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // GIN: deregister nccl_orig_win_. Pipes: no-op.
   Backend::deregister_extra_window(nccl_api_, nccl_comm_, &nccl_orig_win_);
 #endif
 
@@ -677,16 +667,6 @@ void TorchCommWindowNCCLX<Backend>::checkWindowAndThrow() const {
 template class TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 #else
 template class TorchCommWindowNCCLX<HostOnlyBackend>;
-#endif
-
-// Pipes instantiation is independent of the device API flag.
-// ENABLE_PRIMS can be set without TORCHCOMMS_HAS_NCCL_DEVICE_API (e.g.,
-// NCCLX 2.27 CMake builds with ENABLE_PRIMS=1). In that case, host-side
-// window operations (put, signal, wait_signal) work; device API methods
-// (get_device_window, register_local_buffer) fall back to the base class
-// default that throws "not yet supported".
-#if defined(ENABLE_PRIMS)
-template class TorchCommWindowNCCLX<torchcomms::device::PrimsDeviceBackend>;
 #endif
 
 } // namespace torch::comms

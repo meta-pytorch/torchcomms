@@ -2,14 +2,19 @@
 
 #pragma once
 
+#include <cuda_runtime.h>
 #include <cstddef>
-#include <cstdint>
 
 namespace comms::prims {
 class P2pIbgdaTransportDevice;
 } // namespace comms::prims
 
 namespace comms::prims::test {
+
+/// Wire format the chain runs on. Maps to protocol::Simple / protocol::LL.
+/// Every rank must pick the same one: the two formats disagree on packet
+/// layout and land on different per-protocol channel slots.
+enum class ChainProto { Simple, LL };
 
 /**
  * Launch a chain test kernel: rank 0 sends, intermediates recv_forward,
@@ -25,6 +30,7 @@ namespace comms::prims::test {
  * @param world_size     Total number of ranks.
  * @param num_blocks     CUDA grid dimension.
  * @param stream         CUDA stream.
+ * @param proto          Wire format; every rank in the chain must agree.
  */
 void launch_recv_forward_chain(
     P2pIbgdaTransportDevice** transports,
@@ -34,7 +40,8 @@ void launch_recv_forward_chain(
     int my_rank,
     int world_size,
     int num_blocks,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    ChainProto proto = ChainProto::Simple);
 
 /**
  * Same as above but with dst=nullptr for intermediates (forward-only mode).
@@ -48,6 +55,7 @@ void launch_recv_forward_chain_no_dst(
     int my_rank,
     int world_size,
     int num_blocks,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    ChainProto proto = ChainProto::Simple);
 
 } // namespace comms::prims::test

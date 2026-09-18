@@ -15,8 +15,8 @@ __global__ __launch_bounds__(512, 1) void testAllToAllvKernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
   // Call all_to_allv - it will perform actual data transfers
   all_to_allv(
       recvbuff_d,
@@ -25,7 +25,7 @@ __global__ __launch_bounds__(512, 1) void testAllToAllvKernel(
       transports,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abortDevice);
 }
 
 void testAllToAllv(
@@ -38,7 +38,7 @@ void testAllToAllv(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize) {
-  Timeout timeout; // Default no timeout
+  AbortDevice abortDevice; // Default: disabled
   testAllToAllvKernel<<<numBlocks, blockSize>>>(
       recvbuff_d,
       sendbuff_d,
@@ -47,7 +47,7 @@ void testAllToAllv(
       transports,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abortDevice);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

@@ -429,26 +429,49 @@ PYBIND11_MODULE(_core, m) {
                       const std::string& name,
                       const std::string& listenAddress,
                       int connectRetries,
-                      int connectTimeoutMs) {
+                      int connectTimeoutMs,
+                      bool enableTcp,
+                      const std::string& tcpBindHost,
+                      std::optional<TransportType> preferredTransport,
+                      std::optional<TransportType> intraNodeTransport,
+                      std::optional<TransportType> interNodeTransport) {
             return UniflowAgentConfig{
                 .deviceId = deviceId,
                 .name = name,
                 .listenAddress = listenAddress,
                 .connectRetries = connectRetries,
                 .connectTimeoutMs = connectTimeoutMs,
+                .enableTcp = enableTcp,
+                .tcpBindHost = tcpBindHost,
+                .preferredTransport = preferredTransport,
+                .intraNodeTransport = intraNodeTransport,
+                .interNodeTransport = interNodeTransport,
             };
           }),
           py::arg("device_id") = -1,
           py::arg("name") = "",
           py::arg("listen_address") = "",
           py::arg("connect_retries") = 10,
-          py::arg("connect_timeout_ms") = 1000)
+          py::arg("connect_timeout_ms") = 1000,
+          py::arg("enable_tcp") = false,
+          py::arg("tcp_bind_host") = "",
+          py::arg("preferred_transport") = std::nullopt,
+          py::arg("intra_node_transport") = std::nullopt,
+          py::arg("inter_node_transport") = std::nullopt)
       .def_readwrite("device_id", &UniflowAgentConfig::deviceId)
       .def_readwrite("name", &UniflowAgentConfig::name)
       .def_readwrite("listen_address", &UniflowAgentConfig::listenAddress)
       .def_readwrite("connect_retries", &UniflowAgentConfig::connectRetries)
       .def_readwrite(
-          "connect_timeout_ms", &UniflowAgentConfig::connectTimeoutMs);
+          "connect_timeout_ms", &UniflowAgentConfig::connectTimeoutMs)
+      .def_readwrite("enable_tcp", &UniflowAgentConfig::enableTcp)
+      .def_readwrite("tcp_bind_host", &UniflowAgentConfig::tcpBindHost)
+      .def_readwrite(
+          "preferred_transport", &UniflowAgentConfig::preferredTransport)
+      .def_readwrite(
+          "intra_node_transport", &UniflowAgentConfig::intraNodeTransport)
+      .def_readwrite(
+          "inter_node_transport", &UniflowAgentConfig::interNodeTransport);
 
   // ---------------------------------------------------------------------------
   // MultiTransport
@@ -538,12 +561,16 @@ PYBIND11_MODULE(_core, m) {
           py::init([](int deviceId,
                       const std::string& nicFilter,
                       CpuNicSelectionPolicy cpuNicSelectionPolicy,
-                      size_t maxCpuNics) {
+                      size_t maxCpuNics,
+                      bool enableTcp,
+                      const std::string& tcpBindHost) {
             MultiTransportFactoryOptions options{
                 .nicFilter =
                     nicFilter.empty() ? NicFilter() : NicFilter(nicFilter),
                 .cpuNicSelectionPolicy = cpuNicSelectionPolicy,
                 .maxCpuNics = maxCpuNics,
+                .enableTcp = enableTcp,
+                .tcpBindHost = tcpBindHost,
             };
             return std::make_shared<MultiTransportFactory>(
                 deviceId, std::move(options));
@@ -553,7 +580,9 @@ PYBIND11_MODULE(_core, m) {
           py::arg("nic_filter") = "",
           py::arg("cpu_nic_selection_policy") =
               CpuNicSelectionPolicy::kNumaLocalBounded,
-          py::arg("max_cpu_nics") = 2)
+          py::arg("max_cpu_nics") = 2,
+          py::arg("enable_tcp") = false,
+          py::arg("tcp_bind_host") = "")
       .def(
           "register_segment",
           [](MultiTransportFactory& f, Segment& seg) {

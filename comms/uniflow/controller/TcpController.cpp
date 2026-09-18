@@ -4,15 +4,22 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <netinet/tcp.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #include <cassert>
 #include <cerrno>
 #include <charconv>
+#include <condition_variable>
 #include <cstring>
+#include <fstream>
+#include <memory>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <thread>
 
@@ -59,6 +66,18 @@ Status TcpSocketConfig::validate() const {
   if (acceptRetryCnt <= 0) {
     return Err(ErrCode::InvalidArgument, "acceptRetryCnt must be positive");
   }
+  if (bindToDevice) {
+    if (bindToDevice->empty()) {
+      return Err(ErrCode::InvalidArgument, "bindToDevice must not be empty");
+    }
+    // The kernel copies the name into an IFNAMSIZ buffer and needs room for the
+    // terminator, so reject an over-long name here instead of letting
+    // setsockopt fail with an opaque error.
+    if (bindToDevice->size() >= IFNAMSIZ) {
+      return Err(
+          ErrCode::InvalidArgument, "bindToDevice too long: " + *bindToDevice);
+    }
+  }
   if (retryTimeout.count() < 0) {
     return Err(ErrCode::InvalidArgument, "retryTimeout must be non-negative");
   }
@@ -68,13 +87,8 @@ Status TcpSocketConfig::validate() const {
 namespace {
 
 constexpr uint32_t kMaxMessageSize = 64 << 20;
-constexpr int kSocketBufSize = 1 << 20;
 constexpr int kAcceptTimeoutSec = 5;
 constexpr int kConnectedTimeoutSec = 30;
-constexpr int kKeepaliveIdleSec = 60;
-constexpr int kKeepaliveIntervalSec = 5;
-constexpr int kKeepaliveCount = 3;
-constexpr int kUserTimeoutMs = 60000;
 
 // Magic value exchanged during connection handshake to validate that both
 // endpoints are uniflow controllers (rejects stray connections).
@@ -112,6 +126,22 @@ class SockOptSetter {
     return Ok();
   }
 };
+
+// Pins the socket's egress to `device` via SO_BINDTODEVICE. Must be called
+// before bind() or connect(): the option only takes effect on the route
+// selection made at that point, so applying it to an already-connected fd is
+// too late to move any traffic.
+Status bindSocketToDevice(int sock, const std::string& device) {
+  char ifname[IFNAMSIZ]{};
+  device.copy(ifname, sizeof(ifname) - 1);
+  SockOptSetter opt(sock);
+  opt.set(
+      SOL_SOCKET,
+      SO_BINDTODEVICE,
+      ifname,
+      fmt::format("SO_BINDTODEVICE({})", device).c_str());
+  return opt.status();
+}
 
 // Aligned with ctran/bootstrap/Socket.cc::shouldRetry().
 bool shouldRetry(int errcode) {
@@ -221,12 +251,22 @@ std::string formatAddr(const sockaddr_storage& addr) {
   return std::string(buf) + ":" + std::to_string(ntohs(sa->sin_port));
 }
 
-Result<int> createListenSocket(int domain) {
+Result<int> createListenSocket(
+    int domain,
+    const std::optional<std::string>& bindDevice) {
   int sock = ::socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
   if (sock < 0) {
     return Err(
         ErrCode::ConnectionFailed,
         "socket creation failed: " + std::system_category().message(errno));
+  }
+
+  if (bindDevice) {
+    auto status = bindSocketToDevice(sock, *bindDevice);
+    if (!status) {
+      ::close(sock);
+      return std::move(status).error();
+    }
   }
 
   SockOptSetter opt(sock);
@@ -248,22 +288,68 @@ Result<int> createListenSocket(int domain) {
   return sock;
 }
 
-Status configureAcceptedSocket(int sock) {
+// Applies a TcpSocketConfig to a connected socket. Shared by the client and
+// accept paths: both need identical treatment of a connected fd, and keeping
+// one implementation is what stops the two from drifting apart again.
+//
+// Every field falls through to the OS kernel default when nullopt, with one
+// deliberate exception -- connTimeout, see below.
+void applySocketConfig(SockOptSetter& opt, const TcpSocketConfig& config) {
+  // Buffer sizing is the option a caller most often wants left alone: setting
+  // SO_RCVBUF explicitly disables Linux receive-window autotuning, which caps a
+  // single stream at window/RTT, so a bulk-data connection wants it unset while
+  // the control connection does not care.
+  if (config.socketBufSize) {
+    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
+    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
+  }
+  if (config.tcpNoDelay) {
+    int val = *config.tcpNoDelay ? 1 : 0;
+    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
+  }
+  if (config.enableKeepalive) {
+    int val = *config.enableKeepalive ? 1 : 0;
+    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
+  }
+  if (config.enableKeepalive && *config.enableKeepalive) {
+    if (config.keepaliveIdle) {
+      int val = static_cast<int>(config.keepaliveIdle->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
+    }
+    if (config.keepaliveInterval) {
+      int val = static_cast<int>(config.keepaliveInterval->count());
+      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
+    }
+    if (config.keepaliveCount) {
+      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
+    }
+  }
+  if (config.userTimeout) {
+    int val = static_cast<int>(config.userTimeout->count());
+    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
+  }
+  /*
+   * Default the send/recv timeout to kConnectedTimeoutSec when the caller does
+   * not specify one. This is the one field that does not fall through to the
+   * OS. Without it a connected socket blocks forever: a peer that accepts the
+   * TCP connection but stops responding mid-handshake (e.g. its transport setup
+   * failed) would wedge a blocking recv during the handshake exchange
+   * indefinitely, which is only reaped as an opaque process-unresponsive
+   * failure. Bounding it turns the hang into a surfaced ConnectionFailed error.
+   */
+  {
+    struct timeval tv{};
+    tv.tv_sec =
+        config.connTimeout ? config.connTimeout->count() : kConnectedTimeoutSec;
+    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
+    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
+  }
+}
+
+// Applies the connected-socket options to a freshly accepted fd.
+Status configureAcceptedSocket(int sock, const TcpSocketConfig& config) {
   SockOptSetter opt(sock);
-  opt.set(SOL_SOCKET, SO_SNDBUF, kSocketBufSize, "SO_SNDBUF");
-  opt.set(SOL_SOCKET, SO_RCVBUF, kSocketBufSize, "SO_RCVBUF");
-  opt.set(IPPROTO_TCP, TCP_NODELAY, 1, "TCP_NODELAY");
-  opt.set(SOL_SOCKET, SO_KEEPALIVE, 1, "SO_KEEPALIVE");
-  opt.set(IPPROTO_TCP, TCP_KEEPIDLE, kKeepaliveIdleSec, "TCP_KEEPIDLE");
-  opt.set(IPPROTO_TCP, TCP_KEEPINTVL, kKeepaliveIntervalSec, "TCP_KEEPINTVL");
-  opt.set(IPPROTO_TCP, TCP_KEEPCNT, kKeepaliveCount, "TCP_KEEPCNT");
-  opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, kUserTimeoutMs, "TCP_USER_TIMEOUT");
-
-  struct timeval tv{};
-  tv.tv_sec = kConnectedTimeoutSec;
-  opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-  opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-
+  applySocketConfig(opt, config);
   return opt.status();
 }
 
@@ -301,6 +387,81 @@ Status setHandshakeTimeout(int sock) {
 
 } // namespace
 
+Result<std::string> deviceGlobalIpv6(const std::string& device) {
+  // Read /proc/net/if_inet6 rather than getifaddrs(): the address flags are the
+  // point, and getifaddrs() does not expose them (ifa_flags carries the
+  // interface's IFF_* bits, not the address's IFA_F_* bits). A deprecated
+  // address is still returned by getifaddrs() and still binds successfully, so
+  // picking one silently produces a working socket bound to an address the peer
+  // is not supposed to reply to. On the MI350 hosts every frontend NIC except
+  // eth2 carries a deprecated address alongside its live one, and enumeration
+  // order is not specified, so the deprecated one can win.
+  std::ifstream f("/proc/net/if_inet6");
+  if (!f) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "cannot open /proc/net/if_inet6 to resolve device " + device);
+  }
+
+  // Non-throwing, because every other failure path in this function yields an
+  // Err and an exception escaping past a Result-returning contract is
+  // inconsistent with it. The columns are kernel-generated at fixed width, so a
+  // parse failure means the file is not the format this was written against --
+  // skip the row rather than defensively rewriting the loop. Same pattern as
+  // the port parse above.
+  auto parseHex = [](const std::string& s) -> std::optional<unsigned long> {
+    unsigned long value = 0;
+    const char* const end = s.data() + s.size();
+    const auto [ptr, ec] = std::from_chars(s.data(), end, value, 16);
+    if (ec != std::errc{} || ptr != end) {
+      return std::nullopt;
+    }
+    return value;
+  };
+
+  // Columns: address(32 hex, no colons) ifindex prefixlen scope flags name
+  std::string hex, ifindex, prefixLen, scope, flags, name;
+  while (f >> hex >> ifindex >> prefixLen >> scope >> flags >> name) {
+    if (name != device || hex.size() != 32) {
+      continue;
+    }
+    // Scope 0 is global; this skips link-local (0x20) and host (0x10).
+    const auto scopeValue = parseHex(scope);
+    if (!scopeValue || *scopeValue != 0) {
+      continue;
+    }
+    // An unreadable flags column is treated as unusable rather than as "not
+    // deprecated": the whole point of reading this file is the flags, so a row
+    // whose deprecation bit cannot be established must not be bound.
+    constexpr unsigned long kIfaFDeprecated = 0x20;
+    const auto flagsValue = parseHex(flags);
+    if (!flagsValue || (*flagsValue & kIfaFDeprecated) != 0) {
+      continue;
+    }
+    in6_addr addr{};
+    bool parsed = true;
+    for (size_t i = 0; i < sizeof(addr.s6_addr); ++i) {
+      const auto byte = parseHex(hex.substr(i * 2, 2));
+      if (!byte) {
+        parsed = false;
+        break;
+      }
+      addr.s6_addr[i] = static_cast<uint8_t>(*byte);
+    }
+    if (!parsed) {
+      continue;
+    }
+    char buf[INET6_ADDRSTRLEN] = {};
+    if (inet_ntop(AF_INET6, &addr, buf, sizeof(buf)) == nullptr) {
+      continue;
+    }
+    return std::string(buf);
+  }
+  return Err(
+      ErrCode::InvalidArgument,
+      "no live global IPv6 address on device " + device);
+}
+
 // ---------------------------------------------------------------------------
 // TcpConn<IOPolicy> — shared sync methods
 // ---------------------------------------------------------------------------
@@ -330,6 +491,76 @@ bool TcpConn<IOPolicy>::sendAll(const void* buf, size_t len) {
   return true;
 }
 
+// Sends every byte of @p iov, coalescing the length prefix and the payload into
+// one syscall instead of two. Mutates @p iov to track progress, so the caller
+// must not reuse it.
+//
+// Error handling deliberately mirrors sendAll(): only EINTR is retried, and
+// anything else -- EAGAIN included -- is fatal. That is the existing contract
+// for these sockets, and widening it here would hide a non-blocking data socket
+// rather than fix one.
+template <typename IOPolicy>
+bool TcpConn<IOPolicy>::sendAllVec(std::span<iovec> iov) {
+  while (!iov.empty()) {
+    msghdr msg{};
+    msg.msg_iov = iov.data();
+    msg.msg_iovlen = iov.size();
+    ssize_t n = ::sendmsg(sock_, &msg, MSG_NOSIGNAL);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      int savedErrno = errno;
+      UNIFLOW_LOG_ERROR(
+          "sendAllVec failed: fd={} errno={} ({})",
+          sock_,
+          savedErrno,
+          std::system_category().message(savedErrno));
+      errno = savedErrno;
+      return false;
+    }
+    // A short write can land mid-iovec: retire the entries it fully covered,
+    // then advance the base of the one it split. On a blocking socket this is
+    // only reachable when a signal interrupts a partial transfer, so it is not
+    // covered by tests -- an attempt to force it with an oversized payload did
+    // not reach this branch.
+    auto consumed = static_cast<size_t>(n);
+    while (!iov.empty() && consumed >= iov.front().iov_len) {
+      consumed -= iov.front().iov_len;
+      iov = iov.subspan(1);
+    }
+    if (!iov.empty() && consumed > 0) {
+      iov.front().iov_base =
+          static_cast<uint8_t*>(iov.front().iov_base) + consumed;
+      iov.front().iov_len -= consumed;
+    }
+  }
+  return true;
+}
+
+// Classifies a failed recvAll() while errno is still the one recvAll saw.
+//
+// recvAll restores errno before returning false precisely so a caller can read
+// it, but only until the next call that can overwrite it -- and formatting the
+// message allocates. So this captures first and formats second. Callers must
+// not read the global errno after the Result has travelled anywhere; that was
+// the defect this replaces, where a retry loop tested errno after a
+// promise/future round trip and several string constructions.
+//
+// A timeout is reported as ErrCode::Timeout rather than ConnectionFailed
+// because the two mean different things on a connected socket. SO_RCVTIMEO is
+// set on every connected socket to bound the handshake against a peer that
+// accepts and then stops responding; on a socket that is merely idle between
+// transfers the same timeout fires with EAGAIN, and a caller that cannot tell
+// those apart has to treat normal idleness as a dead peer.
+Err classifyRecvFailure(const char* what) {
+  const int savedErrno = errno;
+  const bool timedOut = savedErrno == EAGAIN || savedErrno == EWOULDBLOCK;
+  return Err(
+      timedOut ? ErrCode::Timeout : ErrCode::ConnectionFailed,
+      std::string(what) + ": " + std::system_category().message(savedErrno));
+}
+
 template <typename IOPolicy>
 bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
   auto* ptr = static_cast<uint8_t*>(buf);
@@ -341,6 +572,28 @@ bool TcpConn<IOPolicy>::recvAll(void* buf, size_t len) {
         continue;
       }
       int savedErrno = errno;
+      // A timeout that lands MID-FRAME is not idleness, and must not be
+      // reported as one. recvAll holds no cross-call reassembly state, so the
+      // bytes already taken off the socket cannot be resumed: a caller that
+      // treats ErrCode::Timeout as an idle gap and retries would read the
+      // remainder of this frame as a fresh length prefix, desynchronising the
+      // stream and most likely producing a garbage length. `remaining != len`
+      // catches progress made WITHIN this call only -- it cannot see that a
+      // previous recvAll already took the header off the socket, which is why
+      // syncRecv treats any failure of its payload read as fatal too. Reported
+      // as EPROTO so
+      // classifyRecvFailure() maps it to ConnectionFailed and the connection is
+      // torn down, which is what happened before timeouts became retryable.
+      if ((savedErrno == EAGAIN || savedErrno == EWOULDBLOCK) &&
+          remaining != len) {
+        UNIFLOW_LOG_ERROR(
+            "recvAll timed out mid-frame, tearing down: fd={} received={} "
+            "expected={}",
+            sock_,
+            len - remaining,
+            len);
+        savedErrno = EPROTO;
+      }
       UNIFLOW_LOG_ERROR(
           "recvAll failed: fd={} errno={} ({})",
           sock_,
@@ -445,16 +698,24 @@ Result<size_t> TcpConn<IOPolicy>::syncSend(std::span<const uint8_t> data) {
 
   UNIFLOW_LOG_DEBUG("TcpConn::send: fd={} bytes={}", sock_, data.size());
 
+  // One sendmsg for prefix + payload. With TCP_NODELAY set, sending the 4-byte
+  // prefix separately hands the kernel a 4-byte segment it may put on the wire
+  // immediately, so coalescing also stops emitting a runt segment per frame.
   uint32_t len = htonl(static_cast<uint32_t>(data.size()));
-  if (!sendAll(&len, sizeof(len))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "send header failed: " + std::system_category().message(errno));
+  iovec iov[2];
+  iov[0].iov_base = &len;
+  iov[0].iov_len = sizeof(len);
+  size_t iovCnt = 1;
+  if (!data.empty()) {
+    // const_cast: iovec has no const variant, and sendmsg only reads.
+    iov[1].iov_base = const_cast<uint8_t*>(data.data());
+    iov[1].iov_len = data.size();
+    iovCnt = 2;
   }
-  if (!data.empty() && !sendAll(data.data(), data.size())) {
+  if (!sendAllVec(std::span{iov}.first(iovCnt))) {
     return Err(
         ErrCode::ConnectionFailed,
-        "send payload failed: " + std::system_category().message(errno));
+        "send frame failed: " + std::system_category().message(errno));
   }
   return data.size();
 }
@@ -465,12 +726,17 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
+  // Split the wait: blocking on the next length prefix is inter-frame stall,
+  // blocking on the payload is drain time. Two clock reads per frame (~20ns
+  // each) against a frame that takes hundreds of microseconds.
+  auto& stats = recvPhaseStats();
+  const auto tStart = std::chrono::steady_clock::now();
+
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
+  const auto tFirstByte = std::chrono::steady_clock::now();
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
@@ -483,10 +749,37 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::vector<uint8_t>& data) {
 
   data.resize(len);
   if (len != 0 && !recvAll(data.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    // Never reported as a retryable Timeout, whatever errno says. The header is
+    // already off the socket, so this frame is half-consumed and recvAll
+    // exposes no offset to resume from -- a caller that treated this as an idle
+    // gap and retried would read the payload as the next length prefix and
+    // desynchronise the stream. recvAll's own mid-frame guard cannot catch this
+    // case: the payload read starts with remaining == len, so a timeout that
+    // fires before the first payload byte arrives looks like zero progress to
+    // it, even though progress was made by the PREVIOUS recvAll call for the
+    // header.
+    auto failure = classifyRecvFailure("recv payload failed");
+    if (failure.code() == ErrCode::Timeout) {
+      return Err(
+          ErrCode::ConnectionFailed,
+          std::string(
+              "recv payload failed mid-frame after the header was "
+              "consumed: ") +
+              failure.message());
+    }
+    return failure;
   }
+
+  const auto tDone = std::chrono::steady_clock::now();
+  using ns = std::chrono::nanoseconds;
+  stats.interFrameStallNs.fetch_add(
+      std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
+      std::memory_order_relaxed);
+  stats.payloadDrainNs.fetch_add(
+      std::chrono::duration_cast<ns>(tDone - tFirstByte).count(),
+      std::memory_order_relaxed);
+  stats.frames.fetch_add(1, std::memory_order_relaxed);
+  stats.payloadBytes.fetch_add(len, std::memory_order_relaxed);
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv: fd={} bytes={}", sock_, len);
   return static_cast<size_t>(len);
@@ -498,12 +791,14 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
     return Err(ErrCode::NotConnected, "Socket is not connected");
   }
 
+  auto& stats = recvPhaseStats();
+  const auto tStart = std::chrono::steady_clock::now();
+
   uint32_t rawLen = 0;
   if (!recvAll(&rawLen, sizeof(rawLen))) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv header failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv header failed");
   }
+  const auto tFirstByte = std::chrono::steady_clock::now();
 
   uint32_t len = ntohl(rawLen);
   if (len > kMaxMessageSize) {
@@ -522,10 +817,19 @@ Result<size_t> TcpConn<IOPolicy>::syncRecv(std::span<uint8_t> buf) {
   }
 
   if (len != 0 && !recvAll(buf.data(), len)) {
-    return Err(
-        ErrCode::ConnectionFailed,
-        "recv payload failed: " + std::system_category().message(errno));
+    return classifyRecvFailure("recv payload failed");
   }
+
+  const auto tDone = std::chrono::steady_clock::now();
+  using ns = std::chrono::nanoseconds;
+  stats.interFrameStallNs.fetch_add(
+      std::chrono::duration_cast<ns>(tFirstByte - tStart).count(),
+      std::memory_order_relaxed);
+  stats.payloadDrainNs.fetch_add(
+      std::chrono::duration_cast<ns>(tDone - tFirstByte).count(),
+      std::memory_order_relaxed);
+  stats.frames.fetch_add(1, std::memory_order_relaxed);
+  stats.payloadBytes.fetch_add(len, std::memory_order_relaxed);
 
   UNIFLOW_LOG_DEBUG("TcpConn::recv(span): fd={} bytes={}", sock_, len);
   return static_cast<size_t>(len);
@@ -931,6 +1235,10 @@ TcpConn<IOPolicy>::~TcpConn() {
 
 template <typename IOPolicy>
 void TcpConn<IOPolicy>::close() {
+  // Off-loop callers are fine for SyncIO and not for AsyncIO -- see the
+  // declaration in TcpController.h for why. Both current callers
+  // (TcpTransport::shutdown() on an application thread and the reader refusing
+  // a connection) hold SyncIO conns.
   if (sock_ >= 0) {
     UNIFLOW_LOG_DEBUG("TcpConn: close, fd={}", sock_);
     ::shutdown(sock_, SHUT_RDWR);
@@ -947,7 +1255,7 @@ template class TcpConn<AsyncIO>;
 
 std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     std::atomic<int>& listenSock,
-    int acceptRetryCnt,
+    const TcpSocketConfig& config,
     const std::string& id) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (listenSock.load() < 0) {
@@ -961,7 +1269,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
   // EAGAIN from SO_RCVTIMEO loops back for shutdown checks without
   // counting as a retry. Transient errors retry up to acceptRetryCnt.
   int retryCnt = 0;
-  while (retryCnt < acceptRetryCnt) {
+  while (retryCnt < config.acceptRetryCnt) {
     socklen_t clientLen = sizeof(clientAddr);
     int clientSock = ::accept4(
         listenSock.load(),
@@ -973,7 +1281,7 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
           "TcpServer: accepted fd={} from {}",
           clientSock,
           formatAddr(clientAddr));
-      auto status = configureAcceptedSocket(clientSock);
+      auto status = configureAcceptedSocket(clientSock, config);
       if (!status) {
         UNIFLOW_LOG_ERROR(
             "TcpServer: socket config failed fd={}: {}",
@@ -1018,13 +1326,15 @@ std::future<std::unique_ptr<Conn>> SyncAccept::accept(
     UNIFLOW_LOG_WARN(
         "TcpServer: accept retry {}/{}: errno={} ({})",
         retryCnt,
-        acceptRetryCnt,
+        config.acceptRetryCnt,
         savedErrno,
         std::system_category().message(savedErrno));
   }
 
   UNIFLOW_LOG_ERROR(
-      "TcpServer: accept exhausted {} retries on {}", acceptRetryCnt, id);
+      "TcpServer: accept exhausted {} retries on {}",
+      config.acceptRetryCnt,
+      id);
   return make_ready_future(std::unique_ptr<Conn>(nullptr));
 }
 
@@ -1047,6 +1357,28 @@ void SyncAccept::shutdown(std::atomic<int>& listenSock, const std::string& id) {
 // AsyncAccept
 // ---------------------------------------------------------------------------
 
+AsyncAccept::~AsyncAccept() {
+  std::queue<std::promise<std::unique_ptr<Conn>>> orphaned;
+  {
+    std::lock_guard<std::mutex> lock(alive_->mu);
+    alive_->alive = false;
+    // Taken under the guard, which is what makes touching loop-thread-only
+    // state safe here: every callback holds the same mutex for its whole body,
+    // so none is running now and none can start.
+    //
+    // A teardown callback that timed out and later bailed on the dead guard
+    // never settled these, and nothing else will, so a caller blocked on
+    // accept() would otherwise see broken_promise from the promise destructor
+    // rather than the null a closed listener is supposed to report. Settled
+    // outside the lock because set_value() can run a continuation.
+    orphaned.swap(pendingPromises_);
+  }
+  while (!orphaned.empty()) {
+    orphaned.front().set_value(nullptr);
+    orphaned.pop();
+  }
+}
+
 void AsyncAccept::teardown(int fd) {
   accepting_ = false;
   evb_.unregisterFd(fd);
@@ -1063,7 +1395,9 @@ void AsyncAccept::teardown(int fd) {
   readyConns_ = {};
 }
 
-void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
+void AsyncAccept::acceptPendingConnections(
+    std::atomic<int>& listenSock,
+    const TcpSocketConfig& config) {
   if (!accepting_) {
     return;
   }
@@ -1114,6 +1448,8 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
       continue;
     }
 
+    // SyncIO deliberately: see the AsyncAccept doc comment. The accept is
+    // async, the connection it yields is not.
     auto conn = TcpConn<SyncIO>::create(clientSock);
     if (!conn) {
       continue;
@@ -1121,7 +1457,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
     // configureAcceptedSocket sets 30s timeouts — must come after the
     // 500ms handshake timeout to avoid overriding it.
-    auto status = configureAcceptedSocket(conn->getFd());
+    auto status = configureAcceptedSocket(conn->getFd(), config);
     if (!status) {
       UNIFLOW_LOG_ERROR(
           "TcpServer: async socket config failed fd={}: {}",
@@ -1141,7 +1477,7 @@ void AsyncAccept::acceptPendingConnections(std::atomic<int>& listenSock) {
 
 std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
     std::atomic<int>& listenSock,
-    int /*acceptRetryCnt*/,
+    const TcpSocketConfig& config,
     const std::string& /*id*/) {
   if (listenSock.load() < 0) {
     return make_ready_future(std::unique_ptr<Conn>(nullptr));
@@ -1150,7 +1486,20 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   std::promise<std::unique_ptr<Conn>> promise;
   auto future = promise.get_future();
 
-  evb_.dispatch([this, &listenSock, p = std::move(promise)]() mutable noexcept {
+  evb_.dispatch([this,
+                 alive = alive_,
+                 &listenSock,
+                 cfg = config,
+                 p = std::move(promise)]() mutable noexcept {
+    // Guarded for the same reason as runOnLoopBounded()'s callback, and it
+    // matters more here: besides this object, the body reads listenSock, which
+    // belongs to the owning server and dies with it. Nothing is salvageable
+    // once the guard is dead, so report the closed-listener answer and stop.
+    std::lock_guard<std::mutex> lock(alive->mu);
+    if (!alive->alive) {
+      p.set_value(nullptr);
+      return;
+    }
     int sock = listenSock.load();
     if (sock < 0) {
       p.set_value(nullptr);
@@ -1168,9 +1517,17 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
         p.set_value(nullptr);
         return;
       }
-      evb_.registerFd(sock, EPOLLIN, [this, &listenSock](uint32_t /*events*/) {
-        acceptPendingConnections(listenSock);
-      });
+      // The config travels with the fd registration rather than through a
+      // member: it is server-level, so freezing it when the fd is armed loses
+      // nothing -- BasicTcpServer hands its own config_ to every accept() call
+      // and never reassigns it. Nothing here binds an accepted fd to a
+      // particular accept() anyway; connections go to whichever promise is
+      // queued first. A future per-accept override would have to travel with
+      // the connection instead.
+      evb_.registerFd(
+          sock, EPOLLIN, [this, &listenSock, cfg](uint32_t /*events*/) {
+            acceptPendingConnections(listenSock, cfg);
+          });
       accepting_ = true;
     }
 
@@ -1185,6 +1542,46 @@ std::future<std::unique_ptr<Conn>> AsyncAccept::accept(
   });
 
   return future;
+}
+
+bool AsyncAccept::runOnLoopBounded(
+    std::function<void()> work,
+    std::chrono::milliseconds timeout) {
+  // Heap-allocated and shared with the queued callback, not a stack frame the
+  // callback captures by reference: this wait is allowed to give up, and a
+  // callback that runs afterwards must still have somewhere valid to signal.
+  // That is the difference between this and EventBase::dispatchAndWait(), which
+  // can only be safe because it never stops waiting.
+  struct Barrier {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done{false};
+  };
+  auto barrier = std::make_shared<Barrier>();
+
+  evb_.dispatch([work = std::move(work), barrier, alive = alive_]() noexcept {
+    {
+      // Held across work() so the destructor cannot retire the object midway
+      // through it. Skipped entirely on a dead guard: this callback may have
+      // been abandoned by a timed-out wait, and dispatch() offers no way to
+      // recall it.
+      std::lock_guard<std::mutex> lock(alive->mu);
+      if (alive->alive) {
+        work();
+      }
+    }
+    // Signalled either way, so a caller still waiting is never left to time out
+    // on work that has already been decided.
+    {
+      std::lock_guard<std::mutex> lock(barrier->mu);
+      barrier->done = true;
+    }
+    barrier->cv.notify_all();
+  });
+
+  std::unique_lock<std::mutex> lock(barrier->mu);
+  return barrier->cv.wait_for(
+      lock, timeout, [&barrier]() { return barrier->done; });
 }
 
 void AsyncAccept::shutdown(
@@ -1205,10 +1602,39 @@ void AsyncAccept::shutdown(
     teardown(fd);
     closeFd();
   } else if (evb_.isLoopRunning()) {
-    evb_.dispatchAndWait([this, fd]() noexcept { teardown(fd); });
-    // Drain: unregisterFd inside teardown is deferred —
-    // wait for it to complete before closing the fd.
-    evb_.dispatchAndWait([]() noexcept {});
+    // Bounded, and the fd is closed either way.
+    //
+    // dispatchAndWait() would be the natural call here and it is what this used
+    // to do, but it waits on the loop with no timeout, and neither condition it
+    // depends on is guaranteed. isLoopRunning() is only !stop_, so the loop can
+    // stop in the window between that check and the dispatch -- after which the
+    // callback is enqueued into a queue nobody drains and the wait never ends.
+    // The loop can also simply be busy: the TCP transport runs its staged-reply
+    // and H2D poll loops on this same EventBase and they re-dispatch themselves
+    // while a copy is outstanding, so teardown competes with the data path for
+    // the one loop thread. A responder was observed wedged here for 600s during
+    // an 8-GPU run, having logged the first of its two listener shutdowns and
+    // never reached the second.
+    //
+    // On timeout the loop-thread-only state teardown() touches is deliberately
+    // left alone rather than reached into from here. Closing the fd is what
+    // actually stops the listener, and a closed fd leaves epoll on its own, so
+    // giving up on the callback costs a stale registration the loop will fail
+    // to remove -- not a leaked listener.
+    const bool tornDown =
+        runOnLoopBounded([this, fd]() { teardown(fd); }, kLoopTeardownTimeout);
+    // Second round trip: unregisterFd() inside teardown() defers its own work,
+    // so draining past it is what makes the fd safe to close.
+    const bool drained =
+        tornDown && runOnLoopBounded([]() {}, kLoopTeardownTimeout);
+    if (!drained) {
+      UNIFLOW_LOG_WARN(
+          "TcpServer: event loop did not run listener teardown for {} within "
+          "{}ms (stopped or wedged in another callback); closing fd={} anyway",
+          id,
+          kLoopTeardownTimeout.count(),
+          fd);
+    }
     closeFd();
   } else {
     // Loop stopped — closing the fd auto-removes it from epoll.
@@ -1253,7 +1679,7 @@ Status BasicTcpServer<AcceptPolicy>::init() {
   }
   int domain = domainResult.value();
 
-  auto sockResult = createListenSocket(domain);
+  auto sockResult = createListenSocket(domain, config_.bindToDevice);
   if (!sockResult) {
     UNIFLOW_LOG_ERROR("TcpServer: socket creation failed on {}", id_);
     return std::move(sockResult).error();
@@ -1316,54 +1742,7 @@ namespace {
 
 Status configureClientSocket(int sock, const TcpSocketConfig& config) {
   SockOptSetter opt(sock);
-
-  if (config.socketBufSize) {
-    opt.set(SOL_SOCKET, SO_SNDBUF, *config.socketBufSize, "SO_SNDBUF");
-    opt.set(SOL_SOCKET, SO_RCVBUF, *config.socketBufSize, "SO_RCVBUF");
-  }
-  if (config.tcpNoDelay) {
-    int val = *config.tcpNoDelay ? 1 : 0;
-    opt.set(IPPROTO_TCP, TCP_NODELAY, val, "TCP_NODELAY");
-  }
-  if (config.enableKeepalive) {
-    int val = *config.enableKeepalive ? 1 : 0;
-    opt.set(SOL_SOCKET, SO_KEEPALIVE, val, "SO_KEEPALIVE");
-  }
-  if (config.enableKeepalive && *config.enableKeepalive) {
-    if (config.keepaliveIdle) {
-      int val = static_cast<int>(config.keepaliveIdle->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPIDLE, val, "TCP_KEEPIDLE");
-    }
-    if (config.keepaliveInterval) {
-      int val = static_cast<int>(config.keepaliveInterval->count());
-      opt.set(IPPROTO_TCP, TCP_KEEPINTVL, val, "TCP_KEEPINTVL");
-    }
-    if (config.keepaliveCount) {
-      opt.set(IPPROTO_TCP, TCP_KEEPCNT, *config.keepaliveCount, "TCP_KEEPCNT");
-    }
-  }
-  if (config.userTimeout) {
-    int val = static_cast<int>(config.userTimeout->count());
-    opt.set(IPPROTO_TCP, TCP_USER_TIMEOUT, val, "TCP_USER_TIMEOUT");
-  }
-  /*
-   * Default the send/recv timeout to kConnectedTimeoutSec when the caller does
-   * not specify one, matching configureAcceptedSocket on the server side.
-   * Without this the client's connected socket blocks forever: a peer that
-   * accepts the TCP connection but stops responding mid-handshake (e.g. its
-   * transport setup failed) would wedge the client's blocking recv during the
-   * handshake exchange indefinitely, which is only reaped as an opaque
-   * process-unresponsive failure. Bounding it turns the hang into a surfaced
-   * ConnectionFailed error.
-   */
-  {
-    struct timeval tv{};
-    tv.tv_sec =
-        config.connTimeout ? config.connTimeout->count() : kConnectedTimeoutSec;
-    opt.set(SOL_SOCKET, SO_SNDTIMEO, tv, "SO_SNDTIMEO");
-    opt.set(SOL_SOCKET, SO_RCVTIMEO, tv, "SO_RCVTIMEO");
-  }
-
+  applySocketConfig(opt, config);
   return opt.status();
 }
 
@@ -1490,6 +1869,15 @@ std::future<std::unique_ptr<Conn>> SyncConnect::connect(
       return make_ready_future(std::unique_ptr<Conn>(nullptr));
     }
 
+    if (config.bindToDevice) {
+      auto status = bindSocketToDevice(sock, *config.bindToDevice);
+      if (!status) {
+        UNIFLOW_LOG_ERROR("TcpClient: {}: {}", id, status.error().toString());
+        ::close(sock);
+        return make_ready_future(std::unique_ptr<Conn>(nullptr));
+      }
+    }
+
     if (::connect(
             sock,
             reinterpret_cast<sockaddr*>(&resolved->addr),
@@ -1539,6 +1927,15 @@ std::future<std::unique_ptr<Conn>> AsyncConnect::connect(
         "TcpClient: socket creation failed: {}",
         std::system_category().message(errno));
     return make_ready_future(std::unique_ptr<Conn>(nullptr));
+  }
+
+  if (config.bindToDevice) {
+    auto bindStatus = bindSocketToDevice(sock, *config.bindToDevice);
+    if (!bindStatus) {
+      UNIFLOW_LOG_ERROR("TcpClient: {}", bindStatus.error().toString());
+      ::close(sock);
+      return make_ready_future(std::unique_ptr<Conn>(nullptr));
+    }
   }
 
   int rc = ::connect(

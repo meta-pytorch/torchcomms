@@ -52,7 +52,7 @@
 //
 // Self-skip on non-HIP/non-AMD builds so this header can be included
 // unconditionally from cross-platform headers (e.g. `IbgdaBuffer.h`,
-// `Timeout.cuh`). All HIP-specific intrinsic shims and host-pass stubs
+// `AbortCheck.cuh`). All HIP-specific intrinsic shims and host-pass stubs
 // below are gated by this block.
 
 #ifdef __HIP_PLATFORM_AMD__

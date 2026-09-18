@@ -2,6 +2,15 @@
 
 #include "comms/uniflow/controller/TcpController.h"
 
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cstring>
+#include <fstream>
+#include <string>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -377,4 +386,167 @@ TEST_F(TcpSocketConfigTest, ExplicitKeepaliveDisableIsValid) {
 
   acceptThread.join();
   EXPECT_NE(serverConn, nullptr);
+}
+
+TEST_F(TcpSocketConfigTest, DefaultsLeaveBindToDeviceUnset) {
+  EXPECT_FALSE(TcpSocketConfig{}.bindToDevice.has_value());
+  EXPECT_FALSE(TcpSocketConfig::osDefaults().bindToDevice.has_value());
+}
+
+TEST_F(TcpSocketConfigTest, ValidateRejectsEmptyBindToDevice) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = "";
+  auto status = cfg.validate();
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpSocketConfigTest, ValidateRejectsOverlongBindToDevice) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = std::string(IFNAMSIZ, 'e');
+  auto status = cfg.validate();
+  EXPECT_TRUE(status.hasError());
+  EXPECT_EQ(status.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpSocketConfigTest, ValidateAcceptsLongestBindToDevice) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = std::string(IFNAMSIZ - 1, 'e');
+  EXPECT_TRUE(cfg.validate().hasValue());
+}
+
+TEST_F(TcpSocketConfigTest, BindToLoopbackDeviceConnectionSucceeds) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = "lo";
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
+
+  TcpClient client(cfg);
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
+  EXPECT_NE(clientConn, nullptr);
+
+  acceptThread.join();
+  EXPECT_NE(serverConn, nullptr);
+}
+
+// Accepted sockets inherit sk_bound_dev_if from the listener, so the accept
+// path needs no explicit binding. Asserted here because that is a kernel
+// behaviour the design relies on rather than something this code enforces.
+TEST_F(TcpSocketConfigTest, AcceptedSocketInheritsListenerDevice) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = "lo";
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
+
+  TcpClient client(TcpSocketConfig{});
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
+  ASSERT_NE(clientConn, nullptr);
+
+  acceptThread.join();
+  ASSERT_NE(serverConn, nullptr);
+
+  auto* tcpConn = dynamic_cast<TcpConn<SyncIO>*>(serverConn.get());
+  ASSERT_NE(tcpConn, nullptr);
+
+  char boundDev[IFNAMSIZ] = {};
+  socklen_t len = sizeof(boundDev);
+  ASSERT_EQ(
+      ::getsockopt(
+          tcpConn->getFd(), SOL_SOCKET, SO_BINDTODEVICE, boundDev, &len),
+      0);
+  EXPECT_STREQ(boundDev, "lo");
+}
+
+TEST_F(TcpSocketConfigTest, BindToNonexistentDeviceFailsNamingIt) {
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = "nonexistent0";
+
+  TcpServer server("127.0.0.1:0", cfg);
+  auto status = server.init();
+  ASSERT_TRUE(status.hasError());
+  EXPECT_NE(status.error().toString().find("nonexistent0"), std::string::npos)
+      << status.error().toString();
+}
+
+TEST_F(TcpSocketConfigTest, ClientBindToNonexistentDeviceFails) {
+  TcpServer server("127.0.0.1:0");
+  auto status = server.init();
+  ASSERT_TRUE(status.hasValue()) << status.error().toString();
+
+  auto cfg = TcpSocketConfig{};
+  cfg.bindToDevice = "nonexistent0";
+  cfg.connectRetries = 0;
+
+  TcpClient client(cfg);
+  auto clientConn =
+      client.connect("127.0.0.1:" + std::to_string(server.getPort())).get();
+  EXPECT_EQ(clientConn, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// deviceGlobalIpv6
+// ---------------------------------------------------------------------------
+
+TEST(DeviceGlobalIpv6Test, UnknownDeviceReportsError) {
+  auto addr = deviceGlobalIpv6("nonexistent0");
+
+  ASSERT_TRUE(addr.hasError());
+  EXPECT_EQ(addr.error().code(), ErrCode::InvalidArgument);
+}
+
+// ::1 is host-scope, not global. Returning it would hand the transport an
+// address no peer can reach, so the scope filter has to exclude it.
+TEST(DeviceGlobalIpv6Test, LoopbackHasNoGlobalAddress) {
+  auto addr = deviceGlobalIpv6("lo");
+
+  ASSERT_TRUE(addr.hasError())
+      << "unexpectedly resolved lo to " << addr.value();
+  EXPECT_EQ(addr.error().code(), ErrCode::InvalidArgument);
+}
+
+// Whatever comes back must be usable as a bind address, which is the only
+// property the transport relies on. Skipped where the host has no global IPv6.
+TEST(DeviceGlobalIpv6Test, ResolvedAddressIsBindable) {
+  std::ifstream f("/proc/net/if_inet6");
+  ASSERT_TRUE(f.good());
+  std::string hex, ifindex, prefixLen, scope, flags, name;
+  std::string candidate;
+  while (f >> hex >> ifindex >> prefixLen >> scope >> flags >> name) {
+    if (std::stoul(scope, nullptr, 16) == 0 &&
+        (std::stoul(flags, nullptr, 16) & 0x20) == 0) {
+      candidate = name;
+      break;
+    }
+  }
+  if (candidate.empty()) {
+    GTEST_SKIP() << "host has no live global IPv6 address";
+  }
+
+  auto addr = deviceGlobalIpv6(candidate);
+  ASSERT_TRUE(addr.hasValue()) << addr.error().message();
+
+  in6_addr parsed{};
+  EXPECT_EQ(inet_pton(AF_INET6, addr.value().c_str(), &parsed), 1)
+      << "deviceGlobalIpv6 returned unparseable address " << addr.value();
+
+  int sock = ::socket(AF_INET6, SOCK_STREAM, 0);
+  ASSERT_GE(sock, 0);
+  sockaddr_in6 sa{};
+  sa.sin6_family = AF_INET6;
+  sa.sin6_addr = parsed;
+  EXPECT_EQ(::bind(sock, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)), 0)
+      << "cannot bind " << addr.value() << ": " << std::strerror(errno);
+  ::close(sock);
 }

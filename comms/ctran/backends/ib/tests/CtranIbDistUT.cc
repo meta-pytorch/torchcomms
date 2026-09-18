@@ -11,7 +11,7 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -58,9 +58,9 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
     // NOTE: Printing it as WARN to make this log visible as our default setting
     // is to only print WARN and above logs.
-    XLOG_IF(WARN, this->globalRank == 0)
+    CTRAN_LOG_STREAM_IF(WARN, this->globalRank == 0)
         << testName << " numRanks " << this->numRanks
-        << ". Description: " << testDesc << std::endl;
+        << ". Description: " << testDesc;
   }
 
   size_t getIbRegCount() {
@@ -974,7 +974,7 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
   } catch (const std::bad_alloc&) {
@@ -1056,7 +1056,7 @@ TEST_F(CtranIbTest, InitializeWithoutCommAndExternalBootstrap) {
         cudaDev,
         commHash,
         commDesc,
-        false /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kExternal);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
@@ -1233,7 +1233,7 @@ TEST_F(CtranIbTest, LocalFlush) {
         localRank,
         0,
         "ib_dist_test",
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kDefaultServer);
 
     CtranIbRequest req;
@@ -1619,14 +1619,17 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
       "Expect rank 0 puts data from its local GPU data to other ranks and "
       "the traffic profiling can catch exact bytes as expected per device and per QP.");
 
-  setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "true", 1);
-  ncclCvarInit();
+  EnvRAII profilerEnv(NCCL_CTRAN_TRANSPORT_PROFILER, true);
+  auto singleton = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(singleton);
+  const size_t trafficBefore =
+      singleton->getDeviceTrafficSnapshot(this->localRank);
 
 #undef BUF_COUNT
 #define BUF_COUNT 8192
   try {
-    auto ctranIb =
-        std::make_unique<CtranIb>(this->comm, true /* enableLocalFlush */);
+    auto ctranIb = std::make_unique<CtranIb>(
+        this->comm, CtranIbConfig{.enableLocalFlush = true});
     int* buf;
     void* handle = nullptr;
     ControlMsg sendMsg;
@@ -1715,6 +1718,10 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
           putReqs.erase(rank);
         }
       }
+
+      EXPECT_EQ(
+          singleton->getDeviceTrafficSnapshot(this->localRank) - trafficBefore,
+          (this->numRanks - 1) * BUF_COUNT * sizeof(int));
     } else {
       // Other rank ensures send control messages has completed
       waitIbReq(ctrlSReq, ctranIb);
@@ -1736,8 +1743,6 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
-
-  unsetenv("NCCL_CTRAN_TRANSPORT_PROFILER");
 }
 
 TEST_F(CtranIbTest, InvalidPeer) {
@@ -2111,6 +2116,88 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
   }
 }
 
+// CtranIb resolves the env-map against comm->statex_->commDesc(), so an
+// env-map entry only matches when it is keyed on that value's prefix.
+namespace {
+std::string trafficClassPgPrefix(const CtranComm* comm) {
+  const std::string commDesc = comm->statex_->commDesc();
+  return commDesc.substr(0, commDesc.find(':'));
+}
+} // namespace
+
+// Precedence: comm hint > NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map > NCCL_IB_TC.
+TEST_F(CtranIbTest, trafficClassHintOverridesEnvMap) {
+  // Env-map matches this comm and would set 200. The hint (192) must win.
+  std::vector<std::string> pgTrafficClass = {
+      trafficClassPgPrefix(this->comm) + ":200"};
+  EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = 192;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 192u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassFallsBackToNcclIbTc) {
+  EnvRAII env1(NCCL_IB_TC, int64_t{128});
+  // No PG env-map entry, no hint.
+  this->comm->config_.trafficClass = INT_MIN;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 128u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassOutOfRangeFallsBackToEnv) {
+  EnvRAII env1(NCCL_IB_TC, int64_t{64});
+  this->comm->config_.commDesc = "DP";
+  this->comm->config_.trafficClass = 1024; // > 255
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 64u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassEnvMapUsedWhenHintUnset) {
+  // No hint: the env-map entry matching this comm's PG prefix applies, and
+  // NCCL_IB_TC stays unused. The non-matching entry must be ignored.
+  EnvRAII env1(NCCL_IB_TC, int64_t{64});
+  std::vector<std::string> pgTrafficClass = {
+      "PP_P2P_0:200", trafficClassPgPrefix(this->comm) + ":208"};
+  EnvRAII env2(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = -1;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    EXPECT_EQ(ctranIb->getTrafficClass(), 208u);
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  }
+}
+
+TEST_F(CtranIbTest, trafficClassMalformedEnvEntryRejectedRegardlessOfOrder) {
+  // The malformed entry sits after the one that matches this comm; it must
+  // still be reported instead of being skipped by an early match.
+  std::vector<std::string> pgTrafficClass = {
+      trafficClassPgPrefix(this->comm) + ":200", "PP_P2P_1:xyz"};
+  EnvRAII env1(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, std::move(pgTrafficClass));
+  this->comm->config_.trafficClass = -1;
+  try {
+    auto ctranIb = std::make_unique<CtranIb>(this->comm);
+    ADD_FAILURE() << "Expected CtranIb construction to reject the malformed "
+                     "NCCL_CTRAN_IB_PG_TRAFFIC_CLASS entry";
+  } catch (const std::bad_alloc&) {
+    GTEST_SKIP() << "IB backend not enabled. Skip test";
+  } catch (const ctran::utils::Exception&) {
+    SUCCEED();
+  }
+}
+
 TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
   const std::string eth = "eth0";
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
@@ -2140,7 +2227,7 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
     constexpr int peerRank = 0;

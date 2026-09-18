@@ -16,9 +16,9 @@ namespace comms::prims {
 template <int kBlockSize>
 __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
     const __grid_constant__ DirectAllgatherNvlArgs args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   auto group = make_block_group();
   const int my_rank = args.my_rank;
@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
         continue;
       }
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, max_sig, timeout);
+      peer.send(group, send_src, window, max_sig, abortDevice);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -65,7 +65,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void direct_allgather_nvl_kernel(
       }
       char* dst = args.recvbuf + peer_rank * sendcount + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.recv(group, dst, window, max_sig, timeout);
+      peer.recv(group, dst, window, max_sig, abortDevice);
     }
   }
 #endif
@@ -75,9 +75,9 @@ template <int kBlockSize>
 __global__
 __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
     const __grid_constant__ HierarchicalAllgatherFusedArgs args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   auto group = make_block_group();
   const int W = args.ib_size;
@@ -109,7 +109,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
         args.nvl_signaling_data_size,
         args.nvl_peers,
         args.recvbuf,
-        timeout);
+        abortDevice);
     return;
   }
 
@@ -130,7 +130,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
 
     const char* send_src = tile_src + off;
     next.template send<MemcpyAndSelfCopy>(
-        group, send_src, window, max_sig, timeout, own_dst + off);
+        group, send_src, window, max_sig, abortDevice, own_dst + off);
 
     int fwd_current_rank = args.ib_rank;
     for (int step = 0; step < W - 1; step++) {
@@ -142,9 +142,9 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(group, dst, next, window, max_sig, timeout);
+        prev.forward(group, dst, next, window, max_sig, abortDevice);
       } else {
-        prev.recv(group, dst, window, max_sig, timeout);
+        prev.recv(group, dst, window, max_sig, abortDevice);
       }
     }
   }
@@ -160,7 +160,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_fused_kernel(
       args.nvl_signaling_data_size,
       args.nvl_peers,
       args.recvbuf,
-      timeout);
+      abortDevice);
 #endif
 }
 
@@ -207,7 +207,7 @@ __device__ __forceinline__ void wait_ready(
     const uint64_t* ready_counters,
     std::size_t idx,
     uint64_t sequence,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
   // Per-thread check, not the group form: the group form is leader-only, so a
   // break driven by it would exit on the leader alone and leave the rest of the
   // group at the group.sync() below. Every thread reads the same shared abort
@@ -215,7 +215,7 @@ __device__ __forceinline__ void wait_ready(
   // and all reach the barrier together.
   while (load_ready_counter(ready_counters + idx) != sequence) {
     FT_ABORT_BREAK(
-        timeout,
+        abortDevice,
         "hierarchical allgather waiting for ready counter idx=%llu sequence=%llu",
         static_cast<unsigned long long>(idx),
         static_cast<unsigned long long>(sequence));
@@ -246,9 +246,9 @@ template <int kBlockSize>
 __global__
 __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
     const __grid_constant__ HierarchicalAllgatherOverlapArgs args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   auto base_group = make_block_group();
   const std::size_t chunk_bytes = args.chunk_bytes;
@@ -318,7 +318,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             send_src + chunk_off,
             window,
             args.ib_signaling_data_size,
-            timeout,
+            abortDevice,
             args.trace,
             static_cast<uint8_t>(args.ib_rank),
             own_dst + chunk_off);
@@ -339,7 +339,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 next,
                 window,
                 args.ib_signaling_data_size,
-                timeout,
+                abortDevice,
                 args.trace,
                 static_cast<uint8_t>(args.ib_rank));
           } else {
@@ -348,7 +348,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 dst,
                 window,
                 args.ib_signaling_data_size,
-                timeout,
+                abortDevice,
                 args.trace,
                 static_cast<uint8_t>(args.ib_rank));
           }
@@ -416,7 +416,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
         args.ready_counters,
         static_cast<std::size_t>(ib_src) * total_chunks + chunk,
         args.ready_sequence,
-        timeout);
+        abortDevice);
     trace_hierarchical_allgather(
         args.trace,
         group,
@@ -444,7 +444,7 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
             send_src + chunk_off,
             window,
             args.nvl_signaling_data_size,
-            timeout);
+            abortDevice);
       }
 
       for (int peer_rank = 0; peer_rank < args.nvl_size; ++peer_rank) {
@@ -456,7 +456,8 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
                 args.sendcount +
             off + chunk_off;
         auto peer = args.nvl_peers[peer_rank];
-        peer.recv(group, dst, window, args.nvl_signaling_data_size, timeout);
+        peer.recv(
+            group, dst, window, args.nvl_signaling_data_size, abortDevice);
       }
     }
     trace_hierarchical_allgather(
@@ -471,14 +472,14 @@ __launch_bounds__(kBlockSize, 1) void hierarchical_allgather_overlap_kernel(
 
 template __global__ void direct_allgather_nvl_kernel<512>(
     const __grid_constant__ DirectAllgatherNvlArgs,
-    Timeout);
+    AbortDevice);
 
 template __global__ void hierarchical_allgather_fused_kernel<512>(
     const __grid_constant__ HierarchicalAllgatherFusedArgs,
-    Timeout);
+    AbortDevice);
 
 template __global__ void hierarchical_allgather_overlap_kernel<512>(
     const __grid_constant__ HierarchicalAllgatherOverlapArgs,
-    Timeout);
+    AbortDevice);
 
 } // namespace comms::prims

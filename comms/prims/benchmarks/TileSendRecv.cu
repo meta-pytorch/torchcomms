@@ -7,13 +7,26 @@
 
 namespace comms::prims::benchmark {
 
+namespace {
+/*
+ * Both terminal statuses stop the driver loop. These kernels never set an abort
+ * handle, so `Aborted` is unreachable here; testing for it keeps the loops from
+ * spinning if one is ever driven under a live abort.
+ */
+__device__ __forceinline__ bool progressFinished(
+    NvlSendRecvProgressStatus status) {
+  return status == NvlSendRecvProgressStatus::Done ||
+      status == NvlSendRecvProgressStatus::Aborted;
+}
+} // namespace
+
 __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
     P2pNvlTransportDevice p2p,
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   auto [role, sub] = group.partition(2);
@@ -26,14 +39,52 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecv(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
+  }
+}
+
+/*
+ * `sendDone` / `recvDone` are per-thread but derive only from the group-uniform
+ * status each progress call returns, so every thread in the block agrees on
+ * them. That matters: progress_*_once syncs the group internally, so a diverged
+ * skip would strand part of the block at the next barrier.
+ */
+__global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes,
+    AbortDevice timeout) {
+  timeout.start();
+
+  auto group = make_block_group();
+  const int blockId = group.group_id;
+
+  char* src = sendTiles.tile_data(blockId);
+  const std::size_t sendBytes = sendTiles.tile_bytes(blockId);
+  char* dst = recvTiles.tile_data(blockId);
+  const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
+
+  p2p.init_send_progress(group, src, sendBytes, max_signal_bytes);
+  p2p.init_recv_progress(group, dst, recvBytes, max_signal_bytes);
+
+  bool sendDone = sendBytes == 0;
+  bool recvDone = recvBytes == 0;
+
+  while (!sendDone || !recvDone) {
+    if (!sendDone) {
+      sendDone = progressFinished(p2p.progress_send_once(group, timeout));
+    }
+    if (!recvDone) {
+      recvDone = progressFinished(p2p.progress_recv_once(group, timeout));
+    }
   }
 }
 
@@ -93,15 +144,15 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     bool needsBarrier,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   auto [role, sub] = group.partition(2);
   const int blockId = sub.group_id;
 
   if (needsBarrier) {
-    p2p.barrier_sync(sub, blockId, timeout);
+    p2p.barrier_sync(sub, blockId, abortDevice);
   }
 
   if (role == 0) {
@@ -110,14 +161,14 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvDynamic(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         /*max_signal_bytes=*/0,
-        timeout);
+        abortDevice);
   }
 }
 
@@ -175,8 +226,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
     TiledBuffer<char> sendTiles,
     TiledBuffer<char> recvTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_multiwarp_group(blockDim.x / 2);
   auto [role, sub] = group.partition_interleaved(2);
@@ -189,14 +240,95 @@ __global__ __launch_bounds__(512, 1) void p2pTileSendRecvBidirCta(
         sendTiles.tile_data(blockId),
         sendTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
   } else {
     p2p.recv(
         sub,
         recvTiles.tile_data(blockId),
         recvTiles.tile_bytes(blockId),
         max_signal_bytes,
-        timeout);
+        abortDevice);
+  }
+}
+
+__global__ __launch_bounds__(512, 1) void p2pTileProgressDrainSendRecv(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes,
+    AbortDevice timeout) {
+  timeout.start();
+
+  auto group = make_block_group();
+  const int blockId = group.group_id;
+
+  char* src = sendTiles.tile_data(blockId);
+  const std::size_t sendBytes = sendTiles.tile_bytes(blockId);
+  char* dst = recvTiles.tile_data(blockId);
+  const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
+
+  p2p.init_send_progress(group, src, sendBytes, max_signal_bytes);
+  p2p.init_recv_progress(group, dst, recvBytes, max_signal_bytes);
+
+  bool sendDone = sendBytes == 0;
+  bool recvDone = recvBytes == 0;
+
+  while (!sendDone || !recvDone) {
+    // Drain each direction to its blocking point rather than surrendering the
+    // block after a single chunk. The status is group-uniform, so every thread
+    // leaves the inner loop together.
+    while (!sendDone) {
+      const auto status = p2p.progress_send_once(group, timeout);
+      sendDone = progressFinished(status);
+      if (status != NvlSendRecvProgressStatus::Progressed) {
+        break;
+      }
+    }
+    while (!recvDone) {
+      const auto status = p2p.progress_recv_once(group, timeout);
+      recvDone = progressFinished(status);
+      if (status != NvlSendRecvProgressStatus::Progressed) {
+        break;
+      }
+    }
+  }
+}
+
+/*
+ * Same progress API as p2pTileProgressSendRecv, but each direction gets its own
+ * half-block group so the two run concurrently rather than alternating. This is
+ * the progress-API analogue of p2pTileSendRecvBidirCta, and exists to separate
+ * the cost of the API itself from the cost of the alternating loop shape.
+ */
+__global__ __launch_bounds__(512, 1) void p2pTileProgressSendRecvBidirCta(
+    P2pNvlTransportDevice p2p,
+    TiledBuffer<char> sendTiles,
+    TiledBuffer<char> recvTiles,
+    std::size_t max_signal_bytes,
+    AbortDevice timeout) {
+  timeout.start();
+
+  auto group = make_multiwarp_group(blockDim.x / 2);
+  auto [role, sub] = group.partition_interleaved(2);
+
+  const int blockId = sub.group_id;
+
+  if (role == 0) {
+    char* src = sendTiles.tile_data(blockId);
+    const std::size_t sendBytes = sendTiles.tile_bytes(blockId);
+    p2p.init_send_progress(sub, src, sendBytes, max_signal_bytes);
+    bool done = sendBytes == 0;
+    while (!done) {
+      done = progressFinished(p2p.progress_send_once(sub, timeout));
+    }
+  } else {
+    char* dst = recvTiles.tile_data(blockId);
+    const std::size_t recvBytes = recvTiles.tile_bytes(blockId);
+    p2p.init_recv_progress(sub, dst, recvBytes, max_signal_bytes);
+    bool done = recvBytes == 0;
+    while (!done) {
+      done = progressFinished(p2p.progress_recv_once(sub, timeout));
+    }
   }
 }
 
@@ -205,8 +337,8 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
     P2pNvlTransportDevice p2p_succ,
     TiledBuffer<char> dstTiles,
     std::size_t max_signal_bytes,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
 
   auto group = make_block_group();
   const int blockId = group.group_id;
@@ -217,7 +349,7 @@ __global__ __launch_bounds__(512, 1) void p2pTileForward(
       dstTiles.tile_bytes(blockId),
       p2p_succ,
       max_signal_bytes,
-      timeout);
+      abortDevice);
 }
 
 } // namespace comms::prims::benchmark

@@ -9,7 +9,6 @@
 
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
 #include "debug.h"
 #include "meta/NcclxLogger.h"
 
@@ -19,7 +18,9 @@ class LogTest : public ::testing::Test {
 
   void finishLogging() {
     sleep(1); // wait for logging to finish
-    NcclLogger::close();
+    meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+        .flush();
+    meta::comms::logger::getSpdlogLogger().flush();
   }
 
   void initLogging() {

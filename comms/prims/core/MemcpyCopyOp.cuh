@@ -6,10 +6,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/LLImpl.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 
 namespace comms::prims {
 
@@ -85,9 +85,10 @@ struct Memcpy {
   }
 
   template <typename P, typename... Args>
-  // Takes a Timeout where recv()/sendLL() do not: LL's readiness wait happens
-  // inside the codec (the flag is in the payload), so this is the one hook that
-  // can block indefinitely and therefore the one that needs a deadline.
+  // Takes an AbortDevice where recv()/sendLL() do not: LL's readiness wait
+  // happens inside the codec (the flag is in the payload), so this is the one
+  // hook that can block indefinitely and therefore the one that needs a
+  // deadline.
   __device__ __forceinline__ static void recvLL(
       ThreadGroup& group,
       char* dst,
@@ -95,9 +96,35 @@ struct Memcpy {
       std::size_t nbytes,
       std::size_t /*byte_offset*/,
       typename P::FlagType flagVal,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       Args...) {
-    LLImpl<P>::unpack(group, dst, staging, nbytes, flagVal, timeout);
+    LLImpl<P>::unpack(group, dst, staging, nbytes, flagVal, abortDevice);
+  }
+
+  // LL counterpart of forward(): decode the relayed chunk into `dst` and
+  // re-encode it into the next hop's staging in one pass. `recvFlagVal` is the
+  // generation the upstream sender stamped, `fwdFlagVal` the one the
+  // downstream ring expects -- they differ because the two staging rings
+  // advance on independent cursors, which is why this cannot be a
+  // packet-to-packet copy. A plain copy delegates to LLImpl<P>::repack; a
+  // reduce/convert op overrides this the way it overrides recvLL. Presence is
+  // detected by has_forwardLL_v.
+  //
+  // Takes no Timeout where recvLL() does: the caller has already confirmed
+  // every packet flag, so this hook must not spin -- a partial pass has
+  // already written fwd_staging and could not be retried.
+  template <typename P, typename... Args>
+  __device__ __forceinline__ static void forwardLL(
+      ThreadGroup& group,
+      char* dst,
+      char* fwd_staging,
+      const char* staging,
+      std::size_t nbytes,
+      std::size_t /*byte_offset*/,
+      typename P::FlagType /*recvFlagVal*/,
+      typename P::FlagType fwdFlagVal,
+      Args...) {
+    LLImpl<P>::repack(group, dst, fwd_staging, staging, nbytes, fwdFlagVal);
   }
 };
 
@@ -133,6 +160,22 @@ inline constexpr bool has_recvLL_v<
         std::declval<std::size_t>(),
         std::declval<std::size_t>(),
         std::declval<typename P::FlagType>(),
-        std::declval<const Timeout&>()))>> = true;
+        std::declval<const AbortDevice&>()))>> = true;
+
+template <typename Op, typename P, typename = void>
+inline constexpr bool has_forwardLL_v = false;
+template <typename Op, typename P>
+inline constexpr bool has_forwardLL_v<
+    Op,
+    P,
+    std::void_t<decltype(Op::template forwardLL<P>(
+        std::declval<ThreadGroup&>(),
+        std::declval<char*>(),
+        std::declval<char*>(),
+        std::declval<const char*>(),
+        std::declval<std::size_t>(),
+        std::declval<std::size_t>(),
+        std::declval<typename P::FlagType>(),
+        std::declval<typename P::FlagType>()))>> = true;
 
 } // namespace comms::prims

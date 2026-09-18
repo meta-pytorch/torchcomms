@@ -21,7 +21,8 @@ static AlgoDescriptor makeSendRecvCtgraph() {
     size_t bytes;
     int sendPeer, recvPeer;
     B(size_t c, int rank, int nR)
-        : send(c * sizeof(int32_t)),
+        : Buffers(c * sizeof(int32_t)),
+          send(c * sizeof(int32_t)),
           recv(c * sizeof(int32_t)),
           bytes(c * sizeof(int32_t)),
           sendPeer((rank + 1) % nR),

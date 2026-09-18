@@ -7,7 +7,8 @@ static AlgoDescriptor makeAllToAll() {
     ctran::TestDeviceBuffer send, recv;
     size_t bytes;
     B(size_t c, int rank, int nR)
-        : send(c * nR * sizeof(int32_t)),
+        : Buffers(c * nR * sizeof(int32_t)),
+          send(c * nR * sizeof(int32_t)),
           recv(c * nR * sizeof(int32_t)),
           bytes(c * nR * sizeof(int32_t)) {
       CtranCudaGraphTestBase::fillSendBuf(send.get(), c * nR, rank);
@@ -60,7 +61,9 @@ static AlgoDescriptor makeAllToAllv() {
     ctran::TestDeviceBuffer send, recv;
 
     B(size_t, int rank, int nRanks)
-        : totalSend(static_cast<size_t>(rank + 1) * 100 * nRanks),
+        : Buffers(
+              static_cast<size_t>(rank + 1) * 100 * nRanks * sizeof(int32_t)),
+          totalSend(static_cast<size_t>(rank + 1) * 100 * nRanks),
           totalRecv(100 * nRanks * (nRanks + 1) / 2),
           send(totalSend * sizeof(int32_t)),
           recv(totalRecv * sizeof(int32_t)) {

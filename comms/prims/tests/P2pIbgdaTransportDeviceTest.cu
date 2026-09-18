@@ -6,7 +6,7 @@
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
 #include "comms/common/fault_tolerance/Abort.h"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/tests/P2pIbgdaTransportDeviceTest.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
@@ -143,7 +143,7 @@ __global__ void testWaitSignalUntilAbort(
       1);
 
   // Arm the deadline the way a production kernel does. Without this the
-  // handle observes explicit aborts only, and a communicator timeout never
+  // handle observes explicit aborts only, and a communicator abortDevice never
   // reaches the wait.
   abort.start();
   // Published after the handle is armed, so a host that sees it knows every
@@ -411,12 +411,14 @@ void runTestTraceIbgdaEvent(PipesTraceHandle trace) {
 }
 
 // =============================================================================
-// wait_signal timeout test kernels
+// wait_signal abortDevice test kernels
 // =============================================================================
 
-__global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
-  // Start the timeout timer
-  timeout.start();
+__global__ void testWaitSignalTimeout(
+    uint64_t* d_signalBuf,
+    AbortDevice abortDevice) {
+  // Start the abortDevice timer
+  abortDevice.start();
 
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
@@ -428,14 +430,16 @@ __global__ void testWaitSignalTimeout(uint64_t* d_signalBuf, Timeout timeout) {
       1);
 
   // Signal buffer is pre-set to 0 by host.
-  // Waiting for >= 999 will never succeed, so timeout should fire.
-  transport.wait_signal(0, 999, timeout);
+  // Waiting for >= 999 will never succeed, so abortDevice should fire.
+  transport.wait_signal(0, 999, abortDevice);
 }
 
-__global__ void
-testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
-  // Start the timeout timer
-  timeout.start();
+__global__ void testWaitSignalNoTimeout(
+    uint64_t* d_signalBuf,
+    AbortDevice abortDevice,
+    bool* success) {
+  // Start the abortDevice timer
+  abortDevice.start();
 
   // Construct transport with ownedLocalSignalBuf
   IbgdaLocalBuffer localSigBuf(d_signalBuf, NetworkLKeys{});
@@ -447,14 +451,14 @@ testWaitSignalNoTimeout(uint64_t* d_signalBuf, Timeout timeout, bool* success) {
       1);
 
   // Signal buffer is pre-set to 42 by host.
-  // Waiting for >= 42 will succeed immediately, no timeout.
-  transport.wait_signal(0, 42, timeout);
+  // Waiting for >= 42 will succeed immediately, no abort handle.
+  transport.wait_signal(0, 42, abortDevice);
 
   *success = true;
 }
 
 // =============================================================================
-// wait_signal timeout test wrapper functions
+// wait_signal abortDevice test wrapper functions
 // =============================================================================
 
 cudaError_t runTestWaitSignalTimeout(
@@ -468,11 +472,11 @@ cudaError_t runTestWaitSignalTimeout(
   comms::fault_tolerance::Abort abort{
       /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP};
   abort.setDefaultTimeout(std::chrono::milliseconds{timeout_ms});
-  Timeout timeout = abort.getDeviceHandle();
+  AbortDevice abortDevice = abort.getDeviceHandle();
 
   // Intentionally unchecked - we expect the kernel to trap
   // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
-  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, timeout);
+  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, abortDevice);
   // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   return cudaDeviceSynchronize();
 }
@@ -482,10 +486,158 @@ void runTestWaitSignalNoTimeout(
     int /*device*/,
     uint32_t /*timeout_ms*/,
     bool* d_success) {
-  Timeout timeout;
+  AbortDevice abortDevice;
 
-  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, timeout, d_success);
+  testWaitSignalNoTimeout<<<1, 1>>>(d_signalBuf, abortDevice, d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
+
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void testCollapsedCqPoll(
+    doca_gpu_dev_verbs_cq* cq,
+    uint64_t ticket,
+    bool blocking,
+    bool abortAware,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
+    CollapsedCqPollResult* result) {
+  if (blocking) {
+    result->status = prims_ibgda_wait_collapsed_cq<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+    result->aborted = 0;
+  } else if (abortAware) {
+    const auto pollResult = gpuSharing
+        ? detail::pollIbgdaSqOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+              DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(
+              cq, ticket, collapsedCq, abort)
+        : detail::pollIbgdaSqOnce<
+              DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_EXCLUSIVE,
+              DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(
+              cq, ticket, collapsedCq, abort);
+    result->status = pollResult.status;
+    result->aborted = pollResult.aborted ? 1U : 0U;
+  } else {
+    result->status = prims_ibgda_poll_collapsed_cq_once<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_CTA>(cq, ticket);
+    result->aborted = 0;
+  }
+  result->finalConsumerIndex = cq->cqe_ci;
+}
+
+namespace {
+
+cudaError_t runTestIbgdaSqPoll(
+    const CollapsedCqPollCase& testCase,
+    bool abortAware,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
+    CollapsedCqPollResult* result) {
+  doca_gpunetio_ib_mlx5_cqe64 hostCqe{};
+  hostCqe.wqe_counter = static_cast<__be16>(
+      (testCase.wqeCounter >> 8) | (testCase.wqeCounter << 8));
+  hostCqe.op_own = static_cast<uint8_t>(
+      testCase.opcode << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT);
+  if (!collapsedCq) {
+    hostCqe.op_own |= DOCA_GPUNETIO_IB_MLX5_CQE_OWNER_MASK;
+  }
+
+  doca_gpunetio_ib_mlx5_cqe64* deviceCqe = nullptr;
+  doca_gpu_dev_verbs_cq* deviceCq = nullptr;
+  CollapsedCqPollResult* deviceResult = nullptr;
+  cudaError_t status = cudaMalloc(&deviceCqe, sizeof(hostCqe));
+  if (status != cudaSuccess) {
+    return status;
+  }
+  status = cudaMalloc(&deviceCq, sizeof(doca_gpu_dev_verbs_cq));
+  if (status != cudaSuccess) {
+    cudaFree(deviceCqe);
+    return status;
+  }
+  status = cudaMalloc(&deviceResult, sizeof(CollapsedCqPollResult));
+  if (status != cudaSuccess) {
+    cudaFree(deviceCq);
+    cudaFree(deviceCqe);
+    return status;
+  }
+
+  doca_gpu_dev_verbs_cq hostCq{};
+  hostCq.cqe_daddr = reinterpret_cast<uint8_t*>(deviceCqe);
+  hostCq.cqe_num = testCase.cqeCount;
+  hostCq.cqe_ci = testCase.initialConsumerIndex;
+  status =
+      cudaMemcpy(deviceCqe, &hostCqe, sizeof(hostCqe), cudaMemcpyHostToDevice);
+  if (status == cudaSuccess) {
+    status =
+        cudaMemcpy(deviceCq, &hostCq, sizeof(hostCq), cudaMemcpyHostToDevice);
+  }
+  if (status == cudaSuccess) {
+    testCollapsedCqPoll<<<1, 1>>>(
+        deviceCq,
+        testCase.ticket,
+        testCase.blocking,
+        abortAware,
+        collapsedCq,
+        gpuSharing,
+        abort,
+        deviceResult);
+    status = cudaDeviceSynchronize();
+  }
+  if (status == cudaSuccess) {
+    status = cudaMemcpy(
+        result,
+        deviceResult,
+        sizeof(CollapsedCqPollResult),
+        cudaMemcpyDeviceToHost);
+  }
+
+  const cudaError_t resultFreeStatus = cudaFree(deviceResult);
+  const cudaError_t cqFreeStatus = cudaFree(deviceCq);
+  const cudaError_t cqeFreeStatus = cudaFree(deviceCqe);
+  if (status != cudaSuccess) {
+    return status;
+  }
+  if (resultFreeStatus != cudaSuccess) {
+    return resultFreeStatus;
+  }
+  if (cqFreeStatus != cudaSuccess) {
+    return cqFreeStatus;
+  }
+  return cqeFreeStatus;
+}
+
+} // namespace
+
+cudaError_t runTestCollapsedCqPoll(
+    const CollapsedCqPollCase& testCase,
+    CollapsedCqPollResult* result) {
+  return runTestIbgdaSqPoll(
+      testCase,
+      /*abortAware=*/false,
+      /*collapsedCq=*/true,
+      /*gpuSharing=*/true,
+      comms::fault_tolerance::AbortDevice{},
+      result);
+}
+
+cudaError_t runTestIbgdaSqPollWithAbort(
+    const CollapsedCqPollCase& testCase,
+    bool collapsedCq,
+    bool gpuSharing,
+    comms::fault_tolerance::AbortDevice abort,
+    CollapsedCqPollResult* result) {
+  return runTestIbgdaSqPoll(
+      testCase,
+      /*abortAware=*/true,
+      collapsedCq,
+      gpuSharing,
+      abort,
+      result);
+}
+#endif
 
 } // namespace comms::prims::tests

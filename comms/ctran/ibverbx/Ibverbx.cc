@@ -3,17 +3,9 @@
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
-#ifdef IBVERBX_BUILD_RDMA_CORE
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-#endif
-
 #include <dlfcn.h>
-#include <folly/ScopeGuard.h>
-#include <folly/Singleton.h>
-#include <folly/String.h>
 #include <folly/synchronization/CallOnce.h>
-#include "comms/utils/cvars/nccl_cvars.h"
+#include <cstdlib>
 
 namespace ibverbx {
 
@@ -23,26 +15,31 @@ namespace {
 
 folly::once_flag initIbvSymbolOnce;
 
+// Read at the point of use rather than through a cvar, so every ibverbx
+// consumer sees it regardless of whether it initializes ncclx cvars.
+constexpr const char* kIbverbsSoEnv = "IBVERBX_IBVERBS_SO";
+
 } // namespace
 
-folly::Expected<folly::Unit, Error> ibvInit() {
+Status ibvInit() {
   static std::atomic<int> errNum{1};
   folly::call_once(initIbvSymbolOnce, [&]() {
-    errNum = buildIbvSymbols(ibvSymbols, NCCL_IBVERBS_PATH);
+    const char* path = std::getenv(kIbverbsSoEnv);
+    errNum = buildIbvSymbols(ibvSymbols, path != nullptr ? path : "");
   });
   if (errNum != 0) {
-    return folly::makeUnexpected(Error(errNum));
+    return makeUnexpected(Error(errNum));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<folly::Unit, Error>
+Status
 ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context) {
   int rc = ibvSymbols.ibv_internal_get_cq_event(channel, cq, cq_context);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents) {

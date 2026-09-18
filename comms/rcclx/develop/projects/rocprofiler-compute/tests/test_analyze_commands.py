@@ -1106,7 +1106,7 @@ def test_ast_transformer_edge_cases():
 
     unknown_call = ast.Call(
         func=ast.Name(id="UNKNOWN_FUNCTION", ctx=ast.Load()),
-        args=[ast.Constant(value=5) if hasattr(ast, "Constant") else ast.Num(n=5)],
+        args=[ast.Constant(value=5)],
         keywords=[],
     )
 
@@ -1121,7 +1121,7 @@ def test_ast_transformer_edge_cases():
 
     SUPPORTED_CALL = ast.Call(
         func=ast.Name(id="MIN", ctx=ast.Load()),
-        args=[ast.Constant(value=5) if hasattr(ast, "Constant") else ast.Num(n=5)],
+        args=[ast.Constant(value=5)],
         keywords=[],
     )
 

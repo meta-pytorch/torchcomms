@@ -2,63 +2,14 @@
 
 #include "comms/utils/logger/LoggingFormat.h"
 
-#include <unistd.h>
-#include <cstring>
-#include <sstream>
+#include <string_view>
+#include <utility>
 
-#include <fmt/format.h>
-#include <folly/String.h>
-#include <folly/Synchronized.h>
 #include <folly/logging/LogCategory.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/LogName.h>
-#include <folly/synchronization/CallOnce.h>
 
-#include "comms/utils/Conversion.h"
-#include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
 #include "comms/utils/logger/CommsLogFormatter.h"
-#include "comms/utils/logger/ErrorStackUtil.h"
-#include "comms/utils/logger/EventsScubaUtil.h"
-#include "comms/utils/logger/NcclScubaSample.h"
-#include "comms/utils/logger/SpdlogLogger.h"
-
-namespace {
-std::string getHostName(const char delim) {
-  constexpr int maxlen = HOST_NAME_MAX + 1;
-  char hostname[maxlen];
-  if (gethostname(hostname, maxlen) != 0) {
-    return "unknown";
-  }
-  int i = 0;
-  while ((hostname[i] != delim) && (hostname[i] != '\0') && (i < maxlen - 1)) {
-    i++;
-  }
-  hostname[i] = '\0';
-  return std::string{hostname};
-}
-
-struct ProcMetaData {
-  std::string hostname;
-  int pid{};
-} procMetaData;
-folly::once_flag procMetaDataInitFlag;
-static thread_local std::string myThreadName = "main";
-
-struct LastErrorInfo {
-  std::string lastErrorMessage;
-  // Legacy per-frame error chain, still appended by v2_27/v2_29's debug.cc via
-  // appendErrorToStack(). Kept for backward compatibility.
-  // TODO: remove once ncclx v2_29 is retired -- only v2_29 populates this;
-  // v2_30 is native-stack-only (lastErrorNativeStack), so this field and the
-  // getLastCommsError() fallback that reads it become dead.
-  std::vector<std::string> lastErrorStack;
-  // Native symbolized stack captured at the error site by logErrorToScuba().
-  // Preferred by getLastCommsError() when present.
-  std::vector<std::string> lastErrorNativeStack;
-};
-
-static folly::Synchronized<LastErrorInfo> lastCommsError{};
-} // Anonymous namespace
 
 namespace meta::comms::logger {
 
@@ -103,179 +54,19 @@ folly::StringPiece getCategoryNthParent(folly::StringPiece category, int n) {
   return category;
 }
 
-/* Parse the DEBUG_SUBSYS env var
- * This can be a comma separated list such as INIT,COLL
- * or ^INIT,COLL etc
- */
-uint64_t parseDebugSubsysMask(const char* ncclDebugSubsysEnv) {
-  uint64_t maskResult{0};
-
-  int invert = 0;
-  if (ncclDebugSubsysEnv[0] == '^') {
-    invert = 1;
-    ncclDebugSubsysEnv++;
-  }
-  maskResult = invert ? ~0ULL : 0ULL;
-  char* ncclDebugSubsys = strdup(ncclDebugSubsysEnv);
-  // Fixme: this is not thread safe, rewrite with folly::split
-  char* subsys = strtok(ncclDebugSubsys, ",");
-  while (subsys != nullptr) {
-    uint64_t mask = 0;
-    if (strcasecmp(subsys, "INIT") == 0) {
-      mask = INIT;
-    } else if (strcasecmp(subsys, "COLL") == 0) {
-      mask = COLL;
-    } else if (strcasecmp(subsys, "P2P") == 0) {
-      mask = P2P;
-    } else if (strcasecmp(subsys, "SHM") == 0) {
-      mask = SHM;
-    } else if (strcasecmp(subsys, "NET") == 0) {
-      mask = NET;
-    } else if (strcasecmp(subsys, "GRAPH") == 0) {
-      mask = GRAPH;
-    } else if (strcasecmp(subsys, "TUNING") == 0) {
-      mask = TUNING;
-    } else if (strcasecmp(subsys, "ENV") == 0) {
-      mask = ENV;
-    } else if (strcasecmp(subsys, "ALLOC") == 0) {
-      mask = ALLOC;
-    } else if (strcasecmp(subsys, "CALL") == 0) {
-      mask = CALL;
-    } else if (strcasecmp(subsys, "PROXY") == 0) {
-      mask = PROXY;
-    } else if (strcasecmp(subsys, "NVLS") == 0) {
-      mask = NVLS;
-    } else if (strcasecmp(subsys, "BOOTSTRAP") == 0) {
-      mask = BOOTSTRAP;
-    } else if (strcasecmp(subsys, "REG") == 0) {
-      mask = REG;
-    } else if (strcasecmp(subsys, "PROFILE") == 0) {
-      mask = PROFILE;
-    } else if (strcasecmp(subsys, "RAS") == 0) {
-      mask = RAS;
-    } else if (strcasecmp(subsys, "ALL") == 0) {
-      mask = ALL;
-    }
-    if (mask) {
-      if (invert) {
-        maskResult &= ~mask;
-      } else {
-        maskResult |= mask;
-      }
-    }
-    subsys = strtok(nullptr, ",");
-  }
-  free(ncclDebugSubsys);
-  return maskResult;
-}
-
-std::string parseDebugFile(const char* ncclDebugFileEnv) {
-  initProcMetaData();
-
-  int c = 0;
-  char debugFn[PATH_MAX + 1] = "";
-  char* dfn = debugFn;
-  while (ncclDebugFileEnv[c] != '\0' && (dfn - debugFn) < PATH_MAX) {
-    if (ncclDebugFileEnv[c++] != '%') {
-      *dfn++ = ncclDebugFileEnv[c - 1];
-      continue;
-    }
-    switch (ncclDebugFileEnv[c++]) {
-      case '%': // Double %
-        *dfn++ = '%';
-        break;
-      case 'h': // %h = hostname
-        dfn += snprintf(
-            dfn,
-            PATH_MAX + 1 - (dfn - debugFn),
-            "%s",
-            procMetaData.hostname.c_str());
-        break;
-      case 'p': // %p = pid
-        dfn += snprintf(
-            dfn, PATH_MAX + 1 - (dfn - debugFn), "%d", procMetaData.pid);
-        break;
-      default: // Echo everything we don't understand
-        *dfn++ = '%';
-        if ((dfn - debugFn) < PATH_MAX) {
-          *dfn++ = ncclDebugFileEnv[c - 1];
-        }
-        break;
-    }
-    if ((dfn - debugFn) > PATH_MAX) {
-      // snprintf wanted to overfill the buffer: set dfn to the end
-      // of the buffer (for null char) and it will naturally exit
-      // the loop.
-      dfn = debugFn + PATH_MAX;
-    }
-  }
-  *dfn = '\0';
-  return std::string{debugFn};
-}
-
-LogLevel getLoggerDebugLevel(std::string_view level) {
-  // If the env var is empty, then we default to log nothing
-  if (level.empty()) {
-    return LogLevel::NONE;
-  }
-  if (level == "VERSION") {
-    return LogLevel::VERSION;
-  } else if (level == "ERROR") {
-    return LogLevel::ERROR;
-  } else if (level == "WARN") {
-    return LogLevel::WARN;
-  } else if (level == "INFO") {
-    return LogLevel::INFO;
-  } else if (level == "ABORT") {
-    return LogLevel::ABORT;
-  } else if (level == "TRACE") {
-    return LogLevel::TRACE;
-  } else if (level == "NONE") {
-    return LogLevel::NONE;
-  }
-  // TODO: Add a warning here
-  return LogLevel::NONE;
-}
-
-void initProcMetaData() {
-  folly::call_once(procMetaDataInitFlag, []() {
-    procMetaData.hostname = getHostName('.');
-    procMetaData.pid = getpid();
-  });
-}
-
-void initThreadMetaData(std::string_view threadName) {
-  static thread_local folly::once_flag threadNameFlag;
-  folly::call_once(threadNameFlag, [&]() {
-    myThreadName = threadName;
-    setSpdlogThreadName(threadName);
-  });
-}
-
 std::string NcclLogFormatter::formatMessage(
     const folly::LogMessage& message,
     const folly::LogCategory* /* handlerCategory */) {
-  initProcMetaData();
-
-  bool isErrorMessage = message.getLevel() >= folly::LogLevel::ERR;
-  if (isErrorMessage) {
-    // Errors are recorded to Scuba at their call sites (ncclMetaDebugLogError
-    // for NCCL, CERR for CTRAN), each of which captures a fresh native stack
-    // via logErrorToScuba(). Clear any stale cached native stack here so
-    // getLastCommsError() does not pair this message with an unrelated stack;
-    // the call site's logErrorToScuba(), which runs after this formatter,
-    // re-sets it when present, and a bare XLOG(ERR) correctly falls back to the
-    // legacy per-frame chain.
-    auto lockedError = lastCommsError.wlock();
-    lockedError->lastErrorMessage = message.getMessage();
-    lockedError->lastErrorNativeStack.clear();
+  const auto processMetadata = detail::getLogProcessMetadata();
+  if (message.getLevel() >= folly::LogLevel::ERR) {
+    /*
+     * Errors are recorded to Scuba at their call sites. Clear any stale native
+     * stack here so a bare legacy XLOG(ERR) falls back to the per-frame chain.
+     */
+    detail::setLastErrorFromLegacyLog(message.getMessage());
   }
 
-  // At least for now, formatter is called in the same thread as the logging
-  // thread. So we don't need to worry about getting the information of another
-  // thread here.
-  int cudaDev = threadContextFn_();
-
+  const int cudaDev = threadContextFn_();
   const auto basename = message.getFileBaseName();
   return formatCommsLogMessage(
       getGlogLevelName(message.getLevel()),
@@ -284,80 +75,17 @@ std::string NcclLogFormatter::formatMessage(
        .threadId = message.getThreadID(),
        .filename = std::string_view{basename.data(), basename.size()},
        .lineNumber = message.getLineNumber(),
-       .hostname = procMetaData.hostname,
-       .processId = procMetaData.pid,
+       .hostname = processMetadata.hostname,
+       .processId = processMetadata.processId,
        .threadContext = cudaDev,
-       .threadName = myThreadName,
+       .threadName = getLogThreadName(),
        .prefix = prefix_});
-}
-
-void logErrorToScuba(
-    const std::string& message,
-    const int code,
-    const std::string& errorName,
-    const std::vector<std::string>& stack) {
-  // Build one Scuba record for the whole error; the guard flushes it to
-  // nccl_structured_logging on scope exit and keeps the sticky-context columns.
-  auto sampleGuard = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("ERROR");
-  auto& sample = sampleGuard.sample();
-  sample.setError(message, stack);
-  if (code != 0) {
-    sample.addNormal("error_code", fmt::format("{}:{}", code, errorName));
-  }
-}
-
-void setLastError(const std::string& message, std::vector<std::string> stack) {
-  auto w = lastCommsError.wlock();
-  w->lastErrorMessage = message;
-  w->lastErrorNativeStack = std::move(stack);
-}
-
-void logCommErrorToScuba(commResult_t code, const std::string& message) {
-  if (!NCCL_SCUBA_LOG_ERROR_ENABLED) {
-    return;
-  }
-  std::vector<std::string> stack;
-  if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
-    stack = captureNativeErrorStack();
-  }
-  logErrorToScuba(
-      message,
-      static_cast<int>(code),
-      ::meta::comms::commCodeToString(code),
-      stack);
-}
-
-std::string getLastCommsError() {
-  std::ostringstream ss;
-  {
-    auto lastCommsErrorRLocked = lastCommsError.rlock();
-    ss << lastCommsErrorRLocked->lastErrorMessage << "\nNCCL Stack trace:";
-    // Prefer the native captured stack; fall back to the legacy per-frame
-    // chain (still populated by v2_27/v2_29) when no native stack is present.
-    // TODO: remove the lastErrorStack fallback once ncclx v2_29 is retired --
-    // v2_30 is native-only, so this can collapse to lastErrorNativeStack.
-    const auto& stackTrace =
-        !lastCommsErrorRLocked->lastErrorNativeStack.empty()
-        ? lastCommsErrorRLocked->lastErrorNativeStack
-        : lastCommsErrorRLocked->lastErrorStack;
-    for (const auto& stack : stackTrace) {
-      ss << '\n' << stack;
-    }
-  }
-  return ss.str();
-}
-
-// TODO: remove once ncclx v2_29 is retired (see appendErrorToStack decl in
-// LoggingFormat.h) -- v2_30/ctran use captureNativeErrorStack() +
-// setLastError().
-void appendErrorToStack(std::string error) {
-  lastCommsError.wlock()->lastErrorStack.push_back(std::move(error));
 }
 
 NcclLogFormatter::NcclLogFormatter(
     std::string prefix,
     std::function<int(void)> threadContextFn)
     : prefix_(std::move(prefix)),
-      threadContextFn_(std::move(threadContextFn)) {};
+      threadContextFn_(std::move(threadContextFn)) {}
 
 } // namespace meta::comms::logger

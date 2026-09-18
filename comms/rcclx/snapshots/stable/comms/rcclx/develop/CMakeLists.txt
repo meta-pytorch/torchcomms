@@ -757,6 +757,8 @@ set(COMMON_FILES
   comms/utils/logger/EventsScubaUtil.h
   comms/utils/logger/Logger.cc
   comms/utils/logger/Logger.h
+  comms/utils/logger/CommsLogging.cc
+  comms/utils/logger/CommsLogging.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
   comms/utils/logger/LogUtils.cc

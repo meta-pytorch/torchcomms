@@ -1,239 +1,311 @@
-# Uniflow Developer Onboarding Guide
+# UniFlow Developer Onboarding Guide
 
-A minimal guide for engineers contributing to Uniflow or extending it for new platforms.
+Entry point for engineers contributing to UniFlow or extending it for new
+platforms.
 
-> **Uniflow** (Unified Transport for Heterogeneous LLM Systems) is a host-based point-to-point
-> data transfer library for LLM workloads — disaggregated inference, RL tensor transfer,
-> and checkpoint retrieval/loading.
+> **UniFlow** (Unified Transport for Heterogeneous LLM Systems) is a host-based
+> point-to-point data transfer library for LLM workloads — disaggregated
+> inference, RL tensor transfer, and checkpoint retrieval/loading.
 
 ---
 
 ## Table of Contents
 
-- [Codebase Overview](#codebase-overview)
-- [Building & Hello World](#building--hello-world)
-- [Running Tests & Benchmarks](#running-tests--benchmarks)
-- [Extending RDMA Backend for New HW Types](#extending-rdma-backend-for-new-hw-types)
+- [Architecture at a Glance](#architecture-at-a-glance)
+- [Document Map](#document-map)
+- [Codebase Layout](#codebase-layout)
+- [Building and Hello World](#building-and-hello-world)
+- [Running Tests](#running-tests)
+- [Performance Benchmarking](#performance-benchmarking)
+- [Extending the RDMA Backend for New HW](#extending-the-rdma-backend-for-new-hw)
 - [Adding a New Backend](#adding-a-new-backend)
+- [Glossary](#glossary)
 - [Further Reading](#further-reading)
 
 ---
 
-## Codebase Overview
+## Architecture at a Glance
 
-Source: `fbcode/comms/uniflow/`
+![UniFlow architecture](uniflow-arch.png)
 
-```
-comms/uniflow/
-├── Uniflow.h/cpp          # UniflowAgent — top-level per-process orchestrator
-├── Connection.h/cpp       # User-facing connection (control + data plane)
-├── MultiTransport.h/cpp   # Aggregates backends, routes to optimal transport
-├── Segment.h/cpp          # Memory abstraction (DRAM, VRAM, NVMe)
-├── Result.h               # Error handling (Status, Result<T>)
-├── controller/            # Control plane (TCP-based connection establishment)
-├── executor/              # Async primitives (EventBase, ScopedEventBaseThread)
-├── transport/
-│   ├── Transport.h        # Abstract transport interface + TransportFactory
-│   ├── Topology.h/cpp     # PCIe/NIC topology discovery (GPU↔NIC affinity)
-│   ├── rdma/              # RDMA backend (InfiniBand / RoCE)
-│   └── nvlink/            # NVLink backend (intra-node / MNNVL)
-├── drivers/               # Hardware abstraction (cuda, ibverbs, nvml, sysfs)
-├── core/                  # Low-level utilities (MPSC queue, Func)
-├── tests/                 # Unit + integration tests
-├── benchmarks/            # Performance benchmark suite
-└── .claude/docs/          # Detailed design documentation per module
+Generated with graphviz from [`uniflow-arch.dot`](uniflow-arch.dot); regenerate with:
+
+```bash
+dot -Tpng -Gdpi=140 fbcode/comms/uniflow/docs/uniflow-arch.dot \
+  -o fbcode/comms/uniflow/docs/uniflow-arch.png
 ```
 
-For detailed per-module design docs, see [`.claude/docs/`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/):
+### The two data paths
 
-| Document | Contents |
-|----------|----------|
-| [`overview.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/overview.md) | System goals, architecture, key differentiators |
-| [`transport.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/transport.md) | Transport interface, factory lifecycle, backend types |
-| [`rdma-transport.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/rdma-transport.md) | RDMA put/get architecture, multi-NIC parallelism |
-| [`rdma-copy-send-recv.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/rdma-copy-send-recv.md) | Copy-based send/recv with slab pools |
-| [`connection.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/connection.md) | Connection design, segment exchange |
-| [`segment.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/segment.md) | Memory model (Segment, RegisteredSegment, Spans) |
-| [`executor.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/docs/executor.md) | EventBase, async execution primitives |
+Chosen by the **static type of the span** — there is no runtime negotiation.
+Asymmetric transfer (one side zero-copy, the other staged) is **not** supported.
 
-Design doc: https://fburl.com/uniflow
+| | `put` / `get` | `send` / `recv` |
+|---|---|---|
+| mode | zero-copy, one-sided | copy-based, two-sided |
+| argument | `RegisteredSegment::Span` + `RemoteRegisteredSegment::Span` | `Segment::Span` |
+| registration | required, both sides | not required |
+| staging | none — NIC DMAs from user memory | host-pinned slab pool, both sides |
+| CUDA on data path | **none** | present (the copy) |
+| flow control | send-queue capacity | CTS ring (implicit credit) |
+| chunking | 512 KB | slab-sized, `pipelineDepth = 2` |
+
+### How to read the diagram
+
+The **vertical spine** is the request path. A consumer calls `UniflowAgent`,
+which splits into a control plane (rendezvous) and a data plane
+(`Connection` → `MultiTransport`); `MultiTransport` picks a backend, the factory
+creates it, and the backend drives the drivers.
+
+**Dashed edges** are cross-cutting — memory model, execution, observability, and
+the slab pool. They are not layers; they cut across every layer.
+
+Five things the diagram is trying to make obvious:
+
+1. **The control plane never carries payload bytes.** It exchanges topology,
+   `TransportInfo`, and segment handles, then gets out of the way. That
+   separation is what lets the data plane be lock-free.
+2. **The static type of the span selects the data path** — see the table above.
+3. **`put`/`get` puts no CUDA call on the data path. `send`/`recv` does.** That
+   single row explains most of the performance and reliability difference
+   between them.
+4. **The slab pool is factory-level**, shared across every connection — not
+   per-transport. Transports hold a `shared_ptr` into it.
+5. **There is one EventBase thread, not a pool.** All mutable transport state
+   lives on it, which is what makes the data path lock-free. The RFC describes a
+   thread pool with request sharding; it is not implemented.
 
 ---
 
-## Building & Hello World
+## Document Map
+
+Design documentation lives in [`../.claude/docs/`](../.claude/docs/). Start with
+`overview.md`, then read the deep-dive for whatever you are touching.
+
+| Document | Contents |
+|---|---|
+| [`overview.md`](../.claude/docs/overview.md) | **Start here.** Goals, non-goals, integrations, key differentiators vs OSS |
+| [`segment.md`](../.claude/docs/segment.md) | Memory model — `Segment`, `TSpan`, `RegisteredSegment`, `RemoteRegisteredSegment` |
+| [`transport.md`](../.claude/docs/transport.md) | `Transport` / `TransportFactory` interfaces, backend types, connection lifecycle |
+| [`agent.md`](../.claude/docs/agent.md) | `UniflowAgent` design, configuration, connection establishment, threading model |
+| [`executor.md`](../.claude/docs/executor.md) | `Func`, `Executor`, `EventBase`, `ScopedEventBaseThread` |
+| [`core.md`](../.claude/docs/core.md) | Core primitives, and what does *not* belong in core |
+| [`rdma-transport.md`](../.claude/docs/rdma-transport.md) | Zero-copy `put`/`get` path — multi-QP distribution, selective signaling, SQ flow control, task lifecycle |
+| [`rdma-copy-send-recv.md`](../.claude/docs/rdma-copy-send-recv.md) | Copy-based `send`/`recv` — slab pool, CTS ring, notify ring, pipelining |
+| [`fault-model.md`](../.claude/docs/fault-model.md) | Error contract, timeout semantics, and the launch-side blocking hazard |
+| [`telemetry.md`](../.claude/docs/telemetry.md) | Telemetry and latency-measurement design |
+
+Elsewhere in the tree:
+
+| Document | Contents |
+|---|---|
+| [`../benchmarks/DESIGN.md`](../benchmarks/DESIGN.md) | Benchmark suite design — **read as history, see the benchmarking section below** |
+
+---
+
+## Codebase Layout
+
+```
+comms/uniflow/
+├── Uniflow.h/cpp          UniflowAgent — top-level per-process orchestrator
+├── Connection.h/cpp       User-facing connection (control + data plane)
+├── MultiTransport.h/cpp   Aggregates backends, routes to the optimal transport
+├── Segment.h/cpp          Memory abstraction (DRAM, VRAM, NVMe)
+├── Result.h               Error handling (Status, Result<T>, ErrCode)
+├── UniflowPy.cpp          pybind11 bindings → the `_core` Python extension
+├── controller/            Control plane (TCP-based rendezvous)
+├── executor/              Async primitives (Func, EventBase, ScopedEventBaseThread)
+├── core/                  Low-level utilities (MpscQueue, Func)
+├── logging/               spdlog async logger behind UNIFLOW_LOG_* macros
+├── transport/
+│   ├── Transport.h        Abstract transport + TransportFactory interfaces
+│   ├── TransportType.h    NVLink | RDMA | TCP | Mock
+│   ├── Topology.h/cpp     PCIe/NIC topology discovery (GPU↔NIC affinity)
+│   ├── rdma/              RDMA backend — RdmaTransport, RdmaSlabPool, CopyEngine
+│   ├── nvlink/            NVLink backend — NVLinkTransport, NVLinkTopology
+│   └── p2p/               Shared P2P helpers
+├── drivers/               Hardware abstraction (cuda, ibverbs, nvml, sysfs), all mockable
+├── tests/                 unit/ · integration/ · py/
+├── benchmarks/            Performance benchmark suite (see below)
+├── amd/                   AMD-specific pieces
+└── .claude/docs/          Design documentation
+```
+
+---
+
+## Building and Hello World
 
 ### Prerequisites
 
 - devserver or on-demand with GPU access (≥2 GPUs for NVLink tests)
-- Buck2 build system
+- Buck2
 
-### Build the Core Library
+### Build
 
 ```bash
-# Build the entire uniflow library
-buck2 build //comms/uniflow:uniflow
-
-# Build individual components
-buck2 build //comms/uniflow:segment
-buck2 build //comms/uniflow:multi-transport
-buck2 build //comms/uniflow:connection
+buck2 build fbcode//comms/uniflow:uniflow      # core library
+buck2 build fbcode//comms/uniflow:_core        # Python extension
 ```
 
-### Build & Run the Python Bindings (Hello World)
+### Hello World (requires 2 GPUs)
+
+The Python integration test exercises the full path — agent creation, segment
+registration, connection, transfer, verification:
 
 ```bash
-# Build Python extension
-buck2 build //comms/uniflow:_core
-
-# Quick sanity check — runs a basic Python test
-buck2 test //comms/uniflow/tests/py:test_uniflow
+buck2 test fbcode//comms/uniflow/tests/py:test_uniflow_integration
 ```
 
-### Hello World — Python (Requires 2 GPUs)
+It creates two `UniflowAgent` instances, registers GPU memory on each,
+establishes a connection via the TCP controller, performs a `get()` from GPU:0
+to GPU:1 over NVLink, and verifies the data.
 
-The integration test is the best "Hello World" — it exercises the full path:
-agent creation → segment registration → connection → data transfer → verification.
-
-```bash
-buck2 test //comms/uniflow/tests/py:test_uniflow_integration
-```
-
-What it does (see [`tests/py/test_uniflow_integration.py`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/tests/py/test_uniflow_integration.py)):
-1. Creates two `UniflowAgent` instances (one server, one client)
-2. Registers GPU memory segments on each
-3. Establishes a connection via TCP controller
-4. Performs a `get()` transfer from GPU:0 → GPU:1 over NVLink
-5. Verifies data correctness
-
-### Hello World — C++ (Unit Tests)
+The C++ equivalent:
 
 ```bash
-# Run all unit tests
-buck2 test //comms/uniflow/tests/unit:
-
-# Run a specific test
-buck2 test //comms/uniflow/tests/unit:segment_test
-buck2 test //comms/uniflow/tests/unit:multi_transport_test
-buck2 test //comms/uniflow/tests/unit:uniflow_agent_test
+buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test
 ```
 
 ---
 
-## Running Tests & Benchmarks
-
-### Unit Tests (No Hardware Required)
+## Running Tests
 
 ```bash
-buck2 test //comms/uniflow/tests/unit:                       # All core unit tests
-buck2 test //comms/uniflow/executor/tests:                   # Executor tests
-buck2 test //comms/uniflow/controller/tests:                 # Controller tests
-buck2 test //comms/uniflow/core/tests:                       # Core utility tests
-buck2 test //comms/uniflow/drivers/ibverbs/tests:            # IB verbs API tests
-buck2 test //comms/uniflow/drivers/cuda/tests:               # CUDA driver tests
-buck2 test //comms/uniflow/drivers/nvml/tests:               # NVML API tests
+# No hardware required
+buck2 test fbcode//comms/uniflow/tests/unit:
+buck2 test fbcode//comms/uniflow/executor/tests:
+buck2 test fbcode//comms/uniflow/controller/tests:
+buck2 test fbcode//comms/uniflow/core/tests:
+buck2 test fbcode//comms/uniflow/drivers/ibverbs/tests:
+buck2 test fbcode//comms/uniflow/drivers/cuda/tests:
+buck2 test fbcode//comms/uniflow/drivers/nvml/tests:
+buck2 test fbcode//comms/uniflow/logging/tests:
+buck2 test fbcode//comms/uniflow/transport/tests:
+buck2 test fbcode//comms/uniflow/transport/rdma/tests:
+buck2 test fbcode//comms/uniflow/transport/nvlink/tests:
+buck2 test fbcode//comms/uniflow/transport/p2p/tests:
+
+# GPUs required
+buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_single_host_test   # ≥2 GPUs, 1 host
+buck2 test fbcode//comms/uniflow/tests/integration:multi_transport_cross_host_test    # 2 nodes
 ```
 
-### Integration Tests (Require GPUs)
-
-```bash
-# Single-host NVLink test (requires ≥2 GPUs on one host)
-buck2 test //comms/uniflow/tests/integration:multi_transport_single_host_test
-
-# Cross-host RDMA test (requires 2 nodes, run via MAST or MPI)
-buck2 test //comms/uniflow/tests/integration:multi_transport_cross_host_test
-```
-
-### NVLink Benchmarks
-
-```bash
-# Build the benchmark binary
-buck2 build //comms/uniflow/benchmarks:uniflow_bench
-
-# Run NVLink benchmark (local, 2 GPUs)
-bash fbcode/comms/uniflow/benchmarks/scripts/run_nvlink_benchmark.sh
-
-# Remote GB200 hosts (cross-compiled for aarch64)
-bash fbcode/comms/uniflow/benchmarks/scripts/run_nvlink_benchmark.sh \
-  --hosts <gb200_host0>,<gb200_host1> --gpu b200
-```
-
-Key options: `--iterations`, `--warmup`, `--min-size`, `--max-size`, `--direction put|get|both`
-
-### RDMA Benchmarks
-
-```bash
-# End-to-end RDMA benchmark comparing uniflow vs ib_write_bw
-bash fbcode/comms/uniflow/benchmarks/scripts/rdma_benchmark.sh \
-  --host0 <host0> --host1 <host1>
-
-# Options
-#   --iterations 500  --warmup 10
-#   --min-size 1      --max-size 1073741824
-#   --chunks 524288,1048576,2097152,4194304
-#   --num-nics 0 (0 = all available)
-#   --skip-ib         (uniflow only)
-#   --skip-uniflow    (ib_write_bw only)
-```
-
-### General Benchmark Launcher (torchrun)
-
-```bash
-# Local multi-rank using torchrun
-bash fbcode/comms/uniflow/benchmarks/scripts/run_benchmark.sh \
-  --nproc 2 -- --benchmark rdma_bandwidth --iterations 50
-```
-
-For benchmark design details, see [`benchmarks/DESIGN.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/benchmarks/DESIGN.md).
+CMake / OSS builds are supported per module; see `CMakeLists.txt`. **When adding
+a file, update both `BUCK` and `CMakeLists.txt`.**
 
 ---
 
-## Extending RDMA Backend for New HW Types
+## Performance Benchmarking
 
-The RDMA backend supports new hardware through three extension points:
-**topology discovery**, **NIC filtering**, and **device adaptation**.
+`benchmarks/` holds **two largely independent tracks** that share a directory
+and little else.
 
-### 1. Topology Discovery (`transport/Topology.h/.cpp`)
+### Track 1 — C++ transport microbenchmarks (`uniflow_bench`)
 
-Topology discovery determines GPU↔NIC affinity by walking the PCIe tree via sysfs.
+Six benchmarks, registered in `benchmarks/main.cpp`:
 
-**How it works:**
-- [`Topology.h`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/Topology.h) defines the graph model: `TopoNode` (GPU/CPU/NIC), `TopoLink`, `PathType`
-- [`Topology.cpp`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/Topology.cpp) builds the graph via:
-  1. CUDA device enumeration → GPU nodes with PCIe BDF
-  2. IB device enumeration → NIC nodes with PCIe BDF
-  3. Sysfs walk → PCIe ancestor chains for each device
-  4. BFS shortest-path → PathType classification (PIX, PXB, PHB, SYS)
-  5. PCIe link speed probing → bandwidth weights
+| Name | Platform | Measures |
+|---|---|---|
+| `rdma_bandwidth` | both | RDMA put/get, multi-NIC, multi-GPU aggregate, Data Direct |
+| `sendrecv_bandwidth` | both (hipified) | Copy-based slab-staged send/recv, fan-out/fan-in |
+| `nvlink_bandwidth` | NVIDIA | NVLink put/get |
+| `connection_setup` | NVIDIA | bind/connect cycle cost |
+| `nccl_sendrecv` | NVIDIA | NCCL baseline for comparison |
+| `xgmi_bandwidth` | AMD | HIP IPC over XGMI |
 
-**To support new hardware:**
+```bash
+buck2 build fbcode//comms/uniflow/benchmarks:uniflow_bench
+buck2 run  fbcode//comms/uniflow/benchmarks:uniflow_bench -- --list   # authoritative names
+
+# launcher scripts, from the repo root
+bash fbcode/comms/uniflow/benchmarks/scripts/run_nvlink_benchmark.sh          # local 2-GPU
+bash fbcode/comms/uniflow/benchmarks/scripts/run_sendrecv_benchmark.sh
+bash fbcode/comms/uniflow/benchmarks/scripts/rdma_benchmark.sh --host0 <h0> --host1 <h1>   # vs ib_write_bw
+```
+
+The binary is launcher-agnostic: it reads `MASTER_ADDR`, `MASTER_PORT`, `RANK`,
+`WORLD_SIZE`, `LOCAL_RANK`, so torchrun or a plain shell script both work.
+Rendezvous uses UniFlow's own `TcpController` — no c10d, folly, or MPI.
+
+**Two structural facts worth knowing before you read the code:**
+
+- `BenchmarkRunner` is a 68-line registry. It does *not* own the size sweep,
+  warmup, or barriers — each benchmark implements its own loop, which is why
+  `bench/*.cpp` files are 600–1000 lines each. Only `generateSizes()` is shared.
+- `Rendezvous` returns **control channels only**. Each benchmark does its own
+  transport bind/connect and memory registration.
+
+**What layer is measured:** no C++ benchmark includes `Uniflow.h`,
+`Connection.h`, or `MultiTransport.h`. They drive `RdmaTransport` /
+`NVLinkTransport` directly, using the `SegmentHelper.h` friend-class hack to
+build a `RegisteredSegment` outside the agent. The suite measures the transport
+layer in isolation — there is no C++ benchmark of the full user-facing stack.
+
+Two constraints worth knowing before editing these:
+`SegmentHelper.h` names its class `SegmentTest` purely to satisfy a `friend`
+declaration in `Segment.h` — the name is load-bearing, do not rename it. And the
+NVIDIA-only benchmarks are compiled out on AMD via `__HIP_PLATFORM_AMD__`, so an
+unguarded include breaks the other platform's build.
+
+Undocumented but working flags: `--batch-size`, `--tx-depth`, `--num-nics`,
+`--chunk-size`, `--loop-count`, `--bidirectional`, `--topology fanout|fanin`,
+`--pipeline-depth`, `--slab-size`, `--slab-num`, `--data-direct`,
+`--cuda-devices`, `--gpu-nics`.
+
+### Track 2 — Python KV-transfer bench
+
+`benchmarks/py/kv_transfer_bench.py` — a `python_unittest_remote_gpu` with
+`gpus = 2`. The only benchmark exercising the **public** API (`UniflowAgent` →
+`register_segment` → `export_id` → connect → `conn.get(requests=[...])`). Models
+KV-cache shape directly and verifies correctness before timing.
+
+```bash
+buck2 test fbcode//comms/uniflow/benchmarks/py:kv_transfer_bench
+```
+
+## Extending the RDMA Backend for New HW
+
+Three extension points: **topology discovery**, **NIC filtering**, and **device
+adaptation**.
+
+### 1. Topology discovery (`transport/Topology.h/.cpp`)
+
+`Topology.h` defines the graph model — `TopoNode` (GPU/CPU/NIC), `TopoLink`,
+`PathType`. `Topology.cpp` builds it by enumerating CUDA devices and IB devices,
+walking sysfs for PCIe ancestry, running BFS shortest-path, and probing PCIe
+link speed for bandwidth weights.
 
 | Step | Action | Where |
-|------|--------|-------|
-| 1 | Add a driver wrapper for your device's enumeration API (like `NvmlApi`, `IbvApi`) | `drivers/<your_hw>/` |
-| 2 | Expose PCIe BDF discovery so topology can find your device in the sysfs tree | Your driver's `getDeviceSysfsPath()` or similar |
-| 3 | Register nodes in the topology builder | `Topology.cpp` — add enumeration alongside GPU/NIC discovery |
-| 4 | Update `NicFilter` if your NIC naming convention differs | `Topology.h` — `NicFilter` class |
+|---|---|---|
+| 1 | Add a driver wrapper for your device's enumeration API | `drivers/<your_hw>/` |
+| 2 | Expose PCIe BDF discovery so topology can find your device | your driver |
+| 3 | Register nodes in the topology builder | `Topology.cpp` |
+| 4 | Update `NicFilter` if your NIC naming differs | `Topology.h` |
 
-**Key abstractions:**
-- `SysfsApi` (`drivers/sysfs/`) — abstracts sysfs reads (mockable for tests)
-- `IbvApi` (`drivers/ibverbs/`) — abstracts libibverbs (mockable)
-- `NicFilter` — NCCL_IB_HCA-style NIC selection (prefix/exact include/exclude)
-- `PathType` enum — ordered best→worst: NVL > C2C > PIX > PXB > PXN > PHB > SYS > DIS
+`PathType`, best to worst: `NVL > C2C > PIX > PXB > PXN > PHB > SYS > DIS`.
 
-### 2. Device Adapter (`drivers/DeviceAdapter.h`)
-
-The [`DeviceAdapter`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/drivers/DeviceAdapter.h) interface abstracts host-pinned memory allocation for DMA:
+### 2. Device adapter (`drivers/DeviceAdapter.h`)
 
 ```cpp
 class DeviceAdapter {
  public:
+  // Host-pinned allocation for DMA
   virtual Result<void*> pinnedHostAlloc(size_t size) = 0;
   virtual Status pinnedHostFree(void* ptr) = 0;
   virtual Result<void*> hostGetDevicePointer(void* hostPtr) = 0;
+
+  // DMA-BUF export, for GPUDirect registration
+  virtual Result<bool> isDmaBuffSupported(int deviceId) = 0;
+  virtual Result<DmaBuff> exportDmaBuff(...) = 0;
+  virtual Status closeDmaBuff(DmaBuff& buff) = 0;
+
+  // Optional overrides — both have defaults
+  virtual uint64_t resolveDevicePointer(const void* ptr) const noexcept;
+  virtual bool allowsRegMrFallback() const noexcept;
 };
 ```
 
-Platform selection is done via Buck `select()` in [`drivers/BUCK`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/drivers/BUCK):
+Platform selection is a Buck `select()` in `drivers/BUCK`:
 
 ```python
 oss_cpp_library(
@@ -245,25 +317,20 @@ oss_cpp_library(
 )
 ```
 
-**To add support for your platform:**
-1. Implement `DeviceAdapter` for your HW in `drivers/<your_hw>/`
-2. Add a Buck `select()` entry for your platform config
-3. Implement `createDeviceAdapter()` factory function
+To add a platform: implement `DeviceAdapter` in `drivers/<your_hw>/`, add a
+`select()` entry, and implement `createDeviceAdapter()`.
 
-### 3. Testing a New HW Integration
+### 3. Testing a new HW integration
 
-1. **Unit tests** — Mock the driver APIs (see `drivers/ibverbs/mock/`, `drivers/cuda/mock/`)
-2. **Topology test** — Validate GPU↔NIC path detection with your hardware's PCIe layout
-3. **Integration test** — Use `multi_transport_single_host_test` pattern on your platform
-4. **Benchmark** — Run `rdma_benchmark.sh` against your HW to validate bandwidth
+1. **Unit tests** — mock the driver APIs (`drivers/ibverbs/mock/`,
+   `drivers/cuda/mock/`).
+2. **Topology test** — validate GPU↔NIC path detection for your PCIe layout.
+3. **Integration** — follow the `multi_transport_single_host_test` pattern.
+4. **Benchmark** — run `rdma_benchmark.sh` to validate bandwidth.
 
 ---
 
 ## Adding a New Backend
-
-To add a new transport backend (e.g., TCP, EFA, custom fabric):
-
-### Step 1: Define Transport + Factory
 
 Create `transport/<backend>/`:
 
@@ -275,27 +342,36 @@ transport/<backend>/
 └── CMakeLists.txt
 ```
 
-Implement the two core interfaces from [`Transport.h`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/Transport.h):
+Implement the two core interfaces from `transport/Transport.h`.
 
-**Transport** (data plane — one instance per connection):
+**`Transport`** — data plane, one instance per connection:
+
 ```cpp
 class MyTransport : public Transport {
   const std::string& name() const noexcept override;
   TransportType transportType() const noexcept override;
   TransportState state() const noexcept override;
-  TransportInfo bind() override;                              // Serialize local endpoint
+  TransportInfo bind() override;                                // Serialize local endpoint
   Status connect(std::span<const uint8_t> remoteInfo) override; // Connect to peer
+
+  // Batch transfer operations
   std::future<Status> put(std::span<const TransferRequest>, ...) override;
   std::future<Status> get(std::span<const TransferRequest>, ...) override;
+
+  // Zero-copy send/recv — registered memory
   std::future<Status> send(RegisteredSegment::Span, ...) override;
   std::future<Status> recv(RegisteredSegment::Span, ...) override;
+
+  // Copy-based send/recv — unregistered memory, staged through slabs
   std::future<Status> send(Segment::Span, ...) override;
   std::future<Status> recv(Segment::Span, ...) override;
+
   void shutdown() override;
 };
 ```
 
-**TransportFactory** (lifecycle management — one per process):
+**`TransportFactory`** — lifecycle management, one per process:
+
 ```cpp
 class MyTransportFactory : public TransportFactory {
   Result<std::unique_ptr<RegistrationHandle>> registerSegment(Segment&) override;
@@ -306,45 +382,50 @@ class MyTransportFactory : public TransportFactory {
 };
 ```
 
-### Step 2: Register in TransportType Enum
+Then:
 
-Add your backend to [`transport/TransportType.h`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/TransportType.h).
+1. Add your backend to `transport/TransportType.h`.
+2. In `MultiTransport.cpp`, add a `supported()` check, instantiate your factory
+   in the `MultiTransportFactory` constructor, and add topology
+   serialization to `getTopology()` / `parse()`.
+3. Add tests — a mock-based unit test in `transport/<backend>/tests/`, a case in
+   `tests/integration/MultiTransportSingleHostTest.cpp`, and a
+   `<Backend>BandwidthBenchmark` in `benchmarks/bench/`.
 
-### Step 3: Integrate into MultiTransportFactory
+Reference implementations: `transport/nvlink/` (simpler, GPU-only) and
+`transport/rdma/` (full-featured, multi-NIC).
 
-In [`MultiTransport.cpp`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/MultiTransport.cpp):
-1. Add a `supported()` check in `MultiTransportFactory::supported()`
-2. Instantiate your factory in the `MultiTransportFactory` constructor
-3. Add topology serialization in `getTopology()` / `parse()`
+---
 
-### Step 4: Add Tests
+## Glossary
 
-Follow the existing patterns:
-- **Unit test**: Mock-based test in `transport/<backend>/tests/`
-- **Integration**: Add a case to `tests/integration/MultiTransportSingleHostTest.cpp`
-- **Benchmark**: Add a `<Backend>BandwidthBenchmark` in `benchmarks/bench/`
+| Term | Meaning |
+|---|---|
+| **Chunk** | A 512 KB subdivision of a `TransferRequest` for multi-QP distribution (put/get path). |
+| **Slab** | A fixed-size staging buffer from the shared pool (send/recv path). Distinct from chunk. |
+| **CTS** | Clear-To-Send. Receiver-to-sender ring advertising allocated recv slabs; doubles as flow control. |
+| **Notify ring** | Sender-to-receiver ring carrying a monotonic completed-slab counter. |
+| **Spray** | Distributing WRs across QPs in proportion to available send-queue capacity. |
+| **Flush WR** | A WR posted after a partial post failure so the HCA still emits a CQE for consumed unsignaled WRs. |
+| **Segment / Span** | A registered memory region / a bounds-checked non-owning view into one. |
+| **PathType** | Topology path classification, `NVL > C2C > PIX > PXB > PXN > PHB > SYS > DIS`. |
+| **Zero-copy** | NIC DMAs directly from registered user memory. No CUDA call on the data path. |
+| **Copy-based** | User memory is staged through host-pinned slabs. A CUDA copy enters the data path. |
 
-### Step 5: Reference Implementations
-
-Study these as templates:
-- **NVLink** (simpler, GPU-only): [`transport/nvlink/`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/nvlink/)
-- **RDMA** (full-featured, multi-NIC): [`transport/rdma/`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/transport/rdma/)
+---
 
 ---
 
 ## Further Reading
 
 | Resource | Link |
-|----------|------|
-| Design Doc | https://fburl.com/uniflow |
-| RFC | [UniFlow RFC (Google Doc)](https://docs.google.com/document/d/1UkX7OgV4xtekjGnoe0VJAj4-5jXDIp47kzIUhm7hyMo) |
-| Coding Standards | [`.claude/CLAUDE.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/.claude/CLAUDE.md) |
-| Benchmark Design | [`benchmarks/DESIGN.md`](https://www.internalfb.com/code/fbsource/fbcode/comms/uniflow/benchmarks/DESIGN.md) |
-| Oncall | `ncclx` |
+|---|---|
+| Benchmark design | [`../benchmarks/DESIGN.md`](../benchmarks/DESIGN.md) |
+| Coding standards | [`../.claude/CLAUDE.md`](../.claude/CLAUDE.md) |
 
-### Key Design Principles
+### Key design principles
 
-- **No folly dependency** — C++20 standard library only (OSS portability)
-- **Lock-free data path** — All mutable state accessed on EventBase thread
-- **Mockable drivers** — Each HW driver has a mock in `drivers/<hw>/mock/`
-- **Topology-aware routing** — MultiTransport picks optimal backend automatically
+- **No folly** — C++20 standard library only (OSS portability)
+- **Lock-free data path** — all mutable state on the EventBase thread
+- **Mockable drivers** — each HW driver has a mock in `drivers/<hw>/mock/`
+- **Topology-aware routing** — `MultiTransport` picks the backend automatically

@@ -5,9 +5,15 @@
 #include <cstdint>
 #include <cstdio>
 
+// Must precede AbortMacros.cuh: HIP has no `__trap()`, and this header is
+// where the shim aliasing it to `::abort()` lives. AbortMacros.cuh expands
+// `__trap()` inside a non-dependent template body, so the name has to be
+// visible when that header is parsed, not when the template is instantiated.
+// The blank line keeps clang-format from sorting the two blocks together.
+#include "comms/prims/transport/amd/HipHostCompat.h"
+
 #include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/common/fault_tolerance/AbortMacros.cuh"
-#include "comms/prims/transport/amd/HipHostCompat.h"
 
 namespace comms::prims {
 

@@ -157,12 +157,18 @@ inline uint64_t collStatDurMinNs(const CollStatValue& v) {
 
 struct CollStatSpanScratch {
   uint64_t start; // min entry %globaltimer over blocks; init UINT64_MAX
-  uint32_t
-      arrived; // exit-barrier arrival count; finalizer when == expectedBlocks
-  uint32_t expectedBlocks; // gridDim, from launch config
-  uint32_t kernelIndex; // multi-kernel collective: current kernel in sequence
-  uint32_t
-      kernelCount; // multi-kernel collective: total kernels; finalize on last
+  // Exit-barrier arrival count. The finalizer is the block that drives it to
+  // collStatsGridBlocks(), read from gridDim at exit -- not expectedBlocks.
+  uint32_t arrived;
+  /* Reserved, and none of the three is read today. A multi-kernel collective
+   * sharing one slot therefore records one observation per kernel rather than
+   * one per collective; sequencing on kernelIndex/kernelCount, and taking the
+   * block count from expectedBlocks instead of gridDim, are both future work.
+   * Stated here because the barrier condition a reader assumes is authoritative
+   * decides whether they trust a multi-kernel duration. */
+  uint32_t expectedBlocks;
+  uint32_t kernelIndex;
+  uint32_t kernelCount;
 };
 
 inline constexpr uint64_t kSpanStartInit = ~0ull; // UINT64_MAX

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "comms/common/fault_tolerance/Abort.h"
-#include "comms/prims/core/Timeout.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
 #include "comms/prims/transport/ll128/tests/Ll128OpsTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -1072,7 +1072,7 @@ TEST_F(Ll128OpsTestFixture, FlagState_AfterMultiStep_NonChunked) {
 }
 
 TEST_F(Ll128OpsTestFixture, AbortDeviceEnabledState) {
-  Timeout default_timeout;
+  AbortDevice default_timeout;
   EXPECT_FALSE(default_timeout.isEnabled());
 
   comms::fault_tolerance::Abort abort{/*enabled=*/true};

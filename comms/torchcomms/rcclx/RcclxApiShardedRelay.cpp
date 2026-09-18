@@ -16,6 +16,8 @@
 
 #include "comms/torchcomms/rcclx/RcclxApi.hpp"
 
+#include <cstddef>
+
 namespace torch::comms {
 
 ncclResult_t DefaultRcclxApi::allGatherInit(
@@ -57,7 +59,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllReduce(
       sendBuffs,
       recvBuffs,
@@ -68,7 +71,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
@@ -81,7 +85,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupReduceScatter(
       sendBuffs,
       recvBuffs,
@@ -92,7 +97,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
@@ -104,7 +110,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllToAll(
       sendBuffs,
       recvBuffs,
@@ -114,7 +121,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
@@ -126,7 +134,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllGather(
       sendBuffs,
       recvBuffs,
@@ -136,7 +145,73 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
+}
+
+// Hop three of the plan's wire path: RcclxRelayPlan -> ncclRelayPlanInfo -> the
+// internal RelayPlanInfo. The second hop is guarded where both of its types are
+// visible; this is the only translation unit where THESE two are, so the guard
+// belongs here. Five adjacent same-typed uint32s copied by hand is precisely
+// the shape in which a transposition is invisible -- two swapped zero-valued
+// fields change nothing observable until something finally reads them.
+//
+// This cannot be a memcpy, unlike the second hop: RcclxRelayPlan deliberately
+// carries no reserved words, so the two records are different sizes. What must
+// hold is that the fields it does carry sit at the same offsets.
+static_assert(
+    sizeof(ncclRelayPlanInfo) == 32,
+    "ncclRelayPlanInfo is a wire format; its size is part of the protocol");
+static_assert(
+    offsetof(RcclxRelayPlan, nCalls) == offsetof(ncclRelayPlanInfo, nCalls) &&
+        offsetof(RcclxRelayPlan, opCode) ==
+            offsetof(ncclRelayPlanInfo, opCode) &&
+        offsetof(RcclxRelayPlan, dtype) == offsetof(ncclRelayPlanInfo, dtype) &&
+        offsetof(RcclxRelayPlan, redOp) == offsetof(ncclRelayPlanInfo, redOp) &&
+        offsetof(RcclxRelayPlan, flags) == offsetof(ncclRelayPlanInfo, flags),
+    "RcclxRelayPlan and ncclRelayPlanInfo must agree field for field");
+
+ncclResult_t DefaultRcclxApi::relayControlPublish(
+    ncclComm_t comm,
+    uint64_t epoch,
+    const RcclxRelayPlan& plan,
+    const size_t* counts,
+    int64_t timeoutNs) {
+  ncclRelayPlanInfo info{};
+  info.nCalls = plan.nCalls;
+  info.opCode = plan.opCode;
+  info.dtype = plan.dtype;
+  info.redOp = plan.redOp;
+  info.flags = plan.flags;
+  return ncclRelayControlPublish(comm, epoch, &info, counts, timeoutNs);
+}
+
+ncclResult_t DefaultRcclxApi::relayControlConsume(
+    ncclComm_t comm,
+    uint64_t epoch,
+    RcclxRelayPlan* plan,
+    size_t* counts,
+    uint32_t countsCapacity,
+    int64_t timeoutNs) {
+  ncclRelayPlanInfo info{};
+  const ncclResult_t res = ncclRelayControlConsume(
+      comm, epoch, &info, counts, countsCapacity, timeoutNs);
+  // Copied out on success, and on the one failure that carries information: an
+  // over-capacity plan reports the number of calls the caller needed room for,
+  // which is the only way to recover from it. Mirrors what
+  // ncclRelayControlConsume itself does, and for the same reason -- on any
+  // other failure `info` is untouched, and a zeroed record is nCalls 0 with
+  // opCode 0, which is a valid ncclRelayOpShutdown rather than a marker for "no
+  // plan".
+  if (res == ncclSuccess ||
+      (res == ncclInvalidArgument && info.nCalls > countsCapacity)) {
+    plan->nCalls = info.nCalls;
+    plan->opCode = info.opCode;
+    plan->dtype = info.dtype;
+    plan->redOp = info.redOp;
+    plan->flags = info.flags;
+  }
+  return res;
 }
 
 } // namespace torch::comms

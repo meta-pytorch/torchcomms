@@ -17,6 +17,8 @@
 #include <utility>
 #include <vector>
 
+#include <folly/Synchronized.h>
+
 #include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/prims/memory/DeviceSpan.cuh"
@@ -38,9 +40,219 @@ enum class AddressFamily {
 };
 
 /**
- * Shared configuration for the multi-peer IB transports (IBGDA, IBRC). Every
- * field is backend-agnostic IB transport config. IMPORTANT: all ranks must use
- * identical configuration values.
+ * The *resolved* NIC data-placement ordering mode for an IB QP (mlx5 QPC
+ * dp_ordering) -- what actually gets written to the QPC, after the requested
+ * IbQpOrderingPolicy below has been checked against the NIC.
+ *
+ * The NIC encodes this as a 2-bit tier plus a "force" bit that overrides the
+ * HCA's mlxreg adaptive-routing admin default:
+ *   tier 0 IBTA    - strict IBTA ordering
+ *   tier 1 OOO_RW  - out-of-order placement for RDMA Read/Write
+ *   tier 2 OOO_ALL - out-of-order placement for all supported opcodes
+ * This enum flattens the (tier, force) pair into the four combinations worth
+ * selecting; ibQpOrderingTier()/ibQpOrderingForce() below split it back out.
+ *
+ * Ibta leaves both QPC bits and the force bit at zero, which is the pre-patch
+ * wire behaviour. IbtaForced is deliberately distinct: it pins the QP to strict
+ * ordering even when the NIC's admin default enables adaptive routing, which is
+ * how you find out whether a QP is being sprayed today.
+ *
+ * Note that Ibta does NOT mean "the QP runs strict IBTA". It means "we wrote
+ * nothing and the firmware chose". On a ConnectX-8 rail with adaptive routing
+ * enabled the firmware chooses OOO_RW on its own, so Ibta and OooRw describe
+ * the same QP there; on ConnectX-7 (AR off) Ibta really is tier 0.
+ */
+enum class IbQpOrderingSemantic {
+  Ibta, // tier IBTA, force off (default; no QPC write at all)
+  IbtaForced, // tier IBTA, force on
+  OooRw, // tier OOO_RW, force on
+  OooAll, // tier OOO_ALL, force on
+};
+
+// The 2-bit dp_ordering tier the NIC expects (matches DOCA's
+// doca_verbs_qp_ordering_semantic and UCX's uct_ib_mlx5_dp_ordering_t).
+constexpr int ibQpOrderingTier(IbQpOrderingSemantic mode) {
+  switch (mode) {
+    case IbQpOrderingSemantic::OooRw:
+      return 1;
+    case IbQpOrderingSemantic::OooAll:
+      return 2;
+    case IbQpOrderingSemantic::Ibta:
+    case IbQpOrderingSemantic::IbtaForced:
+      break;
+  }
+  return 0;
+}
+
+// Whether the QPC dp_ordering_force bit is set (requires HCA
+// cmd_hca_cap_2.dp_ordering_force).
+constexpr bool ibQpOrderingForce(IbQpOrderingSemantic mode) {
+  return mode != IbQpOrderingSemantic::Ibta;
+}
+
+// True when the mode writes nothing to the QPC, i.e. is a wire-level no-op and
+// the QP keeps whatever tier the firmware picked for it.
+constexpr bool ibQpOrderingIsWireNoOp(IbQpOrderingSemantic mode) {
+  return mode == IbQpOrderingSemantic::Ibta;
+}
+
+constexpr const char* ibQpOrderingSemanticName(IbQpOrderingSemantic mode) {
+  switch (mode) {
+    case IbQpOrderingSemantic::IbtaForced:
+      return "ibta_forced";
+    case IbQpOrderingSemantic::OooRw:
+      return "ooo_rw";
+    case IbQpOrderingSemantic::OooAll:
+      return "ooo_all";
+    case IbQpOrderingSemantic::Ibta:
+      break;
+  }
+  return "ibta";
+}
+
+// Name for an ordering mode that arrived over the wire from a peer, which may
+// be out of range if that peer is running a different build. Never casts the
+// value to the enum, so an unknown value is reported rather than aliased onto a
+// real mode.
+constexpr const char* ibQpOrderingSemanticNameFromWire(int value) {
+  switch (value) {
+    case static_cast<int>(IbQpOrderingSemantic::Ibta):
+      return ibQpOrderingSemanticName(IbQpOrderingSemantic::Ibta);
+    case static_cast<int>(IbQpOrderingSemantic::IbtaForced):
+      return ibQpOrderingSemanticName(IbQpOrderingSemantic::IbtaForced);
+    case static_cast<int>(IbQpOrderingSemantic::OooRw):
+      return ibQpOrderingSemanticName(IbQpOrderingSemantic::OooRw);
+    case static_cast<int>(IbQpOrderingSemantic::OooAll):
+      return ibQpOrderingSemanticName(IbQpOrderingSemantic::OooAll);
+    default:
+      break;
+  }
+  return "unknown";
+}
+
+// Parse the MCCL_IBGDA_QP_ORDERING_SEMANTIC spelling. Returns nullopt on an
+// unrecognized value so the caller can fail loudly instead of silently running
+// the default arm of an A/B.
+inline std::optional<IbQpOrderingSemantic> parseIbQpOrderingSemantic(
+    const std::string& value) {
+  if (value == "ibta") {
+    return IbQpOrderingSemantic::Ibta;
+  }
+  if (value == "ibta_forced") {
+    return IbQpOrderingSemantic::IbtaForced;
+  }
+  if (value == "ooo_rw") {
+    return IbQpOrderingSemantic::OooRw;
+  }
+  if (value == "ooo_all") {
+    return IbQpOrderingSemantic::OooAll;
+  }
+  return std::nullopt;
+}
+
+/**
+ * What the *caller* asks for, before the NIC gets a say. Resolved into an
+ * IbQpOrderingSemantic at transport init by consulting the HCA capabilities.
+ *
+ * The distinction exists because the two kinds of request want opposite
+ * failure behaviour:
+ *
+ *   Auto      - a fleet default. Walks OooAll -> OooRw -> Ibta and takes the
+ *               strongest tier the NIC reports, silently, falling all the way
+ *               to Ibta when the capability query fails outright (a non-mlx5
+ *               NIC has no such query). A default must never be the reason a
+ *               job refuses to start.
+ *   explicit  - somebody is running an experiment and named a tier. Fail
+ *               closed if the NIC cannot deliver it, because a silent
+ *               downgrade turns an A/B into a no-op that reads as "OOO does
+ *               not help". NVIDIA's GDAKI refuses here for the same reason.
+ *
+ * Auto aims at OooAll because that is the rung that pays: it is the only tier
+ * that lifts the ordering fence in front of an atomic, and every prims signal
+ * is an ATOMIC_FETCH_AND_ADD. OooRw relaxes Read/Write placement only, leaves
+ * that fence standing, and on a ConnectX-8 rail is close to a no-op anyway --
+ * the firmware already programs OOO_RW at INIT2RTR under adaptive routing with
+ * nothing in userspace asking for it.
+ *
+ * The ladder is not decoration. ConnectX-8 reports OooAll; ConnectX-7 reports
+ * OooRw but not OooAll (measured: cmd_hca_cap.dp_ordering_ooo_all_rc = 0), so a
+ * flat "ask for OooAll" would fail closed on every CX7 NIC. Ranks that resolve
+ * different tiers are rejected at peer connect, so a job spanning both NIC
+ * generations has to pin ooo_rw explicitly.
+ */
+enum class IbQpOrderingPolicy {
+  Auto, // strongest tier the NIC supports: OooAll, else OooRw, else Ibta
+  Ibta, // explicit: write nothing, keep the firmware default
+  IbtaForced, // explicit: pin to strict IBTA even under adaptive routing
+  OooRw, // explicit: out-of-order placement for RDMA Read/Write
+  OooAll, // explicit: also covers atomics
+};
+
+constexpr bool ibQpOrderingPolicyIsAuto(IbQpOrderingPolicy policy) {
+  return policy == IbQpOrderingPolicy::Auto;
+}
+
+// The tier an explicit policy names. Auto has no fixed answer -- it depends on
+// the NIC -- so it is not accepted here; callers must go through the resolver.
+constexpr IbQpOrderingSemantic ibQpOrderingPolicyToSemantic(
+    IbQpOrderingPolicy policy) {
+  switch (policy) {
+    case IbQpOrderingPolicy::IbtaForced:
+      return IbQpOrderingSemantic::IbtaForced;
+    case IbQpOrderingPolicy::OooRw:
+      return IbQpOrderingSemantic::OooRw;
+    case IbQpOrderingPolicy::OooAll:
+      return IbQpOrderingSemantic::OooAll;
+    case IbQpOrderingPolicy::Auto:
+    case IbQpOrderingPolicy::Ibta:
+      break;
+  }
+  return IbQpOrderingSemantic::Ibta;
+}
+
+constexpr const char* ibQpOrderingPolicyName(IbQpOrderingPolicy policy) {
+  switch (policy) {
+    case IbQpOrderingPolicy::Auto:
+      return "auto";
+    case IbQpOrderingPolicy::IbtaForced:
+      return "ibta_forced";
+    case IbQpOrderingPolicy::OooRw:
+      return "ooo_rw";
+    case IbQpOrderingPolicy::OooAll:
+      return "ooo_all";
+    case IbQpOrderingPolicy::Ibta:
+      break;
+  }
+  return "ibta";
+}
+
+// Parse the MCCL_IBGDA_QP_ORDERING_SEMANTIC spelling into a policy. Returns
+// nullopt on an unrecognized value so a typo cannot silently select the
+// default.
+inline std::optional<IbQpOrderingPolicy> parseIbQpOrderingPolicy(
+    const std::string& value) {
+  if (value == "auto") {
+    return IbQpOrderingPolicy::Auto;
+  }
+  if (value == "ibta") {
+    return IbQpOrderingPolicy::Ibta;
+  }
+  if (value == "ibta_forced") {
+    return IbQpOrderingPolicy::IbtaForced;
+  }
+  if (value == "ooo_rw") {
+    return IbQpOrderingPolicy::OooRw;
+  }
+  if (value == "ooo_all") {
+    return IbQpOrderingPolicy::OooAll;
+  }
+  return std::nullopt;
+}
+
+/**
+ * Shared configuration for the multi-peer IB transports (IBGDA, IBRC). Fields
+ * are backend-agnostic unless documented otherwise. IMPORTANT: all ranks must
+ * use identical configuration values.
  */
 struct MultipeerIbTransportConfig {
   // CUDA device index for GPU operations
@@ -68,7 +280,7 @@ struct MultipeerIbTransportConfig {
   // Per-peer data buffer size in bytes for raw put()/signal() users. When
   // perChannelSize is set for send()/recv(), the transport derives this as the
   // total fixed-channel staging size:
-  //   perChannelSize * max_num_channels
+  //   perChannelSize * max_num_channels * numProtocolSlots()
   std::size_t dataBufferSize{0};
 
   // Fixed-channel send/recv staging window size in bytes for one channel. When
@@ -84,6 +296,11 @@ struct MultipeerIbTransportConfig {
 
   // Fixed-channel send/recv slots/chunks per channel.
   int pipelineDepth{2};
+
+  // Whether fixed-channel resources include the LL protocol slot. Direct prims
+  // users keep the full protocol surface by default; MCCL disables this when
+  // its LL size threshold is zero.
+  bool enableLlProtocol{true};
 
   // Number of signal slots managed by the transport (per peer), for the
   // slot-index API. Independent of send/recv's private signal buffers.
@@ -117,9 +334,20 @@ struct MultipeerIbTransportConfig {
   // qpsPerConnection.
   int qpsPerConnection{1};
 
+  // NVIDIA IBGDA-only: create companion QPs and their local loopback
+  // responders for counter-bearing put operations. Disabled by default because
+  // the collective send/recv paths use main-QP completion tickets instead.
+  // Ignored by IBRC and AMD.
+  bool enableCompanionQP{false};
+
   // IBGDA-only reliable-doorbell policy; ignored by IBRC and AMD. nullopt
   // auto-detects NIC support, true requires support, and false disables it.
   std::optional<bool> enableReliableDoorbell;
+
+  // IBGDA-only collapsed-CQ policy; ignored by IBRC and AMD. nullopt probes
+  // every selected NIC and enables the format only when all accept it, true
+  // requires every NIC to accept it, and false forces ordinary ring CQs.
+  std::optional<bool> enableCollapsedCq;
 
   int numQpsPerPeerPerNic() const {
     if (maxGroups < 0 || qpsPerBlockPerNic < 0) {
@@ -136,18 +364,22 @@ struct MultipeerIbTransportConfig {
   // Slot-indexed storage is reserved per (logical channel, protocol slot).
   // max_num_channels stays the LOGICAL channel count a caller selects with
   // group_id; slot p owns [p * max_num_channels, (p+1) * max_num_channels).
-  // The slot count is kNumProtoSlots (IbgdaBuffer.h) rather than runtime
-  // config, so host sizing and device indexing cannot disagree. QPs are NOT
-  // multiplied: a channel is one QP pair shared by every protocol on it.
+  // QPs are NOT multiplied: a channel is one QP pair shared by every protocol
+  // on it.
+  int numProtocolSlots() const {
+    return enableLlProtocol ? kNumProtoSlots : 1;
+  }
+
   int totalChannelSlots() const {
     if (max_num_channels < 0) {
       throw std::invalid_argument("max_num_channels must be >= 0");
     }
-    if (max_num_channels > std::numeric_limits<int>::max() / kNumProtoSlots) {
+    const int protocolSlots = numProtocolSlots();
+    if (max_num_channels > std::numeric_limits<int>::max() / protocolSlots) {
       throw std::overflow_error(
-          "max_num_channels * kNumProtoSlots overflows int");
+          "max_num_channels * numProtocolSlots overflows int");
     }
-    return max_num_channels * kNumProtoSlots;
+    return max_num_channels * protocolSlots;
   }
 
   std::size_t fixedChannelDataBufferSize() const {
@@ -161,21 +393,6 @@ struct MultipeerIbTransportConfig {
   }
 
   int fixedChannelMainQpsPerPeerPerNic() const {
-    if (max_num_channels < 0 || qpsPerConnection < 0) {
-      throw std::invalid_argument(
-          "max_num_channels and qpsPerConnection must be >= 0");
-    }
-    const int directionCount = fixedChannelDirectionCount();
-    if (max_num_channels != 0 &&
-        qpsPerConnection > std::numeric_limits<int>::max() / directionCount /
-                max_num_channels) {
-      throw std::overflow_error(
-          "max_num_channels * direction_count * qpsPerConnection overflows int");
-    }
-    return max_num_channels * directionCount * qpsPerConnection;
-  }
-
-  int fixedChannelCompanionQpsPerPeerPerNic() const {
     if (max_num_channels < 0 || qpsPerConnection < 0) {
       throw std::invalid_argument(
           "max_num_channels and qpsPerConnection must be >= 0");
@@ -216,6 +433,17 @@ struct MultipeerIbTransportConfig {
   };
   PciRelaxedOrderingMode enablePciRelaxedOrdering{PciRelaxedOrderingMode::Auto};
 
+  // NIC data-placement ordering for IB QPs (mlx5 dp_ordering, a.k.a. DDP /
+  // out-of-order data placement). The PCIe knob above reorders the NIC's writes
+  // across the PCIe bus; this one decides whether the NIC may place inbound
+  // fabric payload out of order, which is what lets adaptive routing spray a
+  // QP's packets across paths without a reassembly stall.
+  //
+  // Auto is the default: take the strongest tier the NIC reports, walking
+  // OooAll -> OooRw -> Ibta. See IbQpOrderingPolicy for why the ladder has
+  // three rungs and what each one costs.
+  IbQpOrderingPolicy qpOrderingPolicy{IbQpOrderingPolicy::Auto};
+
   // InfiniBand Verbs Timeout for QP ACK timeout (4.096us * 2^timeout). Valid
   // 1-31; 0 or >=32 is infinite. Default 20 (similar to NCCL_IB_TIMEOUT).
   uint8_t timeout{20};
@@ -235,6 +463,41 @@ struct MultipeerIbTransportConfig {
 
   // RNR retry count (ibv_qp_attr.rnr_retry); 7 means infinite.
   uint8_t rnrRetry{7};
+
+  // Depth of the RDMA-Read/Atomic pipeline on one QP, applied to BOTH
+  // directions: max_dest_rd_atomic (responder, QPC log_rra_max, written on
+  // INIT->RTR) and max_rd_atomic (initiator, QPC log_sra_max, written on
+  // RTR->RTS). Must be a power of two in [1, 128] because the NIC stores
+  // log2 of it.
+  //
+  // 1 was the historical IBGDA behaviour and NOT a considered default: the DOCA
+  // modify masks never carried MAX_QP_RD_ATOMIC / MAX_DEST_RD_ATOMIC, so both
+  // QPC fields stayed at their zeroed value (log2(1) == 0), i.e. exactly one
+  // outstanding read/atomic per QP per direction. Every prims signal is an
+  // ATOMIC_FA, so a depth of 1 lets only one signal be in flight per QP.
+  //
+  // 16 matches what the rest of the world does for a GPU-initiated transport:
+  // NVIDIA's own GDAKI defaults to the device maximum
+  // (third-party/nccl/.../net_ib/gdaki/gin_host_gdaki.cc:391-394, which is 16
+  // on ConnectX-8), and prims' AMD sibling hardcodes 15/16
+  // (comms/prims/transport/amd/prims_amd_gda/PrimsAmdGdaHost.cc:1188). Note
+  // NCCL's *CPU-driven* RC transport uses 1 (net_ib/connect.cc:408,465) -- the
+  // split is deliberate, and prims is the GPU-initiated case.
+  //
+  // Raising it is safe: depth bounds how many read/atomic ops may be in flight,
+  // not the order they take effect. Per mlx5dv_create_qp(3), on an
+  // out-of-order-placement QP "RDMA Read and RDMA Atomic operations are
+  // executed on the responder side in order ... after all previous messages are
+  // done executing", so signals still land after their data and in sequence
+  // among themselves.
+  //
+  // Measured benefit on the current channel design: none. See the diff's test
+  // plan -- a fixed ~28 us per-chunk cost keeps the per-QP signal interval
+  // above the RTT, so one credit is always sufficient. The value is aligned
+  // with the vendor default rather than tuned.
+  //
+  // Clamped down to the NIC's max_qp_rd_atom / max_qp_init_rd_atom.
+  uint8_t maxRdAtomic{16};
 
   // Deprecated compatibility setting. Per-peer state is always materialized
   // on demand; false no longer enables eager all-peer allocation.
@@ -266,52 +529,62 @@ inline bool relaxedOrderingActiveForNic(
       nicRelaxedOrderingCapable;
 }
 
-// Explicit-release token for one transport-owned registration. Callers must
-// pass every valid lease to deregisterIbBulkBuffer() before destroying it; the
-// lease does not own the transport and therefore cannot release itself safely.
-class IbBufferRegistrationLease {
+// Exact caller-visible user-VA registration owned by its caller. A provider MR
+// may cover its page-aligned DMA-BUF mapping, but only local lkeys and the
+// requested ptr/size are exposed. The registration does not own the transport
+// and must be passed to deregisterIbBufferRange() while the transport is alive.
+class IbBufferRegistration {
  public:
-  IbBufferRegistrationLease() = default;
-  ~IbBufferRegistrationLease() = default;
-  IbBufferRegistrationLease(const IbBufferRegistrationLease&) = delete;
-  IbBufferRegistrationLease& operator=(const IbBufferRegistrationLease&) =
-      delete;
-  IbBufferRegistrationLease(IbBufferRegistrationLease&& other) noexcept
-      : generation_(std::exchange(other.generation_, 0)) {}
-  // Assignment could silently discard a registration that still requires an
-  // explicit release.
-  IbBufferRegistrationLease& operator=(IbBufferRegistrationLease&&) = delete;
+  IbBufferRegistration() = default;
+  ~IbBufferRegistration();
+  IbBufferRegistration(const IbBufferRegistration&) = delete;
+  IbBufferRegistration& operator=(const IbBufferRegistration&) = delete;
+  IbBufferRegistration(IbBufferRegistration&& other) noexcept
+      : localBuffer(std::exchange(other.localBuffer, IbgdaLocalBuffer{})),
+        size(std::exchange(other.size, 0)),
+        relaxedOrdering(std::exchange(other.relaxedOrdering, false)),
+        mrs_(
+            std::exchange(
+                other.mrs_,
+                std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu>{})),
+        numNics_(std::exchange(other.numNics_, 0)) {}
+  // Assignment could silently discard MRs that still require an explicit
+  // release.
+  IbBufferRegistration& operator=(IbBufferRegistration&&) = delete;
 
   bool valid() const {
-    return generation_ != 0;
+    return localBuffer.ptr != nullptr && size != 0 && numNics_ != 0;
   }
 
-  uint64_t generation() const {
-    return generation_;
-  }
-
- private:
-  friend class MultiPeerIbTransportBase;
-
-  explicit IbBufferRegistrationLease(uint64_t generation)
-      : generation_(generation) {}
-
-  void reset() {
-    generation_ = 0;
-  }
-
-  uint64_t generation_{0};
-};
-
-struct IbBufferRegistrationView {
-  uint64_t leaseGeneration{0};
   IbgdaLocalBuffer localBuffer;
   std::size_t size{0};
   bool relaxedOrdering{false};
 
-  bool valid() const {
-    return leaseGeneration != 0 && localBuffer.ptr != nullptr && size != 0;
+ private:
+  friend class MultiPeerIbTransportBase;
+
+  IbBufferRegistration(
+      IbgdaLocalBuffer buffer,
+      std::size_t registrationSize,
+      bool registrationRelaxedOrdering,
+      std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs,
+      int numNics)
+      : localBuffer(buffer),
+        size(registrationSize),
+        relaxedOrdering(registrationRelaxedOrdering),
+        mrs_(mrs),
+        numNics_(numNics) {}
+
+  void reset() {
+    localBuffer = {};
+    size = 0;
+    relaxedOrdering = false;
+    mrs_ = {};
+    numNics_ = 0;
   }
+
+  std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs_{};
+  int numNics_{0};
 };
 
 inline bool reliableDoorbellActiveForNic(
@@ -328,6 +601,31 @@ inline bool reliableDoorbellActiveForNic(
 inline bool reliableDoorbellNeedsCapabilityQuery(
     const MultipeerIbTransportConfig& config) {
   return config.enableReliableDoorbell.value_or(true);
+}
+
+inline bool collapsedCqActiveForTransport(
+    const MultipeerIbTransportConfig& config,
+    bool allNicsAcceptCollapsedCq) {
+  if (config.enableCollapsedCq.value_or(false) && !allNicsAcceptCollapsedCq) {
+    throw std::invalid_argument(
+        "enableCollapsedCq requires collapsed-CQ support on every selected NIC");
+  }
+  return config.enableCollapsedCq.value_or(allNicsAcceptCollapsedCq);
+}
+
+inline bool collapsedCqNeedsCapabilityProbe(
+    const MultipeerIbTransportConfig& config) {
+  return config.enableCollapsedCq.value_or(true);
+}
+
+// Whether MultipeerIbTransportConfig::maxRdAtomic is programmable as-is.
+// max_rd_atomic / max_dest_rd_atomic are stored by the NIC as log2, so only
+// powers of two round-trip. DOCA's own setters only reject 0 (they call
+// doca_internal_utils_next_power_of_two() where they meant
+// doca_internal_utils_is_power_of_two()), so a non-power-of-two would silently
+// be rounded DOWN by log2 -- e.g. 15 would become 8. Reject it here instead.
+constexpr bool isIbMaxRdAtomicValid(unsigned value) {
+  return value >= 1 && value <= 128 && (value & (value - 1)) == 0;
 }
 
 // Order in which connectPeers() walks a rank's pending peers.
@@ -400,9 +698,47 @@ constexpr int kMaxRanksForAllGather = 128;
 // block-owned QP shapes must use lazy peer materialization.
 constexpr int kMaxEagerExchangeQpsPerPeerPerNic = 128;
 
-constexpr int kMaxIbGroups = 64;
+// Group (channel) index space: device-side IB QP selection uses
+// ThreadGroup::block_id and requires block_id < maxGroups.
+//
+// This is an index space only: raising it creates no QP by itself, and a group
+// index costs nothing until a configuration actually asks for that many
+// channels. What it does NOT mean is that QPs appear per group on first use.
+// Materialization is lazy per PEER, not per group: the first touch of a peer
+// runs materializePeer() -> createPeerQps(), which builds that peer's ENTIRE
+// configured shape up front -- `fixedChannelMainQpsPerPeerPerNic()` slots --
+// even if a single group ever runs on it. So the QP cost of a transport is set
+// by `max_num_channels` (times directions, times qpsPerConnection) and the
+// number of peers touched, and the knob for reducing it is `max_num_channels`,
+// not this limit.
+//
+// Sized for the a2av 1.5D compressed sweep at high blocks/peer: GB300 runs
+// BPP=170 x 3 IB peers = 510 groups, above the previous 256 ceiling.
+//
+// 1024 rather than 512, which that consumer would also clear: the number that
+// bounds real resource use is kMaxIbQpsPerPeerPerNic below, not this one, so
+// widening the index space costs no memory and no QP -- it only widens the set
+// of shapes the constructor accepts. 512 would leave two spare group indices,
+// so BPP 171, a fourth IB peer (4 x 170 = 680), or a rail-count change would
+// each become a construction-time throw for no reason but this ceiling. At
+// 1024 the widest admissible shape is 1024 x kIbDirections = 2048 QPs per peer
+// per NIC, a quarter of the 8192 budget below, which stays the binding limit
+// on what actually gets created.
+constexpr int kMaxIbGroups = 1024;
 constexpr int kMaxIbQpsPerBlockPerNic = 128;
-constexpr int kMaxIbQpsPerPeerPerNic = kMaxIbGroups * kMaxIbQpsPerBlockPerNic;
+
+// Budget for QPs actually created per (peer, NIC): max_num_channels *
+// direction_count * qpsPerConnection. Must stay independent of kMaxIbGroups:
+// it dimensions the PeerQpPayload::NicQpInfo::qpns wire array below, so
+// deriving it from the group index space would grow every lazy peer exchange
+// whenever that space grows. kMaxIbGroups * kMaxIbQpsPerBlockPerNic is also
+// not a meaningful bound — it multiplies two limits no configuration reaches
+// simultaneously.
+constexpr int kMaxIbQpsPerPeerPerNic = 8192;
+
+static_assert(
+    kMaxIbQpsPerPeerPerNic >= kMaxEagerExchangeQpsPerPeerPerNic,
+    "the eager-exchange QP cap must fit inside the created-QP budget");
 
 /**
  * Transport exchange info for allGather-based exchange.
@@ -440,6 +776,7 @@ struct IbTransportExchInfoAll {
   // Block-owned QP shape.
   int maxGroups{64};
   int qpsPerBlockPerNic{1};
+  int numProtocolSlots{kNumProtoSlots};
 };
 
 // Phases within the peer-pair-specific bootstrap tag computed by
@@ -449,6 +786,13 @@ constexpr int kIbPeerBufferExchangeTag = 1;
 
 // Wire formats for bilateral peer materialization. Split into two phases: QP
 // info first (to connect), then buffer info (acts as QP-ready barrier).
+//
+// WIRE FORMAT: PeerQpPayload is exchanged between peer ranks as raw bytes by
+// exchangeWithPeer(), which sends and expects exactly sizeof(PeerQpPayload).
+// Its layout is therefore an ABI both ends must agree on. Only APPEND new
+// fields: inserting or reordering one shifts every field after it, so two
+// ranks built from different revisions would decode each other's gids, qpns
+// and MTU as garbage instead of failing on the size.
 struct PeerQpPayload {
   struct NicQpInfo {
     uint8_t gid[16]{};
@@ -462,7 +806,41 @@ struct PeerQpPayload {
   int numQpsPerPeerPerNic{0};
   int maxGroups{0};
   int qpsPerBlockPerNic{0};
+  // dp_ordering mode, exchanged so a mismatch is a loud connect-time error
+  // rather than a silent one-sided reassembly change. NVIDIA's GDAKI refuses to
+  // connect on an ordering_semantic mismatch for the same reason.
+  // static_cast<int>(IbQpOrderingSemantic); 0 == Ibta == opted out.
+  int qpOrderingSemantic{0};
+  // Responder/initiator RDMA-Read/Atomic depth (config maxRdAtomic after the
+  // NIC-capability clamp). Exchanged for the same reason: the two ends must
+  // agree or one side's log_rra_max will not cover the other's log_sra_max.
+  // Defaults to the same 1 the transport resolves when nobody raises the depth.
+  int maxRdAtomic{1};
+  int numProtocolSlots{kNumProtoSlots};
 };
+
+// This payload is sent and received once per peer on every materializePeer(),
+// and both copies are stack-resident while in flight, so its size is a
+// bootstrap cost every lazy collective pays per peer -- not only the ones that
+// ask for a large group count. It must stay within kMaxNicsPerGpu * 8192 QPNs
+// (~64KB) however large the group index space becomes; widening a QP-shape
+// limit past this has to revisit the wire format rather than silently scale
+// it.
+//
+// Derived from the documented shape rather than rounded up to a convenient
+// number: a round bound leaves kilobytes of headroom for a new fixed array to
+// be added without the static_assert ever firing, which is exactly the drift
+// this constant exists to catch. The only slack is the scalar header.
+//
+// Named so the bound has one definition: MultiPeerIbTransportConfigTest checks
+// the same constant rather than restating the number.
+inline constexpr std::size_t kMaxPeerQpPayloadBytes =
+    kMaxNicsPerGpu * sizeof(PeerQpPayload::NicQpInfo) +
+    /*scalar header allowance=*/256;
+
+static_assert(
+    sizeof(PeerQpPayload) <= kMaxPeerQpPayloadBytes,
+    "PeerQpPayload is exchanged and stack-allocated per peer; keep it small");
 
 struct PeerBufferPayload {
   IbgdaBufferExchInfo recvStaging;
@@ -570,27 +948,16 @@ class MultiPeerIbTransportBase {
   void deregisterBuffer(void* ptr);
 
   /**
-   * Register a logical bulk-data range and return its move-only ownership
-   * token. The underlying allocation MR is shared with other registrations,
-   * while the lease preserves the exact caller-visible range.
+   * Register a local send source and expose exactly [ptr, ptr + size) without
+   * allocation discovery or caching. A provider MR may be page-aligned. The
+   * result exposes local keys only and is invisible to exchangeBuffer() and
+   * registeredSlotMemoryExchInfo(); use registerBuffer() for memory that peers
+   * write into.
    */
-  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size);
+  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
 
-  /**
-   * Return a non-owning RDMA view when the requested range is fully contained
-   * in the active lease. The view remains valid only while its lease is active.
-   */
-  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
-      const IbBufferRegistrationLease& lease,
-      void* ptr,
-      std::size_t size) const;
-
-  /** Release one logical bulk registration and invalidate its ownership token.
-   */
-  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease);
-
-  /** Return whether a previously resolved view still names its active lease. */
-  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const;
+  /** Release an exact-range registration and invalidate it. */
+  void deregisterIbBufferRange(IbBufferRegistration& registration);
 
   /**
    * exchangeBuffer - COLLECTIVE. allGather a registered buffer's addr + per-NIC
@@ -765,13 +1132,6 @@ class MultiPeerIbTransportBase {
     bool relaxedOrdering{false};
   };
 
-  struct BulkBufferRegistration {
-    void* ptr{nullptr};
-    std::size_t size{0};
-    IbgdaLocalBuffer localBuffer;
-    bool relaxedOrdering{false};
-  };
-
   const int myRank_{-1};
   const int nRanks_{0};
   std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
@@ -813,14 +1173,19 @@ class MultiPeerIbTransportBase {
   // Ordering must be uniform across NICs; gating on this aggregate keeps it so.
   bool relaxedOrderingCapable_{false};
 
-  // Maps allocation base address -> cached MR covering the full allocation.
-  // Ordered map enables O(log n) containment lookup via upper_bound.
-  std::map<uintptr_t, CachedMr> registeredBuffers_;
+  struct RegistrationState {
+    // Maps allocation base address -> cached MR covering the full allocation.
+    // Ordered map enables O(log n) containment lookup via upper_bound.
+    std::map<uintptr_t, CachedMr> registeredBuffers;
+  };
+  folly::Synchronized<RegistrationState> registrationState_;
 
-  // Logical bulk-data registrations are keyed by a monotonically increasing
-  // generation. Their underlying MRs remain owned by registeredBuffers_.
-  std::map<uint64_t, BulkBufferRegistration> bulkBufferRegistrations_;
-  uint64_t nextBulkBufferGeneration_{1};
+  IbgdaLocalBuffer registerBufferLocked(
+      void* ptr,
+      std::size_t size,
+      bool relaxedOrdering,
+      RegistrationState& registrations);
+  void deregisterBufferLocked(void* ptr, RegistrationState& registrations);
 
   // Shared send/recv staging-ring state (eager mode). Owns the bulk
   // allocations; sendRecvPeerBuffers_ slices them per peer.

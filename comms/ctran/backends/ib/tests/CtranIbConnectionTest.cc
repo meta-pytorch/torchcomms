@@ -70,7 +70,7 @@ class CtranIbConnectionTest : public ::testing::Test {
         rank, // Use rank as CUDA device identifier
         commHash,
         commDesc,
-        false, // enableLocalFlush
+        CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kExternal,
         /*qpServerAddr=*/std::nullopt,
         /*abortCtrl=*/abortCtrl);
@@ -287,7 +287,7 @@ TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
       rank,
       commHash,
       commDesc,
-      false, // enableLocalFlush
+      CtranIbConfig{.enableLocalFlush = false},
       CtranIb::BootstrapMode::kExternal,
       /*qpServerAddr=*/std::nullopt,
       /*abortCtrl=*/abortCtrl);
@@ -303,6 +303,43 @@ TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
   EXPECT_EQ(
       ctranIb->externalBootstrap()->connectVc(fakeRemoteVcId, peerRank),
       commInternalError);
+}
+
+TEST_F(CtranIbConnectionTest, MismatchedExternalQpCountsFailCleanly) {
+  constexpr int kLocalRank = 0;
+  constexpr int kPeerRank = 1;
+  constexpr uint64_t kCommHash = 0x12345678;
+
+  CtranIbConfig localConfig;
+  localConfig.numQps = 4;
+  localConfig.maxNumNic = 1;
+  CtranIbConfig peerConfig = localConfig;
+  peerConfig.numQps = 8;
+
+  auto local = std::make_unique<CtranIb>(
+      kLocalRank,
+      /*cudaDev=*/0,
+      kCommHash,
+      "local",
+      localConfig,
+      CtranIb::BootstrapMode::kExternal);
+  auto peer = std::make_unique<CtranIb>(
+      kPeerRank,
+      /*cudaDev=*/0,
+      kCommHash,
+      "peer",
+      peerConfig,
+      CtranIb::BootstrapMode::kExternal);
+
+  const auto localId = local->externalBootstrap()->getLocalVcId(kPeerRank);
+  const auto peerId = peer->externalBootstrap()->getLocalVcId(kLocalRank);
+
+  EXPECT_EQ(
+      local->externalBootstrap()->connectVc(peerId, kPeerRank),
+      commInvalidArgument);
+  EXPECT_EQ(
+      peer->externalBootstrap()->connectVc(localId, kLocalRank),
+      commInvalidArgument);
 }
 
 // Verify that the externalBootstrap() accessor returns nullptr when CtranIb is
@@ -331,7 +368,7 @@ TEST_F(CtranIbConnectionTest, ExternalBootstrapAccessorNullInInternalMode) {
       rank, // cudaDev
       commHash,
       commDesc,
-      false, // enableLocalFlush
+      CtranIbConfig{.enableLocalFlush = false},
       CtranIb::BootstrapMode::kSpecifiedServer,
       /*qpServerAddr=*/&serverAddr,
       /*abortCtrl=*/abortCtrl);

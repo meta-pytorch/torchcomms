@@ -46,9 +46,6 @@ class NcclxBaseTestFixture : public ::testing::Test,
 #ifdef TEST_ENABLE_LOCAL_REGISTER
     envs.push_back({"NCCL_LOCAL_REGISTER", "1"});
 #endif
-#ifdef TEST_CUDA_GRAPH_MODE
-    envs.push_back({"NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1"});
-#endif
     SetUp(envs);
   }
 

@@ -27,6 +27,8 @@ struct BusCard {
   uint32_t controlQpn;
   uint32_t notifQpn;
   uint32_t atomicQpn;
+  uint32_t numDataQps;
+  uint32_t numActiveDevices;
   uint32_t dataQpn[CTRAN_HARDCODED_MAX_QPS];
   uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
   union {
@@ -46,50 +48,119 @@ struct BusCard {
   uint8_t oooRq;
 };
 
-// Apply the per-VC QP configuration. MAX_QPS is supplied by the caller
-// (see computeMaxQpsPerVc), then clamped to CTRAN_HARDCODED_MAX_QPS and
-// rounded up to a multiple of activeDevices_.size() so data QPs split
-// evenly across the active NICs. Other settings (QP scaling threshold,
-// VC mode, max msgs per QP) come from the cvars / connection-class
-// configList for this peer.
-inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
-  qpScalingTh_ = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
-  vcMode_ = NCCL_CTRAN_IB_VC_MODE;
-  maxQpMsgs_ = NCCL_CTRAN_IB_QP_MAX_MSGS;
-  qpInterleaveDevices_ = NCCL_CTRAN_IB_QP_INTERLEAVE_DEVICES_ENABLE;
-  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
+namespace {
+struct VcConfig {
+  int numQps{NCCL_CTRAN_IB_MAX_QPS};
+  size_t qpScalingTh{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
+  enum NCCL_CTRAN_IB_VC_MODE vcMode { NCCL_CTRAN_IB_VC_MODE };
+  int qpMsgs{static_cast<int>(NCCL_CTRAN_IB_QP_MAX_MSGS)};
+};
+
+// Apply a non-empty NCCL_CTRAN*_IB_QP_CONFIG list.
+void applyQpConfigList(
+    const std::vector<std::string>& configList,
+    VcConfig& config) {
+  if (configList.empty()) {
+    return;
+  }
+  FB_CHECKABORT(
+      configList.size() == kExpectedQpConfigLength,
+      "XZONE, XDC QP Config strings must have exactly 4 elements");
+  config.qpScalingTh =
+      stoul(configList.at(qpConfigIndex::QP_SCALING_THRESHOLD));
+  config.numQps = stoi(configList.at(qpConfigIndex::MAX_QPS));
+  if (configList.at(qpConfigIndex::VC_MODE) == "spray") {
+    config.vcMode = NCCL_CTRAN_IB_VC_MODE::spray;
+  } else {
+    FB_CHECKABORT(
+        configList.at(qpConfigIndex::VC_MODE) == "dqplb",
+        "IBVC mode must be one of spray or dqplb");
+    config.vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb;
+  }
+  config.qpMsgs = stoi(configList.at(qpConfigIndex::MAX_QP_MSGS));
+}
+
+} // namespace
+
+commResult_t CtranIbVirtualConn::resolveVcConfig(
+    CtranComm* comm,
+    int peerRank,
+    int numVcs,
+    const CtranIbConfig& ibConfig) {
+  FB_CHECKABORT(numVcs > 0, "numVcs must be positive");
+
+  VcConfig config;
   ConnectionType connTyp = ConnectionType::NO_STATEX;
-  std::vector<std::string>* configList{nullptr};
-  if (comm_ && comm_->statex_) {
-    if (comm_->statex_->isSameZone(comm_->statex_->rank(), peerRank)) {
+  if (comm && comm->statex_) {
+    if (comm->statex_->isSameZone(comm->statex_->rank(), peerRank)) {
       connTyp = ConnectionType::SAME_ZONE;
-    } else if (comm_->statex_->isSameDc(comm_->statex_->rank(), peerRank)) {
+    } else if (comm->statex_->isSameDc(comm->statex_->rank(), peerRank)) {
       connTyp = ConnectionType::SAME_DC;
-      configList = &NCCL_CTRAN_IB_QP_CONFIG_XZONE;
+      applyQpConfigList(NCCL_CTRAN_IB_QP_CONFIG_XZONE, config);
     } else {
       connTyp = ConnectionType::DIFF_DC;
-      configList = &NCCL_CTRAN_IB_QP_CONFIG_XDC;
+      applyQpConfigList(NCCL_CTRAN_IB_QP_CONFIG_XDC, config);
     }
-  } else if (!comm_) {
+  } else if (!comm) {
     connTyp = ConnectionType::CTRAN_EX;
-    configList = &NCCL_CTRAN_EX_IB_QP_CONFIG;
+    applyQpConfigList(NCCL_CTRAN_EX_IB_QP_CONFIG, config);
   }
 
-  if ((configList != nullptr) && (configList->size() > 0)) {
-    FB_CHECKABORT(
-        configList->size() == kExpectedQpConfigLength,
-        "XZONE, XDC QP Config strings must have exactly 4 elements");
-    qpScalingTh_ = stoul(configList->at(qpConfigIndex::QP_SCALING_THRESHOLD));
-    if (configList->at(qpConfigIndex::VC_MODE) == "spray") {
-      vcMode_ = NCCL_CTRAN_IB_VC_MODE::spray;
-    } else {
-      FB_CHECKABORT(
-          configList->at(qpConfigIndex::VC_MODE) == "dqplb",
-          "IBVC mode must be one of spray or dqplb");
-      vcMode_ = NCCL_CTRAN_IB_VC_MODE::dqplb;
-    }
-    maxQpMsgs_ = stoi(configList->at(qpConfigIndex::MAX_QP_MSGS));
+  if (ibConfig.numQps.has_value()) {
+    config.numQps = *ibConfig.numQps;
   }
+  if (ibConfig.qpScalingTh.has_value()) {
+    config.qpScalingTh = *ibConfig.qpScalingTh;
+  }
+  if (ibConfig.vcMode.has_value()) {
+    config.vcMode = *ibConfig.vcMode;
+  }
+  if (ibConfig.qpMsgs.has_value()) {
+    config.qpMsgs = *ibConfig.qpMsgs;
+  }
+
+  FB_CHECKABORT(
+      config.numQps >= numVcs,
+      fmt::format(
+          "CTRAN-IB: per-peer MAX_QPS ({}) must be at least numVcs ({})",
+          config.numQps,
+          numVcs));
+  FB_CHECKABORT(
+      config.numQps % numVcs == 0,
+      fmt::format(
+          "CTRAN-IB: per-peer MAX_QPS ({}) must be a multiple of numVcs "
+          "({}) so per-VC data QPs distribute evenly",
+          config.numQps,
+          numVcs));
+  config.numQps /= numVcs;
+
+  if (config.qpMsgs <= 0) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: qpMsgs ({}) must be positive",
+        config.qpMsgs);
+    return commInvalidArgument;
+  }
+
+  maxNumQps_ = config.numQps;
+  qpScalingTh_ = config.qpScalingTh;
+  vcMode_ = config.vcMode;
+  maxQpMsgs_ = config.qpMsgs;
+  // A per-WQE threshold cannot express whether the aggregate workload should
+  // use multiple NICs, so keep interleaving policy inside the transport rather
+  // than exposing it through CtranIbConfig.
+  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
+  qpInterleaveDevices_ = qpInterleaveMinWqeSize_ > 0;
+
+  maxNumQps_ = config.numQps;
+  qpScalingTh_ = config.qpScalingTh;
+  vcMode_ = config.vcMode;
+  maxQpMsgs_ = config.qpMsgs;
+  // A per-WQE threshold cannot express whether the aggregate workload should
+  // use multiple NICs, so keep interleaving policy inside the transport rather
+  // than exposing it through CtranIbConfig.
+  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
+  qpInterleaveDevices_ = qpInterleaveMinWqeSize_ > 0;
 
   // cannot execeed the hardcoded max number of QPs
   if (maxNumQps_ > CTRAN_HARDCODED_MAX_QPS) {
@@ -107,10 +178,13 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   const int numActive = static_cast<int>(activeDevices_.size());
   if (maxNumQps_ % numActive) {
     int originalMaxNumQps = maxNumQps_;
-    maxNumQps_ = maxNumQps_ + (numActive - maxNumQps_ % numActive);
+    const int roundedUp = maxNumQps_ + (numActive - maxNumQps_ % numActive);
+    maxNumQps_ = roundedUp <= CTRAN_HARDCODED_MAX_QPS
+        ? roundedUp
+        : maxNumQps_ - maxNumQps_ % numActive;
     CTRAN_LOG(
         WARN,
-        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of active device count ({} < {}), rounding up to {} instead",
+        "CTRAN-IB: CTRAN_MAX_QPS is not a multiple of active device count ({} with {} devices), rounding to {} instead",
         originalMaxNumQps,
         numActive,
         maxNumQps_);
@@ -137,44 +211,6 @@ inline commResult_t CtranIbVirtualConn::setDefaultQPConfig() {
   logConnectionConfig(connTyp);
 
   return commSuccess;
-}
-
-int CtranIbVirtualConn::computeMaxQpsPerVc(
-    CtranComm* comm,
-    int peerRank,
-    int numVcs) {
-  FB_CHECKABORT(numVcs > 0, "numVcs must be positive");
-
-  // Per-peer MAX_QPS: cvar default, optionally overridden by the
-  // connection-class configList (same lookup as setDefaultQPConfig).
-  int perPeerMaxQps = NCCL_CTRAN_IB_MAX_QPS;
-  std::vector<std::string>* configList{nullptr};
-  if (comm && comm->statex_) {
-    if (comm->statex_->isSameZone(comm->statex_->rank(), peerRank)) {
-      // SAME_ZONE: no configList override; cvar default applies.
-    } else if (comm->statex_->isSameDc(comm->statex_->rank(), peerRank)) {
-      configList = &NCCL_CTRAN_IB_QP_CONFIG_XZONE;
-    } else {
-      configList = &NCCL_CTRAN_IB_QP_CONFIG_XDC;
-    }
-  } else if (!comm) {
-    configList = &NCCL_CTRAN_EX_IB_QP_CONFIG;
-  }
-  if ((configList != nullptr) && (configList->size() > 0)) {
-    FB_CHECKABORT(
-        configList->size() == kExpectedQpConfigLength,
-        "XZONE, XDC QP Config strings must have exactly 4 elements");
-    perPeerMaxQps = stoi(configList->at(qpConfigIndex::MAX_QPS));
-  }
-
-  FB_CHECKABORT(
-      perPeerMaxQps % numVcs == 0,
-      fmt::format(
-          "CTRAN-IB: per-peer MAX_QPS ({}) must be a multiple of numVcs "
-          "({}) so per-VC data QPs distribute evenly",
-          perPeerMaxQps,
-          numVcs));
-  return perPeerMaxQps / numVcs;
 }
 
 std::string CtranIbVirtualConn::connTypeName(ConnectionType connTyp) {
@@ -369,23 +405,23 @@ CtranIbVirtualConn::CtranIbVirtualConn(
     std::vector<CtranIbDevice>& devices,
     int peerRank,
     CtranComm* comm,
-    uint32_t pgTrafficClass,
+    uint32_t trafficClass,
     int cudaDev,
     std::vector<int> activeDevices,
-    int maxQpsPerVc)
+    int numVcs,
+    const CtranIbConfig& ibConfig)
     : peerRank(peerRank),
       devices_(devices),
-      maxNumQps_(maxQpsPerVc),
       comm_(comm),
-      pgTrafficClass_(pgTrafficClass),
+      trafficClass_(trafficClass),
       cudaDev_(cudaDev) {
-  // Populate the active-devices set BEFORE setDefaultQPConfig (it reads
-  // activeDevices_.size() to validate maxNumQps_). Caller (CtranIb) supplies
+  // Populate the active-devices set before resolving the configuration, which
+  // uses its size to align the per-VC data-QP count. Caller (CtranIb) supplies
   // the precomputed VcLayout slice for this VC.
   FB_CHECKABORT(!activeDevices.empty(), "activeDevices must be non-empty");
   for (int dev : activeDevices) {
     FB_CHECKABORT(
-        dev >= 0 && dev < NCCL_CTRAN_IB_DEVICES_PER_RANK,
+        dev >= 0 && static_cast<size_t>(dev) < devices_.size(),
         "activeDevices entry out of range");
   }
   activeDevices_ = std::move(activeDevices);
@@ -395,9 +431,13 @@ CtranIbVirtualConn::CtranIbVirtualConn(
   ctrlDevice_ = activeDevices_.front();
   notifyDevice_ = activeDevices_.front();
   atomicDevice_ = activeDevices_.front();
-  // set default QP configs based on topology and user-specified CVARs, if
-  // provided
-  FB_COMMCHECKTHROW_EX(setDefaultQPConfig(), comm->logMetaData_);
+  if (comm != nullptr) {
+    FB_COMMCHECKTHROW_EX(
+        resolveVcConfig(comm, peerRank, numVcs, ibConfig), comm->logMetaData_);
+  } else {
+    FB_COMMCHECKTHROW_EX_NOCOMM(
+        resolveVcConfig(comm, peerRank, numVcs, ibConfig));
+  }
 
   // Log the IB device ifnames this VC is bound to. Skip entries with
   // an unset ibvDevice handle (e.g. dummy devices used in unit tests).
@@ -514,14 +554,15 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
       FOLLY_EXPECTED_CHECK(ibvAtomicQpCreateResult);
       ibvAtomicQp_ = std::move(*ibvAtomicQpCreateResult);
 
-      FOLLY_EXPECTED_CHECK(
-          initQp(*ibvControlQp_, devices_[device].port, qpAccessFlags));
-      FOLLY_EXPECTED_CHECK(
-          initQp(*ibvNotifyQp_, devices_[device].port, qpAccessFlags));
+      FOLLY_EXPECTED_CHECK(initQp(
+          *ibvControlQp_, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
+      FOLLY_EXPECTED_CHECK(initQp(
+          *ibvNotifyQp_, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
       FOLLY_EXPECTED_CHECK(initQp(
           *ibvAtomicQp_,
           devices_[device].port,
-          qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC));
+          qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC,
+          NCCL_IB_PKEY));
     }
     // Data QPs may opt into OOO_DP when local caps confirm it (localOooRq_).
     // Control / notify / atomic QPs stay on the plain createRcQp path — their
@@ -536,7 +577,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
           localOooRq_);
       FOLLY_EXPECTED_CHECK(maybeQp);
       FOLLY_EXPECTED_CHECK(
-          initQp(*maybeQp, devices_[device].port, qpAccessFlags));
+          initQp(*maybeQp, devices_[device].port, qpAccessFlags, NCCL_IB_PKEY));
       ibvDataQps_.emplace_back(std::move(*maybeQp));
     }
 
@@ -560,6 +601,8 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   busCard->controlQpn = ibvControlQp_->qp()->qp_num;
   busCard->notifQpn = ibvNotifyQp_->qp()->qp_num;
   busCard->atomicQpn = ibvAtomicQp_->qp()->qp_num;
+  busCard->numDataQps = static_cast<uint32_t>(maxNumQps_);
+  busCard->numActiveDevices = static_cast<uint32_t>(activeDevices_.size());
   for (int i = 0; i < maxNumQps_; i++) {
     busCard->dataQpn[i] = this->ibvDataQps_.at(i).qp()->qp_num;
   }
@@ -574,6 +617,19 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
 
 commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   BusCard* remoteBusCardStruct = reinterpret_cast<BusCard*>(remoteBusCard);
+
+  if (remoteBusCardStruct->numDataQps != maxNumQps_ ||
+      remoteBusCardStruct->numActiveDevices != activeDevices_.size()) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB-VC: peer configuration mismatch: local dataQps={} activeDevices={}, remote dataQps={} activeDevices={} peerRank={}",
+        maxNumQps_,
+        activeDevices_.size(),
+        remoteBusCardStruct->numDataQps,
+        remoteBusCardStruct->numActiveDevices,
+        peerRank);
+    return commInvalidArgument;
+  }
 
   // OOO_RQ negotiation: fail-closed at the receive side so both peers
   // evaluate symmetrically and abort together. Only fires when the local
@@ -707,7 +763,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     FOLLY_EXPECTED_CHECK(rtrQp(
         remoteQpInfo,
         ibvDataQps_.at(i),
-        pgTrafficClass_,
+        trafficClass_,
         NCCL_IB_GID_INDEX,
         NCCL_IB_SL));
   }

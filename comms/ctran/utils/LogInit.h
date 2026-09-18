@@ -5,10 +5,12 @@
 namespace ctran::logging {
 
 /**
- * Initialize logging for Ctran. By default it only initializes once globlally
- * and no-op for future calls on the process.
+ * Initialize logging for Ctran. By default it initializes once globally and
+ * is a no-op on future calls in the process.
  *
- * @param alwaysInit If true, always initialize logging, for testing purpose.
+ * `alwaysInit` reconfigures the CTRAN loggers for tests. Process-global shared
+ * runtime state, including structured logging tables and the subsystem mask,
+ * remains initialized once until explicitly shut down.
  */
 void initCtranLogging(bool alwaysInit = false);
 

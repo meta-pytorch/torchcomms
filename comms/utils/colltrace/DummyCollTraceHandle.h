@@ -28,6 +28,10 @@ class DummyCollTraceHandle : public ICollTraceHandle {
     return std::shared_ptr<ICollRecord>{nullptr};
   }
 
+  CommsMaybeVoid cancel() noexcept override {
+    return folly::Unit{};
+  }
+
   CommsMaybeVoid invalidate() noexcept override {
     return folly::Unit{};
   }

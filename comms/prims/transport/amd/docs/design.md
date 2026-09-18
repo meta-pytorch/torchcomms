@@ -242,7 +242,7 @@ You can write `cudaXxx` in unified sources and trust the rewrite.
 | `cudaEventCreate` / `cudaEventRecord` / `cudaEventElapsedTime` | `hipEventCreate` / `hipEventRecord` / `hipEventElapsedTime` |
 | `cudaIpcGetMemHandle` / `cudaIpcOpenMemHandle` | `hipIpcGetMemHandle` / `hipIpcOpenMemHandle` |
 | `cudaError_t` / `cudaSuccess` | `hipError_t` / `hipSuccess` |
-| `clock64()` | `wall_clock64()` (semantically different — see `Timeout.cuh::gpu_clock64()`) |
+| `clock64()` | `wall_clock64()` (semantically different — see `AbortCheck.cuh::gpu_clock64()`) |
 
 NOT auto-rewritten (you must guard manually):
 

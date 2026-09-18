@@ -396,6 +396,7 @@ TEST_F(HRDWRingBufferReaderTest, ZeroTimeoutStillReadsAvailableEntries) {
 
   // Zero timeout should still deliver all available entries.
   EXPECT_EQ(result.entriesRead, 3u);
+  EXPECT_FALSE(result.lastLostIndex.has_value());
   const std::vector<uint32_t> expected{1, 2, 3};
   EXPECT_EQ(seen, expected);
 }
@@ -418,6 +419,7 @@ TEST_F(HRDWRingBufferReaderTest, TimeoutBoundsOverwrittenProcessing) {
   // 144 entries lost, 16 entries read.
   constexpr uint64_t kTotalEntries = 10 * kRingSize;
   EXPECT_EQ(result.entriesLost, kTotalEntries - kRingSize);
+  EXPECT_EQ(result.lastLostIndex, kTotalEntries - kRingSize - 1);
   EXPECT_EQ(result.entriesRead, kRingSize);
   EXPECT_EQ(result.entriesRead + result.entriesLost, kTotalEntries);
 }
@@ -433,6 +435,7 @@ TEST_F(HRDWRingBufferReaderTest, OnePastLapJumpsToTailLosesOne) {
       [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
 
   EXPECT_EQ(result.entriesLost, 1u);
+  EXPECT_EQ(result.lastLostIndex, 0u);
   EXPECT_EQ(result.entriesRead, kRingSize);
   EXPECT_EQ(result.entriesRead + result.entriesLost, kRingSize + 1);
 }
@@ -455,6 +458,7 @@ TEST_F(HRDWRingBufferReaderTest, JumpToTailAfterPartialRead) {
       [&](const TestEntry& e, uint64_t) { seen.push_back(e.data.tag); });
 
   EXPECT_EQ(result.entriesLost, 3u);
+  EXPECT_EQ(result.lastLostIndex, 6u);
   EXPECT_EQ(result.entriesRead, kRingSize);
   EXPECT_EQ(
       result.entriesRead + result.entriesLost,

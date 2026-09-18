@@ -173,7 +173,7 @@ TEST_F(CtranMapperHostTransportDistTest, ModeMismatchAborts) {
   // Asking for the same peer with a different mode must abort
   // (FB_CHECKABORT). gtest's death-test matcher inspects only the
   // child process's captured stderr; FB_CHECKABORT writes its message
-  // through CLOGF (which goes to the logger sink, not raw stderr), so
+  // through CTRAN_LOG (which goes to the logger sink, not raw stderr), so
   // the message itself isn't visible to EXPECT_DEATH. The signal
   // handler's "*** Aborted at ..." banner IS visible — match on that
   // so the test asserts only the death itself.

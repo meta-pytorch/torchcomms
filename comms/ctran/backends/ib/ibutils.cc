@@ -4,7 +4,6 @@
 #include <fmt/core.h>
 #include <folly/Singleton.h>
 #include <folly/Synchronized.h>
-#include <folly/init/Init.h>
 #include <cerrno>
 #include <chrono>
 #include <thread>

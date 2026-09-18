@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "comms/common/fault_tolerance/AbortDevice.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -97,6 +98,19 @@ void testMultiplePutAndSignal(
     int blockSize);
 
 /**
+ * Test kernel: post a burst larger than the SQ, then flush once. Slot reuse
+ * must therefore make progress through reserve_wq_slots' internal CQ poll.
+ */
+void testBurstPutAndFlush(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Send signal only (no data, slot-index)
  */
 void testSignalOnly(
@@ -127,6 +141,10 @@ struct RegisteredSendObservation {
   uint64_t progressedCount{0};
   uint64_t postedCount{0};
   uint64_t drainedCount{0};
+  uint64_t abortedCount{0};
+  /// Iterations the drain loop actually took. Only written by the
+  /// drain-abort test; zero elsewhere.
+  uint64_t drainIterations{0};
 
   template <typename Status>
   IBGDA_HOST_DEVICE void record(Status status) {
@@ -143,6 +161,9 @@ struct RegisteredSendObservation {
       case Status::Drained:
         ++drainedCount;
         break;
+      case Status::Aborted:
+        ++abortedCount;
+        break;
     }
   }
 };
@@ -154,6 +175,60 @@ struct RegisteredSendObservation {
 void testPipelineGeometry(
     P2pIbTransportDevice transport,
     uint64_t* output,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: blocking pipelined send or recv over the backend-DISPATCHING
+ * `P2pIbTransportDevice`, one fixed channel per block. Block `b` drives
+ * channel `b` over the `bytesPerBlock`-sized slice of `buffer` at
+ * `b * bytesPerBlock`.
+ *
+ * The per-block slice is what makes channel coverage observable. Handing
+ * every block the same buffer (what the single-buffer `testSendRecv` does)
+ * means a channel that silently moves nothing is masked by a sibling block
+ * writing the same bytes, so the verify passes with most channels dead.
+ *
+ * Caller must keep `bytesPerBlock` within one pipeline window: senders then
+ * never block on a peer's SLOT_FREE, so the test cannot deadlock when it runs
+ * more blocks than the GPU can hold resident.
+ */
+void testShardedSendRecvIb(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Fill `numBlocks` consecutive `bytesPerBlock` slices, keying slice `b` on
+ * `baseValue + b` so every slice is byte-distinguishable from its neighbours.
+ */
+void fillShardedPattern(
+    void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Verify the layout `fillShardedPattern` writes. `errorCount` accumulates
+ * mismatched bytes; `firstBadSlice` is `atomicMin`-reduced to the lowest slice
+ * index that had any mismatch, which is what tells a failure whether the
+ * channels above the legacy limit were the ones that dropped data.
+ *
+ * The caller must pre-seed `firstBadSlice` with a sentinel above every valid
+ * slice index (`std::numeric_limits<int>::max()`); a clean run leaves it
+ * untouched rather than writing a "no failure" value of its own.
+ */
+void verifyShardedPattern(
+    const void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice,
     int numBlocks,
     int blockSize);
 
@@ -214,6 +289,24 @@ void testWarpProxySendRecv(
     bool send,
     uint32_t queueDepth,
     uint64_t* queueFullCount);
+
+/**
+ * Test kernel: warp-proxy send against a peer that never runs its own proxy.
+ *
+ * Launches asynchronously and does NOT synchronize -- the caller is expected to
+ * abort the supplied handle while the kernel is parked, then synchronize. The
+ * abort is caller-owned rather than `testAbortDevice()` on purpose: that helper
+ * is a `TRAP`-mode watchdog, so it can only end a stuck proxy by taking the
+ * CUDA context down, which cannot distinguish "the service loop honoured the
+ * abort" from "the watchdog fired".
+ */
+void launchWarpProxyStalledSend(
+    P2pIbgdaTransportDevice* transport,
+    void* buffer,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    uint32_t queueDepth,
+    comms::fault_tolerance::AbortDevice abort);
 
 /**
  * Test kernel: Resumable pipelined send or recv progress loop.
@@ -379,7 +472,8 @@ void testPutSignalCounter(
     int counterId,
     uint64_t counterVal,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    int numIterations = 1);
 
 /**
  * Test kernel: Wait for local counter to reach expected value (slot-index)
@@ -416,6 +510,70 @@ void testMultiQpPutAndSignal(
     std::size_t totalBytes,
     int signalId,
     uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: put + flush against a caller-supplied abort handle.
+ *
+ * The fault injector for the completion-error path: give it a `remoteBuf` whose
+ * rkey the peer rejects and the NIC produces an error CQE, which `flush()`
+ * observes inside `wait_local_on_qp`. Unlike a dead peer -- where the op simply
+ * never completes until IB retry exhaustion, roughly a minute out -- a remote
+ * access error is terminal and reported immediately.
+ *
+ * `abort` is by value: `AbortDevice` is a handle over shared state, so the copy
+ * the kernel mutates and the host's `Abort` observe the same latch.
+ */
+/**
+ * Test kernel: a real registered send whose completions never land, followed by
+ * the production-shaped drain loop.
+ *
+ * `poisonedRemote` is an exchanged peer buffer with its rkey corrupted. The
+ * kernel puts to it several times -- deliberately without flushing -- to drive
+ * the channel's QP lanes into error state, so the registered send that follows
+ * has completions the NIC will never report successfully. The drain then loops
+ * `while (status != Drained)` exactly as `ReduceScatterDirectIbV2.cu` does.
+ *
+ * The channel layout's own staging rkeys are NOT usable for this: they are not
+ * populated at the point the kernel runs, and indexing them traps.
+ *
+ * `drainIterationCap` bounds that loop so a regression reports a failure
+ * instead of hanging until the harness timeout; `observation->drainIterations`
+ * records what it actually took, which is the assertion that matters.
+ */
+void testRegisteredSendDrainWithAbort(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& source,
+    const IbgdaRemoteBuffer& poisonedRemote,
+    std::size_t nbytes,
+    std::size_t maxSignalBytes,
+    RegisteredSendObservation* observation,
+    uint64_t drainIterationCap,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test the blocking send-slot retirement error path against a bad-rkey CQE.
+ */
+void testPrepareSendSlotBadRkey(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
+void testPutAndFlushWithAbort(
+    P2pIbTransportDevice transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    const IbgdaRemoteBuffer& validRemoteBuf,
+    std::size_t nbytes,
+    comms::fault_tolerance::AbortDevice abort,
     int numBlocks,
     int blockSize);
 

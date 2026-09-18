@@ -6,8 +6,8 @@
 #include <cstdint>
 
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/ll/LlOps.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
@@ -26,7 +26,7 @@ __global__ void ll_forward_kernel(
     LlLine* local_ll_buf,
     LlLine* remote_ll_buf) {
   auto group = make_warp_group();
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
   ll_forward(group, dst, nbytes, local_ll_buf, remote_ll_buf, timeout);
 }
@@ -44,7 +44,7 @@ __global__ void ll_multi_step_combined_kernel(
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -72,7 +72,7 @@ __global__ void ll_multi_step_send_forward_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(3);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -101,7 +101,7 @@ __global__ void ll_chunked_combined_kernel(
     LlLine* ll_buf,
     size_t buffer_num_lines,
     int num_steps,
-    Timeout timeout) {
+    AbortDevice timeout) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
@@ -132,7 +132,7 @@ __global__ void ll_varying_data_multi_step_combined_kernel(
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
 
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {
@@ -173,7 +173,7 @@ __global__ void ll_varying_data_multi_step_send_forward_recv_kernel(
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(3);
-  Timeout timeout;
+  AbortDevice timeout;
   timeout.start();
 
   if (partition_id == 0) {

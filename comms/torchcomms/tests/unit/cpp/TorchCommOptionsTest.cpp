@@ -121,7 +121,7 @@ constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_FAKE_TEST";
 // Verifies the behavior the tag field exists for: BackendWrapper::send/recv
 // must thread the c10d `tag` into SendOptions/RecvOptions and pass it down to
 // the backend. Uses the fake backend to capture the options actually received.
-class BackendWrapperTagTest : public ::testing::Test {
+class BackendWrapperTest : public ::testing::Test {
  protected:
   void SetUp() override {
     const char* lib_path = std::getenv("FAKE_TEST_BACKEND_LIB_PATH");
@@ -154,7 +154,7 @@ class BackendWrapperTagTest : public ::testing::Test {
   c10::intrusive_ptr<BackendWrapper> wrapper_;
 };
 
-TEST_F(BackendWrapperTagTest, SendThreadsTagToBackend) {
+TEST_F(BackendWrapperTest, SendThreadsTagToBackend) {
   std::vector<at::Tensor> tensors = {at::ones({4}, at::kFloat)};
   wrapper_->send(tensors, /*dstRank=*/1, /*tag=*/123);
 
@@ -165,7 +165,7 @@ TEST_F(BackendWrapperTagTest, SendThreadsTagToBackend) {
   EXPECT_EQ(fake->getLastSendDstForTest(), 1);
 }
 
-TEST_F(BackendWrapperTagTest, RecvThreadsTagToBackend) {
+TEST_F(BackendWrapperTest, RecvThreadsTagToBackend) {
   std::vector<at::Tensor> tensors = {at::empty({4}, at::kFloat)};
   wrapper_->recv(tensors, /*srcRank=*/2, /*tag=*/456);
 
@@ -176,8 +176,31 @@ TEST_F(BackendWrapperTagTest, RecvThreadsTagToBackend) {
   EXPECT_EQ(fake->getLastRecvSrcForTest(), 2);
 }
 
+TEST_F(BackendWrapperTest, SplitAcceptsRanksIncludingCurrentRank) {
+  auto opts = c10::make_intrusive<BackendWrapper::Options>();
+  opts->group_name = "member_split";
+  std::vector<int> ranks = {0};
+
+  auto splitBackend = wrapper_->split(nullptr, ranks, opts);
+
+  ASSERT_NE(splitBackend, nullptr);
+  EXPECT_EQ(splitBackend->getRank(), 0);
+  EXPECT_EQ(splitBackend->getSize(), ranks.size());
+}
+
+TEST_F(BackendWrapperTest, SplitAcceptsRanksExcludingCurrentRank) {
+  auto opts = c10::make_intrusive<BackendWrapper::Options>();
+  opts->group_name = "nonmember_split";
+  std::vector<int> ranks = {1, 2, 3};
+
+  c10::intrusive_ptr<c10d::Backend> splitBackend;
+  ASSERT_NO_THROW(splitBackend = wrapper_->split(nullptr, ranks, opts));
+
+  EXPECT_EQ(splitBackend, nullptr);
+}
+
 #ifdef C10D_BACKEND_HAS_WINDOW
-TEST_F(BackendWrapperTagTest, WindowOperationsDelegateToTorchComm) {
+TEST_F(BackendWrapperTest, WindowOperationsDelegateToTorchComm) {
   EXPECT_TRUE(wrapper_->supportsWindow());
 
   auto tensor = at::ones({4}, at::kFloat);

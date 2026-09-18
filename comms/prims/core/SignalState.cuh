@@ -6,8 +6,8 @@
 
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/BitOps.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/amd/HipHostCompat.h"
 
 namespace comms::prims {
@@ -180,15 +180,17 @@ struct alignas(128) SignalState {
    *
    * @param op The comparison operation (CMP_EQ, CMP_GT, CMP_LT, CMP_GE, etc.)
    * @param expected The expected value to compare against
-   * @param timeout Timeout config (default: no timeout)
+   * @param abortDevice Abort handle (default: disabled, infinite wait)
    */
-  __device__ __forceinline__ void
-  wait_until(CmpOp op, uint64_t expected, const Timeout& timeout = Timeout()) {
+  __device__ __forceinline__ void wait_until(
+      CmpOp op,
+      uint64_t expected,
+      const AbortDevice& abortDevice = AbortDevice()) {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -199,7 +201,7 @@ struct alignas(128) SignalState {
       case CmpOp::CMP_GT:
         while (load() <= expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -210,7 +212,7 @@ struct alignas(128) SignalState {
       case CmpOp::CMP_LT:
         while (load() >= expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -221,7 +223,7 @@ struct alignas(128) SignalState {
       case CmpOp::CMP_GE:
         while (load() < expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -232,7 +234,7 @@ struct alignas(128) SignalState {
       case CmpOp::CMP_LE:
         while (load() > expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -243,7 +245,7 @@ struct alignas(128) SignalState {
       case CmpOp::CMP_NE:
         while (load() == expected) {
           FT_ABORT_BREAK(
-              timeout,
+              abortDevice,
               "SignalState::wait_until waiting for signal %s %llu "
               "(current=%llu)",
               cmpOpToString(op),
@@ -292,14 +294,14 @@ struct alignas(128) SignalState {
    * @param group ThreadGroup for cooperative processing
    * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
    * @param expected The expected value to compare against
-   * @param timeout Timeout config (default: no timeout)
+   * @param abortDevice Abort handle (default: disabled, infinite wait)
    */
   __device__ __forceinline__ void wait_until(
       ThreadGroup& group,
       CmpOp op,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) {
-    wait_until(op, expected, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) {
+    wait_until(op, expected, abortDevice);
   }
 };
 

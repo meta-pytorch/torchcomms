@@ -70,26 +70,14 @@ std::vector<std::pair<std::string_view, std::string_view>> getAllTableNames();
 //
 // Tables must exist here:
 // https://www.internalfb.com/code/configerator/[master]/source/datainfra/logarithm/transport/logarithm_conda_custom_transport.cinc
-DECLARE_scuba_table(nccl_coll_signature);
-DECLARE_scuba_table(nccl_coll_timestamp);
-DECLARE_scuba_table(nccl_commdump);
-DECLARE_scuba_table(nccl_error_logging);
 DECLARE_scuba_table(nccl_memory_logging);
 DECLARE_scuba_table(nccl_profiler_slow_rank);
 DECLARE_scuba_table(nccl_profiler_algo);
 DECLARE_scuba_table(nccl_profiler_gpe);
 DECLARE_scuba_table(nccl_structured_logging);
-DECLARE_scuba_table(nccl_slow_coll);
-DECLARE_scuba_table(nccl_collective_stats);
 
 #define SCUBA_nccl_structured_logging (*SCUBA_nccl_structured_logging_ptr)
 #define SCUBA_nccl_profiler_algo (*SCUBA_nccl_profiler_algo_ptr)
 #define SCUBA_nccl_profiler_gpe (*SCUBA_nccl_profiler_gpe_ptr)
 #define SCUBA_nccl_profiler_slow_rank (*SCUBA_nccl_profiler_slow_rank_ptr)
 #define SCUBA_nccl_memory_logging (*SCUBA_nccl_memory_logging_ptr)
-#define SCUBA_nccl_error_logging (*SCUBA_nccl_error_logging_ptr)
-#define SCUBA_nccl_coll_signature (*SCUBA_nccl_coll_signature_ptr)
-#define SCUBA_nccl_coll_timestamp (*SCUBA_nccl_coll_timestamp_ptr)
-#define SCUBA_nccl_commdump (*SCUBA_nccl_commdump_ptr)
-#define SCUBA_nccl_slow_coll (*SCUBA_nccl_slow_coll_ptr)
-#define SCUBA_nccl_collective_stats (*SCUBA_nccl_collective_stats_ptr)

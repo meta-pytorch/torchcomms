@@ -40,10 +40,10 @@ struct ProgressChunk {
 /**
  * Register-only geometry for one resumable progress call.
  *
- * This is intentionally not stored in `IbChannelProgress`: callers pass the
- * same static geometry to init and progress, and each progress call derives
- * these values in registers instead of reloading duplicated fields from
- * HBM-backed progress state.
+ * Derived in registers on every call rather than stored: only the two caller
+ * inputs it cannot reach on its own (`activeUserBytes`, `activeMaxSignalBytes`)
+ * live in `IbChannelProgress`; the rest come from `transport.channel_layout()`
+ * and `group`, so caching them would duplicate HBM state for no gain.
  */
 struct ProgressGeometry {
   // Two independent coordinates, never merged: `groupId` is the LOGICAL channel
@@ -71,6 +71,36 @@ __device__ __forceinline__ void abandon_progress_state(
     ThreadGroup& group,
     IbChannelProgress& slot,
     IbChannelProgress& state);
+
+/*
+ * Where the abort is consulted on the ready path, and why it is not a
+ * standalone entry guard.
+ *
+ * Every abort check in this file used to hang off a wait, and each consults the
+ * abort only on its *not-ready* branch. So a call that found everything ready
+ * reached the put, the fused DATA_READY, or the SLOT_FREE credit having never
+ * looked at the abort -- and publishing any of those after an abort is what
+ * principle 4 forbids: a false signal releases a peer that is correctly blocked
+ * and stops it ever reaching its own deadline, so the fault reads to that peer
+ * as success.
+ *
+ * The obvious fix -- one guard at the top of each progress call -- adds a
+ * group-wide broadcast to every *healthy* attempt, and Tree scheduling and
+ * batched send/recv drive these in tight loops. Instead the verdict rides out
+ * through synchronization that already exists:
+ *
+ *   - `try_prepare_send_slot()` and both `progress_recv_ready()` overloads
+ *     already broadcast a readiness verdict; the leader now decides the abort
+ *     inside that same block and returns `kProgressAborted` through it.
+ *   - The pre-put `group.sync()` becomes a broadcast carrying the verdict,
+ *     which covers a call resuming at WaitSlotFree -- that path skips slot
+ *     preparation, and skips the SLOT_FREE wait entirely for a chunk inside the
+ *     pipeline depth.
+ *
+ * Net added barriers on the healthy path: zero, except LL's ready path, which
+ * had no existing broadcast to fold into and now pays the one the not-ready
+ * path already paid.
+ */
 
 template <typename Proto = protocol::Simple>
 __device__ __forceinline__ ProgressGeometry make_progress_geometry(
@@ -116,15 +146,15 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& abortDevice = AbortDevice());
 
 /**
  * Initialize transport-owned state for one pipelined send operation.
  *
  * The transport reserves the sender-side byte stream for `group.group_id`
  * and starts the internal state in the sender state machine unless
- * `nbytes == 0`. It does not capture the source pointer; callers pass the
- * pointer to each `progress_send_once()` call.
+ * `nbytes == 0`. It captures `src`, so `progress_send_once()` advances through
+ * the same buffer on every call and cannot be handed a different one.
  *
  * The send progress slot for this group must be idle. Re-initializing a
  * group while a previous send is outstanding traps with a diagnostic instead
@@ -141,6 +171,8 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
  * behavior and lets schedulers treat empty operations uniformly.
  *
  * @param group Thread group that will execute all later progress calls.
+ * @param src Source user buffer. The range `[src, src + nbytes)` must remain
+ *            valid until the operation reports `Done`.
  * @param nbytes Number of user-buffer bytes to send for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
@@ -148,6 +180,7 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -155,6 +188,10 @@ __device__ __forceinline__ void init_send_progress(
   auto& slot = progress_send_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "send");
   IbChannelProgress state{};
+  // The send path only reads through this; see IbChannelProgress.
+  state.activeUserBuf = const_cast<void*>(src);
+  state.activeUserBytes = nbytes;
+  state.activeMaxSignalBytes = max_signal_bytes;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitLocalCompletion;
@@ -172,6 +209,7 @@ __device__ __forceinline__ void init_send_progress(
 #else
   (void)transport;
   (void)group;
+  (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -181,6 +219,7 @@ template <typename Transport>
 __device__ __forceinline__ void init_registered_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -188,10 +227,22 @@ __device__ __forceinline__ void init_registered_send_progress(
     __threadfence_system();
     group.sync();
   }
-  init_send_progress(transport, group, nbytes, max_signal_bytes);
+  // activeUserBuf stays null: this path never copies through send staging, so
+  // the registered descriptor below is the only source it uses.
+  init_send_progress(
+      transport, group, /*src=*/nullptr, nbytes, max_signal_bytes);
+  // Written after the delegated init, which builds its own local state and
+  // stores it. store_progress_state() does not carry this field, so the slot
+  // keeps what is written here for the whole operation.
+  auto& slot = progress_send_slot<protocol::Simple>(transport, group);
+  if (group.is_leader()) {
+    slot.activeRegisteredBuf = src;
+  }
+  group.sync();
 #else
   (void)transport;
   (void)group;
+  (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -202,8 +253,8 @@ __device__ __forceinline__ void init_registered_send_progress(
  *
  * The transport reserves the receiver-side byte stream for `group.group_id`
  * and starts the internal state in the receiver state machine unless
- * `nbytes == 0`. It does not capture the destination pointer; callers pass
- * the pointer to each `progress_recv_once()` call.
+ * `nbytes == 0`. It captures `dst`, so `progress_recv_once()` advances through
+ * the same buffer on every call and cannot be handed a different one.
  *
  * The recv progress slot for this group must be idle. Re-initializing a
  * group while a previous recv is outstanding traps with a diagnostic instead
@@ -218,6 +269,8 @@ __device__ __forceinline__ void init_registered_send_progress(
  * behavior and lets schedulers treat empty operations uniformly.
  *
  * @param group Thread group that will execute all later progress calls.
+ * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
+ *            remain valid until the operation reports `Done`.
  * @param nbytes Number of user-buffer bytes to receive for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
@@ -225,6 +278,7 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -232,6 +286,9 @@ __device__ __forceinline__ void init_recv_progress(
   auto& slot = progress_recv_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "recv");
   IbChannelProgress state{};
+  state.activeUserBuf = dst;
+  state.activeUserBytes = nbytes;
+  state.activeMaxSignalBytes = max_signal_bytes;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitDataReady;
@@ -249,6 +306,7 @@ __device__ __forceinline__ void init_recv_progress(
 #else
   (void)transport;
   (void)group;
+  (void)dst;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -260,9 +318,9 @@ __device__ __forceinline__ void init_recv_progress(
  * This method advances at most one staged copy plus one RDMA put for the
  * current chunk. It never spins on local completion or SLOT_FREE: if either
  * dependency is not ready, it returns immediately so a higher-level scheduler
- * can try another independent lane. If a `Timeout` is enabled, it is checked
- * only at those readiness points and should already have been started by the
- * caller.
+ * can try another independent lane. If an `AbortDevice` is enabled, it is
+ * checked only at those readiness points and should already have been started
+ * by the caller.
  *
  * The send path first checks local completion before reusing the local
  * send-staging range, then copies user data into send-staging through
@@ -279,11 +337,8 @@ __device__ __forceinline__ void init_recv_progress(
  *
  * @param transport Owning transport used for every transport op.
  * @param group Thread group matching the one used during initialization.
- * @param src Source user buffer. The range `[src, src + nbytes)` must remain
- *            valid until `Done`.
- * @param nbytes Number of user-buffer bytes from the matching init call.
- * @param max_signal_bytes Maximum signaled sub-chunk size from init.
- * @param timeout Optional device timeout checked while dependencies wait.
+ * @param abortDevice Optional device abortDevice checked while dependencies
+ * wait.
  * @param args Additional arguments forwarded to `CopyOp::send`.
  */
 // ---- Resumable-progress protocol seams (tag-dispatched) ------------------
@@ -396,10 +451,7 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
     Args... args) {
@@ -424,7 +476,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     return IbgdaSendRecvProgressStatus::Done;
   }
   const ProgressGeometry progress_params = make_progress_geometry<Proto>(
-      channelLayout, group, nbytes, max_signal_bytes, "progress_send_once");
+      channelLayout,
+      group,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
+      "progress_send_once");
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
     if (group.is_leader()) {
       printf(
@@ -452,7 +508,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     const ProgressChunk chunk =
         next_chunk<Proto>(channelLayout, state, progress_params);
     const uint32_t slotReadiness = try_prepare_send_slot<Proto>(
-        transport, group, chunk.slotId, chunk.pipelineGeneration, timeout);
+        transport, group, chunk.slotId, chunk.pipelineGeneration, abortDevice);
     if (slotReadiness != kProgressReady) {
       if (fine_trace_enabled(traceContext) && traceState != nullptr &&
           !traceState->localCompletionWaitOpen && group.is_leader()) {
@@ -491,7 +547,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
         group,
         channelLayout,
         chunk,
-        src,
+        state.activeUserBuf,
         progress_params.payloadBytes,
         args...);
     if (group.is_leader()) {
@@ -523,7 +579,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "progress_send_once waiting for SLOT_FREE expected>=%llu, "
                   "current=%llu",
                   static_cast<unsigned long long>(expected),
@@ -565,14 +621,30 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
       }
     }
 
+    // Last gate before the put and its fused DATA_READY.
+    //
+    // A call that *resumes* at WaitSlotFree skipped `try_prepare_send_slot`,
+    // and the SLOT_FREE wait above is itself skipped for any chunk inside the
+    // pipeline depth -- so on that path nothing has consulted the abort yet.
+    // This replaces the `group.sync()` that already stood here rather than
+    // adding a barrier: a broadcast is the same single synchronization, and it
+    // carries the verdict out with it.
+    uint32_t sendAborted = 0;
     if (group.is_leader()) {
       trace_allreduce_event(
           traceContext,
           PipesTraceEventType::kAllReduceSendSyncBegin,
           static_cast<uint8_t>(kPipesTraceQpLaneMask),
           chunk.wireBytes);
+      sendAborted =
+          FT_ABORT_CHECK(abortDevice, "send publish on an aborted communicator")
+          ? 1U
+          : 0U;
     }
-    group.sync();
+    if (group.broadcast<uint32_t>(sendAborted) != 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaSendRecvProgressStatus::Aborted;
+    }
     if (group.is_leader()) {
       __threadfence_system();
       trace_allreduce_event(
@@ -651,10 +723,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
 #else
   (void)transport;
   (void)group;
-  (void)src;
-  (void)nbytes;
-  (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
   (void)traceState;
   return IbgdaSendRecvProgressStatus::Done;
@@ -666,10 +735,7 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const IbgdaLocalBuffer& src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
   auto& progressSlot = progress_send_slot<protocol::Simple>(transport, group);
@@ -681,8 +747,8 @@ progress_registered_send_once(
   const ProgressGeometry geometry = make_progress_geometry<protocol::Simple>(
       channelLayout,
       group,
-      nbytes,
-      max_signal_bytes,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
       "progress_registered_send_once");
   if (active_payload_offset(state) >= geometry.protocolBytes) {
     if (group.is_leader()) {
@@ -710,7 +776,7 @@ progress_registered_send_once(
     const ProgressChunk chunk =
         next_chunk<protocol::Simple>(channelLayout, state, geometry);
     const uint32_t slotReadiness = try_prepare_send_slot<protocol::Simple>(
-        transport, group, chunk.slotId, chunk.pipelineGeneration, timeout);
+        transport, group, chunk.slotId, chunk.pipelineGeneration, abortDevice);
     if (slotReadiness != kProgressReady) {
       if (slotReadiness == kProgressAborted) {
         abandon_progress_state(group, progressSlot, state);
@@ -740,7 +806,7 @@ progress_registered_send_once(
         ready = current >= expected ? 1U : 0U;
         if (!ready) {
           if (FT_ABORT_CHECK(
-                  timeout,
+                  abortDevice,
                   "progress_registered_send_once waiting for SLOT_FREE "
                   "expected>=%llu, current=%llu",
                   static_cast<unsigned long long>(expected),
@@ -770,14 +836,28 @@ progress_registered_send_once(
         (isFinalChunk ? protocol::Simple::wire_bytes(state.activeTailPadding)
                       : 0);
 
-    group.sync();
+    // Same gate as the plain send path, for the same reason: a resumed call
+    // entering at WaitSlotFree consulted nothing, and this replaces the
+    // `group.sync()` that already stood here rather than adding a barrier.
+    uint32_t sendAborted = 0;
+    if (group.is_leader()) {
+      sendAborted =
+          FT_ABORT_CHECK(
+              abortDevice, "registered send publish on an aborted communicator")
+          ? 1U
+          : 0U;
+    }
+    if (group.broadcast<uint32_t>(sendAborted) != 0U) {
+      abandon_progress_state(group, progressSlot, state);
+      return IbgdaRegisteredSendProgressStatus::Aborted;
+    }
     if (group.is_leader()) {
       __threadfence_system();
       ThreadGroup solo{
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = transport.put(
           solo,
-          src.subBuffer(chunk.dataOff),
+          state.activeRegisteredBuf.subBuffer(chunk.dataOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           validBytes,
           remoteChannel.dataReady,
@@ -814,10 +894,7 @@ progress_registered_send_once(
 #else
   (void)transport;
   (void)group;
-  (void)src;
-  (void)nbytes;
-  (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   return IbgdaRegisteredSendProgressStatus::Drained;
 #endif
 }
@@ -851,11 +928,11 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t result =
       static_cast<uint32_t>(IbgdaRegisteredSendProgressStatus::Drained);
-  if (group.is_leader() && !timeout.isAborted()) {
+  if (group.is_leader() && !abortDevice.isAborted()) {
     bool foundPending = false;
     bool madeProgress = false;
     bool aborted = false;
@@ -876,14 +953,15 @@ progress_registered_send_drain_once(
             .completionId = laneId,
             .value = slot.values[laneId],
         };
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+        if (transport.is_local_completion_ready(
+                group.group_id, ticket, abortDevice)) {
           pending &= ~laneBit;
           madeProgress = true;
           continue;
         }
         foundPending = true;
         aborted = FT_ABORT_CHECK(
-            timeout,
+            abortDevice,
             "registered send local completion timed out slot=%d lane=%u",
             slotId,
             laneId);
@@ -910,7 +988,7 @@ progress_registered_send_drain_once(
 #else
   (void)transport;
   (void)group;
-  (void)timeout;
+  (void)abortDevice;
   return IbgdaRegisteredSendProgressStatus::Drained;
 #endif
 }
@@ -922,23 +1000,23 @@ __device__ __forceinline__ void send_registered(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  init_registered_send_progress(transport, group, nbytes, max_signal_bytes);
+  init_registered_send_progress(
+      transport, group, src, nbytes, max_signal_bytes);
   IbgdaRegisteredSendProgressStatus status;
   // Both loops are unbounded by design: they spin until the NIC makes progress.
   // `Aborted` is the only escape when the NIC never will, so it must terminate
   // them - otherwise an abort on a dead NIC deadlocks here, which is the exact
   // failure this abort plumbing exists to break.
   do {
-    status = progress_registered_send_once(
-        transport, group, src, nbytes, max_signal_bytes, timeout);
+    status = progress_registered_send_once(transport, group, abortDevice);
   } while (status != IbgdaRegisteredSendProgressStatus::Posted &&
            status != IbgdaRegisteredSendProgressStatus::Drained &&
            status != IbgdaRegisteredSendProgressStatus::Aborted);
   while (status != IbgdaRegisteredSendProgressStatus::Drained &&
          status != IbgdaRegisteredSendProgressStatus::Aborted) {
-    status = progress_registered_send_drain_once(transport, group, timeout);
+    status = progress_registered_send_drain_once(transport, group, abortDevice);
   }
 #else
   (void)transport;
@@ -946,7 +1024,7 @@ __device__ __forceinline__ void send_registered(
   (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
 #endif
 }
 
@@ -954,21 +1032,10 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     Args... args) {
   return progress_send_once_impl<Transport, CopyOp, Proto>(
-      transport,
-      group,
-      src,
-      nbytes,
-      max_signal_bytes,
-      timeout,
-      nullptr,
-      nullptr,
-      args...);
+      transport, group, abortDevice, nullptr, nullptr, args...);
 }
 
 template <typename Transport, typename CopyOp, typename... Args>
@@ -976,23 +1043,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_send_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   return progress_send_once_impl<Transport, CopyOp, protocol::Simple>(
-      transport,
-      group,
-      src,
-      nbytes,
-      max_signal_bytes,
-      timeout,
-      &traceContext,
-      &traceState,
-      args...);
+      transport, group, abortDevice, &traceContext, &traceState, args...);
 }
 
 /**
@@ -1003,7 +1059,7 @@ progress_send_once_with_trace(
  * `recvDataReadyLaneCursor`/`recvLaneExpected` by exactly one chunk on that
  * (and only that) return. A false return leaves all receiver state untouched so
  * the caller can retry the same chunk on a later progress attempt.
- * `currentOut`/`expectedOut` are set for the caller's timeout diagnostic.
+ * `currentOut`/`expectedOut` are set for the caller's abortDevice diagnostic.
  */
 template <typename Transport>
 __device__ __forceinline__ bool poll_recv_data_ready(
@@ -1052,8 +1108,8 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  *
  * This method advances at most one recv-staging copy for the current chunk.
  * It never spins on DATA_READY: if the sender has not signaled the next
- * chunk, it returns `Waiting` immediately. If a `Timeout` is enabled, it is
- * checked only while the DATA_READY dependency is not ready and should
+ * chunk, it returns `Waiting` immediately. If an `AbortDevice` is enabled, it
+ * is checked only while the DATA_READY dependency is not ready and should
  * already have been started by the caller.
  *
  * When DATA_READY reaches the chunk's `streamEnd`, the recv path copies from
@@ -1068,11 +1124,8 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  *
  * @param transport Owning transport used for every transport op.
  * @param group Thread group matching the one used during initialization.
- * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
- *            remain valid until `Done`.
- * @param nbytes Number of user-buffer bytes from the matching init call.
- * @param max_signal_bytes Maximum signaled sub-chunk size from init.
- * @param timeout Optional device timeout checked while dependencies wait.
+ * @param abortDevice Optional device abortDevice checked while dependencies
+ * wait.
  * @param args Additional arguments forwarded to `CopyOp::recv`.
  */
 // Non-blocking readiness check for one recv chunk (Simple: poll the round-robin
@@ -1090,7 +1143,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
     uint8_t qpLane) {
@@ -1101,42 +1154,52 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   if (group.is_leader()) {
     unsigned long long current = 0;
     unsigned long long expected = 0;
-    ready = poll_recv_data_ready(
-                transport,
-                localChannel,
-                localDataReady,
-                waitCredit,
-                current,
-                expected)
-        ? 1U
-        : 0U;
-    if (!ready) {
-      if (fine_trace_enabled(traceContext) && traceState != nullptr &&
-          !traceState->dataReadyWaitOpen) {
+    // Asked before readiness, so the already-landed path is covered too. This
+    // function already broadcasts, so the check is free of extra barriers; a
+    // separate entry guard would add one to every healthy poll. Without it a
+    // chunk whose data had arrived went on to consume it and credit SLOT_FREE
+    // without ever consulting the abort.
+    if (FT_ABORT_CHECK(
+            abortDevice, "recv progress on an aborted communicator")) {
+      ready = kProgressAborted;
+    } else {
+      ready = poll_recv_data_ready(
+                  transport,
+                  localChannel,
+                  localDataReady,
+                  waitCredit,
+                  current,
+                  expected)
+          ? 1U
+          : 0U;
+      if (!ready) {
+        if (fine_trace_enabled(traceContext) && traceState != nullptr &&
+            !traceState->dataReadyWaitOpen) {
+          trace_allreduce_event(
+              traceContext,
+              PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+              qpLane,
+              waitCredit);
+          traceState->dataReadyWaitOpen = true;
+        }
+        if (FT_ABORT_CHECK(
+                abortDevice,
+                "progress_recv_once waiting for DATA_READY expected>=%llu, "
+                "current=%llu",
+                expected,
+                current)) {
+          ready = kProgressAborted;
+        }
+      } else if (
+          fine_trace_enabled(traceContext) && traceState != nullptr &&
+          traceState->dataReadyWaitOpen) {
         trace_allreduce_event(
             traceContext,
-            PipesTraceEventType::kAllReduceDataReadyWaitBegin,
+            PipesTraceEventType::kAllReduceDataReadyWaitEnd,
             qpLane,
             waitCredit);
-        traceState->dataReadyWaitOpen = true;
+        traceState->dataReadyWaitOpen = false;
       }
-      if (FT_ABORT_CHECK(
-              timeout,
-              "progress_recv_once waiting for DATA_READY expected>=%llu, "
-              "current=%llu",
-              expected,
-              current)) {
-        ready = kProgressAborted;
-      }
-    } else if (
-        fine_trace_enabled(traceContext) && traceState != nullptr &&
-        traceState->dataReadyWaitOpen) {
-      trace_allreduce_event(
-          traceContext,
-          PipesTraceEventType::kAllReduceDataReadyWaitEnd,
-          qpLane,
-          waitCredit);
-      traceState->dataReadyWaitOpen = false;
     }
   }
   // Broadcast makes the answer group-uniform, which is what lets abort ride out
@@ -1151,7 +1214,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   (void)localChannel;
   (void)localDataReady;
   (void)waitCredit;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
   (void)traceState;
   (void)qpLane;
@@ -1234,7 +1297,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
     IbLocalChannel& localChannel,
     const IbgdaLocalBuffer& localDataReady,
     uint64_t waitCredit,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
     uint8_t qpLane) {
@@ -1250,12 +1313,34 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   // Packet geometry lives in LLImpl, which owns the format; this seam only
   // decides what to do with the verdict -- report not-ready on false, rather
   // than spin.
-  if (LLImpl<P>::all_flags_set(
-          group,
-          staging,
-          P::max_payload(chunk.wireBytes),
-          static_cast<typename P::FlagType>(chunk.flagVal))) {
-    if (group.is_leader()) {
+  // `all_flags_set` is group-collective, so every thread evaluates it; the
+  // verdict below is then decided once by the leader and broadcast.
+  const bool flagsSet = LLImpl<P>::all_flags_set(
+      group,
+      staging,
+      P::max_payload(chunk.wireBytes),
+      static_cast<typename P::FlagType>(chunk.flagVal));
+  // Only the leader checks, so the answer has to be broadcast before it leaves:
+  // a per-thread verdict here would split the group at the caller's next
+  // collective step.
+  //
+  // The abort is asked *before* readiness, and the ready path now leaves
+  // through the same single broadcast as the not-ready path rather than
+  // returning early. Previously a chunk whose flags were already set returned
+  // `kProgressReady` without ever consulting the abort, and the caller went on
+  // to consume the packet and credit SLOT_FREE. One broadcast on every path is
+  // the floor here -- unlike Simple, LL's ready path had no existing barrier to
+  // fold into.
+  uint32_t status = kProgressNotReady;
+  if (group.is_leader()) {
+    if (FT_ABORT_CHECK(
+            abortDevice,
+            "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
+            "wireBytes=%llu",
+            static_cast<unsigned long long>(chunk.flagVal),
+            static_cast<unsigned long long>(chunk.wireBytes))) {
+      status = kProgressAborted;
+    } else if (flagsSet) {
       // LL carries no DATA_READY, but its put still advanced the sender's
       // IbQpState::cursor -- select_put_lane_ordinal() increments that cursor
       // on every put regardless of protocol, and it is channel-scoped, not
@@ -1265,21 +1350,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
       // then waits on a lane the sender never wrote. Matches the unconditional
       // bump in poll_recv_data_ready() (a single lane makes it a no-op).
       ++localChannel.recvDataReadyLaneCursor;
-    }
-    return kProgressReady;
-  }
-  // Only the leader checks, so the answer has to be broadcast before it leaves:
-  // a per-thread verdict here would split the group at the caller's next
-  // collective step.
-  uint32_t status = kProgressNotReady;
-  if (group.is_leader()) {
-    if (FT_ABORT_CHECK(
-            timeout,
-            "progress_recv_once(LL) waiting for packet flags flagVal=%llu, "
-            "wireBytes=%llu",
-            static_cast<unsigned long long>(chunk.flagVal),
-            static_cast<unsigned long long>(chunk.wireBytes))) {
-      status = kProgressAborted;
+      status = kProgressReady;
     }
   }
   return group.broadcast<uint32_t>(status);
@@ -1291,7 +1362,7 @@ __device__ __forceinline__ uint32_t progress_recv_ready(
   (void)localChannel;
   (void)localDataReady;
   (void)waitCredit;
-  (void)timeout;
+  (void)abortDevice;
   return kProgressReady;
 #endif
 }
@@ -1331,8 +1402,8 @@ __device__ __forceinline__ void progress_recv_consume_buf(
       valid_payload_bytes(chunk.dataOff, chunk.payloadBytes, payloadBytes);
   // progress_recv_ready() above already confirmed every packet flag equals
   // chunk.flagVal, so unpack's readiness spin exits on its first load and a
-  // disabled Timeout cannot hang here. If that pre-check ever stops being
-  // exhaustive, thread progress_recv_once()'s timeout through instead.
+  // disabled AbortDevice cannot hang here. If that pre-check ever stops being
+  // exhaustive, thread progress_recv_once()'s abortDevice through instead.
   CopyOp::template recvLL<P>(
       group,
       static_cast<char*>(dst) + chunk.dataOff,
@@ -1340,7 +1411,7 @@ __device__ __forceinline__ void progress_recv_consume_buf(
       validBytes,
       chunk.dataOff,
       static_cast<typename P::FlagType>(chunk.flagVal),
-      Timeout(),
+      AbortDevice(),
       args...);
 #else
   (void)group;
@@ -1356,10 +1427,7 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
     Args... args) {
@@ -1382,7 +1450,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     return IbgdaSendRecvProgressStatus::Done;
   }
   const ProgressGeometry progress_params = make_progress_geometry<Proto>(
-      channelLayout, group, nbytes, max_signal_bytes, "progress_recv_once");
+      channelLayout,
+      group,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
+      "progress_recv_once");
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
     if (group.is_leader()) {
       printf(
@@ -1418,7 +1490,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
       localChannel,
       localDataReady,
       protocolBytesThis,
-      timeout,
+      abortDevice,
       traceContext,
       traceState,
       qpLane);
@@ -1435,7 +1507,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
       group,
       channelLayout,
       chunk,
-      dst,
+      state.activeUserBuf,
       progress_params.payloadBytes,
       traceContext,
       qpLane,
@@ -1479,10 +1551,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
 #else
   (void)transport;
   (void)group;
-  (void)dst;
-  (void)nbytes;
-  (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)traceContext;
   (void)traceState;
   return IbgdaSendRecvProgressStatus::Done;
@@ -1493,21 +1562,10 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     Args... args) {
   return progress_recv_once_impl<Transport, CopyOp, Proto>(
-      transport,
-      group,
-      dst,
-      nbytes,
-      max_signal_bytes,
-      timeout,
-      nullptr,
-      nullptr,
-      args...);
+      transport, group, abortDevice, nullptr, nullptr, args...);
 }
 
 template <typename Transport, typename CopyOp, typename... Args>
@@ -1515,23 +1573,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   return progress_recv_once_impl<Transport, CopyOp, protocol::Simple>(
-      transport,
-      group,
-      dst,
-      nbytes,
-      max_signal_bytes,
-      timeout,
-      &traceContext,
-      &traceState,
-      args...);
+      transport, group, abortDevice, &traceContext, &traceState, args...);
 }
 
 /**
@@ -1559,9 +1606,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_acquire_once(
     Transport& transport,
     ThreadGroup& group,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     RecvChunkAcquisition& out) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
@@ -1573,8 +1618,8 @@ progress_recv_acquire_once(
   const ProgressGeometry geometry = make_progress_geometry<Proto>(
       channelLayout,
       group,
-      nbytes,
-      max_signal_bytes,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
       "progress_recv_acquire_once");
   // Parity with progress_recv_once: a cursor past the end of the stream while
   // the stage is not Done means the progress state is corrupted or
@@ -1616,7 +1661,7 @@ progress_recv_acquire_once(
       ch.channel,
       ch.local.dataReady,
       protocolBytesThis,
-      timeout,
+      abortDevice,
       nullptr,
       nullptr,
       qpLane);
@@ -1647,9 +1692,7 @@ progress_recv_acquire_once(
 #else
   (void)transport;
   (void)group;
-  (void)nbytes;
-  (void)max_signal_bytes;
-  (void)timeout;
+  (void)abortDevice;
   (void)out;
   return IbgdaSendRecvProgressStatus::Done;
 #endif
@@ -1679,9 +1722,29 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void progress_recv_release_once(
     Transport& transport,
     ThreadGroup& group,
+    const AbortDevice& abortDevice,
     const RecvChunkAcquisition& view) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if (view.staging == nullptr) {
+    return;
+  }
+  // SLOT_FREE is a peer-visible credit: it tells the sender this range has been
+  // consumed and may be overwritten. After an abort the consumption either did
+  // not happen or is not trustworthy, so crediting it releases a peer that is
+  // correctly blocked -- principle 4. This function had no abort parameter at
+  // all and signalled unconditionally, which is why the split-receive path
+  // stayed uncontained while the fused one was fixed.
+  //
+  // Leader-decides-and-broadcasts, because a subset skipping the signal while
+  // the rest enter `transport.signal()` would split the group.
+  uint32_t aborted = 0;
+  if (group.is_leader()) {
+    aborted = FT_ABORT_CHECK(
+                  abortDevice, "recv slot release on an aborted communicator")
+        ? 1U
+        : 0U;
+  }
+  if (group.broadcast<uint32_t>(aborted) != 0U) {
     return;
   }
   auto& channelLayout = transport.channel_layout();
@@ -1692,6 +1755,7 @@ __device__ __forceinline__ void progress_recv_release_once(
 #else
   (void)transport;
   (void)group;
+  (void)abortDevice;
   (void)view;
 #endif
 }
@@ -1709,6 +1773,9 @@ __device__ __forceinline__ void store_progress_state(
     slot.activeNextByte = state.activeNextByte;
     slot.activeTailPadding = state.activeTailPadding;
     slot.activeBaseStep = state.activeBaseStep;
+    slot.activeUserBytes = state.activeUserBytes;
+    slot.activeMaxSignalBytes = state.activeMaxSignalBytes;
+    slot.activeUserBuf = state.activeUserBuf;
     slot.activeStage = state.activeStage;
   }
   group.sync();
@@ -2090,41 +2157,57 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
     ThreadGroup& group,
     uint32_t slotId,
     uint64_t generation,
-    const Timeout& timeout) {
+    const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   uint32_t ready = kProgressReady;
   if (group.is_leader()) {
-    auto& slot = transport.template local_channel_slot<P>(group.group_id)
-                     .sendCompletionSlots[slotId];
-    if (slot.generation != generation) {
-      uint64_t pending = slot.laneMask;
-      const uint32_t numLanes = transport.send_completion_lane_count();
-      for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
-        const uint64_t laneBit = 1ULL << laneId;
-        if ((pending & laneBit) == 0) {
-          continue;
+    // Consulted on the ready path too, not just when the slot is busy.
+    //
+    // This function already broadcasts its verdict, so folding the abort into
+    // it costs no extra barrier -- which is the whole point: a standalone entry
+    // guard would add a group-wide broadcast to every healthy progress attempt,
+    // and Tree scheduling and batched send/recv call this in tight loops.
+    //
+    // Checking only inside the not-ready branch below is what left the hole: a
+    // call that finds the slot already free never looked at the abort and went
+    // on to stage the payload and issue the put with its fused DATA_READY.
+    if (FT_ABORT_CHECK(
+            abortDevice, "send slot preparation on an aborted communicator")) {
+      ready = kProgressAborted;
+    } else {
+      auto& slot = transport.template local_channel_slot<P>(group.group_id)
+                       .sendCompletionSlots[slotId];
+      if (slot.generation != generation) {
+        uint64_t pending = slot.laneMask;
+        const uint32_t numLanes = transport.send_completion_lane_count();
+        for (uint32_t laneId = 0; laneId < numLanes; ++laneId) {
+          const uint64_t laneBit = 1ULL << laneId;
+          if ((pending & laneBit) == 0) {
+            continue;
+          }
+          const IbLocalCompletionTicket ticket{
+              .completionId = laneId,
+              .value = slot.values[laneId],
+          };
+          if (transport.is_local_completion_ready(
+                  group.group_id, ticket, abortDevice)) {
+            pending &= ~laneBit;
+          }
         }
-        const IbLocalCompletionTicket ticket{
-            .completionId = laneId,
-            .value = slot.values[laneId],
-        };
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
-          pending &= ~laneBit;
-        }
-      }
-      slot.laneMask = pending;
-      if (pending == 0) {
-        slot.generation = generation;
-      } else {
-        ready = kProgressNotReady;
-        if (FT_ABORT_CHECK(
-                timeout,
-                "send slot local completion timed out slot=%u generation=%llu "
-                "pending=0x%llx",
-                slotId,
-                static_cast<unsigned long long>(generation),
-                static_cast<unsigned long long>(pending))) {
-          ready = kProgressAborted;
+        slot.laneMask = pending;
+        if (pending == 0) {
+          slot.generation = generation;
+        } else {
+          ready = kProgressNotReady;
+          if (FT_ABORT_CHECK(
+                  abortDevice,
+                  "send slot local completion timed out slot=%u generation=%llu "
+                  "pending=0x%llx",
+                  slotId,
+                  static_cast<unsigned long long>(generation),
+                  static_cast<unsigned long long>(pending))) {
+            ready = kProgressAborted;
+          }
         }
       }
     }
@@ -2135,7 +2218,7 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
   (void)group;
   (void)slotId;
   (void)generation;
-  (void)timeout;
+  (void)abortDevice;
   return kProgressReady;
 #endif
 }

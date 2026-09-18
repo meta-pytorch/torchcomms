@@ -158,7 +158,9 @@ __device__ __forceinline__ void elemsFreeListByGroup(
 __device__ __forceinline__ void
 copy(uint4* dst, const uint4* src, size_t count);
 
-static inline __device__ void devStateLoadToShm(
+// __forceinline__: writes the per-TU static __shared__ statex/kernelFlag/
+// kernelDoAbort. See DevShmState.cuh.
+static __forceinline__ __device__ void devStateLoadToShm(
     int* flag,
     CtranAlgoDeviceState* devState) {
   const uint4* devStatePtr = reinterpret_cast<const uint4*>(devState);
@@ -183,7 +185,7 @@ static inline __device__ void devStateLoadToShm(
 #endif
 }
 
-static inline __device__ void devStateLoadToShm(
+static __forceinline__ __device__ void devStateLoadToShm(
     CtranAlgoDeviceState* devState) {
   devStateLoadToShm(&placeHolderKernelFlag, devState);
 }

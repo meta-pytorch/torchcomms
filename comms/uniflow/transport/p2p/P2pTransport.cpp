@@ -282,7 +282,7 @@ Result<std::vector<P2pTransport::CopyOp>> P2pTransport::buildCopyOps(
     if (mappedBase == nullptr) {
       return Err(ErrCode::InvalidArgument, "P2P: null mapped pointer");
     }
-    auto* remotePtr = mappedBase + req.remote.nvlinkOffset_;
+    auto* remotePtr = mappedBase + req.remote.remoteOffset_;
 
     if (dir == Dir::Put) {
       ops.emplace_back(CopyOp{remotePtr, req.local.data(), req.local.size()});

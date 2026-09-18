@@ -82,43 +82,23 @@ else()
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
 
-# Check if ENABLE_PRIMS is requested via environment variable.
-# When enabled, compiles prims device backend support into _comms_ncclx.
-# Requires NCCL built with ENABLE_PRIMS=1 (prims transport in libnccl.so).
-if("$ENV{ENABLE_PRIMS}" STREQUAL "1")
-    set(TORCHCOMMS_ENABLE_PRIMS ON)
-    message(STATUS "ENABLE_PRIMS=1 set, building with prims support")
-    if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
-        file(GLOB TORCHCOMMS_DEVICE_PRIMS_SOURCE
-            "comms/torchcomms/device/prims/*.cpp")
-    else()
-        set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
-    endif()
-else()
-    set(TORCHCOMMS_ENABLE_PRIMS OFF)
-    set(TORCHCOMMS_DEVICE_PRIMS_SOURCE "")
-    message(STATUS "ENABLE_PRIMS not set, building without prims support")
-endif()
-
 set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
 if(USE_SYSTEM_LIBS)
     # CudaRAII.cc calls into CommsSpdlogLogger, whose out-of-line definitions
-    # live in these three. libnccl.so cannot supply them: it is built
+    # live in these two. libnccl.so cannot supply them: it is built
     # -fvisibility=hidden behind version.script, which exports only the nccl*
     # ABI, so on the USE_SYSTEM_LIBS path the references survive to dlopen and
     # importing the extension fails. The static path gets the definitions from
     # the libnccl_static.a archive instead.
     #
-    # These three are the whole closure and no more: SpdlogLogger.cc needs
-    # formatCommsLogMessage() from CommsLogFormatter.cc and the subsystem-mask
-    # accessors from LogTypes.cc, and neither of those includes any further
-    # comms header. RateLimit.h, the other SpdlogLogger.h dependency, is
-    # header-only.
+    # These two are the whole out-of-line closure: SpdlogLogger.cc needs
+    # formatCommsLogMessage() from CommsLogFormatter.cc. LogTypes.h contributes
+    # only types on this path; none of its out-of-line accessors are referenced.
+    # RateLimit.h, the other SpdlogLogger.h dependency, is header-only.
     find_package(spdlog CONFIG REQUIRED)
     list(APPEND TORCHCOMMS_NCCLX_LOGGER_SOURCES
         comms/utils/logger/SpdlogLogger.cc
         comms/utils/logger/CommsLogFormatter.cc
-        comms/utils/logger/LogTypes.cc
     )
 endif()
 
@@ -126,7 +106,6 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_DEVICE_SOURCES}
     ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
-    ${TORCHCOMMS_DEVICE_PRIMS_SOURCE}
     comms/utils/CudaRAII.cc
     comms/utils/GraphCaptureSideStream.cc
     ${TORCHCOMMS_NCCLX_LOGGER_SOURCES}
@@ -160,12 +139,6 @@ if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
         PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
 endif()
 
-# Add ENABLE_PRIMS compile definition for prims device backend
-if(TORCHCOMMS_ENABLE_PRIMS)
-    target_compile_definitions(torchcomms_comms_ncclx
-        PRIVATE ENABLE_PRIMS=1)
-endif()
-
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_ncclx PRIVATE
     fmt::fmt
@@ -187,17 +160,8 @@ if(USE_SYSTEM_LIBS)
         spdlog::spdlog
     )
 else()
-    set(TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS "")
-    if(TORCHCOMMS_ENABLE_PRIMS)
-        list(APPEND TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS
-            "-ldoca_gpunetio"
-            "-libverbs"
-            "-lmlx5"
-        )
-    endif()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
-        ${TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS}
         "-l:libfolly.a"
         "-l:libcrypto.a"
         "-l:libssl.a"

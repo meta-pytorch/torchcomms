@@ -36,24 +36,46 @@ class GraphSideStreamTest : public ::testing::Test {
     return nodes;
   }
 
+  // CUDA 13 folded the optional edge-data output into the dependency queries
+  // themselves; HIP and earlier CUDA runtimes keep the three-argument form.
+  static cudaError_t
+  dependentNodes(cudaGraphNode_t node, cudaGraphNode_t* out, size_t* n) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+    return hipGraphNodeGetDependentNodes(node, out, n);
+#elif CUDART_VERSION >= 13000
+    return cudaGraphNodeGetDependentNodes(node, out, nullptr, n);
+#else
+    return cudaGraphNodeGetDependentNodes(node, out, n);
+#endif
+  }
+
+  static cudaError_t
+  dependencies(cudaGraphNode_t node, cudaGraphNode_t* out, size_t* n) {
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+    return hipGraphNodeGetDependencies(node, out, n);
+#elif CUDART_VERSION >= 13000
+    return cudaGraphNodeGetDependencies(node, out, nullptr, n);
+#else
+    return cudaGraphNodeGetDependencies(node, out, n);
+#endif
+  }
+
   static std::vector<cudaGraphNode_t> getSuccs(cudaGraphNode_t node) {
     size_t n = 0;
-    EXPECT_EQ(cudaGraphNodeGetDependentNodes(node, nullptr, &n), cudaSuccess);
+    EXPECT_EQ(dependentNodes(node, nullptr, &n), cudaSuccess);
     std::vector<cudaGraphNode_t> out(n);
     if (n > 0) {
-      EXPECT_EQ(
-          cudaGraphNodeGetDependentNodes(node, out.data(), &n), cudaSuccess);
+      EXPECT_EQ(dependentNodes(node, out.data(), &n), cudaSuccess);
     }
     return out;
   }
 
   static std::vector<cudaGraphNode_t> getPreds(cudaGraphNode_t node) {
     size_t n = 0;
-    EXPECT_EQ(cudaGraphNodeGetDependencies(node, nullptr, &n), cudaSuccess);
+    EXPECT_EQ(dependencies(node, nullptr, &n), cudaSuccess);
     std::vector<cudaGraphNode_t> out(n);
     if (n > 0) {
-      EXPECT_EQ(
-          cudaGraphNodeGetDependencies(node, out.data(), &n), cudaSuccess);
+      EXPECT_EQ(dependencies(node, out.data(), &n), cudaSuccess);
     }
     return out;
   }

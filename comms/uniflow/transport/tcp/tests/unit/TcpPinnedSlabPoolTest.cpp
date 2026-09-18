@@ -1,0 +1,312 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include <limits>
+
+#include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <set>
+#include <thread>
+#include <vector>
+
+#include "comms/uniflow/drivers/cuda/mock/MockCudaApi.h"
+
+namespace uniflow {
+
+// The pool's job is to make the reader's staging copy non-blocking (pinned
+// memory) without letting put() take every slab. The two properties that
+// matter, and that nothing else in the transport can enforce, are: a reserved
+// slab is unreachable from the bulk path, and a bulk acquire is all-or-nothing
+// so two of them cannot each hold a partial set and wait for the other.
+class TcpPinnedSlabPoolTest : public ::testing::Test {
+ protected:
+  static constexpr size_t kSlabSize = 128;
+  static constexpr size_t kSlabCount = 4;
+  static constexpr size_t kReserved = 1;
+
+  void SetUp() override {
+    cudaApi_ = std::make_shared<::testing::NiceMock<MockCudaApi>>();
+    // Real memory, so a test can prove the slabs are distinct, non-overlapping
+    // windows onto one region rather than trusting the arithmetic.
+    region_.assign(kSlabSize * kSlabCount, uint8_t{0});
+    ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
+        .WillByDefault(
+            ::testing::Return(
+                Result<void*>(static_cast<void*>(region_.data()))));
+    ON_CALL(*cudaApi_, hostFree(::testing::_))
+        .WillByDefault(::testing::Return(Ok()));
+  }
+
+  std::shared_ptr<TcpPinnedSlabPool> makePool(
+      size_t slabCount = kSlabCount,
+      size_t reserved = kReserved) {
+    auto pool =
+        TcpPinnedSlabPool::create(cudaApi_, kSlabSize, slabCount, reserved);
+    EXPECT_TRUE(pool.hasValue()) << "pool creation should succeed";
+    return pool.hasValue() ? pool.value() : nullptr;
+  }
+
+  std::shared_ptr<::testing::NiceMock<MockCudaApi>> cudaApi_;
+  std::vector<uint8_t> region_;
+};
+
+TEST_F(TcpPinnedSlabPoolTest, SlabsAreDistinctWindowsOntoTheRegion) {
+  auto pool = makePool();
+  std::set<uint8_t*> seen;
+  std::vector<TcpPinnedSlab> held;
+  for (size_t i = 0; i < kSlabCount; ++i) {
+    auto slab = pool->tryAcquire(/*allowReserved=*/true);
+    ASSERT_TRUE(static_cast<bool>(slab)) << "slab " << i << " should be free";
+    EXPECT_EQ(slab.capacity(), kSlabSize);
+    EXPECT_GE(slab.data(), region_.data());
+    EXPECT_LE(slab.data() + slab.capacity(), region_.data() + region_.size());
+    EXPECT_TRUE(seen.insert(slab.data()).second)
+        << "two live leases handed out the same slab";
+    held.push_back(std::move(slab));
+  }
+  EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)))
+      << "the pool is fixed-size; it must not invent a slab past the region";
+}
+
+TEST_F(TcpPinnedSlabPoolTest, ADestroyedLeaseReturnsItsSlab) {
+  auto pool = makePool(/*slabCount=*/1, /*reserved=*/0);
+  uint8_t* first = nullptr;
+  {
+    auto slab = pool->tryAcquire(/*allowReserved=*/false);
+    ASSERT_TRUE(static_cast<bool>(slab));
+    first = slab.data();
+    EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)));
+  }
+  auto again = pool->tryAcquire(/*allowReserved=*/false);
+  ASSERT_TRUE(static_cast<bool>(again));
+  EXPECT_EQ(again.data(), first) << "the released slab should be reusable";
+}
+
+TEST_F(TcpPinnedSlabPoolTest, TheReserveIsUnreachableFromTheBulkPath) {
+  auto pool = makePool();
+  // Take everything the unreserved path can reach.
+  auto bulk = pool->acquire(kSlabCount - kReserved);
+  ASSERT_TRUE(bulk.hasValue());
+  EXPECT_EQ(bulk.value().size(), kSlabCount - kReserved);
+
+  EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/false)))
+      << "put() must see the pool as exhausted while only the reserve is left";
+  auto readerSlab = pool->tryAcquire(/*allowReserved=*/true);
+  EXPECT_TRUE(static_cast<bool>(readerSlab))
+      << "the responder must still get a slab with every put slab occupied; "
+         "that is what the reserve is for";
+}
+
+TEST_F(TcpPinnedSlabPoolTest, ABulkAcquireLargerThanTheUnreservedSetIsRefused) {
+  auto pool = makePool();
+  auto tooMany = pool->acquire(kSlabCount);
+  EXPECT_TRUE(tooMany.hasError())
+      << "a request that can never be satisfied must fail rather than park the "
+         "caller forever";
+  EXPECT_EQ(tooMany.error().code(), ErrCode::InvalidArgument);
+}
+
+TEST_F(TcpPinnedSlabPoolTest, ABulkAcquireIsAllOrNothing) {
+  auto pool = makePool();
+  const size_t bulkCount = kSlabCount - kReserved;
+  auto held = pool->acquire(bulkCount);
+  ASSERT_TRUE(held.hasValue());
+
+  std::atomic<bool> completed{false};
+  std::thread waiter([&]() {
+    auto second = pool->acquire(bulkCount);
+    EXPECT_TRUE(second.hasValue());
+    EXPECT_EQ(second.value().size(), bulkCount);
+    completed.store(true, std::memory_order_release);
+  });
+
+  // Hand back one short of the full set. A waiter that took what it could get
+  // would have made partial progress here, and two such waiters would deadlock;
+  // this one must still be holding nothing.
+  held.value().pop_back();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_FALSE(completed.load(std::memory_order_acquire))
+      << "a bulk acquire must not proceed on a partial set";
+
+  held.value().clear();
+  waiter.join();
+  EXPECT_TRUE(completed.load(std::memory_order_acquire));
+}
+
+TEST_F(TcpPinnedSlabPoolTest, CloseWakesWaitersAndRefusesNewLeases) {
+  auto pool = makePool();
+  auto held = pool->acquire(kSlabCount - kReserved);
+  ASSERT_TRUE(held.hasValue());
+
+  std::atomic<bool> refused{false};
+  std::thread waiter([&]() {
+    auto blocked = pool->acquire(kSlabCount - kReserved);
+    EXPECT_TRUE(blocked.hasError());
+    refused.store(true, std::memory_order_release);
+  });
+
+  // Nothing is released, so only close() can end that wait -- which is what
+  // stops a caller parked here from outliving the transport at shutdown.
+  pool->close();
+  waiter.join();
+  EXPECT_TRUE(refused.load(std::memory_order_acquire));
+  EXPECT_FALSE(static_cast<bool>(pool->tryAcquire(/*allowReserved=*/true)));
+}
+
+// The wait is bounded. Without a deadline this call parks until close(), and
+// close() runs only from shutdown() -- so an exhausted pool turns an
+// application thread in put() into a permanent hang rather than a failed
+// operation. That is reachable with concurrent puts: the pool is sized for one
+// put() in flight, so four of them each hold a wave and none can release
+// without returning from the acquire it is parked in.
+//
+// This test has a real negative control, which most of this fix class does not:
+// with the deadline removed the call never returns and the test times out
+// rather than passing. Elapsed time is asserted so a deadline that is silently
+// ignored
+// -- wait_for with a predicate already true, say -- cannot pass either.
+TEST_F(TcpPinnedSlabPoolTest, ABulkAcquireGivesUpRatherThanParkingForever) {
+  auto pool = makePool();
+  const size_t bulkCount = kSlabCount - kReserved;
+  auto held = pool->acquire(bulkCount);
+  ASSERT_TRUE(held.hasValue());
+
+  const auto t0 = std::chrono::steady_clock::now();
+  auto blocked = pool->acquire(bulkCount, std::chrono::milliseconds(150));
+  const auto elapsed = std::chrono::steady_clock::now() - t0;
+
+  ASSERT_TRUE(blocked.hasError())
+      << "an exhausted pool must refuse rather than park";
+  EXPECT_EQ(blocked.error().code(), ErrCode::Timeout);
+  EXPECT_LT(elapsed, std::chrono::seconds(10))
+      << "the deadline must actually bound the wait";
+  EXPECT_GE(elapsed, std::chrono::milliseconds(100))
+      << "it must wait for the deadline rather than failing immediately, or a "
+         "briefly-busy pool would fail a healthy put()";
+
+  // The lease is still good and the pool still works: a timeout is a refusal,
+  // not a teardown.
+  held.value().clear();
+  EXPECT_TRUE(
+      pool->acquire(bulkCount, std::chrono::milliseconds(150)).hasValue());
+}
+
+// close() must still win over the deadline: a shutdown should be reported as a
+// shutdown, not as a timeout that happens to coincide with one.
+TEST_F(TcpPinnedSlabPoolTest, CloseBeatsTheDeadline) {
+  auto pool = makePool();
+  auto held = pool->acquire(kSlabCount - kReserved);
+  ASSERT_TRUE(held.hasValue());
+
+  const auto start = std::chrono::steady_clock::now();
+  ErrCode observed{ErrCode::Timeout};
+  // Signalled immediately before the blocking call, so close() cannot run while
+  // the waiter has not even reached acquire(). Without it the main thread does
+  // nothing between spawn and close, so close() almost always wins, acquire()
+  // sees closed_ on its first predicate evaluation and returns without ever
+  // waiting -- the test then passes while never exercising the "close beats a
+  // pending deadline" interleaving it is named for.
+  //
+  // This narrows the window rather than closing it: being parked inside
+  // condition_variable::wait_for is not observable from outside. The elapsed
+  // check after the join is what makes the coverage real -- a deadline expiry
+  // would take 30s, so a prompt NotConnected can only mean close() ended it.
+  std::promise<void> atAcquire;
+  auto atAcquireFuture = atAcquire.get_future();
+  std::thread waiter([&]() {
+    atAcquire.set_value();
+    auto blocked =
+        pool->acquire(kSlabCount - kReserved, std::chrono::seconds(30));
+    EXPECT_TRUE(blocked.hasError());
+    if (blocked.hasError()) {
+      observed = blocked.error().code();
+    }
+  });
+
+  ASSERT_EQ(
+      atAcquireFuture.wait_for(std::chrono::seconds{5}),
+      std::future_status::ready)
+      << "the waiter thread never reached acquire()";
+
+  pool->close();
+  // No flag asserted after the join: join() already guarantees the lambda ran,
+  // so such an assertion could only fail if the threading guarantees themselves
+  // were broken. `observed` is the whole point of the test.
+  waiter.join();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{25})
+      << "acquire() returned only after its 30s deadline, so the deadline ended "
+         "the wait rather than close() -- the test would then prove nothing "
+         "about close() winning";
+  EXPECT_EQ(observed, ErrCode::NotConnected)
+      << "a closed pool reports closure, not a deadline expiry";
+}
+
+TEST_F(TcpPinnedSlabPoolTest, CreateRejectsAnUnusableConfiguration) {
+  EXPECT_TRUE(
+      TcpPinnedSlabPool::create(cudaApi_, 0, kSlabCount, kReserved).hasError());
+  EXPECT_TRUE(TcpPinnedSlabPool::create(cudaApi_, kSlabSize, 0, 0).hasError());
+  EXPECT_TRUE(
+      TcpPinnedSlabPool::create(cudaApi_, kSlabSize, kSlabCount, kSlabCount)
+          .hasError())
+      << "reserving every slab would leave put() unable to make progress";
+  EXPECT_TRUE(
+      TcpPinnedSlabPool::create(nullptr, kSlabSize, kSlabCount, kReserved)
+          .hasError());
+}
+
+// A geometry whose product wraps must be refused, not allocated. A wrapped
+// product asks the allocator for a short region and the pool then hands out
+// slabs pointing past its end -- and SlabsAreDistinctWindowsOntoTheRegion would
+// still pass for whichever slabs happen to land inside it, so nothing
+// downstream catches it. Unreachable while every caller passes compile-time
+// constants; asserted here because create() is the geometry's validation
+// boundary.
+TEST_F(TcpPinnedSlabPoolTest, CreateRejectsAGeometryWhoseProductOverflows) {
+  constexpr size_t kHuge = std::numeric_limits<size_t>::max() / 2 + 1;
+
+  EXPECT_TRUE(TcpPinnedSlabPool::create(cudaApi_, kHuge, 3, 1).hasError())
+      << "slabCount * slabSize wraps and must be refused before hostAlloc";
+  EXPECT_TRUE(TcpPinnedSlabPool::create(cudaApi_, 3, kHuge, 1).hasError())
+      << "and the same the other way round";
+
+  // The largest product that does not wrap is still accepted, so the check is a
+  // bound rather than a blanket refusal of large geometries.
+  EXPECT_TRUE(
+      TcpPinnedSlabPool::create(cudaApi_, kSlabSize, kSlabCount, kReserved)
+          .hasValue());
+}
+
+TEST_F(TcpPinnedSlabPoolTest, CreatePropagatesAnAllocationFailure) {
+  ON_CALL(*cudaApi_, hostAlloc(::testing::_, ::testing::_))
+      .WillByDefault(
+          ::testing::Return(
+              Result<void*>(
+                  Err(ErrCode::DriverError,
+                      "test: out of pinned host "
+                      "memory"))));
+  auto pool =
+      TcpPinnedSlabPool::create(cudaApi_, kSlabSize, kSlabCount, kReserved);
+  ASSERT_TRUE(pool.hasError())
+      << "a failed pinned allocation must fail one transfer, not throw out of "
+         "the transport";
+  EXPECT_EQ(pool.error().code(), ErrCode::DriverError);
+}
+
+TEST_F(TcpPinnedSlabPoolTest, TheRegionIsFreedExactlyOnce) {
+  EXPECT_CALL(*cudaApi_, hostFree(static_cast<void*>(region_.data()))).Times(1);
+  {
+    auto pool = makePool();
+    auto slab = pool->tryAcquire(/*allowReserved=*/true);
+    // The lease outliving this scope's shared_ptr keeps the pool alive, so the
+    // region is not freed under a copy that may still be running.
+    pool.reset();
+  }
+}
+
+} // namespace uniflow

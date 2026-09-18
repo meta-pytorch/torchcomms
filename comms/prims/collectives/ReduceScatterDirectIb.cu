@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "comms/prims/collectives/ReduceScatterDirectIb.cuh"
+#include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
 
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/CopyOp.cuh"
@@ -27,9 +28,9 @@ template <
 __global__
 __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     const __grid_constant__ DirectReduceScatterIbArgs<T> args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   static_assert(kSendThreads % comms::device::kWarpSize == 0);
   static_assert(kRecvThreads % comms::device::kWarpSize == 0);
@@ -91,9 +92,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + 1 + peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::RECEIVE,
+          kStaggerChannels);
       const char* local_input = !args.in_place && step == 0
           ? reinterpret_cast<const char*>(own_src)
           : output_bytes;
@@ -109,10 +114,10 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             .logical_element_base = 0,
         };
         transport.template recv<QuantOp>(
-            group, output_bytes, wire_bytes, max_sig, timeout, copy_args);
+            group, output_bytes, wire_bytes, max_sig, abortDevice, copy_args);
       } else {
         transport.template recv<ReduceOp>(
-            group, output_bytes, tile_bytes, max_sig, timeout, local_input);
+            group, output_bytes, tile_bytes, max_sig, abortDevice, local_input);
       }
     }
   } else {
@@ -121,9 +126,13 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
     }
 
     for (int step = 0; step < W - 1; ++step) {
-      const int peer_offset =
-          kStaggerChannels ? (step + channel) % (W - 1) : step;
-      const int peer = (my_rank + W - 1 - peer_offset) % W;
+      const int peer = direct_ib_reduce_scatter_peer_for_step(
+          my_rank,
+          W,
+          channel,
+          step,
+          DirectIbReduceScatterRole::SEND,
+          kStaggerChannels);
       TiledBuffer<const T> send_tile(
           input_base + static_cast<std::size_t>(peer) * args.chunk_elements,
           args.chunk_elements,
@@ -151,7 +160,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             reinterpret_cast<const char*>(send_tile.data()),
             wire_bytes,
             max_sig,
-            timeout,
+            abortDevice,
             copy_args);
       } else {
         transport.send(
@@ -159,7 +168,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_kernel(
             reinterpret_cast<const char*>(send_tile.data()),
             send_tile.bytes(),
             max_sig,
-            timeout);
+            abortDevice);
       }
     }
   }
@@ -177,13 +186,13 @@ template __global__ void direct_reduce_scatter_ib_kernel<
     512,
     CpAsyncSmemReduce<float, SumOp, 8192, 384, 2>>(
     const __grid_constant__ DirectReduceScatterIbArgs<float>,
-    Timeout);
+    AbortDevice);
 
 void launch_direct_reduce_scatter_ib_impl(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto* kernel = direct_reduce_scatter_ib_kernel<
       false,
       false,
@@ -224,7 +233,7 @@ void launch_direct_reduce_scatter_ib_impl(
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         static_cast<int>(dynamic_smem)));
   }
-  kernel<<<num_blocks, 512, dynamic_smem, stream>>>(args, timeout);
+  kernel<<<num_blocks, 512, dynamic_smem, stream>>>(args, abortDevice);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -238,7 +247,7 @@ void launch_quantized(
     const DirectReduceScatterIbArgs<float>& args,
     int num_blocks,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   auto* kernel = direct_reduce_scatter_ib_kernel<
       true,
       kTmaRecv,
@@ -259,7 +268,7 @@ void launch_quantized(
         cudaFuncAttributeMaxDynamicSharedMemorySize,
         static_cast<int>(dynamic_smem)));
   }
-  kernel<<<num_blocks, kBlock, dynamic_smem, stream>>>(args, timeout);
+  kernel<<<num_blocks, kBlock, dynamic_smem, stream>>>(args, abortDevice);
   PIPES_CUDA_CHECK(cudaGetLastError());
 }
 
@@ -318,11 +327,13 @@ void launch_direct_reduce_scatter_ib_quantized_impl(
     int num_blocks,
     bool use_tma,
     cudaStream_t stream,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   if (use_tma && tma_supported_on_device()) {
-    launch_quantized<true, 640, 128, 768>(args, num_blocks, stream, timeout);
+    launch_quantized<true, 640, 128, 768>(
+        args, num_blocks, stream, abortDevice);
   } else {
-    launch_quantized<false, 480, 160, 640>(args, num_blocks, stream, timeout);
+    launch_quantized<false, 480, 160, 640>(
+        args, num_blocks, stream, abortDevice);
   }
 }
 

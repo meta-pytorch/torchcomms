@@ -87,6 +87,13 @@ class CommStateX {
 
   /* Setters */
   void setRankTopologies(std::vector<RankTopology> rankTopologies);
+  // Installs an already-agreed topology without bootstrap or hardware
+  // discovery. Each communicator rank must occur exactly once in the supplied
+  // effective domains.
+  void setPrecomputedTopology(
+      std::vector<RankTopology> rankTopologies,
+      std::vector<std::vector<int>> effectiveDomains,
+      bool fabricActive);
   // A supplied fabricHwSupported value is the communicator-agreed result.
   // When absent, use the legacy process-local runtime detection.
   void setNvlFabricTopos(
@@ -106,6 +113,9 @@ class CommStateX {
 
   // get cuda device index
   int cudaDev() const;
+
+  // Query the CUDA architecture for the specified device.
+  static int getCudaArch(int cudaDev);
 
   int cudaArch() const;
 
@@ -174,6 +184,8 @@ class CommStateX {
 
   // check if current rank has enabled NVL Fabric Clique
   bool nvlFabricCliqueEnabled() const;
+
+  bool hasPrecomputedTopology() const;
 
   // check if two ranks are on the same NVL Fabric
   bool isSameNvlFabric(int myRank, int peer) const;
@@ -290,6 +302,8 @@ class CommStateX {
 
   // clique is used to soft partition a NVL domain to multiple cliques.
   bool nvlFabricCliqueEnabled_{false};
+
+  bool precomputedTopology_{false};
 
   std::vector<NvlFabricTopology> nvlFabricTopos_{};
 };

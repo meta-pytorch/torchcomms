@@ -37,6 +37,7 @@ enum SubSystem {
   REG = 0x2000,
   PROFILE = 0x4000,
   RAS = 0x8000,
+  DESTROY = 0x10000,
   ALL = ~0
 };
 #pragma pop_macro("INIT")

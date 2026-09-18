@@ -2,7 +2,10 @@
 
 #include "comms/uniflow/Uniflow.h"
 
+#include <chrono>
+#include <future>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -110,6 +113,53 @@ class MockTransportFactory : public TransportFactory {
   Status canConnect(std::span<const uint8_t>) override {
     return Ok();
   }
+};
+
+class SingleAcceptBlockingServer : public controller::Server {
+ public:
+  SingleAcceptBlockingServer()
+      : acceptResultFuture_(acceptResult_.get_future()) {}
+
+  Status init() override {
+    return Ok();
+  }
+
+  const std::string& getId() const override {
+    return id_;
+  }
+
+  std::future<std::unique_ptr<controller::Conn>> accept() override {
+    std::lock_guard lock(mutex_);
+    if (stopped_ || acceptIssued_) {
+      return make_ready_future(std::unique_ptr<controller::Conn>{});
+    }
+    acceptIssued_ = true;
+    auto result = std::move(acceptResultFuture_);
+    acceptEntered_.set_value();
+    return result;
+  }
+
+  void shutdown() noexcept override {
+    std::lock_guard lock(mutex_);
+    if (stopped_) {
+      return;
+    }
+    stopped_ = true;
+    acceptResult_.set_value(nullptr);
+  }
+
+  std::future<void> getAcceptEnteredFuture() {
+    return acceptEntered_.get_future();
+  }
+
+ private:
+  const std::string id_{"blocking"};
+  std::promise<void> acceptEntered_;
+  std::promise<std::unique_ptr<controller::Conn>> acceptResult_;
+  std::future<std::unique_ptr<controller::Conn>> acceptResultFuture_;
+  std::mutex mutex_;
+  bool acceptIssued_{false};
+  bool stopped_{false};
 };
 
 // Helper to create UniflowAgent with mock factory via private constructor.
@@ -282,6 +332,47 @@ TEST(UniflowAgentTest, FullLifecycleWithWildcardAddress) {
       << clientConnResult.error().toString();
   EXPECT_NE(serverConnResult.value(), nullptr);
   EXPECT_NE(clientConnResult.value(), nullptr);
+}
+
+TEST(UniflowAgentTest, ShutdownUnblocksAccept) {
+  auto factory = MultiTransportFactoryTest::make(
+      {std::make_shared<MockTransportFactory>(TransportType::RDMA)});
+  auto blockingServer = std::make_unique<SingleAcceptBlockingServer>();
+  auto acceptEntered = blockingServer->getAcceptEnteredFuture();
+  auto serverAgent = UniflowAgentTest::create(
+      {.deviceId = 0, .name = "server"},
+      factory,
+      nullptr,
+      std::move(blockingServer));
+
+  Result<std::unique_ptr<Connection>> acceptResult = ErrCode::NotImplemented;
+  std::thread serverThread([&]() { acceptResult = serverAgent.accept(); });
+
+  EXPECT_EQ(
+      acceptEntered.wait_for(std::chrono::seconds(5)),
+      std::future_status::ready);
+  serverAgent.shutdown();
+  serverThread.join();
+
+  EXPECT_TRUE(acceptResult.hasError());
+
+  auto subsequentAcceptResult = serverAgent.accept();
+  EXPECT_TRUE(subsequentAcceptResult.hasError());
+  EXPECT_EQ(subsequentAcceptResult.error().code(), ErrCode::ConnectionFailed);
+}
+
+TEST(UniflowAgentTest, ShutdownWithoutServer) {
+  auto factory = MultiTransportFactoryTest::make(
+      {std::make_shared<MockTransportFactory>(TransportType::RDMA)});
+  auto agent =
+      UniflowAgentTest::create({.deviceId = 0, .name = "test"}, factory);
+
+  agent.shutdown();
+  agent.shutdown();
+
+  auto result = agent.accept();
+  EXPECT_TRUE(result.hasError());
+  EXPECT_EQ(result.error().code(), ErrCode::InvalidArgument);
 }
 
 // ---------------------------------------------------------------------------

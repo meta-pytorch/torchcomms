@@ -3,7 +3,11 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <string_view>
+#include <utility>
 
 #include <folly/Synchronized.h>
 #include <folly/dynamic.h>
@@ -26,6 +30,34 @@ std::string_view triggerStateToStr(CollTraceHandleTriggerState state);
 
 class ICollTrace; // Declear CollTrace to avoid circular dependency
 
+class EagerCancellationGate {
+ public:
+  using Cancel = std::function<CommsMaybeVoid(CollTraceEvent&)>;
+
+  explicit EagerCancellationGate(Cancel cancel) : cancel_(std::move(cancel)) {}
+
+  // Takes the event by pointer, not by reference: the caller cannot safely
+  // form the reference before entering the gate, because teardown can destroy
+  // the owner's event storage first. The pointer is dereferenced only under
+  // mutex_, after the callback has been confirmed live.
+  CommsMaybeVoid cancel(CollTraceEvent* event) noexcept {
+    std::lock_guard lock(mutex_);
+    if (!cancel_ || event == nullptr) {
+      return folly::unit;
+    }
+    return cancel_(*event);
+  }
+
+  void shutdown() noexcept {
+    std::lock_guard lock(mutex_);
+    cancel_ = nullptr;
+  }
+
+ private:
+  std::mutex mutex_;
+  Cancel cancel_;
+};
+
 // Define the interface so that we can use it to handle legacy colltrace
 class ICollTraceHandle {
  public:
@@ -36,6 +68,9 @@ class ICollTraceHandle {
       std::string pluginName,
       folly::dynamic params) noexcept = 0;
   virtual CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept = 0;
+  // Cancel is part of the enqueue state machine and must be called by the
+  // thread that records and triggers this handle, before AfterEnqueueKernel.
+  virtual CommsMaybeVoid cancel() noexcept = 0;
   virtual CommsMaybeVoid invalidate() noexcept = 0;
 
   // In-kernel colltrace: expose the graph ring device handle + collId so the
@@ -48,10 +83,58 @@ class ICollTraceHandle {
   }
 };
 
+// Cancels the handle on scope exit unless disarmed. A launch path that records
+// a handle and then returns early -- driver lookup failure, kernel launch
+// failure -- would otherwise strand the pending record, and the next
+// collective would report an overlap and drop the stranded trace. Arm this at
+// the record site and disarm it once AfterEnqueueKernel has succeeded.
+class CollTraceEnqueueGuard {
+ public:
+  CollTraceEnqueueGuard() noexcept = default;
+  explicit CollTraceEnqueueGuard(
+      std::shared_ptr<ICollTraceHandle> handle) noexcept
+      : handle_(std::move(handle)) {}
+
+  CollTraceEnqueueGuard(CollTraceEnqueueGuard&& other) noexcept
+      : handle_(std::exchange(other.handle_, nullptr)) {}
+
+  CollTraceEnqueueGuard& operator=(CollTraceEnqueueGuard&& other) noexcept {
+    if (this != &other) {
+      cancelNow();
+      handle_ = std::exchange(other.handle_, nullptr);
+    }
+    return *this;
+  }
+
+  CollTraceEnqueueGuard(const CollTraceEnqueueGuard&) = delete;
+  CollTraceEnqueueGuard& operator=(const CollTraceEnqueueGuard&) = delete;
+
+  ~CollTraceEnqueueGuard() {
+    cancelNow();
+  }
+
+  void disarm() noexcept {
+    handle_ = nullptr;
+  }
+
+ private:
+  void cancelNow() noexcept {
+    if (handle_ != nullptr) {
+      handle_->cancel();
+      handle_ = nullptr;
+    }
+  }
+
+  std::shared_ptr<ICollTraceHandle> handle_;
+};
+
 // Handle to be returned to the user for triggering stages for the collective.
 class CollTraceHandle : public ICollTraceHandle {
  public:
-  CollTraceHandle(ICollTrace* collTrace, CollTraceEvent* event);
+  CollTraceHandle(
+      ICollTrace* collTrace,
+      CollTraceEvent* event,
+      std::shared_ptr<EagerCancellationGate> cancellationGate = nullptr);
 
   CommsMaybeVoid trigger(CollTraceHandleTriggerState state) noexcept override;
 
@@ -60,6 +143,8 @@ class CollTraceHandle : public ICollTraceHandle {
       folly::dynamic params) noexcept override;
 
   CommsMaybe<std::shared_ptr<ICollRecord>> getCollRecord() noexcept override;
+
+  CommsMaybeVoid cancel() noexcept override;
 
   CommsMaybeVoid invalidate() noexcept override;
 
@@ -99,6 +184,7 @@ class CollTraceHandle : public ICollTraceHandle {
     // trigger the right event. It should not be used to access the event
     // object directly.
     CollTraceEvent* event_;
+    std::shared_ptr<EagerCancellationGate> cancellationGate_;
 
     // This is used to ensure that the handle is not used after the collective
     // or colltrace is destroyed. CollTrace will be responsible for signaling

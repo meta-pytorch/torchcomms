@@ -7,12 +7,9 @@
 #include <string>
 
 #include <folly/Synchronized.h>
+#include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/utils/commSpecs.h"
-
-// FIXME(alvinyc): move this IB constant to CtranIbBase.h once CtranIb doesn't
-// depend on CtranCtrl and CtranCtrl is removed
-constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{2};
 
 namespace ctran {
 namespace regcache {

@@ -12,6 +12,7 @@
 #include "comms/prims/transport/Transport.cuh"
 #include "comms/prims/transport/ll/LlPacket.cuh"
 #include "comms/prims/transport/ll128/Ll128Packet.cuh"
+#include "comms/prims/transport/nvl/NvlChannelProgress.cuh"
 #include "comms/prims/transport/nvl/NvlChannelState.cuh"
 #include "comms/prims/transport/self/P2pSelfTransportDevice.cuh"
 #ifdef __HIP_PLATFORM_AMD__
@@ -106,8 +107,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       multimemCudaDevice_(multimemCudaDevice),
       bootstrap_(std::move(bootstrap)),
       config_(normalizeChannelConfig(multiPeerNvlTransportConfig)),
-      memSharingMode_(
-          config_.memSharingMode.value_or(GpuMemHandler::detectBestMode())) {
+      memSharingMode_(config_.memSharingMode.value_or(
+          GpuMemHandler::detectBestMode(multimemCudaDevice))) {
   // ===========================================================================
   // Buffer Allocation
   // ===========================================================================
@@ -166,6 +167,27 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
         bootstrap_, myRank_, nRanks_, totalChannelStateSize, memSharingMode_);
     auto* channelStatePtr = channelStateHandler_->getLocalDeviceMemPtr();
     CUDA_CHECK(cudaMemset(channelStatePtr, 0, totalChannelStateSize));
+
+    // Same per-peer shape as the channel state above, but local rather than
+    // IPC-shared. One allocation holds both directions back to back, send
+    // first; progressDirectionStride_ is the offset to the recv half. Zeroed so
+    // every channel starts NvlProgressStage::Idle.
+    perPeerChannelProgressSize_ =
+        config_.maxNumChannels * sizeof(NvlChannelProgress);
+    progressDirectionStride_ = perPeerChannelProgressSize_ * (nRanks_ - 1);
+    // A single-rank transport has no peers and so no progress slices. Skip the
+    // allocation rather than calling cudaMalloc with size 0, which succeeds
+    // while leaving the pointer null. buildP2pTransportDevice leaves the device
+    // progress pointers null, and the progress entry points trap on them.
+    if (progressDirectionStride_ > 0) {
+      void* progressPtr = nullptr;
+      CUDA_CHECK(cudaMalloc(&progressPtr, progressDirectionStride_ * 2));
+      if (progressPtr == nullptr) {
+        throw std::runtime_error("failed to allocate NVL progress state");
+      }
+      progressBase_.reset(progressPtr);
+      CUDA_CHECK(cudaMemset(progressPtr, 0, progressDirectionStride_ * 2));
+    }
   }
 
   // Conditionally allocate barrier buffer
@@ -270,17 +292,18 @@ void MultiPeerNvlTransport::setExternalDataBuffers(
 }
 
 void MultiPeerNvlTransport::exchange() {
-  // Allocate and exchange data buffers when:
-  // - No external buffers were provided, AND
-  // - dataBufferSize_ > 0 (staging buffers needed for send/recv)
-  if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+
+  if (!externalStagingBuffers_ && !dataBufferHandler_ && dataBufferSize_ > 0) {
     const std::size_t totalDataBufferSize =
         perPeerDataBufferSize_ * (nRanks_ - 1);
     dataBufferHandler_ = std::make_unique<GpuMemHandler>(
         bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
   }
 
-  // Exchange buffer pointers across all ranks
   if (dataBufferHandler_) {
     dataBufferHandler_->exchangeMemPtrs();
   }
@@ -298,10 +321,108 @@ void MultiPeerNvlTransport::exchange() {
   if (llBufferHandler_) {
     llBufferHandler_->exchangeMemPtrs();
   }
+  exchangeState_ = ExchangeState::kExchanged;
 
   // Multimem NVL is intentionally not initialized here. Most collectives only
   // need the peer-to-peer NVLink transport. Multimem collectives invoke the
   // explicit collective initializer before reading the cached device handle.
+}
+
+void MultiPeerNvlTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (externalStagingBuffers_.has_value()) {
+    throw std::invalid_argument(
+        "prepared NVLink exchange does not accept legacy external staging buffers");
+  }
+
+  try {
+    if (!externalStagingBuffers_ && dataBufferSize_ > 0) {
+      const std::size_t totalDataBufferSize =
+          perPeerDataBufferSize_ * (nRanks_ - 1);
+      dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+          bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
+    }
+
+    if (dataBufferHandler_) {
+      dataBufferHandler_->prepareExchange();
+    }
+    signalBufferHandler_->prepareExchange();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->prepareExchange();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->prepareExchange();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->prepareExchange();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->prepareExchange();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultiPeerNvlTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultiPeerNvlTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultiPeerNvlTransport::exchangePrepared called before prepareExchange");
+  }
+
+  try {
+    if (dataBufferHandler_) {
+      dataBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    signalBufferHandler_->exchangeMemPtrsPrepared();
+    if (ll128BufferHandler_) {
+      ll128BufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (barrierBufferHandler_) {
+      barrierBufferHandler_->exchangeMemPtrsPrepared();
+    }
+    if (channelStateHandler_) {
+      channelStateHandler_->exchangeMemPtrsPrepared();
+    }
+    if (llBufferHandler_) {
+      llBufferHandler_->exchangeMemPtrsPrepared();
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackExchange();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kExchanged;
+}
+
+void MultiPeerNvlTransport::rollbackExchange() noexcept {
+  llBufferHandler_.reset();
+  channelStateHandler_.reset();
+  barrierBufferHandler_.reset();
+  ll128BufferHandler_.reset();
+  signalBufferHandler_.reset();
+  dataBufferHandler_.reset();
+  transportsDevice_.reset();
+  progressBase_.reset();
+  externalStagingBuffers_.reset();
+  multiPeerInitialized_ = false;
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -368,6 +489,19 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
         localChBase + localPeerIndex * perPeerChannelStateSize_);
     remoteChannels = reinterpret_cast<NvlChannelState*>(
         remoteChBase + remotePeerIndex * perPeerChannelStateSize_);
+  }
+
+  // Both directions slice by localPeerIndex; unlike the channel state there is
+  // no remote endpoint, since this storage is local. The recv half sits one
+  // direction stride into the same allocation.
+  NvlChannelProgress* sendProgress = nullptr;
+  NvlChannelProgress* recvProgress = nullptr;
+  if (progressBase_) {
+    auto* progressPtr = static_cast<char*>(progressBase_.get()) +
+        localPeerIndex * perPeerChannelProgressSize_;
+    sendProgress = reinterpret_cast<NvlChannelProgress*>(progressPtr);
+    recvProgress = reinterpret_cast<NvlChannelProgress*>(
+        progressPtr + progressDirectionStride_);
   }
 
   auto* localSignalPtr =
@@ -477,7 +611,9 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       localState,
       remoteState,
       localChannels,
-      remoteChannels);
+      remoteChannels,
+      sendProgress,
+      recvProgress);
 }
 
 DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {

@@ -9,9 +9,9 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlTransportConfig.h"
 
@@ -63,8 +63,8 @@ __device__ __forceinline__ void multimem_red_release_sys_add_u64(
  * spans are this rank's backing memory after multicast replication. Callers
  * that want to reduce from the multicast VA should obtain
  * `multimem_data_ptr()` and pass it to `multimem::load_reduce_at()`, defined
- * in `MultimemNvlReduce.cuh`. Broadcast-store helpers are introduced by the
- * later store-primitives diff.
+ * in `MultimemNvlReduce.cuh`. Broadcast stores into arbitrary multicast
+ * addresses are defined in `MultimemNvlStore.cuh`.
  */
 struct MultimemNvlTransportDevice {
   char* localData{nullptr};
@@ -109,8 +109,9 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const AbortDevice& timeout = AbortDevice()) const {
-    user_local_signal_ptr(signal_id)->wait_until(group, op, expected, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    user_local_signal_ptr(signal_id)->wait_until(
+        group, op, expected, abortDevice);
   }
 
   __device__ __forceinline__ void signal_internal(
@@ -154,9 +155,9 @@ struct MultimemNvlTransportDevice {
       uint64_t signal_id,
       CmpOp op,
       uint64_t expected,
-      const AbortDevice& timeout = AbortDevice()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     internal_local_signal_ptr(signal_id)->wait_until(
-        group, op, expected, timeout);
+        group, op, expected, abortDevice);
   }
 
  private:

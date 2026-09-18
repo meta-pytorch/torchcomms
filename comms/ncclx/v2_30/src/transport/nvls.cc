@@ -15,6 +15,7 @@
 #include "register.h"
 #include "transport.h"
 #include "register_inline.h"
+#include "meta/nvls/NvlsBindRetry.h"
 #include "meta/nvls/NvlsBindWatchdog.h"
 
 #if CUDART_VERSION >= 12010
@@ -289,11 +290,13 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   CUmulticastObjectProp mcprop;
   CUmemAllocationProp ucprop;
   CUresult err;
+  CUresult localErr;
   ncclResult_t ret = ncclSuccess;
   size_t mcsize;
   size_t ucsize;
   size_t ucgran, mcgran;
   int allocMcHandle = 0;
+  int64_t bindAttempt = 0;
 
   mcsize = ucsize = size;
   *ucptr = *mcptr = NULL;
@@ -307,6 +310,7 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   ALIGN_SIZE(mcsize, mcgran);
   mcprop.size = mcsize;
 
+retryNvlsBind:
   if (comm->localRank == 0) {
     NCCLCHECKGOTO(ncclNvlsGroupCreate(comm, &mcprop, comm->localRank, comm->localRanks, mcHandle, shareableHandle), ret, fail);
     allocMcHandle = 1;
@@ -349,9 +353,27 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   // NB: It will block until all ranks have been added to the Group
   // This is where we normally see issues if the system NVLS/Multicast support is broken
   err = ncclx::nvls::multicastBindMemWithWatchdog(comm, size, ucsize, mcsize, *mcHandle, *ucHandle);
+  localErr = err;
+  NCCLCHECKGOTO(ncclx::nvls::collectiveBindResult(comm, localErr, &err), ret, fail3);
   if (err != CUDA_SUCCESS) {
     const char *errStr;                                                 \
     (void) pfn_cuGetErrorString(err, &errStr);                          \
+    bool retried = false;
+    NCCLCHECK(ncclx::nvls::prepareBindRetry(
+        comm,
+        localErr,
+        err,
+        bindAttempt,
+        ucsize,
+        ucptr,
+        ucHandle,
+        mcHandle,
+        &allocMcHandle,
+        &retried));
+    if (retried) {
+      ++bindAttempt;
+      goto retryNvlsBind;
+    }
     // Fail the job as NVLS support is not functional
     ERR(ncclUnhandledCudaError, "Failed to bind NVLink SHARP (NVLS) Multicast memory of size %ld : CUDA error %d '%s'.\nThis is usually caused by a system or configuration error in the Fabric Manager or NVSwitches.\nDisable NVLS (NCCL_NVLS_ENABLE=0) if you wish to avoid this error in the future.", ucsize, err, errStr );
     ret = ncclUnhandledCudaError;

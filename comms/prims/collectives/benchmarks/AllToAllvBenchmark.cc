@@ -92,8 +92,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
-        std::abort();
+        COMMS_ABORT("ncclGetUniqueId failed: {}", ncclGetErrorString(res));
       }
     }
 
@@ -106,8 +105,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
-      std::abort();
+      COMMS_ABORT("Bootstrap allGather for NCCL ID failed");
     }
     id = allIds[0]; // Take rank 0's ID
     return id;
@@ -288,7 +286,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     const void* sendBuff_d = sendBuffer.get();
 
-    Timeout timeout_config;
+    AbortDevice timeout_config;
 
     CudaEvent start, stop;
     const int nIter = 100;
@@ -675,6 +673,6 @@ int main(int argc, char* argv[]) {
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
 
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }

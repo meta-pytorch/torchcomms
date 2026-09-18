@@ -23,8 +23,8 @@ total_us = int(dump["GlobalInfo"]["totalCommDurPerIterationUs"])
 ```
 
 The `requestFields` parameter is `std::optional<std::string>` (default:
-`std::nullopt`). When `std::nullopt`, all fields are dumped — fully backward
-compatible.
+`std::nullopt`). When `std::nullopt`, all fields are dumped. Consumers must
+select fields by name and tolerate additive keys.
 
 Values are semicolon-separated key names.
 
@@ -39,7 +39,7 @@ skipped entirely if none of its keys are requested (`anyKeyRequested` check).
 | Source function | Output keys |
 |----------------|------------|
 | `dumpCommInfo()` | commHash, rank, localRank, node, nRanks, localRanks, nNodes, commDesc |
-| `dumpNewCollTrace()` → `commDumpToMap()` | CT_pastColls, CT_currentColls, CT_pendingColls, CT_currentIteration, CT_currentIterationCommTimeUs |
+| `dumpNewCollTrace()` → `commDumpToMap()` | CT_pastColls, CT_currentColls, CT_pendingColls, CT_terminalColls, CT_terminalReasonCounts, CT_terminalTransitionDrops, CT_pollLockTimeouts, CT_currentIteration, CT_currentIterationCommTimeUs |
 | `dumpProxyTrace()` | PT_pastColls, PT_activeOps, PT_activeColls |
 | `dumpMapperTrace()` | MT_currentColl, MT_unfinishedRequests, MT_recvNotifiedByPeer, MT_putFinishedByPeer |
 | `dumpMemoryTrace()` | memory |

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <vector>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -83,7 +84,7 @@ class CtranBroadcastTest : public CtranIntraProcessFixture,
   void runBroadcast(size_t nElem, PerRankState& state, int root = 0) {
     validateConfigs(nElem);
 
-    CLOGF(INFO, "rank {} broadcast with {} elems", state.rank, nElem);
+    CTRAN_LOG(INFO, "rank {} broadcast with {} elems", state.rank, nElem);
 
     initBufferValues(nElem, state);
 
@@ -102,7 +103,7 @@ class CtranBroadcastTest : public CtranIntraProcessFixture,
       state.ctranComm->ctran_->commDeregister(srcHandle);
     };
 
-    CLOGF(INFO, "rank {} broadcast completed registration", state.rank);
+    CTRAN_LOG(INFO, "rank {} broadcast completed registration", state.rank);
 
     auto result = ctranBroadcast(
         state.srcBuffer,
@@ -115,14 +116,14 @@ class CtranBroadcastTest : public CtranIntraProcessFixture,
         NCCL_BROADCAST_ALGO);
     EXPECT_EQ(commSuccess, result);
 
-    CLOGF(INFO, "rank {} broadcast scheduled", state.rank);
+    CTRAN_LOG(INFO, "rank {} broadcast scheduled", state.rank);
 
     EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
     EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
 
     validateBroadcastData(nElem, state, root);
 
-    CLOGF(INFO, "rank {} broadcast task completed", state.rank);
+    CTRAN_LOG(INFO, "rank {} broadcast task completed", state.rank);
   }
 
   void validateBroadcastData(size_t nElem, PerRankState& state, int root) {

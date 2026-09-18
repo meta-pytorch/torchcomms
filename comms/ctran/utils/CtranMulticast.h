@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -114,6 +115,26 @@ class CtranMulticast {
                              : reinterpret_cast<void*>(segments_[0].base);
   }
 
+  // Byte offset of a requested range within the retained backing allocation.
+  // Returns nullopt unless the full range is covered.
+  std::optional<size_t> retainedOffset(const void* userPtr, size_t bytes)
+      const {
+    void* base = getBase();
+    if (base == nullptr || userPtr == nullptr || bytes == 0) {
+      return std::nullopt;
+    }
+    const auto baseAddr = reinterpret_cast<uintptr_t>(base);
+    const auto userAddr = reinterpret_cast<uintptr_t>(userPtr);
+    if (userAddr < baseAddr) {
+      return std::nullopt;
+    }
+    const size_t offset = userAddr - baseAddr;
+    if (offset > totalSize_ || bytes > totalSize_ - offset) {
+      return std::nullopt;
+    }
+    return offset;
+  }
+
   // Multicast write target for a user pointer inside the imported range:
   // getMulticastPtr() + (userPtr - getBase()). std::nullopt when there is no
   // mapped VA yet or userPtr falls outside [getBase(),
@@ -121,16 +142,11 @@ class CtranMulticast {
   // address from the overlay alone -- no CtranIpc involvement.
   std::optional<void*> writeBase(const void* userPtr) const {
     void* mcPtr = getMulticastPtr();
-    void* base = getBase();
-    if (mcPtr == nullptr || base == nullptr) {
+    const auto offset = retainedOffset(userPtr, 1);
+    if (mcPtr == nullptr || !offset.has_value()) {
       return std::nullopt;
     }
-    const auto* b = static_cast<const char*>(base);
-    const auto* u = static_cast<const char*>(userPtr);
-    if (u < b || u >= b + totalSize_) {
-      return std::nullopt;
-    }
-    return static_cast<void*>(static_cast<char*>(mcPtr) + (u - b));
+    return static_cast<void*>(static_cast<char*>(mcPtr) + *offset);
   }
 
  private:

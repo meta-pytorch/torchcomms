@@ -12,8 +12,8 @@
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 class RegCacheTest : public ::testing::Test {
  public:
@@ -25,7 +25,7 @@ class RegCacheTest : public ::testing::Test {
     setenv("NCCL_CTRAN_BACKENDS", "ib", 1);
     setenv("NCCL_CTRAN_REGISTER", "eager", 1);
     ncclCvarInit();
-    meta::comms::logger::initCommLogging();
+    ctran::logging::initCtranLogging();
 
     // Initialize CUDA library (required for cuMem operations)
     ASSERT_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);

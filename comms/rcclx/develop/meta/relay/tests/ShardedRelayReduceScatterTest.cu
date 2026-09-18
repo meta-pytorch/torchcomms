@@ -64,6 +64,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
 #include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
@@ -172,7 +173,8 @@ static ncclResult_t callReduceScatterCompat(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision = 0) {
   return ncclShardedRelayMultiGroupReduceScatter(
       sendPtrs,
       recvPtrs,
@@ -183,40 +185,87 @@ static ncclResult_t callReduceScatterCompat(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
  public:
   ShardedRelayMultiGroupReduceScatterTest() = default;
 
-  void SetUp() override {
+  // One comm per active-rank shape, created once for the whole binary and
+  // reused by every case, plus a dedicated one for the rank barrier. These used
+  // to be created in SetUp and destroyed in TearDown, so each of the 37 cases
+  // freed everything an 8-rank comm owns. On MI350 freeing VRAM makes amdgpu
+  // wipe it (amdgpu_bo_release_notify -> amdgpu_fill_buffer) while holding
+  // mmap_lock for write, so 8 ranks cycling multi-GB comms serialise into a
+  // stall that takes the whole host down. Reusing also matches how comms are
+  // really used: a handful, kept for the life of the process.
+  //
+  // Shapes are kept apart because relay state is per-comm and a comm cannot be
+  // shared between the 2- and 4-active-rank configurations. One store serves
+  // all three, with incrTestCount() between them: the unique-ID rendezvous key
+  // is derived from that counter, so without bumping it the second comm would
+  // read the first one's stale ID. Built eagerly in a fixed order so every rank
+  // consumes the same keys in the same sequence.
+  static void SetUpTestSuite() {
     int localSize;
-    std::tie(this->localRank, this->globalRank, this->numRanks, localSize) =
+    std::tie(localRank, globalRank, numRanks, localSize) =
         getTcpStoreOrMpiInfo();
-    bool isServer = (this->globalRank == 0);
+    const bool isServer = (globalRank == 0);
     if (checkTcpStoreEnv()) {
       server = createTcpStore(isServer);
     } else if (isServer) {
       server = createTcpStore(true);
     }
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    barrierComm = makeComm();
+    incrTestCount();
+    commA2 = makeComm();
+    incrTestCount();
+    commA4 = makeComm();
+  }
+
+  static ncclComm_t makeComm() {
+    return createNcclComm(
+        globalRank, numRanks, localRank, false, nullptr, server.get());
+  }
+
+  // The comm for a given active-rank shape. Every collective call site has
+  // nActiveRanksPerGroup in scope, which is how a test reaches its comm.
+  static ncclComm_t commFor(int nActiveRanksPerGroup) {
+    switch (nActiveRanksPerGroup) {
+      case 2:
+        return commA2;
+      case 4:
+        return commA4;
+      default:
+        ADD_FAILURE() << "no comm cached for nActiveRanksPerGroup="
+                      << nActiveRanksPerGroup;
+        return nullptr;
+    }
+  }
+
+  static void TearDownTestSuite() {
+    if (server && checkTcpStoreEnv()) {
+      finalizeNcclComm(globalRank, server.get());
+    }
+    for (ncclComm_t* c : {&commA4, &commA2, &barrierComm}) {
+      if (*c != nullptr) {
+        NCCLCHECK_TEST(ncclCommDestroy(*c));
+        *c = nullptr;
+      }
+    }
+    server.reset();
+  }
+
+  void SetUp() override {
+    ASSERT_NE(this->commA2, nullptr)
+        << "suite-scoped comms were not created; SetUpTestSuite did not run";
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
-    if (server && checkTcpStoreEnv()) {
-      finalizeNcclComm(this->globalRank, server.get());
-    }
-    NCCLCHECK_TEST(ncclCommDestroy(this->comm));
-    server.reset();
   }
 
   // Standard 8-rank, 4-group, 2-active-per-group sparse parallelism layout.
@@ -435,7 +484,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
           recvCounts.data(),
           ncclBfloat16,
           op,
-          this->comm,
+          this->commFor(nActiveRanksPerGroup),
           this->stream,
           allActiveRanks,
           nActiveRanksPerGroup,
@@ -548,7 +597,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         recvCounts,
         ncclInt32,
         op,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -641,7 +690,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         recvCounts,
         ncclBfloat16,
         op,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         groupConfig.allActiveRanks,
         nActiveRanksPerGroup,
@@ -697,7 +746,7 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
         1,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->barrierComm,
         this->stream));
     HIPCHECK_TEST(hipStreamSynchronize(this->stream));
     HIPCHECK_TEST(hipFree(barrierScratch));
@@ -737,12 +786,14 @@ class ShardedRelayMultiGroupReduceScatterTest : public ::testing::Test {
     return errorCount;
   }
 
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
-  ncclComm_t comm;
+  static inline int localRank{0};
+  static inline int globalRank{0};
+  static inline int numRanks{0};
+  static inline ncclComm_t barrierComm{nullptr};
+  static inline ncclComm_t commA2{nullptr};
+  static inline ncclComm_t commA4{nullptr};
+  static inline std::unique_ptr<c10d::TCPStore> server{nullptr};
   cudaStream_t stream;
-  std::unique_ptr<c10d::TCPStore> server{nullptr};
 };
 
 /**
@@ -819,7 +870,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -914,7 +965,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1007,7 +1058,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Correctness_4Groups_Avg_64MB) {
       recvCounts,
       ncclInt32,
       ncclAvg,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1121,7 +1172,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Z_BusBW_4Groups_InPlace_1GB) {
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1253,7 +1304,7 @@ TEST_F(
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -1361,7 +1412,7 @@ TEST_F(ShardedRelayMultiGroupReduceScatterTest, Correctness_SingleGroup_64MB) {
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1469,7 +1520,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1532,7 +1583,7 @@ TEST_F(
                  << " available";
   }
 
-  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclSum);
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(3) << 20, ncclSum);
 }
 
 TEST_F(
@@ -1543,7 +1594,7 @@ TEST_F(
                  << " available";
   }
 
-  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(27) << 20, ncclAvg);
+  runBfloat16A2RoutingThreshold(1, static_cast<size_t>(3) << 20, ncclAvg);
 }
 
 TEST_F(
@@ -1606,7 +1657,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1715,7 +1766,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1814,7 +1865,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -1852,6 +1903,483 @@ TEST_F(
   }
 
   runBfloat16A4SeededDirect(ncclAvg);
+}
+
+/**
+ * Test: single group (nGroups == 1) at 4 active ranks, both placements.
+ *
+ * nGroups == 1 makes the active ranks {0,1,2,3} and the helpers {4,5,6,7}
+ * disjoint, which is what puts the flat relay on its software-pipelined
+ * schedule: the offload scatter and the helper's reduced return share a group
+ * so each cross link runs duplex, and the helper's reduce runs per tile between
+ * the group that receives it and the group that ships it. 64 MB is above the
+ * offload threshold and deep enough for the cost model to tile, so this is the
+ * only coverage of that path -- every other 4-active case runs 2 groups, where
+ * the relay stays unpipelined.
+ */
+class ShardedRelayReduceScatterSingleGroupA4Test
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  void runSingleGroupA4Case(bool inPlace) {
+    const int nGroups = 1;
+    const int nActiveRanksPerGroup = 4;
+    const size_t recvBytes = 64ULL * 1024 * 1024;
+    const size_t recvCount = recvBytes / sizeof(int32_t);
+    const size_t inBytes =
+        static_cast<size_t>(nActiveRanksPerGroup) * recvBytes;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < nActiveRanksPerGroup;
+    const int myActiveIndex = this->globalRank;
+
+    // Helpers hand in a placeholder; the kernel stages into its own scratch.
+    int32_t* sendBuff = nullptr;
+    int32_t* recvBuff = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendBuff, inBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvBuff, recvBytes));
+    }
+
+    barrierSyncOn(sendBuff);
+
+    HIPCHECK_TEST(hipMemset(sendBuff, 0, inBytes));
+    if (isActive) {
+      initActiveSendBuffer(
+          sendBuff, recvCount, myActiveIndex, nActiveRanksPerGroup);
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, recvBytes));
+      }
+    }
+    // In-place: the output aliases this rank's own contribution block.
+    int32_t* out = inPlace
+        ? sendBuff + static_cast<size_t>(myActiveIndex) * recvCount
+        : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t recvCounts[1] = {recvCount};
+
+    const ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclInt32,
+        ncclSum,
+        this->commFor(nActiveRanksPerGroup),
+        this->stream,
+        allActiveRanks,
+        nActiveRanksPerGroup,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      verifyDeviceBufferEquals(
+          out,
+          recvCount,
+          expectedReduceScatterSum(myActiveIndex, nActiveRanksPerGroup),
+          0,
+          "4-active single-group reduce-scatter SUM mismatch");
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+TEST_F(
+    ShardedRelayReduceScatterSingleGroupA4Test,
+    Correctness_OutOfPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/false);
+}
+
+TEST_F(ShardedRelayReduceScatterSingleGroupA4Test, Correctness_InPlace_64MB) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runSingleGroupA4Case(/*inPlace=*/true);
+}
+
+/**
+ * Test: the pipelined relay's block layout fits inside recvCount at EVERY
+ * geometry buildShardedRelayRankConfig() accepts, not just the A = H = 4 one
+ * the 8-rank cases above exercise.
+ *
+ * The GPU cases here are pinned to 8 ranks, so a single-group A = 4 call always
+ * has exactly 4 helpers; the combinations a 9-to-16-rank comm would produce
+ * (A = 4 with H = 5..8, or A = 8 with H = 8) cannot be built from this harness.
+ * What those geometries break is arithmetic, not scheduling:
+ * shardedRelayReduceScatterFlatPipelined() takes directSz = rc - H*T*w and then
+ * directSize(T) = directSz - T*(A-1)*w, so if totalUnits(T) is smaller than
+ * H*T + (A-1)*T + 1 both subtractions underflow as size_t and a wild count
+ * reaches ncclSend/ncclRecv. Assert the invariant against the shape directly
+ * over the whole accepted (A, H) space, which needs no ranks at all.
+ */
+TEST(ShardedRelayReduceScatterFanoutShape, LayoutFitsAtEveryAcceptedGeometry) {
+  // Mirrors SHARDED_RELAY_MAX_ACTIVE / SHARDED_RELAY_MAX_HELPERS.
+  constexpr int kMaxActive = 8;
+  constexpr int kMaxHelpers = 8;
+
+  for (int a = 2; a <= kMaxActive; a *= 2) {
+    for (int h = 1; h <= kMaxHelpers; h++) {
+      const rcclx::relay::RelayPipelineShape shape =
+          rcclx::relay::relayShapeFanout(a, h);
+      for (int t = 1; t <= 8; t *= 2) {
+        const int totalUnits = shape.totalPerTile * t + shape.totalFixed;
+        // Offload region, plus the T heavy direct chunks, plus at least one
+        // unit for the last chunk to absorb.
+        const int consumed = h * t + (a - 1) * t + 1;
+        EXPECT_LE(consumed, totalUnits)
+            << "pipelined block layout overruns recvCount at A=" << a
+            << " H=" << h << " T=" << t << ": needs " << consumed
+            << " units out of " << totalUnits;
+      }
+    }
+  }
+
+  // The shipped 8-GPU geometry must still resolve to the constants the perf
+  // numbers were measured at, so the parameterization is a generalization and
+  // not a change.
+  const rcclx::relay::RelayPipelineShape shipped =
+      rcclx::relay::relayShapeFanout(4, 4);
+  EXPECT_EQ(shipped.linkPerTile, 3);
+  EXPECT_EQ(shipped.linkFixed, 1);
+  EXPECT_EQ(shipped.totalPerTile, 7);
+  EXPECT_EQ(shipped.totalFixed, 1);
+}
+
+/**
+ * Test: single group at 2 active ranks, large enough to overlap the owner
+ * reduce, with a POSITION-DEPENDENT fill.
+ *
+ * Above kRelayOverlapReduceMinBytes the pipelined 2-active relay stops reducing
+ * once at the end and instead reduces each pipeline region on a side stream as
+ * that region lands. That required re-indexing the shipped block from
+ * helper-major to stage-major, so region k holds exactly what group k receives.
+ *
+ * Every other reduce-scatter test fills a contribution block with a CONSTANT
+ * value, which means a region that arrives at the wrong offset still sums to
+ * the right number and the bug is invisible. These cases fill position
+ * dependently instead, so any permutation, shift, overlap or omission of a
+ * region changes the output and fails.
+ *
+ * Element i of every block on active rank r holds (r + 1) * kBase +
+ * (i % kPeriod). Owner m's output element i is the sum over r, which at A == 2
+ * is 3 * kBase + 2 * (i % kPeriod) -- always even, so AVG is exact in integer
+ * arithmetic and a divisor applied twice, or to the wrong region, is caught.
+ * kPeriod is coprime with the 128-element chunk alignment, so a misplacement by
+ * any whole number of chunks shifts the pattern rather than aliasing onto it.
+ */
+class ShardedRelayReduceScatterOverlapA2Test
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int32_t kBase = 1000;
+  static constexpr int32_t kPeriod = 977;
+
+  static int32_t fillValue(int activeIndex, size_t i) {
+    return static_cast<int32_t>(activeIndex + 1) * kBase +
+        static_cast<int32_t>(i % static_cast<size_t>(kPeriod));
+  }
+
+  void runOverlapCase(
+      bool inPlace,
+      ncclRedOp_t op,
+      size_t recvCountOverride = 0,
+      size_t misalignElemsOnOddRanks = 0,
+      int activeRanksPerGroup = 2) {
+    const int nGroups = 1;
+    const int A = activeRanksPerGroup;
+    // Default: A * recvBytes reaches kRelayOverlapReduceMinBytes (256 MiB) so
+    // the side-stream path engages. recvCountOverride instead pins a small
+    // count so the one-shot IPC path is exercised (it needs A * recvCount *
+    // elemSize <= kRelayOneShotMaxBytes).
+    const size_t recvCount = (recvCountOverride != 0)
+        ? recvCountOverride
+        : (128ULL * 1024 * 1024) / sizeof(int32_t);
+    const size_t recvBytes = recvCount * sizeof(int32_t);
+    const size_t inBytes = static_cast<size_t>(A) * recvBytes;
+
+    const int activeRanks[] = {0, 1, 2, 3};
+    const int* allActiveRanks[] = {activeRanks};
+    const bool isActive = this->globalRank < A;
+    const int myActiveIndex = this->globalRank;
+
+    // Shift only the ODD active rank's buffers, so the two peers disagree on
+    // whether 16-byte accesses are usable. hipMalloc always returns a
+    // 16-byte-aligned pointer, so every other case here has both ranks aligned.
+    const size_t skew =
+        (misalignElemsOnOddRanks != 0 && (myActiveIndex % 2) == 1)
+        ? misalignElemsOnOddRanks
+        : 0;
+    const size_t skewBytes = skew * sizeof(int32_t);
+
+    int32_t* sendAlloc = nullptr;
+    int32_t* recvAlloc = nullptr;
+    HIPCHECK_TEST(hipMalloc(&sendAlloc, inBytes + skewBytes));
+    if (isActive && !inPlace) {
+      HIPCHECK_TEST(hipMalloc(&recvAlloc, recvBytes + skewBytes));
+    }
+    int32_t* sendBuff = sendAlloc + skew;
+    int32_t* recvBuff = (recvAlloc != nullptr) ? recvAlloc + skew : nullptr;
+
+    barrierSyncOn(sendBuff);
+
+    HIPCHECK_TEST(hipMemset(sendBuff, 0, inBytes));
+    if (isActive) {
+      std::vector<int32_t> host(static_cast<size_t>(A) * recvCount);
+      for (int j = 0; j < A; j++) {
+        int32_t* block = host.data() + static_cast<size_t>(j) * recvCount;
+        for (size_t i = 0; i < recvCount; i++) {
+          block[i] = fillValue(myActiveIndex, i);
+        }
+      }
+      HIPCHECK_TEST(
+          hipMemcpy(sendBuff, host.data(), inBytes, hipMemcpyHostToDevice));
+      if (!inPlace) {
+        HIPCHECK_TEST(hipMemset(recvBuff, 0, recvBytes));
+      }
+    }
+
+    int32_t* out = inPlace
+        ? sendBuff + static_cast<size_t>(myActiveIndex) * recvCount
+        : recvBuff;
+
+    const void* sendPtrs[1] = {sendBuff};
+    void* recvPtrs[1] = {isActive ? out : sendBuff};
+    size_t recvCounts[1] = {recvCount};
+
+    const ncclResult_t result = callReduceScatterCompat(
+        sendPtrs,
+        recvPtrs,
+        recvCounts,
+        ncclInt32,
+        op,
+        this->commFor(activeRanksPerGroup),
+        this->stream,
+        allActiveRanks,
+        A,
+        nGroups);
+    ASSERT_EQ(result, ncclSuccess);
+    HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+    if (isActive) {
+      std::vector<int32_t> got(recvCount);
+      HIPCHECK_TEST(
+          hipMemcpy(got.data(), out, recvBytes, hipMemcpyDeviceToHost));
+      size_t mismatches = 0;
+      size_t firstBad = 0;
+      for (size_t i = 0; i < recvCount; i++) {
+        int32_t sum = 0;
+        for (int r = 0; r < A; r++) {
+          sum += fillValue(r, i);
+        }
+        const int32_t want = (op == ncclAvg) ? sum / A : sum;
+        if (got[i] != want) {
+          if (mismatches == 0) {
+            firstBad = i;
+          }
+          mismatches++;
+        }
+      }
+      ASSERT_EQ(mismatches, 0u)
+          << A << "-active single-group reduce-scatter mismatch: " << mismatches
+          << " of " << recvCount << " elements, first at index " << firstBad;
+    }
+
+    HIPCHECK_TEST(hipFree(sendBuff));
+    if (recvBuff != nullptr) {
+      HIPCHECK_TEST(hipFree(recvBuff));
+    }
+  }
+};
+
+// The four cases below sit BELOW kRelayOneShotMaxBytes (1 MiB of
+// per-active-rank input), where the one-shot IPC kernel replaces the ncclGroup
+// + reduce pair entirely: it pushes into the peer's staging, handshakes on a
+// per-block flag, and reduces in registers, in a single launch.
+//
+// This fixture is the right home because its fill is POSITION-DEPENDENT. The
+// older A=2 tests fill each block with a constant, which cannot catch an offset
+// or slot permutation -- and the one-shot path is exactly where such a bug
+// would live, since it indexes peer staging by active index.
+//
+// 65536 int32 = 256 KiB per rank, so 512 KiB of input: inside the gate, and
+// 16-byte aligned so the vectorized bulk path runs. 65535 is deliberately NOT a
+// multiple of 16/sizeof(int32_t), so it drives the scalar tail and the
+// misaligned-pointer fallback instead.
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclSum, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclAvg, /*recvCountOverride=*/65536);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum, /*recvCountOverride=*/65535);
+}
+
+// The two cases below give ONE of the two peers 16-byte-misaligned caller
+// buffers and leave the other aligned, so the peers disagree about whether
+// vectorized accesses are usable. hipMalloc always returns a 16-byte-aligned
+// pointer, so in every other case here both ranks vectorize and that mixed
+// state is never reached at all.
+//
+// The count is chosen so the two ranks would also PARTITION differently if the
+// alignment decision were allowed to pick the block range. Vector partitioning
+// splits rc/kEvec vectors across gridDim blocks, element partitioning splits
+// rc, and the two agree whenever ceil((rc/kEvec)/G)*kEvec == ceil(rc/G) --
+// which is the case at 65536 and 65535 (both 1024). At 16388 int32 with
+// kEvec = 4 and G = 64 the vector stride is ceil(4097/64)*4 = 260 against an
+// element stride of ceil(16388/64) = 257, so the ranges diverge from block 1
+// onward. 16389 adds a ragged rc % kEvec tail on top of the same skew.
+//
+// WHAT THESE DO AND DO NOT GUARANTEE. They cover the mixed-alignment path --
+// one rank on the vector loops, its peer on the element-wise loops -- and they
+// would fail outright on a partition that overlapped or left a gap. They are
+// NOT a regression test for the ordering hazard that motivated deriving the
+// range from rank-agreed values only. With a divergent partition, block b
+// reduces a range wider than the one block b's flag covers, so it can read
+// staging its peer has not pushed yet. That read is a race and it is not
+// reliably observable here: the window is a few elements at a block seam, the
+// peer's block is doing the same work at the same time, and this fixture writes
+// the same fill on every call, so a premature read returns the value that is
+// about to be written anyway. Confirmed empirically -- with the
+// alignment-dependent partition restored, both cases below still pass. The
+// invariant is held by the kernel deriving [begin, end) from rc, kEvec and
+// gridDim alone; do not read a green run here as licence to relax that.
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_OutOfPlace_Sum_AsymmetricAlignment) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/16388,
+      /*misalignElemsOnOddRanks=*/1);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_InPlace_Avg_AsymmetricAlignmentUnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/true,
+      ncclAvg,
+      /*recvCountOverride=*/16389,
+      /*misalignElemsOnOddRanks=*/1);
+}
+
+// A=4 counterparts of the one-shot cases above. The one-shot kernel indexes
+// peer staging by ACTIVE INDEX, so a slot permutation is the characteristic
+// bug, and at A=4 there are three sources to get wrong instead of one. The A=4
+// fixture elsewhere in this file fills each block with a constant, which cannot
+// see such a bug -- these reuse this fixture's position-dependent fill instead.
+//
+// AVG stays integer-exact at A=4: the per-element sum is
+// kBase*A*(A+1)/2 + A*(i%kPeriod), so dividing by 4 gives 2500 + (i%kPeriod).
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/32768,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/true,
+      ncclAvg,
+      /*recvCountOverride=*/32768,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterOverlapA2Test,
+    Correctness_OneShot_A4_OutOfPlace_Sum_UnalignedTail) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(
+      /*inPlace=*/false,
+      ncclSum,
+      /*recvCountOverride=*/32767,
+      /*misalignElemsOnOddRanks=*/0,
+      /*activeRanksPerGroup=*/4);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclSum);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_InPlace_Sum) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclSum);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_OutOfPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/false, ncclAvg);
+}
+
+TEST_F(ShardedRelayReduceScatterOverlapA2Test, Correctness_InPlace_Avg) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, but got " << this->numRanks;
+  }
+  runOverlapCase(/*inPlace=*/true, ncclAvg);
 }
 
 TEST_F(
@@ -1917,7 +2445,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2010,7 +2538,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclAvg,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2134,7 +2662,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2230,7 +2758,7 @@ TEST_F(
       recvCounts,
       ncclInt32,
       ncclSum,
-      this->comm,
+      this->commFor(nActiveRanksPerGroup),
       this->stream,
       allActiveRanks,
       nActiveRanksPerGroup,
@@ -2322,7 +2850,7 @@ TEST_F(
         recvCounts,
         ncclInt32,
         ncclSum,
-        this->comm,
+        this->commFor(nActiveRanksPerGroup),
         this->stream,
         allActiveRanks,
         nActiveRanksPerGroup,
@@ -2359,7 +2887,708 @@ TEST_F(
   }
 }
 
+// ===========================================================================
+// LOW PRECISION (fp8e4m3 wire format)
+// ===========================================================================
+//
+// Every case here asserts that low precision actually ENGAGED or actually
+// DECLINED, via the counters, rather than trusting the flag. The gate declines
+// silently on several independent grounds, so an "LP" run that quietly fell
+// back to full precision produces exactly the numbers a passing LP run
+// produces -- the counter is the only thing that tells them apart.
+//
+// The comparators stay EXACT. Each active rank fills every block it contributes
+// with a single constant, so every 128-element wire block has that constant as
+// its absmax; the power-of-two normalization target then makes
+// quantize/dequantize an identity, and a sum of equal values behaves the same
+// way. These cases are therefore a genuine detector for a wrong scale, a wrong
+// block boundary or a dropped scale. Do not loosen them.
+//
+// Reduce-scatter's own hazard, which no allreduce case can catch: the halves of
+// the send buffer are DIFFERENT blocks bound for different places, and
+// sendBlockOffset selects the one shipped to the partner. Filling each block
+// with a different constant means a wire offset computed against the wrong
+// block, or a quantize hoisted over the wrong span, changes the answer instead
+// of cancelling out.
+class ShardedRelayReduceScatterLowPrecisionTest
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int kActive = 2;
+  static constexpr int kGroups = 4;
+
+  // 2 Mi elements per output block = 16 MiB of fp32 input per active rank,
+  // comfortably above the low-precision size threshold and a whole number of
+  // 128-element blocks.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  // bf16 is carried as raw bits, the convention the rest of this file uses, so
+  // that no host-side bf16 arithmetic or comparison is involved. These
+  // overloads are selected by a value-initialized tag of the storage type.
+  static float encodeAs(float v, float) {
+    return v;
+  }
+  static int32_t encodeAs(float v, int32_t) {
+    return static_cast<int32_t>(v);
+  }
+  static uint16_t encodeAs(float v, uint16_t) {
+    return bfloat16Bits(v);
+  }
+
+  template <typename T>
+  static T encode(float v) {
+    return encodeAs(v, T{});
+  }
+
+  // Active rank r's input block b holds this value, so the expected output for
+  // whichever rank owns block b is the sum over r -- a different constant per
+  // owner, which is what makes a swapped block detectable. All four values
+  // (5, 6, 9, 10) and both sums (14, 16) are exactly representable in fp32,
+  // bf16 and, after the power-of-two normalization, e4m3.
+  static float blockValue(int activeIndex, int blockIndex) {
+    return static_cast<float>((activeIndex + 1) * 4 + (blockIndex + 1));
+  }
+
+  static float expectedOwnerValue(int blockIndex) {
+    float sum = 0.0f;
+    for (int r = 0; r < kActive; r++) {
+      sum += blockValue(r, blockIndex);
+    }
+    return sum;
+  }
+
+  struct Buffers {
+    std::vector<void*> sendMem;
+    void* recvMem{nullptr};
+    const void* sendPtrs[kGroups];
+    void* recvPtrs[kGroups];
+    size_t counts[kGroups];
+    int nGroups{kGroups};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  // Out-of-place buffers, one contiguous send/recv pair per group. Helper
+  // groups pass their send allocation as the output placeholder, as the rest of
+  // this suite does; only the active group's output is read.
+  template <typename T>
+  void makeBuffers(size_t count, int nGroups, Buffers& b) {
+    b = Buffers{};
+    b.nGroups = nGroups;
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    b.sendMem.resize(nGroups);
+    const size_t elems = static_cast<size_t>(kActive) * count;
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], elems * sizeof(T)));
+      if (g == b.myActiveGroup) {
+        std::vector<T> host(elems);
+        for (int blk = 0; blk < kActive; blk++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(blk * count),
+              host.begin() + static_cast<ptrdiff_t>((blk + 1) * count),
+              encode<T>(blockValue(b.myActiveIndex, blk)));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            elems * sizeof(T),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, elems * sizeof(T)));
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.counts[g] = count;
+    }
+    HIPCHECK_TEST(hipMalloc(&b.recvMem, count * sizeof(T)));
+    HIPCHECK_TEST(hipMemset(b.recvMem, 0, count * sizeof(T)));
+    for (int g = 0; g < nGroups; g++) {
+      b.recvPtrs[g] = (g == b.myActiveGroup) ? b.recvMem : b.sendMem[g];
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (void* p : b.sendMem) {
+      HIPCHECK_TEST(hipFree(p));
+    }
+    HIPCHECK_TEST(hipFree(b.recvMem));
+    b.sendMem.clear();
+    b.recvMem = nullptr;
+  }
+
+  // Exact, element by element. Only the ranks that own an output block check
+  // it; for a single-group call the rest are helpers with no output of their
+  // own.
+  template <typename T>
+  void expectOutputEquals(const Buffers& b, size_t count, float wantValue) {
+    if (b.myActiveGroup >= b.nGroups) {
+      return;
+    }
+    const T want = encode<T>(wantValue);
+    std::vector<T> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), b.recvMem, count * sizeof(T), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << " differs (raw comparison against the encoding of "
+                      << wantValue << ")";
+      }
+    }
+  }
+
+  ncclResult_t
+  call(const Buffers& b, ncclDataType_t dt, ncclRedOp_t op, int lowPrecision) {
+    Standard4GroupActiveRanks layout;
+    return callReduceScatterCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        dt,
+        op,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        b.nGroups,
+        lowPrecision);
+  }
+};
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, ConstantBlocksAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, Bfloat16IsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The other supported dtype, and the one the wire format was built for: bf16
+  // in, fp8 on the wire, bf16 out, with a single rounding on the whole path
+  // because reduce-scatter's helper never requantizes.
+  Buffers b;
+  makeBuffers<uint16_t>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclBfloat16, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<uint16_t>(
+      b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, AvgAppliesTheDivisorOnce) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclAvg is where reduce-scatter parts company with allreduce. Its helper is
+  // a PURE RELAY, so the divisor belongs solely to the active rank's closing
+  // reduce. A divisor also applied at the helper -- which is correct for
+  // allreduce and wrong here -- would halve the relayed chunks and leave the
+  // two direct chunks right, and the exact comparator catches that at the first
+  // relayed element. 14 / 2 and 16 / 2 are both exact.
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(
+      b,
+      kLpCount,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayReduceScatterLowPrecisionTest, DeclinesOnUnsupportedDtype) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclInt32 is not a low-precision dtype, so the flag must fall through to
+  // full precision and the answer must be exactly the full-precision answer.
+  Buffers b;
+  makeBuffers<int32_t>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclInt32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<int32_t>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Dtype), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    DeclinesOnCountThatIsNotWholeBlocks) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // One element past a whole number of 128-element blocks. sendBlockOffset is a
+  // raw per-group count here, so an unaligned count breaks additivity in the
+  // MIDDLE of the send buffer, not only in its tail -- the gate must refuse.
+  const size_t count = kLpCount + 1;
+  Buffers b;
+  makeBuffers<float>(count, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, count, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Alignment), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The behaviour an env var could not express, and the whole point of making
+  // this a per-call argument: two calls on the SAME communicator, one low
+  // precision and one not, with no state leaking from the first into the
+  // second.
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  HIPCHECK_TEST(hipMemset(b.recvMem, 0, kLpCount * sizeof(float)));
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals<float>(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The 4-group fixture above cannot reach the pipelined schedule:
+  // relayPipelineTiles() returns 1 whenever nGroups != 1. So this case is
+  // single-group, at a size the depth selector pipelines -- asserted rather
+  // than assumed, because a size that quietly failed to pipeline would silently
+  // re-test the schedule the other cases already cover.
+  const size_t count = 4ULL * 1024 * 1024;
+  const int numHelpers = 8 - kActive;
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::relayShapeA2(numHelpers), count, sizeof(float)),
+      1);
+
+  Buffers b;
+  makeBuffers<float>(count, /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(b, count, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterLowPrecisionTest,
+    SingleGroupPipelinedAvgIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The pipelined schedule reduces PER REGION on a side stream rather than once
+  // at the end, so the divisor is applied T + 1 times over disjoint spans. This
+  // pins that it is applied exactly once per element: a divisor that also
+  // landed at the helper, or one applied twice to an overlapping span, breaks
+  // the exact comparator.
+  const size_t count = 4ULL * 1024 * 1024;
+  Buffers b;
+  makeBuffers<float>(count, /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals<float>(
+      b,
+      count,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  freeBuffers(b);
+}
+
+// ===========================================================================
+// LOW PRECISION, FLAT A>2 PATH
+// ===========================================================================
+//
+// Same exactness discipline as the 2-active fixture above, at the 2-group
+// 4-active geometry, which is what reaches shardedRelayReduceScatterFlat.
+//
+// Every value here is a distinct per-(source, owner) constant, so a wrong block
+// index, a wrong helper slot or a wrong owner changes the answer. Exactness
+// survives even though the offload region rounds TWICE -- once on the way up
+// and again when the helper requantizes its sum -- because each 128-element
+// wire block is constant, and a constant block's absmax normalization makes the
+// code exactly 128 and the round trip exact for ANY value. That is the property
+// kLpNormalizeMax being a power of two buys, and it is what makes these exact
+// comparators legitimate rather than lucky.
+class ShardedRelayReduceScatterFlatLowPrecisionTest
+    : public ShardedRelayMultiGroupReduceScatterTest {
+ protected:
+  static constexpr int kActive = 4;
+  static constexpr int kGroups = 2;
+
+  // 4 Mi elements per output block = 64 MiB of fp32 input per rank. The flat
+  // route's own metric is A * recvCount * elementSize = 64 MiB, which is above
+  // both the offload crossover (~48 MB) and the low-precision threshold; the
+  // test asserts the offload route rather than assuming it.
+  static constexpr size_t kLpCount = 4ULL * 1024 * 1024;
+
+  // Source s's contribution to owner j. Distinct in both indices.
+  static float blockValue(int sourceIndex, int ownerIndex) {
+    return static_cast<float>((sourceIndex + 1) * 10 + (ownerIndex + 1));
+  }
+
+  static float expectedOwnerValue(int ownerIndex) {
+    float sum = 0.0f;
+    for (int s = 0; s < kActive; s++) {
+      sum += blockValue(s, ownerIndex);
+    }
+    return sum;
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem{nullptr};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  void makeBuffers(size_t count, Buffers& b) {
+    b = Buffers{};
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t inputCount = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], inputCount * sizeof(float)));
+      if (g == b.myActiveGroup) {
+        std::vector<float> host(inputCount);
+        for (int owner = 0; owner < kActive; owner++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(owner * count),
+              host.begin() + static_cast<ptrdiff_t>((owner + 1) * count),
+              blockValue(b.myActiveIndex, owner));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            inputCount * sizeof(float),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, inputCount * sizeof(float)));
+      }
+      b.sendPtrs[g] = b.sendMem[g];
+      b.counts[g] = count;
+    }
+
+    HIPCHECK_TEST(hipMalloc(&b.recvMem, count * sizeof(float)));
+    HIPCHECK_TEST(hipMemset(b.recvMem, 0, count * sizeof(float)));
+    for (int g = 0; g < kGroups; g++) {
+      b.recvPtrs[g] = (g == b.myActiveGroup) ? b.recvMem : b.sendMem[g];
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+    }
+    HIPCHECK_TEST(hipFree(b.recvMem));
+  }
+
+  void expectOutputEquals(const Buffers& b, size_t count, float wantValue) {
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), b.recvMem, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != wantValue) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << ": got " << got[i] << ", want " << wantValue;
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, ncclRedOp_t op, int lowPrecision) {
+    TwoGroupFourActiveRanks layout;
+    return callReduceScatterCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        ncclFloat32,
+        op,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  // The flat schedule only routes through the helpers above the offload
+  // crossover; below it the call degenerates to a pure-direct all-to-all with
+  // the helpers idle, which low precision declines. Asserting the route keeps a
+  // resized test from silently covering the wrong schedule.
+  void assertOffloadRouteSelected(size_t count) {
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      counts[g] = count;
+    }
+    ASSERT_EQ(
+        rcclx::relay::selectReduceScatterRoute(
+            kActive, 8 - kActive, kGroups, counts, sizeof(float)),
+        rcclx::relay::ReduceScatterRoute::FlatOffload);
+  }
+};
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    ConstantBlocksAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  // Covers both regions of the schedule at once: the direct all-to-all over the
+  // intra links and the reduce-at-helper offload over the cross links. Their
+  // boundary is interior to the output block, so a wire offset that disagrees
+  // with a peer's shows up as a mismatch partway through rather than
+  // everywhere.
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    AvgAppliesTheDivisorOnce) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The divisor placement differs BETWEEN THE TWO REGIONS of this one schedule.
+  // The offload region's helper reduces and returns a plain sum, so the divisor
+  // waits for the owner's fold; the direct region has no helper at all and gets
+  // it in the same owner-side reduce. A divisor applied at the helper as well
+  // would scale only the offload region, which the exact comparator catches at
+  // the region boundary rather than everywhere.
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclAvg, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectOutputEquals(
+      b,
+      kLpCount,
+      expectedOwnerValue(b.myActiveIndex) / static_cast<float>(kActive));
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertOffloadRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  HIPCHECK_TEST(hipMemset(b.recvMem, 0, kLpCount * sizeof(float)));
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclSum, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectOutputEquals(b, kLpCount, expectedOwnerValue(b.myActiveIndex));
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayReduceScatterFlatLowPrecisionTest,
+    SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the two-group
+  // cases above cannot reach the pipelined flat schedule. This one is
+  // single-group, at a size the depth selector pipelines -- asserted, so a
+  // resize cannot quietly turn this into a third test of the non-pipelined
+  // path.
+  const size_t count = 8ULL * 1024 * 1024;
+  size_t counts[1] = {count};
+  ASSERT_EQ(
+      rcclx::relay::selectReduceScatterRoute(
+          kActive, 8 - kActive, 1, counts, sizeof(float)),
+      rcclx::relay::ReduceScatterRoute::FlatOffload);
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1,
+          rcclx::relay::relayShapeFanout(kActive, 8 - kActive),
+          count,
+          sizeof(float)),
+      1);
+
+  // Group 0's active ranks are {0, 1, 2, 3}; ranks 4-7 are its helpers.
+  const int myActiveIndex = this->globalRank % kActive;
+  const bool owner = this->globalRank < kActive;
+  const size_t inputCount = static_cast<size_t>(kActive) * count;
+
+  void* sendMem = nullptr;
+  void* recvMem = nullptr;
+  HIPCHECK_TEST(hipMalloc(&sendMem, inputCount * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&recvMem, count * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(recvMem, 0, count * sizeof(float)));
+  if (owner) {
+    std::vector<float> host(inputCount);
+    for (int j = 0; j < kActive; j++) {
+      std::fill(
+          host.begin() + static_cast<ptrdiff_t>(j * count),
+          host.begin() + static_cast<ptrdiff_t>((j + 1) * count),
+          blockValue(myActiveIndex, j));
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        sendMem,
+        host.data(),
+        inputCount * sizeof(float),
+        hipMemcpyHostToDevice));
+  } else {
+    HIPCHECK_TEST(hipMemset(sendMem, 0, inputCount * sizeof(float)));
+  }
+
+  const void* sendPtrs[1] = {sendMem};
+  void* recvPtrs[1] = {owner ? recvMem : sendMem};
+  barrierSyncOn(nullptr);
+
+  TwoGroupFourActiveRanks layout;
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(
+      callReduceScatterCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclFloat32,
+          ncclSum,
+          this->commFor(kActive),
+          this->stream,
+          layout.allActiveRanks,
+          kActive,
+          1,
+          /*lowPrecision=*/1),
+      ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (owner) {
+    const float want = expectedOwnerValue(myActiveIndex);
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), recvMem, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": element " << i
+                      << ": got " << got[i] << ", want " << want;
+      }
+    }
+  }
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+
+  HIPCHECK_TEST(hipFree(sendMem));
+  HIPCHECK_TEST(hipFree(recvMem));
+}
+
 int main(int argc, char* argv[]) {
+  // The low-precision size thresholds that SHIP are a tuning policy measured
+  // per shape, and they decline most shapes outright (see lpMinBytes()). This
+  // suite covers the MECHANISM -- that the wire format is correct wherever it
+  // runs -- so it must not be coupled to that policy: a retune would otherwise
+  // silently turn these cases into no-ops that still pass. Set before any
+  // communicator exists, because NCCL_PARAM caches on first read.
+  setenv("NCCL_SHARDED_RELAY_LP_MIN_KB", "1", /*overwrite=*/1);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);

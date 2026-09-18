@@ -171,6 +171,18 @@ Status CudaApi::memcpyPeerAsync(
 
 // --- Stream ---
 
+Status CudaApi::streamCreateNonBlocking(cudaStream_t* stream) {
+  CUDA_CHECK(
+      cudaStreamCreateWithFlags(stream, cudaStreamNonBlocking),
+      ErrCode::DriverError);
+  return Ok();
+}
+
+Status CudaApi::streamDestroy(cudaStream_t stream) {
+  CUDA_CHECK(cudaStreamDestroy(stream), ErrCode::DriverError);
+  return Ok();
+}
+
 Status CudaApi::streamSynchronize(cudaStream_t stream) {
   CUDA_CHECK(cudaStreamSynchronize(stream), ErrCode::DriverError);
   return Ok();
@@ -203,6 +215,11 @@ Result<bool> CudaApi::eventQuery(cudaEvent_t event) {
   }
   CUDA_RETURN_ERR(err, "cudaEventQuery", ErrCode::DriverError);
   return false; // unreachable
+}
+
+Status CudaApi::eventSynchronize(cudaEvent_t event) {
+  CUDA_CHECK(cudaEventSynchronize(event), ErrCode::DriverError);
+  return Ok();
 }
 
 Status CudaApi::eventDestroy(cudaEvent_t event) {

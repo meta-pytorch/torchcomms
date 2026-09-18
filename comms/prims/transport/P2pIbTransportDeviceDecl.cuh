@@ -6,9 +6,9 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/IbgdaBuffer.h"
 
 namespace comms::prims {
@@ -67,6 +67,7 @@ template <typename Transport>
 __device__ __forceinline__ void init_registered_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0);
 
@@ -75,32 +76,28 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const IbgdaLocalBuffer& src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& abortDevice = AbortDevice());
 
 template <typename Transport>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_drain_once(
     Transport& transport,
     ThreadGroup& group,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& abortDevice = AbortDevice());
 
 template <typename Transport, typename Proto>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_acquire_once(
     Transport& transport,
     ThreadGroup& group,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     RecvChunkAcquisition& out);
 
 template <typename Transport, typename Proto>
 __device__ __forceinline__ void progress_recv_release_once(
     Transport& transport,
     ThreadGroup& group,
+    const AbortDevice& abortDevice,
     const RecvChunkAcquisition& view);
 
 template <typename Transport>
@@ -110,17 +107,14 @@ __device__ __forceinline__ void send_registered(
     const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0,
-    const Timeout& timeout = Timeout());
+    const AbortDevice& abortDevice = AbortDevice());
 
 template <typename Transport, typename CopyOp, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_send_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
-    const Timeout& timeout,
+    const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args);
@@ -182,23 +176,23 @@ struct P2pIbTransportDevice {
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void reset_signal(ThreadGroup& group, int signalId);
 
@@ -264,28 +258,28 @@ struct P2pIbTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_counter(
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   __device__ void reset_signal(
       ThreadGroup& group,
@@ -306,13 +300,17 @@ struct P2pIbTransportDevice {
   // Takes the abort handle so the drain terminates on abort instead of waiting
   // on a NIC that will never complete. Stays void: the wait terminates itself,
   // and a caller draining its own WQEs has nothing to do with a status.
-  __device__ void flush(ThreadGroup& group, const Timeout& timeout = Timeout());
+  __device__ void flush(
+      ThreadGroup& group,
+      const AbortDevice& abortDevice = AbortDevice());
 
-  __device__ void flush(const Timeout& timeout = Timeout());
+  __device__ void flush(const AbortDevice& abortDevice = AbortDevice());
 
-  __device__ void fence(ThreadGroup& group, const Timeout& timeout = Timeout());
+  __device__ void fence(
+      ThreadGroup& group,
+      const AbortDevice& abortDevice = AbortDevice());
 
-  __device__ void fence(const Timeout& timeout = Timeout());
+  __device__ void fence(const AbortDevice& abortDevice = AbortDevice());
 
   __device__ __forceinline__ void require_ibgda(
       ThreadGroup& group,
@@ -324,7 +322,7 @@ struct P2pIbTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
   template <typename = void>
@@ -333,7 +331,7 @@ struct P2pIbTransportDevice {
       const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
@@ -341,17 +339,20 @@ struct P2pIbTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
   __device__ __forceinline__ std::size_t pipeline_window() const;
@@ -363,18 +364,21 @@ struct P2pIbTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
   template <typename = void>
   __device__ __forceinline__ void init_registered_send_progress(
       ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
@@ -384,35 +388,26 @@ struct P2pIbTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
   template <typename = void>
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_once(
       ThreadGroup& group,
-      const IbgdaLocalBuffer& src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   template <typename = void>
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_drain_once(
       ThreadGroup& group,
-      const Timeout& timeout = Timeout());
+      const AbortDevice& abortDevice = AbortDevice());
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_send_once_with_trace(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
       Args... args);
@@ -420,14 +415,13 @@ struct P2pIbTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_acquire_once(
       ThreadGroup& group,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out);
 
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view);
 
   template <
@@ -436,20 +430,14 @@ struct P2pIbTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_once_with_trace(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
       Args... args);
@@ -458,13 +446,19 @@ struct P2pIbTransportDevice {
 static_assert(std::is_standard_layout_v<P2pIbTransportDevice>);
 static_assert(std::is_trivially_copyable_v<P2pIbTransportDevice>);
 
-template <uint32_t WorkerThreads>
+// `Proto` is the wire format every op on this policy uses. It lives on the
+// policy rather than on each call so a collective picks the format once, at the
+// point it builds its ops object, and cannot end up with a mixed-protocol
+// sequence on one channel. The warp-proxy policy has no LL counterpart, so LL
+// is only reachable through this blocking one.
+template <uint32_t WorkerThreads, typename Proto = protocol::Simple>
 class BlockingIbOps {
  public:
   static constexpr uint32_t kWorkerThreads = WorkerThreads;
+  using WireProto = Proto;
 
-  __device__ BlockingIbOps(ThreadGroup workers, const Timeout& timeout)
-      : workers_(workers), timeout_(timeout) {}
+  __device__ BlockingIbOps(ThreadGroup workers, const AbortDevice& abortDevice)
+      : workers_(workers), timeout_(abortDevice) {}
 
   __device__ __forceinline__ ThreadGroup& group() {
     return workers_;
@@ -483,7 +477,7 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    transport.template send<CopyOp>(
+    transport.template send<CopyOp, Proto>(
         workers_, src, nbytes, maxSignalBytes, timeout_, args...);
   }
 
@@ -494,7 +488,7 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    transport.template recv<CopyOp>(
+    transport.template recv<CopyOp, Proto>(
         workers_, dst, nbytes, maxSignalBytes, timeout_, args...);
   }
 
@@ -506,13 +500,13 @@ class BlockingIbOps {
       std::size_t nbytes,
       std::size_t maxSignalBytes,
       Args... args) {
-    prev.template forward<CopyOp>(
+    prev.template forward<CopyOp, Proto>(
         workers_, dst, next, nbytes, maxSignalBytes, timeout_, args...);
   }
 
  private:
   ThreadGroup workers_;
-  Timeout timeout_;
+  AbortDevice timeout_;
 };
 
 } // namespace comms::prims

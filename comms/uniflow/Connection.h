@@ -23,7 +23,7 @@ class Connection {
 
   ~Connection();
 
-  /// Graceful shutdown: stop reader, shut down transport, close ctrl.
+  /// Graceful shutdown: shut down transport, then close ctrl.
   void shutdown();
 
   Status sendCtrlMsg(std::span<const uint8_t> payload);

@@ -11,9 +11,9 @@ namespace comms::prims {
 template <int NumRings, int kBlockSize>
 __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
     const __grid_constant__ RingAllgatherArgs<NumRings> args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   auto group = make_block_group();
   auto [ring_id, ring_group] = group.partition(NumRings);
@@ -56,7 +56,7 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
     // Step 0: Send own chunk to next.
     char* send_src = args.recvbuf + my_rank * chunk_bytes + ring_offset +
         io_tile_offset + off;
-    next.send(group, send_src, window, max_sig, timeout);
+    next.send(group, send_src, window, max_sig, abortDevice);
 
     // Steps 1..W-1: receive and forward (or just receive on last step).
     int current_rank = my_rank;
@@ -66,9 +66,9 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
           io_tile_offset + off;
 
       if (step < W - 2) {
-        prev.forward(group, dst, next, window, max_sig, timeout);
+        prev.forward(group, dst, next, window, max_sig, abortDevice);
       } else {
-        prev.recv(group, dst, window, max_sig, timeout);
+        prev.recv(group, dst, window, max_sig, abortDevice);
       }
     }
   }
@@ -78,12 +78,12 @@ __global__ __launch_bounds__(kBlockSize, 1) void ring_allgather_kernel(
 // Template instantiations
 template __global__ void ring_allgather_kernel<1, 512>(
     const __grid_constant__ RingAllgatherArgs<1>,
-    Timeout);
+    AbortDevice);
 template __global__ void ring_allgather_kernel<2, 512>(
     const __grid_constant__ RingAllgatherArgs<2>,
-    Timeout);
+    AbortDevice);
 template __global__ void ring_allgather_kernel<4, 512>(
     const __grid_constant__ RingAllgatherArgs<4>,
-    Timeout);
+    AbortDevice);
 
 } // namespace comms::prims

@@ -160,7 +160,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
   std::unique_ptr<CtranIb> ctranIb;
   try {
-    ctranIb = std::make_unique<CtranIb>(comm_.get(), std::nullopt);
+    ctranIb = std::make_unique<CtranIb>(comm_.get());
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend failed to allocate. Skip test";
   }

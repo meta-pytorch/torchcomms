@@ -2,22 +2,24 @@
 
 #include "comms/utils/logger/LogTypes.h"
 
+#include <atomic>
+
 namespace meta::comms::logger {
 namespace {
 
-uint64_t& getSubSystemMask() {
-  static uint64_t subSystemMask = 0;
+std::atomic<uint64_t>& getSubSystemMask() {
+  static std::atomic<uint64_t> subSystemMask{0};
   return subSystemMask;
 }
 
 } // namespace
 
 void setSubSystemMask(uint64_t subSystemMaskValue) {
-  getSubSystemMask() = subSystemMaskValue;
+  getSubSystemMask().store(subSystemMaskValue, std::memory_order_relaxed);
 }
 
 bool isEnabledSubSystemBitwise(uint64_t subSystem) {
-  return getSubSystemMask() & subSystem;
+  return (getSubSystemMask().load(std::memory_order_relaxed) & subSystem) != 0;
 }
 
 } // namespace meta::comms::logger

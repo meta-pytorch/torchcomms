@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "comms/prims/tests/RecvForwardChainTest.h"
@@ -21,6 +22,45 @@ using meta::comms::BenchmarkTestFixture;
 using meta::comms::DeviceBuffer;
 
 namespace comms::prims::tests {
+
+namespace {
+
+struct ChainMode {
+  test::ChainProto proto;
+};
+
+// Every wire format the chain supports. Cases sweep both on ONE transport,
+// which also gives the cross-protocol coverage that matters most here: Simple
+// and LL share a channel's QPs and its recvDataReadyLaneCursor, and an LL path
+// that forgets to advance that mirror passes every all-LL and all-Simple run
+// yet deadlocks the next Simple recv.
+constexpr std::array<ChainMode, 2> kChainModes = {{
+    {test::ChainProto::Simple},
+    {test::ChainProto::LL},
+}};
+
+std::string modeName(const ChainMode& mode) {
+  return std::string(mode.proto == test::ChainProto::LL ? "ll" : "simple") +
+      "_blocking";
+}
+
+// Position-dependent so a stale-slot or stale-flag accept cannot pass. A
+// uniform fill would let LL return the previous ring pass's bytes unnoticed --
+// and it would return them EARLY, so it shows up as a better latency number
+// rather than a failure.
+uint8_t expectedByte(uint8_t base, std::size_t i) {
+  return static_cast<uint8_t>(base + (i % 251));
+}
+
+std::vector<uint8_t> makePattern(uint8_t base, std::size_t nbytes) {
+  std::vector<uint8_t> data(nbytes);
+  for (std::size_t i = 0; i < nbytes; ++i) {
+    data[i] = expectedByte(base, i);
+  }
+  return data;
+}
+
+} // namespace
 
 class RecvForwardChainTest : public BenchmarkTestFixture {
  protected:
@@ -51,6 +91,108 @@ class RecvForwardChainTest : public BenchmarkTestFixture {
     return transport;
   }
 
+  // Device-resident array of per-rank transport pointers, indexed by rank.
+  DeviceBuffer makePeerTable(MultipeerIbgdaTransport& transport) {
+    std::vector<P2pIbgdaTransportDevice*> peers(worldSize, nullptr);
+    for (int r = 0; r < worldSize; ++r) {
+      if (r != globalRank) {
+        peers[r] = transport.getP2pTransportDevice(r);
+      }
+    }
+    DeviceBuffer table(worldSize * sizeof(P2pIbgdaTransportDevice*));
+    CUDACHECK_TEST(cudaMemcpy(
+        table.get(),
+        peers.data(),
+        worldSize * sizeof(P2pIbgdaTransportDevice*),
+        cudaMemcpyHostToDevice));
+    return table;
+  }
+
+  /**
+   * Run one chain pass and verify it.
+   *
+   * `use_dst` selects whether intermediates also copy into recv_buf. Ranks that
+   * are expected to hold the data are checked byte-for-byte; `expectData`
+   * decides which those are (all but rank 0 with a dst, only the last rank
+   * without one).
+   */
+  void runChainCase(
+      DeviceBuffer& peerTable,
+      DeviceBuffer& sendBuf,
+      DeviceBuffer& recvBuf,
+      std::size_t nbytes,
+      int numBlocks,
+      const ChainMode& mode,
+      bool use_dst,
+      uint8_t base) {
+    const std::vector<uint8_t> pattern = makePattern(base, nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        sendBuf.get(), pattern.data(), nbytes, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, nbytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    bootstrap->barrierAll();
+
+    auto* peers = static_cast<P2pIbgdaTransportDevice**>(peerTable.get());
+    auto* src = static_cast<const char*>(sendBuf.get());
+    auto* dst = static_cast<char*>(recvBuf.get());
+    if (use_dst) {
+      test::launch_recv_forward_chain(
+          peers,
+          src,
+          dst,
+          nbytes,
+          globalRank,
+          worldSize,
+          numBlocks,
+          stream_,
+          mode.proto);
+    } else {
+      test::launch_recv_forward_chain_no_dst(
+          peers,
+          src,
+          dst,
+          nbytes,
+          globalRank,
+          worldSize,
+          numBlocks,
+          stream_,
+          mode.proto);
+    }
+
+    cudaError_t err = cudaStreamSynchronize(stream_);
+    ASSERT_EQ(err, cudaSuccess)
+        << modeName(mode) << " kernel failed: " << cudaGetErrorString(err);
+    bootstrap->barrierAll();
+
+    const bool expectData =
+        use_dst ? (globalRank != 0) : (globalRank == worldSize - 1);
+    if (!expectData) {
+      return;
+    }
+    std::vector<uint8_t> hostBuf(nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuf.data(), recvBuf.get(), nbytes, cudaMemcpyDeviceToHost));
+
+    std::size_t errors = 0;
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      if (hostBuf[i] != expectedByte(base, i)) {
+        if (errors < 10) {
+          COMMS_LOG(
+              ERR,
+              "[{}] rank {}: byte {} expected 0x{:02X} got 0x{:02X}",
+              modeName(mode),
+              globalRank,
+              i,
+              expectedByte(base, i),
+              hostBuf[i]);
+        }
+        ++errors;
+      }
+    }
+    EXPECT_EQ(errors, 0u) << modeName(mode) << ": rank " << globalRank
+                          << " saw " << errors << " byte mismatches";
+  }
+
   cudaStream_t stream_{};
 };
 
@@ -68,69 +210,21 @@ TEST_F(RecvForwardChainTest, ForwardWithCopy) {
 
   try {
     auto transport = create_transport(kDataBytes, kNumBlocks);
-
     DeviceBuffer sendBuf(kDataBytes);
     DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
 
-    const uint8_t fillPattern = 0xCA;
-    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
-    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    // Build per-rank transport pointer array
-    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
-    for (int r = 0; r < worldSize; ++r) {
-      if (r != globalRank) {
-        peer_transports[r] = transport->getP2pTransportDevice(r);
-      }
-    }
-    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
-    CUDACHECK_TEST(cudaMemcpy(
-        d_transports.get(),
-        peer_transports.data(),
-        worldSize * sizeof(P2pIbgdaTransportDevice*),
-        cudaMemcpyHostToDevice));
-
-    bootstrap->barrierAll();
-
-    test::launch_recv_forward_chain(
-        static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
-        static_cast<const char*>(sendBuf.get()),
-        static_cast<char*>(recvBuf.get()),
-        kDataBytes,
-        globalRank,
-        worldSize,
-        kNumBlocks,
-        stream_);
-
-    cudaError_t err = cudaStreamSynchronize(stream_);
-    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
-
-    bootstrap->barrierAll();
-
-    // All ranks except rank 0 should have received the data
-    if (globalRank != 0) {
-      std::vector<uint8_t> hostBuf(kDataBytes);
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
-
-      int errors = 0;
-      for (std::size_t i = 0; i < kDataBytes; ++i) {
-        if (hostBuf[i] != fillPattern) {
-          if (errors < 10) {
-            COMMS_LOG(
-                ERR,
-                "Rank {}: byte {} expected 0x{:02X} got 0x{:02X}",
-                globalRank,
-                i,
-                fillPattern,
-                hostBuf[i]);
-          }
-          ++errors;
-        }
-      }
-      EXPECT_EQ(errors, 0) << "Rank " << globalRank << ": " << errors
-                           << " byte mismatches";
+    uint8_t base = 0xCA;
+    for (const auto& mode : kChainModes) {
+      runChainCase(
+          peerTable,
+          sendBuf,
+          recvBuf,
+          kDataBytes,
+          kNumBlocks,
+          mode,
+          /*use_dst=*/true,
+          base++);
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
@@ -150,58 +244,21 @@ TEST_F(RecvForwardChainTest, ForwardOnly) {
 
   try {
     auto transport = create_transport(kDataBytes, kNumBlocks);
-
     DeviceBuffer sendBuf(kDataBytes);
     DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
 
-    const uint8_t fillPattern = 0xBE;
-    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
-    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
-    for (int r = 0; r < worldSize; ++r) {
-      if (r != globalRank) {
-        peer_transports[r] = transport->getP2pTransportDevice(r);
-      }
-    }
-    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
-    CUDACHECK_TEST(cudaMemcpy(
-        d_transports.get(),
-        peer_transports.data(),
-        worldSize * sizeof(P2pIbgdaTransportDevice*),
-        cudaMemcpyHostToDevice));
-
-    bootstrap->barrierAll();
-
-    test::launch_recv_forward_chain_no_dst(
-        static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
-        static_cast<const char*>(sendBuf.get()),
-        static_cast<char*>(recvBuf.get()),
-        kDataBytes,
-        globalRank,
-        worldSize,
-        kNumBlocks,
-        stream_);
-
-    cudaError_t err = cudaStreamSynchronize(stream_);
-    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
-
-    bootstrap->barrierAll();
-
-    // Only the last rank gets data
-    if (globalRank == worldSize - 1) {
-      std::vector<uint8_t> hostBuf(kDataBytes);
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
-
-      int errors = 0;
-      for (std::size_t i = 0; i < kDataBytes; ++i) {
-        if (hostBuf[i] != fillPattern) {
-          ++errors;
-        }
-      }
-      EXPECT_EQ(errors, 0) << "Last rank: " << errors << " byte mismatches";
+    uint8_t base = 0xBE;
+    for (const auto& mode : kChainModes) {
+      runChainCase(
+          peerTable,
+          sendBuf,
+          recvBuf,
+          kDataBytes,
+          kNumBlocks,
+          mode,
+          /*use_dst=*/false,
+          base++);
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
@@ -221,65 +278,31 @@ TEST_F(RecvForwardChainTest, SendRecvDirect) {
 
   try {
     auto transport = create_transport(kDataBytes, kNumBlocks);
-
     DeviceBuffer sendBuf(kDataBytes);
     DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
 
-    const uint8_t fillPattern = 0x55;
-    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
-    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
-    for (int r = 0; r < worldSize; ++r) {
-      if (r != globalRank) {
-        peer_transports[r] = transport->getP2pTransportDevice(r);
-      }
-    }
-    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
-    CUDACHECK_TEST(cudaMemcpy(
-        d_transports.get(),
-        peer_transports.data(),
-        worldSize * sizeof(P2pIbgdaTransportDevice*),
-        cudaMemcpyHostToDevice));
-
-    bootstrap->barrierAll();
-
-    // Chain with worldSize=2: rank 0 sends, rank 1 receives — no recv_forward
-    test::launch_recv_forward_chain(
-        static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
-        static_cast<const char*>(sendBuf.get()),
-        static_cast<char*>(recvBuf.get()),
-        kDataBytes,
-        globalRank,
-        worldSize,
-        kNumBlocks,
-        stream_);
-
-    cudaError_t err = cudaStreamSynchronize(stream_);
-    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
-
-    bootstrap->barrierAll();
-
-    if (globalRank == 1) {
-      std::vector<uint8_t> hostBuf(kDataBytes);
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
-
-      int errors = 0;
-      for (std::size_t i = 0; i < kDataBytes; ++i) {
-        if (hostBuf[i] != fillPattern) {
-          ++errors;
-        }
-      }
-      EXPECT_EQ(errors, 0) << "Rank 1: " << errors << " byte mismatches";
+    uint8_t base = 0x55;
+    for (const auto& mode : kChainModes) {
+      runChainCase(
+          peerTable,
+          sendBuf,
+          recvBuf,
+          kDataBytes,
+          kNumBlocks,
+          mode,
+          /*use_dst=*/true,
+          base++);
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
   }
 }
 
-// Multi-section test: transfer more data than one slot to exercise pipelining.
+// Multi-section test: transfer more data than one slot to exercise pipelining,
+// slot reuse, and the generation advance that slot reuse implies. Without a
+// transfer long enough to wrap the staging ring, every packet in an LL run
+// carries generation 1 and a missing re-stamp cannot show up.
 TEST_F(RecvForwardChainTest, MultiSection) {
   if (worldSize < 2) {
     COMMS_LOG(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
@@ -292,58 +315,115 @@ TEST_F(RecvForwardChainTest, MultiSection) {
 
   try {
     auto transport = create_transport(kSlotSize, kNumBlocks);
-
     DeviceBuffer sendBuf(kDataBytes);
     DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
 
-    const uint8_t fillPattern = 0xDD;
-    CUDACHECK_TEST(cudaMemset(sendBuf.get(), fillPattern, kDataBytes));
-    CUDACHECK_TEST(cudaMemset(recvBuf.get(), 0, kDataBytes));
-    CUDACHECK_TEST(cudaDeviceSynchronize());
-
-    std::vector<P2pIbgdaTransportDevice*> peer_transports(worldSize, nullptr);
-    for (int r = 0; r < worldSize; ++r) {
-      if (r != globalRank) {
-        peer_transports[r] = transport->getP2pTransportDevice(r);
-      }
+    uint8_t base = 0xDD;
+    for (const auto& mode : kChainModes) {
+      runChainCase(
+          peerTable,
+          sendBuf,
+          recvBuf,
+          kDataBytes,
+          kNumBlocks,
+          mode,
+          /*use_dst=*/true,
+          base++);
     }
-    DeviceBuffer d_transports(worldSize * sizeof(P2pIbgdaTransportDevice*));
-    CUDACHECK_TEST(cudaMemcpy(
-        d_transports.get(),
-        peer_transports.data(),
-        worldSize * sizeof(P2pIbgdaTransportDevice*),
-        cudaMemcpyHostToDevice));
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
 
-    bootstrap->barrierAll();
+// A transfer whose per-block size is not a multiple of the LL packet payload
+// (kData = 4), so the final packet of each stream carries fewer than kData
+// valid bytes alongside the packer's zero padding. Every size above is a clean
+// multiple, which never exercises the valid_payload mask on the relay hop.
+TEST_F(RecvForwardChainTest, PartialFinalPacket) {
+  if (worldSize < 2) {
+    COMMS_LOG(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
+    return;
+  }
 
-    test::launch_recv_forward_chain(
-        static_cast<P2pIbgdaTransportDevice**>(d_transports.get()),
-        static_cast<const char*>(sendBuf.get()),
-        static_cast<char*>(recvBuf.get()),
-        kDataBytes,
-        globalRank,
-        worldSize,
-        kNumBlocks,
-        stream_);
+  // The slot size stays 16 B-aligned (the transport requires it of
+  // perChannelSize); only the payload is odd. Block 0 takes a 16 B-aligned
+  // share and the last block takes the remainder, so its stream ends
+  // mid-packet: 131083 % 4 == 3.
+  constexpr std::size_t kSlotSize = 256 * 1024;
+  constexpr std::size_t kDataBytes = kSlotSize - 5;
+  constexpr int kNumBlocks = 2;
 
-    cudaError_t err = cudaStreamSynchronize(stream_);
-    ASSERT_EQ(err, cudaSuccess) << "Kernel failed: " << cudaGetErrorString(err);
+  try {
+    auto transport = create_transport(kSlotSize, kNumBlocks);
+    DeviceBuffer sendBuf(kDataBytes);
+    DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
 
-    bootstrap->barrierAll();
+    uint8_t base = 0x33;
+    for (const auto& mode : kChainModes) {
+      runChainCase(
+          peerTable,
+          sendBuf,
+          recvBuf,
+          kDataBytes,
+          kNumBlocks,
+          mode,
+          /*use_dst=*/true,
+          base++);
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
 
-    if (globalRank != 0) {
-      std::vector<uint8_t> hostBuf(kDataBytes);
-      CUDACHECK_TEST(cudaMemcpy(
-          hostBuf.data(), recvBuf.get(), kDataBytes, cudaMemcpyDeviceToHost));
+/**
+ * Alternate Simple and LL forwards repeatedly on one channel.
+ *
+ * The two protocols own separate progress cursors and staging banks but SHARE
+ * the channel's QPs and its recvDataReadyLaneCursor. select_put_lane_ordinal()
+ * bumps the sender's cursor on every put regardless of protocol, so every LL
+ * recv-side path has to bump the receiver's mirror to match. Skipping it
+ * leaves the two one chunk apart per LL transfer, and the NEXT Simple receive
+ * resolves to a lane the sender never wrote and blocks forever.
+ *
+ * All-Simple and all-LL runs cannot catch that -- the first keeps both
+ * counters in step, the second never consults the lane mapping. Only an
+ * interleaving does, which is why this case exists separately from the sweeps
+ * above and alternates several times rather than once.
+ */
+TEST_F(RecvForwardChainTest, MixedProtocolAlternating) {
+  if (worldSize < 2) {
+    COMMS_LOG(INFO, "Skipping: requires >= 2 ranks, got {}", worldSize);
+    return;
+  }
 
-      int errors = 0;
-      for (std::size_t i = 0; i < kDataBytes; ++i) {
-        if (hostBuf[i] != fillPattern) {
-          ++errors;
-        }
+  constexpr std::size_t kDataBytes = 256 * 1024;
+  constexpr int kNumBlocks = 2;
+  constexpr int kRounds = 3;
+
+  try {
+    auto transport = create_transport(kDataBytes, kNumBlocks);
+    DeviceBuffer sendBuf(kDataBytes);
+    DeviceBuffer recvBuf(kDataBytes);
+    DeviceBuffer peerTable = makePeerTable(*transport);
+
+    uint8_t base = 0x10;
+    for (int round = 0; round < kRounds; ++round) {
+      for (const auto proto :
+           {test::ChainProto::Simple,
+            test::ChainProto::LL,
+            test::ChainProto::Simple}) {
+        runChainCase(
+            peerTable,
+            sendBuf,
+            recvBuf,
+            kDataBytes,
+            kNumBlocks,
+            ChainMode{proto},
+            /*use_dst=*/true,
+            base++);
       }
-      EXPECT_EQ(errors, 0) << "Rank " << globalRank << ": " << errors
-                           << " byte mismatches in multi-section transfer";
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();

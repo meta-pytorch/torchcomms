@@ -6,13 +6,17 @@
 
 #include <gtest/gtest.h>
 
-#include <folly/logging/xlog.h>
-
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/bootstrap/tests/CtranLoggingEnvironment.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ::testing;
 using namespace std::literals::chrono_literals;
+
+namespace {
+[[maybe_unused]] auto* const kCtranLoggingEnvironment =
+    ctran::bootstrap::testing::registerCtranLoggingEnvironment();
+} // namespace
 
 TEST(Socket, GetInterfaceAddress) {
   const bool kPreferV6{true};
@@ -49,7 +53,7 @@ TEST(Socket, GetInterfaceAddress) {
   maybeEth0Addr6 =
       ctran::bootstrap::getInterfaceAddress("eth0", "2401", kPreferV6);
   if (maybeEth0Addr6.hasValue()) {
-    XLOG(INFO) << "Found v6 address: " << maybeEth0Addr6->str();
+    CTRAN_LOG_STREAM(INFO) << "Found v6 address: " << maybeEth0Addr6->str();
     EXPECT_TRUE(maybeEth0Addr6->isV6());
     EXPECT_EQ(0, maybeEth0Addr6->str().find("2401"));
   }
@@ -170,7 +174,7 @@ TEST(Socket, ConnectRetries) {
   ctran::bootstrap::ServerSocket server{1};
 
   // Bind server on the loopback interface but do not listen
-  XLOG(INFO) << "Binding server..";
+  CTRAN_LOG_STREAM(INFO) << "Binding server..";
   ASSERT_EQ(0, server.bind(folly::SocketAddress("::1", 0), "lo"));
   const auto& maybeServerAddr = server.getListenAddress();
   ASSERT_FALSE(maybeServerAddr.hasError());
@@ -178,7 +182,7 @@ TEST(Socket, ConnectRetries) {
 
   // Connect client to the server. It may experience few connect errors but
   // retry will eventually make it succeed
-  XLOG(INFO) << "Connecting to server..";
+  CTRAN_LOG_STREAM(INFO) << "Connecting to server..";
   ctran::bootstrap::Socket client;
   ASSERT_EQ(
       ECONNREFUSED, client.connect(serverAddr, "lo", 100ms, 5 /* retries */));
@@ -187,12 +191,12 @@ TEST(Socket, ConnectRetries) {
   // Delay the listen in a separate thread to simulate a connect error
   std::thread listenThread([&]() {
     std::this_thread::sleep_for(500ms);
-    XLOG(INFO) << "Starting to listen on server";
+    CTRAN_LOG_STREAM(INFO) << "Starting to listen on server";
     ASSERT_EQ(0, server.listen());
   });
 
   // Attempt to connect to server again .. we may succeed after few more retries
-  XLOG(INFO) << "Attempting to connect to server again..";
+  CTRAN_LOG_STREAM(INFO) << "Attempting to connect to server again..";
   ASSERT_EQ(0, client.connect(serverAddr, "lo", 100ms, 10 /* retries */));
   EXPECT_NE(client.getFd(), -1);
 
@@ -272,26 +276,27 @@ TEST(Socket, SocketNonBlocking) {
       timeout_counter += 1;
       ret = poll(fds, 2, 500);
       if (ret == 0) {
-        XLOG(INFO) << "Poll timeout counter: " << timeout_counter;
+        CTRAN_LOG_STREAM(INFO) << "Poll timeout counter: " << timeout_counter;
         continue;
       } else if (ret < 0) {
-        XLOG(ERR) << "Poll error" << std::endl;
+        CTRAN_LOG_STREAM(ERR) << "Poll error";
         break;
       } else {
-        XLOG(INFO) << "Successfully polled " << ret << " fds";
+        CTRAN_LOG_STREAM(INFO) << "Successfully polled " << ret << " fds";
         for (int fid = 0; fid < 2; fid++) {
           if (fds[fid].revents & POLLIN) {
-            XLOG(INFO) << "fid: " << fid << " fd: " << fds[fid].fd
-                       << " revents: " << fds[fid].revents;
+            CTRAN_LOG_STREAM(INFO) << "fid: " << fid << " fd: " << fds[fid].fd
+                                   << " revents: " << fds[fid].revents;
             int rcvd = sockets[fid]->recvAsync(buffer, 100);
             if (rcvd < 0) {
-              XLOG(ERR) << "Read error" << std::endl;
+              CTRAN_LOG_STREAM(ERR) << "Read error";
               break;
             } else if (rcvd == 0) {
-              XLOG(INFO) << "Server closed the connection";
+              CTRAN_LOG_STREAM(INFO) << "Server closed the connection";
             } else {
-              XLOG(INFO) << "fd " << fds[fid].fd << " successfully read "
-                         << rcvd << " bytes";
+              CTRAN_LOG_STREAM(INFO)
+                  << "fd " << fds[fid].fd << " successfully read " << rcvd
+                  << " bytes";
 
               EXPECT_EQ(
                   0, std::memcmp(buffer, expected.data(), expected.size()));

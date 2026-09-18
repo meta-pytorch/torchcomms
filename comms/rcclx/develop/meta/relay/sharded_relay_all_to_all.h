@@ -29,10 +29,10 @@
  * nActiveRanksPerGroup must be a power of two (2 or 4). A==2 selects between
  * the exact direct exchange at small sizes and the original 2-active
  * passthrough relay with 6 dedicated helpers. A==4 with 4
- * helpers uses the no-pack XOR/Latin relay when the common maximum per-active-
- * rank input size, A * max(segmentCounts) * elementSize, is in [63 MiB,
- * 256 MiB) and every group count is positive. Other A==4 calls use the exact
- * pure-direct all-to-all. OUT-OF-PLACE ONLY in all cases.
+ * helpers uses the no-pack XOR/Latin relay once the common maximum per-active-
+ * rank input size, A * max(segmentCounts) * elementSize, reaches 27 MiB (fused)
+ * or 9 MiB (independent) and every group count is positive. Smaller A==4 calls
+ * use the exact pure-direct all-to-all. OUT-OF-PLACE ONLY in all cases.
  *
  * Unlike allreduce/reduce-scatter, all-to-all performs NO reduction — it is
  * pure data movement — so no reduction kernels are used and there is no
@@ -71,11 +71,12 @@
  * Chunking:
  * =========
  * A==2 relay: chunkSize = segmentCounts[g] / (numHelpers + 2), rounded down to
- * 128 elements. One direct chunk rides with each relay group; if alignment
- * makes chunkSize zero, directA/directB cover the whole segment.
- * Routed A==4: directA = floor(segmentCounts[g] / 3), relayCount is directA
- * rounded down to 128 elements, and directB absorbs every alignment and
- * division tail. The three contiguous regions cover every element once.
+ * kRelayChunkAlignElements (512) elements. One direct chunk rides with each
+ * relay group; if alignment makes chunkSize zero, directA/directB cover the
+ * whole segment. Routed A==4: directA = floor(segmentCounts[g] / 3), relayCount
+ * is directA rounded down to kRelayChunkAlignElements (512) elements, and
+ * directB absorbs every alignment and division tail. The three contiguous
+ * regions cover every element once.
  *
  * Helper-Buffer Contract (passthrough-at-helper):
  * ===============================================
@@ -119,6 +120,14 @@
  * [nGroups][nActiveRanksPerGroup]
  * @param nActiveRanksPerGroup Number of active ranks per group (2 or 4)
  * @param nGroups Number of groups (typically 4 for 8-GPU node)
+ * @param lowPrecision Non-zero to use the low-precision (fp8e4m3) wire format
+ *        where it pays; an internal size-only gate declines to full precision
+ *        silently otherwise (see sharded_relay_lp.h). COLLECTIVE -- it must be
+ *        identical on every rank of the call, like datatype and the counts.
+ *        Ranks that disagree disagree on how many bytes cross each link, so the
+ *        call hangs or corrupts rather than degrading. Documented rather than
+ *        validated, because a per-call check would cost an allreduce; datatype
+ *        is already treated the same way.
  * @return ncclResult_t Success or error code
  */
 ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
@@ -130,4 +139,5 @@ ncclResult_t ncclShardedRelayMultiGroupAllToAllImpl(
     cudaStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups);
+    int nGroups,
+    int lowPrecision = 0);

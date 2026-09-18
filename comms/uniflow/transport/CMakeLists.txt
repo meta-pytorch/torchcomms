@@ -26,3 +26,6 @@ target_include_directories(uniflow_transport PUBLIC
 # Sub-components
 add_subdirectory(nvlink)
 add_subdirectory(rdma)
+if(UNIFLOW_ENABLE_TCP_TRANSPORT)
+  add_subdirectory(tcp)
+endif()

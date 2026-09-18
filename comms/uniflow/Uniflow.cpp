@@ -7,12 +7,31 @@
 
 namespace uniflow {
 
+namespace {
+
+MultiTransportFactoryOptions makeFactoryOptions(
+    const UniflowAgentConfig& config) {
+  MultiTransportFactoryOptions options;
+  options.enableTcp = config.enableTcp;
+  options.tcpBindHost = config.tcpBindHost;
+  options.preferredTransport = config.preferredTransport;
+  options.intraNodeTransport = config.intraNodeTransport;
+  options.interNodeTransport = config.interNodeTransport;
+  options.tcpTransportConfig = config.tcpTransportConfig;
+  return options;
+}
+
+} // namespace
+
 UniflowAgent::UniflowAgent(
     const UniflowAgentConfig& config,
     std::unique_ptr<controller::Client> client,
     std::unique_ptr<controller::Server> server)
     : config_(config),
-      factory_(std::make_shared<MultiTransportFactory>(config.deviceId)),
+      factory_(
+          std::make_shared<MultiTransportFactory>(
+              config.deviceId,
+              makeFactoryOptions(config))),
       client_(std::move(client)),
       server_(std::move(server)) {
   if (!client_) {
@@ -31,6 +50,16 @@ UniflowAgent::UniflowAgent(
           "TcpServer init failed: " + status.error().toString());
     }
     server_ = std::move(tcpServer);
+  }
+}
+
+UniflowAgent::~UniflowAgent() noexcept {
+  shutdown();
+}
+
+void UniflowAgent::shutdown() noexcept {
+  if (server_) {
+    server_->shutdown();
   }
 }
 

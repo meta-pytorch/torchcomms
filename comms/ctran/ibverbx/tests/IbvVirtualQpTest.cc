@@ -2,10 +2,6 @@
 
 #include "comms/ctran/ibverbx/tests/IbverbxTestFixture.h"
 
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
-
 namespace ibverbx {
 
 TEST_F(IbverbxTestFixture, IbvQpGetQpNumFailsAfterMove) {

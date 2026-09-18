@@ -4,6 +4,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "comms/ctran/utils/CtranLogger.h"
 
 #include <cuda_runtime.h>
 
@@ -16,7 +17,6 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::fttesting {
 
@@ -44,7 +44,7 @@ struct FtTestSync {
   void wait(std::chrono::milliseconds timeout) {
     bool signaled = baton_.try_wait_for(timeout);
     if (!signaled) {
-      CLOGF(INFO, "wait timeout");
+      CTRAN_LOG(INFO, "wait timeout");
     }
   }
 

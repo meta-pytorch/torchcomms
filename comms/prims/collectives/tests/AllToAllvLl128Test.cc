@@ -93,8 +93,7 @@ TEST_P(AllToAllvLl128EqualSizeTest, AllToAllvLl128EqualSize) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   auto transports_span = transport->getDeviceTransports();
@@ -496,8 +495,7 @@ TEST_P(AllToAllvLl128UnequalSizeTest, AllToAllvLl128UnequalSize) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   auto transports_span = transport->getDeviceTransports();
@@ -702,8 +700,7 @@ TEST_P(AllToAllvLl128ZeroPeerTest, AllToAllvLl128ZeroPeer) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   auto transports_span = transport->getDeviceTransports();
@@ -878,8 +875,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCall) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   auto transports_span = transport->getDeviceTransports();
@@ -1014,8 +1010,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedMultiCallChunked) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   auto transports_span = transport->getDeviceTransports();
@@ -1157,9 +1152,7 @@ TEST_F(AllToAllvLl128TestFixture, ChunkedBlockCountSweep) {
           globalRank, worldSize, bootstrap, config);
       transport->exchange();
     } catch (const std::runtime_error& e) {
-      COMMS_LOG(
-          ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-      std::abort();
+      COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
     }
 
     auto transports_span = transport->getDeviceTransports();
@@ -1317,8 +1310,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
@@ -1457,8 +1449,7 @@ TEST_F(AllToAllvLl128TestFixture, PipelinedVaryingSizes_Chunked) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
@@ -1587,8 +1578,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_1KB_UsesLl128) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
@@ -1700,8 +1690,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_256KB_UsesLl128) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();
@@ -1813,8 +1802,7 @@ TEST_F(AllToAllvLl128TestFixture, AutoDispatch_512KB_UsesSimple) {
         globalRank, worldSize, bootstrap, config);
     transport->exchange();
   } catch (const std::runtime_error& e) {
-    COMMS_LOG(ERR, "Rank {}: transport init failed: {}", globalRank, e.what());
-    std::abort();
+    COMMS_ABORT("Rank {}: transport init failed: {}", globalRank, e.what());
   }
 
   DeviceSpan<Transport> transports_span = transport->getDeviceTransports();

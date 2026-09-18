@@ -76,8 +76,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     if (globalRank == 0) {
       ncclResult_t res = ncclGetUniqueId(&id);
       if (res != ncclSuccess) {
-        COMMS_LOG(ERR, "ncclGetUniqueId failed: {}", ncclGetErrorString(res));
-        std::abort();
+        COMMS_ABORT("ncclGetUniqueId failed: {}", ncclGetErrorString(res));
       }
     }
     // Broadcast NCCL ID using bootstrap allGather
@@ -89,8 +88,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
                 allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
             .get();
     if (result != 0) {
-      COMMS_LOG_STREAM(ERR) << "Bootstrap allGather for NCCL ID failed";
-      std::abort();
+      COMMS_ABORT("Bootstrap allGather for NCCL ID failed");
     }
     id = allIds[0]; // Take rank 0's ID
     return id;
@@ -247,8 +245,8 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     void* recvBuff_d = recvBuffer.get();
     void* sendBuff_d = sendBuffer.get();
 
-    // Create timeout (default = no timeout)
-    Timeout timeout;
+    // Create abort handle (default = disabled)
+    AbortDevice abortDevice;
 
     // Need non-const copy for kernel args
     std::size_t sendcount_arg = sendcount;
@@ -260,7 +258,7 @@ class AllGatherBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         &sendcount_arg,
         &rank_arg,
         &transports_span,
-        &timeout};
+        &abortDevice};
 
     CudaEvent start, stop;
     const int nIter = 100;
@@ -612,6 +610,6 @@ int main(int argc, char* argv[]) {
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
 
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }

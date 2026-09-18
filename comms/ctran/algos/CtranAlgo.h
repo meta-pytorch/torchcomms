@@ -7,6 +7,7 @@
 #include <functional>
 #include <vector>
 
+#include <folly/Synchronized.h>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllReduce/AllReduceResourceImpl.h"
 #include "comms/ctran/algos/CollUtils.h"
@@ -15,16 +16,6 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/prims/transport/nvl/P2pNvlTransportDevice.cuh"
-#else
-// prims not compiled in; the member/getter are pointer-only, so a forward
-// declaration suffices (mirrors SendRecv/Types.h).
-namespace comms::prims {
-class P2pNvlTransportDevice;
-} // namespace comms::prims
-#endif // defined(ENABLE_PRIMS)
-#include <folly/Synchronized.h>
 
 #include "comms/ctran/algos/IPersistPlan.h"
 
@@ -53,10 +44,6 @@ class CtranAlgo {
   commResult_t initKernelResources();
   // Get device state
   CtranAlgoDeviceState* getDevState();
-  // Get base pointer to pre-allocated P2pNvlTransportDevice array
-  // Array is indexed by peer local rank
-  comms::prims::P2pNvlTransportDevice* getNvlTransportsBase();
-
   // Thread-safe get-or-create for persistent algorithm plans.
   // Returns a non-owning pointer to the plan (lifetime owned by this map).
   const ctran::algos::IPersistPlan* getOrCreatePersistPlan(
@@ -128,8 +115,6 @@ class CtranAlgo {
   CtranIbConfig* getCollToVcConfig(CollType type);
 
  private:
-  friend commResult_t ctranInitPipesResources(CtranAlgo* algo);
-
   class SharedResource;
 
   commResult_t destroyDevState();
@@ -163,11 +148,6 @@ class CtranAlgo {
   std::unordered_map<enum CollType, CtranIbConfig> collToVcConfigMap_;
   std::unique_ptr<ctran::algos::allreduce::AllReduceResourceImpl>
       allReduceDirectResource{nullptr};
-  // Pre-allocated array of P2pNvlTransportDevice objects for all peers
-  // Allocated with cudaMalloc for device accessibility
-  // Indexed by peer local rank, slot for self (localRank) is unused
-  comms::prims::P2pNvlTransportDevice* nvlTransports_{nullptr};
-
   // Generic persistent plan map: any algorithm can register a cached plan.
   folly::Synchronized<std::unordered_map<
       ctran::algos::PersistPlanKey,

@@ -8,8 +8,10 @@
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/tests/Checks.h"
 #include "comms/prims/transport/nvl/MultimemNvlReduce.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlRegistered.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlSignal.cuh"
 #include "comms/prims/transport/nvl/MultimemNvlStageLayout.cuh"
+#include "comms/prims/transport/nvl/MultimemNvlStore.cuh"
 
 namespace comms::prims::test {
 
@@ -142,7 +144,7 @@ __global__ void aggregateSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -176,7 +178,7 @@ __global__ void perPeerSignalProtocolKernel(
       round,
       makeTestParticipants(transport, fanIn),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
@@ -203,7 +205,7 @@ __global__ void aggregateAckSignalProtocolKernel(
       StageRound{.channel = 0, .value = roundValue},
       makeAckParticipants(transport),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -232,7 +234,7 @@ __global__ void multiChannelAggregateSignalKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
     const uint64_t signalId = layout.signalBase +
@@ -258,7 +260,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/true),
       group,
-      Timeout{});
+      AbortDevice{});
 
   if (transport.nvlRank == transport.nvlRanks - 1) {
     __nanosleep(100'000'000);
@@ -272,7 +274,7 @@ __global__ void aggregateMultimemWaiterTransitionKernel(
       round,
       makeTestParticipants(transport, /*fanIn=*/false),
       group,
-      Timeout{});
+      AbortDevice{});
 
   const uint32_t lane = group.thread_id_in_group;
   if (lane < transport.pipelineDepth) {
@@ -310,7 +312,7 @@ __global__ void aggregateMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.thread_id_in_group == kPayloadLane) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -354,7 +356,7 @@ __global__ void perPeerMultimemRelaxedPayloadKernel(
       StageRound{.channel = 0, .value = 1},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   if (transport.nvlRank == 0 && group.is_leader()) {
     *observedPayload = comms::device::ld_relaxed_sys_global(localPayload);
   }
@@ -378,7 +380,7 @@ __global__ void separatePublishAndWaitKernel(
         NvlSignalAccess::Unicast,
         NvlSignalTopology::PerPeer,
         NvlSignalPhase::Ready>(
-        transport, round, participants, group, Timeout{});
+        transport, round, participants, group, AbortDevice{});
   } else {
     signal_publish<
         NvlSignalAccess::Unicast,
@@ -404,6 +406,41 @@ __global__ void initializeAggregateSignalsKernel(
   }
 }
 
+__global__ void blockAggregateBarrierKernel(
+    MultimemNvlTransportDevice transport,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues) {
+  auto block = make_block_group();
+  auto* local = reinterpret_cast<int32_t*>(transport.localData);
+  const auto* multicast =
+      reinterpret_cast<const int32_t*>(transport.multimemData);
+  for (uint32_t epoch = 0; epoch < epochs; ++epoch) {
+    const std::size_t offset =
+        (static_cast<std::size_t>(epoch) * gridDim.x + blockIdx.x) * blockDim.x;
+    local[offset + threadIdx.x] = transport.nvlRank + 1 +
+        static_cast<int32_t>(10 * epoch + 100 * blockIdx.x);
+    nvl_block_barrier(
+        transport, static_cast<uint32_t>(blockIdx.x), block, AbortDevice{});
+    multimem::load_reduce_at<int32_t>(
+        block, reducedValues + offset, multicast + offset, blockDim.x);
+  }
+
+  block.sync();
+  if (threadIdx.x < transport.pipelineDepth) {
+    const uint64_t signalId =
+        static_cast<uint64_t>(blockIdx.x) * transport.signalsPerChannel +
+        static_cast<uint64_t>(3 * transport.nvlRanks) +
+        static_cast<uint64_t>(4 * threadIdx.x);
+    const std::size_t outputBase =
+        static_cast<std::size_t>(blockIdx.x) * 2 * transport.pipelineDepth;
+    signalValues[outputBase + threadIdx.x] =
+        transport.internalLocalSignals[signalId].load();
+    signalValues[outputBase + transport.pipelineDepth + threadIdx.x] =
+        transport.internalLocalSignals[signalId + 1].load();
+  }
+}
+
 __global__ void perPeerWaitOnlyKernel(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,
@@ -418,7 +455,7 @@ __global__ void perPeerWaitOnlyKernel(
       StageRound{.channel = 0, .value = roundValue},
       participants,
       group,
-      Timeout{});
+      AbortDevice{});
   const int source = static_cast<int>(group.thread_id_in_group);
   if (source < transport.nvlRanks) {
     out[source] = transport.internalLocalSignals[source].load();
@@ -527,6 +564,76 @@ __global__ void loadReduceKernel(
       group, output, source, elems);
 }
 
+template <typename T, bool kAccF32>
+__global__ void reduceBroadcastKernel(
+    MultimemNvlTransportDevice transport,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems) {
+  auto block = make_block_group();
+  constexpr std::size_t kElementsPerPack = 16 / sizeof(T);
+  const std::size_t packs = elems / kElementsPerPack;
+  const std::size_t firstPack = packs * transport.nvlRank / transport.nvlRanks;
+  const std::size_t endPack =
+      packs * (transport.nvlRank + 1) / transport.nvlRanks;
+  const std::size_t first = firstPack * kElementsPerPack;
+  const std::size_t count = (endPack - firstPack) * kElementsPerPack;
+  auto* destination =
+      reinterpret_cast<T*>(transport.multimemData) + destinationOffsetElems;
+  const auto* source =
+      reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
+
+  nvl_block_barrier(transport, /*channel=*/0, block);
+  multimem::reduce_broadcast_at<T, 4, kAccF32>(
+      block, destination + first, source + first, count);
+  nvl_block_barrier(transport, /*channel=*/0, block);
+}
+
+template <int kUnroll>
+__global__ void multimemStoreKernel(
+    MultimemNvlTransportDevice transport,
+    std::size_t destinationOffset,
+    const void* source,
+    std::size_t bytes) {
+  auto group = make_warp_group();
+  multimem::store<kUnroll>(
+      group, transport.multimem_data_ptr(destinationOffset), source, bytes);
+}
+
+template <typename T, bool kAccF32>
+__global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
+  auto block = make_block_group();
+  constexpr std::size_t kElements = sizeof(uint4) / sizeof(T);
+  auto* local = reinterpret_cast<T*>(transport.localData);
+  if (threadIdx.x < kElements) {
+    local[threadIdx.x] =
+        reductionValue<T>(phasedReduceBlockRankValue(transport.nvlRank));
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+
+  uint4 reduced{};
+  if (block.is_leader()) {
+    reduced = multimem::load_reduce_block16<T, kAccF32>(
+        reinterpret_cast<const T*>(transport.multimemData));
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+
+  if (block.is_leader()) {
+    const std::size_t ownedFirstLane = kElements *
+        static_cast<std::size_t>(transport.nvlRank) /
+        static_cast<std::size_t>(transport.nvlRanks);
+    const std::size_t ownedEndLane = kElements *
+        static_cast<std::size_t>(transport.nvlRank + 1) /
+        static_cast<std::size_t>(transport.nvlRanks);
+    multimem::store_reduced_block16_range(
+        local + ownedFirstLane,
+        reduced,
+        ownedFirstLane,
+        ownedEndLane - ownedFirstLane);
+  }
+  nvl_block_barrier(transport, /*channel=*/0, block);
+}
+
 __global__ void stageLayoutKernel(
     MultimemNvlTransportDevice transport,
     StageLayoutResult* results) {
@@ -571,6 +678,24 @@ void launchFillReductionInputTyped(
 }
 
 template <typename T>
+void launchReduceBroadcastTyped(
+    MultimemNvlTransportDevice transport,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream) {
+  if (accF32) {
+    reduceBroadcastKernel<T, true><<<1, 128, 0, stream>>>(
+        transport, sourceOffsetElems, destinationOffsetElems, elems);
+  } else {
+    reduceBroadcastKernel<T, false><<<1, 128, 0, stream>>>(
+        transport, sourceOffsetElems, destinationOffsetElems, elems);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
 void launchLoadReduceTyped(
     MultimemNvlTransportDevice transport,
     bool accF32,
@@ -584,6 +709,19 @@ void launchLoadReduceTyped(
   } else {
     loadReduceKernel<T, false><<<1, 32, 0, stream>>>(
         transport, static_cast<T*>(output), elems, sourceOffsetElems);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename T>
+void launchPhasedReduceBlockTyped(
+    MultimemNvlTransportDevice transport,
+    bool accF32,
+    cudaStream_t stream) {
+  if (accF32) {
+    phasedReduceBlockKernel<T, true><<<1, 128, 0, stream>>>(transport);
+  } else {
+    phasedReduceBlockKernel<T, false><<<1, 128, 0, stream>>>(transport);
   }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
@@ -831,6 +969,18 @@ void launchInitializeAggregateSignals(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+void launchBlockAggregateBarrier(
+    MultimemNvlTransportDevice transport,
+    uint32_t channels,
+    uint32_t epochs,
+    int32_t* reducedValues,
+    uint64_t* signalValues,
+    cudaStream_t stream) {
+  blockAggregateBarrierKernel<<<channels, 128, 0, stream>>>(
+      transport, epochs, reducedValues, signalValues);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 void launchPerPeerWaitOnly(
     MultimemNvlTransportDevice transport,
     uint64_t roundValue,
@@ -888,6 +1038,86 @@ void launchLoadReduce(
     case MultimemReductionTestType::Bfloat16:
       return launchLoadReduceTyped<__nv_bfloat16>(
           transport, accF32, output, elems, sourceOffsetElems, stream);
+  }
+}
+
+void launchReduceBroadcast(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    std::size_t sourceOffsetElems,
+    std::size_t destinationOffsetElems,
+    std::size_t elems,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float:
+      return launchReduceBroadcastTyped<float>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Int32:
+      return launchReduceBroadcastTyped<int32_t>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Float16:
+      return launchReduceBroadcastTyped<__half>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchReduceBroadcastTyped<__nv_bfloat16>(
+          transport,
+          accF32,
+          sourceOffsetElems,
+          destinationOffsetElems,
+          elems,
+          stream);
+  }
+}
+
+void launchMultimemStore(
+    MultimemNvlTransportDevice transport,
+    std::size_t destinationOffset,
+    const void* source,
+    std::size_t bytes,
+    int unroll,
+    cudaStream_t stream) {
+  if (unroll == 1) {
+    multimemStoreKernel<1>
+        <<<1, 32, 0, stream>>>(transport, destinationOffset, source, bytes);
+  } else if (unroll == 4) {
+    multimemStoreKernel<4>
+        <<<1, 32, 0, stream>>>(transport, destinationOffset, source, bytes);
+  } else {
+    throw std::invalid_argument("test supports unroll 1 or 4");
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void launchPhasedReduceBlock(
+    MultimemNvlTransportDevice transport,
+    MultimemReductionTestType type,
+    bool accF32,
+    cudaStream_t stream) {
+  switch (type) {
+    case MultimemReductionTestType::Float16:
+      return launchPhasedReduceBlockTyped<__half>(transport, accF32, stream);
+    case MultimemReductionTestType::Bfloat16:
+      return launchPhasedReduceBlockTyped<__nv_bfloat16>(
+          transport, accF32, stream);
+    case MultimemReductionTestType::Float:
+    case MultimemReductionTestType::Int32:
+      throw std::runtime_error("phased reduce block requires a 2-byte type");
   }
 }
 

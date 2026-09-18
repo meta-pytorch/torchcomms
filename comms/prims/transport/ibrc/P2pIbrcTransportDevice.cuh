@@ -14,9 +14,9 @@
 #include <cstdio>
 #include <type_traits>
 
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/memory/DeviceSpan.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceDecl.cuh"
 #include "comms/prims/transport/P2pIbTransportDeviceImpl.cuh"
@@ -89,7 +89,9 @@ class P2pIbrcTransportDevice {
       int numSignalSlots = 0,
       int numCounterSlots = 0,
       IbChannelLayout channelLayout = {},
-      AbortDevice abort = {})
+      AbortDevice abort = {},
+      int myRank = -1,
+      int peerRank = -1)
       : cmdQueues(queues),
         numNics(nics),
         maxChannels_(maxChannels),
@@ -102,7 +104,9 @@ class P2pIbrcTransportDevice {
         numSignalSlots_(numSignalSlots),
         numCounterSlots_(numCounterSlots),
         channelLayout_(channelLayout),
-        abort_(abort) {}
+        abort_(abort),
+        myRank_(myRank),
+        peerRank_(peerRank) {}
 
   // IBRC round-robins each send/recv chunk's RDMA_WRITE + DATA_READY fetch-add
   // across per-lane command queues / QPs when numLanes > 1 (select_put_queue_id
@@ -193,32 +197,32 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_signal(group, local_signal_slot(signalId), expected, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    wait_signal(group, local_signal_slot(signalId), expected, abortDevice);
   }
 
   __device__ void wait_signal(
       int signalId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_signal(solo, signalId, expected, timeout);
+    wait_signal(solo, signalId, expected, abortDevice);
   }
 
   __device__ void wait_counter(
       ThreadGroup& group,
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_counter(group, counter_device_slot(counterId), expected, timeout);
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    wait_counter(group, counter_device_slot(counterId), expected, abortDevice);
   }
 
   __device__ void wait_counter(
       int counterId,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_counter(solo, counterId, expected, timeout);
+    wait_counter(solo, counterId, expected, abortDevice);
   }
 
   __device__ void reset_signal(ThreadGroup& group, int signalId) {
@@ -354,6 +358,7 @@ class P2pIbrcTransportDevice {
       if (seq != kIbrcInvalidReadySeq) {
         completion = IbLocalCompletionTicket{
             .completionId = laneOrdinal,
+            .posted = true,
             .value = seq + 1,
         };
       }
@@ -388,7 +393,7 @@ class P2pIbrcTransportDevice {
   __device__ void wait_local(
       ThreadGroup& group,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     if (group.is_leader()) {
       const auto& queue = cmdQueues[queue_for_lane(
           group.group_id, IbDirection::Send, ticket.completionId)];
@@ -396,8 +401,12 @@ class P2pIbrcTransportDevice {
                  load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
         check_status(queue);
         FT_ABORT_BREAK(
-            timeout,
-            "P2pIbrcTransportDevice: wait_local lane=%u expected=%llu",
+            abortDevice,
+            "P2pIbrcTransportDevice: wait_local rank=%d peer=%d groupId=%u "
+            "lane=%u expected=%llu",
+            myRank_,
+            peerRank_,
+            group.group_id,
             ticket.completionId,
             static_cast<unsigned long long>(ticket.value));
       }
@@ -405,9 +414,15 @@ class P2pIbrcTransportDevice {
     group.sync();
   }
 
+  // The `abortDevice` parameter exists for signature parity with the IBGDA
+  // transport: the progress path is templated on the transport type and passes
+  // it to whichever one it has. IBRC does not need it -- `check_status()` below
+  // already latches the abort on the communicator-scoped `abort_` member -- so
+  // it is accepted and ignored rather than threaded through.
   __device__ __forceinline__ bool is_local_completion_ready(
       uint32_t channelId,
-      const IbLocalCompletionTicket& ticket) const {
+      const IbLocalCompletionTicket& ticket,
+      const AbortDevice& /*abortDevice*/ = AbortDevice()) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     check_status(queue);
@@ -418,15 +433,19 @@ class P2pIbrcTransportDevice {
   __device__ __forceinline__ void wait_local_completion(
       uint32_t channelId,
       const IbLocalCompletionTicket& ticket,
-      const Timeout& timeout) const {
+      const AbortDevice& abortDevice) const {
     const auto& queue = cmdQueues[queue_for_lane(
         channelId, IbDirection::Send, ticket.completionId)];
     while (static_cast<int64_t>(
                load_acquire_system_u64(queue.ci) - ticket.value) < 0) {
       check_status(queue);
       FT_ABORT_BREAK(
-          timeout,
-          "P2pIbrcTransportDevice: local completion lane=%u expected=%llu",
+          abortDevice,
+          "P2pIbrcTransportDevice: local completion rank=%d peer=%d "
+          "channel=%u lane=%u expected=%llu",
+          myRank_,
+          peerRank_,
+          channelId,
           ticket.completionId,
           static_cast<unsigned long long>(ticket.value));
     }
@@ -479,16 +498,16 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_local(group, signalBuf.ptr, expected, timeout, "signal");
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    wait_local(group, signalBuf.ptr, expected, abortDevice, "signal");
   }
 
   __device__ void wait_signal(
       const IbgdaLocalBuffer& signalBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_signal(solo, signalBuf, expected, timeout);
+    wait_signal(solo, signalBuf, expected, abortDevice);
   }
 
   __device__ void reset_signal(
@@ -517,16 +536,16 @@ class P2pIbrcTransportDevice {
       ThreadGroup& group,
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
-    wait_local(group, counterBuf.ptr, expected, timeout, "counter");
+      const AbortDevice& abortDevice = AbortDevice()) const {
+    wait_local(group, counterBuf.ptr, expected, abortDevice, "counter");
   }
 
   __device__ void wait_counter(
       const IbgdaLocalBuffer& counterBuf,
       uint64_t expected,
-      const Timeout& timeout = Timeout()) const {
+      const AbortDevice& abortDevice = AbortDevice()) const {
     ThreadGroup solo = make_thread_solo();
-    wait_counter(solo, counterBuf, expected, timeout);
+    wait_counter(solo, counterBuf, expected, abortDevice);
   }
 
   __device__ uint64_t read_signal(const IbgdaLocalBuffer& signalBuf) const {
@@ -634,19 +653,21 @@ class P2pIbrcTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_send_progress<P2pIbrcTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, src, nbytes, max_signal_bytes);
   }
 
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0) {
     detail::init_recv_progress<P2pIbrcTransportDevice, Proto>(
-        *this, group, nbytes, max_signal_bytes);
+        *this, group, dst, nbytes, max_signal_bytes);
   }
 
   template <
@@ -655,13 +676,10 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_send_once<P2pIbrcTransportDevice, CopyOp, Proto>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this, group, abortDevice, args...);
   }
 
   template <
@@ -670,13 +688,10 @@ class P2pIbrcTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     return detail::progress_recv_once<P2pIbrcTransportDevice, CopyOp, Proto>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this, group, abortDevice, args...);
   }
 
   // Templated for the same reason P2pIbTransportDevice templates its
@@ -690,22 +705,21 @@ class P2pIbrcTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_acquire_once(
       ThreadGroup& group,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out) {
     return detail::
         progress_recv_acquire_once<P2pIbrcTransportDevice, protocol::Simple>(
-            *this, group, nbytes, max_signal_bytes, timeout, out);
+            *this, group, abortDevice, out);
   }
 
   template <typename = void>
   __device__ __forceinline__ void progress_recv_release_once(
       ThreadGroup& group,
+      const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view) {
     detail::
         progress_recv_release_once<P2pIbrcTransportDevice, protocol::Simple>(
-            *this, group, view);
+            *this, group, abortDevice, view);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -714,10 +728,10 @@ class P2pIbrcTransportDevice {
       const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     detail::send<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, src, nbytes, max_signal_bytes, timeout, args...);
+        *this, group, src, nbytes, max_signal_bytes, abortDevice, args...);
   }
 
   template <typename CopyOp = Memcpy, typename... Args>
@@ -726,23 +740,26 @@ class P2pIbrcTransportDevice {
       void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
     detail::recv<P2pIbrcTransportDevice, CopyOp>(
-        *this, group, dst, nbytes, max_signal_bytes, timeout, args...);
+        *this, group, dst, nbytes, max_signal_bytes, abortDevice, args...);
   }
 
-  template <typename CopyOp = Memcpy, typename... Args>
+  template <
+      typename CopyOp = Memcpy,
+      typename Proto = protocol::Simple,
+      typename... Args>
   __device__ __forceinline__ void forward(
       ThreadGroup& group,
       void* __restrict__ dst,
       P2pIbrcTransportDevice& fwd,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
-      const Timeout& timeout = Timeout(),
+      const AbortDevice& abortDevice = AbortDevice(),
       Args... args) {
-    detail::forward<CopyOp>(
-        *this, group, dst, fwd, nbytes, max_signal_bytes, timeout, args...);
+    detail::forward<CopyOp, P2pIbrcTransportDevice, Proto>(
+        *this, group, dst, fwd, nbytes, max_signal_bytes, abortDevice, args...);
   }
 
  private:
@@ -1014,34 +1031,64 @@ class P2pIbrcTransportDevice {
     if (load_acquire_system_u32(&queue.status->error) == 0) {
       return;
     }
-    printf(
-        "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
-        load_acquire_system_u32(&queue.status->error_queue),
-        load_acquire_system_u32(&queue.status->error_code));
     if (!abort_.isEnabled()) {
+      printf(
+          "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
+          load_acquire_system_u32(&queue.status->error_queue),
+          load_acquire_system_u32(&queue.status->error_code));
       PIPES_DEVICE_TRAP();
     }
-    abort_.setAbort(comms::fault_tolerance::AbortReason::ABORTED);
+    // NETWORK_ERROR, not ABORTED: the proxy published a transport fault, which
+    // is what FAULT_TOLERANCE.md reserves NETWORK_ERROR for, while ABORTED
+    // means an explicit user or transport abort. The reason is
+    // first-writer-wins and drives host telemetry, so the old value permanently
+    // misfiled a proxy queue error as a user abort. Matches the IBGDA
+    // error-CQE sites.
+    //
+    // Diagnostic gated on the CAS result so it fires once. A queue error is
+    // sticky and this is called on every iteration of the `reserve()` and
+    // `drain_queue()` spins -- which deliberately do not read the abort flag --
+    // so printing first meant one printf plus one system-scope CAS attempt per
+    // iteration until the fixed watchdog fired, a large burst for one fault.
+    if (abort_.setAbort(
+            comms::fault_tolerance::AbortReason::NETWORK_ERROR,
+            "IBRC proxy queue error")) {
+      printf(
+          "P2pIbrcTransportDevice: queue error queue=%u code=%u\n",
+          load_acquire_system_u32(&queue.status->error_queue),
+          load_acquire_system_u32(&queue.status->error_code));
+    }
   }
 
   __device__ void wait_local(
       ThreadGroup& group,
       const void* ptr,
       uint64_t expected,
-      const Timeout& timeout,
+      const AbortDevice& abortDevice,
       const char* kind) const {
     if (ptr == nullptr) {
       trap("P2pIbrcTransportDevice: wait buffer is null");
     }
     if (group.is_leader()) {
       validate_group_scope(group);
-      while (load_acquire_system_u64(ptr) < expected) {
+      // Carry the polled value in a register rather than reloading it for the
+      // message: the abort args are evaluated on every spin iteration, so an
+      // acquire load in the arg list would put a system-scope read back on the
+      // hot path that the throttled abort check exists to keep off it.
+      uint64_t current = load_acquire_system_u64(ptr);
+      while (current < expected) {
         check_channel_status(group.group_id);
         FT_ABORT_BREAK(
-            timeout,
-            "P2pIbrcTransportDevice: wait_%s expected=%llu",
+            abortDevice,
+            "P2pIbrcTransportDevice: wait_%s rank=%d peer=%d channel=%u "
+            "expected=%llu current=%llu",
             kind,
-            static_cast<unsigned long long>(expected));
+            myRank_,
+            peerRank_,
+            group.group_id,
+            static_cast<unsigned long long>(expected),
+            static_cast<unsigned long long>(current));
+        current = load_acquire_system_u64(ptr);
       }
     }
     group.sync();
@@ -1179,7 +1226,7 @@ class P2pIbrcTransportDevice {
   //
   // Held as a member rather than threaded through put()/signal()/flush()
   // because the waits that need it -- reserve() and drain_queue() -- sit behind
-  // APIs that take no timeout. Passing it per call would push an abort
+  // APIs that take no abort handle. Passing it per call would push an abort
   // parameter onto every IBRC producer, and the callers have nothing to do with
   // the answer: these waits terminate themselves. Default-constructed (no
   // handle) keeps the legacy cycle-deadline trap.
@@ -1200,6 +1247,12 @@ class P2pIbrcTransportDevice {
   // FT is on, and *write* a terminal reason via a system-scope CAS. The waits
   // bound themselves on the device clock instead of on shared reads.
   AbortFlag abort_{};
+
+  // Diagnostic identity, read only from abort/error log paths. A stalled wait
+  // otherwise reports a ticket or signal value with nothing to attribute it to,
+  // and the rank is not recoverable from anything else this slot holds.
+  int myRank_{-1};
+  int peerRank_{-1};
 };
 
 static_assert(std::is_standard_layout_v<P2pIbrcTransportDevice>);

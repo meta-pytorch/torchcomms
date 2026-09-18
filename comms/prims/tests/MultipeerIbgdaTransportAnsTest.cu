@@ -19,9 +19,9 @@
 #include <string>
 
 #include "comms/common/fault_tolerance/TestAbort.h"
+#include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyOp.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
-#include "comms/prims/core/Timeout.cuh"
 #include "comms/prims/transport/ibgda/P2pIbgdaTransportDevice.cuh"
 
 namespace comms::prims::test {
@@ -47,10 +47,10 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void sendAnsKernel(
     const void* buffer,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel (derives a
   // trap-safe chunk size via CopyOp::max_safe_chunk_size_for_slot()); a
@@ -63,7 +63,7 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void sendAnsKernel(
       buffer,
       nbytes,
       maxSignalBytes,
-      timeout,
+      abortDevice,
       /*alignedAuxBuf=*/static_cast<char*>(nullptr));
 }
 
@@ -73,15 +73,15 @@ __global__ __launch_bounds__(NumWarps * 32, 1) void recvAnsKernel(
     void* buffer,
     std::size_t nbytes,
     std::size_t maxSignalBytes,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   using Comp = AnsCompress<NumWarps, PIPES_ANS_DEFAULT_MAX_UNCOMP_BYTES>;
   auto group = make_block_group();
-  timeout.start();
+  abortDevice.start();
 
   // maxSignalBytes == 0 exercises the transport's 0-sentinel; a non-zero value
   // drives the explicit signaled-chunk-size path. Sender and receiver must pass
   // the same value so they derive the identical chunking.
-  transport->recv<Comp>(group, buffer, nbytes, maxSignalBytes, timeout);
+  transport->recv<Comp>(group, buffer, nbytes, maxSignalBytes, abortDevice);
 }
 
 } // namespace

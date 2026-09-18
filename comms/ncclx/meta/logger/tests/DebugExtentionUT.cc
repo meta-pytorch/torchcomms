@@ -6,9 +6,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
 
+#include "meta/NcclxLogger.h"
 #include "meta/logger/DebugExt.h"
 
 #include "debug.h" // @manual
@@ -25,8 +26,6 @@ class NcclLoggerTestEnv : public ::testing::Environment {
  public:
   void SetUp() override {
     initEnv();
-    // close logger to force unregistration of folly logger factory
-    NcclLogger::close();
   }
 
   void TearDown() override {}
@@ -40,7 +39,8 @@ class DebugExtTest : public ::testing::Test {
   void TearDown() override {}
 
   void finishLogging() {
-    NcclLogger::close();
+    meta::comms::logger::getSpdlogLogger(ncclx::logging::kNcclxLoggerName)
+        .flush();
   }
 
   void initLogging() {
@@ -53,6 +53,8 @@ TEST_F(DebugExtTest, TestWarnLogToLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;
@@ -80,6 +82,8 @@ TEST_F(DebugExtTest, TestWarnLogBelowLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 20;
   constexpr int iterCount = 10;
@@ -101,6 +105,8 @@ TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   initEnv();
   NCCL_DEBUG = "WARN";
   NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
+  SysEnvRAII debugEnv{"NCCL_DEBUG", "WARN"};
+  SysEnvRAII debugFileEnv{"NCCL_DEBUG_FILE", ""};
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;

@@ -15,6 +15,7 @@
 #include "comms/torchcomms/TorchWork.hpp"
 
 #include <atomic>
+#include <memory>
 #include <optional>
 
 namespace torch::comms {
@@ -36,6 +37,7 @@ class WorkWrapper : public c10d::Work {
   friend class BackendWrapper;
   c10::intrusive_ptr<TorchWork> work_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
+  std::shared_ptr<std::atomic<bool>> futureCompletionClaimed_;
   std::vector<at::Tensor> outputTensors_;
   // When set (synchronous barrier), wait()/synchronize() also host-block via
   // work_->hostSynchronize() after the stream-ordered wait().

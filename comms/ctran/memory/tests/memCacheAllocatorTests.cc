@@ -8,7 +8,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/DataTableWrapper.h"
 
 #include "param.h"
 
@@ -31,6 +31,7 @@ class memCacheAllocatorTest : public ::testing::Test {
     ncclCvarInit();
     ncclCudaLibraryInit();
     initNcclLogger();
+    DataTableWrapper::init();
 
     dummyLogData = CommLogData{
         .commDesc = "ncclx.ut",
@@ -46,7 +47,7 @@ class memCacheAllocatorTest : public ::testing::Test {
 
   void TearDown() override {
     ctran::logGpuMemoryStats(cudaDev);
-    NcclLogger::close();
+    DataTableWrapper::shutdown();
   }
 
   std::shared_ptr<ncclx::memory::memRegion> getMemRegByIdWrapper(

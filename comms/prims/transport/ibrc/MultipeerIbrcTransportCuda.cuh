@@ -26,7 +26,15 @@ std::size_t ibrcDeviceSlotSize();
 
 // Default-construct (placement-new) each P2pIbrcTransportDevice slot in a
 // host-pinned mapped array.
-void constructIbrcDeviceSlots(void* slotsHost, int numSlots);
+// `firstPeerIndex` is the *peer index* of slot 0; slot i is peer index
+// `firstPeerIndex + i`, converted to a communicator rank the same way
+// `MultipeerIbrcTransport::peerIndexToRank` does. Pass -1 for either rank
+// argument to leave the diagnostic sentinels in place.
+void constructIbrcDeviceSlots(
+    void* slotsHost,
+    int numSlots,
+    int myRank,
+    int firstPeerIndex);
 
 // Placement-new a single populated P2pIbrcTransportDevice into the host-pinned
 // mapped array. Args mirror the device-handle constructor; all are plain-data
@@ -46,6 +54,8 @@ void writeIbrcDeviceSlot(
     int numSignalSlots,
     int numCounterSlots,
     IbChannelLayout channelLayout,
-    comms::fault_tolerance::AbortDevice abort);
+    comms::fault_tolerance::AbortDevice abort,
+    int myRank,
+    int peerRank);
 
 } // namespace comms::prims

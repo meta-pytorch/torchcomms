@@ -2,7 +2,6 @@
 
 #include "comms/ncclx/meta/tests/NcclxBaseTest.h"
 
-#include <folly/logging/xlog.h>
 #include <cstdlib>
 
 void NcclxBaseTestFixture::SetUp(const NcclxEnvs& envs) {

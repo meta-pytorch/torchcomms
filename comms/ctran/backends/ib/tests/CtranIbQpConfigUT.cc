@@ -4,12 +4,15 @@
 
 #include <algorithm>
 #include <numeric>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranIbQpConfigTest
@@ -21,6 +24,7 @@ class CtranIbQpConfigTest
 };
 
 TEST_P(CtranIbQpConfigTest, MaxNumQpsIsValidForAllConfigs) {
+  constexpr int kBusCardQpCapacity = 128;
   const auto [maxQps, devicesPerRank] = GetParam();
 
   EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, maxQps);
@@ -33,15 +37,17 @@ TEST_P(CtranIbQpConfigTest, MaxNumQpsIsValidForAllConfigs) {
       dummyDevices,
       /*peerRank=*/0,
       /*comm=*/nullptr,
-      /*pgTrafficClass=*/0,
+      /*trafficClass=*/0,
       /*cudaDev=*/0,
       /*activeDevices=*/std::move(activeDevices),
-      /*vcsPerPeer=*/1);
+      /*numVcs=*/1);
 
   const int maxNumQps = vc.getMaxNumQp();
   EXPECT_GE(maxNumQps, 1) << "maxNumQps must never be zero";
   EXPECT_GE(maxNumQps, devicesPerRank)
       << "maxNumQps must be at least devicesPerRank";
+  EXPECT_LE(maxNumQps, kBusCardQpCapacity)
+      << "maxNumQps must not exceed the business-card capacity";
   EXPECT_EQ(maxNumQps % devicesPerRank, 0)
       << "maxNumQps must be an exact multiple of devicesPerRank";
 }
@@ -77,40 +83,189 @@ TEST(CtranIbQpConfigRegressionTest, MaxQps1DevPerRank2) {
       dummyDevices,
       /*peerRank=*/0,
       /*comm=*/nullptr,
-      /*pgTrafficClass=*/0,
+      /*trafficClass=*/0,
       /*cudaDev=*/0,
       /*activeDevices=*/std::vector<int>{0, 1},
-      /*vcsPerPeer=*/1);
+      /*numVcs=*/1);
 
   EXPECT_EQ(vc.getMaxNumQp(), 2);
 }
 
-TEST(CtranIbDefaultFlushTest, EnablesFlushForOldNvidiaGb300AndForceFlush) {
+TEST(CtranIbConfigTest, DefaultVcModeFollowsCvar) {
   ncclCvarInit();
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::dqplb);
 
-  {
-    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
-    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 1);
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(900));
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1000));
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
-  }
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/1);
 
-  {
-    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
-    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(800));
-    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
-    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(1000));
-    EXPECT_TRUE(CtranIb::shouldEnableLocalFlushByDefault(1030));
-  }
+  EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
+}
 
-  {
-    EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 2);
-    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
-    EXPECT_FALSE(CtranIb::shouldEnableLocalFlushByDefault(900));
-  }
+TEST(CtranIbQpConfigTest, DividesPerPeerQpsAcrossVcs) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 16);
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/4);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 4);
+}
+
+TEST(CtranIbQpConfigDeathTest, RejectsFewerQpsThanVcs) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 3);
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+
+  EXPECT_DEATH(
+      CtranIbVirtualConn(
+          dummyDevices,
+          /*peerRank=*/0,
+          /*comm=*/nullptr,
+          /*trafficClass=*/0,
+          /*cudaDev=*/0,
+          /*activeDevices=*/std::vector<int>{0},
+          /*numVcs=*/4),
+      "per-peer MAX_QPS.*must be at least numVcs");
+}
+
+TEST(CtranIbQpConfigDeathTest, RejectsUnevenQpDivisionAcrossVcs) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 5);
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+
+  EXPECT_DEATH(
+      CtranIbVirtualConn(
+          dummyDevices,
+          /*peerRank=*/0,
+          /*comm=*/nullptr,
+          /*trafficClass=*/0,
+          /*cudaDev=*/0,
+          /*activeDevices=*/std::vector<int>{0},
+          /*numVcs=*/2),
+      "per-peer MAX_QPS.*must be a multiple of numVcs");
+}
+
+TEST(CtranIbQpConfigTest, AlignmentDoesNotExceedBusCardCapacity) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 129);
+  EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 3);
+
+  std::vector<CtranIbDevice> dummyDevices(3, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0, 1, 2},
+      /*numVcs=*/1);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 126);
+}
+
+// Without caller configuration, the comm-less path uses the base cvars.
+TEST(CtranIbQpConfigTest, BaseCvarsApplyWithoutTopologyOverride) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 8);
+  EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  EnvRAII envScalingTh(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, uint64_t{1048576});
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{128});
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::dqplb);
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/1);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 8);
+  EXPECT_EQ(vc.getQpScalingTh(), 1048576);
+  EXPECT_EQ(vc.getMaxQpMsgs(), 128);
+  EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
+}
+
+TEST(CtranIbQpConfigTest, NonVcOverridePreservesConnectionConfig) {
+  ncclCvarInit();
+  EnvRAII envExConfig(
+      NCCL_CTRAN_EX_IB_QP_CONFIG,
+      std::vector<std::string>{"262144", "8", "dqplb", "64"});
+  const CtranIbConfig ibConfig{.maxNumCqe = 4096};
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/1,
+      ibConfig);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 8);
+  EXPECT_EQ(vc.getQpScalingTh(), 262144);
+  EXPECT_EQ(vc.getMaxQpMsgs(), 64);
+  EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
+}
+
+TEST(CtranIbQpConfigTest, OverridesOnlySpecifiedVcField) {
+  ncclCvarInit();
+  EnvRAII envExConfig(
+      NCCL_CTRAN_EX_IB_QP_CONFIG,
+      std::vector<std::string>{"262144", "8", "dqplb", "64"});
+  const CtranIbConfig ibConfig{.numQps = 4};
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/1,
+      ibConfig);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 4);
+  EXPECT_EQ(vc.getQpScalingTh(), 262144);
+  EXPECT_EQ(vc.getMaxQpMsgs(), 64);
+  EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
+}
+
+TEST(CtranIbQpConfigTest, RejectsNonPositiveQpDepth) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 1);
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{0});
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  EXPECT_THROW(
+      CtranIbVirtualConn(
+          dummyDevices,
+          /*peerRank=*/0,
+          /*comm=*/nullptr,
+          /*trafficClass=*/0,
+          /*cudaDev=*/0,
+          /*activeDevices=*/std::vector<int>{0},
+          /*numVcs=*/1),
+      ctran::utils::Exception);
 }
 
 // Build the physical QP visit order produced by the NIC-interleaved

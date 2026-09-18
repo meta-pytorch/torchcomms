@@ -107,6 +107,24 @@ class MultiPeerTransport {
    */
   void exchange();
 
+  /**
+   * Perform all rank-local allocation required by exchangePrepared().
+   *
+   * This operation is idempotent and performs no bootstrap communication. A
+   * caller coordinating failure across the communicator must run its readiness
+   * agreement after every rank has attempted this method.
+   */
+  void prepareExchange();
+
+  /**
+   * Complete the failure-safe exchange after prepareExchange() has succeeded
+   * and the caller has agreed readiness across the full communicator.
+   *
+   * Unlike exchange(), the CUDA-IPC path includes a post-import team agreement.
+   * A failure poisons this transport and cannot be retried.
+   */
+  void exchangePrepared();
+
   // --- Topology queries ---
 
   /** @return Preferred transport type for the given peer rank. */
@@ -270,6 +288,15 @@ class MultiPeerTransport {
   std::optional<int> ib_max_num_channels() const;
 
   /*
+   * Channel capacity of the NVL transport. Empty when this rank has no NVL
+   * peers, mirroring ib_max_num_channels(). Rank-local: IB cross-validates
+   * maxChannels across ranks at connect, NVL has no equivalent exchange, so
+   * using this for per-edge geometry assumes it is uniform across the job, the
+   * same assumption MCCL_MAX_NBLOCKS already relies on.
+   */
+  std::optional<int> nvl_max_num_channels() const;
+
+  /*
    * Every requested edge must be requested by both endpoint ranks in the same
    * connect round. Peer-vector order may differ between ranks.
    */
@@ -289,16 +316,9 @@ class MultiPeerTransport {
    */
   IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
 
-  IbBufferRegistrationLease registerIbBulkBuffer(void* ptr, std::size_t size);
+  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
 
-  std::optional<IbBufferRegistrationView> lookupIbBulkBuffer(
-      const IbBufferRegistrationLease& lease,
-      void* ptr,
-      std::size_t size) const;
-
-  void deregisterIbBulkBuffer(IbBufferRegistrationLease& lease);
-
-  bool isIbBulkBufferViewActive(const IbBufferRegistrationView& view) const;
+  void deregisterIbBufferRange(IbBufferRegistration& registration);
 
   /**
    * Deregister a previously registered IBGDA buffer.
@@ -318,6 +338,39 @@ class MultiPeerTransport {
    */
   std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
       const IbgdaLocalBuffer& localBuf);
+
+  /**
+   * Host-driven RDMA writer for one peer (CPU posts put/signal into the IBRC
+   * command queue, no GPU kernel involved). Only available when the transport
+   * was built in IBRC mode (config.ibMode == kIbrc); throws otherwise.
+   *
+   * @param peerRank Global rank of the IB peer.
+   * @param queueIndex Command-queue index for this peer (default 0).
+   * @return A P2pIbrcHostWriter bound to that peer's command queue.
+   */
+  P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
+
+  /**
+   * Number of NICs the IB transport opened for this GPU -- the best-affinity
+   * tier, or config.gpuNicMap when set. A host-driven collective needs this to
+   * size its lane count: one writer reaches one NIC, so pinning a transfer
+   * to queue 0 uses a single port of however many the topology provides.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  int ibNumNics() const;
+
+  /** Largest lane count getHostLanes() accepts for this peer. */
+  std::size_t hostLaneCapacity(int peerRank) const;
+
+  /**
+   * Lanes onto one peer for splitting a single transfer across NICs and QPs.
+   * See P2pIbrcHostLanes for the per-lane signalling contract -- each lane
+   * must signal its own counter, and the receiver must wait on all of them.
+   *
+   * @throws std::runtime_error when the IBRC transport is not available.
+   */
+  P2pIbrcHostLanes getHostLanes(int peerRank, int numLanes) const;
 
   IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
   IbgdaLocalBuffer registerIbCounterBuffer(
@@ -382,14 +435,19 @@ class MultiPeerTransport {
 
   // --- GPU-allocated transport array for device handle ---
   Transport* transportsGpu_{nullptr};
+  std::vector<Transport> transportsHost_;
   bool deviceHandleBuilt_{false};
+
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
 
   // --- Private helpers ---
   void initFromTopology(
       TopologyResult topo,
       const MultiPeerTransportConfig& config);
-  void build_device_handle();
+  void build_device_handle(bool allowAllocation);
   void free_device_handle();
+  void rollbackPreparedExchange() noexcept;
 
   // Memory type detection for exchangeNvlBuffer tri-path support.
   enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };

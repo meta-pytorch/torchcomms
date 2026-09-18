@@ -240,6 +240,8 @@ CudaWaitEvent::CudaWaitEvent(cudaStream_t stream)
       startWaitPoint_(stream, CudaWaitPoint::WaitPointType::start),
       endWaitPoint_(stream, CudaWaitPoint::WaitPointType::end) {}
 
+CudaWaitEvent::~CudaWaitEvent() = default;
+
 CommsMaybeVoid CudaWaitEvent::beforeCollKernelScheduled() noexcept {
   return startWaitPoint_.recordEvent();
 }

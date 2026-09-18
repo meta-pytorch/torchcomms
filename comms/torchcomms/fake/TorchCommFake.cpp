@@ -5,6 +5,8 @@
 #include <comms/torchcomms/fake/TorchCommFake.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 
+#include <algorithm>
+
 namespace torch::comms {
 
 namespace {
@@ -286,10 +288,21 @@ std::shared_ptr<TorchCommBackend> TorchCommFake::split(
     const std::vector<int>& ranks,
     const std::string& name,
     const CommOptions& options) {
-  (void)ranks;
-  (void)name;
-  (void)options;
-  return std::make_shared<TorchCommFake>();
+  if (ranks.empty()) {
+    return nullptr;
+  }
+  auto rankIt = std::find(ranks.begin(), ranks.end(), rank_);
+  TORCH_CHECK(
+      rankIt != ranks.end(),
+      "Current rank ",
+      rank_,
+      " is not included in the provided ranks list");
+
+  auto child = std::make_shared<TorchCommFake>();
+  child->init(device_, name, options);
+  child->rank_ = static_cast<int>(std::distance(ranks.begin(), rankIt));
+  child->size_ = static_cast<int>(ranks.size());
+  return child;
 }
 
 const CommOptions& TorchCommFake::getOptions() const {

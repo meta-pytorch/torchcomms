@@ -31,7 +31,7 @@ __global__ void p2pSend(
     void* srcBuff,
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // Recv kernel
 __global__ void p2pRecv(
@@ -39,7 +39,7 @@ __global__ void p2pRecv(
     void* dstBuff,
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // Timed versions that export GPU-side clock64() timing stats
 __global__ void p2pSendTimed(
@@ -63,7 +63,7 @@ __global__ void p2pBidirectional(
     void* recvBuff,
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // Signal benchmark kernel - ping-pong signaling pattern
 __global__ void p2pSignalBenchKernel(
@@ -81,14 +81,14 @@ __global__ void p2pLl128Send(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // LL128 recv kernel
 __global__ void p2pLl128Recv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // LL128 bidirectional kernel - half warps send, half recv
 __global__ void p2pLl128Bidirectional(
@@ -96,7 +96,7 @@ __global__ void p2pLl128Bidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // =============================================================================
 // LL benchmark kernels - per-thread LL protocol with inline flag signaling
@@ -107,14 +107,14 @@ __global__ void p2pLlSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // LL recv kernel
 __global__ void p2pLlRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 // LL bidirectional kernel - half warps send, half recv
 __global__ void p2pLlBidirectional(
@@ -122,6 +122,6 @@ __global__ void p2pLlBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    Timeout timeout = Timeout());
+    AbortDevice abortDevice = AbortDevice());
 
 } // namespace comms::prims::benchmark

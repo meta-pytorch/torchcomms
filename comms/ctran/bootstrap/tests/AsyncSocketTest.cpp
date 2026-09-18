@@ -5,21 +5,24 @@
 #include <gtest/gtest.h>
 
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/logging/xlog.h>
 
 #include "comms/ctran/bootstrap/AsyncSocket.h"
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/bootstrap/tests/CtranLoggingEnvironment.h"
 
 using namespace ::testing;
 using namespace std::literals::chrono_literals;
 
 namespace {
+[[maybe_unused]] auto* const kCtranLoggingEnvironment =
+    ctran::bootstrap::testing::registerCtranLoggingEnvironment();
+
 enum ReqStatus {
   INCOMPLETE,
   COMPLETE,
   ERROR,
 };
-}
+} // namespace
 
 TEST(AsyncSocket, AsyncSocketLifeCycle) {
   const std::string request = "ping";
@@ -197,8 +200,13 @@ TEST(AsyncSocket, AsyncServerSocketReceiveTimeout) {
       [&recvCallbackInvoked](std::unique_ptr<folly::IOBuf> buf) {
         // This callback should NOT be invoked if timeout happens before data
         // arrives
-        XLOGF(INFO, "Server received {} bytes", buf->computeChainDataLength());
         recvCallbackInvoked.store(true);
+        if (buf == nullptr) {
+          ADD_FAILURE() << "Receive callback returned a null buffer";
+          return;
+        }
+        CTRAN_LOG(
+            INFO, "Server received {} bytes", buf->computeChainDataLength());
       },
       std::chrono::milliseconds(500)); // 500ms timeout
 
@@ -207,8 +215,8 @@ TEST(AsyncSocket, AsyncServerSocketReceiveTimeout) {
   // Connect a client but don't send any data (simulating hung client)
   ctran::bootstrap::Socket silentClient;
   ASSERT_EQ(0, silentClient.connect(serverAddr, "lo"));
-  XLOG(INFO) << "Client connected to server at " << serverAddr.describe()
-             << " but not sending data";
+  CTRAN_LOG_STREAM(INFO) << "Client connected to server at "
+                         << serverAddr.describe() << " but not sending data";
 
   // Wait for timeout to occur (timeout is 500ms, wait a bit longer to ensure
   // timeout fires)
@@ -297,8 +305,13 @@ TEST(AsyncSocket, AsyncServerSocketReceivePartialDataTimeout) {
       expectedSize,
       [&recvCallbackInvoked](std::unique_ptr<folly::IOBuf> buf) {
         // This callback should NOT be invoked if we only send partial data
-        XLOGF(INFO, "Server received {} bytes", buf->computeChainDataLength());
         recvCallbackInvoked.store(true);
+        if (buf == nullptr) {
+          ADD_FAILURE() << "Receive callback returned a null buffer";
+          return;
+        }
+        CTRAN_LOG(
+            INFO, "Server received {} bytes", buf->computeChainDataLength());
       },
       std::chrono::milliseconds(500)); // 500ms timeout
 
@@ -311,7 +324,7 @@ TEST(AsyncSocket, AsyncServerSocketReceivePartialDataTimeout) {
   // Send only 50 bytes when server expects 100 bytes
   const std::string partialData(50, 'x');
   ASSERT_EQ(0, partialClient.send(partialData.data(), partialData.size()));
-  XLOGF(
+  CTRAN_LOG(
       INFO,
       "Client sent {} bytes (partial), server expects {} bytes",
       partialData.size(),

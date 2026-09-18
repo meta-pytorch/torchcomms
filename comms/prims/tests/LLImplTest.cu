@@ -241,4 +241,225 @@ void test_ll_unpack_reduce_i64(
   launchByKind<int64_t>(src_d, staging_d, accum_d, nelems, ReduceKind::Sum);
 }
 
+// pack(src) under the upstream generation, relay it into a second staging
+// region under the downstream one, then check the two halves of the result
+// separately. See test_ll_repack() in the header for why the flag pass does
+// not go through unpack().
+template <typename P>
+__global__ void repack_kernel(
+    const char* src,
+    char* recvStaging,
+    char* fwdStaging,
+    char* dst,
+    char* packetOut,
+    std::size_t nbytes,
+    bool useDst,
+    uint32_t* flagErrors) {
+  ThreadGroup g{
+      threadIdx.x,
+      blockDim.x,
+      blockIdx.x,
+      blockIdx.x,
+      gridDim.x,
+      SyncScope::BLOCK};
+
+  const auto recvFlag = static_cast<typename P::FlagType>(7);
+  const auto fwdFlag = static_cast<typename P::FlagType>(9);
+
+  LLImpl<P>::pack(g, recvStaging, src, nbytes, recvFlag);
+  g.sync();
+  LLImpl<P>::repack(
+      g, useDst ? dst : nullptr, fwdStaging, recvStaging, nbytes, fwdFlag);
+  g.sync();
+
+  // (1) Flag pass. One read per packet, no spin.
+  const std::size_t nPackets = P::packet_count(nbytes);
+  for (std::size_t i = threadIdx.x; i < nPackets; i += blockDim.x) {
+    const char* pkt =
+        fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes);
+    if (!LLImpl<P>::is_flag_set(pkt, fwdFlag)) {
+      atomicAdd(flagErrors, 1u);
+    }
+  }
+  g.sync();
+
+  // (2) Payload pass. Force every flag to the downstream generation first so
+  // unpack() is guaranteed to terminate even when the relay mis-stamped -- the
+  // flag verdict is already recorded above, and this isolates the data half.
+  for (std::size_t i = threadIdx.x; i < nPackets; i += blockDim.x) {
+    LLImpl<P>::store_flag(
+        fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes), fwdFlag);
+  }
+  g.sync();
+  LLImpl<P>::unpack(g, packetOut, fwdStaging, nbytes, fwdFlag);
+}
+
+void test_ll_repack(
+    const char* src_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    char* dst_d,
+    char* packetOut_d,
+    std::size_t nbytes,
+    bool useDst,
+    uint32_t* flagErrors_d) {
+  repack_kernel<LlxPacketGeometry><<<1, 256>>>(
+      src_d,
+      recvStaging_d,
+      fwdStaging_d,
+      dst_d,
+      packetOut_d,
+      nbytes,
+      useDst,
+      flagErrors_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// pack(src) with the upstream flag, relay-reduce it against `local` into a
+// second staging region under the downstream flag, then decode that region.
+//
+// The decode is written out here rather than calling unpack(): unpack() spins
+// until the flag matches, so a relay that forgot to re-stamp would hang the
+// test instead of failing it. Reading the flag once and counting the mismatch
+// keeps the failure mode a diff-able error count.
+template <typename P, typename T, typename Op>
+__global__ void repack_reduce_kernel(
+    const T* src,
+    const T* local,
+    char* recvStaging,
+    char* fwdStaging,
+    T* dst,
+    std::size_t nelems,
+    uint32_t* errorCount) {
+  ThreadGroup g{
+      threadIdx.x,
+      blockDim.x,
+      blockIdx.x,
+      blockIdx.x,
+      gridDim.x,
+      SyncScope::BLOCK};
+
+  const std::size_t nbytes = nelems * sizeof(T);
+  const auto recvFlag = static_cast<typename P::FlagType>(7);
+  const auto fwdFlag = static_cast<typename P::FlagType>(9);
+
+  LLImpl<P>::pack(
+      g, recvStaging, reinterpret_cast<const char*>(src), nbytes, recvFlag);
+  g.sync();
+  LLImpl<P>::template repack_reduce<T, TestCombine<T, Op>>(
+      g, fwdStaging, recvStaging, local, nbytes, fwdFlag);
+
+  auto* out = reinterpret_cast<char*>(dst);
+  const std::size_t nPackets = P::packet_count(nbytes);
+  for (std::size_t i = threadIdx.x; i < nPackets; i += blockDim.x) {
+    const char* pkt =
+        fwdStaging + i * static_cast<std::size_t>(P::kPacketBytes);
+    if (!LLImpl<P>::is_flag_set(pkt, fwdFlag)) {
+      atomicAdd(errorCount, 1u);
+    }
+    const uint32_t data = LLImpl<P>::load_payload(pkt);
+    const auto* db = reinterpret_cast<const char*>(&data);
+    const std::size_t off = i * static_cast<std::size_t>(P::kData);
+    // The FULL data half, not just valid_payload(i, nbytes). The tail packet's
+    // padding is shipped on the wire too, and repack_reduce must carry it
+    // through untouched; decoding only the valid bytes would let a reduce that
+    // ran past nElem corrupt the padding and still pass. `dst` is therefore
+    // sized packet_count(nbytes) * kData, not nbytes.
+    for (std::size_t b = 0; b < static_cast<std::size_t>(P::kData); ++b) {
+      out[off + b] = db[b];
+    }
+  }
+}
+
+namespace {
+
+template <typename T, typename Op>
+void launchRepackReduce(
+    const T* src,
+    const T* local,
+    char* recvStaging,
+    char* fwdStaging,
+    T* dst,
+    std::size_t nelems,
+    uint32_t* errorCount) {
+  repack_reduce_kernel<LlxPacketGeometry, T, Op><<<1, 256>>>(
+      src, local, recvStaging, fwdStaging, dst, nelems, errorCount);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+} // namespace
+
+void test_ll_repack_reduce_f32(
+    const float* src_d,
+    const float* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    float* dst_d,
+    std::size_t nelems,
+    ReduceKind kind,
+    uint32_t* errorCount_d) {
+  switch (kind) {
+    case ReduceKind::Sum:
+      launchRepackReduce<float, SumOp>(
+          src_d,
+          local_d,
+          recvStaging_d,
+          fwdStaging_d,
+          dst_d,
+          nelems,
+          errorCount_d);
+      break;
+    case ReduceKind::Max:
+      launchRepackReduce<float, MaxOp>(
+          src_d,
+          local_d,
+          recvStaging_d,
+          fwdStaging_d,
+          dst_d,
+          nelems,
+          errorCount_d);
+      break;
+    case ReduceKind::Min:
+      launchRepackReduce<float, MinOp>(
+          src_d,
+          local_d,
+          recvStaging_d,
+          fwdStaging_d,
+          dst_d,
+          nelems,
+          errorCount_d);
+      break;
+  }
+}
+
+void test_ll_repack_reduce_f16(
+    const void* src_d,
+    const void* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    void* dst_d,
+    std::size_t nelems,
+    uint32_t* errorCount_d) {
+  launchRepackReduce<__half, SumOp>(
+      static_cast<const __half*>(src_d),
+      static_cast<const __half*>(local_d),
+      recvStaging_d,
+      fwdStaging_d,
+      static_cast<__half*>(dst_d),
+      nelems,
+      errorCount_d);
+}
+
+void test_ll_repack_reduce_i64(
+    const int64_t* src_d,
+    const int64_t* local_d,
+    char* recvStaging_d,
+    char* fwdStaging_d,
+    int64_t* dst_d,
+    std::size_t nelems,
+    uint32_t* errorCount_d) {
+  launchRepackReduce<int64_t, SumOp>(
+      src_d, local_d, recvStaging_d, fwdStaging_d, dst_d, nelems, errorCount_d);
+}
+
 } // namespace comms::prims::test

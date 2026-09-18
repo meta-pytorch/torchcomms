@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Expected.h>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvCq.h"
 #include "comms/ctran/ibverbx/IbvPd.h"
@@ -14,7 +13,7 @@ namespace ibverbx {
 // IbvDevice
 class IbvDevice {
  public:
-  static folly::Expected<std::vector<IbvDevice>, Error> ibvGetDeviceList(
+  static Expected<std::vector<IbvDevice>> ibvGetDeviceList(
       const std::vector<std::string>& hcaList = kDefaultHcaList,
       const std::string& hcaPrefix = std::string(kDefaultHcaPrefix),
       int defaultPort = kIbAnyPort,
@@ -35,28 +34,26 @@ class IbvDevice {
   int port() const;
   int32_t getDeviceId() const;
 
-  folly::Expected<IbvPd, Error> allocPd();
-  folly::Expected<IbvPd, Error> allocParentDomain(
-      ibv_parent_domain_init_attr* attr);
-  folly::Expected<ibv_device_attr, Error> queryDevice() const;
-  folly::Expected<ibv_port_attr, Error> queryPort(uint8_t portNum) const;
-  folly::Expected<ibv_gid, Error> queryGid(uint8_t portNum, int gidIndex) const;
+  Expected<IbvPd> allocPd();
+  Expected<IbvPd> allocParentDomain(ibv_parent_domain_init_attr* attr);
+  Expected<ibv_device_attr> queryDevice() const;
+  Expected<ibv_port_attr> queryPort(uint8_t portNum) const;
+  Expected<ibv_gid> queryGid(uint8_t portNum, int gidIndex) const;
 
-  folly::Expected<IbvCq, Error> createCq(
+  Expected<IbvCq> createCq(
       int cqe,
       void* cq_context,
       ibv_comp_channel* channel,
       int comp_vector) const;
 
   // create Cq with attributes
-  folly::Expected<IbvCq, Error> createCq(ibv_cq_init_attr_ex* attr) const;
+  Expected<IbvCq> createCq(ibv_cq_init_attr_ex* attr) const;
 
   // Create a completion channel for event-driven completion handling
-  folly::Expected<ibv_comp_channel*, Error> createCompChannel() const;
+  Expected<ibv_comp_channel*> createCompChannel() const;
 
   // Destroy a completion channel
-  folly::Expected<folly::Unit, Error> destroyCompChannel(
-      ibv_comp_channel* channel) const;
+  Status destroyCompChannel(ibv_comp_channel* channel) const;
 
   // When creating an IbvVirtualCq for an IbvVirtualQp, ensure that cqe >=
   // (number of QPs * capacity per QP). If send queue and recv queue intend to
@@ -65,16 +62,16 @@ class IbvDevice {
   // this requirement in the low-level API. If a higher-level API is introduced
   // in the future, ensure this guarantee is handled within Ibverbx when
   // creating a IbvVirtualCq for the user.
-  folly::Expected<IbvVirtualCq, Error> createVirtualCq(
+  Expected<IbvVirtualCq> createVirtualCq(
       int cqe,
       void* cq_context,
       ibv_comp_channel* channel,
       int comp_vector);
 
-  folly::Expected<bool, Error> isPortActive(
+  Expected<bool> isPortActive(
       uint8_t portNum,
       std::unordered_set<int> linkLayers) const;
-  folly::Expected<uint8_t, Error> findActivePort(
+  Expected<uint8_t> findActivePort(
       std::unordered_set<int> const& linkLayers) const;
 
  private:

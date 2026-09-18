@@ -19,11 +19,6 @@
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #endif
 
-#if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
-#include "comms/torchcomms/device/prims/TorchCommDevicePrimsTypes.hpp"
-#endif
-
 namespace torch::comms {
 
 // =============================================================================
@@ -109,10 +104,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // NON-COLLECTIVE — registration is purely local (lkey only, no rkey
   // exchange). The resulting buffer can only be used as a source for put
   // operations.
-  //
-  // Backend dispatch:
-  //   - NCCLDeviceBackend: NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY
-  //   - PrimsDeviceBackend: MultiPeerTransport::localRegisterIbgdaBuffer
   //
   // Prerequisites: Must call tensor_register() then get_device_window() first.
   RegisteredBuffer register_local_buffer(const at::Tensor& tensor) override;
@@ -219,8 +210,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // D2H copy is needed on deregister — we use the cached host copy.
   std::unordered_map<int64_t, RegisteredBuffer> device_buffer_handles_;
 
-  // No ctran_win_ member needed — Prims device windows are created
-  // on-demand via nccl_api_->winCreateDeviceWin() in get_device_window().
 #endif
 
   // NCCL API abstraction
@@ -236,13 +225,6 @@ using TorchCommWindowNCCLXGin =
     TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 #else
 using TorchCommWindowNCCLXGin = TorchCommWindowNCCLX<HostOnlyBackend>;
-#endif
-
-// Type alias for the Pipes backend (IBGDA + NVLink device-side P2P).
-// Only available when ENABLE_PRIMS is defined (propagated from ctran_lib).
-#if defined(ENABLE_PRIMS)
-using TorchCommWindowNCCLXPipes =
-    TorchCommWindowNCCLX<torchcomms::device::PrimsDeviceBackend>;
 #endif
 
 } // namespace torch::comms

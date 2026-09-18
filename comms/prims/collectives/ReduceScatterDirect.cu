@@ -15,9 +15,9 @@ template <typename T, typename AccumOp, int kTileElems, int kBlockSize>
 __global__
 __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
     const __grid_constant__ DirectReduceScatterNvlArgs<T> args,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
 #ifdef __CUDA_ARCH__
-  timeout.start();
+  abortDevice.start();
 
   auto group = make_block_group();
   const int my_rank = args.my_rank;
@@ -62,7 +62,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
       const char* send_src =
           input_base + peer_rank * chunk_bytes + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.send(group, send_src, window, max_sig, timeout);
+      peer.send(group, send_src, window, max_sig, abortDevice);
     }
 
     for (int peer_rank = 0; peer_rank < W; ++peer_rank) {
@@ -71,7 +71,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
       }
       char* dst = output_base + tile_offset + off;
       auto peer = args.peers[peer_rank];
-      peer.template recv<ReduceOp>(group, dst, window, max_sig, timeout, dst);
+      peer.template recv<ReduceOp>(
+          group, dst, window, max_sig, abortDevice, dst);
     }
   }
 #endif
@@ -80,6 +81,6 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_nvl_kernel(
 template __global__ void
 direct_reduce_scatter_nvl_kernel<float, SumOp, 16384, 512>(
     const __grid_constant__ DirectReduceScatterNvlArgs<float>,
-    Timeout);
+    AbortDevice);
 
 } // namespace comms::prims

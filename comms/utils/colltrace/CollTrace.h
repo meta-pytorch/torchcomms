@@ -3,6 +3,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <latch>
 #include <mutex>
 #include <set>
@@ -15,6 +16,7 @@
 
 #include <folly/MPMCQueue.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
+#include <folly/container/F14Map.h>
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
@@ -35,7 +37,9 @@ namespace meta::comms::colltrace {
 
 struct GraphCollTraceState;
 struct GraphCollectiveEntry;
+class GraphCancellationGate;
 class GraphCudaWaitEvent;
+class CollTraceGraphReplayTestAccessor;
 
 // Whether graph-captured collectives can be timed on the *current* device.
 // Requires both a compute capability of sm_90+ (the ring's 128b System-scope
@@ -69,6 +73,11 @@ struct CollTraceConfig {
   // If we have too many pending events, we will start dropping events.
   // 1024 should be enough for most of the cases.
   ::size_t maxPendingQueueSize{kDefaultMaxPendingQueueSize};
+
+  // Test seam. Invoked on the poll thread after the cancelled-collective
+  // sweep and before any ring entry is dispatched, so a test can land a
+  // cancellation exactly in that window. Empty in production.
+  std::function<void()> afterGraphSweepHook;
 };
 
 // Action types for the unified polling pipeline.
@@ -77,12 +86,15 @@ enum class PendingActionType {
   kStart, // Eager collective started — fire start plugin
   kProgressing, // Heartbeat — fire progressing plugin (watchdog)
   kEnd, // Collective ended — fire end plugin
+  /* Tracking ended without a valid completion. */
+  kTerminate,
 };
 
 struct PendingAction {
   CollTraceEvent* event{nullptr};
   PendingActionType type{};
   std::chrono::system_clock::time_point timestamp{};
+  std::optional<CollTraceTerminalReason> terminalReason;
 
   // ordered by timestamp, or by action type if timestamp is the same
   // which will ensure that for a given collective, we always fire the
@@ -132,15 +144,29 @@ class CollTrace : public ICollTrace {
       CollTraceEvent& collEvent,
       CollTraceHandleTriggerState state) noexcept override;
 
+  CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept override;
+
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
 
  private:
+  /*
+   * Terminal notifications may run on the caller thread for events that were
+   * never published, on the poll thread for tracked events, or on the
+   * destroying thread after the poll thread is joined. Each event remains
+   * owned by exactly one of those threads when its terminalReason is written.
+   */
+  void terminateEvent(
+      CollTraceEvent& event,
+      CollTraceTerminalReason reason) noexcept;
+  friend class CollTraceGraphReplayTestAccessor;
+
   // Internal impl for graph-captured collectives, called when
   // recordCollective detects a GraphCudaWaitEvent.
   CommsMaybe<std::shared_ptr<ICollTraceHandle>> recordGraphCollectiveImpl(
       std::unique_ptr<ICollMetadata> metadata,
       std::unique_ptr<ICollWaitEvent> waitEvent) noexcept;
+  CommsMaybeVoid cancelGraphCollective(uint32_t collId) noexcept;
 
   /****************************************************************************
    * Start of Private Methods for CollTrace thread. All of these methods should
@@ -149,6 +175,17 @@ class CollTrace : public ICollTrace {
    ***************************************************************************/
   bool isThreadCancelled() const noexcept;
   void ackFlush(uint64_t gen) noexcept;
+
+  struct AmbiguousGraphReplayState {
+    uint64_t outstandingEndMarkers{0};
+    uint64_t clearAfterSlot{0};
+  };
+  void markAmbiguousGraphReplay(
+      uint32_t collId,
+      uint64_t additionalMarkers,
+      uint64_t currentSlot,
+      uint64_t recoveryWindow) noexcept;
+  void expireAmbiguousGraphReplays(uint64_t consumedUpTo) noexcept;
 
   void collTraceThread(
       const std::function<CommsMaybeVoid(void)>& threadSetupFunc);
@@ -196,6 +233,7 @@ class CollTrace : public ICollTrace {
   // Remove by: CollTrace Thread
   folly::ConcurrentHashMap<CollTraceEvent*, std::shared_ptr<CollTraceHandle>>
       eventToHandleMap_;
+  std::shared_ptr<EagerCancellationGate> eagerCancellationGate_;
 
   std::unordered_map<std::string, ICollTracePlugin&> pluginByName_;
   std::vector<std::unique_ptr<ICollTracePlugin>> plugins_;
@@ -213,6 +251,8 @@ class CollTrace : public ICollTrace {
   std::mutex graphStateMutex_;
   std::unordered_map<unsigned long long, std::shared_ptr<GraphCollTraceState>>
       graphStateMap_;
+  std::shared_ptr<GraphCancellationGate> graphCancellationGate_;
+  std::atomic<bool> hasCancelledGraphCollectives_{false};
 
   // Single shared ring buffer for ALL cuda graphs. RAII-managed via
   // HRDWRingBuffer (mapped pinned memory, GPU-writable, CPU-readable).
@@ -241,6 +281,18 @@ class CollTrace : public ICollTrace {
   // Owns the CollTraceEvent so it survives across poll cycles.
   std::unordered_map<uint32_t, std::unique_ptr<CollTraceEvent>>
       inFlightReplays_;
+  /*
+   * The absolute ring slot for each in-flight replay's start marker. Keeping
+   * this across poll calls distinguishes a replay whose start precedes a loss
+   * boundary from one known to have started after that boundary.
+   */
+  folly::F14FastMap<uint32_t, uint64_t> inFlightReplayStartSlots_;
+  /*
+   * Untagged end markers are consumed while correlation is ambiguous. The
+   * slot bound restores tracking after one ring window even when an end marker
+   * was itself overwritten and therefore can never decrement the count.
+   */
+  folly::F14FastMap<uint32_t, AmbiguousGraphReplayState> ambiguousGraphReplays_;
 
   // Eager events being polled by the colltrace thread. Only accessed from
   // the colltrace thread — no mutex needed.

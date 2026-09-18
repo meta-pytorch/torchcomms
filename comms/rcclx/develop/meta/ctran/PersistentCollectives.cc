@@ -41,30 +41,32 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
 
 #define CHECK_VALID_CTRAN(comm)                                             \
   if (!ctranInitialized(comm)) {                                            \
-    CLOGF(                                                                  \
+    CTRAN_LOG(                                                              \
         ERR,                                                                \
         "CTRAN must be enabled and initialized for persistent collective"); \
     return ncclInvalidUsage;                                                \
   }
 
-#define CHECK_PREQ_TYPE(pReq, type)                                \
-  if (pReq->type != type) {                                        \
-    CLOGF(                                                         \
+/* The parameter must not be named `type`: the preprocessor would also rewrite
+ * the `->type` member accesses below, turning the check into a tautology. */
+#define CHECK_PREQ_TYPE(pReq, expectedType)                        \
+  if ((pReq)->type != (expectedType)) {                            \
+    CTRAN_LOG(                                                     \
         ERR,                                                       \
-        "%s requires persistent request type %d, but received %d", \
+        "{} requires persistent request type {}, but received {}", \
         __func__,                                                  \
-        type,                                                      \
-        pReq->type);                                               \
+        (expectedType),                                            \
+        (pReq)->type);                                             \
     return ncclInvalidArgument;                                    \
   }
 
-#define GET_VALID_PREQ_OR_ERRRETURN(req, pReq)                     \
-  do {                                                             \
-    if (request == nullptr) {                                      \
-      CLOGF(ERR, "%s received invalid nullptr request", __func__); \
-      return ncclInvalidArgument;                                  \
-    }                                                              \
-    *(pReq) = reinterpret_cast<CtranPersistentRequest*>(request);  \
+#define GET_VALID_PREQ_OR_ERRRETURN(req, pReq)                         \
+  do {                                                                 \
+    if ((req) == nullptr) {                                            \
+      CTRAN_LOG(ERR, "{} received invalid nullptr request", __func__); \
+      return ncclInvalidArgument;                                      \
+    }                                                                  \
+    *(pReq) = reinterpret_cast<CtranPersistentRequest*>(req);          \
   } while (0)
 
 __attribute__((visibility("default"))) ncclResult_t allGatherExec(
@@ -84,25 +86,25 @@ __attribute__((visibility("default"))) ncclResult_t allGatherExec(
 __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {
   CtranPersistentRequest* pReq = nullptr;
   GET_VALID_PREQ_OR_ERRRETURN(request, &pReq);
-  CLOGF(
+  CTRAN_LOG(
       INFO,
       "Executing persistent request {} comm {}",
       (void*)pReq,
       (void*)pReq->comm_);
 
   if (!ctranInitialized(pReq->comm_)) {
-    CLOGF(
+    CTRAN_LOG(
         ERR, "CTRAN must be enabled and initialized for persistent collective");
     return ncclInvalidUsage;
   }
 
   switch (pReq->type) {
     default:
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "Persistent request {} has unknown op type {}",
           (void*)pReq,
-          (void*)pReq->type);
+          pReq->type);
       return ncclInvalidArgument;
   }
 }
@@ -116,7 +118,7 @@ __attribute__((visibility("default"))) ncclResult_t pFree(void* request) {
       NCCLCHECK(metaCommToNccl(ctran::allGatherPDestroy(pReq)));
       break;
     default:
-      CLOGF(
+      CTRAN_LOG(
           ERR,
           "Persistent request {} has unknown op type {}",
           (void*)pReq,

@@ -14,6 +14,17 @@
 #include "comms/uniflow/transport/Transport.h"
 #include "comms/uniflow/transport/nvlink/NVLinkRegistrationHandle.h"
 
+// Whether multi-op transfers use `cudaMemcpyBatchAsync`. The batch path is
+// hardware-validated on CUDA 12.8-12.x only; on 13.x the runtime returns
+// incorrect data for multi-op device-to-device batches, so those fall back to
+// the per-op copy loop. Tests select their expectations from this same macro —
+// keep it the single definition of the switch.
+#if CUDART_VERSION >= 12080 && CUDART_VERSION < 13000
+#define UNIFLOW_NVLINK_MEMCPY_BATCH 1
+#else
+#define UNIFLOW_NVLINK_MEMCPY_BATCH 0
+#endif
+
 namespace uniflow {
 
 // ---------------------------------------------------------------------------

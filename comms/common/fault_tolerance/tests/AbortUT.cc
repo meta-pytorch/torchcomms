@@ -1,16 +1,20 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/common/fault_tolerance/tests/AbortLogMarkers.h"
 
 namespace comms::fault_tolerance::testing {
 
@@ -143,6 +147,21 @@ TEST(AbortFactoryTest, disabledNoop) {
   abort->setAbort();
 
   EXPECT_FALSE(abort->isAborted());
+}
+
+TEST(AbortFactoryTest, DisabledSingletonDoesNotStoreAbortInfo) {
+  auto first = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
+  auto second = ::comms::fault_tolerance::createAbort(/*enabled=*/false);
+
+  ASSERT_EQ(first.get(), second.get());
+
+  EXPECT_FALSE(
+      first->setAbort(AbortReason::NETWORK_ERROR, "ignored disabled abort"));
+
+  EXPECT_FALSE(first->isAborted());
+  EXPECT_EQ(first->getAbortInfo(), std::nullopt);
+  EXPECT_FALSE(second->isAborted());
+  EXPECT_EQ(second->getAbortInfo(), std::nullopt);
 }
 
 TEST(AbortTest, timeoutNotExpired) {
@@ -607,6 +626,78 @@ TEST(AbortTest, firstTerminalReasonWins) {
   EXPECT_TRUE(abort.isAborted());
   EXPECT_TRUE(abort.isTimedOut());
   EXPECT_EQ(abort.reason(), AbortReason::TIMED_OUT);
+}
+
+// `firstTerminalReasonWins` covers the sequential case. This is the contended
+// one: many threads recording different reasons at once must still leave
+// exactly one terminal reason behind, and it must not move afterwards. A reason
+// that could be overwritten would make the first-writer log name a fault that
+// is no longer the one being reported.
+TEST(AbortTest, concurrentWritersLeaveOneStableReason) {
+  constexpr int kThreadsPerReason = 16;
+  Abort abort{/*enabled=*/true};
+
+  std::atomic<bool> go{false};
+  std::vector<std::thread> writers;
+  writers.reserve(kThreadsPerReason * 2);
+  for (int i = 0; i < kThreadsPerReason * 2; ++i) {
+    const auto reason =
+        (i % 2 == 0) ? AbortReason::ABORTED : AbortReason::TIMED_OUT;
+    writers.emplace_back([&abort, &go, reason] {
+      while (!go.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      abort.setAbort(reason);
+    });
+  }
+  go.store(true, std::memory_order_release);
+  for (auto& t : writers) {
+    t.join();
+  }
+
+  const auto reason = abort.reason();
+  EXPECT_TRUE(
+      reason == AbortReason::ABORTED || reason == AbortReason::TIMED_OUT);
+  EXPECT_TRUE(abort.isAborted());
+  for (int i = 0; i < 1000; ++i) {
+    ASSERT_EQ(abort.reason(), reason);
+  }
+}
+
+TEST(AbortTest, hostFirstWriterEmitsTheMarker) {
+  Abort abort{/*enabled=*/true};
+
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.setAbort(AbortReason::NETWORK_ERROR, "host callsite");
+  const std::string out = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_TRUE(won);
+  // Both the numeric enum and the name: the number survives an enum rename and
+  // the name is what makes the line readable without a header lookup.
+  EXPECT_THAT(
+      out,
+      ::testing::HasSubstr(
+          std::string{kFirstWriterMarker} + "host reason=" +
+          std::to_string(static_cast<int>(AbortReason::NETWORK_ERROR)) + "(" +
+          std::string{abortReasonToString(AbortReason::NETWORK_ERROR)} +
+          ") context=host callsite"))
+      << "captured: " << out;
+}
+
+TEST(AbortTest, hostFirstWriterLoserIsSilent) {
+  Abort abort{/*enabled=*/true};
+  ASSERT_TRUE(abort.setAbort(AbortReason::TIMED_OUT, "the winner"));
+
+  ::testing::internal::CaptureStderr();
+  const bool won = abort.setAbort(AbortReason::NETWORK_ERROR, "the loser");
+  const std::string out = ::testing::internal::GetCapturedStderr();
+
+  EXPECT_FALSE(won);
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr(kFirstWriterMarker)))
+      << "captured: " << out;
+  // And the losing context is not published either -- the line and the stored
+  // context have to agree about who won.
+  EXPECT_THAT(out, ::testing::Not(::testing::HasSubstr("the loser")));
 }
 
 TEST(AbortTest, abortReasonToString) {

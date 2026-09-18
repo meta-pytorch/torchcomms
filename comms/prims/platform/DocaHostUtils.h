@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #include "comms/prims/platform/CudaDriverLazy.h"
@@ -143,6 +144,58 @@ inline std::optional<DmaBufExport> export_gpu_dmabuf_aligned(
     return std::nullopt;
   }
 
+  return DmaBufExport{fd, alignment};
+}
+
+// Export only the page-rounded virtual-address range containing [ptr,
+// ptr+size). Unlike export_gpu_dmabuf_aligned(), this deliberately does not
+// resolve or widen to the allocator's backing allocation.
+inline std::optional<DmaBufExport> export_gpu_dmabuf_va_range_aligned(
+    void* ptr,
+    size_t size,
+    DmaBufExportKind kind = DmaBufExportKind::Default) {
+  if (ptr == nullptr || size == 0) {
+    return std::nullopt;
+  }
+  const auto address = reinterpret_cast<uintptr_t>(ptr);
+  if (address > std::numeric_limits<uintptr_t>::max() - size) {
+    return std::nullopt;
+  }
+
+  unsigned long long handleFlags = 0;
+  if (kind == DmaBufExportKind::Pcie) {
+#if CUDA_VERSION >= 12080
+    handleFlags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
+#else
+    return std::nullopt;
+#endif
+  }
+
+  if (cuda_driver_lazy_init() != 0 ||
+      pfn_cuMemGetHandleForAddressRange == nullptr) {
+    LOG(WARNING)
+        << "export_gpu_dmabuf_va_range_aligned: CUDA driver API is not available";
+    return std::nullopt;
+  }
+
+  static const size_t pageSize = sysconf(_SC_PAGESIZE);
+  const auto alignment = compute_dmabuf_alignment(address, size, ptr, pageSize);
+  int fd = -1;
+  const CUresult result = pfn_cuMemGetHandleForAddressRange(
+      &fd,
+      reinterpret_cast<CUdeviceptr>(alignment.alignedBase),
+      alignment.alignedSize,
+      CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
+      handleFlags);
+  if (result != CUDA_SUCCESS || fd < 0) {
+    LOG(WARNING)
+        << "export_gpu_dmabuf_va_range_aligned: cuMemGetHandleForAddressRange"
+        << " failed err=" << result << " ptr=" << ptr << " size=" << size
+        << " kind=" << (kind == DmaBufExportKind::Pcie ? "pcie" : "default")
+        << " alignedBase=" << alignment.alignedBase
+        << " alignedSize=" << alignment.alignedSize;
+    return std::nullopt;
+  }
   return DmaBufExport{fd, alignment};
 }
 

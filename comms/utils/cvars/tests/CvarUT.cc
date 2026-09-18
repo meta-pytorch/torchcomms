@@ -113,6 +113,21 @@ TEST_F(CvarTest, CvarInitIdempotent) {
   unsetenv("__NCCL_UNIT_TEST_STRING_CVAR__");
 }
 
+TEST_F(CvarTest, ExplicitConfigurationTracksPresenceNotValue) {
+  constexpr const char* kName = "__NCCL_UNIT_TEST_INT_CVAR__";
+  unsetenv(kName);
+  ncclCvarInit();
+  EXPECT_FALSE(ncclx::isCvarExplicitlyConfigured(kName));
+
+  setenv(kName, "0", 1);
+  ncclCvarInit();
+  EXPECT_TRUE(ncclx::isCvarExplicitlyConfigured(kName));
+
+  unsetenv(kName);
+  ncclCvarInit();
+  EXPECT_FALSE(ncclx::isCvarExplicitlyConfigured(kName));
+}
+
 // Test invalid boolean values produce warnings but don't crash
 TEST_F(CvarTest, InvalidBooleanValueWarning) {
   setenv("__NCCL_UNIT_TEST_BOOL_CVAR__", "invalid_boolean", 1);

@@ -8,6 +8,7 @@
 
 #include <folly/dynamic.h>
 
+#include "comms/common/fault_tolerance/AbortTypes.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
@@ -41,7 +42,6 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
         {KernelConfig::KernelType::RECV, "Recv"},
         {KernelConfig::KernelType::SENDRECV, "SendRecv"},
         {KernelConfig::KernelType::ALLTOALL, "AllToAll"},
-        {KernelConfig::KernelType::DEVICE_ALLTOALLV, "DeviceAllToAllvPrims"},
         {KernelConfig::KernelType::ALLTOALLV, "AllToAllv"},
 };
 
@@ -112,8 +112,7 @@ CtranGpeCmd::~CtranGpeCmd() {
 
   // For persistent (graph) cmds, postKernelCleanup is deliberately skipped
   // during replay (the resources must persist across replays). Run it here
-  // on destruction so resources like device-allocated sendsList/recvsList
-  // are freed when the graph is destroyed.
+  // on destruction so retained resources are freed with the graph.
   if (postKernelCleanup) {
     postKernelCleanup();
   }
@@ -246,6 +245,11 @@ commResult_t CtranGpe::Impl::submit(
       colltraceCreatesRecord ? meta::comms::colltrace::getCollTraceHandle(
                                    comm, opGroup, kernelConfig, ifchecksum)
                              : nullptr;
+  // Every exit below this point -- early return, or goto fail -- must release
+  // the record it just took out, or the next collective inherits a stale
+  // pending trace.
+  meta::comms::colltrace::CollTraceEnqueueGuard colltraceEnqueueGuard{
+      colltraceHandle};
 
   // Arm the collective kernel to publish its own start/end timestamps into the
   // colltrace ring, replacing the host-launched timestamp kernels for the
@@ -541,6 +545,7 @@ commResult_t CtranGpe::Impl::submit(
   if (colltraceHandle != nullptr) {
     colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
   }
+  colltraceEnqueueGuard.disarm();
 
   CTRAN_LOG_SUBSYS(
       INFO,
@@ -774,22 +779,26 @@ void CtranGpe::Impl::gpeThreadFn() {
       }
       SCOPE_EXIT {
         if (comm->testAbort()) {
-          // Preserve abort state across cancelTimeout(): an aborted comm
-          // must never flip back to not-aborted.
-          comm->setAbort();
-          const std::string_view reason =
-              comm->getAbort()->isTimedOut() ? "timeout" : "explicit";
+          const auto abortInfo = comm->getAbortInfo();
+          const auto reasonAndContext = abortInfo.has_value()
+              ? fmt::format(
+                    "reason={} context=\"{}\"",
+                    comms::fault_tolerance::abortReasonToString(
+                        abortInfo->reason),
+                    folly::cEscape<std::string>(abortInfo->context))
+              : std::string{"reason=unknown context=\"\""};
 
           // TERMINATE was marked before SCOPE_EXIT — skip the marker here.
           if (!isTerminateCmd) {
-            gpeProfiler_->mark(ctran::GpeTracePoint::ALGO_ABORTED, reason);
+            gpeProfiler_->mark(
+                ctran::GpeTracePoint::ALGO_ABORTED, reasonAndContext);
           }
 
           const std::string_view phase = isTerminateCmd ? " now TERMINATE" : "";
           CTRAN_LOG(
               ERR,
               "Communicator aborted ({}){} on rank {} commHash {:x} {}",
-              reason,
+              reasonAndContext,
               phase,
               statex->rank(),
               statex->commHash(),

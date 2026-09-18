@@ -1895,12 +1895,12 @@ TEST_F(NVLinkTransportPutGetTest, PutMultipleRequestsCopiesAllData) {
 
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x70);
 
-  // Expect a single batched call on CUDA 12.8+, otherwise 3 individual
-  // memcpyAsync calls. put: dst=remote, src=local.
-#if CUDART_VERSION >= 12080
+  // Expect a single batched call where the batch path is enabled, otherwise 3
+  // individual memcpyAsync calls. put: dst=remote, src=local.
+#if UNIFLOW_NVLINK_MEMCPY_BATCH
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,
@@ -2041,10 +2041,10 @@ TEST_F(NVLinkTransportPutGetTest, PutSubSpanTransfersPartialData) {
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x72);
 
   // Sub-spans: only transfer the first half of each region.
-#if CUDART_VERSION >= 12080
+#if UNIFLOW_NVLINK_MEMCPY_BATCH
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,
@@ -2197,12 +2197,12 @@ TEST_F(NVLinkTransportPutGetTest, GetMultipleRequestsCopiesAllData) {
 
   cudaEvent_t fakeEvent = reinterpret_cast<cudaEvent_t>(0x71);
 
-  // Expect a single batched call on CUDA 12.8+, otherwise 3 individual
-  // memcpyAsync calls. get: dst=local, src=remote.
-#if CUDART_VERSION >= 12080
+  // Expect a single batched call where the batch path is enabled, otherwise 3
+  // individual memcpyAsync calls. get: dst=local, src=remote.
+#if UNIFLOW_NVLINK_MEMCPY_BATCH
   EXPECT_CALL(*cudaApiMock_, memcpyBatchAsync(_, _, _, 3, nullptr))
       .WillOnce(Invoke(
-          [](void** dsts,
+          [](void* const* dsts,
              const void* const* srcs,
              const size_t* sizes,
              size_t count,

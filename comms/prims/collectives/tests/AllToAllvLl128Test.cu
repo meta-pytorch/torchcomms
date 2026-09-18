@@ -17,8 +17,8 @@ __global__ void test_all_to_allv_ll128_kernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos,
-    Timeout timeout) {
-  timeout.start();
+    AbortDevice abortDevice) {
+  abortDevice.start();
   all_to_allv_ll128(
       recvbuff_d,
       sendbuff_d,
@@ -26,7 +26,7 @@ __global__ void test_all_to_allv_ll128_kernel(
       transports,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abortDevice);
 }
 
 void test_all_to_allv_ll128(
@@ -39,7 +39,7 @@ void test_all_to_allv_ll128(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize,
-    Timeout timeout) {
+    AbortDevice abortDevice) {
   test_all_to_allv_ll128_kernel<<<numBlocks, blockSize>>>(
       recvbuff_d,
       sendbuff_d,
@@ -48,7 +48,7 @@ void test_all_to_allv_ll128(
       transports,
       send_chunk_infos,
       recv_chunk_infos,
-      timeout);
+      abortDevice);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

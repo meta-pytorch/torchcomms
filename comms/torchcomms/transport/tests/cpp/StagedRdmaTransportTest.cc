@@ -3,11 +3,11 @@
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <vector>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/CtranLogger.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/torchcomms/transport/StagedRdmaTransport.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -15,10 +15,6 @@
 // NOLINTNEXTLINE(google-build-using-namespace)
 using namespace torch::comms;
 using namespace meta::comms;
-
-FOLLY_INIT_LOGGING_CONFIG(
-    ".=WARNING"
-    ";default:async=true,sync_level=WARNING");
 
 // --- Fill mode for transfer helpers ---
 
@@ -1113,5 +1109,6 @@ int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+  ctran::logging::configureStandaloneCtranLogging(spdlog::level::warn);
   return RUN_ALL_TESTS();
 }
