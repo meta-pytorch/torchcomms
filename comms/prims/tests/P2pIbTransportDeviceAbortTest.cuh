@@ -9,15 +9,52 @@
 
 namespace comms::prims::test {
 
+inline constexpr uint32_t kTestBlockSize = 32;
+
 struct PrepareSendSlotAbortObservation {
   uint32_t waitReason{0};
   uint32_t confirmationReason{0};
   uint32_t slotUnretired{0};
+  uint32_t llForwardCount{0};
+  uint32_t predecessorCreditCount{0};
+  uint32_t successorPutCount{0};
+  uint32_t completionRecordCount{0};
+  uint32_t recvLaneCursor{0};
   uint64_t remainingLaneMask{0};
   uint64_t generation{0};
 };
 
+struct VariableWaitAbortObservation {
+  uint32_t sendCopyCount{0};
+  uint32_t putCount{0};
+  uint32_t recvCopyCount{0};
+  uint32_t signalCount{0};
+  uint32_t recvLaneCursor{0};
+  uint32_t waitCallCount{0};
+  uint32_t waitObservedAbortCount{0};
+  uint32_t waitBoundExpiredCount{0};
+};
+
+struct ProgressPostRefusalObservation {
+  uint32_t legacyPutCount{0};
+  uint32_t abortAwarePutCount{0};
+  uint32_t legacySignalCount{0};
+  uint32_t abortAwareSignalCount{0};
+  uint32_t completionRecordCount{0};
+  uint32_t status{0};
+  uint32_t finalStage{0};
+  uint32_t completed{0};
+};
+
 void launchPrepareSendSlotAbortForwarding(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchLlForwardPreparationRetirementRefusal(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchLlForwardPreparationDataReadyAbort(
     PrepareSendSlotAbortObservation* observation,
     comms::fault_tolerance::AbortDevice abort);
 
@@ -54,6 +91,54 @@ void launchIbrcWaitSignal(
     uint64_t expected,
     comms::fault_tolerance::AbortDevice abort,
     uint32_t* enteredWait = nullptr);
+
+void launchIbWrapperTrySignal(
+    uint64_t* signal,
+    uint32_t* postedCount,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchIbWrapperRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchIbrcRecvRelease(
+    uint64_t* data,
+    bool* releaseResult,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableSendWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchVariableRecvWaitAbort(
+    VariableWaitAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
+void launchProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchRegisteredProgressSendPostRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchProgressRecvCreditRefusal(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+void launchProgressRecvReleaseSequence(
+    ProgressPostRefusalObservation* observation,
+    comms::fault_tolerance::AbortDevice abort,
+    bool refuse);
+
+uint32_t progressSendRecvDoneStatus();
+uint32_t progressSendRecvAbortedStatus();
+uint32_t registeredSendAbortedStatus();
+uint32_t progressDoneStage();
 
 /*
  * Depth of the command queue backing `launchIbrcPutUntilQueueFull`, so the test

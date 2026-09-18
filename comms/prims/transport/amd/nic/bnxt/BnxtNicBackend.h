@@ -33,6 +33,14 @@
 namespace prims_amd_gda {
 
 struct BnxtNicBackend {
+  static constexpr uint64_t kMaxSqWaitSpins = 10000000ULL;
+
+  __device__ __forceinline__ bool qpTerminal(
+      prims_amd_gda_gpu_dev_verbs_qp* qp) const {
+    return __hip_atomic_load(
+               &qp->terminal, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_AGENT) != 0;
+  }
+
   static constexpr const char* vendorPrefix() {
     return "bnxt_re";
   }
@@ -65,6 +73,31 @@ struct BnxtNicBackend {
                  __HIP_MEMORY_SCOPE_SYSTEM));
   }
 
+  template <typename ContinuePolicy>
+  __device__ bool tryLockQp(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      const ContinuePolicy& shouldContinue) {
+    int expected;
+    do {
+      if (qpTerminal(qp) || !shouldContinue()) {
+        return false;
+      }
+      expected = 0;
+    } while (0 ==
+             __hip_atomic_compare_exchange_strong(
+                 &qp->nic.bnxt.sq_lock,
+                 &expected,
+                 1,
+                 __ATOMIC_ACQUIRE,
+                 __ATOMIC_ACQUIRE,
+                 __HIP_MEMORY_SCOPE_SYSTEM));
+    if (qpTerminal(qp) || !shouldContinue()) {
+      unlockQp(qp);
+      return false;
+    }
+    return true;
+  }
+
   __device__ void unlockQp(prims_amd_gda_gpu_dev_verbs_qp* qp) {
     __hip_atomic_store(
         &qp->nic.bnxt.sq_lock, 0, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_SYSTEM);
@@ -90,8 +123,10 @@ struct BnxtNicBackend {
     // Bounded spin: an SQ that never drains means the NIC has stopped
     // completing WQEs (link down or QP in error), so an unbounded spin would
     // hang the kernel forever. Trap once exhausted so the stall surfaces.
-    constexpr uint64_t kMaxSpins = 10000000ULL;
-    for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
+    for (uint64_t spins = 0; spins < kMaxSqWaitSpins; ++spins) {
+      if (qpTerminal(qp)) {
+        return;
+      }
       uint32_t conIdx = cqe->con_indx & 0xFFFF;
       uint32_t sqHead =
           (conIdx * PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT) % sqDepth;
@@ -112,6 +147,44 @@ struct BnxtNicBackend {
         qp->nic.bnxt.sq_id);
     // __builtin_trap() is the portable device trap (s_trap on AMDGPU); the
     // CUDA-only __trap() intrinsic is not declared in this HIP header context.
+    __builtin_trap();
+  }
+
+  template <typename ContinuePolicy>
+  __device__ bool tryWaitForSqSlots(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      uint32_t requestedSlots,
+      const ContinuePolicy& shouldContinue) {
+    const uint32_t sqDepth = qp->nic.bnxt.sq_depth;
+    if (sqDepth == 0) {
+      return true;
+    }
+    volatile auto* cqe = reinterpret_cast<volatile prims_amd_gda_bnxt_req_cqe*>(
+        qp->cq_sq.cqe_daddr);
+    for (uint64_t spins = 0; spins < kMaxSqWaitSpins; ++spins) {
+      if (qpTerminal(qp) || !shouldContinue()) {
+        return false;
+      }
+      const uint32_t sqHead =
+          ((cqe->con_indx & 0xFFFF) * PRIMS_AMD_GDA_BNXT_GDA_WQE_SLOT_COUNT) %
+          sqDepth;
+      const uint32_t consumed =
+          (qp->nic.bnxt.sq_tail - sqHead + sqDepth) % sqDepth;
+      if (sqDepth - consumed >= requestedSlots) {
+        return true;
+      }
+    }
+    if (qpTerminal(qp) || !shouldContinue()) {
+      return false;
+    }
+    printf(
+        "BNXT tryWaitForSqSlots TIMEOUT: requested=%u sq_depth=%u "
+        "sq_tail=%u con_indx=%u sq_id=%u\n",
+        requestedSlots,
+        sqDepth,
+        qp->nic.bnxt.sq_tail,
+        cqe->con_indx & 0xFFFF,
+        qp->nic.bnxt.sq_id);
     __builtin_trap();
   }
 
@@ -157,9 +230,34 @@ struct BnxtNicBackend {
       uint64_t firstIdx,
       uint64_t lastIdx) {
     while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp)) {
+        return;
+      }
+    }
+    if (qpTerminal(qp)) {
+      return;
     }
     amd_fence_release_device();
     amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+  }
+
+  template <typename ContinuePolicy>
+  __device__ bool tryMarkWqesReady(
+      prims_amd_gda_gpu_dev_verbs_qp* qp,
+      uint64_t firstIdx,
+      uint64_t lastIdx,
+      const ContinuePolicy& shouldContinue) {
+    while (amd_load_relaxed_device(&qp->sq_ready_index) < firstIdx) {
+      if (qpTerminal(qp) || !shouldContinue()) {
+        return false;
+      }
+    }
+    if (qpTerminal(qp) || !shouldContinue()) {
+      return false;
+    }
+    amd_fence_release_device();
+    amd_atomic_max_device(&qp->sq_ready_index, lastIdx + 1);
+    return true;
   }
 
   __device__ void bnxtIncrTail(
@@ -253,6 +351,9 @@ struct BnxtNicBackend {
   __device__ void ringDoorbell(
       prims_amd_gda_gpu_dev_verbs_qp* qp,
       uint64_t /* nextWqeIdx */) {
+    if (qpTerminal(qp)) {
+      return;
+    }
     const auto& bnxt = qp->nic.bnxt;
     const uint64_t doorbellWord =
         composeSqDoorbell(bnxt.sq_tail, bnxt.sq_flags, bnxt.sq_id);
@@ -595,6 +696,9 @@ struct BnxtNicBackend {
 
     constexpr uint64_t kMaxSpins = 10000000ULL;
     for (uint64_t spins = 0; spins < kMaxSpins; ++spins) {
+      if (qpTerminal(qp)) {
+        return ECANCELED;
+      }
       uint32_t conIdx = cqe->con_indx & 0xFFFF;
       int16_t diff = static_cast<int16_t>(conIdx - target);
       if (diff >= 0) {

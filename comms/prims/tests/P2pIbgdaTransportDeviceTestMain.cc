@@ -178,6 +178,170 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, SqCapacityPollObservesAbort) {
     EXPECT_TRUE(abort.isAborted());
   }
 }
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    DataOnlySqReservationAbortLeavesUnpublished) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  DataOnlySqAbortResult result{};
+
+  CUDACHECK_TEST(runTestDataOnlySqReservationAbort(
+      /*collapsedCq=*/false, abort, &result));
+
+  EXPECT_EQ(result.prePutAbortClear, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.producerIndex, 0U);
+  EXPECT_EQ(result.doorbellRecord, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.pendingFlushLanesMask, 0U);
+  EXPECT_EQ(result.wqeUnchanged, 1U);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_FALSE(abort.isTimedOut());
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    DataOnlyCollapsedSqReservationAbortLeavesUnpublished) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  DataOnlySqAbortResult result{};
+
+  CUDACHECK_TEST(runTestDataOnlySqReservationAbort(
+      /*collapsedCq=*/true, abort, &result));
+
+  EXPECT_EQ(result.prePutAbortClear, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_GE(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.producerIndex, 0U);
+  EXPECT_EQ(result.doorbellRecord, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.pendingFlushLanesMask, 0U);
+  EXPECT_EQ(result.wqeUnchanged, 1U);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_FALSE(abort.isTimedOut());
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, DataOnlyPutPostsWithCapacity) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  DataOnlySqAbortResult result{};
+
+  CUDACHECK_TEST(
+      runTestDataOnlyPutWithCapacity(abort.getDeviceHandle(), &result));
+
+  EXPECT_EQ(result.prePutAbortClear, 1U);
+  EXPECT_EQ(result.posted, 1U);
+  EXPECT_EQ(result.completionId, 0U);
+  EXPECT_EQ(result.completionValue, 0U);
+  EXPECT_EQ(result.reservedIndex, 1U);
+  EXPECT_EQ(result.readyIndex, 1U);
+  EXPECT_EQ(result.producerIndex, 0U);
+  EXPECT_EQ(result.doorbell, 1U);
+  EXPECT_EQ(result.pendingFlushLanesMask, 1U);
+  EXPECT_EQ(result.wqeUnchanged, 0U);
+  EXPECT_FALSE(abort.isAborted());
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, DataOnlySqErrorSetsNetworkAbort) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  DataOnlySqAbortResult result{};
+
+  CUDACHECK_TEST(runTestDataOnlySqErrorWithFt(abort, &result));
+
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.producerIndex, 0U);
+  EXPECT_EQ(result.doorbellRecord, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.pendingFlushLanesMask, 0U);
+  EXPECT_EQ(result.wqeUnchanged, 1U);
+  EXPECT_TRUE(abort.isAborted());
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
+#endif
+
+#ifdef __HIP_PLATFORM_AMD__
+TEST_F(P2pIbgdaTransportDeviceTestFixture, AmdDataOnlyPreAbortIsTerminal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdDataOnlyPreAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.reservedIndex, 0U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    AmdDataOnlyMidWaitAbortStopsConcurrentProducers) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdDataOnlyMidWaitAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.reservationObservationTimedOut, 0U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.firstProducerCompleted, 1U);
+  EXPECT_EQ(result.secondProducerCompleted, 1U);
+  EXPECT_GE(result.reservedIndex, 2U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, AmdPutSignalPreAbortIsTerminal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdPutSignalPreAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.reservedIndex, 0U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+}
+
+TEST_F(
+    P2pIbgdaTransportDeviceTestFixture,
+    AmdPutSignalMidWaitAbortStopsConcurrentProducers) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  AmdDataOnlyAbortResult result{};
+
+  CUDACHECK_TEST(runTestAmdPutSignalMidWaitAbort(abort, &result));
+
+  EXPECT_EQ(result.completed, 1U);
+  EXPECT_EQ(result.reservationObserved, 1U);
+  EXPECT_EQ(result.reservationObservationTimedOut, 0U);
+  EXPECT_EQ(result.posted, 0U);
+  EXPECT_EQ(result.secondPosted, 0U);
+  EXPECT_EQ(result.firstProducerCompleted, 1U);
+  EXPECT_EQ(result.secondProducerCompleted, 1U);
+  EXPECT_GE(result.reservedIndex, 3U);
+  EXPECT_EQ(result.readyIndex, 0U);
+  EXPECT_EQ(result.doorbell, 0U);
+  EXPECT_EQ(result.terminal, 1U);
+  EXPECT_EQ(result.lockReleased, 1U);
+  EXPECT_TRUE(abort.isAborted());
+}
 #endif
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {
@@ -523,6 +687,43 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, TraceIbgdaEventWritesEvent) {
 // `doca_compat_amd_smoke` build target (compile-time correctness) and can
 // be added once a HIP-specific trap-detection helper exists.
 #ifndef __HIP_PLATFORM_AMD__
+
+class P2pIbgdaTransportDeviceTrapTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    CUDACHECK_TEST(cudaSetDevice(0));
+  }
+
+  void TearDown() override {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaDeviceReset();
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaSetDevice(0);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaGetLastError();
+  }
+};
+
+TEST_F(P2pIbgdaTransportDeviceTrapTest, DataOnlySqErrorTrapsWithoutFt) {
+  const cudaError_t error = runTestDataOnlySqErrorWithoutFt();
+  EXPECT_TRUE(
+      error == cudaErrorIllegalInstruction || error == cudaErrorAssert ||
+      error == cudaErrorLaunchFailure)
+      << "expected disabled-FT SQ error to trap, got "
+      << cudaGetErrorString(error);
+}
+
+TEST_F(P2pIbgdaTransportDeviceTrapTest, DataOnlySqErrorTrapsWithFt) {
+  comms::fault_tolerance::Abort abort(
+      /*enabled=*/true, comms::fault_tolerance::AbortBehavior::TRAP);
+  const cudaError_t error = runTestDataOnlySqErrorWithFt(abort, nullptr);
+  EXPECT_TRUE(
+      error == cudaErrorIllegalInstruction || error == cudaErrorAssert ||
+      error == cudaErrorLaunchFailure)
+      << "expected enabled-FT SQ error to trap, got "
+      << cudaGetErrorString(error);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
 
 // Test fixture for timeout trap tests that resets the device after each test
 // to clear __trap() state.
