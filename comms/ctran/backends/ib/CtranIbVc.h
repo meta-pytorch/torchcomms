@@ -418,6 +418,10 @@ class CtranIbVirtualConn {
     return maxQpMsgs_;
   }
 
+  inline uint32_t getTrafficClass() const {
+    return trafficClass_;
+  }
+
   inline uint32_t getControlQpNum() const {
     FB_CHECKABORT(
         ibvControlQp_.has_value() && ibvControlQp_->qp() != nullptr,

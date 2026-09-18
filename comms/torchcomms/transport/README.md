@@ -53,10 +53,14 @@ if (!torch::comms::RdmaTransport::supported()) {
 
 #### Constructor
 ```cpp
-RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
+RdmaTransport(
+    int cudaDev,
+    folly::EventBase* evb = nullptr,
+    const CtranIbConfig& ibConfig = {});
 ```
 - `cudaDev`: CUDA device ID to bind the transport to
 - `evb`: Event base for asynchronous operations (optional)
+- `ibConfig`: sparse IB configuration overrides; unset fields use CTRAN policy
 
 #### Core Methods
 

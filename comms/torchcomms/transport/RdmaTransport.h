@@ -16,6 +16,7 @@
 #include <folly/io/async/EventBase.h>
 
 #include <comms/utils/commSpecs.h>
+#include "comms/ctran/backends/CtranIbConfig.h"
 
 extern "C" int RdmaRegTensor(void* addr, size_t len);
 extern "C" int RdmaDeregTensor(void* addr, size_t len);
@@ -326,13 +327,18 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * cudaDev - Transport needs to use NIC for I/O. It does so by identifying
    *           the NIC associated with specified cudaDevice.
    * evb - EventLoop to drive the RDMA operations.
-   * maxNumCqe - Optional per-transport CQ size cap. When set, overrides
-   *             the global NCCL_CTRAN_IB_MAX_NUM_CQE env var.
+   * ibConfig - Sparse caller-owned IB overrides. Unset fields use CTRAN's
+   *            standard configuration.
    */
   explicit RdmaTransport(
       int cudaDev,
       folly::EventBase* evb = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt,
+      const CtranIbConfig& ibConfig = {});
+
+  explicit RdmaTransport(
+      int cudaDev,
+      folly::EventBase* evb,
+      std::optional<int> maxNumCqe,
       std::optional<int> maxNumNic = std::nullopt);
 
   ~RdmaTransport();
@@ -376,6 +382,9 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * Return the effective number of NICs configured for this transport.
    */
   int getNumNics() const;
+
+  /* Return the effective peer VC settings, or empty before connect(). */
+  std::optional<CtranIbConfig> getVcConfig() const;
 
   /*
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer
