@@ -63,10 +63,13 @@ target_include_directories(ctran PRIVATE
     ${CUDA_INCLUDE_DIRS}/cccl
 )
 
-# ctran is the primary prims consumer: enabling this activates the (otherwise
-# compiled-out) prims-backed code — CtranPipes, CtranAlgo, AllToAll/SendRecv,
-# window, hierarchical ring — which #include "comms/prims/..." (resolved via
-# ROOT) and link against the prims OBJECT library.
-if(MCCL_ENABLE_PRIMS)
-    target_compile_definitions(ctran PRIVATE ENABLE_PRIMS=1)
+if(TARGET mccl_rdma_core)
+    # This directory's ctran target is the sole CMake owner of this source.
+    # Keep this source-local define and the provider link together if that
+    # ownership changes; other ibverbx translation units use wrapper types.
+    set_property(SOURCE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ibverbx/IbverbxSymbols.cc"
+        APPEND PROPERTY COMPILE_DEFINITIONS IBVERBX_BUILD_RDMA_CORE=1
+    )
+    target_link_libraries(ctran PRIVATE mccl_rdma_core)
 endif()

@@ -2,6 +2,8 @@
 
 #include "comms/prims/collectives/ReduceScatterDirectIbV2.cuh"
 
+#include "comms/prims/collectives/ReduceScatterDirectIbCore.cuh"
+
 #include "comms/prims/core/Checks.h"
 #include "comms/prims/core/ThreadGroup.cuh"
 #include "comms/prims/core/TiledBuffer.cuh"
@@ -277,12 +279,16 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
       if (group.is_leader()) {
         for (int i = 0; i < count; ++i) {
           const int step = base + i;
-          rpeer_of[i] = (my_rank + 1 + (step + channel) % (W - 1)) % W;
+          rpeer_of[i] = direct_ib_reduce_scatter_peer_for_step(
+              my_rank, W, channel, step, DirectIbReduceScatterRole::RECEIVE);
           for (int sl = 0; sl < kSlots; ++sl) {
             rviews[sl][i] = detail::RecvChunkAcquisition{};
           }
           auto transport = args.peers[rpeer_of[i]];
-          transport.init_recv_progress(solo, wire_bytes, max_sig);
+          // The acquire path hands back staging pointers and reduces out of
+          // them directly, so this operation has no destination buffer.
+          transport.init_recv_progress(
+              solo, /*dst=*/nullptr, wire_bytes, max_sig);
         }
         s_published = -1;
         s_consumed = -1;
@@ -311,7 +317,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
                 detail::RecvChunkAcquisition view{};
                 auto transport = args.peers[rpeer_of[i]];
                 const auto st = transport.progress_recv_acquire_once(
-                    solo, wire_bytes, max_sig, abortDevice, view);
+                    solo, abortDevice, view);
                 // `Aborted` is terminal and must be handled explicitly. It used
                 // to fall through this chain: the acquire had already driven
                 // the slot to `Done` via abandon_progress_state(), so the NEXT
@@ -431,10 +437,16 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
       bool posted[kMaxPeersInFlight];
       for (int i = 0; i < count; ++i) {
         const int step = base + i;
-        peer_of[i] = (my_rank + W - 1 - (step + channel) % (W - 1)) % W;
+        peer_of[i] = direct_ib_reduce_scatter_peer_for_step(
+            my_rank, W, channel, step, DirectIbReduceScatterRole::SEND);
         posted[i] = false;
         auto transport = args.peers[peer_of[i]];
-        transport.init_registered_send_progress(solo, wire_bytes, max_sig);
+        transport.init_registered_send_progress(
+            solo,
+            args.input_reg.subBuffer(
+                send_offset_bytes(args, peer_of[i], tile_offset_elements)),
+            wire_bytes,
+            max_sig);
       }
 
       int remaining = count;
@@ -444,13 +456,8 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
             continue;
           }
           auto transport = args.peers[peer_of[i]];
-          const auto st = transport.progress_registered_send_once(
-              solo,
-              args.input_reg.subBuffer(
-                  send_offset_bytes(args, peer_of[i], tile_offset_elements)),
-              wire_bytes,
-              max_sig,
-              abortDevice);
+          const auto st =
+              transport.progress_registered_send_once(solo, abortDevice);
           if (st == IbgdaRegisteredSendProgressStatus::Posted) {
             posted[i] = true;
             --remaining;

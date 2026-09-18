@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
 #ifdef __HIP_PLATFORM_AMD__
 // On AMD: use the HIP runtime for the cuda* API calls below (HIPify
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
@@ -39,6 +41,7 @@
 #include "comms/prims/transport/ibgda/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/prims/transport/rdma/NicDiscovery.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims {
 
@@ -50,6 +53,19 @@ constexpr int kHopLimit = 255;
 // The device-visible companion QP is created by create_qp_group_hl() with
 // mainAttr and therefore uses config_.qpDepth.
 constexpr uint32_t kLoopbackCompanionQpDepth = 32;
+constexpr uint32_t kCollapsedCqProbeDepth = 32;
+
+#ifndef __HIP_PLATFORM_AMD__
+bool allQpsErrorBeforeDestroyEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY");
+    // Keep this fail-stop mitigation an explicit opt-in; only the documented
+    // canonical value enables it.
+    return value != nullptr && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+#endif
 } // namespace
 
 namespace {
@@ -118,6 +134,65 @@ const char* docaErrorToString(doca_error_t err) {
 }
 
 #ifndef __HIP_PLATFORM_AMD__
+doca_error_t transitionQpToError(doca_gpu_verbs_qp_hl* qp) {
+  if (qp == nullptr || qp->qp == nullptr) {
+    return DOCA_SUCCESS;
+  }
+
+  doca_verbs_qp_attr* qpAttr = nullptr;
+  doca_error_t status = doca_verbs_qp_attr_create(&qpAttr);
+  if (status == DOCA_SUCCESS) {
+    auto* const createdQpAttr = CHECK_NOTNULL(qpAttr);
+    status = doca_verbs_qp_attr_set_next_state(
+        createdQpAttr, DOCA_VERBS_QP_STATE_ERR);
+    if (status == DOCA_SUCCESS) {
+      status = doca_verbs_qp_modify(
+          qp->qp, createdQpAttr, DOCA_VERBS_QP_ATTR_NEXT_STATE);
+    }
+  }
+  if (qpAttr != nullptr) {
+    const doca_error_t destroyStatus = doca_verbs_qp_attr_destroy(qpAttr);
+    if (destroyStatus != DOCA_SUCCESS) {
+      LOG(ERROR) << "Failed to destroy DOCA verbs QP attributes: "
+                 << static_cast<int>(destroyStatus) << " ("
+                 << docaErrorToString(destroyStatus) << ")";
+    }
+  }
+  return status;
+}
+
+doca_error_t transitionQpGroupToError(doca_gpu_verbs_qp_group_hl* group) {
+  if (group == nullptr) {
+    return DOCA_ERROR_INVALID_VALUE;
+  }
+
+  const doca_error_t mainStatus = transitionQpToError(&group->qp_main);
+  const doca_error_t companionStatus =
+      transitionQpToError(&group->qp_companion);
+  return mainStatus != DOCA_SUCCESS ? mainStatus : companionStatus;
+}
+
+} // namespace
+
+void detail::requireQpTransitionSuccess(
+    doca_error_t status,
+    const char* qpKind,
+    std::size_t nicIndex,
+    std::size_t qpIndex) {
+  if (status == DOCA_SUCCESS) {
+    return;
+  }
+  LOG(FATAL) << "MultipeerIbgdaTransport: QP transition failed; refusing to "
+                "release memory that may still be referenced by outstanding "
+                "WQEs"
+             << " qp_kind=" << qpKind << " nic_index=" << nicIndex
+             << " qp_index=" << qpIndex
+             << " status=" << static_cast<int>(status) << " ("
+             << docaErrorToString(status) << ")";
+}
+
+namespace {
+
 const char* reliableDoorbellModeName(const std::optional<bool>& enabled) {
   if (!enabled.has_value()) {
     return "auto";
@@ -153,6 +228,41 @@ uint8_t resolveMaxRdAtomic(const MultipeerIbgdaTransportConfig& config) {
         fmt::format("maxRdAtomic={} is not a power of two in [1, 128]", value));
   }
   return static_cast<uint8_t>(value);
+}
+
+std::optional<bool> resolveCollapsedCqMode(
+    const MultipeerIbgdaTransportConfig& config) {
+  // Standalone Link-EP does not initialize NCCL CVARs, but must still honor
+  // the environment kill switch before constructing this transport. Remove
+  // this direct read when Link-EP initializes CVARs before transport setup.
+  if (const char* mode = std::getenv("MCCL_IBGDA_COLLAPSED_CQ_MODE");
+      mode != nullptr) {
+    if (std::strcmp(mode, "on") == 0) {
+      return true;
+    }
+    if (std::strcmp(mode, "off") == 0) {
+      return false;
+    }
+    if (std::strcmp(mode, "auto") == 0) {
+      return config.enableCollapsedCq;
+    }
+    LOG_FIRST_N(WARNING, 1) << "Ignoring unknown MCCL_IBGDA_COLLAPSED_CQ_MODE='"
+                            << mode << "'; expected auto, on, or off";
+  }
+  if (MCCL_IBGDA_COLLAPSED_CQ_MODE ==
+      MCCL_IBGDA_COLLAPSED_CQ_MODE_DEFAULTCVARVALUE) {
+    return config.enableCollapsedCq;
+  }
+  using Mode = decltype(MCCL_IBGDA_COLLAPSED_CQ_MODE);
+  switch (MCCL_IBGDA_COLLAPSED_CQ_MODE) {
+    case Mode::on:
+      return true;
+    case Mode::off:
+      return false;
+    case Mode::auto_:
+      break;
+  }
+  return std::nullopt;
 }
 
 // Largest power of two <= limit, or 0 when limit is 0.
@@ -367,17 +477,18 @@ IbQpOrderingSemantic resolveQpOrderingSemanticForNic(
 
   if (ibQpOrderingPolicyIsAuto(policy)) {
     if (!cap.has_value()) {
-      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                   "back to ibta on NIC "
-                << deviceName << " because " << queryFailure;
+      COMMS_LOG(
+          DBG,
+          "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {} because {}",
+          deviceName,
+          queryFailure);
       return IbQpOrderingSemantic::Ibta;
     }
     if (!cap->forceSupported) {
-      LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                   "back to ibta on NIC "
-                << deviceName
-                << ": the NIC does not report cmd_hca_cap_2.dp_ordering_force, "
-                   "without which the QPC tier is ignored";
+      COMMS_LOG(
+          DBG,
+          "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {}: the NIC does not report cmd_hca_cap_2.dp_ordering_force, without which the QPC tier is ignored",
+          deviceName);
       return IbQpOrderingSemantic::Ibta;
     }
     // Ladder: take the strongest tier this NIC reports, ooo_all first.
@@ -406,11 +517,10 @@ IbQpOrderingSemantic resolveQpOrderingSemanticForNic(
         return candidate;
       }
     }
-    LOG(INFO) << "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling "
-                 "back to ibta on NIC "
-              << deviceName
-              << ": the NIC reports no out-of-order placement tier "
-                 "(cmd_hca_cap.dp_ordering_ooo_{rw,all}_rc both clear)";
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: qp_ordering_semantic=auto falling back to ibta on NIC {}: the NIC reports no out-of-order placement tier (cmd_hca_cap.dp_ordering_ooo_{{rw,all}}_rc both clear)",
+        deviceName);
     return IbQpOrderingSemantic::Ibta;
   }
 
@@ -452,6 +562,90 @@ void checkDocaError(doca_error_t err, const char* msg) {
   }
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+#ifndef PRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+// Probe through the high-level QP path so the CQ uses GPU UMEM, like
+// production. CX8 rejects an otherwise equivalent collapsed CQ backed by
+// internal host UMEM.
+doca_error_t
+tryCreateProbeQp(doca_gpu* gpuDev, ::ibv_pd* ibvPd, bool collapsed) {
+  doca_gpu_verbs_qp_init_attr_hl attr{};
+  attr.gpu_dev = gpuDev;
+  attr.ibpd = ibvPd;
+  attr.sq_nwqe = kCollapsedCqProbeDepth;
+  attr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
+  attr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
+  attr.send_dbr_mode_ext = DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+  attr.cq_collapsed = collapsed;
+
+  doca_gpu_verbs_qp_hl* qp = nullptr;
+  const doca_error_t createStatus = doca_gpu_verbs_create_qp_hl(&attr, &qp);
+  if (createStatus != DOCA_SUCCESS) {
+    return createStatus;
+  }
+  if (qp == nullptr) {
+    return DOCA_ERROR_BAD_STATE;
+  }
+  checkDocaError(
+      doca_gpu_verbs_destroy_qp_hl(qp),
+      "Failed to destroy collapsed-CQ capability-probe QP");
+  return DOCA_SUCCESS;
+}
+#endif
+
+bool resolveCollapsedCqForNic(
+    const MultipeerIbgdaTransportConfig& config,
+    doca_gpu* gpuDev,
+    ::ibv_pd* ibvPd,
+    const std::string& deviceName) {
+#ifdef PRIMS_IBGDA_DISABLE_COLLAPSED_CQ
+  static_cast<void>(gpuDev);
+  static_cast<void>(ibvPd);
+  if (config.enableCollapsedCq.value_or(false)) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} cannot use collapsed CQs because this build links a GPUNetIO "
+            "host library without collapsed-CQ creation support",
+            deviceName));
+  }
+  return false;
+#else
+  if (!collapsedCqNeedsCapabilityProbe(config)) {
+    return false;
+  }
+
+  const doca_error_t collapsedStatus = tryCreateProbeQp(gpuDev, ibvPd, true);
+  if (collapsedStatus == DOCA_SUCCESS) {
+    return true;
+  }
+  if (config.enableCollapsedCq.value_or(false)) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} rejected collapsed CQ creation: {}",
+            deviceName,
+            docaErrorToString(collapsedStatus)));
+  }
+
+  const doca_error_t ringStatus = tryCreateProbeQp(gpuDev, ibvPd, false);
+  if (ringStatus != DOCA_SUCCESS) {
+    throw std::runtime_error(
+        fmt::format(
+            "NIC {} rejected both collapsed and ring CQ capability probes: "
+            "collapsed={}, ring={}",
+            deviceName,
+            docaErrorToString(collapsedStatus),
+            docaErrorToString(ringStatus)));
+  }
+  LOG_FIRST_N(WARNING, 1)
+      << "MultipeerIbgdaTransport: NIC " << deviceName
+      << " rejected or could not create a collapsed CQ ("
+      << docaErrorToString(collapsedStatus)
+      << "); the ring-CQ control succeeded, so auto mode will use ring CQs";
+  return false;
+#endif
+}
+#endif
+
 } // namespace
 
 // Helper method implementations
@@ -488,6 +682,9 @@ void MultipeerIbgdaTransport::openIbDevice() {
   // all NICs — same fabric/HCA generation assumed), matching the prior inline
   // behavior.
   nicDoca_.resize(numNics_);
+#ifndef __HIP_PLATFORM_AMD__
+  bool allNicsAcceptCollapsedCq = true;
+#endif
   const doca_verbs_addr_type addrType =
       (nics_[0].linkLayer == ibverbx::IBV_LINK_LAYER_INFINIBAND)
       ? DOCA_VERBS_ADDR_TYPE_IB_NO_GRH
@@ -496,6 +693,12 @@ void MultipeerIbgdaTransport::openIbDevice() {
              : DOCA_VERBS_ADDR_TYPE_IPv6);
   for (int n = 0; n < numNics_; ++n) {
 #ifndef __HIP_PLATFORM_AMD__
+    allNicsAcceptCollapsedCq &= resolveCollapsedCqForNic(
+        config_,
+        docaGpu_,
+        reinterpret_cast<::ibv_pd*>(nics_[n].ibvPd),
+        nics_[n].deviceName);
+
     // Narrow the read/atomic depth to the most restrictive NIC before any QP
     // exists. At the default depth of 1 this returns immediately and issues no
     // capability query.
@@ -503,8 +706,11 @@ void MultipeerIbgdaTransport::openIbDevice() {
         maxRdAtomic_,
         reinterpret_cast<::ibv_context*>(nics_[n].ibvCtx),
         nics_[n].deviceName);
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " max_rd_atomic=" << static_cast<unsigned>(maxRdAtomic_);
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} max_rd_atomic={}",
+        nics_[n].deviceName,
+        static_cast<unsigned>(maxRdAtomic_));
 
     const bool nicReliableDoorbellCapable =
         reliableDoorbellNeedsCapabilityQuery(config_)
@@ -514,11 +720,12 @@ void MultipeerIbgdaTransport::openIbDevice() {
         : false;
     nicDoca_[n].useReliableDoorbell =
         reliableDoorbellActiveForNic(config_, nicReliableDoorbellCapable);
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " reliable_doorbell_mode="
-              << reliableDoorbellModeName(config_.enableReliableDoorbell)
-              << " send_dbr_mode="
-              << (nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} reliable_doorbell_mode={} send_dbr_mode={}",
+        nics_[n].deviceName,
+        reliableDoorbellModeName(config_.enableReliableDoorbell),
+        nicDoca_[n].useReliableDoorbell ? "NO_DBR_HW" : "VALID_DBR");
 
     // Resolve the dp_ordering tier against this NIC before any QP exists. An
     // explicit policy throws here; auto demotes to Ibta and logs why.
@@ -545,18 +752,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
     // enabled that is OOO_RW, not IBTA. Logging "tier=0" as though it were the
     // QP's state would be actively misleading: it reads as strict ordering when
     // the QP is in fact relaxed for reads and writes.
-    LOG(INFO) << "MultipeerIbgdaTransport: NIC " << nics_[n].deviceName
-              << " qp_ordering_policy="
-              << ibQpOrderingPolicyName(qpOrderingPolicy_)
-              << " qp_ordering_semantic="
-              << ibQpOrderingSemanticName(qpOrderingSemantic_)
-              << " (dp_ordering written tier="
-              << ibQpOrderingTier(qpOrderingSemantic_)
-              << " force=" << ibQpOrderingForce(qpOrderingSemantic_)
-              << (ibQpOrderingIsWireNoOp(qpOrderingSemantic_)
-                      ? "; nothing written, QP keeps the firmware default"
-                      : "")
-              << ")";
+    COMMS_LOG(
+        DBG,
+        "MultipeerIbgdaTransport: NIC {} qp_ordering_policy={} qp_ordering_semantic={} (dp_ordering written tier={} force={}{})",
+        nics_[n].deviceName,
+        ibQpOrderingPolicyName(qpOrderingPolicy_),
+        ibQpOrderingSemanticName(qpOrderingSemantic_),
+        ibQpOrderingTier(qpOrderingSemantic_),
+        ibQpOrderingForce(qpOrderingSemantic_),
+        ibQpOrderingIsWireNoOp(qpOrderingSemantic_)
+            ? "; nothing written, QP keeps the firmware default"
+            : "");
 #endif
 
     doca_error_t err = doca_verbs_ah_attr_create(
@@ -583,6 +789,17 @@ void MultipeerIbgdaTransport::openIbDevice() {
     err = doca_verbs_ah_attr_set_sl(nicDoca_[n].ahAttr, config_.serviceLevel);
     checkDocaError(err, "Failed to set service level");
   }
+#ifndef __HIP_PLATFORM_AMD__
+  collapsedCq_ =
+      collapsedCqActiveForTransport(config_, allNicsAcceptCollapsedCq);
+  COMMS_LOG(
+      DBG,
+      "MultipeerIbgdaTransport: collapsed_cq_mode={} active={}",
+      config_.enableCollapsedCq.has_value()
+          ? (*config_.enableCollapsedCq ? "on" : "off")
+          : "auto",
+      collapsedCq_);
+#endif
 }
 
 void MultipeerIbgdaTransport::allocateResources() {
@@ -754,57 +971,6 @@ void MultipeerIbgdaTransport::registerMemory() {
             << " (zero-based MR, iova=0)";
   }
 }
-void MultipeerIbgdaTransport::createQpGroups() {
-  const int numPeers = nRanks_ - 1;
-  const int directionCount = config_.fixedChannelDirectionCount();
-  const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
-  const int totalMainQpsPerPeer = numNics_ * mainQpsPerPeerPerNic;
-  const int companionQpsPerPeerPerNic =
-      config_.fixedChannelCompanionQpsPerPeerPerNic();
-  const int totalCompanionQpsPerPeer = numNics_ * companionQpsPerPeerPerNic;
-  for (auto& nic : nicDoca_) {
-    nic.blockQpGroups.resize(
-        static_cast<size_t>(numPeers) * companionQpsPerPeerPerNic);
-    nic.extraMainQps.clear();
-    nic.loopbackCompanionQps.resize(
-        static_cast<size_t>(numPeers) * companionQpsPerPeerPerNic);
-  }
-
-  // Verify CUDA device is still set correctly
-  int currentDevice = -1;
-  cudaError_t cudaErr = cudaGetDevice(&currentDevice);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error(
-        "Failed to get CUDA device: " +
-        std::string(cudaGetErrorString(cudaErr)));
-  }
-  VLOG(1) << "MultipeerIbgdaTransport::createQpGroups: current CUDA device="
-          << currentDevice << " expected=" << config_.cudaDevice;
-
-  // Query IB device capabilities for debugging (NIC 0 is representative).
-  ibverbx::ibv_device_attr devAttr{};
-  auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_query_device(nics_[0].ibvCtx, &devAttr) == 0) {
-    VLOG(1) << "MultipeerIbgdaTransport: IB device - max_qp=" << devAttr.max_qp
-            << " max_cq=" << devAttr.max_cq << " max_mr=" << devAttr.max_mr
-            << " max_qp_wr=" << devAttr.max_qp_wr;
-  }
-
-  VLOG(1) << "MultipeerIbgdaTransport: creating " << totalMainQpsPerPeer
-          << " main QPs/peer and " << totalCompanionQpsPerPeer
-          << " companion QPs/peer (" << numNics_
-          << " NICs × max_num_channels=" << config_.max_num_channels
-          << " × direction_count=" << directionCount
-          << " × qpsPerConnection=" << config_.qpsPerConnection
-          << ", peers=" << numPeers << ") gpu_dev=" << (void*)docaGpu_
-          << " sq_nwqe=" << config_.qpDepth
-          << " nic_handler=AUTO mreg_type=DEFAULT";
-
-  for (int peer = 0; peer < numPeers; peer++) {
-    createPeerQps(peer);
-  }
-}
-
 void MultipeerIbgdaTransport::connectQp(
     doca_gpu_verbs_qp_hl* qpHl,
     const IbgdaTransportExchInfo& peerInfo,
@@ -933,6 +1099,79 @@ void MultipeerIbgdaTransport::connectQp(
           << peerInfo.qpn;
 }
 
+bool MultipeerIbgdaTransport::companionQpEnabled() const {
+#ifdef __HIP_PLATFORM_AMD__
+  return true;
+#else
+  return config_.enableCompanionQP;
+#endif
+}
+
+MultipeerIbgdaTransport::QpSlotResources MultipeerIbgdaTransport::createQpSlot(
+    int nic,
+    int slot,
+    int slotsPerPeer,
+    doca_gpu_verbs_qp_init_attr_hl& mainAttr,
+    doca_gpu_verbs_qp_init_attr_hl& loopbackAttr) {
+  QpSlotResources resources{};
+  const bool withCompanion = companionQpEnabled();
+  auto createMain = [&]() {
+    return withCompanion
+        ? doca_gpu_verbs_create_qp_group_hl(&mainAttr, &resources.group)
+        : doca_gpu_verbs_create_qp_hl(&mainAttr, &resources.standaloneMain);
+  };
+
+  doca_error_t err = createMain();
+#ifndef __HIP_PLATFORM_AMD__
+  // Only the auto policy may degrade. An explicit enableReliableDoorbell is a
+  // hard requirement -- reliableDoorbellActiveForNic() throws for it -- so it
+  // must fail here too rather than be silently satisfied with the other mode.
+  if (err != DOCA_SUCCESS && nicDoca_[nic].useReliableDoorbell &&
+      !config_.enableReliableDoorbell.has_value()) {
+    // Both create APIs leave their output pointer untouched on failure, so the
+    // retry cannot orphan a partial allocation.
+    // The NIC caps DBR-less QPs and the capability is a bare bit with no count,
+    // so the ceiling is only observable as a create refusal. The retry changes
+    // only the doorbell mode, which identifies that failure class.
+    const doca_error_t noDbrErr = err;
+    mainAttr.send_dbr_mode_ext =
+        DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+    err = createMain();
+
+    if (err != DOCA_SUCCESS) {
+      // Not a doorbell problem; report the original error.
+      err = noDbrErr;
+    } else {
+      // Latch, or every remaining slot re-fails against the same ceiling.
+      nicDoca_[nic].useReliableDoorbell = false;
+      LOG(WARNING) << "MultipeerIbgdaTransport: NIC " << nics_[nic].deviceName
+                   << " hit its NO_DBR_HW QP limit at slot " << slot << "/"
+                   << slotsPerPeer << " (" << docaErrorToString(noDbrErr)
+                   << "); using VALID_DBR for the rest of this NIC. Lower "
+                      "max_num_channels or qpsPerConnection to stay under it.";
+    }
+  }
+#else
+  (void)nic;
+  (void)slot;
+  (void)slotsPerPeer;
+#endif
+  checkDocaError(
+      err,
+      withCompanion ? "Failed to create QP group"
+                    : "Failed to create standalone main QP");
+
+  if (withCompanion) {
+    err = doca_gpu_verbs_create_qp_hl(&loopbackAttr, &resources.loopback);
+    if (err != DOCA_SUCCESS) {
+      doca_gpu_verbs_destroy_qp_group_hl(resources.group);
+      resources.group = nullptr;
+      checkDocaError(err, "Failed to create loopback companion QP");
+    }
+  }
+  return resources;
+}
+
 void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
   for (int nic = 0; nic < numNics_; nic++) {
     doca_gpu_verbs_qp_init_attr_hl mainAttr{};
@@ -941,10 +1180,14 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     mainAttr.sq_nwqe = config_.qpDepth;
     mainAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
     mainAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(PRIMS_IBGDA_DISABLE_COLLAPSED_CQ)
+    // Collapsed CQ: the NIC writes every CQE to slot 0 and the poller keys off
+    // the CQE's own wqe_counter instead of ring position, so one success can
+    // retire several completions at once. Applies to the device-visible main
+    // and companion QPs (create_qp_group_hl shares this attr).
+    mainAttr.cq_collapsed = collapsedCq_;
+#endif
 #ifndef __HIP_PLATFORM_AMD__
-    mainAttr.send_dbr_mode_ext = nicDoca_[nic].useReliableDoorbell
-        ? DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW
-        : DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
     // dp_ordering tier is carried on the init attr and applied to the QPC when
     // DOCA moves the QP INIT->RTR. At the Ibta default both fields stay zero
     // (the struct is value-initialized above) and DOCA executes no DEVX_SET
@@ -955,6 +1198,12 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
 #endif
 
     doca_gpu_verbs_qp_init_attr_hl loopbackAttr = mainAttr;
+#if !defined(__HIP_PLATFORM_AMD__) && !defined(PRIMS_IBGDA_DISABLE_COLLAPSED_CQ)
+    // The standalone loopback QP is the responder peer of the device companion
+    // QP; it never posts device-side WQEs and its send CQ is never polled from
+    // the GPU. Leave it a ring CQ -- CQ format is local, not negotiated.
+    loopbackAttr.cq_collapsed = false;
+#endif
     loopbackAttr.sq_nwqe = kLoopbackCompanionQpDepth;
 #ifndef __HIP_PLATFORM_AMD__
     loopbackAttr.send_dbr_mode_ext =
@@ -968,24 +1217,27 @@ void MultipeerIbgdaTransport::createPeerQps(int peerIndex) {
     loopbackAttr.ordering_semantic_force = 0;
 #endif
 
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
-    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
-      doca_error_t err =
-          doca_gpu_verbs_create_qp_group_hl(&mainAttr, &nicQps[slotIdx]);
-      checkDocaError(err, "Failed to create QP group");
-      err = doca_gpu_verbs_create_qp_hl(&loopbackAttr, &nicLoopback[slotIdx]);
-      checkDocaError(err, "Failed to create loopback companion QP");
+    auto& qpSlots = nicDoca_[nic].qpSlots;
+    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
+    for (int slot = 0; slot < slotsPerPeer; slot++) {
+      const int slotIdx = peerIndex * slotsPerPeer + slot;
+#ifndef __HIP_PLATFORM_AMD__
+      mainAttr.send_dbr_mode_ext = nicDoca_[nic].useReliableDoorbell
+          ? DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_NO_DBR_HW
+          : DOCA_GPUNETIO_VERBS_SEND_DBR_MODE_EXT_VALID_DBR;
+#endif
+      qpSlots[slotIdx] =
+          createQpSlot(nic, slot, slotsPerPeer, mainAttr, loopbackAttr);
     }
   }
 }
 
 void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
+  if (!companionQpEnabled()) {
+    return;
+  }
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
-    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
+    auto& qpSlots = nicDoca_[nic].qpSlots;
 
     IbgdaTransportExchInfo selfInfo;
     memcpy(selfInfo.gid, nics_[nic].localGid.raw, sizeof(selfInfo.gid));
@@ -997,13 +1249,14 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
       selfInfo.lid = portAttr.lid;
     }
 
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicLoopback[slotIdx]->qp);
-      connectQp(&nicQps[slotIdx]->qp_companion, selfInfo, nic);
-      selfInfo.qpn = doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_companion.qp);
-      connectQp(nicLoopback[slotIdx], selfInfo, nic);
+    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
+    for (int slot = 0; slot < slotsPerPeer; slot++) {
+      const int slotIdx = peerIndex * slotsPerPeer + slot;
+      auto& resources = qpSlots[slotIdx];
+      selfInfo.qpn = doca_verbs_qp_get_qpn(resources.loopback->qp);
+      connectQp(resources.companion(), selfInfo, nic);
+      selfInfo.qpn = doca_verbs_qp_get_qpn(resources.companion()->qp);
+      connectQp(resources.loopback, selfInfo, nic);
     }
   }
 }
@@ -1011,12 +1264,15 @@ void MultipeerIbgdaTransport::connectPeerLoopback(int peerIndex) {
 P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
     int peerIndex) const {
   const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
-  const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
+  const int companionSlots = companionQpEnabled() ? mainQpsPerPeerPerNic : 0;
   // Build the device-side send/recv layout from the shared base.
   P2pIbgdaTransportBuildParams params(channelLayoutForPeer(peerIndex));
+  params.myRank = myRank_;
+  params.peerRank = peerIndexToRank(peerIndex);
   params.maxChannels = config_.max_num_channels;
   params.qpDirectionCount = config_.fixedChannelDirectionCount();
   params.qpsPerConnection = config_.qpsPerConnection;
+  params.collapsedCq = collapsedCq_;
   params.h_nicDeviceIbgdaResources.resize(numNics_);
   for (int n = 0; n < numNics_; ++n) {
     auto& nicSpec = params.h_nicDeviceIbgdaResources[n];
@@ -1027,17 +1283,20 @@ P2pIbgdaTransportBuildParams MultipeerIbgdaTransport::buildPeerTransportParams(
   }
 
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
+    auto& qpSlots = nicDoca_[nic].qpSlots;
     auto& nicSpec = params.h_nicDeviceIbgdaResources[nic];
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
+    for (int slot = 0; slot < mainQpsPerPeerPerNic; slot++) {
+      const int slotIdx = peerIndex * mainQpsPerPeerPerNic + slot;
+      auto& resources = qpSlots[slotIdx];
       doca_error_t err = doca_gpu_verbs_get_qp_dev(
-          nicQps[slotIdx]->qp_main.qp_gverbs, &nicSpec.qps[slot]);
+          resources.main()->qp_gverbs, &nicSpec.qps[slot]);
       checkDocaError(err, "Failed to get GPU QP handle");
 
-      err = doca_gpu_verbs_get_qp_dev(
-          nicQps[slotIdx]->qp_companion.qp_gverbs, &nicSpec.companionQps[slot]);
-      checkDocaError(err, "Failed to get companion GPU QP handle");
+      if (resources.companion() != nullptr) {
+        err = doca_gpu_verbs_get_qp_dev(
+            resources.companion()->qp_gverbs, &nicSpec.companionQps[slot]);
+        checkDocaError(err, "Failed to get companion GPU QP handle");
+      }
     }
   }
 
@@ -1071,6 +1330,10 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   }
   if (config_.qpsPerConnection < 1) {
     throw std::invalid_argument("qpsPerConnection must be >= 1");
+  }
+  if (config_.numCounterSlots > 0 && !companionQpEnabled()) {
+    throw std::invalid_argument(
+        "numCounterSlots requires enableCompanionQP=true on NVIDIA IBGDA");
   }
   if (config_.max_num_channels > kMaxIbGroups) {
     throw std::invalid_argument(
@@ -1107,12 +1370,15 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
             config_.qpsPerConnection,
             kIbMaxQpLanesPerChannelDirection));
   }
-  if (mainQpsPerPeerPerNic * (nRanks_ - 1) * 3 > 1000) {
+  const int qpsPerSlot = companionQpEnabled() ? 3 : 1;
+  const int64_t configuredQpsPerNic =
+      static_cast<int64_t>(mainQpsPerPeerPerNic) * (nRanks_ - 1) * qpsPerSlot;
+  if (configuredQpsPerNic > 1000) {
     LOG(WARNING) << "MultipeerIbgdaTransport: high QP count: "
                  << mainQpsPerPeerPerNic << " main QPs/(peer,NIC) * "
-                 << (nRanks_ - 1)
-                 << " peers * 3 ~= " << mainQpsPerPeerPerNic * (nRanks_ - 1) * 3
-                 << " total QPs (per NIC)";
+                 << (nRanks_ - 1) << " peers * " << qpsPerSlot
+                 << " ~= " << configuredQpsPerNic
+                 << " QPs/NIC if all peers materialize";
   }
   try {
 #ifndef __HIP_PLATFORM_AMD__
@@ -1120,6 +1386,7 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     // MCCL_IBGDA_MAX_RD_ATOMIC) before any NIC or QP exists, so a bad value
     // fails immediately.
     maxRdAtomic_ = resolveMaxRdAtomic(config_);
+    config_.enableCollapsedCq = resolveCollapsedCqMode(config_);
 
     // Resolve CUDA driver function pointers (NVIDIA-only; AMD doesn't
     // use the CUDA driver API for GPU memory allocation).
@@ -1142,12 +1409,9 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     openIbDevice();
 
     const int numPeers = nRanks - 1;
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
+    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
     for (auto& nic : nicDoca_) {
-      nic.blockQpGroups.resize(static_cast<size_t>(numPeers) * companionSlots);
-      nic.extraMainQps.clear();
-      nic.loopbackCompanionQps.resize(
-          static_cast<size_t>(numPeers) * companionSlots);
+      nic.qpSlots.resize(static_cast<size_t>(numPeers) * slotsPerPeer);
     }
     peerMaterialized_.resize(numPeers, false);
 
@@ -1178,59 +1442,76 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
 
-  // Free all GPU memory (transport objects + QP pointer arrays)
-  for (auto* ptr : gpuAllocations_) {
-    if (ptr != nullptr) {
-      cudaError_t err = cudaFree(ptr);
-      if (err != cudaSuccess) {
-        LOG(WARNING) << "Failed to free GPU memory: "
-                     << cudaGetErrorString(err);
+  auto releaseGpuAllocations = [&]() {
+    // Free all GPU memory (transport objects + QP pointer arrays).
+    for (auto* ptr : gpuAllocations_) {
+      if (ptr != nullptr) {
+        cudaError_t err = cudaFree(ptr);
+        if (err != cudaSuccess) {
+          LOG(WARNING) << "Failed to free GPU memory: "
+                       << cudaGetErrorString(err);
+        }
       }
     }
-  }
-  gpuAllocations_.clear();
-  peerTransportsGpu_ = nullptr;
+    gpuAllocations_.clear();
+    peerTransportsGpu_ = nullptr;
+  };
 
-  // Free send/recv staging buffers (eager bulks + any lazy per-peer
-  // allocations) via the shared base cleanup.
-  cleanupSendRecvBuffers();
+  auto releaseSendRecvBuffers = [&]() {
+    // Free send/recv staging buffers (eager bulks + any lazy per-peer
+    // allocations) via the shared base cleanup.
+    cleanupSendRecvBuffers();
+  };
+
+  // Quiesce every QP before either class of referenced buffer is released.
+#ifndef __HIP_PLATFORM_AMD__
+  detail::quiesceQpsThenReleaseBuffers(
+      allQpsErrorBeforeDestroyEnabled(),
+      nicDoca_,
+      [](doca_gpu_verbs_qp_group_hl* group) {
+        return transitionQpGroupToError(group);
+      },
+      [](doca_gpu_verbs_qp_hl* qp) { return transitionQpToError(qp); },
+      releaseGpuAllocations,
+      releaseSendRecvBuffers);
+#else
+  releaseGpuAllocations();
+  releaseSendRecvBuffers();
+#endif
 
   // Destroy per-NIC QPs and loopback responders.
   for (auto& nic : nicDoca_) {
-    for (auto* qpGroup : nic.blockQpGroups) {
-      if (qpGroup != nullptr) {
-        doca_gpu_verbs_destroy_qp_group_hl(qpGroup);
+    for (auto& resources : nic.qpSlots) {
+      if (resources.group != nullptr) {
+        doca_gpu_verbs_destroy_qp_group_hl(resources.group);
+      }
+      if (resources.standaloneMain != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(resources.standaloneMain);
+      }
+      if (resources.loopback != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(resources.loopback);
       }
     }
-    nic.blockQpGroups.clear();
-    for (auto* qpHl : nic.extraMainQps) {
-      if (qpHl != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(qpHl);
-      }
-    }
-    nic.extraMainQps.clear();
-    for (auto* qpHl : nic.loopbackCompanionQps) {
-      if (qpHl != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(qpHl);
-      }
-    }
-    nic.loopbackCompanionQps.clear();
+    nic.qpSlots.clear();
   }
 
   cleanupSignalCounterResources();
 
   // Destroy user buffer MRs
-  for (auto& [_, cached] : registeredBuffers_) {
-    // numNics_=1 today; loop is the multi-NIC-ready shape (P2.x fills the
-    // rest of mrs[]).
-    for (int n = 0; n < numNics_; ++n) {
-      if (cached.mrs[n] != nullptr &&
-          symbols.ibv_internal_dereg_mr != nullptr) {
-        symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+  {
+    auto registrations = registrationState_.wlock();
+    for (auto& [_, cached] : registrations->registeredBuffers) {
+      // numNics_=1 today; loop is the multi-NIC-ready shape (P2.x fills the
+      // rest of mrs[]).
+      for (int n = 0; n < numNics_; ++n) {
+        if (cached.mrs[n] != nullptr &&
+            symbols.ibv_internal_dereg_mr != nullptr) {
+          symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+        }
       }
     }
+    registrations->registeredBuffers.clear();
   }
-  registeredBuffers_.clear();
 
   // Destroy per-NIC sink MRs. Iterate over actual nicDoca_ entries
   // (vector is empty if cleanup runs before openIbDevice; partial init leaves
@@ -1296,20 +1577,63 @@ void MultipeerIbgdaTransport::cleanup() {
 }
 
 void MultipeerIbgdaTransport::exchange() {
+  prepareExchange();
+  exchangePrepared();
+}
+
+void MultipeerIbgdaTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error(
+        "MultipeerIbgdaTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+
   const int numPeers = nRanks_ - 1;
   peerTransportSize_ = getP2pIbgdaTransportDeviceSize();
   const std::size_t totalBytes = numPeers * peerTransportSize_;
-  cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
-  if (err != cudaSuccess) {
+  try {
+    cudaError_t err = cudaMalloc(&peerTransportsGpu_, totalBytes);
+    if (err != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to allocate on-demand device transport array: " +
+          std::string(cudaGetErrorString(err)));
+    }
+    try {
+      gpuAllocations_.push_back(peerTransportsGpu_);
+    } catch (...) {
+      static_cast<void>(cudaFree(peerTransportsGpu_));
+      peerTransportsGpu_ = nullptr;
+      throw;
+    }
+    err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
+    if (err != cudaSuccess) {
+      throw std::runtime_error(
+          "Failed to zero on-demand device transport array");
+    }
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    cleanup();
+    throw;
+  }
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultipeerIbgdaTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
     throw std::runtime_error(
-        "Failed to allocate on-demand device transport array: " +
-        std::string(cudaGetErrorString(err)));
+        "MultipeerIbgdaTransport: exchange previously failed");
   }
-  gpuAllocations_.push_back(peerTransportsGpu_);
-  err = cudaMemset(peerTransportsGpu_, 0, totalBytes);
-  if (err != cudaSuccess) {
-    throw std::runtime_error("Failed to zero on-demand device transport array");
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
   }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultipeerIbgdaTransport::exchangePrepared called before prepareExchange");
+  }
+  exchangeState_ = ExchangeState::kExchanged;
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " exchange complete (per-peer state deferred to materializePeer)";
 }
@@ -1374,7 +1698,6 @@ int MultipeerIbgdaTransport::qpsPerBlockPerNic() const {
 PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     int peerIndex) const {
   const int mainQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
-  const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
   PeerQpPayload payload{};
   payload.gidIndex = gidIndex_;
   payload.mtu = static_cast<int>(localMtu_);
@@ -1384,6 +1707,7 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
   payload.qpOrderingSemantic = static_cast<int>(qpOrderingSemantic_);
   payload.maxRdAtomic = static_cast<int>(maxRdAtomic_);
+  payload.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1395,11 +1719,11 @@ PeerQpPayload MultipeerIbgdaTransport::buildLocalQpPayload(
     if (symbols.ibv_internal_query_port(nics_[n].ibvCtx, 1, &portAttr) == 0) {
       payload.nicInfo[n].lid = portAttr.lid;
     }
-    auto& nicQps = nicDoca_[n].blockQpGroups;
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
+    auto& qpSlots = nicDoca_[n].qpSlots;
+    for (int slot = 0; slot < mainQpsPerPeerPerNic; slot++) {
+      const int slotIdx = peerIndex * mainQpsPerPeerPerNic + slot;
       payload.nicInfo[n].qpns[slot] =
-          doca_verbs_qp_get_qpn(nicQps[slotIdx]->qp_main.qp);
+          doca_verbs_qp_get_qpn(qpSlots[slotIdx].main()->qp);
     }
   }
   return payload;
@@ -1409,10 +1733,10 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
     int peerIndex,
     const PeerQpPayload& remotePayload) {
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
+    auto& qpSlots = nicDoca_[nic].qpSlots;
+    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
+    for (int slot = 0; slot < slotsPerPeer; slot++) {
+      const int slotIdx = peerIndex * slotsPerPeer + slot;
       IbgdaTransportExchInfo peerInfo;
       peerInfo.qpn = remotePayload.nicInfo[nic].qpns[slot];
       memcpy(
@@ -1420,25 +1744,29 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
       peerInfo.gidIndex = remotePayload.gidIndex;
       peerInfo.lid = remotePayload.nicInfo[nic].lid;
       peerInfo.mtu = static_cast<ibverbx::ibv_mtu>(remotePayload.mtu);
-      connectQp(&nicQps[slotIdx]->qp_main, peerInfo, nic);
+      connectQp(qpSlots[slotIdx].main(), peerInfo, nic);
     }
   }
 }
 
 void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   for (int nic = 0; nic < numNics_; nic++) {
-    auto& nicQps = nicDoca_[nic].blockQpGroups;
-    auto& nicLoopback = nicDoca_[nic].loopbackCompanionQps;
-    const int companionSlots = config_.fixedChannelCompanionQpsPerPeerPerNic();
-    for (int slot = 0; slot < companionSlots; slot++) {
-      const int slotIdx = peerIndex * companionSlots + slot;
-      if (nicQps[slotIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_group_hl(nicQps[slotIdx]);
-        nicQps[slotIdx] = nullptr;
+    auto& qpSlots = nicDoca_[nic].qpSlots;
+    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
+    for (int slot = 0; slot < slotsPerPeer; slot++) {
+      const int slotIdx = peerIndex * slotsPerPeer + slot;
+      auto& resources = qpSlots[slotIdx];
+      if (resources.group != nullptr) {
+        doca_gpu_verbs_destroy_qp_group_hl(resources.group);
+        resources.group = nullptr;
       }
-      if (nicLoopback[slotIdx] != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(nicLoopback[slotIdx]);
-        nicLoopback[slotIdx] = nullptr;
+      if (resources.standaloneMain != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(resources.standaloneMain);
+        resources.standaloneMain = nullptr;
+      }
+      if (resources.loopback != nullptr) {
+        doca_gpu_verbs_destroy_qp_hl(resources.loopback);
+        resources.loopback = nullptr;
       }
     }
   }
@@ -1487,15 +1815,19 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
             static_cast<int>(maxRdAtomic_)));
   }
   if (remoteQp.maxGroups != config_.max_num_channels ||
+      remoteQp.numProtocolSlots != config_.numProtocolSlots() ||
       remoteQp.qpsPerBlockPerNic != config_.qpsPerConnection) {
     throw std::runtime_error(
         fmt::format(
-            "materializePeer: peer {} maxGroups={} qpsPerBlockPerNic={} "
-            "vs local maxGroups={} qpsPerBlockPerNic={}",
+            "materializePeer: peer {} maxGroups={} numProtocolSlots={} "
+            "qpsPerBlockPerNic={} vs local maxGroups={} numProtocolSlots={} "
+            "qpsPerBlockPerNic={}",
             peerRank,
             remoteQp.maxGroups,
+            remoteQp.numProtocolSlots,
             remoteQp.qpsPerBlockPerNic,
             config_.max_num_channels,
+            config_.numProtocolSlots(),
             config_.qpsPerConnection));
   }
   // dp_ordering has to match on both ends of a connection: fail closed and name
@@ -1554,6 +1886,20 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
       peerTransportsGpu_, peerIndex, params, gpuAllocations_);
   peerMaterialized_[peerIndex] = true;
 
+  const int mainQps = numNics_ * config_.fixedChannelMainQpsPerPeerPerNic();
+  const int companionQps = companionQpEnabled() ? mainQps : 0;
+  const int loopbackQps = companionQps;
+  if (!qpResourceShapeLogged_) {
+    LOG(INFO) << "MultipeerIbgdaTransport: rank " << myRank_
+              << " QP resources per materialized peer: main=" << mainQps
+              << " companion=" << companionQps << " loopback=" << loopbackQps
+              << " total=" << mainQps + companionQps + loopbackQps
+              << " (NICs=" << numNics_
+              << " channels=" << config_.max_num_channels
+              << " directions=" << config_.fixedChannelDirectionCount()
+              << " qpsPerConnection=" << config_.qpsPerConnection << ")";
+    qpResourceShapeLogged_ = true;
+  }
   VLOG(1) << "MultipeerIbgdaTransport: rank " << myRank_
           << " materialized peer " << peerRank;
 }

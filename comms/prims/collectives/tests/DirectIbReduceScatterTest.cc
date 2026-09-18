@@ -152,8 +152,7 @@ std::vector<DirectIbReduceScatterTestParams> all_test_params() {
         {.chunk_elements = chunk_elements,
          .quantized = true,
          .name = size_label + "Quantized"});
-    // MCCL_PRIMS_TMA=0. Exercises launch_quantized<false, ...>, which is the
-    // production kill switch and is otherwise never instantiated by a test.
+    // Exercise the explicit non-TMA instantiation.
     out.push_back(
         {.chunk_elements = chunk_elements,
          .quantized = true,

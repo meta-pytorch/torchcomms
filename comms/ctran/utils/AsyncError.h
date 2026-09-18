@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include <folly/String.h>
 #include <folly/Synchronized.h>
 
+#include "comms/ctran/utils/AbortUtils.h"
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/ctran/utils/Exception.h"
 
@@ -47,7 +49,17 @@ namespace ctran::utils {
           opCount,                                                            \
           comm->logMetaData_.rank,                                            \
           comm->logMetaData_.commHash);                                       \
-      comm->setAbort();                                                       \
+      comm->setAbort(                                                         \
+          comms::fault_tolerance::AbortInfo{                                  \
+              .reason = ctran::utils::abortReason(e.result()),                \
+              .context = fmt::format(                                         \
+                  "op_type={} op_count={} rank={} comm_hash={} error=\"{}\"", \
+                  opType,                                                     \
+                  opCount,                                                    \
+                  comm->logMetaData_.rank,                                    \
+                  comm->logMetaData_.commHash,                                \
+                  folly::cEscape<std::string>(e.what())),                     \
+          });                                                                 \
     } else {                                                                  \
       throw;                                                                  \
     }                                                                         \
@@ -60,10 +72,9 @@ namespace ctran::utils {
     CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(comm, e, opType, opCount); \
   } catch (const std::runtime_error& e) {                                  \
     /*TODO: replace remaining runtime_error with Exception */              \
-    /*TODO(T238821628): improve from simple commRemoteError */             \
     CTRAN_ASYNC_ERR_HANDLE_IMPL_FAULT_TOLERANCE(                           \
         comm,                                                              \
-        ctran::utils::Exception(e.what(), commRemoteError),                \
+        ctran::utils::Exception(e.what(), commInternalError),              \
         opType,                                                            \
         opCount);                                                          \
   }

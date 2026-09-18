@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <cstdlib>
 #include <filesystem>
 
 #include <folly/stop_watch.h>
@@ -11,6 +12,9 @@
 class ScubaLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
  public:
   void SetUp() override {
+    // A table is only constructed when NCCL_COMM_EVENT_LOGGING is non-empty,
+    // and it only writes a file when its destination type is pipe.
+    setenv("NCCL_COMM_EVENT_LOGGING", "pipe:nccl_structured_logging", 1);
     ScubaLoggerTestMixin::SetUp();
   }
 };

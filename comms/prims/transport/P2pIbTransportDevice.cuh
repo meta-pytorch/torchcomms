@@ -622,12 +622,13 @@ __device__ __forceinline__ std::size_t P2pIbTransportDevice::pipeline_chunk()
 template <typename Proto>
 __device__ __forceinline__ void P2pIbTransportDevice::init_send_progress(
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->init_send_progress<Proto>(group, nbytes, max_signal_bytes);
+    ibrc->init_send_progress<Proto>(group, src, nbytes, max_signal_bytes);
   } else {
-    ibgda->init_send_progress<Proto>(group, nbytes, max_signal_bytes);
+    ibgda->init_send_progress<Proto>(group, src, nbytes, max_signal_bytes);
   }
 }
 
@@ -635,21 +636,23 @@ template <typename>
 __device__ __forceinline__ void
 P2pIbTransportDevice::init_registered_send_progress(
     ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
   require_ibgda(group, "registered-source send progress");
-  ibgda->init_registered_send_progress(group, nbytes, max_signal_bytes);
+  ibgda->init_registered_send_progress(group, src, nbytes, max_signal_bytes);
 }
 
 template <typename Proto>
 __device__ __forceinline__ void P2pIbTransportDevice::init_recv_progress(
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
   if (type == P2pIbBackendType::IBRC) {
-    ibrc->init_recv_progress<Proto>(group, nbytes, max_signal_bytes);
+    ibrc->init_recv_progress<Proto>(group, dst, nbytes, max_signal_bytes);
   } else {
-    ibgda->init_recv_progress<Proto>(group, nbytes, max_signal_bytes);
+    ibgda->init_recv_progress<Proto>(group, dst, nbytes, max_signal_bytes);
   }
 }
 
@@ -657,30 +660,21 @@ template <typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_send_once(
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->progress_send_once<CopyOp, Proto>(
-        group, src, nbytes, max_signal_bytes, abortDevice, args...);
+    return ibrc->progress_send_once<CopyOp, Proto>(group, abortDevice, args...);
   }
-  return ibgda->progress_send_once<CopyOp, Proto>(
-      group, src, nbytes, max_signal_bytes, abortDevice, args...);
+  return ibgda->progress_send_once<CopyOp, Proto>(group, abortDevice, args...);
 }
 
 template <typename>
 __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 P2pIbTransportDevice::progress_registered_send_once(
     ThreadGroup& group,
-    const IbgdaLocalBuffer& src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice) {
   require_ibgda(group, "registered-source send progress");
-  return ibgda->progress_registered_send_once(
-      group, src, nbytes, max_signal_bytes, abortDevice);
+  return ibgda->progress_registered_send_once(group, abortDevice);
 }
 
 template <typename>
@@ -696,85 +690,54 @@ template <typename CopyOp, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_send_once_with_trace(
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->progress_send_once<CopyOp>(
-        group, src, nbytes, max_signal_bytes, abortDevice, args...);
+    return ibrc->progress_send_once<CopyOp>(group, abortDevice, args...);
   }
   return ibgda->progress_send_once_with_trace<CopyOp>(
-      group,
-      src,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      traceContext,
-      traceState,
-      args...);
+      group, abortDevice, traceContext, traceState, args...);
 }
 
 template <typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_recv_once(
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->progress_recv_once<CopyOp, Proto>(
-        group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+    return ibrc->progress_recv_once<CopyOp, Proto>(group, abortDevice, args...);
   }
-  return ibgda->progress_recv_once<CopyOp, Proto>(
-      group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+  return ibgda->progress_recv_once<CopyOp, Proto>(group, abortDevice, args...);
 }
 
 template <typename CopyOp, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_recv_once_with_trace(
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->progress_recv_once<CopyOp>(
-        group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+    return ibrc->progress_recv_once<CopyOp>(group, abortDevice, args...);
   }
   return ibgda->progress_recv_once_with_trace<CopyOp>(
-      group,
-      dst,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      traceContext,
-      traceState,
-      args...);
+      group, abortDevice, traceContext, traceState, args...);
 }
 
 template <typename>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus
 P2pIbTransportDevice::progress_recv_acquire_once(
     ThreadGroup& group,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     detail::RecvChunkAcquisition& out) {
   if (type == P2pIbBackendType::IBRC) {
-    return ibrc->progress_recv_acquire_once(
-        group, nbytes, max_signal_bytes, abortDevice, out);
+    return ibrc->progress_recv_acquire_once(group, abortDevice, out);
   }
-  return ibgda->progress_recv_acquire_once(
-      group, nbytes, max_signal_bytes, abortDevice, out);
+  return ibgda->progress_recv_acquire_once(group, abortDevice, out);
 }
 
 template <typename>

@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "CommDumpTest.hpp"
-#include <folly/logging/xlog.h>
 
 void CommDumpTest::SetUp() {
   wrapper_ = std::make_unique<TorchCommTestWrapper>();

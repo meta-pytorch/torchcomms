@@ -6,8 +6,8 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LogTypes.h"
-#include "comms/utils/logger/LoggingFormat.h"
 
 #define CTRAN_LOG_SUBSYS(level, subsys, ...)            \
   CTRAN_LOG_IF(                                         \
@@ -35,7 +35,7 @@
       __VA_ARGS__)
 
 #define CTRAN_LOG_STREAM_EVERY_MS(level, ms) \
-  COMMS_LOG_NAMED_STREAM_EVERY_MS(::ctran::logging::kCtranLoggerName, level, ms)
+  COMMS_LOGGER_STREAM_EVERY_MS(::ctran::logging::getCtranLogger(), level, ms)
 
 #define CTRAN_LOG_TRACE(subsys, format, ...)                             \
   do {                                                                   \

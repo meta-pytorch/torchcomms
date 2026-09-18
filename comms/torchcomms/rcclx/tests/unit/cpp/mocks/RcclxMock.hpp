@@ -310,7 +310,8 @@ class RcclxMock : public RcclxApi {
        hipStream_t stream,
        const int* const* allActiveRanks,
        int nActiveRanksPerGroup,
-       int nGroups),
+       int nGroups,
+       int lowPrecision),
       (override));
   MOCK_METHOD(
       ncclResult_t,
@@ -324,7 +325,8 @@ class RcclxMock : public RcclxApi {
        hipStream_t stream,
        const int* const* allActiveRanks,
        int nActiveRanksPerGroup,
-       int nGroups),
+       int nGroups,
+       int lowPrecision),
       (override));
   MOCK_METHOD(
       ncclResult_t,
@@ -337,7 +339,8 @@ class RcclxMock : public RcclxApi {
        hipStream_t stream,
        const int* const* allActiveRanks,
        int nActiveRanksPerGroup,
-       int nGroups),
+       int nGroups,
+       int lowPrecision),
       (override));
   MOCK_METHOD(
       ncclResult_t,
@@ -350,7 +353,8 @@ class RcclxMock : public RcclxApi {
        hipStream_t stream,
        const int* const* allActiveRanks,
        int nActiveRanksPerGroup,
-       int nGroups),
+       int nGroups,
+       int lowPrecision),
       (override));
   MOCK_METHOD(
       ncclResult_t,

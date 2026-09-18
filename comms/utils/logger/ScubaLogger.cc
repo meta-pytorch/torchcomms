@@ -8,12 +8,6 @@
 
 DataTableWrapper* getTablePtrFromEvent(LoggerEventType event) {
   switch (event) {
-    case LoggerEventType::CollSignatureEventType:
-      return SCUBA_nccl_coll_signature_ptr.get();
-    case LoggerEventType::CollTimestampEventType:
-      return SCUBA_nccl_coll_timestamp_ptr.get();
-    case LoggerEventType::ErrorEventType:
-      return SCUBA_nccl_error_logging_ptr.get();
     case LoggerEventType::MemoryEventType:
       return SCUBA_nccl_memory_logging_ptr.get();
     case LoggerEventType::CtranProfilerSlowRankModuleEventType:

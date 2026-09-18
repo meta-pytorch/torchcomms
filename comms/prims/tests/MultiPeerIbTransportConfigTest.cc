@@ -167,6 +167,37 @@ TEST(MultiPeerIbTransportConfigTest, ReliableDoorbellDisableForcesValidDbr) {
       config, /*nicReliableDoorbellCapable=*/false));
 }
 
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqAutoUsesAllNicResult) {
+  const MultipeerIbTransportConfig config;
+  EXPECT_FALSE(config.enableCollapsedCq.has_value());
+  EXPECT_TRUE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_TRUE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_FALSE(collapsedCqActiveForTransport(
+      config, /*allNicsAcceptCollapsedCq=*/false));
+}
+
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqOnRequiresEveryNic) {
+  MultipeerIbTransportConfig config;
+  config.enableCollapsedCq = true;
+  EXPECT_TRUE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_TRUE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_THROW(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/false),
+      std::invalid_argument);
+}
+
+TEST(MultiPeerIbTransportConfigTest, CollapsedCqOffForcesRingAndSkipsProbe) {
+  MultipeerIbTransportConfig config;
+  config.enableCollapsedCq = false;
+  EXPECT_FALSE(collapsedCqNeedsCapabilityProbe(config));
+  EXPECT_FALSE(
+      collapsedCqActiveForTransport(config, /*allNicsAcceptCollapsedCq=*/true));
+  EXPECT_FALSE(collapsedCqActiveForTransport(
+      config, /*allNicsAcceptCollapsedCq=*/false));
+}
+
 // -----------------------------------------------------------------------------
 // max_rd_atomic (MCCL_IBGDA_MAX_RD_ATOMIC / config.maxRdAtomic)
 // -----------------------------------------------------------------------------
@@ -210,6 +241,22 @@ TEST(MultiPeerIbTransportConfigTest, MaxRdAtomicAcceptsOnlyPowersOfTwo) {
 TEST(MultiPeerIbTransportConfigTest, PeerMaterializationDefaultsOnDemand) {
   const MultipeerIbTransportConfig config;
   EXPECT_TRUE(config.ibLazyConnect);
+}
+
+TEST(MultiPeerIbTransportConfigTest, LlProtocolControlsChannelStorage) {
+  MultipeerIbTransportConfig config;
+  config.max_num_channels = 3;
+  config.perChannelSize = 1024;
+
+  EXPECT_TRUE(config.enableLlProtocol);
+  EXPECT_EQ(config.numProtocolSlots(), 2);
+  EXPECT_EQ(config.totalChannelSlots(), 6);
+  EXPECT_EQ(config.fixedChannelDataBufferSize(), 6 * 1024);
+
+  config.enableLlProtocol = false;
+  EXPECT_EQ(config.numProtocolSlots(), 1);
+  EXPECT_EQ(config.totalChannelSlots(), 3);
+  EXPECT_EQ(config.fixedChannelDataBufferSize(), 3 * 1024);
 }
 
 // connectPeers() walks each rank's pending peers in peerMaterializationKey
@@ -560,6 +607,64 @@ TEST(MultiPeerIbTransportConfigTest, QpOrderingWireDefaultMatchesIbta) {
   const PeerQpPayload payload;
   EXPECT_EQ(
       payload.qpOrderingSemantic, static_cast<int>(IbQpOrderingSemantic::Ibta));
+}
+
+// PeerQpPayload is the lazy (ibLazyConnect) bilateral wire format: one is sent
+// and one received per peer on every materializePeer(), and both live on the
+// stack while in flight. Its qpns[] array is dimensioned by
+// kMaxIbQpsPerPeerPerNic, so that constant must stay a QP budget in its own
+// right rather than being derived from the kMaxIbGroups index space -- growing
+// the group index space must not grow what every lazy peer exchange costs. The
+// footprint bound is kMaxNicsPerGpu * 8192 QPNs, ~64KB.
+TEST(MultiPeerIbTransportConfigTest, LazyQpPayloadDoesNotScaleWithGroupLimit) {
+  // What actually matters to a lazy caller is the observable property: the
+  // bilateral exchange payload stays small no matter how wide the group index
+  // space gets. Assert that directly, against the same named bound the header
+  // static_asserts on, so there is no second copy of the number to drift.
+  //
+  // Deliberately NOT `kMaxIbQpsPerPeerPerNic < kMaxIbGroups *
+  // kMaxIbQpsPerBlockPerNic`: that holds only for the values the two constants
+  // happen to have. At kMaxIbGroups=64 the product is exactly 8192, which turns
+  // the check red even though the constants would still be independent -- it
+  // expresses the decoupling only by accident.
+  //
+  // Nor `sizeof(PeerQpPayload) <= kMaxPeerQpPayloadBytes`: that is the header's
+  // static_assert, so a violation fails to compile and this test could never go
+  // red. Assert instead what only a runtime check can see -- that the WIDEST
+  // shape the index space admits still fits the exchanged array. That is the
+  // property a future kMaxIbGroups bump can actually break.
+  MultipeerIbTransportConfig narrow;
+  narrow.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape
+  narrow.max_num_channels = 1;
+  narrow.qpsPerConnection = 1;
+
+  MultipeerIbTransportConfig widest = narrow;
+  widest.max_num_channels = kMaxIbGroups;
+
+  ASSERT_LT(
+      narrow.fixedChannelMainQpsPerPeerPerNic(),
+      widest.fixedChannelMainQpsPerPeerPerNic())
+      << "the two shapes must differ for this to prove anything";
+  EXPECT_LE(widest.fixedChannelMainQpsPerPeerPerNic(), kMaxIbQpsPerPeerPerNic)
+      << "the widest configurable shape must fit the exchanged qpns[] array; "
+         "raising kMaxIbGroups past the QP budget needs a wire-format change";
+}
+
+// The widest shape this limit admits -- kMaxIbGroups channels, both directions
+// -- must fit the QP budget while landing above the eager exchange cap, i.e. it
+// is reachable only with ibLazyConnect=true. Written against the constant, not
+// against a literal, so a bump to the index space re-checks the same property
+// at its new width instead of silently continuing to check the old one.
+TEST(MultiPeerIbTransportConfigTest, MaxGroupShapeFitsBudgetAndRequiresLazy) {
+  MultipeerIbTransportConfig config;
+  config.perChannelSize = 64 * 1024; // > 0 selects the two-direction shape
+  config.max_num_channels = kMaxIbGroups;
+  config.qpsPerConnection = 1;
+
+  const int mainQps = config.fixedChannelMainQpsPerPeerPerNic();
+  EXPECT_EQ(mainQps, kMaxIbGroups * kIbDirections);
+  EXPECT_LE(mainQps, kMaxIbQpsPerPeerPerNic);
+  EXPECT_GT(mainQps, kMaxEagerExchangeQpsPerPeerPerNic);
 }
 
 } // namespace

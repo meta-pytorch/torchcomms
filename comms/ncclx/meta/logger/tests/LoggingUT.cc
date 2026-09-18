@@ -11,7 +11,7 @@
 
 #include "comms/testinfra/TestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/SpdlogLogger.h"
 #include "meta/NcclxChecks.h"
 
@@ -85,6 +85,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
 
 TEST_F(NcclLoggerTest, NcclxChecksPreserveResultsAndSingleEvaluation) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
   ncclResetDebugInitInternal();
   initLogging();
   auto loggingGuard = folly::makeGuard([&] { finishLogging(); });
@@ -220,6 +221,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTest) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorLongStreamMessageTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "INFO");
   ncclResetDebugInit();
 
   initLogging();
@@ -438,6 +440,8 @@ TEST_F(NcclLoggerTest, MetaDebugBridgePreservesTraceAndSourceMetadata) {
 TEST_F(NcclLoggerTest, SpdlogDebugUsesVerboseLevel) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"TRACE"});
   auto asyncGuard = EnvRAII(NCCL_DEBUG_LOGGING_ASYNC, false);
+  SysEnvRAII sysDebugGuard("NCCL_DEBUG", "TRACE");
+  SysEnvRAII sysAsyncGuard("NCCL_DEBUG_LOGGING_ASYNC", "0");
 
   initLogging();
   auto& logger =

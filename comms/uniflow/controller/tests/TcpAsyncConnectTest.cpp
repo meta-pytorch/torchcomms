@@ -184,6 +184,46 @@ TEST_F(TcpAsyncConnectMiscTest, AsyncConnectRejectsNonUniflowServer) {
   ::close(listenSock);
 }
 
+// The async client is the path the TCP transport's lanes actually use, so it
+// gets its own coverage of the device binding rather than relying on the sync
+// client's.
+TEST_P(TcpAsyncConnectTest, AsyncConnectBoundToLoopbackDevice) {
+  ScopedEventBaseThread evbThread("async-connect");
+  TcpServer server(GetParam().serverAddr);
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+  int port = server.getPort();
+
+  std::unique_ptr<Conn> serverConn;
+  std::thread acceptThread([&]() { serverConn = server.accept().get(); });
+
+  TcpSocketConfig cfg;
+  cfg.bindToDevice = "lo";
+  AsyncTcpClient client(cfg, *evbThread.getEventBase());
+  auto conn = client.connect(clientAddr(port)).get();
+  EXPECT_NE(conn, nullptr);
+
+  acceptThread.join();
+  EXPECT_NE(serverConn, nullptr);
+}
+
+TEST_P(TcpAsyncConnectTest, AsyncConnectToNonexistentDeviceFails) {
+  ScopedEventBaseThread evbThread("async-connect");
+  TcpServer server(GetParam().serverAddr);
+  auto status = server.init();
+  if (status.hasError()) {
+    GTEST_SKIP() << "Not available: " << status.error().toString();
+  }
+  int port = server.getPort();
+
+  TcpSocketConfig cfg;
+  cfg.bindToDevice = "nonexistent0";
+  AsyncTcpClient client(cfg, *evbThread.getEventBase());
+  EXPECT_EQ(client.connect(clientAddr(port)).get(), nullptr);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     AddrFamilies,
     TcpAsyncConnectTest,

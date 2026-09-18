@@ -35,6 +35,11 @@ struct UniflowAgentConfig {
   // a case's first choice (intra-node -> RDMA/TCP; inter-node -> TCP).
   std::optional<TransportType> intraNodeTransport;
   std::optional<TransportType> interNodeTransport;
+  // Forwarded to MultiTransportFactoryOptions::tcpTransportConfig -- socket
+  // options, lane count, and lane device binding for the TCP data path. Null
+  // keeps the transport's own defaults. See that field for why it is a pointer
+  // to a forward-declared type.
+  std::shared_ptr<const TcpTransportConfig> tcpTransportConfig;
 };
 
 class UniflowAgent {
@@ -43,7 +48,11 @@ class UniflowAgent {
       const UniflowAgentConfig& config,
       std::unique_ptr<controller::Client> client = nullptr,
       std::unique_ptr<controller::Server> server = nullptr);
-  ~UniflowAgent() = default;
+  ~UniflowAgent() noexcept;
+  UniflowAgent(const UniflowAgent&) = delete;
+  UniflowAgent& operator=(const UniflowAgent&) = delete;
+  UniflowAgent(UniflowAgent&&) = delete;
+  UniflowAgent& operator=(UniflowAgent&&) = delete;
 
   Result<std::string> getUniqueId() const;
 
@@ -59,6 +68,8 @@ class UniflowAgent {
 
   /// Client-side: connect to a remote peer by its UniqueId
   Result<std::unique_ptr<Connection>> connect(std::string peerId);
+
+  void shutdown() noexcept;
 
  private:
   friend class UniflowAgentTest;

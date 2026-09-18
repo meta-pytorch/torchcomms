@@ -178,7 +178,29 @@ __global__ void abortDeviceIsAbortedLoadLoopKernel(
   *sink = local;
 }
 
+__global__ void abortDeviceArmOnlyKernel(AbortDevice abort, uint64_t* sink) {
+  // Deliberately NOT leader-gated: the collectives arm on every thread (see
+  // `abortDevice.start()` at the top of the AllReduce tree/ring kernels), and
+  // reproducing that is the point of this benchmark.
+  abort.startTimeout();
+  // Consume the result so the arm cannot be optimized away, without adding a
+  // store on the measured path: the deadline is a clock value and is never 1.
+  if (abort.deadlineCycles() == 1) {
+    *sink = 1;
+  }
+}
+
 } // namespace
+
+cudaError_t launchAbortDeviceArmOnly(
+    AbortDevice abort,
+    uint64_t* sink,
+    int blocks,
+    int threads,
+    cudaStream_t stream) {
+  abortDeviceArmOnlyKernel<<<blocks, threads, 0, stream>>>(abort, sink);
+  return cudaGetLastError();
+}
 
 cudaError_t launchDeviceLoadLoop(
     int* flag,

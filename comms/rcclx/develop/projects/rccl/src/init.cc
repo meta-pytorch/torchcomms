@@ -73,6 +73,7 @@
 #include "meta/lpcoll/low_precision_buffer_pool.h"
 #include "meta/relay/sharded_relay_oneshot.h"
 #include "meta/relay/relay_control.h"
+#include "meta/relay/sharded_relay_lp_arena.h"
 // [/RCCL]
 
 #ifdef ENABLE_ROCSHMEM
@@ -538,6 +539,11 @@ static ncclResult_t commFree(ncclComm_t comm) {
   // creating rank, an shm_unlink -- so it respects commFree()'s
   // no-sync-among-ranks contract, and a no-op for a comm that never built one.
   rcclx::relay::relayControlRelease(comm);
+
+  // And the low-precision arena, which is the largest of the three by far (over
+  // a GiB at the default message provisioning). One hipFree, purely local, a
+  // no-op for a comm no caller ever asked for low precision on.
+  rcclx::relay::lpArenaRelease(comm);
 
   if (comm->symmetricSupport) {
     NCCLCHECK(ncclSymkFinalize(comm));
@@ -2501,6 +2507,14 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // every rank is in init already, and no later call has to run a bootstrap
   // all-gather it cannot capture.
   rcclx::relay::oneShotInit(comm);
+
+  // And the low-precision arena, if NCCL_SHARDED_RELAY_LP_PREALLOC asked for it.
+  // Off by default: low precision is requested per call, so init cannot know
+  // whether this comm will ever use it, and the arena is too large to provision
+  // speculatively. A job that will use it sets the variable and gets zero
+  // call-path allocation -- and therefore graph-capture safety -- from its first
+  // call onwards.
+  rcclx::relay::lpArenaInit(comm);
 
   // And the control plane segment, for the same reason: setup is collective (two
   // bootstrap all-gathers, enabled only on unanimity), so init is the one place

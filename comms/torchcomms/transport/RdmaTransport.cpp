@@ -103,11 +103,12 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
   // scope
   regCache_ = ctran::RegCache::getInstance();
 
-  regHdl_ = regCache_->searchIbRegHandle(buf_, len_, cudaDev_);
-  if (regHdl_ != nullptr) {
-    // Cache HIT: reuse the existing cached registration. This RdmaMemory does
-    // not own it (no dynamic handle), so the dtor will not deregister it.
-    cacheReg_ = true;
+  if (regCache_->searchIbRegHandle(buf_, len_, cudaDev_) != nullptr) {
+    std::vector<bool> backends(CommBackend::NUM_BACKENDS, false);
+    backends[CommBackend::IB] = true;
+    scopedRegHdl_ = std::make_unique<ctran::ScopedRegHdl>();
+    FB_COMMCHECKTHROW(regCache_->acquireScopedRegister(
+        buf_, len_, cudaDev_, backends, CommLogData{}, *scopedRegHdl_));
   } else {
     // Cache MISS: register dynamically with an IB-only backend set — an
     // isolated registration that is NOT cached and NOT reused (searchRegElem
@@ -120,17 +121,16 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
     FB_COMMCHECKTHROW(
         regCache_->regDynamic(buf_, len_, cudaDev_, backends, &dynHdl));
     dynRegHdl_ = dynHdl;
-    regHdl_ = dynHdl->ibRegElem;
   }
-  remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
+  remoteKey_ = CtranIb::getRemoteAccessKey(localKey()).toString();
   REG_VERBOSE_LOG(
-      "RdmaMemory regcache={} buf={} len={} cudaDev={} cacheReg_={} regHdl={} dynRegHdl={} remoteKey={}",
+      "RdmaMemory regcache={} buf={} len={} cudaDev={} reusedRegistration={} localKey={} dynRegHdl={} remoteKey={}",
       fmt::ptr(regCache_.get()),
       buf_,
       len_,
       cudaDev_,
-      cacheReg_,
-      fmt::ptr(regHdl_),
+      reusedRegistration(),
+      fmt::ptr(localKey()),
       fmt::ptr(dynRegHdl_),
       remoteKey_);
 }
@@ -139,31 +139,35 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
     : buf_(other.buf_),
       len_(other.len_),
       cudaDev_(other.cudaDev_),
-      regHdl_(other.regHdl_),
       dynRegHdl_(other.dynRegHdl_),
       remoteKey_(std::move(other.remoteKey_)),
-      cacheReg_(other.cacheReg_),
-      regCache_(std::move(other.regCache_)) {
+      regCache_(std::move(other.regCache_)),
+      scopedRegHdl_(std::move(other.scopedRegHdl_)) {
   // Properly invalidate the moved-from object to prevent double-free
   // and ensure the object is in a valid but unspecified state
   other.buf_ = nullptr;
   other.len_ = 0;
   other.cudaDev_ = -1;
-  other.regHdl_ = nullptr;
   other.dynRegHdl_ = nullptr;
-  other.cacheReg_ = false;
   // Note: remoteKey_ is already moved, leaving other.remoteKey_ empty
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
-  // Ownership is keyed on dynRegHdl_: the HIT path has dynRegHdl_ == nullptr,
-  // so this is a no-op there and only the owned dynamic registration is freed.
   if (dynRegHdl_ != nullptr) {
     FB_COMMCHECKIGNORE(regCache_->deregDynamic(
         static_cast<ctran::regcache::RegElem*>(dynRegHdl_)));
     dynRegHdl_ = nullptr;
-    regHdl_ = nullptr;
   }
+}
+
+void* RdmaMemory::localKey() const {
+  if (scopedRegHdl_) {
+    return scopedRegHdl_->get()->ibRegElem;
+  }
+  if (dynRegHdl_ != nullptr) {
+    return static_cast<ctran::regcache::RegElem*>(dynRegHdl_)->ibRegElem;
+  }
+  return nullptr;
 }
 
 bool RdmaMemory::contains(const void* buf, size_t len) const {
@@ -452,6 +456,52 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   }
 
   // Add work to pending list and schedule progress
+  auto pendingWorks = pendingWorks_.wlock();
+  pendingWorks->emplace_back(std::move(work));
+  evb_->runInEventBaseThread([this]() { progress(); });
+
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
+  return sf;
+}
+
+folly::SemiFuture<commResult_t> RdmaTransport::flush(
+    RdmaMemory::View localBuffer,
+    std::optional<std::chrono::milliseconds> timeout) {
+  if (broken_.load(std::memory_order_relaxed)) {
+    return commInternalError;
+  }
+  CHECK_THROW(evb_, std::runtime_error);
+
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
+  if (localBuffer.size() == 0) {
+    return commSuccess;
+  }
+
+  auto work = std::make_unique<Work>();
+  // Flush has the same completion and timeout behavior as write.
+  work->type = Work::Type::Write;
+  auto sf = work->promise.getSemiFuture();
+
+  CtranIbEpochRAII epochRAII(ib_.get());
+  const auto ibRes =
+      ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
+  if (ibRes != commSuccess && ibRes != commInProgress) {
+    XLOGF(
+        ERR,
+        "RdmaTransport::flush: iflush failed with {}",
+        static_cast<int>(ibRes));
+    broken_.store(true, std::memory_order_relaxed);
+    // iflush may have stored a pointer to work->ibReq in the local VC
+    // queues before failing; park the work instead of destroying it.
+    work->promise.setValue(ibRes);
+    retiredWorks_.wlock()->emplace_back(std::move(work));
+    return sf;
+  }
+  if (timeout.has_value()) {
+    work->timeout = timeout;
+    work->creationTime = std::chrono::steady_clock::now();
+  }
+
   auto pendingWorks = pendingWorks_.wlock();
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });

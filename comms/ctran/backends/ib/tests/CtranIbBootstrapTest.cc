@@ -371,6 +371,31 @@ TEST_F(CtranIbBootstrapCommonTest, EmptySocketIfnameFailsNoInterfaces) {
   }
 }
 
+// CtranMapper only allocates a request when the caller wants to track the
+// flush, so both skip paths of iflush have to tolerate a null request.
+TEST_F(CtranIbBootstrapCommonTest, IflushSkipPathsAcceptNullRequest) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  auto ctranIb = createCtranIb(
+      /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
+
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+
+  // createCtranIb disables local flush, so the registration handle is never
+  // dereferenced and a non-null placeholder selects the disabled-flush path.
+  int placeholderRegHdl = 0;
+  EXPECT_EQ(
+      ctranIb->iflush(
+          /*dbuf=*/nullptr,
+          /*localRegHdl=*/&placeholderRegHdl,
+          /*req=*/nullptr),
+      commSuccess);
+
+  EXPECT_EQ(
+      ctranIb->iflush(
+          /*dbuf=*/nullptr, /*localRegHdl=*/nullptr, /*req=*/nullptr),
+      commSuccess);
+}
+
 // Test bootstrapStart with specified server address
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
   SocketServerAddr serverAddr = getSocketServerAddress();
@@ -1032,6 +1057,18 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
   }
 
   EXPECT_TRUE(preparedServerSocket->abortCtrl->isAborted());
+  const auto abortInfo = preparedServerSocket->abortCtrl->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(
+      abortInfo->reason, comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+  EXPECT_THAT(
+      abortInfo->context,
+      ::testing::AllOf(
+          ::testing::HasSubstr("origin=socket_error"),
+          ::testing::HasSubstr("subsystem=ctran_ib"),
+          ::testing::HasSubstr("error_code=" + std::to_string(ECONNABORTED)),
+          ::testing::HasSubstr("error_name=ECONNABORTED"),
+          ::testing::HasSubstr("error_description=\"")));
 
   // Destroy CtranIb
   auto startDestroy = std::chrono::steady_clock::now();
@@ -1041,6 +1078,59 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
   auto destroyTime = std::chrono::steady_clock::now() - startDestroy;
   EXPECT_LT(destroyTime, 2s)
       << "Listen thread should terminate quickly after abort";
+}
+
+TEST_F(CtranIbBootstrapCommonTest, ExistingAbortDuringSocketRecvIsPreserved) {
+  auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
+  folly::Baton<> recvCalledBaton;
+
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+  EXPECT_CALL(*mockSocket, recv(_, sizeof(uint64_t)))
+      .WillOnce([&](void* buf, const size_t len) {
+        abortCtrl->setAbort(
+            comms::fault_tolerance::AbortReason::ABORTED,
+            "user requested abort");
+        recvCalledBaton.post();
+        return 0;
+      });
+  auto socketHolder =
+      std::make_shared<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>(
+          std::move(mockSocket));
+
+  auto mockServerSocket = std::make_unique<
+      StrictMock<ctran::bootstrap::testing::MockIServerSocket>>();
+  EXPECT_CALL(*mockServerSocket, bindAndListen(_, _))
+      .WillOnce(
+          [](const folly::SocketAddress&, const std::string&) { return 0; });
+  EXPECT_CALL(*mockServerSocket, acceptSocket())
+      .WillOnce(
+          [socketHolder]() mutable
+              -> folly::
+                  Expected<std::unique_ptr<ctran::bootstrap::ISocket>, int> {
+                    return std::move(*socketHolder);
+                  });
+  EXPECT_CALL(*mockServerSocket, shutdown()).WillOnce([]() { return 0; });
+
+  std::vector<StrictMockIServerSocketPtr> mockServerSockets;
+  mockServerSockets.push_back(std::move(mockServerSocket));
+  auto socketFactory =
+      std::make_shared<ctran::bootstrap::testing::MockInjectorSocketFactory>(
+          std::move(mockServerSockets));
+
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto ctranIb = createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      abortCtrl,
+      &serverAddr,
+      socketFactory);
+
+  recvCalledBaton.wait();
+  const auto abortInfo = abortCtrl->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, comms::fault_tolerance::AbortReason::ABORTED);
+  EXPECT_EQ(abortInfo->context, "user requested abort");
 }
 
 // Test that listen thread terminates cleanly via shutdown

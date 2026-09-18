@@ -10,6 +10,9 @@
 #include "comm.h"
 #include "sharded_relay_allreduce_kernels.h"
 #include "sharded_relay_graph_scratch.h"
+#include "sharded_relay_lp.h"
+#include "sharded_relay_lp_arena.h"
+#include "sharded_relay_lp_kernels.h"
 #include "sharded_relay_oneshot.h"
 #include "sharded_relay_route.h"
 
@@ -22,7 +25,22 @@
 // GPU memory access alignment in elements for chunk size rounding.
 // Distinct from the CPU CACHE_LINE_SIZE (64 bytes) defined in comm.h
 // which is used for struct padding.
-static constexpr size_t CHUNK_ALIGN_ELEMENTS = 128;
+//
+// SHARED with the other three collectives on purpose. This used to be a local
+// 128 and that was a BUG: when the shared constant was raised to 512 to make
+// every chunk boundary a whole number of FOUR wire blocks -- the condition for
+// a low-precision region offset (132 bytes per block) to be 16-byte aligned --
+// allreduce kept its own literal and silently did not get the fix. The
+// pipelined 2-active schedule then put its tile offsets on 4-byte-aligned wire
+// offsets at every size where the tile count reaches 4, which is 67.5 MB and
+// up.
+static constexpr size_t CHUNK_ALIGN_ELEMENTS =
+    rcclx::relay::kRelayChunkAlignElements;
+static_assert(
+    CHUNK_ALIGN_ELEMENTS % rcclx::relay::kLpBlockElems == 0 &&
+        (CHUNK_ALIGN_ELEMENTS / rcclx::relay::kLpBlockElems) % 4 == 0,
+    "every chunk boundary must be a multiple of 4 wire blocks so its offset in "
+    "wire bytes (132 per block) is 16-byte aligned");
 
 // The helpers below are duplicated, by design, across every sharded-relay TU
 // (reduce-scatter, all-gather, all-to-all, hierarchical all-to-all). Each of
@@ -590,6 +608,62 @@ class ScratchBufferCache {
     }                                                                      \
   } while (0)
 
+// =========================================================================
+// LOW-PRECISION DISPATCH
+// =========================================================================
+// Only bf16 and fp32 appear here, because lpDtypeSupported() admits only those
+// and the gate declines everything else back to full precision. The `default:`
+// arm is therefore unreachable rather than a silent fallthrough; it aborts the
+// call instead of returning ncclSuccess having quantized nothing, which is how
+// a gate bug surfaces as an error rather than as wrong numbers.
+#define DISPATCH_LP(datatype, CALL, ...)                                                                      \
+  do {                                                                                                        \
+    switch (datatype) {                                                                                       \
+      case ncclFloat32:                                                                                       \
+        CALL<float>(__VA_ARGS__);                                                                             \
+        break;                                                                                                \
+      case ncclBfloat16:                                                                                      \
+        CALL<__nv_bfloat16>(__VA_ARGS__);                                                                     \
+        break;                                                                                                \
+      default:                                                                                                \
+        WARN(                                                                                                 \
+            "Sharded relay: low precision reached an unsupported datatype %d; the eligibility gate is wrong", \
+            static_cast<int>(datatype));                                                                      \
+        return ncclInternalError;                                                                             \
+    }                                                                                                         \
+  } while (0)
+
+#define DISPATCH_LP_QUANTIZE(datatype, wireOut, in, count, stream) \
+  DISPATCH_LP(datatype, launchLpQuantizeKernel, wireOut, in, count, stream)
+
+#define DISPATCH_LP_DEQUANTIZE(datatype, out, wireIn, count, stream) \
+  DISPATCH_LP(datatype, launchLpDequantizeKernel, out, wireIn, count, stream)
+
+#define DISPATCH_LP_MULTI_REDUCE(                           \
+    datatype, dst, wireContribs, n, count, divisor, stream) \
+  DISPATCH_LP(                                              \
+      datatype,                                             \
+      launchLpMultiReduceKernel,                            \
+      dst,                                                  \
+      wireContribs,                                         \
+      n,                                                    \
+      count,                                                \
+      divisor,                                              \
+      stream)
+
+#define DISPATCH_LP_SEEDED_MULTI_REDUCE(                          \
+    datatype, dst, seed, wireContribs, n, count, divisor, stream) \
+  DISPATCH_LP(                                                    \
+      datatype,                                                   \
+      launchLpSeededMultiReduceKernel,                            \
+      dst,                                                        \
+      seed,                                                       \
+      wireContribs,                                               \
+      n,                                                          \
+      count,                                                      \
+      divisor,                                                    \
+      stream)
+
 namespace {
 
 // The DISPATCH_* macros above instantiate reduce kernels for exactly these
@@ -1016,6 +1090,445 @@ static bool tryOneShotAllReduce(
   return handled;
 }
 
+namespace {
+
+/**
+ * The wire buffers one 2-active relay call needs, carved from the
+ * communicator's low-precision arena.
+ *
+ * Every region is carved UNCONDITIONALLY and at the WORST CASE over all groups,
+ * even though a rank is active for exactly one group and a helper for the rest.
+ * That is deliberate on two counts. It makes the partition byte-identical on
+ * every rank and on every call with the same geometry, which is what lets a
+ * captured graph replay against the same addresses. And it makes the footprint
+ * a function of the counts alone, so the capacity check below is
+ * rank-independent -- a rank that sized its own roles would decline on a
+ * different set of calls than its peers, and low precision has to be unanimous
+ * or the two disagree on wire byte counts and the call hangs.
+ */
+struct A2LpPlan {
+  char* sendShadow{nullptr}; // wire(count): the whole active send buffer
+  char* relayRecv{
+      nullptr}; // wire(relayTotal): mirrors recvBuff's relayed region
+  char* directRecv{nullptr}; // wire(direct region)
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{};
+  bool valid{false};
+};
+
+// The size-and-dtype half of the gate, in one place so the dispatcher cannot
+// accidentally feed it a different size metric than the route selector uses.
+rcclx::relay::LpGateInputs allReduceLpGate(
+    ncclDataType_t datatype,
+    const size_t* counts,
+    int nGroups,
+    int nActiveRanksPerGroup,
+    size_t elementSize,
+    bool relayRouteSelected,
+    size_t countAlignElems) {
+  rcclx::relay::LpGateInputs in;
+  in.coll = rcclx::relay::LpCollective::AllReduce;
+  in.datatype = datatype;
+  in.counts = counts;
+  in.nGroups = nGroups;
+  in.nActiveRanksPerGroup = nActiveRanksPerGroup;
+  // max(counts) * elementSize is exactly selectAllReduceRoute()'s metric, so
+  // the low-precision threshold and the route threshold are directly
+  // comparable.
+  in.routeSizeBytes =
+      rcclx::relay::relayMaxCount(counts, nGroups) * elementSize;
+  in.relayRouteSelected = relayRouteSelected;
+  in.countAlignElems = countAlignElems;
+  return in;
+}
+
+size_t a2LpAlign(size_t bytes) {
+  return ((bytes + rcclx::relay::LpArenaCarver::kAlign - 1) /
+          rcclx::relay::LpArenaCarver::kAlign) *
+      rcclx::relay::LpArenaCarver::kAlign;
+}
+
+// Bytes one call needs, derived only from the counts and the chunk geometry
+// (which is itself derived only from the counts), so every rank computes the
+// same number.
+size_t a2LpRequiredBytes(
+    const size_t* counts,
+    const size_t* relayTotals,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  const size_t maxRelay = rcclx::relay::relayMaxCount(relayTotals, nGroups);
+  const size_t maxChunk = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+  // directRecv is bounded by maxCount rather than max(count - relayTotal),
+  // which costs a little arena and removes a per-group subtraction from a
+  // number every rank has to agree on.
+  size_t total = a2LpAlign(rcclx::relay::lpWireBytes(maxCount)) +
+      a2LpAlign(rcclx::relay::lpWireBytes(maxRelay)) +
+      a2LpAlign(rcclx::relay::lpWireBytes(maxCount));
+  total += static_cast<size_t>(nGroups) *
+      a2LpAlign(
+               static_cast<size_t>(nActiveRanks) *
+               rcclx::relay::lpWireBytes(maxChunk));
+  return total;
+}
+
+A2LpPlan a2LpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    const size_t* counts,
+    const size_t* relayTotals,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  const size_t maxRelay = rcclx::relay::relayMaxCount(relayTotals, nGroups);
+  const size_t maxChunk = rcclx::relay::relayMaxCount(chunkSizes, nGroups);
+
+  A2LpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  p.relayRecv = carver.take(rcclx::relay::lpWireBytes(maxRelay));
+  p.directRecv = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  for (int g = 0; g < nGroups; g++) {
+    p.helper[g] = carver.take(
+        static_cast<size_t>(nActiveRanks) *
+        rcclx::relay::lpWireBytes(maxChunk));
+  }
+  p.valid = carver.ok();
+  return p;
+}
+
+/**
+ * Every region boundary this schedule sends or receives at is a whole number of
+ * wire blocks.
+ *
+ * 128-aligned per-group counts (what lpEligible() checks) make relayTotal, dirA
+ * and dirB aligned -- but ONLY when the aligned chunk size is non-zero. When
+ * count / numChunks floors to zero the geometry falls back to splitting the
+ * buffer in HALF, and count / 2 is a multiple of 64, not of 128. That is not a
+ * tail-only error: dirB starts at count/2, so under low precision the boundary
+ * lands mid-block and both directions of the exchange disagree about where the
+ * second chunk begins.
+ *
+ * The degenerate branch is easy to reach in a FUSED call, where one small group
+ * rides along with a large one: the gate only ever sees the largest group's
+ * size, so counts={2097152, 384} passes on the big sibling while the 384
+ * element group takes the halving branch. Its own size is a legal 128 multiple,
+ * which is why the count check cannot catch this.
+ *
+ * Pure function of the counts and the chunk geometry (itself a pure function of
+ * the counts), so every rank declines together.
+ */
+bool a2LpGeometryOk(
+    const size_t* counts,
+    const size_t* chunkSizes,
+    int nGroups) {
+  for (int g = 0; g < nGroups; g++) {
+    if (counts[g] > 0 && chunkSizes[g] == 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Turn the caller's request into a decision, and carve the buffers if it holds.
+ *
+ * COLLECTIVE: lpArenaAcquire() runs a bootstrap unanimity vote on first use, so
+ * every rank must reach this whenever the dispatcher's size-only gate said yes
+ * -- including the helper ranks, which is why it is called before any role
+ * branch. Every reason it can return false is derived from the counts or is
+ * already agreed across the communicator, so all ranks decline together.
+ */
+bool a2LpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const size_t* counts,
+    const size_t* relayTotals,
+    const size_t* chunkSizes,
+    int nGroups,
+    int nActiveRanks,
+    A2LpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+
+  if (!a2LpGeometryOk(counts, chunkSizes, nGroups)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Alignment);
+    return false;
+  }
+
+  // Creating the arena is not capturable: it runs a bootstrap all-gather. Using
+  // one that already exists is fine, so under capture take the path only if the
+  // arena is already up. Same precedent as the one-shot region.
+  struct ncclCudaGraph graph;
+  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::lpArenaReady(comm)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+
+  rcclx::relay::LpArenaLease lease{};
+  if (!rcclx::relay::lpArenaAcquire(comm, &lease)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  if (a2LpRequiredBytes(
+          counts, relayTotals, chunkSizes, nGroups, nActiveRanks) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+
+  *out =
+      a2LpCarve(lease, counts, relayTotals, chunkSizes, nGroups, nActiveRanks);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+/**
+ * The wire buffers one flat (A>2) allreduce call needs.
+ *
+ * Five regions rather than the 2-active schedules' three, because this schedule
+ * sends from a region it produces MID-CALL: group 2's direct all-gather sends
+ * the shard the reduce wrote between the two groups, so that shard has to be
+ * quantized after the reduce and staged somewhere the peers' arrivals do not
+ * overwrite.
+ *
+ * Same discipline as A2LpPlan: carved unconditionally at the worst case over
+ * groups, so the partition is byte-identical on every rank and the capacity
+ * check is a pure function of the counts.
+ */
+struct FlatLpPlan {
+  char* sendShadow{nullptr}; // wire(count): quantized [0, count) for group 1
+  char* directRecv{nullptr}; // wire((A-1)*dShard): received direct shards
+  char* agStage{nullptr}; // wire(pD): reduced shards, mine out and theirs in
+  char* offloadRecv{
+      nullptr}; // wire(pO): the reduced offload region coming back
+  char* helper[SHARDED_RELAY_MAX_GROUPS]{}; // 2*A*wire(oChunk): staging
+  bool valid{false};
+};
+
+/*
+ * Every region below is sized at what the two flat schedules actually index,
+ * which is NOT what this used to reserve. Sizing them at maxCount and
+ * maxOffload instead was described as costing "a little arena"; it cost 7500
+ * permille of wire(count) against an arena that provides 5000, so the widest
+ * shape declined on capacity for any message at the top of its own declared
+ * budget. See the static_assert below.
+ *
+ * The bounds, verified against shardedRelayAllReduceFlat and
+ * ...FlatPipelined rather than inferred:
+ *
+ *   sendShadow   the whole send buffer is quantized in one pass    count
+ *   directRecv   dScratch holds the A-1 FOREIGN shards. Flat reads
+ *                slot p of A-1; pipelined indexes dSlot(t, p) =
+ *                (A-1)*tileOffset(t) + p*tileSize(t), whose top is
+ *                (A-1)*dShard exactly                          (A-1)*dShard
+ *   agStage      A shards: theirsOff = k*dShard for k < A, plus
+ *                dShard, and the closing dequantize reads
+ *                [afterMine, pD)                                        pD
+ *   offloadRecv  H chunks: off = h*oChunk for h < H, plus oChunk         pO
+ *   helper       Flat indexes a*oChunk for a < A. Pipelined
+ *                ping-pongs, helperSlot(a, k) = (k%2 * A + a)*oTile
+ *                with oTile = oChunk/T, so 2*A*oTile <= 2*A*oChunk
+ *                for every T >= 1. The 2x is what makes one number
+ *                cover both schedules without T here        2*A*oChunk
+ *
+ * dShard and oChunk are whole wire blocks: pO is aligned to H*CHUNK_ALIGN so
+ * oChunk = pO/H is a multiple of 512, and dShard = pD/A is a multiple of 128
+ * because the gate requires count to be a multiple of A*128 and pO already is.
+ *
+ * Still carved unconditionally at the worst case over groups, so the partition
+ * stays byte-identical on every rank and the capacity check stays a pure
+ * function of the counts. numHelpers is passed rather than assumed equal to
+ * nActiveRanks: it happens to be on an 8-GPU node at A=4, and a reader should
+ * not have to know that to check this arithmetic.
+ */
+size_t flatLpMaxDirect(const size_t* counts, const size_t* pOArr, int nGroups) {
+  size_t maxDirect = 0;
+  for (int g = 0; g < nGroups; g++) {
+    const size_t pD = (counts[g] > pOArr[g]) ? counts[g] - pOArr[g] : 0;
+    if (pD > maxDirect) {
+      maxDirect = pD;
+    }
+  }
+  return maxDirect;
+}
+
+size_t flatLpRequiredBytes(
+    const size_t* counts,
+    const size_t* pOArr,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  const size_t maxOffload = rcclx::relay::relayMaxCount(pOArr, nGroups);
+  const size_t maxDirect = flatLpMaxDirect(counts, pOArr, nGroups);
+  const size_t dShard =
+      (nActiveRanks > 0) ? maxDirect / static_cast<size_t>(nActiveRanks) : 0;
+  const size_t oChunk =
+      (numHelpers > 0) ? maxOffload / static_cast<size_t>(numHelpers) : 0;
+
+  size_t total = a2LpAlign(rcclx::relay::lpWireBytes(maxCount));
+  total += a2LpAlign(
+      rcclx::relay::lpWireBytes(
+          static_cast<size_t>(nActiveRanks - 1) * dShard));
+  total += a2LpAlign(rcclx::relay::lpWireBytes(maxDirect));
+  total += a2LpAlign(rcclx::relay::lpWireBytes(maxOffload));
+  total += static_cast<size_t>(nGroups) *
+      a2LpAlign(
+               2 * static_cast<size_t>(nActiveRanks) *
+               rcclx::relay::lpWireBytes(oChunk));
+  return total;
+}
+
+// Compile-time restatement of the above for the widest configuration this route
+// ever runs, in permille of wire(count): A == H == 4, hence nGroups <= 2 on an
+// 8-GPU node, and allReduceOffloadPermille() == 500 so pO == pD == count/2.
+//
+//   sendShadow                            count            1000
+//   directRecv    (A-1)/A * pD  = 3/8 * count               375
+//   agStage       pD            = 1/2 * count               500
+//   offloadRecv   pO            = 1/2 * count               500
+//   helper        nGroups * 2*A * oChunk, oChunk = pO/H
+//                              = 2 * 8 * count/8          2000
+//                                                        -----
+//                                                         4375
+//
+// The arena provides kLpArenaShadowsPerMessage * wire(budget), i.e. 5000
+// permille of wire(count) when count is the declared budget. This assert is
+// what makes "a message inside NCCL_SHARDED_RELAY_LP_MAX_MSG_MB never declines
+// on capacity" a checked property instead of a hope. It was silently false at
+// 7500.
+constexpr size_t kFlatLpWorstCasePermille = 1000 + 375 + 500 + 500 + 2000;
+static_assert(
+    kFlatLpWorstCasePermille <= rcclx::relay::kLpArenaShadowsPerMessage * 1000,
+    "the flat allreduce low-precision plan does not fit the arena budget");
+
+FlatLpPlan flatLpCarve(
+    const rcclx::relay::LpArenaLease& lease,
+    const size_t* counts,
+    const size_t* pOArr,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers) {
+  const size_t maxCount = rcclx::relay::relayMaxCount(counts, nGroups);
+  const size_t maxOffload = rcclx::relay::relayMaxCount(pOArr, nGroups);
+  const size_t maxDirect = flatLpMaxDirect(counts, pOArr, nGroups);
+  const size_t dShard =
+      (nActiveRanks > 0) ? maxDirect / static_cast<size_t>(nActiveRanks) : 0;
+  const size_t oChunk =
+      (numHelpers > 0) ? maxOffload / static_cast<size_t>(numHelpers) : 0;
+
+  FlatLpPlan p{};
+  rcclx::relay::LpArenaCarver carver(lease);
+  p.sendShadow = carver.take(rcclx::relay::lpWireBytes(maxCount));
+  p.directRecv = carver.take(
+      rcclx::relay::lpWireBytes(
+          static_cast<size_t>(nActiveRanks - 1) * dShard));
+  p.agStage = carver.take(rcclx::relay::lpWireBytes(maxDirect));
+  p.offloadRecv = carver.take(rcclx::relay::lpWireBytes(maxOffload));
+  for (int g = 0; g < nGroups; g++) {
+    p.helper[g] = carver.take(
+        2 * static_cast<size_t>(nActiveRanks) *
+        rcclx::relay::lpWireBytes(oChunk));
+  }
+  p.valid = carver.ok();
+  return p;
+}
+
+/**
+ * Every direct shard this schedule sends is a whole number of wire blocks.
+ *
+ * The gate makes count a multiple of A*128, so pD = count - pO leaves
+ * dShard = pD/A block-aligned exactly when pO is a multiple of A*128 too. pO is
+ * floored to H*CHUNK_ALIGN_ELEMENTS, which carries that only when
+ * A*128 divides H*CHUNK_ALIGN_ELEMENTS -- i.e. it rests on a relationship
+ * between A and H that nothing in buildShardedRelayRankConfig() enforces.
+ * numHelpers is nRanks - A, so A=4 with H=5..8 reaches this path as readily as
+ * the A == H the comments assume.
+ *
+ * When it does not hold the failure is silent and total: every
+ * wire.bytes(k * dShard) floors to a block boundary, so each shard's window
+ * shifts by up to 127 elements and recvBuff[0, pD) is wrong on every active
+ * rank while the same call in full precision is correct.
+ *
+ * Checked against the pO values themselves rather than against a divisibility
+ * rule, so it stays correct if either the chunk alignment or the offload share
+ * is retuned. Pure function of the counts and the geometry, so every rank
+ * declines together.
+ */
+bool flatLpGeometryOk(const size_t* pOArr, int nGroups, int nActiveRanks) {
+  if (nActiveRanks <= 0) {
+    return false;
+  }
+  const size_t shardAlign =
+      static_cast<size_t>(nActiveRanks) * rcclx::relay::kLpBlockElems;
+  for (int g = 0; g < nGroups; g++) {
+    if (pOArr[g] % shardAlign != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// COLLECTIVE, for the same reason a2LpPrepare() is: lpArenaAcquire() votes on
+// first use, so every rank must reach this whenever the dispatcher said yes.
+bool flatLpPrepare(
+    bool wantLp,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    const size_t* counts,
+    const size_t* pOArr,
+    int nGroups,
+    int nActiveRanks,
+    int numHelpers,
+    FlatLpPlan* out) {
+  if (!wantLp) {
+    return false;
+  }
+  if (!flatLpGeometryOk(pOArr, nGroups, nActiveRanks)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Alignment);
+    return false;
+  }
+  struct ncclCudaGraph graph;
+  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+  if (ncclCudaGraphValid(graph) && !rcclx::relay::lpArenaReady(comm)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
+    return false;
+  }
+  rcclx::relay::LpArenaLease lease{};
+  if (!rcclx::relay::lpArenaAcquire(comm, &lease)) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  if (flatLpRequiredBytes(counts, pOArr, nGroups, nActiveRanks, numHelpers) >
+      lease.bytes) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  *out = flatLpCarve(lease, counts, pOArr, nGroups, nActiveRanks, numHelpers);
+  if (!out->valid) {
+    rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::Arena);
+    return false;
+  }
+  rcclx::relay::lpRecordEngage();
+  return true;
+}
+
+} // namespace
+
 static ncclResult_t shardedRelayAllReduce2Active(
     const void* const* sendBuffs,
     void* const* recvBuffs,
@@ -1028,7 +1541,8 @@ static ncclResult_t shardedRelayAllReduce2Active(
     int myActiveGroup,
     int numHelpers,
     int nGroups,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   // ==========================================================================
   // SIZE-ADAPTIVE PURE-DIRECT FAST PATH (A==2)
   // ==========================================================================
@@ -1041,6 +1555,10 @@ static ncclResult_t shardedRelayAllReduce2Active(
   // selectAllReduceRoute() so the tests assert the same definition this
   // dispatch uses. This function is the A==2 path, so the selector is asked
   // about A==2.
+  // The pure-direct route is launch-bound, not bandwidth-bound: low precision
+  // would only add launches there, so the gate already excludes it and this
+  // branch never sees wantLp true. Asserted by construction rather than
+  // re-checked -- see the gate in the dispatcher.
   if (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
       rcclx::relay::AllReduceRoute::PureDirect) {
     // One kernel instead of the group-plus-reduce pair below. See
@@ -1160,6 +1678,52 @@ static ncclResult_t shardedRelayAllReduce2Active(
   }
 
   // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // Collective: every rank reaches a2LpPrepare() when the dispatcher's
+  // size-only gate said yes, and every way it can decline is agreed across the
+  // communicator, so all ranks run the same wire format or none do.
+  A2LpPlan lpPlan{};
+  const bool lp = a2LpPrepare(
+      wantLp,
+      comm,
+      stream,
+      counts,
+      relayTotals,
+      chunkSizes,
+      nGroups,
+      configs[0].nActiveRanks,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize per group over the ENTIRE boundary-crossing send region,
+  // before the first ncclGroupStart. Every byte of the active buffer crosses a
+  // rank boundary here -- the relayed chunks cover [0, relayTotal) and the two
+  // direct chunks cover [relayTotal, count) -- so this is the whole buffer.
+  // Hoisted rather than done per chunk: per-chunk would cost numChunks launches
+  // instead of one for no benefit, since nothing between them reads the result.
+  if (lp && myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        sendBuffs[myActiveGroup],
+        counts[myActiveGroup],
+        stream);
+  }
+
+  // Where a boundary-crossing send reads from: the quantized shadow under low
+  // precision, the caller's buffer otherwise. Offsets are in ELEMENTS of the
+  // caller's dtype either way, which is what keeps every call site below
+  // unchanged in shape.
+  auto sendFrom = [&](int g, size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[g]) + offsetElems * elementSize;
+  };
+
+  // =========================================================================
   // SCRATCH: the two received direct chunks, contiguous (in-place only)
   // =========================================================================
   // Out-of-place receives the direct chunks straight into recvBuff and reduces
@@ -1174,7 +1738,10 @@ static ncclResult_t shardedRelayAllReduce2Active(
     isInPlace = (sendBuffs[myActiveGroup] == recvBuffs[myActiveGroup]);
     myDirOffset = relayTotals[myActiveGroup];
     myDirTotal = counts[myActiveGroup] - myDirOffset;
-    if (isInPlace) {
+    // Under low precision the arrivals are wire bytes, so they cannot land in
+    // recvBuff even out-of-place: lpPlan.directRecv stages them in both cases
+    // and the closing fold reads them from there.
+    if (isInPlace && !lp) {
       directScratch = ScratchBufferCache::getInstance().get(
           myActiveGroup, myDirTotal * elementSize, stream);
       if (directScratch == nullptr) {
@@ -1185,6 +1752,9 @@ static ncclResult_t shardedRelayAllReduce2Active(
 
   // Destination for received direct chunk A / chunk B.
   auto directDst = [&](size_t offsetWithinDirect) -> char* {
+    if (lp) {
+      return lpPlan.directRecv + wire.bytes(offsetWithinDirect);
+    }
     if (isInPlace) {
       return static_cast<char*>(directScratch) +
           offsetWithinDirect * elementSize;
@@ -1200,6 +1770,12 @@ static ncclResult_t shardedRelayAllReduce2Active(
   for (int g = 0; g < nGroups; g++) {
     const ShardedRelayRankConfig& cfg = configs[g];
     if (!cfg.isActiveRank && counts[g] > 0 && chunkSizes[g] > 0) {
+      if (lp) {
+        // Already carved, and in wire bytes: the helper reduces and forwards
+        // wire blocks without ever learning the caller's dtype.
+        helperScratch[g] = lpPlan.helper[g];
+        continue;
+      }
       size_t needBytes =
           static_cast<size_t>(cfg.nActiveRanks) * chunkSizes[g] * elementSize;
       helperScratch[g] = ScratchBufferCache::getInstance().get(
@@ -1223,14 +1799,12 @@ static ncclResult_t shardedRelayAllReduce2Active(
     size_t chunkSize = chunkSizes[g];
 
     if (cfg.isActiveRank) {
-      const char* sendbuff = static_cast<const char*>(sendBuffs[g]);
-
       // Scatter: chunk h goes to helper h.
       for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
         NCCLCHECK(ncclSend(
-            sendbuff + static_cast<size_t>(h) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
+            sendFrom(g, static_cast<size_t>(h) * chunkSize),
+            wire.count(chunkSize),
+            wire.dtype,
             cfg.helperRanks[h],
             comm,
             stream));
@@ -1240,23 +1814,28 @@ static ncclResult_t shardedRelayAllReduce2Active(
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       if (dirASizes[g] > 0) {
         NCCLCHECK(ncclSend(
-            sendbuff + relayTotals[g] * elementSize,
-            dirASizes[g],
-            datatype,
+            sendFrom(g, relayTotals[g]),
+            wire.count(dirASizes[g]),
+            wire.dtype,
             partner,
             comm,
             stream));
         NCCLCHECK(ncclRecv(
-            directDst(0), dirASizes[g], datatype, partner, comm, stream));
+            directDst(0),
+            wire.count(dirASizes[g]),
+            wire.dtype,
+            partner,
+            comm,
+            stream));
       }
     } else if (chunkSize > 0) {
       // Helper: receive active rank a's chunk into slot a.
       char* helperBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclRecv(
-            helperBuf + static_cast<size_t>(a) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
+            helperBuf + wire.bytes(static_cast<size_t>(a) * chunkSize),
+            wire.count(chunkSize),
+            wire.dtype,
             cfg.activeRanks[a],
             comm,
             stream));
@@ -1280,6 +1859,21 @@ static ncclResult_t shardedRelayAllReduce2Active(
       continue;
     char* helperBuf = static_cast<char*>(helperScratch[g]);
     size_t chunkSize = chunkSizes[g];
+    if (lp) {
+      // Wire in, wire out, summed in fp32. The divisor lands HERE and not on
+      // the active rank because the reduced chunk below goes straight to its
+      // final place -- there is no active-side reduce for this region to defer
+      // it to. Exact: the divisor is a power of two. See
+      // sharded_relay_lp_kernels.h.
+      launchLpReduceRequantizeKernel(
+          helperBuf,
+          helperBuf,
+          configs[g].nActiveRanks,
+          chunkSize,
+          reductionDivisor,
+          stream);
+      continue;
+    }
     DISPATCH_FUSED_REDUCE(
         datatype,
         helperBuf,
@@ -1305,13 +1899,19 @@ static ncclResult_t shardedRelayAllReduce2Active(
     if (cfg.isActiveRank) {
       char* recvbuff = static_cast<char*>(recvBuffs[g]);
 
-      // The helper's chunk is already reduced, so it lands directly in its
-      // final place in recvBuff — no active-side reduction for this region.
+      // The helper's chunk is already reduced, so at full precision it lands
+      // directly in its final place in recvBuff. Under low precision it arrives
+      // as wire bytes, so it stages in lpPlan.relayRecv -- laid out to mirror
+      // recvBuff's relayed region -- and one dequantize below writes the whole
+      // region out at once.
       for (int h = 0; h < cfg.numHelpers && chunkSize > 0; h++) {
+        const size_t offsetElems = static_cast<size_t>(h) * chunkSize;
+        char* dst = lp ? (lpPlan.relayRecv + wire.bytes(offsetElems))
+                       : (recvbuff + offsetElems * elementSize);
         NCCLCHECK(ncclRecv(
-            recvbuff + static_cast<size_t>(h) * chunkSize * elementSize,
-            chunkSize,
-            datatype,
+            dst,
+            wire.count(chunkSize),
+            wire.dtype,
             cfg.helperRanks[h],
             comm,
             stream));
@@ -1320,16 +1920,16 @@ static ncclResult_t shardedRelayAllReduce2Active(
       // Direct chunk B, again over the idle active<->active link.
       int partner = cfg.activeRanks[1 - cfg.myActiveIndex];
       NCCLCHECK(ncclSend(
-          static_cast<const char*>(sendBuffs[g]) + dirBOffsets[g] * elementSize,
-          dirBSizes[g],
-          datatype,
+          sendFrom(g, dirBOffsets[g]),
+          wire.count(dirBSizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
       NCCLCHECK(ncclRecv(
           directDst(dirASizes[g]),
-          dirBSizes[g],
-          datatype,
+          wire.count(dirBSizes[g]),
+          wire.dtype,
           partner,
           comm,
           stream));
@@ -1338,12 +1938,31 @@ static ncclResult_t shardedRelayAllReduce2Active(
       const char* helperBuf = static_cast<const char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(
-            helperBuf, chunkSize, datatype, cfg.activeRanks[a], comm, stream));
+            helperBuf,
+            wire.count(chunkSize),
+            wire.dtype,
+            cfg.activeRanks[a],
+            comm,
+            stream));
       }
     }
   }
 
   NCCLCHECK(ncclGroupEnd());
+
+  // =========================================================================
+  // LOW PRECISION: land the relayed region
+  // =========================================================================
+  // One launch for the whole [0, relayTotal) region, which is already final --
+  // the helpers reduced it and applied the divisor. Nothing else touches it.
+  if (lp && myActiveGroup >= 0 && relayTotals[myActiveGroup] > 0) {
+    DISPATCH_LP_DEQUANTIZE(
+        datatype,
+        recvBuffs[myActiveGroup],
+        lpPlan.relayRecv,
+        relayTotals[myActiveGroup],
+        stream);
+  }
 
   // =========================================================================
   // DIRECT REDUCE: fold both received direct chunks in one fused pass
@@ -1353,7 +1972,32 @@ static ncclResult_t shardedRelayAllReduce2Active(
   if (myActiveGroup >= 0 && myDirTotal > 0) {
     char* dst = static_cast<char*>(recvBuffs[myActiveGroup]) +
         myDirOffset * elementSize;
-    if (isInPlace) {
+    if (lp) {
+      // One wire contribution (the partner's two direct chunks, contiguous)
+      // folded against this rank's own, accumulated in fp32. In-place reads its
+      // contribution from dst; out-of-place seeds from sendBuff.
+      if (isInPlace) {
+        DISPATCH_LP_MULTI_REDUCE(
+            datatype,
+            dst,
+            lpPlan.directRecv,
+            1,
+            myDirTotal,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_LP_SEEDED_MULTI_REDUCE(
+            datatype,
+            dst,
+            static_cast<const char*>(sendBuffs[myActiveGroup]) +
+                myDirOffset * elementSize,
+            lpPlan.directRecv,
+            1,
+            myDirTotal,
+            reductionDivisor,
+            stream);
+      }
+    } else if (isInPlace) {
       if (reductionDivisor > 1) {
         DISPATCH_INCREMENTAL_ADD_AND_SCALE(
             datatype, dst, directScratch, myDirTotal, reductionDivisor, stream);
@@ -1420,7 +2064,8 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
     int myActiveGroup,
     int numHelpers,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t count = counts[0];
   const int H = numHelpers;
@@ -1436,12 +2081,52 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
   const size_t directTotal = count - directBase;
   const size_t lastDirect = directTotal - tileStride;
 
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send buffer
+  // =========================================================================
+  // The plan's region set fits this schedule exactly once the geometry is
+  // described in its terms: the relayed span is [0, directBase), and a helper
+  // needs nActiveRanks * 2 ping-pong slots of u, which is nActiveRanks slots of
+  // 2u. Both are 128-multiples, so wire.bytes() is additive across them and
+  // wire.bytes(2u) == 2 * wire.bytes(u).
+  const size_t lpRelayTotals[1] = {directBase};
+  const size_t lpChunkSizes[1] = {2 * u};
+  A2LpPlan lpPlan{};
+  const bool lp = a2LpPrepare(
+      wantLp,
+      comm,
+      stream,
+      counts,
+      lpRelayTotals,
+      lpChunkSizes,
+      /*nGroups=*/1,
+      cfg.nActiveRanks,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // One quantize over the whole send buffer, before the first group of the
+  // first stage. Hoisted out of the k-loop deliberately: per-tile would cost T
+  // launches, and worse, in the in-place case tile k's fold can still be in
+  // flight while tile k+1's send source is being read.
+  if (lp && cfg.isActiveRank && count > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype, lpPlan.sendShadow, sendBuffs[0], count, stream);
+  }
+
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(sendBuffs[0]) + offsetElems * elementSize;
+  };
+
   // In-place must stage the received direct chunks so the local contribution is
   // still readable when the fused reduce runs; out-of-place lands them straight
   // in recvBuff and reduces against sendBuff.
   void* directScratch = nullptr;
   const bool isInPlace = (myActiveGroup == 0) && (sendBuffs[0] == recvBuffs[0]);
-  if (myActiveGroup == 0 && isInPlace) {
+  if (myActiveGroup == 0 && isInPlace && !lp) {
     directScratch = ScratchBufferCache::getInstance().get(
         0, directTotal * elementSize, stream);
     if (directScratch == nullptr) {
@@ -1449,6 +2134,10 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
     }
   }
   auto directDst = [&](size_t offsetWithinDirect) -> char* {
+    if (lp) {
+      // Wire bytes cannot land in recvBuff even out-of-place.
+      return lpPlan.directRecv + wire.bytes(offsetWithinDirect);
+    }
     if (isInPlace) {
       return static_cast<char*>(directScratch) +
           offsetWithinDirect * elementSize;
@@ -1461,19 +2150,33 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
   // flight. Small enough that a tile is reduced and forwarded out of cache.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          static_cast<size_t>(cfg.nActiveRanks) * 2 * u * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
   // Slot for active source a of the buffer that stage k uses.
+  //
+  // STAGE-MAJOR: the slot index is (k%2)*nActiveRanks + a, so the sources of
+  // one stage are ADJACENT. Source-major -- (a*2 + k%2) -- put them two slots
+  // apart, which is equivalent while the reduce takes two explicit pointers,
+  // but not once it takes a base plus a contribution stride. Indices still
+  // cover 0..2A-1 exactly once, and the allocation is the same size, so this is
+  // behaviour-neutral.
   auto helperSlot = [&](int a, int k) -> char* {
     return hbuff +
-        (static_cast<size_t>(a) * 2 + static_cast<size_t>(k % 2)) * u *
-        elementSize;
+        wire.bytes(
+            (static_cast<size_t>(k % 2) *
+                 static_cast<size_t>(cfg.nActiveRanks) +
+             static_cast<size_t>(a)) *
+            u);
   };
 
   for (int k = 0; k <= T; k++) {
@@ -1488,34 +2191,38 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
       if (k < T) {
         for (int h = 0; h < H; h++) {
           NCCLCHECK(ncclSend(
-              sendbuff +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k) * u) *
-                      elementSize,
-              u,
-              datatype,
+              sendFrom(
+                  static_cast<size_t>(h) * tileStride +
+                  static_cast<size_t>(k) * u),
+              wire.count(u),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
         }
       }
       NCCLCHECK(ncclSend(
-          sendbuff + (directBase + directOffset) * elementSize,
-          directSize,
-          datatype,
+          sendFrom(directBase + directOffset),
+          wire.count(directSize),
+          wire.dtype,
           partner,
           comm,
           stream));
       if (k > 0) {
-        // Already reduced by the helper, so this is its final value.
+        // Already reduced by the helper, so this is its final value. At full
+        // precision it lands where it belongs in recvBuff; under low precision
+        // it stages in lpPlan.relayRecv, laid out to mirror recvBuff's relayed
+        // span, and one dequantize after the loop writes [0, directBase) out at
+        // once.
         for (int h = 0; h < H; h++) {
+          const size_t offsetElems = static_cast<size_t>(h) * tileStride +
+              static_cast<size_t>(k - 1) * u;
+          char* dst = lp ? (lpPlan.relayRecv + wire.bytes(offsetElems))
+                         : (recvbuff + offsetElems * elementSize);
           NCCLCHECK(ncclRecv(
-              recvbuff +
-                  (static_cast<size_t>(h) * tileStride +
-                   static_cast<size_t>(k - 1) * u) *
-                      elementSize,
-              u,
-              datatype,
+              dst,
+              wire.count(u),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -1523,8 +2230,8 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
       }
       NCCLCHECK(ncclRecv(
           directDst(directOffset),
-          directSize,
-          datatype,
+          wire.count(directSize),
+          wire.dtype,
           partner,
           comm,
           stream));
@@ -1532,15 +2239,20 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
       if (k < T) {
         for (int a = 0; a < cfg.nActiveRanks; a++) {
           NCCLCHECK(ncclRecv(
-              helperSlot(a, k), u, datatype, cfg.activeRanks[a], comm, stream));
+              helperSlot(a, k),
+              wire.count(u),
+              wire.dtype,
+              cfg.activeRanks[a],
+              comm,
+              stream));
         }
       }
       if (k > 0) {
         for (int a = 0; a < cfg.nActiveRanks; a++) {
           NCCLCHECK(ncclSend(
               helperSlot(0, k - 1),
-              u,
-              datatype,
+              wire.count(u),
+              wire.dtype,
               cfg.activeRanks[a],
               comm,
               stream));
@@ -1551,22 +2263,63 @@ static ncclResult_t shardedRelayAllReduce2ActivePipelined(
 
     // Reduce the tile this group received, before the next group forwards it.
     if (!cfg.isActiveRank && k < T) {
-      DISPATCH_FUSED_REDUCE(
-          datatype,
-          helperSlot(0, k),
-          helperSlot(0, k),
-          helperSlot(1, k),
-          u,
-          reductionDivisor,
-          stream);
+      if (lp) {
+        // The stage's sources are adjacent slots, which is what the stage-major
+        // layout above is for: this kernel reads nActiveRanks contributions
+        // from one base at wire.bytes(u) stride.
+        launchLpReduceRequantizeKernel(
+            helperSlot(0, k),
+            helperSlot(0, k),
+            cfg.nActiveRanks,
+            u,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_FUSED_REDUCE(
+            datatype,
+            helperSlot(0, k),
+            helperSlot(0, k),
+            helperSlot(1, k),
+            u,
+            reductionDivisor,
+            stream);
+      }
     }
+  }
+
+  // Land the relayed span. One launch for [0, directBase), which the helpers
+  // already reduced and already divided.
+  if (lp && cfg.isActiveRank && directBase > 0) {
+    DISPATCH_LP_DEQUANTIZE(
+        datatype, recvBuffs[0], lpPlan.relayRecv, directBase, stream);
   }
 
   // Fold both received direct chunks in one fused pass; they are adjacent in
   // recvBuff and in the scratch.
   if (myActiveGroup == 0 && directTotal > 0) {
     char* dst = static_cast<char*>(recvBuffs[0]) + directBase * elementSize;
-    if (isInPlace) {
+    if (lp) {
+      if (isInPlace) {
+        DISPATCH_LP_MULTI_REDUCE(
+            datatype,
+            dst,
+            lpPlan.directRecv,
+            1,
+            directTotal,
+            reductionDivisor,
+            stream);
+      } else {
+        DISPATCH_LP_SEEDED_MULTI_REDUCE(
+            datatype,
+            dst,
+            static_cast<const char*>(sendBuffs[0]) + directBase * elementSize,
+            lpPlan.directRecv,
+            1,
+            directTotal,
+            reductionDivisor,
+            stream);
+      }
+    } else if (isInPlace) {
       if (reductionDivisor > 1) {
         DISPATCH_INCREMENTAL_ADD_AND_SCALE(
             datatype,
@@ -1633,7 +2386,8 @@ static ncclResult_t shardedRelayAllReduceFlat(
     int numHelpers,
     int nActiveRanksPerGroup,
     int nGroups,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const int A = nActiveRanksPerGroup;
   const int H = numHelpers;
 
@@ -1793,16 +2547,60 @@ static ncclResult_t shardedRelayAllReduceFlat(
         stream);
   }
 
+  // =========================================================================
+  // LOW PRECISION: decide, acquire the arena, and quantize the send region
+  // =========================================================================
+  FlatLpPlan lpPlan{};
+  const bool lp = flatLpPrepare(
+      wantLp,
+      comm,
+      stream,
+      counts,
+      pOArr,
+      nGroups,
+      nActiveRanksPerGroup,
+      H,
+      &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
+  // Note this quantizes recvBuff, not sendBuff, and only AFTER the seeding
+  // above: unlike the 2-active schedules, both regions of this one read their
+  // outbound data out of recvBuff. Covers all of [0, count) -- the direct
+  // reduce-scatter reads [0, pD) shard by shard and the offload scatter reads
+  // [pD, count).
+  if (lp && myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.sendShadow,
+        recvBuffs[myActiveGroup],
+        counts[myActiveGroup],
+        stream);
+  }
+
+  // Where a group-1 send reads from. Offsets stay in ELEMENTS of the caller's
+  // dtype so the call sites keep their shape.
+  auto sendFrom = [&](int g, size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(recvBuffs[g]) + offsetElems * elementSize;
+  };
+
   // Direct reduce-scatter scratch: the A-1 received direct shards.
   void* dScratch = nullptr;
   if (myActiveGroup >= 0 && counts[myActiveGroup] > 0 &&
       pDArr[myActiveGroup] > 0) {
     size_t dShard = pDArr[myActiveGroup] / A;
-    size_t dBytes = static_cast<size_t>(A - 1) * dShard * elementSize;
-    dScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS, dBytes, stream);
-    if (dScratch == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      dScratch = lpPlan.directRecv;
+    } else {
+      size_t dBytes = static_cast<size_t>(A - 1) * dShard * elementSize;
+      dScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS, dBytes, stream);
+      if (dScratch == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
 
@@ -1814,12 +2612,16 @@ static ncclResult_t shardedRelayAllReduceFlat(
     const ShardedRelayRankConfig& cfg = configs[g];
     size_t oChunkG = (pOArr[g] > 0) ? pOArr[g] / H : 0;
     if (!cfg.isActiveRank && counts[g] > 0 && oChunkG > 0) {
-      size_t needBytes =
-          static_cast<size_t>(cfg.nActiveRanks) * oChunkG * elementSize;
-      helperScratch[g] = ScratchBufferCache::getInstance().get(
-          kHelperScratchKeyBase + g, needBytes, stream);
-      if (helperScratch[g] == nullptr) {
-        return ncclInternalError;
+      if (lp) {
+        helperScratch[g] = lpPlan.helper[g];
+      } else {
+        size_t needBytes =
+            static_cast<size_t>(cfg.nActiveRanks) * oChunkG * elementSize;
+        helperScratch[g] = ScratchBufferCache::getInstance().get(
+            kHelperScratchKeyBase + g, needBytes, stream);
+        if (helperScratch[g] == nullptr) {
+          return ncclInternalError;
+        }
       }
     }
   }
@@ -1845,9 +2647,9 @@ static ncclResult_t shardedRelayAllReduceFlat(
           if (k == m)
             continue;
           NCCLCHECK(ncclSend(
-              recvbuff + static_cast<size_t>(k) * dShard * elementSize,
-              dShard,
-              datatype,
+              sendFrom(g, static_cast<size_t>(k) * dShard),
+              wire.count(dShard),
+              wire.dtype,
               cfg.activeRanks[k],
               comm,
               stream));
@@ -1858,9 +2660,9 @@ static ncclResult_t shardedRelayAllReduceFlat(
           int p = (s < m) ? s : s - 1;
           NCCLCHECK(ncclRecv(
               static_cast<char*>(dScratch) +
-                  static_cast<size_t>(p) * dShard * elementSize,
-              dShard,
-              datatype,
+                  wire.bytes(static_cast<size_t>(p) * dShard),
+              wire.count(dShard),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -1870,9 +2672,9 @@ static ncclResult_t shardedRelayAllReduceFlat(
       if (oChunk > 0) {
         for (int h = 0; h < cfg.numHelpers; h++) {
           NCCLCHECK(ncclSend(
-              recvbuff + (pD + static_cast<size_t>(h) * oChunk) * elementSize,
-              oChunk,
-              datatype,
+              sendFrom(g, pD + static_cast<size_t>(h) * oChunk),
+              wire.count(oChunk),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -1884,9 +2686,9 @@ static ncclResult_t shardedRelayAllReduceFlat(
       char* rawBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclRecv(
-            rawBuf + static_cast<size_t>(a) * oChunk * elementSize,
-            oChunk,
-            datatype,
+            rawBuf + wire.bytes(static_cast<size_t>(a) * oChunk),
+            wire.count(oChunk),
+            wire.dtype,
             cfg.activeRanks[a],
             comm,
             stream));
@@ -1911,8 +2713,16 @@ static ncclResult_t shardedRelayAllReduceFlat(
         char* dst = recvbuff + static_cast<size_t>(m) * dShard * elementSize;
         // Fused single-pass reduce: dst = (dst + A-1 direct contribs) / divisor
         // (AVG folded in), before the all-gather broadcasts the owned shard.
-        DISPATCH_MULTI_REDUCE(
-            datatype, dst, dScratch, A - 1, dShard, reductionDivisor, stream);
+        if (lp) {
+          // Writes FULL PRECISION: this shard's final value. It is re-quantized
+          // below for the all-gather, which is cheaper and clearer than
+          // teaching the reduce to emit wire.
+          DISPATCH_LP_MULTI_REDUCE(
+              datatype, dst, dScratch, A - 1, dShard, reductionDivisor, stream);
+        } else {
+          DISPATCH_MULTI_REDUCE(
+              datatype, dst, dScratch, A - 1, dShard, reductionDivisor, stream);
+        }
       }
     } else if (oChunk > 0) {
       // Helper: fused single-pass reduce of the A received chunks into
@@ -1920,15 +2730,42 @@ static ncclResult_t shardedRelayAllReduceFlat(
       // launch instead of memcpy + A-1 adds + scale. The broadcast below reads
       // rawBuf[0].
       char* rawBuf = static_cast<char*>(helperScratch[g]);
-      DISPATCH_MULTI_REDUCE(
-          datatype,
-          rawBuf,
-          rawBuf + oChunk * elementSize,
-          cfg.nActiveRanks - 1,
-          oChunk,
-          reductionDivisor,
-          stream);
+      if (lp) {
+        // All A contributions from one base at wire.bytes(oChunk) stride, which
+        // is exactly how group 1 laid them out. The divisor lands here because
+        // the broadcast below goes straight to its final place -- there is no
+        // active-side reduce for the offload region.
+        launchLpReduceRequantizeKernel(
+            rawBuf, rawBuf, cfg.nActiveRanks, oChunk, reductionDivisor, stream);
+      } else {
+        DISPATCH_MULTI_REDUCE(
+            datatype,
+            rawBuf,
+            rawBuf + oChunk * elementSize,
+            cfg.nActiveRanks - 1,
+            oChunk,
+            reductionDivisor,
+            stream);
+      }
     }
+  }
+
+  // ===== Low precision: the all-gather's send source is produced above, not by
+  // the caller, so it needs its own quantize here. This is the one place the
+  // flat schedule differs structurally from the 2-active ones, where a single
+  // hoisted pre-pass covers every outbound byte. It goes into the AG stage at
+  // this rank's own shard slot, so the peers' arrivals below land in the other
+  // slots and the whole direct region can be dequantized from one buffer.
+  if (lp && myActiveGroup >= 0 && pDArr[myActiveGroup] > 0) {
+    const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+    const size_t dShard = pDArr[myActiveGroup] / A;
+    const size_t mine = static_cast<size_t>(cfg.myActiveIndex) * dShard;
+    DISPATCH_LP_QUANTIZE(
+        datatype,
+        lpPlan.agStage + wire.bytes(mine),
+        static_cast<const char*>(recvBuffs[myActiveGroup]) + mine * elementSize,
+        dShard,
+        stream);
   }
 
   // ===== Group 2: direct AG (active<->active) + offload broadcast
@@ -1951,17 +2788,21 @@ static ncclResult_t shardedRelayAllReduceFlat(
         for (int k = 0; k < A; k++) {
           if (k == m)
             continue;
+          const size_t mineOff = static_cast<size_t>(m) * dShard;
+          const size_t theirsOff = static_cast<size_t>(k) * dShard;
           NCCLCHECK(ncclSend(
-              recvbuff + static_cast<size_t>(m) * dShard * elementSize,
-              dShard,
-              datatype,
+              lp ? (lpPlan.agStage + wire.bytes(mineOff))
+                 : (recvbuff + mineOff * elementSize),
+              wire.count(dShard),
+              wire.dtype,
               cfg.activeRanks[k],
               comm,
               stream));
           NCCLCHECK(ncclRecv(
-              recvbuff + static_cast<size_t>(k) * dShard * elementSize,
-              dShard,
-              datatype,
+              lp ? (lpPlan.agStage + wire.bytes(theirsOff))
+                 : (recvbuff + theirsOff * elementSize),
+              wire.count(dShard),
+              wire.dtype,
               cfg.activeRanks[k],
               comm,
               stream));
@@ -1970,10 +2811,12 @@ static ncclResult_t shardedRelayAllReduceFlat(
       // Offload broadcast: recv reduced chunk h from helper h into recvBuff.
       if (oChunk > 0) {
         for (int h = 0; h < cfg.numHelpers; h++) {
+          const size_t off = static_cast<size_t>(h) * oChunk;
           NCCLCHECK(ncclRecv(
-              recvbuff + (pD + static_cast<size_t>(h) * oChunk) * elementSize,
-              oChunk,
-              datatype,
+              lp ? (lpPlan.offloadRecv + wire.bytes(off))
+                 : (recvbuff + (pD + off) * elementSize),
+              wire.count(oChunk),
+              wire.dtype,
               cfg.helperRanks[h],
               comm,
               stream));
@@ -1985,11 +2828,56 @@ static ncclResult_t shardedRelayAllReduceFlat(
       char* rawBuf = static_cast<char*>(helperScratch[g]);
       for (int a = 0; a < cfg.nActiveRanks; a++) {
         NCCLCHECK(ncclSend(
-            rawBuf, oChunk, datatype, cfg.activeRanks[a], comm, stream));
+            rawBuf,
+            wire.count(oChunk),
+            wire.dtype,
+            cfg.activeRanks[a],
+            comm,
+            stream));
       }
     }
   }
   NCCLCHECK(ncclGroupEnd());
+
+  // ===== Low precision: land both regions.
+  if (lp && myActiveGroup >= 0 && counts[myActiveGroup] > 0) {
+    const ShardedRelayRankConfig& cfg = configs[myActiveGroup];
+    char* recvbuff = static_cast<char*>(recvBuffs[myActiveGroup]);
+    const size_t pD = pDArr[myActiveGroup];
+    const size_t pO = pOArr[myActiveGroup];
+
+    // The direct region, in the at-most-two contiguous runs that EXCLUDE this
+    // rank's own shard. The reduce above already wrote that shard at full
+    // precision, so dequantizing over it would round-trip a value that is
+    // already exact through fp8 for nothing.
+    if (pD > 0) {
+      const size_t dShard = pD / A;
+      const size_t mine = static_cast<size_t>(cfg.myActiveIndex) * dShard;
+      if (mine > 0) {
+        DISPATCH_LP_DEQUANTIZE(
+            datatype, recvbuff, lpPlan.agStage, mine, stream);
+      }
+      const size_t afterMine = mine + dShard;
+      if (afterMine < pD) {
+        DISPATCH_LP_DEQUANTIZE(
+            datatype,
+            recvbuff + afterMine * elementSize,
+            lpPlan.agStage + wire.bytes(afterMine),
+            pD - afterMine,
+            stream);
+      }
+    }
+
+    // The offload region is contiguous and arrives already reduced and divided.
+    if (pO > 0) {
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          recvbuff + pD * elementSize,
+          lpPlan.offloadRecv,
+          pO,
+          stream);
+    }
+  }
 
   // The AVG divisor was already folded into the per-shard direct reduce and the
   // per-chunk helper reduce above, so no separate whole-count scale is needed.
@@ -2049,7 +2937,8 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
     int numHelpers,
     int nActiveRanksPerGroup,
     int nTiles,
-    size_t elementSize) {
+    size_t elementSize,
+    bool wantLp) {
   const ShardedRelayRankConfig& cfg = configs[0];
   const size_t count = counts[0];
   const int A = nActiveRanksPerGroup;
@@ -2096,6 +2985,20 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
         static_cast<size_t>(p) * tileSize(t);
   };
 
+  // Every offset below is a whole number of wire blocks: y is
+  // CHUNK_ALIGN-aligned, so oTile = 2y, oPiece = oTile/oN (oN in {1,2}), oChunk
+  // = T*oTile and pO = H*oChunk all are; pD = count - pO is because pO is;
+  // tileOffset(t) = t*y is, and so is the remainder tile dShard - (T-1)*y; and
+  // dSlot is a sum of the two. dShard = pD/A needs count to be a multiple of
+  // A*128, which is exactly what the gate requires -- pO is a multiple of
+  // A*128, so pD == count (mod A*128).
+  const size_t lpPO[1] = {pO};
+  FlatLpPlan lpPlan{};
+  const bool lp = flatLpPrepare(
+      wantLp, comm, stream, counts, lpPO, /*nGroups=*/1, A, H, &lpPlan);
+  const rcclx::relay::RelayWire wire =
+      rcclx::relay::lpWireFor(datatype, elementSize, lp);
+
   void* dScratch = nullptr;
   if (myActiveGroup == 0) {
     if (sendBuffs[0] != recvBuffs[0]) {
@@ -2106,31 +3009,57 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
           cudaMemcpyDeviceToDevice,
           stream);
     }
-    dScratch = ScratchBufferCache::getInstance().get(
-        SHARDED_RELAY_MAX_GROUPS,
-        static_cast<size_t>(A - 1) * dShard * elementSize,
-        stream);
-    if (dScratch == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      dScratch = lpPlan.directRecv;
+    } else {
+      dScratch = ScratchBufferCache::getInstance().get(
+          SHARDED_RELAY_MAX_GROUPS,
+          static_cast<size_t>(A - 1) * dShard * elementSize,
+          stream);
+      if (dScratch == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
+
+  // The reduce-scatter and offload sends read the caller's data, so one
+  // quantize covers them -- after the seeding above, and over recvBuff, because
+  // that is where this schedule reads its outbound data from. The all-gather's
+  // source is produced per stage and is quantized inside the loop instead.
+  if (lp && cfg.isActiveRank && count > 0) {
+    DISPATCH_LP_QUANTIZE(
+        datatype, lpPlan.sendShadow, recvBuffs[0], count, stream);
+  }
+  auto sendFrom = [&](size_t offsetElems) -> const char* {
+    if (lp) {
+      return lpPlan.sendShadow + wire.bytes(offsetElems);
+    }
+    return static_cast<const char*>(recvBuffs[0]) + offsetElems * elementSize;
+  };
 
   // Helper staging: A chunks per ping-pong buffer, buffer-major so the A inputs
   // of one stage are contiguous with stride oTile for the fused reduce.
   char* hbuff = nullptr;
   if (!cfg.isActiveRank) {
-    hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
-        kHelperScratchKeyBase,
-        2 * static_cast<size_t>(A) * oTile * elementSize,
-        stream));
-    if (hbuff == nullptr) {
-      return ncclInternalError;
+    if (lp) {
+      hbuff = lpPlan.helper[0];
+    } else {
+      hbuff = static_cast<char*>(ScratchBufferCache::getInstance().get(
+          kHelperScratchKeyBase,
+          2 * static_cast<size_t>(A) * oTile * elementSize,
+          stream));
+      if (hbuff == nullptr) {
+        return ncclInternalError;
+      }
     }
   }
+  // Already stage-major -- the A inputs of one stage are contiguous with stride
+  // oTile -- which is exactly the layout launchLpReduceRequantizeKernel wants,
+  // so unlike the 2-active pipelined path this needs no relayout.
   auto helperSlot = [&](int a, int k) -> char* {
     return hbuff +
-        ((static_cast<size_t>(k % 2) * A + static_cast<size_t>(a)) * oTile) *
-        elementSize;
+        wire.bytes(
+            (static_cast<size_t>(k % 2) * A + static_cast<size_t>(a)) * oTile);
   };
 
   for (int k = 0; k <= T; k++) {
@@ -2148,11 +3077,9 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
             continue;
           }
           NCCLCHECK(ncclSend(
-              recvbuff +
-                  (static_cast<size_t>(j) * dShard + tileOffset(k)) *
-                      elementSize,
-              tileSize(k),
-              datatype,
+              sendFrom(static_cast<size_t>(j) * dShard + tileOffset(k)),
+              wire.count(tileSize(k)),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -2163,12 +3090,13 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
           if (j == m) {
             continue;
           }
+          const size_t mineOff =
+              static_cast<size_t>(m) * dShard + tileOffset(k - 1);
           NCCLCHECK(ncclSend(
-              recvbuff +
-                  (static_cast<size_t>(m) * dShard + tileOffset(k - 1)) *
-                      elementSize,
-              tileSize(k - 1),
-              datatype,
+              lp ? (lpPlan.agStage + wire.bytes(mineOff))
+                 : (recvbuff + mineOff * elementSize),
+              wire.count(tileSize(k - 1)),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -2184,13 +3112,12 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
         for (int h = 0; h < H; h++) {
           for (int i = 0; i < oN; i++) {
             NCCLCHECK(ncclSend(
-                recvbuff +
-                    (pD + static_cast<size_t>(h) * oChunk +
-                     static_cast<size_t>(k) * oTile +
-                     static_cast<size_t>(i) * oPiece) *
-                        elementSize,
-                oPiece,
-                datatype,
+                sendFrom(
+                    pD + static_cast<size_t>(h) * oChunk +
+                    static_cast<size_t>(k) * oTile +
+                    static_cast<size_t>(i) * oPiece),
+                wire.count(oPiece),
+                wire.dtype,
                 cfg.helperRanks[h],
                 comm,
                 stream));
@@ -2205,9 +3132,9 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
           }
           const int p = (s < m) ? s : s - 1;
           NCCLCHECK(ncclRecv(
-              static_cast<char*>(dScratch) + dSlot(k, p) * elementSize,
-              tileSize(k),
-              datatype,
+              static_cast<char*>(dScratch) + wire.bytes(dSlot(k, p)),
+              wire.count(tileSize(k)),
+              wire.dtype,
               cfg.activeRanks[s],
               comm,
               stream));
@@ -2218,12 +3145,13 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
           if (j == m) {
             continue;
           }
+          const size_t theirsOff =
+              static_cast<size_t>(j) * dShard + tileOffset(k - 1);
           NCCLCHECK(ncclRecv(
-              recvbuff +
-                  (static_cast<size_t>(j) * dShard + tileOffset(k - 1)) *
-                      elementSize,
-              tileSize(k - 1),
-              datatype,
+              lp ? (lpPlan.agStage + wire.bytes(theirsOff))
+                 : (recvbuff + theirsOff * elementSize),
+              wire.count(tileSize(k - 1)),
+              wire.dtype,
               cfg.activeRanks[j],
               comm,
               stream));
@@ -2232,14 +3160,14 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
         // match the scatter above.
         for (int h = 0; h < H; h++) {
           for (int i = 0; i < oN; i++) {
+            const size_t off = static_cast<size_t>(h) * oChunk +
+                static_cast<size_t>(k - 1) * oTile +
+                static_cast<size_t>(i) * oPiece;
             NCCLCHECK(ncclRecv(
-                recvbuff +
-                    (pD + static_cast<size_t>(h) * oChunk +
-                     static_cast<size_t>(k - 1) * oTile +
-                     static_cast<size_t>(i) * oPiece) *
-                        elementSize,
-                oPiece,
-                datatype,
+                lp ? (lpPlan.offloadRecv + wire.bytes(off))
+                   : (recvbuff + (pD + off) * elementSize),
+                wire.count(oPiece),
+                wire.dtype,
                 cfg.helperRanks[h],
                 comm,
                 stream));
@@ -2251,10 +3179,9 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
         for (int a = 0; a < A; a++) {
           for (int i = 0; i < oN; i++) {
             NCCLCHECK(ncclRecv(
-                helperSlot(a, k) +
-                    static_cast<size_t>(i) * oPiece * elementSize,
-                oPiece,
-                datatype,
+                helperSlot(a, k) + wire.bytes(static_cast<size_t>(i) * oPiece),
+                wire.count(oPiece),
+                wire.dtype,
                 cfg.activeRanks[a],
                 comm,
                 stream));
@@ -2266,9 +3193,9 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
           for (int i = 0; i < oN; i++) {
             NCCLCHECK(ncclSend(
                 helperSlot(0, k - 1) +
-                    static_cast<size_t>(i) * oPiece * elementSize,
-                oPiece,
-                datatype,
+                    wire.bytes(static_cast<size_t>(i) * oPiece),
+                wire.count(oPiece),
+                wire.dtype,
                 cfg.activeRanks[a],
                 comm,
                 stream));
@@ -2281,15 +3208,47 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
     if (k < T) {
       if (cfg.isActiveRank) {
         // Fold this tile of my own shard, before the next group gathers it.
-        char* dst = static_cast<char*>(recvBuffs[0]) +
-            (static_cast<size_t>(cfg.myActiveIndex) * dShard + tileOffset(k)) *
-                elementSize;
-        DISPATCH_MULTI_REDUCE(
-            datatype,
-            dst,
-            static_cast<char*>(dScratch) + dSlot(k, 0) * elementSize,
-            A - 1,
-            tileSize(k),
+        const size_t mine =
+            static_cast<size_t>(cfg.myActiveIndex) * dShard + tileOffset(k);
+        char* dst = static_cast<char*>(recvBuffs[0]) + mine * elementSize;
+        if (lp) {
+          // dScratch is already tile-major, so this tile's A-1 contributions
+          // are contiguous at stride tileSize(k) -- what the kernel expects.
+          // The result is written FULL PRECISION, then quantized just below for
+          // the all-gather that carries it in the next group.
+          DISPATCH_LP_MULTI_REDUCE(
+              datatype,
+              dst,
+              static_cast<char*>(dScratch) + wire.bytes(dSlot(k, 0)),
+              A - 1,
+              tileSize(k),
+              reductionDivisor,
+              stream);
+          DISPATCH_LP_QUANTIZE(
+              datatype,
+              lpPlan.agStage + wire.bytes(mine),
+              dst,
+              tileSize(k),
+              stream);
+        } else {
+          DISPATCH_MULTI_REDUCE(
+              datatype,
+              dst,
+              static_cast<char*>(dScratch) + dSlot(k, 0) * elementSize,
+              A - 1,
+              tileSize(k),
+              reductionDivisor,
+              stream);
+        }
+      } else if (lp) {
+        // All A contributions from slot 0 at wire.bytes(oTile) stride. The
+        // divisor lands here: the broadcast delivers this straight to its final
+        // place, so there is no active-side reduce to defer it to.
+        launchLpReduceRequantizeKernel(
+            helperSlot(0, k),
+            helperSlot(0, k),
+            A,
+            oTile,
             reductionDivisor,
             stream);
       } else {
@@ -2303,6 +3262,37 @@ static ncclResult_t shardedRelayAllReduceFlatPipelined(
             reductionDivisor,
             stream);
       }
+    }
+  }
+
+  // ===== Low precision: land both regions, once, after every stage has
+  // arrived.
+  if (lp && cfg.isActiveRank) {
+    char* recvbuff = static_cast<char*>(recvBuffs[0]);
+    // The direct region in the at-most-two runs that EXCLUDE this rank's own
+    // shard, which the per-stage reduces already wrote at full precision.
+    const size_t mineBase = static_cast<size_t>(cfg.myActiveIndex) * dShard;
+    if (mineBase > 0) {
+      DISPATCH_LP_DEQUANTIZE(
+          datatype, recvbuff, lpPlan.agStage, mineBase, stream);
+    }
+    const size_t afterMine = mineBase + dShard;
+    if (afterMine < pD) {
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          recvbuff + afterMine * elementSize,
+          lpPlan.agStage + wire.bytes(afterMine),
+          pD - afterMine,
+          stream);
+    }
+    // The offload region is contiguous and arrives already reduced and divided.
+    if (pO > 0) {
+      DISPATCH_LP_DEQUANTIZE(
+          datatype,
+          recvbuff + pD * elementSize,
+          lpPlan.offloadRecv,
+          pO,
+          stream);
     }
   }
 
@@ -2330,7 +3320,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
     cudaStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   int nRanks, rank;
   NCCLCHECK(ncclCommCount(comm, &nRanks));
   NCCLCHECK(ncclCommUserRank(comm, &rank));
@@ -2411,15 +3402,33 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
     // be software-pipelined into one duplex stream. relayPipelineTiles()
     // returns 1 whenever that does not apply, and the small-message pure-direct
     // route (owned by shardedRelayAllReduce2Active) never pipelines.
-    const int nTiles =
-        (rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize) ==
-         rcclx::relay::AllReduceRoute::A2Relay)
+    const rcclx::relay::AllReduceRoute route =
+        rcclx::relay::selectAllReduceRoute(2, nGroups, counts, elementSize);
+    const int nTiles = (route == rcclx::relay::AllReduceRoute::A2Relay)
         ? rcclx::relay::relayPipelineTiles(
               nGroups,
               rcclx::relay::relayShapeA2(numHelpers),
               rcclx::relay::relayMaxCount(counts, nGroups),
               elementSize)
         : 1;
+
+    // The caller's request narrowed by the size-only gate, so every rank
+    // reaches the same answer without communicating. Both 2-active schedules
+    // carry the wire format; the flat schedules still decline, which is safe
+    // precisely because this decision is identical on every rank -- a per-rank
+    // disagreement would be a hang, not a slowdown.
+    bool wantLp = false;
+    if (lowPrecision != 0) {
+      wantLp = rcclx::relay::lpEligible(allReduceLpGate(
+          datatype,
+          counts,
+          nGroups,
+          nActiveRanksPerGroup,
+          elementSize,
+          route == rcclx::relay::AllReduceRoute::A2Relay,
+          rcclx::relay::kLpBlockElems));
+    }
+
     r = (nTiles > 1) ? shardedRelayAllReduce2ActivePipelined(
                            sendBuffs2,
                            recvBuffs2,
@@ -2432,7 +3441,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
                            myActiveGroup,
                            numHelpers,
                            nTiles,
-                           elementSize)
+                           elementSize,
+                           wantLp)
                      : shardedRelayAllReduce2Active(
                            sendBuffs2,
                            recvBuffs2,
@@ -2445,18 +3455,46 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
                            myActiveGroup,
                            numHelpers,
                            nGroups,
-                           elementSize);
+                           elementSize,
+                           wantLp);
   } else {
     // A>2: flat helper-reduce-and-broadcast (direct RS+AG over intra woven with
-    // offload reduce+broadcast through the helpers). A single-group call can
-    // pipeline both dependencies so each cross link runs duplex; the selector
-    // returns 1 below the crossover, where the two-group schedule is better.
+    // offload reduce+broadcast through the helpers). Low precision is not
+    // carried by the non-pipelined schedule below; the pipelined one still
+    // declines, identically on every rank since the condition is the tile
+    // count.
+    //
+    // The alignment requirement is STRICTER here than for the 2-active
+    // schedules. This one splits its direct region into A per-owner shards of
+    // pD/A, and pD being a whole number of wire blocks does not make pD/A one.
+    // So the gate asks for a multiple of A*128, which makes the shards
+    // block-aligned PROVIDED pO is a multiple of A*128 as well. That last part
+    // is a property of H, not of the count -- pO is floored to
+    // H*CHUNK_ALIGN_ELEMENTS -- so it is verified per call in
+    // flatLpGeometryOk() rather than assumed here. A single-group call can
+    // pipeline both dependencies so each cross link runs
+    // duplex; the selector returns 1 below the crossover, where the two-group
+    // schedule is better.
     const int nTiles = rcclx::relay::relayAllReducePipelineTiles(
         nGroups,
         nActiveRanksPerGroup,
         numHelpers,
         rcclx::relay::relayMaxCount(counts, nGroups),
         elementSize);
+
+    bool wantLp = false;
+    if (lowPrecision != 0) {
+      wantLp = rcclx::relay::lpEligible(allReduceLpGate(
+          datatype,
+          counts,
+          nGroups,
+          nActiveRanksPerGroup,
+          elementSize,
+          /*relayRouteSelected=*/true,
+          static_cast<size_t>(nActiveRanksPerGroup) *
+              rcclx::relay::kLpBlockElems));
+    }
+
     if (nTiles > 1) {
       return shardedRelayAllReduceFlatPipelined(
           sendBuffs2,
@@ -2471,7 +3509,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
           numHelpers,
           nActiveRanksPerGroup,
           nTiles,
-          elementSize);
+          elementSize,
+          wantLp);
     }
     r = shardedRelayAllReduceFlat(
         sendBuffs2,
@@ -2486,7 +3525,8 @@ HOT ncclResult_t ncclShardedRelayMultiGroupAllReduceImpl(
         numHelpers,
         nActiveRanksPerGroup,
         nGroups,
-        elementSize);
+        elementSize,
+        wantLp);
   }
 
   return r;

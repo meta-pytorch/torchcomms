@@ -22,41 +22,6 @@ PYBIND11_MODULE(_comms_ncclx, m, py::mod_gil_not_used()) {
   py::class_<TorchCommNCCLX, TorchCommBackend, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
       .def(
-          "device_alltoallv_single",
-          [](TorchCommNCCLX& self,
-             at::Tensor& output,
-             const at::Tensor& input,
-             const at::Tensor& output_split_sizes,
-             const at::Tensor& input_split_sizes,
-             bool async_op) {
-            return self.device_alltoallv_single(
-                output, input, output_split_sizes, input_split_sizes, async_op);
-          },
-          R"(
-All-to-all-v operation where split sizes are device tensors (on GPU).
-
-Unlike all_to_all_v_single where split sizes are host vectors, this API takes
-split sizes as CUDA tensors, allowing the GPU to read them directly without
-host-device synchronization. Displacements are computed internally by the
-kernel as exclusive prefix sums of the counts.
-
-Args:
-    output: Output tensor to receive data.
-    input: Input tensor containing data to send.
-    output_split_sizes: CUDA int64 tensor of receive counts per rank.
-    input_split_sizes: CUDA int64 tensor of send counts per rank.
-    async_op: Whether to perform the operation asynchronously.
-
-Returns:
-    TorchWork object for tracking operation completion.
-)",
-          py::arg("output"),
-          py::arg("input"),
-          py::arg("output_split_sizes"),
-          py::arg("input_split_sizes"),
-          py::arg("async_op"),
-          py::call_guard<py::gil_scoped_release>())
-      .def(
           "comm_dump",
           &TorchCommNCCLX::comm_dump,
           R"(
@@ -171,7 +136,9 @@ Args:
             GlobalInfo::totalCommDurPerIterationUs, memory
 
         Expensive — requires dumping + JSON serialization of collections:
-            CT_pastColls, CT_currentColls, CT_pendingColls,
+            CT_pastColls, CT_currentColls, CT_pendingColls, CT_terminalColls,
+            CT_terminalReasonCounts, CT_terminalTransitionDrops,
+            CT_pollLockTimeouts,
             PT_pastColls, PT_activeOps, PT_activeColls,
             MT_currentColl, MT_unfinishedRequests,
             MT_recvNotifiedByPeer, MT_putFinishedByPeer,
@@ -204,9 +171,8 @@ The hook is a process-global singleton -- calling this multiple times is safe
 )");
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // Device API methods (get_device_window, register_local_buffer,
-  // deregister_local_buffer) are bound on the TorchCommWindow base class
-  // in TorchCommPy.cpp and inherited by both GIN and Pipes subclasses.
+  // Device API methods are bound on the TorchCommWindow base class in
+  // TorchCommPy.cpp and inherited by the GIN subclass.
 
   // --- GIN backend window class ---
   auto gin_cls = py::class_<
@@ -267,15 +233,6 @@ Returns:
 )",
       py::arg("offset") = 0,
       py::call_guard<py::gil_scoped_release>());
-#endif
-
-#if defined(ENABLE_PRIMS)
-  // --- Pipes backend window class ---
-  auto pipes_cls = py::class_<
-      TorchCommWindowNCCLXPipes,
-      TorchCommWindow,
-      std::shared_ptr<TorchCommWindowNCCLXPipes>>(
-      m, "TorchCommWindowNCCLXPipes");
 #endif
 
 #endif

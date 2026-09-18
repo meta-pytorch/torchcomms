@@ -21,6 +21,7 @@ enum class GraphPattern {
   MultiGraph,
   InPlace,
   Abort,
+  DistinctPayload,
 };
 
 inline const char* patternToString(GraphPattern pattern) {
@@ -41,6 +42,8 @@ inline const char* patternToString(GraphPattern pattern) {
       return "InPlace";
     case GraphPattern::Abort:
       return "Abort";
+    case GraphPattern::DistinctPayload:
+      return "DistinctPayload";
   }
   return "Unknown";
 }
@@ -64,16 +67,20 @@ inline int baseReplays(GraphPattern pattern) {
       return 3;
     case GraphPattern::Abort:
       return 1;
+    case GraphPattern::DistinctPayload:
+      return 5;
   }
   return 3;
 }
 
 struct AlgoDescriptor {
   struct Buffers {
+    explicit Buffers(size_t sendNbytes_) : sendNbytes(sendNbytes_) {}
     virtual ~Buffers() = default;
     virtual void* sendbuf() = 0;
     virtual void* recvbuf() = 0;
     virtual size_t recvBytes() = 0;
+    const size_t sendNbytes;
   };
 
   std::string name;
@@ -478,6 +485,97 @@ inline void runAbortPattern(
   ASSERT_EQ(cudaGraphDestroy(graph), cudaSuccess);
 }
 
+// ---------------------------------------------------------------------------
+// DistinctPayload: like Basic, but the reset hook additionally overwrites the
+// send buffer with a per-replay-distinct payload (stream-ordered before the
+// replay, mirroring a training step writing new data between replays), and
+// each replay is verified against its own expected output. Replays after the
+// first run fully async, so a prior replay's in-flight writes landing late
+// hold bytes that DIFFER from the current replay's expected values; with a
+// payload baked once at capture (all other patterns), cross-replay drain bugs
+// write byte-identical data and are unobservable.
+// ---------------------------------------------------------------------------
+
+// Payload byte for cudaMemsetAsync fills. All (rank, replay) pairs are
+// distinct while numRanks * numReplays <= kPayloadModulus — the rank counts
+// these tests run — so stale-replay data and cross-rank misroutes mismatch
+// (a uniform fill cannot see intra-rank offset errors; the Basic pattern's
+// per-element fills cover those). Starts at 1: recvbufs are reset to 0, so a
+// never-written chunk cannot match. The replay index is the low-order term,
+// so one rank's replays are always distinct at any rank count.
+constexpr int kPayloadModulus = 251;
+
+inline void runDistinctPayloadPattern(
+    CtranComm* comm,
+    int rank,
+    int nRanks,
+    size_t count,
+    int numReplays,
+    AlgoDescriptor& desc) {
+  auto bufs = desc.makeBuffers(count, rank, nRanks);
+
+  // All (rank, replay) payload bytes are distinct only within this bound;
+  // outside it the pattern cannot verify (and expected-set memory scales
+  // with numReplays), so skip rather than fail.
+  if (nRanks * numReplays > kPayloadModulus) {
+    GTEST_SKIP() << "DistinctPayload needs nRanks * numReplays <= "
+                 << kPayloadModulus;
+  }
+
+  // Expected output per replay, from an eager run on a sendbuf holding that
+  // replay's payload; the sendbuf doubles as that replay's payload source
+  // below. One set per replay is deliberate (fewer payloads would reintroduce
+  // the cross-replay aliasing this pattern detects); setup scales linearly
+  // with numReplays, so keep replay multipliers modest.
+  std::vector<std::shared_ptr<AlgoDescriptor::Buffers>> expectedSets;
+  expectedSets.reserve(numReplays);
+  for (int r = 0; r < numReplays; ++r) {
+    auto expected = desc.makeBuffers(count, rank, nRanks);
+    CUDACHECK_TEST(cudaMemset(
+        expected->sendbuf(),
+        1 + (rank * numReplays + r) % kPayloadModulus,
+        expected->sendNbytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    computeExpected(desc, expected.get(), count, comm, rank, nRanks);
+    expectedSets.push_back(std::move(expected));
+  }
+
+  // The builder invokes reset, then the replay, then device verify once per
+  // replay on the host in order; replayIdx tracks which replay is being
+  // enqueued so verify compares against the matching expected set.
+  int replayIdx = -1;
+  ctran::testing::CtranGraphTestBuilder(comm, rank, nRanks)
+      .withNumReplays(numReplays)
+      .addCapture([&](ctran::testing::CaptureContext& ctx) {
+        desc.capture(bufs.get(), count, ctx);
+      })
+      .withReset([&](cudaStream_t stream) {
+        ++replayIdx;
+        ASSERT_LT(replayIdx, numReplays)
+            << "builder invoked the reset hook more than once per replay";
+        CUDACHECK_TEST(
+            cudaMemsetAsync(bufs->recvbuf(), 0, bufs->recvBytes(), stream));
+        // Stream-ordered payload swap with no host sync against the previous
+        // replay's in-flight work.
+        CUDACHECK_TEST(cudaMemcpyAsync(
+            bufs->sendbuf(),
+            expectedSets[replayIdx]->sendbuf(),
+            bufs->sendNbytes,
+            cudaMemcpyDeviceToDevice,
+            stream));
+      })
+      .withDeviceVerify([&](cudaStream_t stream, unsigned int* mc) {
+        ASSERT_GE(replayIdx, 0) << "device verify ran before the reset hook";
+        ASSERT_LT(replayIdx, numReplays);
+        deviceVerifyAgainstExpected(
+            bufs.get(), expectedSets[replayIdx].get(), mc, stream);
+      })
+      .withGraphAssertions(
+          CtranCudaGraphTestBase::expectGraphNodes(
+              desc.expectsHostNodes(comm, count) ? 1 : 0))
+      .run();
+}
+
 // GraphTestParam: (algo, pattern, count, replayMultiplier)
 // Actual replays = baseReplays(pattern) * replayMultiplier
 using GraphTestParam = std::tuple<AlgoDescriptor, GraphPattern, size_t, int>;
@@ -519,50 +617,58 @@ inline void runPattern(
     case GraphPattern::Abort:
       runAbortPattern(comm, rank, nRanks, count, numReplays, desc);
       break;
+    case GraphPattern::DistinctPayload:
+      runDistinctPayloadPattern(comm, rank, nRanks, count, numReplays, desc);
+      break;
   }
 }
 
-#define DEFINE_CUDAGRAPH_PARAM_TEST(SuiteName, ...)                          \
-  class SuiteName : public CtranCudaGraphTestBase,                           \
-                    public ::testing::WithParamInterface<GraphTestParam> {   \
-   protected:                                                                \
-    ctran::test::VerifyAlgoStatsHelper algoStats_;                           \
-    void SetUp() override {                                                  \
-      CtranCudaGraphTestBase::SetUp();                                       \
-      algoStats_.enable();                                                   \
-    }                                                                        \
-  };                                                                         \
-                                                                             \
-  TEST_P(SuiteName, CudaGraphOp) {                                           \
-    auto [desc, pattern, count, replayMult] = GetParam();                    \
-    int numReplays = baseReplays(pattern) * replayMult;                      \
-    auto comm = makeCtranComm();                                             \
-    ASSERT_NE(comm, nullptr);                                                \
-    if (!desc.isSupported(comm.get(), count, numRanks)) {                    \
-      GTEST_SKIP() << desc.name << " not supported";                         \
-    }                                                                        \
-    runPattern(                                                              \
-        pattern, comm.get(), globalRank, numRanks, count, numReplays, desc); \
-    if (!desc.expectedAlgo.empty()) {                                        \
-      algoStats_.verify(comm.get(), desc.collective, desc.expectedAlgo);     \
-    }                                                                        \
-  }                                                                          \
-                                                                             \
-  std::string SuiteName##TestName(                                           \
-      const ::testing::TestParamInfo<GraphTestParam>& info) {                \
-    auto& [desc, pattern, count, replayMult] = info.param;                   \
-    return desc.name + "_" + patternToString(pattern) + "_" +                \
-        std::to_string(count) + "_x" + std::to_string(replayMult);           \
-  }                                                                          \
-                                                                             \
-  INSTANTIATE_TEST_SUITE_P(                                                  \
-      SuiteName##Tests,                                                      \
-      SuiteName,                                                             \
-      ::testing::Combine(                                                    \
-          ::testing::Values(__VA_ARGS__),                                    \
-          ::testing::Values(CUDAGRAPH_TEST_PATTERN),                         \
-          ::testing::Values(1024UL, 8192UL),                                 \
-          ::testing::Values(1)),                                             \
+#define DEFINE_CUDAGRAPH_PARAM_TEST(SuiteName, ...)                           \
+  class SuiteName : public CtranCudaGraphTestBase,                            \
+                    public ::testing::WithParamInterface<GraphTestParam> {    \
+   protected:                                                                 \
+    ctran::test::VerifyAlgoStatsHelper algoStats_;                            \
+    void SetUp() override {                                                   \
+      CtranCudaGraphTestBase::SetUp();                                        \
+      algoStats_.enable();                                                    \
+    }                                                                         \
+  };                                                                          \
+                                                                              \
+  TEST_P(SuiteName, CudaGraphOp) {                                            \
+    auto [desc, pattern, count, replayMult] = GetParam();                     \
+    int numReplays = baseReplays(pattern) * replayMult;                       \
+    auto comm = makeCtranComm();                                              \
+    ASSERT_NE(comm, nullptr);                                                 \
+    if (!desc.isSupported(comm.get(), count, numRanks)) {                     \
+      GTEST_SKIP() << desc.name << " not supported";                          \
+    }                                                                         \
+    runPattern(                                                               \
+        pattern, comm.get(), globalRank, numRanks, count, numReplays, desc);  \
+    /* A pattern may GTEST_SKIP from inside the helper (e.g.               */ \
+    /* DistinctPayload's rank bound); nothing ran, so don't verify stats.  */ \
+    if (IsSkipped() || HasFatalFailure()) {                                   \
+      return;                                                                 \
+    }                                                                         \
+    if (!desc.expectedAlgo.empty()) {                                         \
+      algoStats_.verify(comm.get(), desc.collective, desc.expectedAlgo);      \
+    }                                                                         \
+  }                                                                           \
+                                                                              \
+  std::string SuiteName##TestName(                                            \
+      const ::testing::TestParamInfo<GraphTestParam>& info) {                 \
+    auto& [desc, pattern, count, replayMult] = info.param;                    \
+    return desc.name + "_" + patternToString(pattern) + "_" +                 \
+        std::to_string(count) + "_x" + std::to_string(replayMult);            \
+  }                                                                           \
+                                                                              \
+  INSTANTIATE_TEST_SUITE_P(                                                   \
+      SuiteName##Tests,                                                       \
+      SuiteName,                                                              \
+      ::testing::Combine(                                                     \
+          ::testing::Values(__VA_ARGS__),                                     \
+          ::testing::Values(CUDAGRAPH_TEST_PATTERN),                          \
+          ::testing::Values(1024UL, 8192UL),                                  \
+          ::testing::Values(1)),                                              \
       SuiteName##TestName)
 
 // Stress variant: reuses the same test class from DEFINE_CUDAGRAPH_PARAM_TEST

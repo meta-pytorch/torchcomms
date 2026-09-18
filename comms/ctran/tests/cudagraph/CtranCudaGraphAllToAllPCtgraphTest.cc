@@ -87,7 +87,8 @@ static AlgoDescriptor makeAllToAllPCtgraph(
     size_t bytes;
     ScopedRecvBufReg recvReg;
     B(size_t c, int rank, int nR)
-        : send(c * nR * sizeof(int32_t)),
+        : Buffers(c * nR * sizeof(int32_t)),
+          send(c * nR * sizeof(int32_t)),
           recv(c * nR * sizeof(int32_t)),
           bytes(c * nR * sizeof(int32_t)),
           recvReg(recv.get(), c * nR * sizeof(int32_t)) {

@@ -112,7 +112,7 @@ class DcMultiRankTestFixture : public meta::comms::MpiBaseTestFixture {
   std::optional<ibverbx::IbvQp> dci_;
   std::optional<ibverbx::IbvQp> dct_;
   ibverbx::ibv_qp_ex* exQp_{nullptr};
-  struct mlx5dv_qp_ex* dvQp_{nullptr};
+  ibverbx::mlx5dv_qp_ex* dvQp_{nullptr};
   ibverbx::ibv_gid gid_{};
 };
 

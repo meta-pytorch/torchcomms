@@ -47,6 +47,7 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
 #include "meta/relay/sharded_relay_route.h"
 #include "nccl.h"
 
@@ -150,7 +151,8 @@ static ncclResult_t callAllToAllCompat(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision = 0) {
   return ncclShardedRelayMultiGroupAllToAll(
       sendPtrs,
       recvPtrs,
@@ -160,7 +162,8 @@ static ncclResult_t callAllToAllCompat(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 class ShardedRelayMultiGroupAllToAllTest : public ::testing::Test {
@@ -2033,7 +2036,562 @@ TEST_F(
   }
 }
 
+// ===========================================================================
+// LOW PRECISION (fp8e4m3 wire format)
+// ===========================================================================
+//
+// Every case asserts that low precision actually ENGAGED or actually DECLINED,
+// via the counters, rather than trusting the flag: the gate declines silently
+// on several grounds, so a quiet fallback produces exactly the numbers a
+// passing LP run produces.
+//
+// The comparators stay EXACT. Segment (source, dest) is filled with a single
+// constant that identifies BOTH endpoints, so every 128-element wire block is
+// constant -- which the power-of-two normalization makes an identity round trip
+// -- and a segment delivered to the wrong destination, or read from the wrong
+// source offset, changes a value rather than cancelling out.
+//
+// All-to-all's own hazard: the DIAGONAL segment is a local copy that must stay
+// full precision, and for nGroups == 1 it rides along inside the same ncclGroup
+// as wire-format transfers, as a self P2P pair that keeps the caller's dtype.
+// That mixing is the thing most likely to be got wrong, so the single-group
+// case below exercises it directly.
+class ShardedRelayAllToAllLowPrecisionTest
+    : public ShardedRelayMultiGroupAllToAllTest {
+ protected:
+  static constexpr int kGroups = 4;
+  static constexpr int kActive = 2;
+
+  // 2 Mi elements per segment = 8 MiB fp32, above the low-precision threshold
+  // and a whole number of 128-element blocks.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  // What source s sends to dest d. Distinct in both indices.
+  static float segValue(int source, int dest) {
+    return static_cast<float>((source + 1) * 8 + (dest + 1));
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem[kGroups]{};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+    int nGroups{kGroups};
+  };
+
+  // Out of place, as every all-to-all route requires. Segment d of the send
+  // buffer holds segValue(me, d); segment s of the output must end up holding
+  // segValue(s, me).
+  template <typename T>
+  void makeBuffers(size_t count, int nGroups, Buffers& b) {
+    b = Buffers{};
+    b.nGroups = nGroups;
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t total = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < nGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], total * sizeof(T)));
+      HIPCHECK_TEST(hipMalloc(&b.recvMem[g], total * sizeof(T)));
+      if (g == b.myActiveGroup) {
+        std::vector<T> host(total);
+        for (int d = 0; d < kActive; d++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(d * count),
+              host.begin() + static_cast<ptrdiff_t>((d + 1) * count),
+              static_cast<T>(segValue(b.myActiveIndex, d)));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            total * sizeof(T),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, total * sizeof(T)));
+      }
+      // Poison, so a segment the implementation never writes fails rather than
+      // accidentally passing.
+      HIPCHECK_TEST(hipMemset(b.recvMem[g], 0xff, total * sizeof(T)));
+      b.sendPtrs[g] = b.sendMem[g];
+      b.recvPtrs[g] = b.recvMem[g];
+      b.counts[g] = count;
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < b.nGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+      HIPCHECK_TEST(hipFree(b.recvMem[g]));
+    }
+  }
+
+  // Output segment s must hold segValue(s, me), exactly, for every s --
+  // including the diagonal s == me, which never crossed a boundary.
+  template <typename T>
+  void expectEverySegmentIsItsSource(const Buffers& b, size_t count) {
+    if (b.myActiveGroup >= b.nGroups) {
+      return;
+    }
+    const size_t total = static_cast<size_t>(kActive) * count;
+    std::vector<T> got(total);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        b.recvMem[b.myActiveGroup],
+        total * sizeof(T),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int seg = 0; seg < kActive && reported < 8; seg++) {
+      const T want = static_cast<T>(segValue(seg, b.myActiveIndex));
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const T v = got[static_cast<size_t>(seg) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": segment " << seg
+                        << " element " << i << ": got " << static_cast<float>(v)
+                        << ", want " << static_cast<float>(want)
+                        << (seg == b.myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, ncclDataType_t dt, int lowPrecision) {
+    Standard4GroupActiveRanks layout;
+    return callAllToAllCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        dt,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        b.nGroups,
+        lowPrecision);
+  }
+};
+
+TEST_F(ShardedRelayAllToAllLowPrecisionTest, ConstantSegmentsAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource<float>(b, kLpCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllLowPrecisionTest, DeclinesOnUnsupportedDtype) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // ncclInt32 is not a low-precision dtype, so the flag must fall through to
+  // full precision and the answer must be exactly the full-precision answer.
+  Buffers b;
+  makeBuffers<int32_t>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclInt32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource<int32_t>(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Dtype), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(
+    ShardedRelayAllToAllLowPrecisionTest,
+    DeclinesOnCountThatIsNotWholeBlocks) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // One element past a whole number of 128-element blocks. The segment stride
+  // is a raw per-group count here, so an unaligned count breaks additivity in
+  // the MIDDLE of the buffer, not only in its tail -- the gate must refuse.
+  const size_t count = kLpCount + 1;
+  Buffers b;
+  makeBuffers<float>(count, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource<float>(b, count);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u);
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::Alignment), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllLowPrecisionTest, InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // The behaviour an env var could not express, and the whole point of making
+  // this a per-call argument: two calls on the SAME communicator, one low
+  // precision and one not, with no state leaking from the first into the
+  // second.
+  Buffers b;
+  makeBuffers<float>(kLpCount, kGroups, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource<float>(b, kLpCount);
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  HIPCHECK_TEST(hipMemset(
+      b.recvMem[b.myActiveGroup],
+      0xff,
+      static_cast<size_t>(kActive) * kLpCount * sizeof(float)));
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource<float>(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllLowPrecisionTest, SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the 4-group cases
+  // above cannot reach the pipelined schedule. Single-group at a size the depth
+  // selector pipelines -- asserted, so a resize cannot quietly turn this into a
+  // second test of the non-pipelined path.
+  //
+  // This is also the case that exercises the FULL-PRECISION DIAGONAL mixed into
+  // a wire-format group: here the diagonal is split into T+1 self P2P pairs,
+  // one per group, each keeping the caller's dtype while every other operation
+  // in the group carries wire bytes.
+  const size_t count = 4ULL * 1024 * 1024;
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::relayShapeA2(8 - kActive), count, sizeof(float)),
+      1);
+
+  Buffers b;
+  makeBuffers<float>(count, /*nGroups=*/1, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, ncclFloat32, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource<float>(b, count);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+// ===========================================================================
+// LOW PRECISION, A=4 XOR/LATIN RELAY PATH
+// ===========================================================================
+//
+// Same exactness discipline as the 2-active fixture, at the 2-group 4-active
+// geometry that reaches shardedRelayAllToAllA4XorRelay.
+//
+// This schedule splits every off-diagonal segment into three ADJACENT regions
+// -- directA one hop, relay two hops through a helper, directB one hop -- so a
+// wire offset that disagrees with a peer's shows up partway through a segment
+// rather than everywhere, and the exact per-element comparator localizes it.
+// The arrival staging is packed to A-1 slots with a per-rank mapping, so a
+// wrong packed index swaps two segments.
+class ShardedRelayAllToAllA4LowPrecisionTest
+    : public ShardedRelayMultiGroupAllToAllTest {
+ protected:
+  static constexpr int kActive = 4;
+  static constexpr int kGroups = 2;
+
+  // 4 Mi elements per segment = 64 MiB per-rank buffer in fp32. The route
+  // metric is A * max(segmentCounts) * elementSize = 64 MiB, above both the
+  // fused XOR-relay lower bound (27 MB) and the low-precision threshold; the
+  // test asserts the route rather than assuming it.
+  static constexpr size_t kLpCount = 4ULL * 1024 * 1024;
+
+  static float segValue(int source, int dest) {
+    return static_cast<float>((source + 1) * 8 + (dest + 1));
+  }
+
+  struct Buffers {
+    void* sendMem[kGroups]{};
+    void* recvMem[kGroups]{};
+    const void* sendPtrs[kGroups]{};
+    void* recvPtrs[kGroups]{};
+    size_t counts[kGroups]{};
+    int myActiveGroup{0};
+    int myActiveIndex{0};
+  };
+
+  void makeBuffers(size_t count, Buffers& b) {
+    b = Buffers{};
+    b.myActiveGroup = this->globalRank / kActive;
+    b.myActiveIndex = this->globalRank % kActive;
+    const size_t total = static_cast<size_t>(kActive) * count;
+
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipMalloc(&b.sendMem[g], total * sizeof(float)));
+      HIPCHECK_TEST(hipMalloc(&b.recvMem[g], total * sizeof(float)));
+      if (g == b.myActiveGroup) {
+        std::vector<float> host(total);
+        for (int d = 0; d < kActive; d++) {
+          std::fill(
+              host.begin() + static_cast<ptrdiff_t>(d * count),
+              host.begin() + static_cast<ptrdiff_t>((d + 1) * count),
+              segValue(b.myActiveIndex, d));
+        }
+        HIPCHECK_TEST(hipMemcpy(
+            b.sendMem[g],
+            host.data(),
+            total * sizeof(float),
+            hipMemcpyHostToDevice));
+      } else {
+        HIPCHECK_TEST(hipMemset(b.sendMem[g], 0, total * sizeof(float)));
+      }
+      HIPCHECK_TEST(hipMemset(b.recvMem[g], 0xff, total * sizeof(float)));
+      b.sendPtrs[g] = b.sendMem[g];
+      b.recvPtrs[g] = b.recvMem[g];
+      b.counts[g] = count;
+    }
+  }
+
+  void freeBuffers(Buffers& b) {
+    for (int g = 0; g < kGroups; g++) {
+      HIPCHECK_TEST(hipFree(b.sendMem[g]));
+      HIPCHECK_TEST(hipFree(b.recvMem[g]));
+    }
+  }
+
+  void expectEverySegmentIsItsSource(const Buffers& b, size_t count) {
+    const size_t total = static_cast<size_t>(kActive) * count;
+    std::vector<float> got(total);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(),
+        b.recvMem[b.myActiveGroup],
+        total * sizeof(float),
+        hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int seg = 0; seg < kActive && reported < 8; seg++) {
+      const float want = segValue(seg, b.myActiveIndex);
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const float v = got[static_cast<size_t>(seg) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": segment " << seg
+                        << " element " << i << ": got " << v << ", want "
+                        << want
+                        << (seg == b.myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+
+  ncclResult_t call(const Buffers& b, int lowPrecision) {
+    TwoGroupFourActiveRanks layout;
+    return callAllToAllCompat(
+        b.sendPtrs,
+        b.recvPtrs,
+        b.counts,
+        ncclFloat32,
+        this->commFor(kActive),
+        this->stream,
+        layout.allActiveRanks,
+        kActive,
+        kGroups,
+        lowPrecision);
+  }
+
+  void assertXorRelayRouteSelected(size_t count) {
+    size_t counts[kGroups];
+    for (int g = 0; g < kGroups; g++) {
+      counts[g] = count;
+    }
+    ASSERT_EQ(
+        rcclx::relay::selectAllToAllRoute(
+            kActive, 8 - kActive, kGroups, counts, sizeof(float)),
+        rcclx::relay::AllToAllRoute::A4XorRelay);
+  }
+};
+
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, ConstantSegmentsAreBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertXorRelayRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  expectEverySegmentIsItsSource(b, kLpCount);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, InterleavesWithFullPrecision) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  assertXorRelayRouteSelected(kLpCount);
+
+  Buffers b;
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(call(b, /*lowPrecision=*/1), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource(b, kLpCount);
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u);
+
+  const uint64_t engagedBefore = rcclx::relay::lpEngageCount();
+  freeBuffers(b);
+  makeBuffers(kLpCount, b);
+  barrierSyncOn(nullptr);
+  ASSERT_EQ(call(b, /*lowPrecision=*/0), ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+  expectEverySegmentIsItsSource(b, kLpCount);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), engagedBefore)
+      << "a full-precision call must not engage low precision";
+  freeBuffers(b);
+}
+
+TEST_F(ShardedRelayAllToAllA4LowPrecisionTest, SingleGroupPipelinedIsBitExact) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks";
+  }
+  // relayPipelineTiles() returns 1 whenever nGroups != 1, so the two-group
+  // cases above cannot reach the pipelined A=4 relay. Single-group at a size
+  // the depth selector pipelines -- asserted, so a resize cannot quietly turn
+  // this into a third test of the non-pipelined path.
+  //
+  // This case also exercises the FULL-PRECISION DIAGONAL mixed into a
+  // wire-format group: the diagonal is split into T+1 self P2P pairs, one per
+  // group, each keeping the caller's dtype while the relay and direct ops
+  // beside it carry wire bytes.
+  const size_t count = 8ULL * 1024 * 1024;
+  size_t counts[1] = {count};
+  ASSERT_EQ(
+      rcclx::relay::selectAllToAllRoute(
+          kActive, 8 - kActive, 1, counts, sizeof(float)),
+      rcclx::relay::AllToAllRoute::A4XorRelay);
+  ASSERT_GT(
+      rcclx::relay::relayPipelineTiles(
+          1, rcclx::relay::kRelayShapeA4AllToAll, count, sizeof(float)),
+      1);
+
+  // Group 0's active ranks are {0, 1, 2, 3}; ranks 4-7 are its helpers.
+  const int myActiveIndex = this->globalRank % kActive;
+  const bool active = this->globalRank < kActive;
+  const size_t total = static_cast<size_t>(kActive) * count;
+
+  void* sendMem = nullptr;
+  void* recvMem = nullptr;
+  HIPCHECK_TEST(hipMalloc(&sendMem, total * sizeof(float)));
+  HIPCHECK_TEST(hipMalloc(&recvMem, total * sizeof(float)));
+  HIPCHECK_TEST(hipMemset(recvMem, 0xff, total * sizeof(float)));
+  if (active) {
+    std::vector<float> host(total);
+    for (int d = 0; d < kActive; d++) {
+      std::fill(
+          host.begin() + static_cast<ptrdiff_t>(d * count),
+          host.begin() + static_cast<ptrdiff_t>((d + 1) * count),
+          segValue(myActiveIndex, d));
+    }
+    HIPCHECK_TEST(hipMemcpy(
+        sendMem, host.data(), total * sizeof(float), hipMemcpyHostToDevice));
+  } else {
+    HIPCHECK_TEST(hipMemset(sendMem, 0, total * sizeof(float)));
+  }
+
+  const void* sendPtrs[1] = {sendMem};
+  void* recvPtrs[1] = {recvMem};
+  barrierSyncOn(nullptr);
+
+  TwoGroupFourActiveRanks layout;
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(
+      callAllToAllCompat(
+          sendPtrs,
+          recvPtrs,
+          counts,
+          ncclFloat32,
+          this->commFor(kActive),
+          this->stream,
+          layout.allActiveRanks,
+          kActive,
+          1,
+          /*lowPrecision=*/1),
+      ncclSuccess);
+  HIPCHECK_TEST(hipStreamSynchronize(this->stream));
+
+  if (active) {
+    std::vector<float> got(total);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), recvMem, total * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (int seg = 0; seg < kActive && reported < 8; seg++) {
+      const float want = segValue(seg, myActiveIndex);
+      for (size_t i = 0; i < count && reported < 8; i++) {
+        const float v = got[static_cast<size_t>(seg) * count + i];
+        if (v != want) {
+          reported++;
+          ADD_FAILURE() << "R" << this->globalRank << ": segment " << seg
+                        << " element " << i << ": got " << v << ", want "
+                        << want
+                        << (seg == myActiveIndex
+                                ? " (DIAGONAL -- must stay full precision)"
+                                : "");
+        }
+      }
+    }
+  }
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision never engaged, so this case proved nothing";
+  EXPECT_EQ(rcclx::relay::lpDeclineCount(), 0u);
+
+  HIPCHECK_TEST(hipFree(sendMem));
+  HIPCHECK_TEST(hipFree(recvMem));
+}
+
 int main(int argc, char* argv[]) {
+  // The low-precision size thresholds that SHIP are a tuning policy measured
+  // per shape, and they decline most shapes outright (see lpMinBytes()). This
+  // suite covers the MECHANISM -- that the wire format is correct wherever it
+  // runs -- so it must not be coupled to that policy: a retune would otherwise
+  // silently turn these cases into no-ops that still pass. Set before any
+  // communicator exists, because NCCL_PARAM caches on first read.
+  setenv("NCCL_SHARDED_RELAY_LP_MIN_KB", "1", /*overwrite=*/1);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);

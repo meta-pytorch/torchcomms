@@ -157,7 +157,10 @@ TEST(CommsLogFormatter, emptyLevelUsesPlaceholder) {
 
 TEST(LoggingFormat, ParseDebugSubsysMaskPreservesLegacyBehavior) {
   using meta::comms::logger::ALL;
+  using meta::comms::logger::BOOTSTRAP;
   using meta::comms::logger::COLL;
+  using meta::comms::logger::DESTROY;
+  using meta::comms::logger::ENV;
   using meta::comms::logger::INIT;
   using meta::comms::logger::P2P;
   using meta::comms::logger::parseDebugSubsysMask;
@@ -166,7 +169,7 @@ TEST(LoggingFormat, ParseDebugSubsysMaskPreservesLegacyBehavior) {
     const char* input;
     uint64_t expected;
   };
-  constexpr std::array<TestCase, 14> kCases{{
+  constexpr std::array<TestCase, 16> kCases{{
       {"", 0},
       {",", 0},
       {"^", ~0ULL},
@@ -181,12 +184,48 @@ TEST(LoggingFormat, ParseDebugSubsysMaskPreservesLegacyBehavior) {
       {"^UNKNOWN", ~0ULL},
       {"INIT,,COLL,", INIT | COLL},
       {" INIT", 0},
+      {"DESTROY", DESTROY},
+      {"destroy,init", DESTROY | INIT},
   }};
+
+  EXPECT_EQ(
+      parseDebugSubsysMask(nullptr),
+      static_cast<uint64_t>(INIT | BOOTSTRAP | ENV));
 
   for (const auto& testCase : kCases) {
     EXPECT_EQ(parseDebugSubsysMask(testCase.input), testCase.expected)
         << "input: " << testCase.input;
   }
+}
+
+TEST(LoggingFormat, SharedDebugLevelParsingRemainsCaseSensitive) {
+  using meta::comms::logger::getLoggerDebugLevel;
+  using meta::comms::logger::LogLevel;
+
+  EXPECT_EQ(getLoggerDebugLevel("INFO"), LogLevel::INFO);
+  EXPECT_EQ(getLoggerDebugLevel("info"), LogLevel::NONE);
+}
+
+TEST(LoggingFormat, NcclDebugLevelParsingIsCaseInsensitive) {
+  using meta::comms::logger::getNcclLoggerDebugLevel;
+  using meta::comms::logger::LogLevel;
+
+  EXPECT_EQ(getNcclLoggerDebugLevel("info"), LogLevel::INFO);
+  EXPECT_EQ(getNcclLoggerDebugLevel("WaRn"), LogLevel::WARN);
+  EXPECT_EQ(getNcclLoggerDebugLevel("trace"), LogLevel::TRACE);
+  EXPECT_EQ(getNcclLoggerDebugLevel("invalid"), LogLevel::NONE);
+}
+
+TEST(LoggingFormat, ParsesAsyncDeliveryLikeGeneratedNcclCvar) {
+  using meta::comms::logger::parseDebugLoggingAsync;
+
+  EXPECT_TRUE(parseDebugLoggingAsync(nullptr, true));
+  EXPECT_FALSE(parseDebugLoggingAsync(nullptr, false));
+  EXPECT_TRUE(parseDebugLoggingAsync("", false));
+  EXPECT_FALSE(parseDebugLoggingAsync("No", true));
+  EXPECT_TRUE(parseDebugLoggingAsync("YES", false));
+  EXPECT_TRUE(parseDebugLoggingAsync("invalid", true));
+  EXPECT_TRUE(parseDebugLoggingAsync("invalid", false));
 }
 
 TEST(LoggingFormat, ParseDebugSubsysMaskSupportsConcurrentCalls) {

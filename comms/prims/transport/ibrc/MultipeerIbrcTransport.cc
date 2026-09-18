@@ -25,7 +25,6 @@
 #ifdef __HIP_PLATFORM_AMD__
 #include <hip/hip_runtime.h>
 #else
-#include <cuda_runtime.h>
 #endif
 
 #include <fmt/core.h>
@@ -268,13 +267,15 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
     int nRanks,
     std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultipeerIbTransportConfig& config,
-    comms::fault_tolerance::AbortDevice abort)
+    comms::fault_tolerance::AbortDevice abort,
+    std::function<bool()> hostAborted)
     : MultiPeerIbTransport<MultipeerIbrcTransport>(
           myRank,
           nRanks,
           std::move(bootstrap),
           config),
-      abortDevice_(abort) {
+      abortDevice_(abort),
+      hostAborted_(std::move(hostAborted)) {
   const int numQpsPerPeerPerNic = config_.fixedChannelMainQpsPerPeerPerNic();
   if (config_.max_num_channels < 1) {
     throw std::invalid_argument("max_num_channels must be >= 1");
@@ -307,6 +308,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   }
   peerResources_.resize(nRanks_ - 1);
   peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
+  hostLanesIssued_.resize(nRanks_ - 1);
 
   try {
     // Pin GPU work to config_.cudaDevice.
@@ -355,21 +357,24 @@ void MultipeerIbrcTransport::cleanup() {
   cleanupSignalCounterResources();
 
   auto& symbols = ibverbx::ibvSymbols;
-  if (symbols.ibv_internal_dereg_mr != nullptr) {
-    for (auto& [_, cached] : registeredBuffers_) {
-      for (int n = 0; n < numNics_; ++n) {
-        if (cached.mrs[n] != nullptr) {
-          int rc = symbols.ibv_internal_dereg_mr(cached.mrs[n]);
-          if (rc != 0) {
-            LOG(WARNING) << "Failed to deregister IBRC MR on NIC " << n
-                         << ": rc=" << rc;
+  {
+    auto registrations = registrationState_.wlock();
+    if (symbols.ibv_internal_dereg_mr != nullptr) {
+      for (auto& [_, cached] : registrations->registeredBuffers) {
+        for (int n = 0; n < numNics_; ++n) {
+          if (cached.mrs[n] != nullptr) {
+            int rc = symbols.ibv_internal_dereg_mr(cached.mrs[n]);
+            if (rc != 0) {
+              LOG(WARNING) << "Failed to deregister IBRC MR on NIC " << n
+                           << ": rc=" << rc;
+            }
+            cached.mrs[n] = nullptr;
           }
-          cached.mrs[n] = nullptr;
         }
       }
     }
+    registrations->registeredBuffers.clear();
   }
-  registeredBuffers_.clear();
 
   statusHostByNic_.clear();
   statusDeviceByNic_.clear();
@@ -966,7 +971,10 @@ void MultipeerIbrcTransport::initializeDeviceTransportSlots() {
   p2pTransportDevices_ = allocateMapped(
       numPeers * ibrcDeviceSlotSize(), "P2pIbrcTransportDevice slots");
   constructIbrcDeviceSlots(
-      p2pTransportDevices_.host, static_cast<int>(numPeers));
+      p2pTransportDevices_.host,
+      static_cast<int>(numPeers),
+      myRank_,
+      /*firstPeerIndex=*/0);
 }
 
 void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
@@ -980,7 +988,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
     constructIbrcDeviceSlots(
         static_cast<char*>(p2pTransportDevices_.host) +
             peerIndex * ibrcDeviceSlotSize(),
-        1);
+        1,
+        myRank_,
+        peerIndex);
     return;
   }
 
@@ -1016,7 +1026,9 @@ void MultipeerIbrcTransport::updatePeerDeviceTransport(int peerIndex) noexcept {
       config_.numSignalSlots,
       config_.numCounterSlots,
       channelLayoutForPeer(peerIndex),
-      abortDevice_);
+      abortDevice_,
+      myRank_,
+      peerIndexToRank(peerIndex));
 }
 
 std::size_t MultipeerIbrcTransport::allocatedCmdQueueCount() const {
@@ -1289,6 +1301,7 @@ PeerQpPayload MultipeerIbrcTransport::buildLocalQpPayload(int peerIndex) const {
   payload.numQpsPerPeerPerNic = numQps;
   payload.maxGroups = config_.max_num_channels;
   payload.qpsPerBlockPerNic = config_.qpsPerConnection;
+  payload.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1426,15 +1439,18 @@ void MultipeerIbrcTransport::connectPeerQps(
             config_.fixedChannelMainQpsPerPeerPerNic()));
   }
   if (remotePayload.maxGroups != config_.max_num_channels ||
+      remotePayload.numProtocolSlots != config_.numProtocolSlots() ||
       remotePayload.qpsPerBlockPerNic != config_.qpsPerConnection) {
     throw std::runtime_error(
         fmt::format(
             "IBRC peerIndex={} fixed-channel QP shape max_num_channels={} "
-            "qpsPerConnection={} vs local {} {}",
+            "numProtocolSlots={} qpsPerConnection={} vs local {} {} {}",
             peerIndex,
             remotePayload.maxGroups,
+            remotePayload.numProtocolSlots,
             remotePayload.qpsPerBlockPerNic,
             config_.max_num_channels,
+            config_.numProtocolSlots(),
             config_.qpsPerConnection));
   }
 
@@ -1455,6 +1471,39 @@ void MultipeerIbrcTransport::connectPeerQps(
 void MultipeerIbrcTransport::exchangeAndConnectQps() {
   const int numPeers = nRanks_ - 1;
   const int numQps = config_.fixedChannelMainQpsPerPeerPerNic();
+  // PRECONDITION OF THIS FUNCTION, not of the transport. Nothing calls
+  // exchangeAndConnectQps() today -- exchange() defers everything to
+  // materializePeer(), and IBGDA never used the eager allGather at all -- so
+  // this is unreachable as written. It is kept rather than deleted because it
+  // is the invariant that makes reviving the eager path safe, and that
+  // invariant stopped holding in this diff: the allGather wire format
+  // dimensions IbTransportExchInfoAll::NicWireInfo::qpnForRank[][] at
+  // kMaxEagerExchangeQpsPerPeerPerNic, and the loop below writes `numQps` slots
+  // into it. That used to be bounded by coincidence -- with kMaxIbGroups at 64,
+  // 64 channels x kIbDirections filled the array exactly -- but the group index
+  // space is now wider than the eager wire format, so a revived eager path
+  // would write off the end of the exchanged struct.
+  //
+  // Deliberately NOT hoisted into config validation: every live path is lazy,
+  // and a shape wider than the eager cap is legal there -- the SendRecvTile
+  // collective this stack adds runs at 512 QPs/(peer, NIC). Rejecting it at
+  // construction would break the supported configuration to guard a dead one.
+  if (numQps > kMaxEagerExchangeQpsPerPeerPerNic) {
+    throw std::invalid_argument(
+        fmt::format(
+            "MultipeerIbrcTransport: eager QP exchange needs {} QPs per "
+            "(peer, NIC) but the allGather wire format holds only {}. Reduce "
+            "max_num_channels to at most {} for eager exchange, or keep using "
+            "the (default) lazy per-peer materialization path, which has no "
+            "such limit",
+            numQps,
+            kMaxEagerExchangeQpsPerPeerPerNic,
+            kMaxEagerExchangeQpsPerPeerPerNic /
+                std::max(
+                    1,
+                    config_.fixedChannelDirectionCount() *
+                        config_.qpsPerConnection)));
+  }
 
   for (int peerIndex = 0; peerIndex < numPeers; ++peerIndex) {
     createPeerQps(peerIndex);
@@ -1467,6 +1516,7 @@ void MultipeerIbrcTransport::exchangeAndConnectQps() {
   myInfo.numQpsPerPeerPerNic = numQps;
   myInfo.maxGroups = config_.max_num_channels;
   myInfo.qpsPerBlockPerNic = config_.qpsPerConnection;
+  myInfo.numProtocolSlots = config_.numProtocolSlots();
 
   auto& symbols = ibverbx::ibvSymbols;
   for (int n = 0; n < numNics_; ++n) {
@@ -1546,6 +1596,107 @@ P2pIbrcTransportDevice* MultipeerIbrcTransport::getP2pTransportDevice(
   return reinterpret_cast<P2pIbrcTransportDevice*>(
       static_cast<char*>(p2pTransportDevices_.device) +
       peerIndex * ibrcDeviceSlotSize());
+}
+
+std::size_t MultipeerIbrcTransport::hostLaneCapacity(int peerRank) const {
+  // Validated before rankToPeerIndex(), which otherwise turns a bad rank into
+  // an out-of-bounds read of peerResources_ rather than an error.
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format("hostLaneCapacity: invalid peerRank={}", peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const PeerResources& peer = peerResources_[peerIndex];
+  /*
+   * The same acquire gate getHostWriter() uses, and for the same reason:
+   * cmdQueuesAllocated is a plain bool set BEFORE the release store that
+   * publishes the queues, so gating on it lets a concurrent lazy
+   * materialization expose cmdQueues while it is still being built.
+   */
+  if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        fmt::format(
+            "hostLaneCapacity: peerRank={} command queues not published (materialize the peer first)",
+            peerRank));
+  }
+  return peer.cmdQueues.size();
+}
+
+P2pIbrcHostLanes MultipeerIbrcTransport::getHostLanes(
+    int peerRank,
+    int numLanes) const {
+  const std::size_t capacity = hostLaneCapacity(peerRank);
+  if (numLanes < 1 || static_cast<std::size_t>(numLanes) > capacity) {
+    throw std::runtime_error(
+        fmt::format(
+            "getHostLanes: numLanes={} out of range for peerRank={} (capacity {})",
+            numLanes,
+            peerRank,
+            capacity));
+  }
+  /*
+   * Claim the peer's rings before building anything. Refusing here is the
+   * point: the alternative is two lanes objects driving [0, numLanes) at once,
+   * which corrupts in-flight descriptors rather than failing.
+   */
+  std::shared_ptr<void> owner;
+  {
+    const int peerIndex = rankToPeerIndex(peerRank);
+    const std::lock_guard<std::mutex> lock(hostLanesMutex_);
+    if (!hostLanesIssued_[peerIndex].expired()) {
+      throw std::runtime_error(
+          fmt::format(
+              "getHostLanes: peerRank={} rings are already held by another "
+              "lanes object; one logical producer per ring",
+              peerRank));
+    }
+    owner = std::make_shared<char>();
+    hostLanesIssued_[peerIndex] = owner;
+  }
+
+  std::vector<P2pIbrcHostWriter> writers;
+  writers.reserve(static_cast<std::size_t>(numLanes));
+  for (int l = 0; l < numLanes; ++l) {
+    writers.push_back(getHostWriter(peerRank, static_cast<uint32_t>(l)));
+  }
+  return P2pIbrcHostLanes(std::move(writers), std::move(owner));
+}
+
+P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::invalid_argument(
+        fmt::format("getHostWriter: invalid peerRank={}", peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const PeerResources& peer = peerResources_[peerIndex];
+  if (!peerQueuesPublished_[peerIndex].load(std::memory_order_acquire)) {
+    throw std::runtime_error(
+        fmt::format(
+            "getHostWriter: peerRank={} command queues not published (materialize the peer first)",
+            peerRank));
+  }
+  if (queueIndex >= peer.cmdQueues.size()) {
+    throw std::out_of_range(
+        fmt::format(
+            "getHostWriter: queueIndex={} out of range (peer has {} rings)",
+            queueIndex,
+            peer.cmdQueues.size()));
+  }
+  const IbrcCmdQueueHost& q = peer.cmdQueues[queueIndex];
+  P2pIbrcHostWriter writer(
+      q.descsHost,
+      q.piHost,
+      q.ciHost,
+      statusHostByNic_.at(q.nic),
+      q.device.depth,
+      q.nic);
+  // Armed here rather than left to the caller: the device path already gets
+  // abortDevice_ baked in, and a writer that missed the predicate would spin
+  // out its ten-minute deadline instead of unwinding when the job aborts.
+  writer.set_abort_predicate(hostAborted_);
+  return writer;
 }
 
 void MultipeerIbrcTransport::doMaterializePeer(int peerRank) {

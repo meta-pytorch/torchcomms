@@ -237,6 +237,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -244,6 +245,7 @@ template <typename Transport, typename Proto = protocol::Simple>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes);
 
@@ -255,9 +257,6 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args);
 
@@ -269,9 +268,6 @@ template <
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args);
 
@@ -280,9 +276,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
@@ -2027,6 +2020,9 @@ __device__ __forceinline__ void recv_impl(
       } else {
         const uint64_t recvToken =
             ibOps->wait_recv(transport, group, protocolBytesThis, abortDevice);
+        if (!ibOps->recv_token_valid(recvToken)) {
+          break;
+        }
         const std::size_t validBytes =
             valid_payload_bytes(dataOff, payloadBytes, nbytes);
         if (validBytes > 0) {
@@ -2469,6 +2465,9 @@ __device__ __forceinline__ void forward_impl(
     } else {
       const uint64_t recvToken = ibOps->wait_recv(
           transport, group, recvProtocolBytesThis, abortDevice);
+      if (!ibOps->recv_token_valid(recvToken)) {
+        break;
+      }
       if (ibOps->prepare_send_slot(
               fwdTransport,
               group,
@@ -2753,6 +2752,15 @@ __device__ __forceinline__ ChannelSlotView acquire_channel(
     const IbChannelLayout& channelLayout,
     ThreadGroup& group) {
   validate_progress_group(channelLayout, group);
+  if (P::kProtoSlot >= channelLayout.numProtocolSlots) {
+    if (group.is_leader()) {
+      printf(
+          "[PIPES] FATAL: protocol slot %d is disabled (numProtocolSlots=%d)\n",
+          P::kProtoSlot,
+          channelLayout.numProtocolSlots);
+    }
+    PIPES_DEVICE_TRAP();
+  }
   const int channelId = static_cast<int>(group.group_id);
   const int slotIndex =
       channelLayout.protoChannelSlot(channelId, P::kProtoSlot);
@@ -2851,7 +2859,8 @@ template <typename P, typename Transport>
         // Confirm rather than assume: the wait above cannot report that it gave
         // up, and a lane earlier in this loop may already have latched the
         // abort, so later lanes can fall straight through it.
-        if (transport.is_local_completion_ready(group.group_id, ticket)) {
+        if (transport.is_local_completion_ready(
+                group.group_id, ticket, abortDevice)) {
           pending &= ~laneBit;
         }
       }
@@ -2874,6 +2883,9 @@ __device__ __forceinline__ void record_send_completion(
     uint64_t generation,
     const IbLocalCompletionTicket& ticket) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+  if (!ticket.posted) {
+    return;
+  }
   auto& slot = transport.template local_channel_slot<P>(channelId)
                    .sendCompletionSlots[slotId];
   slot.generation = generation;

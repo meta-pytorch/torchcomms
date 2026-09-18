@@ -677,6 +677,8 @@ extern std::unordered_map<std::string, int64_t*> env_int64_values;
 extern std::unordered_map<std::string, int*> env_int_values;
 extern std::unordered_map<std::string, bool*> env_bool_values;
 
+bool isCvarExplicitlyConfigured(std::string_view name);
+
 """
 
     file.write(cvar_maps_text)

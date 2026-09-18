@@ -4,10 +4,16 @@
 #define CTRAN_IB_BASE_H_
 
 #include <folly/String.h>
-#include "comms/ctran/backends/CtranCtrl.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
+
+// Sizes the per-NIC arrays in IBDesc::rkeys, CtranIbRemoteAccessKey::rkeys and
+// BusCard. BusCard is exchanged as raw bytes with a sizeof-derived length and
+// carries no version field, so changing this value changes the bootstrap wire
+// format: all CTRAN peers must run the same build.
+inline constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{4};
 
 struct CtranIbRemoteAccessKey {
   std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK> rkeys{};

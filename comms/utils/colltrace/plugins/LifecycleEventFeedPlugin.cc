@@ -20,6 +20,11 @@ constexpr uint32_t kBacklogCheckPeriod = 256;
 
 } // namespace
 
+uint64_t getNextLifecycleFeedCommId() noexcept {
+  static std::atomic<uint64_t> nextCommId{1};
+  return nextCommId.fetch_add(1, std::memory_order_relaxed);
+}
+
 LifecycleEventFeedPlugin::LifecycleEventFeedPlugin(
     const LifecycleEventFeedConfig& config)
     : commId_(config.commId),

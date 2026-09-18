@@ -329,6 +329,11 @@ class IbgdaWarpProxy {
       IbgdaWarpProxy::publish_recv_copied(storage_, workers, sequence);
     }
 
+    [[nodiscard]] __device__ __forceinline__ bool recv_token_valid(
+        uint64_t sequence) const {
+      return sequence != kInvalidSequence;
+    }
+
    private:
     friend class IbgdaWarpProxy<WorkerThreads, MaxPipelineDepth>;
 
@@ -669,7 +674,8 @@ class IbgdaWarpProxy {
 
   __device__ __forceinline__ static void post_recv_credits(
       SharedState& storage,
-      const ThreadGroup& fullBlock) {
+      const ThreadGroup& fullBlock,
+      const AbortDevice& abortDevice) {
     BlockAtomicU64 copied(storage.recv.copied);
     BlockAtomicU64 credited(storage.recv.credited);
     uint64_t head = credited.load(cuda::memory_order_relaxed);
@@ -680,8 +686,14 @@ class IbgdaWarpProxy {
           command.transport->channel_layout(),
           static_cast<int>(command.channel));
       ThreadGroup solo = make_solo_group(command.channel, fullBlock);
-      command.transport->signal(
-          solo, remote.slotFree, command.protocolBytes, IbDirection::Recv);
+      if (!command.transport->try_signal(
+              solo,
+              remote.slotFree,
+              command.protocolBytes,
+              IbDirection::Recv,
+              abortDevice)) {
+        return;
+      }
       credited.store(++head, cuda::memory_order_release);
     }
   }
@@ -787,7 +799,11 @@ class IbgdaWarpProxy {
         command.protocolBytes,
         /*counterBuf=*/{},
         /*counterVal=*/0,
-        /*signalPerLane=*/true);
+        /*signalPerLane=*/true,
+        abortDevice);
+    if (!ticket.posted) {
+      return;
+    }
     detail::record_send_completion(
         *command.transport,
         command.channel,
@@ -826,10 +842,11 @@ class IbgdaWarpProxy {
         // between each abortable step, rather than once at the bottom. Both are
         // needed, and for different reasons:
         //
-        //   - `post_recv_credits()` emits `signal(slotFree)` and has no abort
-        //     check of its own; `post_send_once()` issues a `put` with a fused
-        //     `DATA_READY`. With the check below them, the iteration on which
-        //     the abort first becomes visible has already sent one more round.
+        //   - `post_recv_credits()` emits `signal(slotFree)` and
+        //     `post_send_once()` issues a `put` with a fused `DATA_READY`.
+        //     Their SQ-capacity waits are abort-aware, but this check also
+        //     prevents entering either posting path after an earlier step
+        //     latched the abort.
         //   - Hoisting alone does not close it: `publish_recv_readiness()` is
         //     itself abortable, so an abort first observed *inside* it would
         //     still be followed by `post_send_once()` in the same iteration.
@@ -855,7 +872,7 @@ class IbgdaWarpProxy {
           emit();
           aborted = abortDevice.isAborted();
         };
-        step([&] { post_recv_credits(storage, fullBlock); });
+        step([&] { post_recv_credits(storage, fullBlock, abortDevice); });
         step([&] { publish_recv_readiness(storage, abortDevice); });
         step([&] { post_send_once(storage, fullBlock, abortDevice); });
 

@@ -25,10 +25,6 @@
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 #include "comms/utils/GraphCaptureSideStream.h"
 
-#if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
-#endif
-
 namespace torch::comms {
 
 // Hint key names for NCCLX backend configuration
@@ -195,15 +191,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       bool async_op,
       const AllToAllOptions& options = {}) override;
 
-  // AllToAllv Dynamic Operations
-  c10::intrusive_ptr<TorchWork> device_alltoallv_single(
-      at::Tensor& output,
-      const at::Tensor& input,
-      const at::Tensor& output_split_sizes,
-      const at::Tensor& input_split_sizes,
-      bool async_op,
-      const std::unordered_map<std::string, std::string>& hints = {});
-
   // Persistent AllGather operations
   AllGatherPHandle all_gather_p_init(
       at::Tensor& output,
@@ -262,6 +249,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   InitHandle getInitHandle() const override;
   c10::intrusive_ptr<TorchWork> reconfigure(
       const ReconfigureOptions& opts) override;
+  using TorchCommBackend::abort;
   void abort() override;
   bool isAbortSupported() const override;
   bool isAborted() const override;
@@ -306,13 +294,6 @@ class TorchCommNCCLX : public TorchCommBackend,
   const at::Device& getDevice() const override {
     return device_;
   }
-
-#if defined(ENABLE_PRIMS)
-  // Get device-allocated transport handle for Triton/CUDA kernels.
-  // Returns device pointer as int64 (same pointer on subsequent calls).
-  // The handle is freed when TorchCommNCCLX is destroyed.
-  int64_t get_device_transport() override;
-#endif
 
  protected:
   // Event management for friend classes
@@ -502,11 +483,6 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   // Initialize the NcclxCachingAllocatorHook singleton
   void attachMemoryHook();
-
-#if defined(ENABLE_PRIMS)
-  torchcomms::device::PrimsDeviceBackend::TransportHandleDevPtr
-      device_transport_handle_;
-#endif
 
   // Member variables
   ncclComm_t nccl_comm_{};

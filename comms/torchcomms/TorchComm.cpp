@@ -9,6 +9,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <atomic>
 #include <limits>
+#include <stdexcept>
 
 namespace torch::comms {
 
@@ -516,6 +517,11 @@ void TorchComm::abort() {
   impl_->abort();
 }
 
+void TorchComm::abort(const AbortInfo& info) {
+  validateTerminalAbortReason(info.reason);
+  impl_->abort(info);
+}
+
 bool TorchComm::isAbortSupported() const {
   return impl_->isAbortSupported();
 }
@@ -524,16 +530,16 @@ bool TorchComm::isAborted() const {
   return impl_->isAborted();
 }
 
+std::optional<AbortInfo> TorchComm::getAbortInfo() const {
+  return impl_->getAbortInfo();
+}
+
 void TorchComm::setTimeout(std::chrono::milliseconds timeout) {
   impl_->setTimeout(timeout);
 }
 
 void TorchComm::setHints(std::unordered_map<std::string, std::string> hints) {
   impl_->setHints(std::move(hints));
-}
-
-int64_t TorchComm::get_device_transport() {
-  return impl_->get_device_transport();
 }
 
 void TorchComm::tensor_register(const at::Tensor& tensor) {

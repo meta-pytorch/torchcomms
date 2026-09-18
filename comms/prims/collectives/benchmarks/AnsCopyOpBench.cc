@@ -526,6 +526,6 @@ int main(int argc, char* argv[]) {
   folly::Init init(&argc, &argv);
   ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
   const auto result = RUN_ALL_TESTS();
-  spdlog::shutdown();
+  meta::comms::logger::shutdownCommsLogging();
   return result;
 }

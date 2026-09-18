@@ -8,11 +8,6 @@
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/ctran/algos/AllToAll/DeviceAllToAllvPipesImpl.h"
-#include "comms/prims/transport/MultiPeerTransport.h"
-#include "comms/prims/transport/Transport.cuh"
-#endif
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/common/GpeRing.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -24,14 +19,6 @@
 static bool isGraphAwareAlgo(enum NCCL_ALLTOALL_ALGO algo) {
   return algo == NCCL_ALLTOALL_ALGO::ctgraph;
 }
-
-#if defined(ENABLE_PRIMS)
-template <PipeProtocol Proto>
-extern __global__ void ncclKernelDeviceAllToAllvPipes(
-    ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::device_alltoallv_pipes::KernArgs args);
-#endif
 
 #define RETURN_ALLTOALLV_IB_IMPL(perfconfig) \
   return ctranAllToAllvIbImpl<perfconfig>(   \
@@ -250,123 +237,6 @@ bool ctranAllToAllSupport(
   return commTypeSize(datatype) * count >= NCCL_CTRAN_ALLTOALL_THRESHOLD;
 }
 
-#if defined(ENABLE_PRIMS)
-// ============================================================================
-// Device AllToAllv (split sizes on device)
-// NVLink domain only — all peers must be reachable via NVLink.
-// IB support will be added in a follow-up via IBGDA (not CPU proxy).
-// ============================================================================
-
-bool ctranDeviceAllToAllvSupport(CtranComm* comm);
-
-commResult_t ctranDeviceAllToAllv(
-    const void* sendbuff,
-    void* recvbuff,
-    const int64_t* sendcounts_d,
-    const int64_t* recvcounts_d,
-    commDataType_t datatype,
-    CtranComm* comm,
-    cudaStream_t stream,
-    int64_t sendcountsMultiplier,
-    int64_t recvcountsMultiplier,
-    const std::unordered_map<std::string, std::string>& hints) {
-  if (!ctranDeviceAllToAllvSupport(comm)) {
-    CTRAN_ERR(
-        commInvalidArgument,
-        "DeviceAllToAllvPipes requires an initialized NVLink-only communicator");
-    return commInvalidArgument;
-  }
-
-  auto opCount = comm->ctran_->getOpCount();
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::DEVICE_ALLTOALLV,
-      stream,
-      "DeviceAllToAllvPipes",
-      opCount);
-
-  // CollectiveConfig resolves all settings in its constructor:
-  // per-collective hint > cvar > default
-  ctran::device_alltoallv_pipes::CollectiveConfig collConfig(
-      comm->statex_->nLocalRanks(), &hints);
-
-  CTRAN_LOG_SUBSYS(
-      INFO,
-      COLL,
-      "DeviceAllToAllvPipes: opCount {} numBlocks {} numThreads {} "
-      "blockScheduling {} ll128ThresholdBytes {} hasHints {} [nLocalRanks={}]",
-      opCount,
-      collConfig.numBlocks,
-      collConfig.numThreads,
-      collConfig.blockScheduling,
-      collConfig.ll128ThresholdBytes,
-      (!hints.empty()),
-      comm->statex_->nLocalRanks());
-
-  ctran::device_alltoallv_pipes::KernArgs kernArgs;
-  FB_COMMCHECK(
-      ctran::device_alltoallv_pipes::setupKernelConfig(
-          sendbuff,
-          recvbuff,
-          sendcounts_d,
-          recvcounts_d,
-          datatype,
-          comm,
-          config,
-          kernArgs,
-          sendcountsMultiplier,
-          recvcountsMultiplier,
-          collConfig));
-
-  // NVLink-only: no GPE op needed (no IB fallback)
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-
-  auto* kernel = (collConfig.ll128ThresholdBytes > 0)
-      ? ncclKernelDeviceAllToAllvPipes<PipeProtocol::LL128>
-      : ncclKernelDeviceAllToAllvPipes<PipeProtocol::Simple>;
-
-  // This NVLink-only device kernel does not use the GPE flag mechanism and does
-  // not construct a ColltraceEventScope, so do not arm an in-kernel colltrace
-  // record for it — otherwise the reused config's default emit flags would
-  // create a record that never receives its start/end and stays in-flight.
-  config.colltraceEmitStart = false;
-  config.colltraceEmitEnd = false;
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup), nullptr, config, reinterpret_cast<void*>(kernel)));
-
-  return commSuccess;
-}
-
-bool ctranDeviceAllToAllvSupport(CtranComm* comm) {
-  if (!ctranInitialized(comm)) {
-    return false;
-  }
-
-  // Require MultiPeerTransport (pipes)
-  if (!comm->multiPeerTransport_) {
-    return false;
-  }
-
-  // NVLink domain only: verify ALL peers are reachable via NVLink (or self).
-  // Reject communicators with any IB-only peers to prevent silent data loss.
-  // Use host-side API — getMultiPeerTransportsPtr(peers) returns a device
-  // pointer that cannot be dereferenced on the host.
-  const auto statex = comm->statex_.get();
-  for (int rank = 0; rank < statex->nRanks(); rank++) {
-    auto type = comm->multiPeerTransport_->get_transport_type(rank);
-    if (type != comms::prims::TransportType::P2P_NVL &&
-        type != comms::prims::TransportType::SELF) {
-      return false;
-    }
-  }
-
-  return true;
-}
-#endif // ENABLE_PRIMS
-
-// Stubs when ENABLE_PRIMS is not defined — prevents linker errors from
-// unconditional declarations in Ctran.h.
-#if !defined(ENABLE_PRIMS)
 commResult_t ctranDeviceAllToAllv(
     const void* /*sendbuff*/,
     void* /*recvbuff*/,
@@ -378,10 +248,9 @@ commResult_t ctranDeviceAllToAllv(
     int64_t /*sendcountsMultiplier*/,
     int64_t /*recvcountsMultiplier*/,
     const std::unordered_map<std::string, std::string>& /*hints*/) {
-  return commInternalError;
+  return commInvalidUsage;
 }
 
 bool ctranDeviceAllToAllvSupport(CtranComm* /*comm*/) {
   return false;
 }
-#endif // !ENABLE_PRIMS

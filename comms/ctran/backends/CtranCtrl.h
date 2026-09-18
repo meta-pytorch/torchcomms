@@ -3,12 +3,12 @@
 #ifndef CTRAN_CTRL_H
 #define CTRAN_CTRL_H
 
-#include <comms/utils/cvars/nccl_cvars.h>
 #include <fmt/format.h>
 #include <cstddef>
 #include <sstream>
 
 #include "comms/ctran/backends/CtranAux.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 
@@ -56,14 +56,6 @@ struct fmt::formatter<ControlMsgType> : fmt::formatter<const char*> {
     return fmt::formatter<const char*>::format(
         ControlMsgTypeToString(type), ctx);
   }
-};
-
-struct CtranIbConfig {
-  int numQps{NCCL_CTRAN_IB_MAX_QPS};
-  size_t qpScalingTh{NCCL_CTRAN_IB_QP_SCALING_THRESHOLD};
-  enum NCCL_CTRAN_IB_VC_MODE vcMode { NCCL_CTRAN_IB_VC_MODE::spray };
-  int qpMsgs{static_cast<int>(NCCL_CTRAN_IB_QP_MAX_MSGS)};
-  int64_t trafficClass{NCCL_IB_TC};
 };
 
 /**

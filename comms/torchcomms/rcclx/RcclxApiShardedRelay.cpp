@@ -59,7 +59,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllReduce(
       sendBuffs,
       recvBuffs,
@@ -70,7 +71,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllReduce(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
@@ -83,7 +85,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupReduceScatter(
       sendBuffs,
       recvBuffs,
@@ -94,7 +97,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupReduceScatter(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
@@ -106,7 +110,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllToAll(
       sendBuffs,
       recvBuffs,
@@ -116,7 +121,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllToAll(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
@@ -128,7 +134,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
     hipStream_t stream,
     const int* const* allActiveRanks,
     int nActiveRanksPerGroup,
-    int nGroups) {
+    int nGroups,
+    int lowPrecision) {
   return ncclShardedRelayMultiGroupAllGather(
       sendBuffs,
       recvBuffs,
@@ -138,7 +145,8 @@ ncclResult_t DefaultRcclxApi::shardedRelayMultiGroupAllGather(
       stream,
       allActiveRanks,
       nActiveRanksPerGroup,
-      nGroups);
+      nGroups,
+      lowPrecision);
 }
 
 // Hop three of the plan's wire path: RcclxRelayPlan -> ncclRelayPlanInfo -> the

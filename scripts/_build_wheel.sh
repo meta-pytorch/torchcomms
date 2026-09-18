@@ -35,7 +35,11 @@ export CLEAN_BUILD=1
 # environment's dependency installation.
 export CXXSTD="-std=c++20"
 export NCCL_PATCH_FMT_NVCC_CXX20=1
-# NCCLX device compilation can exhaust memory at full host parallelism.
-export NCCL_BUILD_JOBS=16
+# CUDA device compilation can exhaust memory at full host parallelism. The
+# NCCLX build runs during CMake configuration, before the top-level build, so
+# cap both sequential phases independently. Four-way parallelism makes the
+# AArch64 wheel builds exceed their two-hour timeout.
+export CMAKE_BUILD_PARALLEL_LEVEL=8
+export NCCL_BUILD_JOBS=8
 
 python setup.py bdist_wheel

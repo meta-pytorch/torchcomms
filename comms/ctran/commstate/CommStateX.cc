@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/String.h>
+#include <stdexcept>
 #include <string>
 
 #include "CommStateX.h"
@@ -8,6 +9,7 @@
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
+#include "comms/ctran/utils/CudaUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ncclx {
@@ -98,6 +100,10 @@ void CommStateX::initSingleRankTopology() {
 }
 
 void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
+  if (precomputedTopology_) {
+    throw std::logic_error(
+        "cannot run topology discovery after installing precomputed topology");
+  }
   if (bootstrap == nullptr) {
     FB_CHECKTHROW_EX(
         nRanks_ == 1,
@@ -159,9 +165,117 @@ void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
       nNodes());
 }
 
+void CommStateX::setPrecomputedTopology(
+    std::vector<RankTopology> rankTopologies,
+    std::vector<std::vector<int>> effectiveDomains,
+    bool fabricActive) {
+  if (precomputedTopology_) {
+    throw std::logic_error("precomputed topology is already installed");
+  }
+  if (rankTopologies.size() != static_cast<std::size_t>(nRanks_)) {
+    throw std::invalid_argument(
+        "precomputed rank topology count must match communicator size");
+  }
+  if (effectiveDomains.empty()) {
+    throw std::invalid_argument(
+        "precomputed topology requires at least one effective domain");
+  }
+  std::vector<int> domainByRank(static_cast<std::size_t>(nRanks_), -1);
+  std::vector<int> localRankByRank(static_cast<std::size_t>(nRanks_), -1);
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (rankTopologies[static_cast<std::size_t>(rank)].rank != rank) {
+      throw std::invalid_argument(
+          "precomputed rank topology identity does not match its slot");
+    }
+  }
+  for (std::size_t domain = 0; domain < effectiveDomains.size(); ++domain) {
+    const auto& ranks = effectiveDomains[domain];
+    if (ranks.empty()) {
+      throw std::invalid_argument(
+          "precomputed topology domains must not be empty");
+    }
+    for (std::size_t localRank = 0; localRank < ranks.size(); ++localRank) {
+      const int rank = ranks[localRank];
+      if (rank < 0 || rank >= nRanks_) {
+        throw std::invalid_argument(
+            "precomputed topology contains an out-of-range rank");
+      }
+      auto& assignedDomain = domainByRank[static_cast<std::size_t>(rank)];
+      if (assignedDomain != -1) {
+        throw std::invalid_argument(
+            "precomputed topology contains a duplicate rank");
+      }
+      assignedDomain = static_cast<int>(domain);
+      localRankByRank[static_cast<std::size_t>(rank)] =
+          static_cast<int>(localRank);
+    }
+  }
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (domainByRank[static_cast<std::size_t>(rank)] == -1) {
+      throw std::invalid_argument(
+          "precomputed topology is missing a communicator rank");
+    }
+  }
+  if (!fabricActive) {
+    for (const auto& ranks : effectiveDomains) {
+      const std::string_view host =
+          rankTopologies[static_cast<std::size_t>(ranks.front())].host;
+      for (int rank : ranks) {
+        if (std::string_view{
+                rankTopologies[static_cast<std::size_t>(rank)].host} != host) {
+          throw std::invalid_argument(
+              "precomputed non-fabric domain crosses physical hosts");
+        }
+      }
+    }
+  }
+
+  setRankStatesTopologies(std::move(rankTopologies));
+  nodeRanks_ = std::move(effectiveDomains);
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    auto& state = rankStates_.at(static_cast<std::size_t>(rank));
+    state.nodeId = domainByRank[static_cast<std::size_t>(rank)];
+    state.localRank = localRankByRank[static_cast<std::size_t>(rank)];
+    state.localRankToRanks =
+        nodeRanks_.at(static_cast<std::size_t>(state.nodeId));
+    state.nLocalRanks = static_cast<int>(state.localRankToRanks.size());
+  }
+
+  nvlFabricTopos_.clear();
+  nvlFabricRankStates_.clear();
+  nvlDomainRanks_.clear();
+  cliqueRanks_.clear();
+  myNvlFabricRankState_ = {};
+  nvlFabricEnabled_ = fabricActive;
+  nvlFabricCliqueEnabled_ = false;
+  if (fabricActive) {
+    nvlDomainRanks_ = nodeRanks_;
+    nvlFabricRankStates_.resize(static_cast<std::size_t>(nRanks_));
+    for (std::size_t domain = 0; domain < nvlDomainRanks_.size(); ++domain) {
+      const auto& ranks = nvlDomainRanks_[domain];
+      for (std::size_t localRank = 0; localRank < ranks.size(); ++localRank) {
+        const int rank = ranks[localRank];
+        auto& state = nvlFabricRankStates_.at(static_cast<std::size_t>(rank));
+        state.rank = rank;
+        state.nvlDomainIndex = static_cast<int>(domain);
+        state.nvlDomainRank = static_cast<int>(localRank);
+        state.nNvlDomainRanks = static_cast<int>(ranks.size());
+        state.nvlDomainRankToRank = ranks;
+      }
+    }
+    myNvlFabricRankState_ =
+        nvlFabricRankStates_.at(static_cast<std::size_t>(rank_));
+  }
+  precomputedTopology_ = true;
+}
+
 void CommStateX::setNvlFabricTopos(
     std::vector<NvlFabricTopology> nvlFabricTopologies,
     std::optional<bool> fabricHwSupportedOverride) {
+  if (precomputedTopology_) {
+    throw std::logic_error(
+        "cannot reclassify an installed precomputed topology");
+  }
   const bool fabricHwSupported =
       fabricHwSupportedOverride.value_or(ctran::utils::isCuMemFabricEnabled());
   FB_CHECKABORT(
@@ -448,6 +562,15 @@ int CommStateX::cudaDev() const {
   return cudaDev_;
 }
 
+int CommStateX::getCudaArch(int cudaDev) {
+  const auto cudaArch = ctran::utils::getCudaArch(cudaDev);
+  if (cudaArch.hasError()) {
+    CTRAN_ERR(commUnhandledCudaError, "{}", cudaArch.error());
+    throw ctran::utils::Exception(cudaArch.error(), commUnhandledCudaError);
+  }
+  return cudaArch.value();
+}
+
 int CommStateX::cudaArch() const {
   return cudaArch_;
 }
@@ -628,10 +751,14 @@ bool CommStateX::isSameNode(int myRank, int peer) const {
   return node(peer) == node(myRank);
 }
 bool CommStateX::isSameZone(int myRank, int peer) const {
-  return zone(peer) == zone(myRank);
+  const auto myZone = zone(myRank);
+  const auto peerZone = zone(peer);
+  return !myZone.empty() && !peerZone.empty() && myZone == peerZone;
 }
 bool CommStateX::isSameDc(int myRank, int peer) const {
-  return dc(peer) == dc(myRank);
+  const auto myDc = dc(myRank);
+  const auto peerDc = dc(peer);
+  return !myDc.empty() && !peerDc.empty() && myDc == peerDc;
 }
 bool CommStateX::isSameDeviceRack(int myRank, int peer) const {
   const auto myRack = deviceRack(myRank);
@@ -644,6 +771,11 @@ bool CommStateX::isSameDeviceRack(int myRank, int peer) const {
 bool CommStateX::isSameNvlFabric(int myRank, int peer) const {
   if (!nvlFabricEnabled_) {
     return false;
+  }
+  if (precomputedTopology_) {
+    CHECK_VALID_RANK(myRank, rankStates_.size());
+    CHECK_VALID_RANK(peer, rankStates_.size());
+    return rankStates_.at(myRank).nodeId == rankStates_.at(peer).nodeId;
   }
   auto toposSize = nvlFabricTopos_.size();
   CHECK_VALID_RANK(myRank, toposSize);
@@ -662,6 +794,10 @@ bool CommStateX::nvlFabricEnabled() const {
 
 bool CommStateX::nvlFabricCliqueEnabled() const {
   return nvlFabricCliqueEnabled_;
+}
+
+bool CommStateX::hasPrecomputedTopology() const {
+  return precomputedTopology_;
 }
 
 void CommStateX::setupDev(::ctran::CommStateXDev& statexDev) {

@@ -186,10 +186,6 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   // Equivalent to `get_mem_allocator(getBackend())`.
   std::shared_ptr<c10::Allocator> getMemAllocator() const;
 
-  // Device Transport API — returns device pointer as int64 for Triton kernels.
-  // Throws if not supported by the backend.
-  int64_t get_device_transport();
-
   // Memory Registration API
   void tensor_register(const at::Tensor& tensor);
   void tensor_deregister(const at::Tensor& tensor);
@@ -252,6 +248,15 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   void abort();
 
   /**
+   * Abort the communicator with a diagnostic reason and context.
+   *
+   * Backends that support contextual aborts preserve the first reported
+   * AbortInfo. Backends that only implement abort() still abort normally and
+   * may report a synthesized ABORTED reason from getAbortInfo().
+   */
+  void abort(const AbortInfo& info);
+
+  /**
    * Check if abort/fault-tolerance is supported on this communicator.
    *
    * @return True if abort is supported, false otherwise.
@@ -264,6 +269,16 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
    * @return True if the communicator has been aborted.
    */
   bool isAborted() const;
+
+  /**
+   * Return available abort information, or std::nullopt while the communicator
+   * is not aborted. Each individual communicator preserves its first report;
+   * composite backends define how they prioritize reports from their children.
+   *
+   * Legacy backends that only expose isAborted() return a synthesized
+   * AbortInfo with reason ABORTED and empty context.
+   */
+  std::optional<AbortInfo> getAbortInfo() const;
 
   /**
    * Set the communicator-level default operation timeout.

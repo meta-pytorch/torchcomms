@@ -20,14 +20,10 @@ enum class LoggerEventType {
   CommEventType,
   MemoryEventType,
   CollEventType,
-  CollSignatureEventType,
-  CollTimestampEventType,
-  ErrorEventType,
   CtranProfilerEventType,
   CtranProfilerSlowRankModuleEventType,
   CtranProfilerAlgoEventType,
   CtranProfilerGpeEventType,
-  CommdumpEventType,
   TerminateEventType,
 };
 

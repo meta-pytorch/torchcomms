@@ -55,6 +55,8 @@
 #include "comm.h"
 #include "comms/rcclx/develop/meta/testinfra/TestUtils.h"
 #include "comms/rcclx/develop/meta/testinfra/TestsDistUtils.h"
+#include "meta/relay/sharded_relay_lp.h"
+#include "meta/relay/sharded_relay_lp_arena.h"
 #include "meta/relay/sharded_relay_oneshot.h"
 #include "nccl.h"
 
@@ -397,7 +399,8 @@ class ShardedRelayGraphCaptureReduceScatterTest
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   }
 
   // Run one uncaptured reduce-scatter and verify it, with a barrier either
@@ -664,7 +667,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllReduceMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {
@@ -725,7 +729,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllGatherMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {
@@ -798,7 +803,8 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
         this->stream,
         this->allActiveRanks,
         kActive,
-        kGroups);
+        kGroups,
+        /*lowPrecision=*/0);
   };
 
   if (this->isActive) {
@@ -838,6 +844,328 @@ TEST_F(ShardedRelayGraphCaptureOtherCollectivesTest, AllToAllMultiReplay) {
   HIPEXPECT_TEST(hipFree(sendBuff));
 }
 
+// ===========================================================================
+// MIXED-OPERATION EAGER SEQUENCE
+// ===========================================================================
+//
+// Two open questions from the Avocado 42B V3 / V3.5 reports, in one case.
+//
+// (1) Does a back-to-back relay sequence need an end-of-forward
+//     `torch.cuda.current_stream().synchronize()`? V3 added one and measured
+//     104.7 / 111.6 / 114.1 ms of wait per relay-bearing eager forward. It
+//     landed together with a full-forward tensor keepalive, and the report
+//     never separated the two, so "the pair was sufficient" is all that was
+//     ever established. Here the keepalive's equivalent is holding the
+//     allocation for the whole sequence, and there is NO synchronize between
+//     calls or between iterations -- only one at the very end, to read results.
+//     If this sequence is correct, the per-forward barrier was not
+//     load-bearing.
+//
+// (2) Does all-to-all followed by all-reduce on ONE communicator hang? V3.5 2.3
+//     reports exactly that, reproducibly, and shipped only by pushing the
+//     all-reduce gate above 128 MiB to keep it off the relay entirely.
+//     RelayPlanInfo carries a single opCode per published plan, so a forward
+//     mixing the two must publish two epochs.
+//
+// The shapes VARY per iteration and each iteration reuses storage the previous
+// iteration used, with the all-reduce landing in-place on the very region the
+// preceding all-to-all read as its send buffer. That is a deliberate
+// write-after-read on reused storage with no intervening barrier -- the exact
+// hazard V3's keepalive was introduced for ("PyTorch reuses that storage for a
+// later shape or request while a helper still accesses it"). If same-stream
+// ordering is sufficient, this passes; if a relay leg escapes stream order,
+// this corrupts or hangs.
+//
+// Only the final iteration is validated: checking every iteration would require
+// a synchronize between them, which is the thing under test. A failure in an
+// earlier iteration shows up either as corruption that survives to the last one
+// or as a hang.
+TEST_F(
+    ShardedRelayGraphCaptureOtherCollectivesTest,
+    MixedA2AThenAllReduceEager) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+  constexpr int kIters = 6;
+  const size_t maxSegment = kMidCount;
+  const size_t regionCount = static_cast<size_t>(kActive) * maxSegment;
+
+  // Two regions, alternating roles, so every iteration reuses storage the
+  // previous one touched. Sized for the larger of the two contracts: the
+  // all-to-all needs A * segmentCount, and a HELPER's in-place all-reduce
+  // scratch needs A * count.
+  int32_t* region[2] = {nullptr, nullptr};
+  HIPCHECK_TEST(hipMalloc(&region[0], regionCount * sizeof(int32_t)));
+  HIPCHECK_TEST(hipMalloc(&region[1], regionCount * sizeof(int32_t)));
+  barrier();
+  HIPCHECK_TEST(hipMemset(region[0], 0, regionCount * sizeof(int32_t)));
+  HIPCHECK_TEST(hipMemset(region[1], 0, regionCount * sizeof(int32_t)));
+  barrier();
+
+  size_t lastSegment = 0;
+  int lastSend = 0;
+  for (int i = 0; i < kIters; i++) {
+    // Mixed shapes, still 512-aligned so the geometry stays representative.
+    const size_t shrink = 1u + static_cast<size_t>(i % 3);
+    size_t segmentCount = (maxSegment / shrink) & ~static_cast<size_t>(511);
+    if (segmentCount == 0) {
+      segmentCount = maxSegment;
+    }
+    const int sendIdx = i % 2;
+    const int recvIdx = 1 - sendIdx;
+    lastSegment = segmentCount;
+    lastSend = sendIdx;
+
+    if (this->isActive) {
+      fillBlocks(region[sendIdx], segmentCount, i);
+    }
+    barrier();
+
+    // --- all-to-all: reads region[sendIdx], writes region[recvIdx] ---
+    {
+      const void* sendPtrs[kGroups] = {region[sendIdx]};
+      void* recvPtrs[kGroups] = {region[recvIdx]};
+      const size_t segmentCounts[kGroups] = {segmentCount};
+      ASSERT_EQ(
+          ncclShardedRelayMultiGroupAllToAll(
+              sendPtrs,
+              recvPtrs,
+              segmentCounts,
+              ncclInt32,
+              this->comm,
+              this->stream,
+              this->allActiveRanks,
+              kActive,
+              kGroups,
+              /*lowPrecision=*/0),
+          ncclSuccess);
+    }
+
+    // --- all-reduce, in place, on the region the all-to-all just READ ---
+    // Deliberate write-after-read on reused storage, no barrier in between.
+    // Skipped on the final iteration so the all-to-all result survives to be
+    // checked; every earlier iteration exercises the hazard.
+    if (i + 1 < kIters) {
+      const void* sendPtrs[kGroups] = {region[sendIdx]};
+      void* recvPtrs[kGroups] = {region[sendIdx]};
+      const size_t counts[kGroups] = {segmentCount};
+      ASSERT_EQ(
+          ncclShardedRelayMultiGroupAllReduce(
+              sendPtrs,
+              recvPtrs,
+              counts,
+              ncclInt32,
+              ncclSum,
+              this->comm,
+              this->stream,
+              this->allActiveRanks,
+              kActive,
+              kGroups,
+              /*lowPrecision=*/0),
+          ncclSuccess);
+    }
+    // NO syncStream() and NO barrier() here on purpose. The next iteration's
+    // calls are enqueued straight behind these on the same stream, which is
+    // precisely the back-to-back case V3's barrier was guarding.
+  }
+
+  // The one and only synchronize, so the results can be read.
+  syncStream("mixed eager sequence drain");
+  barrier();
+
+  if (this->isActive) {
+    const int recvIdx = 1 - lastSend;
+    for (int src = 0; src < kActive; src++) {
+      expectUniform(
+          region[recvIdx] + static_cast<size_t>(src) * lastSegment,
+          lastSegment,
+          fillValue(src, this->myActiveIndex, kIters - 1),
+          "mixed eager all-to-all");
+    }
+  }
+
+  HIPEXPECT_TEST(hipFree(region[0]));
+  HIPEXPECT_TEST(hipFree(region[1]));
+}
+
+// ===========================================================================
+// LOW PRECISION UNDER GRAPH CAPTURE
+// ===========================================================================
+//
+// ONE case, because it has to run in a defined order and this binary shares a
+// single communicator across every suite: the arena is per-communicator and
+// created once, so "the arena is not up yet" is a state that exists exactly
+// once per process. Splitting this into two cases would make the second depend
+// on gtest's ordering.
+//
+// The whole low-precision graph-capture contract in sequence:
+//
+//   1. arena cold + capture  -> LP DECLINES (GraphCapture), because bringing
+//   the
+//      arena up runs a bootstrap all-gather and that must never land inside a
+//      capture. The captured graph is still valid and still correct -- the
+//      decline is a clean fall back to full precision, not a broken graph.
+//   2. eager call             -> LP ENGAGES and the arena comes up.
+//   3. arena warm + capture   -> LP ENGAGES INSIDE THE CAPTURE.
+//   4. replay x3              -> exact every time.
+//
+// Step 4 is what the arena exists for. Its partition is carved from a fixed
+// base at offsets derived only from the counts, so every replay reads and
+// writes the same addresses the capture recorded. A ScratchBufferCache-style
+// allocation would fail here in three separate documented ways; see
+// sharded_relay_lp_arena.h.
+class ShardedRelayGraphCaptureLowPrecisionTest
+    : public ShardedRelayGraphCaptureTest {
+ protected:
+  // A multiple of kActive * 128, which is what the flat allreduce needs: it
+  // splits its direct region into A per-owner shards, and a shard is only a
+  // whole number of wire blocks when the count is a multiple of A * 128. 8 MiB
+  // in fp32, comfortably above the low-precision size threshold.
+  static constexpr size_t kLpCount = 2ULL * 1024 * 1024;
+
+  static float shardValue(int activeIndex) {
+    return static_cast<float>(activeIndex + 1);
+  }
+
+  // 1 + 2 + 3 + 4, exactly, in every element.
+  static float expectedSum() {
+    float sum = 0.0f;
+    for (int r = 0; r < kActive; r++) {
+      sum += shardValue(r);
+    }
+    return sum;
+  }
+
+  void fillMine(float* buff, size_t count) {
+    if (!this->isActive) {
+      return;
+    }
+    const std::vector<float> host(count, shardValue(this->myActiveIndex));
+    HIPCHECK_TEST(hipMemcpy(
+        buff, host.data(), count * sizeof(float), hipMemcpyHostToDevice));
+  }
+
+  void expectSum(float* buff, size_t count, const char* what) {
+    if (!this->isActive) {
+      return;
+    }
+    const float want = expectedSum();
+    std::vector<float> got(count);
+    HIPCHECK_TEST(hipMemcpy(
+        got.data(), buff, count * sizeof(float), hipMemcpyDeviceToHost));
+    size_t reported = 0;
+    for (size_t i = 0; i < count && reported < 8; i++) {
+      if (got[i] != want) {
+        reported++;
+        ADD_FAILURE() << "R" << this->globalRank << ": " << what << " element "
+                      << i << ": got " << got[i] << ", want " << want;
+      }
+    }
+  }
+};
+
+TEST_F(ShardedRelayGraphCaptureLowPrecisionTest, DeclinesColdThenEngagesWarm) {
+  if (this->numRanks != 8) {
+    GTEST_SKIP() << "Test requires exactly 8 ranks, got " << this->numRanks;
+  }
+  const size_t count = kLpCount;
+  const size_t bytes = count * sizeof(float);
+
+  float* buff = nullptr;
+  HIPCHECK_TEST(hipMalloc(
+      &buff, this->isActive ? bytes : static_cast<size_t>(kActive) * bytes));
+  barrier();
+  if (!this->isActive) {
+    HIPCHECK_TEST(hipMemset(buff, 0, static_cast<size_t>(kActive) * bytes));
+  }
+
+  const void* sendPtrs[kGroups] = {buff};
+  void* recvPtrs[kGroups] = {buff};
+  const size_t counts[kGroups] = {count};
+  auto enqueueLp = [&]() {
+    return ncclShardedRelayMultiGroupAllReduce(
+        sendPtrs,
+        recvPtrs,
+        counts,
+        ncclFloat32,
+        ncclSum,
+        this->comm,
+        this->stream,
+        this->allActiveRanks,
+        kActive,
+        kGroups,
+        /*lowPrecision=*/1);
+  };
+
+  // This case owns the cold-arena state for the whole process. If a future low
+  // precision case in this binary runs first, this fires rather than silently
+  // testing the warm path twice.
+  ASSERT_FALSE(rcclx::relay::lpArenaReady(this->comm))
+      << "another low-precision case already brought the arena up; this case "
+         "must be the first, because the cold-arena state exists once per "
+         "communicator";
+
+  // ---- 1. Cold arena inside a capture: LP must decline, graph must be sound.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  ncclResult_t captured = ncclSuccess;
+  hipGraphExec_t coldExec = captureGraph([&]() { captured = enqueueLp(); });
+  ASSERT_EQ(captured, ncclSuccess);
+  ASSERT_NE(coldExec, nullptr);
+  EXPECT_EQ(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision must not bootstrap its arena inside a capture";
+  EXPECT_GT(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::GraphCapture), 0u)
+      << "the decline must be recorded against GraphCapture, not silent";
+
+  // The declined capture is a full-precision graph and has to work like one.
+  for (int r = 0; r < 2; r++) {
+    fillMine(buff, count);
+    barrier();
+    replay(coldExec, /*skew=*/true);
+    expectSum(buff, count, "cold-arena (full precision) replay");
+  }
+  HIPEXPECT_TEST(hipGraphExecDestroy(coldExec));
+
+  // ---- 2. Eager call: LP engages and the arena comes up.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  ASSERT_EQ(enqueueLp(), ncclSuccess);
+  syncStream("eager low-precision drain");
+  ASSERT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "the eager call must engage, or the arena never came up and the rest "
+         "of this case proves nothing";
+  expectSum(buff, count, "eager low precision");
+  ASSERT_TRUE(rcclx::relay::lpArenaReady(this->comm));
+  barrier();
+
+  // ---- 3. Warm arena inside a capture: LP must engage this time.
+  fillMine(buff, count);
+  barrier();
+  rcclx::relay::lpResetCounters();
+  hipGraphExec_t warmExec = captureGraph([&]() { captured = enqueueLp(); });
+  ASSERT_EQ(captured, ncclSuccess);
+  ASSERT_NE(warmExec, nullptr);
+  EXPECT_GT(rcclx::relay::lpEngageCount(), 0u)
+      << "low precision must engage inside a capture once the arena is up";
+  EXPECT_EQ(
+      rcclx::relay::lpDeclineCount(rcclx::relay::LpDecline::GraphCapture), 0u);
+
+  // ---- 4. Replay: the arena's fixed partition must give the same addresses
+  // every time, so every replay is exact.
+  for (int r = 0; r < 3; r++) {
+    fillMine(buff, count);
+    barrier();
+    replay(warmExec, /*skew=*/true);
+    expectSum(buff, count, "warm-arena low-precision replay");
+  }
+
+  HIPEXPECT_TEST(hipGraphExecDestroy(warmExec));
+  HIPEXPECT_TEST(hipFree(buff));
+}
+
 int main(int argc, char* argv[]) {
 #ifdef RCCLX_RELAY_TEST_EAGER_ONESHOT
   // Has to happen before the first communicator is built, and NCCL caches the
@@ -849,6 +1177,13 @@ int main(int argc, char* argv[]) {
   // at init, so it must not inherit the variable from whoever invoked it.
   unsetenv("NCCL_SHARDED_RELAY_MODE_ENABLE");
 #endif
+  // The low-precision size thresholds that SHIP are a tuning policy measured
+  // per shape, and they decline most shapes outright (see lpMinBytes()). This
+  // suite covers the MECHANISM -- that the wire format is correct wherever it
+  // runs -- so it must not be coupled to that policy: a retune would otherwise
+  // silently turn these cases into no-ops that still pass. Set before any
+  // communicator exists, because NCCL_PARAM caches on first read.
+  setenv("NCCL_SHARDED_RELAY_LP_MIN_KB", "1", /*overwrite=*/1);
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
   folly::Init init(&argc, &argv);

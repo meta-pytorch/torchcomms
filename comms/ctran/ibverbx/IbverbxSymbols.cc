@@ -2,15 +2,30 @@
 
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
+#ifdef IBVERBX_BUILD_RDMA_CORE
+#include <infiniband/mlx5dv.h>
+#include <infiniband/verbs.h>
+#endif
+
 #include <dlfcn.h>
-#include <folly/ScopeGuard.h>
 #include <folly/synchronization/CallOnce.h>
+
+#include "comms/ctran/ibverbx/utils/ScopeGuard.h"
 
 #include "comms/ctran/utils/CtranLogger.h"
 
 namespace ibverbx {
 
 IbvSymbols ibvSymbols;
+
+// Wheel validation reads this after debug symbols have been stripped.
+#ifdef IBVERBX_BUILD_RDMA_CORE
+[[gnu::used, gnu::retain]] static constexpr char kIbverbxLinkMode[] =
+    "ibverbx-link-mode:direct-rdma-core";
+#else
+[[gnu::used, gnu::retain]] static constexpr char kIbverbxLinkMode[] =
+    "ibverbx-link-mode:dynamic";
+#endif
 
 #define IBVERBS_VERSION "IBVERBS_1.1"
 
@@ -546,8 +561,8 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   void* tmp;
   void** cast;
 
-  // Use folly::ScopedGuard to ensure resources are cleaned up upon failure
-  auto guard = folly::makeGuard([&]() {
+  // Ensure resources are cleaned up upon failure
+  auto guard = utils::makeScopeGuard([&]() {
     if (ibvhandle != nullptr) {
       dlclose(ibvhandle);
     }

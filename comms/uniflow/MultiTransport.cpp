@@ -24,8 +24,15 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <optional>
+#include <set>
 
 namespace uniflow {
 
@@ -315,11 +322,58 @@ MultiTransportFactory::MultiTransportFactory(
   if (tcpHost.empty()) {
     tcpHost = resolveTcpBindHost(options_.netdevPrefix);
   }
-  if (!isLoopbackHost(tcpHost) || options_.enableTcp) {
+  bool tcpDevicesOk = true;
+  TcpTransportConfig tcpConfig = options_.tcpTransportConfig
+      ? *options_.tcpTransportConfig
+      : TcpTransportConfig{};
+  {
+    // Discovery fills bindToDevices when the caller left it empty. A caller
+    // that named devices keeps them, but only if discovery would have accepted
+    // them: a name that is missing, down, or carries no usable global address
+    // would otherwise bind a lane to a NIC that cannot serve it. Rejecting
+    // rather than substituting is deliberate -- quietly swapping in a different
+    // NIC would hide that the requested one went away.
+    const auto usable = enumerateFrontendDevices(
+        options_.tcpDevicePrefix, std::numeric_limits<size_t>::max());
+    if (tcpConfig.bindToDevices.empty()) {
+      tcpConfig.bindToDevices = usable;
+      // The cap comes off the transport config, which is the single place it is
+      // declared: MultiTransportOptions used to carry its own copy, so this and
+      // the benchmark could disagree about the default while each looked right.
+      // resolveMaxFrontendDevices also clamps to what this host actually has.
+      const size_t maxDevices =
+          tcpConfig.resolveMaxFrontendDevices(options_.tcpDevicePrefix);
+      if (tcpConfig.bindToDevices.size() > maxDevices) {
+        tcpConfig.bindToDevices.resize(maxDevices);
+      }
+    } else {
+      for (const auto& dev : tcpConfig.bindToDevices) {
+        if (std::find(usable.begin(), usable.end(), dev) == usable.end()) {
+          UNIFLOW_LOG_ERROR(
+              "MultiTransport: not registering tcp: configured bind device '{}' "
+              "is not a usable '{}' device (needs operstate up and a "
+              "non-deprecated global address)",
+              dev,
+              options_.tcpDevicePrefix);
+          tcpDevicesOk = false;
+          break;
+        }
+      }
+    }
+  }
+  if (tcpDevicesOk && (!isLoopbackHost(tcpHost) || options_.enableTcp)) {
+    std::string devList;
+    for (const auto& d : tcpConfig.bindToDevices) {
+      devList += (devList.empty() ? "" : ",") + d;
+    }
+    UNIFLOW_LOG_INFO(
+        "MultiTransport: tcp striping across {} device(s) [{}]",
+        tcpConfig.bindToDevices.size(),
+        devList);
     auto tcp = std::make_shared<TcpTransportFactory>(
         deviceId,
         eventBaseThread_->getEventBase(),
-        controller::TcpSocketConfig{},
+        std::move(tcpConfig),
         tcpHost);
     factories_.emplace_back(std::move(tcp));
   } else {

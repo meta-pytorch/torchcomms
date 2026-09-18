@@ -3,8 +3,12 @@
 #include "comms/utils/colltrace/CollTrace.h"
 
 #include <algorithm>
+#include <limits>
+#include <utility>
 
 #include <fmt/core.h>
+#include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <folly/json.h>
 #include <folly/stop_watch.h>
 
@@ -123,6 +127,10 @@ CollTrace::CollTrace(
           folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
               config_.maxPendingQueueSize}),
       plugins_(std::move(plugins)) {
+  eagerCancellationGate_ = std::make_shared<EagerCancellationGate>(
+      [this](CollTraceEvent& event) { return cancelEvent(event); });
+  graphCancellationGate_ = std::make_shared<GraphCancellationGate>(
+      [this](uint32_t collId) { return cancelGraphCollective(collId); });
   if (NCCL_COLLTRACE_TRACE_CUDA_GRAPH &&
       graphColltraceSupported(logPrefix_, config_.loggerName)) {
     // Eagerly initialize the globaltimer calibration singleton now (outside
@@ -178,6 +186,8 @@ CollTrace::CollTrace(
 }
 
 CollTrace::~CollTrace() {
+  eagerCancellationGate_->shutdown();
+  graphCancellationGate_->shutdown();
   // Set the cancellation flag under the flush mutex so waitFlush()
   // can't miss the state change between its predicate check and wait.
   {
@@ -193,17 +203,61 @@ CollTrace::~CollTrace() {
   for (auto& [_, handle] : eventToHandleMap_) {
     handle->invalidate();
   }
-  // Invalidate all graph handles.
-  for (auto& [_, state] : graphStateMap_) {
-    for (auto& [_, collEntry] : state->collectives) {
-      if (auto h = collEntry.handle.lock()) {
-        h->invalidate();
-      }
-    }
-  }
-  // Wait for the thread to finish
+  // Stop the only thread that removes graph state before walking that state.
   if (traceCollThread_.joinable()) {
     traceCollThread_.join();
+  }
+
+  if (pendingEnqueueColl_ != nullptr) {
+    terminateEvent(
+        *pendingEnqueueColl_, CollTraceTerminalReason::TraceDestroyed);
+  }
+  std::unique_ptr<CollTraceEvent> pendingEvent;
+  while (pendingTraceColls_.read(pendingEvent)) {
+    if (pendingEvent != nullptr) {
+      terminateEvent(*pendingEvent, CollTraceTerminalReason::TraceDestroyed);
+    }
+  }
+  for (auto& event : eagerEvents_) {
+    if (event != nullptr) {
+      terminateEvent(*event, CollTraceTerminalReason::TraceDestroyed);
+    }
+  }
+  std::vector<
+      std::pair<std::unique_ptr<CollTraceEvent>, CollTraceTerminalReason>>
+      graphTemplateEvents;
+  folly::F14FastSet<uint32_t> destroyedGraphCollIds;
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    for (auto& [_, state] : graphStateMap_) {
+      const auto reason =
+          state->graph_destructed.load(std::memory_order_relaxed)
+          ? CollTraceTerminalReason::GraphDestroyed
+          : CollTraceTerminalReason::TraceDestroyed;
+      for (auto& [collId, collEntry] : state->collectives) {
+        if (reason == CollTraceTerminalReason::GraphDestroyed) {
+          destroyedGraphCollIds.insert(collId);
+        }
+        if (auto h = collEntry.handle.lock()) {
+          h->invalidate();
+        }
+        if (collEntry.event != nullptr) {
+          graphTemplateEvents.emplace_back(std::move(collEntry.event), reason);
+        }
+      }
+    }
+    graphStateMap_.clear();
+  }
+  for (auto& [event, reason] : graphTemplateEvents) {
+    terminateEvent(*event, reason);
+  }
+  for (auto& [collId, event] : inFlightReplays_) {
+    if (event != nullptr) {
+      const auto reason = destroyedGraphCollIds.contains(collId)
+          ? CollTraceTerminalReason::GraphDestroyed
+          : CollTraceTerminalReason::TraceDestroyed;
+      terminateEvent(*event, reason);
+    }
   }
 }
 
@@ -309,6 +363,9 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       handlePtr->second->invalidate();
       eventToHandleMap_.erase(pendingEnqueueColl_.get());
     }
+    terminateEvent(
+        *pendingEnqueueColl_,
+        CollTraceTerminalReason::SupersededBeforeSchedule);
   }
 
   const auto collId = collId_.fetch_add(1);
@@ -316,8 +373,8 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
       .collRecord = std::make_shared<CollRecord>(collId, std::move(metadata)),
       .waitEvent = std::move(waitEvent),
   });
-  auto handle =
-      std::make_shared<CollTraceHandle>(this, pendingEnqueueColl_.get());
+  auto handle = std::make_shared<CollTraceHandle>(
+      this, pendingEnqueueColl_.get(), eagerCancellationGate_);
   eventToHandleMap_.emplace(pendingEnqueueColl_.get(), handle);
   triggerPlugins<&ICollTracePlugin::afterCollRecorded>(
       *logger_, plugins_, *pendingEnqueueColl_);
@@ -326,6 +383,42 @@ CommsMaybe<std::shared_ptr<ICollTraceHandle>> CollTrace::recordCollective(
 
 ICollTracePlugin* CollTrace::getPluginByName(std::string name) noexcept {
   return folly::get_ptr(pluginByName_, name);
+}
+
+CommsMaybeVoid CollTrace::cancelEvent(CollTraceEvent& collEvent) noexcept {
+  if (&collEvent == pendingEnqueueColl_.get()) {
+    eventToHandleMap_.erase(&collEvent);
+    pendingEnqueueColl_.reset();
+    return folly::unit;
+  }
+
+  std::lock_guard<std::mutex> lock(graphStateMutex_);
+  for (auto& [_, state] : graphStateMap_) {
+    for (auto& collective : state->collectives) {
+      if (collective.second.event.get() == &collEvent) {
+        collective.second.cancelled = true;
+        hasCancelledGraphCollectives_.store(true, std::memory_order_release);
+        return folly::unit;
+      }
+    }
+  }
+  return folly::makeUnexpected(
+      CommsError("CollTrace event is no longer pending", commInvalidArgument));
+}
+
+CommsMaybeVoid CollTrace::cancelGraphCollective(uint32_t collId) noexcept {
+  std::lock_guard<std::mutex> lock(graphStateMutex_);
+  for (auto& [_, state] : graphStateMap_) {
+    auto collective = state->collectives.find(collId);
+    if (collective == state->collectives.end()) {
+      continue;
+    }
+    collective->second.cancelled = true;
+    hasCancelledGraphCollectives_.store(true, std::memory_order_release);
+    return folly::unit;
+  }
+  return folly::makeUnexpected(
+      CommsError("CollTrace event is no longer pending", commInvalidArgument));
 }
 
 CommsMaybeVoid CollTrace::triggerEventState(
@@ -341,6 +434,11 @@ CommsMaybeVoid CollTrace::triggerEventState(
       auto beforeKernelRes = collEvent.waitEvent->beforeCollKernelScheduled();
       triggerPlugins<&ICollTracePlugin::beforeCollKernelScheduled>(
           *logger_, plugins_, collEvent); // Trigger after calling waitEvent
+      /*
+       * A wait-event setup failure leaves the handle and pending event intact.
+       * Callers may retry this state; supersession or CollTrace teardown gives
+       * an event that is never retried its eventual terminal disposition.
+       */
       EXPECT_CHECK_ALWAYS_RETURN(beforeKernelRes);
     }
     case CollTraceHandleTriggerState::AfterEnqueueKernel: {
@@ -351,8 +449,15 @@ CommsMaybeVoid CollTrace::triggerEventState(
       }
       triggerPlugins<&ICollTracePlugin::afterCollKernelScheduled>(
           *logger_, plugins_, collEvent); // Trigger before calling waitEvent
+      /*
+       * Preserve the same retry contract as BeforeEnqueueKernel. Moving the
+       * event to the poll queue before wait-event setup succeeds would make a
+       * retry race the poll thread and could duplicate lifecycle callbacks.
+       */
       EXPECT_CHECK(collEvent.waitEvent->afterCollKernelScheduled());
-      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(precisionNow());
+      auto enqueueTime = collEvent.waitEvent->getCollEnqueueTime();
+      collEvent.collRecord->getTimingInfo().setCollEnqueueTs(
+          enqueueTime.hasValue() ? enqueueTime.value() : precisionNow());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
         // If the write fails, pendingEnqueueColl_ will not be moved. Do a
@@ -363,6 +468,8 @@ CommsMaybeVoid CollTrace::triggerEventState(
         // holds its write lock and calling invalidate here will cause deadlock.
         eventToHandleMap_.at(pendingEnqueueColl_.get())->invalidateUnsafe();
         eventToHandleMap_.erase(pendingEnqueueColl_.get());
+        terminateEvent(
+            *pendingEnqueueColl_, CollTraceTerminalReason::QueueRejected);
         pendingEnqueueColl_ = nullptr;
         return folly::makeUnexpected(CommsError(
             "Failed to write to pendingTraceColls_ queue", commInternalError));
@@ -433,10 +540,9 @@ CollTrace::recordGraphCollectiveImpl(
   });
   auto* registrationEvent = collEvent.get();
 
-  auto handle = std::make_shared<GraphCollTraceHandle>(
-      rawWaitEvent, std::move(recordPtr));
-
   uint32_t collId = rawWaitEvent->getCollId();
+  auto handle = std::make_shared<GraphCollTraceHandle>(
+      rawWaitEvent, std::move(recordPtr), graphCancellationGate_, collId);
 
   GraphCollectiveEntry collectiveEntry{
       .graphWaitEvent = rawWaitEvent,
@@ -484,8 +590,57 @@ void CollTrace::ackFlush(uint64_t gen) noexcept {
   }
 }
 
+void CollTrace::terminateEvent(
+    CollTraceEvent& event,
+    CollTraceTerminalReason reason) noexcept {
+  if (event.terminalReason.has_value()) {
+    return;
+  }
+  event.terminalReason = reason;
+  for (auto& plugin : plugins_) {
+    auto result = plugin->afterCollTerminated(event, reason);
+    if (result.hasError()) {
+      COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 10)
+          << "Plugin " << plugin->getName() << " returned an error"
+          << " when terminating event: " << result.error().message;
+    }
+  }
+}
+
 bool CollTrace::isThreadCancelled() const noexcept {
   return threadShouldStop_.test(std::memory_order_relaxed);
+}
+
+void CollTrace::markAmbiguousGraphReplay(
+    uint32_t collId,
+    uint64_t additionalMarkers,
+    uint64_t currentSlot,
+    uint64_t recoveryWindow) noexcept {
+  const auto maxSlot = std::numeric_limits<uint64_t>::max();
+  const auto clearAfterSlot = currentSlot > maxSlot - recoveryWindow
+      ? maxSlot
+      : currentSlot + recoveryWindow;
+  auto [it, inserted] = ambiguousGraphReplays_.try_emplace(
+      collId,
+      AmbiguousGraphReplayState{
+          .outstandingEndMarkers = additionalMarkers,
+          .clearAfterSlot = clearAfterSlot,
+      });
+  if (!inserted) {
+    const auto available = maxSlot - it->second.outstandingEndMarkers;
+    it->second.outstandingEndMarkers += std::min(additionalMarkers, available);
+  }
+}
+
+void CollTrace::expireAmbiguousGraphReplays(uint64_t consumedUpTo) noexcept {
+  for (auto it = ambiguousGraphReplays_.begin();
+       it != ambiguousGraphReplays_.end();) {
+    if (it->second.clearAfterSlot < consumedUpTo) {
+      it = ambiguousGraphReplays_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void CollTrace::pollGraphEvents(
@@ -494,28 +649,60 @@ void CollTrace::pollGraphEvents(
     return;
   }
 
+  std::vector<std::unique_ptr<CollTraceEvent>> destroyedGraphEvents;
   {
     std::lock_guard<std::mutex> lock(graphStateMutex_);
 
     // check to see if any graphs have been destroyed.
     // if so, remove stop tracking associated state.
-    std::erase_if(graphStateMap_, [this](const auto& entry) {
-      const auto& state = entry.second;
-      if (state->graph_destructed.load(std::memory_order_relaxed)) {
-        for (const auto& [collId, collEntry] : state->collectives) {
-          // Invalidate the handle to prevent use-after-free of the
-          // raw GraphCudaWaitEvent pointer once we destroy the entry.
-          if (auto h = collEntry.handle.lock()) {
-            h->invalidate();
+    std::erase_if(
+        graphStateMap_, [this, &destroyedGraphEvents](const auto& entry) {
+          const auto& state = entry.second;
+          if (state->graph_destructed.load(std::memory_order_relaxed)) {
+            for (auto& [collId, collEntry] : state->collectives) {
+              // Invalidate the handle to prevent use-after-free of the
+              // raw GraphCudaWaitEvent pointer once we destroy the entry.
+              if (auto h = collEntry.handle.lock()) {
+                h->invalidate();
+              }
+              collIdMap_.erase(collId);
+              progressingGraphCollectives_.erase(collId);
+              ambiguousGraphReplays_.erase(collId);
+              if (auto replayIt = inFlightReplays_.find(collId);
+                  replayIt != inFlightReplays_.end()) {
+                destroyedGraphEvents.push_back(std::move(replayIt->second));
+                inFlightReplays_.erase(replayIt);
+                inFlightReplayStartSlots_.erase(collId);
+              }
+              if (collEntry.event != nullptr) {
+                destroyedGraphEvents.push_back(std::move(collEntry.event));
+              }
+            }
+            return true;
           }
+          return false;
+        });
+
+    if (hasCancelledGraphCollectives_.exchange(
+            false, std::memory_order_acq_rel)) {
+      for (auto& [_, state] : graphStateMap_) {
+        std::erase_if(state->collectives, [this](const auto& entry) {
+          if (!entry.second.cancelled) {
+            return false;
+          }
+          if (auto handle = entry.second.handle.lock()) {
+            handle->invalidate();
+          }
+          const auto collId = entry.first;
           collIdMap_.erase(collId);
           progressingGraphCollectives_.erase(collId);
           inFlightReplays_.erase(collId);
-        }
-        return true;
+          inFlightReplayStartSlots_.erase(collId);
+          ambiguousGraphReplays_.erase(collId);
+          return true;
+        });
       }
-      return false;
-    });
+    }
 
     // add new collectives that aren't in collIdMap_ yet.
     for (auto& [_, state] : graphStateMap_) {
@@ -527,14 +714,27 @@ void CollTrace::pollGraphEvents(
     }
   }
 
+  for (auto& event : destroyedGraphEvents) {
+    if (event != nullptr) {
+      terminateEvent(*event, CollTraceTerminalReason::GraphDestroyed);
+    }
+  }
+
+  if (config_.afterGraphSweepHook) {
+    config_.afterGraphSweepHook();
+  }
+
   if (collIdMap_.empty()) {
     return;
   }
 
   const auto& cal = ::hrdw_ring_buffer::GlobaltimerCalibration::get();
+  const auto ambiguityRecoveryWindow =
+      static_cast<uint64_t>(ringBuffer_->size());
 
   auto pollResult = ringReader_->poll(
-      [&](const auto& entry, uint64_t /*slot*/) {
+      [&](const auto& entry, uint64_t slot) {
+        expireAmbiguousGraphReplays(slot);
         auto collId = entry.data.collId;
         bool isStartEvent = entry.data.phase == GraphCollTracePhase::kStart;
 
@@ -544,21 +744,29 @@ void CollTrace::pollGraphEvents(
         }
 
         auto& collEntry = *(it->second);
+        // Cancellation can land after the sweep above exchanged the flag but
+        // before this entry is dispatched, so re-check under the mutex that
+        // publishes it. Without this, ring entries already queued for a
+        // cancelled collId still become plugin actions.
+        {
+          std::lock_guard<std::mutex> lock(graphStateMutex_);
+          if (collEntry.cancelled) {
+            return;
+          }
+        }
         auto timestamp = cal.toWallClock(entry.timestamp);
 
         if (isStartEvent) {
-          // Graph replays are sequential on the stream, so seeing a second
-          // start before the matching end means the prior end was dropped
-          // by ring buffer overflow. The previous in-flight clone will be
-          // discarded below without a kEnd action — this is the expected
-          // data-loss path (warned here; the watchdog detects the changed
-          // start timestamp and resets its timer automatically).
-          if (auto [_, inserted] = progressingGraphCollectives_.insert(collId);
-              !inserted) {
+          auto replayIt = inFlightReplays_.find(collId);
+          auto ambiguousIt = ambiguousGraphReplays_.find(collId);
+          const bool correlationIsAmbiguous =
+              replayIt != inFlightReplays_.end() ||
+              ambiguousIt != ambiguousGraphReplays_.end();
+          if (correlationIsAmbiguous) {
             COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
                 << logPrefix_ << ": graph collective " << collId
-                << " saw a new start event before the previous end event"
-                   " — the end event was likely overwritten (ring too small)";
+                << " saw a new start before prior end markers were correlated;"
+                   " terminally classifying every ambiguous replay";
           }
 
           // Graph replays produce a fresh CollRecord with its own collId
@@ -579,23 +787,73 @@ void CollTrace::pollGraphEvents(
               .capturedCollId = collId,
           });
           auto* replayPtr = replayEvent.get();
-          if (auto replayIt = inFlightReplays_.find(collId);
-              replayIt != inFlightReplays_.end()) {
+          actions.insert(
+              PendingAction{
+                  .event = replayPtr,
+                  .type = PendingActionType::kScheduleAndStart,
+                  .timestamp = timestamp,
+                  .terminalReason = std::nullopt,
+              });
+
+          if (ambiguousIt != ambiguousGraphReplays_.end()) {
+            markAmbiguousGraphReplay(collId, 1, slot, ambiguityRecoveryWindow);
+            actions.insert(
+                PendingAction{
+                    .event = replayPtr,
+                    .type = PendingActionType::kTerminate,
+                    .timestamp = timestamp,
+                    .terminalReason = CollTraceTerminalReason::TrackingOverflow,
+                });
+            graphReplayEvents_.push_back(std::move(replayEvent));
+          } else if (replayIt != inFlightReplays_.end()) {
+            markAmbiguousGraphReplay(collId, 2, slot, ambiguityRecoveryWindow);
+            actions.insert(
+                PendingAction{
+                    .event = replayIt->second.get(),
+                    .type = PendingActionType::kTerminate,
+                    .timestamp = timestamp,
+                    .terminalReason = CollTraceTerminalReason::TrackingOverflow,
+                });
             graphReplayEvents_.push_back(std::move(replayIt->second));
-            replayIt->second = std::move(replayEvent);
+            inFlightReplays_.erase(replayIt);
+            inFlightReplayStartSlots_.erase(collId);
+            progressingGraphCollectives_.erase(collId);
+            actions.insert(
+                PendingAction{
+                    .event = replayPtr,
+                    .type = PendingActionType::kTerminate,
+                    .timestamp = timestamp,
+                    .terminalReason = CollTraceTerminalReason::TrackingOverflow,
+                });
+            graphReplayEvents_.push_back(std::move(replayEvent));
           } else {
+            inFlightReplayStartSlots_.insert_or_assign(collId, slot);
+            progressingGraphCollectives_.insert(collId);
             inFlightReplays_[collId] = std::move(replayEvent);
           }
-          actions.insert(
-              {replayPtr, PendingActionType::kScheduleAndStart, timestamp});
         } else /* isEndEvent */ {
+          if (auto ambiguousIt = ambiguousGraphReplays_.find(collId);
+              ambiguousIt != ambiguousGraphReplays_.end()) {
+            if (--ambiguousIt->second.outstandingEndMarkers == 0) {
+              ambiguousGraphReplays_.erase(ambiguousIt);
+            }
+            return;
+          }
+
           progressingGraphCollectives_.erase(collId);
+          inFlightReplayStartSlots_.erase(collId);
 
           if (auto replayIt = inFlightReplays_.find(collId);
               replayIt != inFlightReplays_.end()) {
             auto* replayPtr = replayIt->second.get();
             replayPtr->collRecord->getTimingInfo().setCollEndTs(timestamp);
-            actions.insert({replayPtr, PendingActionType::kEnd, timestamp});
+            actions.insert(
+                PendingAction{
+                    .event = replayPtr,
+                    .type = PendingActionType::kEnd,
+                    .timestamp = timestamp,
+                    .terminalReason = std::nullopt,
+                });
             graphReplayEvents_.push_back(std::move(replayIt->second));
             inFlightReplays_.erase(replayIt);
           } else {
@@ -611,17 +869,66 @@ void CollTrace::pollGraphEvents(
     COMMS_LOGGER_STREAM_EVERY_MS(*logger_, WARN, 5000)
         << logPrefix_ << ": missed " << pollResult.entriesLost
         << " graph replay timestamp(s) (overwritten)";
+    /*
+     * The ring cannot identify the collective whose marker was overwritten.
+     * A replay whose latest start follows the final lost slot is known-live;
+     * every older in-flight replay may have lost its end marker and must reach
+     * terminal cleanup instead of retaining state and watchdog timers forever.
+     * This can conservatively terminate a long-running replay whose marker was
+     * not overwritten. A start read in this poll can also be suppressed before
+     * plugin delivery when its slot is on the ambiguous side of the loss
+     * boundary; reporting it as valid would promise unavailable correlation.
+     */
+    const auto terminalTimestamp = precisionNow();
+    for (auto it = inFlightReplays_.begin(); it != inFlightReplays_.end();) {
+      const auto collId = it->first;
+      const auto start = inFlightReplayStartSlots_.find(collId);
+      if (pollResult.lastLostIndex.has_value() &&
+          start != inFlightReplayStartSlots_.end() &&
+          start->second > *pollResult.lastLostIndex) {
+        ++it;
+        continue;
+      }
+      actions.insert(
+          PendingAction{
+              .event = it->second.get(),
+              .type = PendingActionType::kTerminate,
+              .timestamp = terminalTimestamp,
+              .terminalReason = CollTraceTerminalReason::TrackingOverflow,
+          });
+      graphReplayEvents_.push_back(std::move(it->second));
+      it = inFlightReplays_.erase(it);
+      inFlightReplayStartSlots_.erase(collId);
+      progressingGraphCollectives_.erase(collId);
+      markAmbiguousGraphReplay(
+          collId, 1, ringReader_->lastReadIndex(), ambiguityRecoveryWindow);
+    }
   }
+
+  expireAmbiguousGraphReplays(ringReader_->lastReadIndex());
 
   // Emit kProgressing for every in-flight clone so the watchdog plugin's
   // timer accumulates. We use inFlightReplays_ (the cloned events) rather
   // than collIdMap_ (the templates) so that progressing fires against the
   // actual replay record with correct timing.
   auto now = precisionNow();
-  for (auto collId : progressingGraphCollectives_) {
-    auto it = inFlightReplays_.find(collId);
-    if (it != inFlightReplays_.end()) {
-      actions.insert({it->second.get(), PendingActionType::kProgressing, now});
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    for (auto collId : progressingGraphCollectives_) {
+      auto entryIt = collIdMap_.find(collId);
+      if (entryIt != collIdMap_.end() && entryIt->second->cancelled) {
+        continue;
+      }
+      auto it = inFlightReplays_.find(collId);
+      if (it != inFlightReplays_.end()) {
+        actions.insert(
+            PendingAction{
+                .event = it->second.get(),
+                .type = PendingActionType::kProgressing,
+                .timestamp = now,
+                .terminalReason = std::nullopt,
+            });
+      }
     }
   }
 }
@@ -660,13 +967,24 @@ void CollTrace::pollEagerEvents(
           startTs = startTimeRes.value();
         }
         timing.setCollStartTs(startTs);
-        actions.insert({event.get(), PendingActionType::kStart, startTs});
+        actions.insert(
+            PendingAction{
+                .event = event.get(),
+                .type = PendingActionType::kStart,
+                .timestamp = startTs,
+                .terminalReason = std::nullopt,
+            });
         started = true;
       } else {
         // Fire progressing even before start so the watchdog plugin can
         // detect pre-start timeouts and async errors.
         actions.insert(
-            {event.get(), PendingActionType::kProgressing, precisionNow()});
+            PendingAction{
+                .event = event.get(),
+                .type = PendingActionType::kProgressing,
+                .timestamp = precisionNow(),
+                .terminalReason = std::nullopt,
+            });
       }
     }
 
@@ -679,10 +997,21 @@ void CollTrace::pollEagerEvents(
           endTs = endTimeRes.value();
         }
         timing.setCollEndTs(endTs);
-        actions.insert({event.get(), PendingActionType::kEnd, endTs});
+        actions.insert(
+            PendingAction{
+                .event = event.get(),
+                .type = PendingActionType::kEnd,
+                .timestamp = endTs,
+                .terminalReason = std::nullopt,
+            });
       } else {
         actions.insert(
-            {event.get(), PendingActionType::kProgressing, precisionNow()});
+            PendingAction{
+                .event = event.get(),
+                .type = PendingActionType::kProgressing,
+                .timestamp = precisionNow(),
+                .terminalReason = std::nullopt,
+            });
       }
     }
   }
@@ -691,6 +1020,9 @@ void CollTrace::pollEagerEvents(
 void CollTrace::processCompletedEvents(
     std::multiset<PendingAction>& actions) noexcept {
   for (auto& action : actions) {
+    if (action.event->terminalReason.has_value()) {
+      continue;
+    }
     switch (action.type) {
       case PendingActionType::kScheduleAndStart: {
         // for graph collectives, there is no actual scheduling
@@ -728,6 +1060,15 @@ void CollTrace::processCompletedEvents(
       case PendingActionType::kProgressing: {
         triggerPlugins<&ICollTracePlugin::collEventProgressing>(
             *logger_, plugins_, *action.event);
+        break;
+      }
+      case PendingActionType::kTerminate: {
+        if (!action.terminalReason.has_value()) {
+          COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 10)
+              << "CollTrace ignored a terminal action without a reason";
+          break;
+        }
+        terminateEvent(*action.event, *action.terminalReason);
         break;
       }
     }

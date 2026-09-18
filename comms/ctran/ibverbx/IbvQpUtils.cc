@@ -1,11 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/utils/cvars/nccl_cvars.h"
-
 #include "comms/ctran/ibverbx/IbvQpUtils.h"
 
 namespace ibverbx {
-folly::Expected<IbvQp, Error>
+Expected<IbvQp>
 createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr) {
   ibv_qp_init_attr initAttr;
   memset(&initAttr, 0, sizeof(ibv_qp_init_attr));
@@ -25,7 +23,7 @@ createRcQp(const IbvPd* ibvPd, ibv_cq* cq, int maxSendWr, int maxRecvWr) {
   return ibvPd->createQp(&initAttr);
 }
 
-folly::Expected<IbvQp, Error> createRcQpWithOooDp(
+Expected<IbvQp> createRcQpWithOooDp(
     const IbvPd* ibvPd,
     ibv_cq* cq,
     int maxSendWr,
@@ -61,12 +59,11 @@ folly::Expected<IbvQp, Error> createRcQpWithOooDp(
   return ibvPd->createExtRcQpMlx5(&initAttrEx, &mlx5InitAttr);
 }
 
-folly::Expected<folly::Unit, Error>
-initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
+Status initQp(IbvQp& ibvQp, int port, int qp_access_flags, uint16_t pkeyIndex) {
   ibv_qp_attr qpAttr;
   memset(&qpAttr, 0, sizeof(ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_INIT;
-  qpAttr.pkey_index = NCCL_IB_PKEY;
+  qpAttr.pkey_index = pkeyIndex;
   qpAttr.port_num = port;
   qpAttr.qp_access_flags = qp_access_flags;
   return ibvQp.modifyQp(
@@ -74,7 +71,7 @@ initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
       IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
 }
 
-folly::Expected<folly::Unit, Error> rtrQp(
+Status rtrQp(
     const RemoteQpInfo& remoteQpInfo,
     IbvQp& ibvQp,
     uint8_t trafficClass,
@@ -115,7 +112,7 @@ folly::Expected<folly::Unit, Error> rtrQp(
           IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
 }
 
-folly::Expected<folly::Unit, Error> rtsQp(
+Status rtsQp(
     IbvQp& ibvQp,
     uint8_t timeout,
     uint8_t retryCnt,

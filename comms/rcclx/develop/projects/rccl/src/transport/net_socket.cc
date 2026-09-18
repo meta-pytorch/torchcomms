@@ -139,6 +139,7 @@ NCCL_PARAM(SocketInlineSize, "SOCKET_INLINE", /*128 B=*/1 << 7);
 NCCL_PARAM(SocketMinTaskSize, "SOCKET_MIN_TASKSIZE", /*64 kiB=*/1 << 16);
 NCCL_PARAM(SocketNsocksPerThread, "NSOCKS_PERTHREAD", -2);
 NCCL_PARAM(SocketNthreads, "SOCKET_NTHREADS", -2);
+NCCL_PARAM(SocketBindToDevice, "SOCKET_BINDTODEVICE", 0);
 
 enum ncclNetSocketCommState {
   ncclNetSocketCommStateStart = 0,
@@ -396,6 +397,9 @@ ncclResult_t ncclNetSocketConnect(void* ctx, int dev, void* opaqueHandle, void**
   for (; i<comm->nSocks+1; i++) {
     sock = (i == comm->nSocks) ? &comm->ctrlSock : comm->socks+i;
     NCCLCHECK(ncclSocketInit(sock, &handle->connectAddr, handle->magic, ncclSocketTypeNetSocket, NULL, 1));
+    if (ncclParamSocketBindToDevice()) {
+      NCCLCHECK(ncclSocketBindToDevice(sock, ncclNetSocketDevs[dev].devName));
+    }
 
     stage->sock = sock;
     stage->state = ncclNetSocketCommStateConnect;

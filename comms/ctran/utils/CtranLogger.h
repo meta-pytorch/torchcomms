@@ -11,6 +11,12 @@ namespace ctran::logging {
 
 inline constexpr std::string_view kCtranLoggerName = "comms.ctran";
 
+inline meta::comms::logger::CommsSpdlogLogger& getCtranLogger() {
+  static auto& logger /* library-local */ =
+      meta::comms::logger::getSpdlogLogger(kCtranLoggerName);
+  return logger;
+}
+
 inline void configureStandaloneCtranLogging(
     spdlog::level::level_enum logLevel) {
   /*
@@ -53,12 +59,11 @@ inline void configureStandaloneCtranLogging(
   } while (false)
 #define CTRAN_LOG(level, ...) CTRAN_LOG_##level(__VA_ARGS__)
 #define CTRAN_LOG_STREAM_IF(level, condition) \
-  COMMS_LOG_NAMED_STREAM_IF(                  \
-      ::ctran::logging::kCtranLoggerName, level, condition)
+  COMMS_LOGGER_STREAM_IF(::ctran::logging::getCtranLogger(), level, condition)
 #define CTRAN_LOG_STREAM(level) \
-  COMMS_LOG_NAMED_STREAM(::ctran::logging::kCtranLoggerName, level)
+  COMMS_LOGGER_STREAM(::ctran::logging::getCtranLogger(), level)
 
-#define CTRAN_LOG_SYNC_ERR(...)                                          \
+#define CTRAN_LOG_SYNC_ERR_IMPL(...)                                     \
   do {                                                                   \
     static auto& _ctran_logger = ::meta::comms::logger::getSpdlogLogger( \
         ::ctran::logging::kCtranLoggerName);                             \
@@ -69,6 +74,9 @@ inline void configureStandaloneCtranLogging(
           __VA_ARGS__);                                                  \
     }                                                                    \
   } while (false)
+
+// Compatibility alias; new code should express the owning operation instead.
+#define CTRAN_LOG_SYNC_ERR(...) CTRAN_LOG_SYNC_ERR_IMPL(__VA_ARGS__)
 
 #define CTRAN_LOG_IF_IMPL(level, spdlog_level, condition, ...)           \
   do {                                                                   \

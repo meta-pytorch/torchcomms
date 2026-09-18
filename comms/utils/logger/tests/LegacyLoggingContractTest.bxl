@@ -1,11 +1,32 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-_SCOPES = (
-    "fbcode//comms/ctran/...",
-    "fbcode//comms/mccl/...",
-    "fbcode//comms/ncclx/...",
-    "fbcode//comms/prims/...",
+_SCOPE_CONFIGS = (
+    ("fbcode//comms/ctran/...", "//comms/ctran/"),
+    ("fbcode//comms/mccl/...", "//comms/mccl/"),
+    ("fbcode//comms/ncclx/...", "//comms/ncclx/"),
+    ("fbcode//comms/prims/...", "//comms/prims/"),
+    ("fbcode//comms/torchcomms/ncclx/...", "//comms/torchcomms/ncclx/"),
 )
+_SCOPE_LABEL_PREFIX = "fbcode//"
+_SCOPE_LABEL_SUFFIX = "/..."
+COMMS_LOGGING_TARGET = "fbcode//comms/utils/logger:comms_logging"
+COMMS_LOGGING_SOURCE_PATHS = (
+    "fbcode//comms/utils/logger/CommsLogging.cc",
+    "fbcode//comms/utils/logger/CommsLogging.h",
+)
+
+def _scope_source_fragment(scope: str) -> str:
+    if not scope.startswith(_SCOPE_LABEL_PREFIX) or not scope.endswith(_SCOPE_LABEL_SUFFIX):
+        fail("Invalid migrated logging scope: {}".format(scope))
+    relative_path = scope[len(_SCOPE_LABEL_PREFIX) : -len(_SCOPE_LABEL_SUFFIX)]
+    return "//{}/".format(relative_path)
+
+_SCOPES = [scope for scope, _ in _SCOPE_CONFIGS] + [
+    COMMS_LOGGING_TARGET,
+]
+_SCOPE_SOURCE_FRAGMENTS = [fragment for _, fragment in _SCOPE_CONFIGS]
+_EXCLUDED_TARGET_SCOPES = ("fbcode//comms/mccl/coordinator/zelos/...",)
+_EXCLUDED_SOURCE_FRAGMENTS = [_scope_source_fragment(scope) for scope in _EXCLUDED_TARGET_SCOPES]
 
 _SOURCE_EXTENSIONS = (
     ".c",
@@ -19,6 +40,7 @@ _SOURCE_EXTENSIONS = (
     ".hpp",
     ".hxx",
     ".inl",
+    ".tcc",
 )
 
 _LEGACY_IDENTIFIERS = (
@@ -84,11 +106,87 @@ _LEGACY_IDENTIFIER = regex(
         "|".join(_LEGACY_IDENTIFIERS),
     ),
 )
+_MCCL_ADAPTER_CONTEXT_SOURCE_PATHS = (
+    "fbcode//comms/mccl/adapter/bootstrap/Socket.cpp",
+    "fbcode//comms/mccl/adapter/mccl_adapter/Comm.cpp",
+    "fbcode//comms/mccl/adapter/mccl_adapter/Impl.cpp",
+)
+_INTERNAL_LOGGING_IDENTIFIERS = (
+    (
+        "MCCL_ACTIVE_LOGGER_CONTEXT_IMPL",
+        regex(
+            ".*(^|[^A-Za-z0-9_])MCCL_ACTIVE_LOGGER_CONTEXT_IMPL([^A-Za-z0-9_]|$).*",
+        ),
+        _MCCL_ADAPTER_CONTEXT_SOURCE_PATHS
+        + (
+            "fbcode//comms/mccl/utils/McclLogger.h",
+            "fbcode//comms/mccl/utils/tests/McclAdapterLoggerTest.cpp",
+        ),
+    ),
+    (
+        "MCCL_ACTIVE_LOGGER_IMPL",
+        regex(
+            ".*(^|[^A-Za-z0-9_])MCCL_ACTIVE_LOGGER_IMPL([^A-Za-z0-9_]|$).*",
+        ),
+        ("fbcode//comms/mccl/utils/McclLogger.h",),
+    ),
+    (
+        "MCCL_ACTIVE_LOGGER_NAME_IMPL",
+        regex(
+            ".*(^|[^A-Za-z0-9_])MCCL_ACTIVE_LOGGER_NAME_IMPL([^A-Za-z0-9_]|$).*",
+        ),
+        ("fbcode//comms/mccl/utils/McclLogger.h",),
+    ),
+    (
+        "CTRAN_LOG_SYNC_ERR",
+        regex(".*(^|[^A-Za-z0-9_])CTRAN_LOG_SYNC_ERR([^A-Za-z0-9_]|$).*"),
+        (
+            "fbcode//comms/ctran/utils/CtranLogger.h",
+            "fbcode//comms/ctran/utils/tests/ChecksUT.cc",
+        ),
+    ),
+    (
+        "CTRAN_LOG_SYNC_ERR_IMPL",
+        regex(".*(^|[^A-Za-z0-9_])CTRAN_LOG_SYNC_ERR_IMPL([^A-Za-z0-9_]|$).*"),
+        (
+            "fbcode//comms/ctran/utils/Checks.h",
+            "fbcode//comms/ctran/utils/CtranLogger.h",
+        ),
+    ),
+    (
+        "MCCL_LOG_WITH_NAME",
+        regex(".*(^|[^A-Za-z0-9_])MCCL_LOG_WITH_NAME([^A-Za-z0-9_]|$).*"),
+        (
+            "fbcode//comms/mccl/utils/McclLogger.h",
+            "fbcode//comms/mccl/utils/tests/McclLoggerTest.cpp",
+        ),
+    ),
+    (
+        "MCCL_LOG_WITH_LOGGER",
+        regex(".*(^|[^A-Za-z0-9_])MCCL_LOG_WITH_LOGGER([^A-Za-z0-9_]|$).*"),
+        ("fbcode//comms/mccl/utils/McclLogger.h",),
+    ),
+)
 _FOLLY_LOGGING_SYMBOL = regex(
     ".*(^|[^A-Za-z0-9_])folly::(Log[A-Za-z0-9_]*|logging)([^A-Za-z0-9_]|$).*",
 )
 _FOLLY_LOGGING_INCLUDE = regex(
     '^[ \\t]*#[ \\t]*include[ \\t]*[<"]folly/logging/.*',
+)
+_CPP_INCLUDE = regex("^[ \\t]*#[ \\t]*include([^A-Za-z0-9_]|$).*")
+_MCCL_CONTEXT_PUSH = '#pragmapush_macro("MCCL_ACTIVE_LOGGER_CONTEXT_IMPL")'
+_MCCL_CONTEXT_UNDEF = "#undefMCCL_ACTIVE_LOGGER_CONTEXT_IMPL"
+_MCCL_CONTEXT_DEFINE = "#defineMCCL_ACTIVE_LOGGER_CONTEXT_IMPL"
+_MCCL_CONTEXT_VALUE = "::mccl::logging::detail::AdapterLoggerContext"
+_MCCL_CONTEXT_POP = '#pragmapop_macro("MCCL_ACTIVE_LOGGER_CONTEXT_IMPL")'
+MCCL_CONTEXTUAL_LOGGING_MACRO = regex(
+    ".*(^|[^A-Za-z0-9_])(MCCL_LOG[A-Za-z0-9_]*|MCCL_ABORT)([^A-Za-z0-9_]|$).*",
+)
+_LEGACY_COMPATIBILITY_TARGETS = (
+    "fbcode//comms/utils/logger:log_utils",
+    "fbcode//comms/utils/logger:logger",
+    "fbcode//comms/utils/logger:logging_format",
+    "fbcode//comms/utils/logger:nccl_writer_wrapper",
 )
 
 def _is_identifier_character(character: str) -> bool:
@@ -193,11 +291,129 @@ def _strip_non_code_line(line: str, in_block_comment: bool = False, raw_terminat
         escaped,
     )
 
-def _is_folly_logging_dependency(label: str) -> bool:
-    return "//folly/logging:" in label
+def _is_legacy_logging_dependency(label: str) -> bool:
+    return "//folly/logging:" in label or label in _LEGACY_COMPATIBILITY_TARGETS
 
 def _contains_folly_logging_include(line: str, starts_in_literal: bool) -> bool:
     return not starts_in_literal and _FOLLY_LOGGING_INCLUDE.match(line)
+
+def _check_mccl_adapter_context_structure(path: str, source_lines):
+    if path not in _MCCL_ADAPTER_CONTEXT_SOURCE_PATHS:
+        return []
+
+    violations = []
+    state = "before_push"
+    in_block_comment = False
+    raw_terminator = ""
+    literal_delimiter = ""
+    escaped = False
+    for line_number, line in enumerate(source_lines, 1):
+        line_starts_in_literal = bool(raw_terminator or literal_delimiter)
+        (
+            line_without_comments,
+            source_line,
+            in_block_comment,
+            raw_terminator,
+            literal_delimiter,
+            escaped,
+        ) = _strip_non_code_line(
+            line,
+            in_block_comment,
+            raw_terminator,
+            literal_delimiter,
+            escaped,
+        )
+        compact_directive = line_without_comments.replace(" ", "").replace("\t", "")
+        if state == "invalid":
+            continue
+        if not line_starts_in_literal and compact_directive == _MCCL_CONTEXT_PUSH:
+            if state != "before_push":
+                violations.append(
+                    "{}:{}: unexpected MCCL adapter logger context push".format(
+                        path,
+                        line_number,
+                    ),
+                )
+            else:
+                state = "after_push"
+        elif not line_starts_in_literal and compact_directive == _MCCL_CONTEXT_UNDEF:
+            if state != "after_push":
+                violations.append(
+                    "{}:{}: MCCL adapter logger context undef must follow its push".format(
+                        path,
+                        line_number,
+                    ),
+                )
+            else:
+                state = "after_undef"
+        elif not line_starts_in_literal and compact_directive == _MCCL_CONTEXT_DEFINE + "\\":
+            if state != "after_undef":
+                violations.append(
+                    "{}:{}: MCCL adapter logger context define must follow its undef".format(
+                        path,
+                        line_number,
+                    ),
+                )
+            else:
+                state = "after_define"
+        elif state == "after_define":
+            if line_starts_in_literal or compact_directive != _MCCL_CONTEXT_VALUE:
+                violations.append(
+                    "{}:{}: MCCL adapter logger context has an unexpected value".format(
+                        path,
+                        line_number,
+                    ),
+                )
+                state = "invalid"
+            else:
+                state = "active"
+        elif not line_starts_in_literal and compact_directive == _MCCL_CONTEXT_POP:
+            if state != "active":
+                violations.append(
+                    "{}:{}: MCCL adapter logger context pop must follow its define".format(
+                        path,
+                        line_number,
+                    ),
+                )
+            else:
+                state = "popped"
+        elif state in ("after_push", "after_undef") and source_line.strip():
+            violations.append(
+                "{}:{}: code appears inside MCCL adapter logger context setup".format(
+                    path,
+                    line_number,
+                ),
+            )
+            state = "invalid"
+        elif state == "active" and _CPP_INCLUDE.match(source_line):
+            violations.append(
+                "{}:{}: include appears inside MCCL adapter logger context override".format(
+                    path,
+                    line_number,
+                ),
+            )
+        elif state == "before_push" and MCCL_CONTEXTUAL_LOGGING_MACRO.match(source_line):
+            violations.append(
+                "{}:{}: MCCL logging appears before its adapter logger context".format(
+                    path,
+                    line_number,
+                ),
+            )
+        elif state == "popped" and source_line.strip():
+            violations.append(
+                "{}:{}: code appears after MCCL adapter logger context pop".format(
+                    path,
+                    line_number,
+                ),
+            )
+
+    if state not in ("popped", "invalid"):
+        violations.append(
+            "{}: MCCL adapter logger context must have one balanced push, define, and EOF pop".format(
+                path,
+            ),
+        )
+    return violations
 
 def _is_scoped_source(path: str) -> bool:
     has_source_extension = False
@@ -207,28 +423,50 @@ def _is_scoped_source(path: str) -> bool:
             break
     if not has_source_extension:
         return False
-    return "//comms/ctran/" in path or "//comms/mccl/" in path or "//comms/ncclx/" in path or "//comms/prims/" in path
+    for excluded_fragment in _EXCLUDED_SOURCE_FRAGMENTS:
+        if excluded_fragment in path:
+            return False
+    for source_fragment in _SCOPE_SOURCE_FRAGMENTS:
+        if source_fragment in path:
+            return True
+    return path in COMMS_LOGGING_SOURCE_PATHS
 
-def _check_direct_dependencies(ctx: bxl.Context) -> None:
+def check_comms_logging_scope(ctx: bxl.Context) -> None:
+    actual_sources = sorted([str(source) for source in ctx.uquery().inputs(ctx.uquery().eval(COMMS_LOGGING_TARGET))])
+    expected_sources = sorted(COMMS_LOGGING_SOURCE_PATHS)
+    if actual_sources != expected_sources:
+        fail(
+            "Update the legacy logging lint scope when {} sources change. Expected: {}; actual: {}".format(
+                COMMS_LOGGING_TARGET,
+                expected_sources,
+                actual_sources,
+            ),
+        )
+
+def _migrated_targets(ctx: bxl.Context):
+    targets = ctx.uquery().eval(" + ".join(_SCOPES))
+    for excluded_scope in _EXCLUDED_TARGET_SCOPES:
+        targets = targets - ctx.uquery().eval(excluded_scope)
+    return targets
+
+def _check_direct_dependencies(ctx: bxl.Context, migrated_targets) -> None:
     violations = {}
-    for scope in _SCOPES:
-        for dependency in ctx.uquery().deps(scope, 1):
-            dependency_label = str(dependency.label)
-            if _is_folly_logging_dependency(dependency_label):
-                violations[dependency_label] = True
+    for dependency in ctx.uquery().deps(migrated_targets, 1):
+        dependency_label = str(dependency.label)
+        if _is_legacy_logging_dependency(dependency_label):
+            violations[dependency_label] = True
 
     if violations:
         fail(
-            "Migrated comms targets must not depend directly on Folly logging:\n" + "\n".join(sorted(violations.keys())),
+            "Migrated comms targets must not depend directly on legacy logging:\n" + "\n".join(sorted(violations.keys())),
         )
 
-def _check_source_content(ctx: bxl.Context) -> None:
+def _check_source_content(ctx: bxl.Context, migrated_targets) -> None:
     source_by_path = {}
-    for scope in _SCOPES:
-        for source in ctx.uquery().inputs(scope):
-            path = str(source)
-            if _is_scoped_source(path):
-                source_by_path[path] = ctx.fs.source(source)
+    for source in ctx.uquery().inputs(migrated_targets):
+        path = str(source)
+        if _is_scoped_source(path):
+            source_by_path[path] = ctx.fs.source(source)
 
     actions = ctx.bxl_actions().actions
     result = actions.declare_output(
@@ -240,14 +478,15 @@ def _check_source_content(ctx: bxl.Context) -> None:
         violations = []
         for path in sorted(source_by_path.keys()):
             source = source_by_path[path]
+            source_lines = artifacts[source].read_string().splitlines()
+            violations.extend(
+                _check_mccl_adapter_context_structure(path, source_lines),
+            )
             in_block_comment = False
             raw_terminator = ""
             literal_delimiter = ""
             escaped = False
-            for line_number, line in enumerate(
-                artifacts[source].read_string().splitlines(),
-                1,
-            ):
+            for line_number, line in enumerate(source_lines, 1):
                 line_starts_in_literal = bool(raw_terminator or literal_delimiter)
                 (
                     line_without_comments,
@@ -270,6 +509,15 @@ def _check_source_content(ctx: bxl.Context) -> None:
                             line_number,
                         ),
                     )
+                for identifier, identifier_regex, allowed_paths in _INTERNAL_LOGGING_IDENTIFIERS:
+                    if path not in allowed_paths and identifier_regex.match(source_line):
+                        violations.append(
+                            "{}:{}: internal logging identifier {}".format(
+                                path,
+                                line_number,
+                                identifier,
+                            ),
+                        )
                 if _FOLLY_LOGGING_SYMBOL.match(source_line):
                     violations.append(
                         "{}:{}: direct Folly logging symbol".format(
@@ -306,12 +554,54 @@ def _check_source_content(ctx: bxl.Context) -> None:
     ctx.output.ensure(result)
 
 def _validate_detector() -> None:
+    for scope, expected_fragment in _SCOPE_CONFIGS:
+        actual_fragment = _scope_source_fragment(scope)
+        if actual_fragment != expected_fragment:
+            fail(
+                "Migrated scope {} produced {}, expected {}".format(
+                    scope,
+                    actual_fragment,
+                    expected_fragment,
+                ),
+            )
+        source_path = "{}source.cc".format(expected_fragment)
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
+    for source_path in (
+        "//comms/common/Source.cc",
+        "//comms/utils/logger/Source.cc",
+        "//comms/ctran/README.md",
+        "//comms/mccl/coordinator/zelos/Source.cc",
+        "//comms/tcp_devmem/Source.cc",
+        "//comms/torchcomms/source.cc",
+    ):
+        if _is_scoped_source(source_path):
+            fail("Migrated scope detector accepted: {}".format(source_path))
+    if not _is_scoped_source("//comms/mccl/utils/Source.cc"):
+        fail("Migrated scope detector missed MCCL runtime source")
+    for source_path in (
+        "fbcode//comms/utils/logger/CommsLogging.cc",
+        "fbcode//comms/utils/logger/CommsLogging.h",
+    ):
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
+    for source_path in (
+        "//comms/ctran/utils/Source.cuh",
+        "//comms/ctran/utils/Source.inl",
+        "//comms/prims/utils/Source.tcc",
+    ):
+        if not _is_scoped_source(source_path):
+            fail("Migrated scope detector missed: {}".format(source_path))
+
     for source in (
         "XLOG(ERR)",
         'XLOGF_IF(INFO, enabled, "message")',
         "XCHECK_EQ(left, right)",
         'CLOGF_SUBSYS(INFO, COLL, "message")',
         "#define PROJECT_LOG XLOG",
+        "#define CHECK_AND_RETURN(x) do { XCHECK(x); } while (false)",
+        '#define LOG_BEFORE_RAW() XLOG(INFO); log(R"tag(value)tag")',
+        '#define LOG_AFTER_RAW() log(R"tag(value)tag"); XLOG(INFO)',
         "XLOG/* preserve token boundary */CLOGF(INFO)",
         'const char* text = R"(ignored XLOG)"; XCHECK(true)',
         "constexpr auto count = 1'000; XLOG(ERR)",
@@ -332,10 +622,64 @@ def _validate_detector() -> None:
         'const char* example = "folly::LogMessage";',
         'const char* example = R"tag(XLOG(ERR) "quoted")tag";',
         'const char* example = u8R"(CLOGF(INFO))";',
+        '#define DOCUMENTED_LOG "use XLOG instead"',
+        '#define DOCUMENTED_RAW R"tag("quoted XLOG")tag"',
+        "#define CALL_HELPER(x) helper(x) // replaces XCHECK",
     ):
         _, source_code, _, _, _, _ = _strip_non_code_line(source)
         if _LEGACY_IDENTIFIER.match(source_code) or _FOLLY_LOGGING_SYMBOL.match(source_code):
             fail("Legacy logging detector rejected valid source: {}".format(source))
+
+    for identifier, identifier_regex, _ in _INTERNAL_LOGGING_IDENTIFIERS:
+        if not identifier_regex.match("{}(ERR, message)".format(identifier)):
+            fail("Internal logging detector missed: {}".format(identifier))
+        if identifier_regex.match("{}_IMPL(ERR, message)".format(identifier)):
+            fail("Internal logging detector matched a distinct identifier: {}".format(identifier))
+
+    adapter_source = _MCCL_ADAPTER_CONTEXT_SOURCE_PATHS[0]
+    valid_adapter_context = (
+        '#include "header.h"',
+        '#pragma push_macro("MCCL_ACTIVE_LOGGER_CONTEXT_IMPL")',
+        "#undef MCCL_ACTIVE_LOGGER_CONTEXT_IMPL",
+        "#define MCCL_ACTIVE_LOGGER_CONTEXT_IMPL \\",
+        "  ::mccl::logging::detail::AdapterLoggerContext",
+        "void adapterCall() {}",
+        'const char* text = R"tag(',
+        '#include "not-a-header.h"',
+        ')tag";',
+        '#pragma pop_macro("MCCL_ACTIVE_LOGGER_CONTEXT_IMPL")',
+        "// comments may follow the EOF pop",
+    )
+    if _check_mccl_adapter_context_structure(adapter_source, valid_adapter_context):
+        fail("MCCL adapter context detector rejected valid source")
+    valid_adapter_context_with_log_text = (
+        valid_adapter_context[:1]
+        + (
+            'const char* text = R"tag(',
+            'MCCL_LOG(ERR, "not code")',
+            ')tag";',
+        )
+        + valid_adapter_context[1:]
+    )
+    if _check_mccl_adapter_context_structure(
+        adapter_source,
+        valid_adapter_context_with_log_text,
+    ):
+        fail("MCCL adapter context detector rejected log text")
+    for invalid_adapter_context in (
+        valid_adapter_context[:1] + ('MCCL_LOG(ERR, "misrouted")',) + valid_adapter_context[1:],
+        valid_adapter_context[:1] + ('MCCL_ABORT("misrouted")',) + valid_adapter_context[1:],
+        valid_adapter_context[:2] + ("void codeBetweenPushAndUndef() {}",) + valid_adapter_context[2:],
+        valid_adapter_context[:3] + ("void codeBetweenUndefAndDefine() {}",) + valid_adapter_context[3:],
+        valid_adapter_context[:4] + ('#include "late.h"',) + valid_adapter_context[4:],
+        valid_adapter_context[:2] + valid_adapter_context[3:],
+        valid_adapter_context[:4] + ("  ::mccl::logging::detail::CoreLoggerContext",) + valid_adapter_context[5:],
+        valid_adapter_context[:-2],
+        valid_adapter_context + ("void lateCall() {}",),
+        valid_adapter_context + valid_adapter_context[1:-1],
+    ):
+        if not _check_mccl_adapter_context_structure(adapter_source, invalid_adapter_context):
+            fail("MCCL adapter context detector missed invalid source")
 
     _, block_comment, in_block_comment, raw_terminator, literal_delimiter, escaped = _strip_non_code_line(
         "/* XLOG(ERR)",
@@ -404,15 +748,21 @@ def _validate_detector() -> None:
     if _contains_folly_logging_include(include_string, False):
         fail("Folly include detector rejected a string literal")
 
-    if not _is_folly_logging_dependency("fbcode//folly/logging:logging"):
+    if not _is_legacy_logging_dependency("fbcode//folly/logging:logging"):
         fail("Folly dependency detector missed its positive control")
-    if _is_folly_logging_dependency("fbcode//folly:format"):
+    if not _is_legacy_logging_dependency("fbcode//comms/utils/logger:logging_format"):
+        fail("Compatibility dependency detector missed its positive control")
+    if _is_legacy_logging_dependency("fbcode//folly:format"):
         fail("Folly dependency detector rejected a non-logging target")
+    if _is_legacy_logging_dependency("fbcode//comms/utils/logger:comms_logging"):
+        fail("Compatibility dependency detector rejected the native target")
 
 def _audit_legacy_logging(ctx: bxl.Context) -> None:
     _validate_detector()
-    _check_direct_dependencies(ctx)
-    _check_source_content(ctx)
+    check_comms_logging_scope(ctx)
+    migrated_targets = _migrated_targets(ctx)
+    _check_direct_dependencies(ctx, migrated_targets)
+    _check_source_content(ctx, migrated_targets)
 
 test = bxl_main(
     cli_args = {},

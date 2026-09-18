@@ -15,7 +15,7 @@
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
-#if defined(ENABLE_PRIMS)
+#if defined(MCCL_BUILD_PRIMS)
 
 #include <cstddef>
 #include <cstdint>
@@ -264,4 +264,4 @@ __device__ __forceinline__ std::size_t lane_begin(
 
 } // namespace comms::prims::multimem
 
-#endif // ENABLE_PRIMS
+#endif // MCCL_BUILD_PRIMS

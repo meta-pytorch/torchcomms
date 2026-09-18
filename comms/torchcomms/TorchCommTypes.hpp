@@ -6,10 +6,14 @@
 #include <ATen/core/Tensor.h> // @manual=//caffe2:ATen-core
 #include <chrono>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
+
+#include "comms/common/fault_tolerance/AbortTypes.h"
 
 namespace torch::comms {
 
@@ -97,6 +101,15 @@ constexpr std::chrono::milliseconds kNoTimeout = std::chrono::milliseconds(0);
 // An InitHandle encodes information required
 // by the backend to complete the initialization process via reconfigure().
 using InitHandle = std::string;
+
+using AbortInfo = ::comms::fault_tolerance::AbortInfo;
+using AbortReason = ::comms::fault_tolerance::AbortReason;
+
+inline void validateTerminalAbortReason(AbortReason reason) {
+  if (!::comms::fault_tolerance::isTerminalAbortReason(reason)) {
+    throw std::invalid_argument("Invalid terminal abort reason");
+  }
+}
 
 /**
  * Options for the reconfigure() fault tolerance API.

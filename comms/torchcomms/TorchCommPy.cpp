@@ -193,6 +193,46 @@ initialized and collective operations are permitted.
           &ReconfigureOptions::hints,
           "Additional configuration key-value pairs");
 
+  py::enum_<AbortReason>(m, "AbortReason", "Communicator abort reason.")
+      .value("NONE", AbortReason::NONE)
+      .value("ABORTED", AbortReason::ABORTED)
+      .value("TIMED_OUT", AbortReason::TIMED_OUT)
+      .value("BOOTSTRAP_POLL", AbortReason::BOOTSTRAP_POLL)
+      .value("NETWORK_ERROR", AbortReason::NETWORK_ERROR)
+      .value("INTERNAL_ERROR", AbortReason::INTERNAL_ERROR)
+      .value("IBRC_PROXY_TIMEOUT", AbortReason::IBRC_PROXY_TIMEOUT);
+
+  py::class_<AbortInfo>(m, "AbortInfo", "Immutable communicator abort status.")
+      .def(
+          py::init([](AbortReason reason, std::string context) {
+            return AbortInfo{.reason = reason, .context = std::move(context)};
+          }),
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "")
+      .def_readonly("reason", &AbortInfo::reason)
+      .def_property_readonly(
+          "reason_str",
+          [](const AbortInfo& info) {
+            return std::string{info.reasonString()};
+          })
+      .def_readonly("context", &AbortInfo::context)
+      .def(
+          "__eq__",
+          [](const AbortInfo& lhs, const AbortInfo& rhs) { return lhs == rhs; },
+          py::is_operator())
+      .def(
+          "__hash__",
+          [](const AbortInfo& info) {
+            return py::hash(py::make_tuple(info.reason, info.context));
+          })
+      .def("__repr__", [](const AbortInfo& info) {
+        const auto reasonName =
+            py::cast(info.reason).attr("name").cast<std::string>();
+        return "AbortInfo(reason=AbortReason." + reasonName +
+            ", context=" + py::repr(py::str(info.context)).cast<std::string>() +
+            ")";
+      });
+
   // Bind TorchWork class
   intrusive_ptr_class_<TorchWork>(
       m,
@@ -1387,7 +1427,9 @@ Example:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "abort",
-          &TorchComm::abort,
+          [](TorchComm& self, AbortReason reason, const std::string& context) {
+            self.abort(AbortInfo{.reason = reason, .context = context});
+          },
           R"(
 Abort the communicator, stopping all in-flight operations.
 
@@ -1398,9 +1440,15 @@ can then be recovered via reconfigure().
 In non-reconfigurable mode, this performs a destructive abort of the NCCL
 communicator.
 
-Does not raise exceptions. After calling abort(), subsequent collective
-operations will fail until reconfigure() is called (in reconfigurable mode).
+After calling abort(), subsequent collective operations will fail until
+reconfigure() is called (in reconfigurable mode).
+
+Raises:
+    ValueError: If reason is NONE or is not a recognized terminal reason.
+    RuntimeError: If the communicator state or backend rejects the operation.
           )",
+          py::arg("reason") = AbortReason::ABORTED,
+          py::arg("context") = "",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "is_abort_supported",
@@ -1427,6 +1475,17 @@ Returns:
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "get_abort_info",
+          &TorchComm::getAbortInfo,
+          R"(
+Return the communicator's first abort reason and diagnostic context.
+
+Returns:
+    AbortInfo | None: The first abort report, or None if the communicator has
+    not been aborted.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "set_timeout",
           &TorchComm::setTimeout,
           R"(
@@ -1447,26 +1506,6 @@ Backends can use these as mutable fallbacks for operations whose per-call
 hints are unset. Mutable across CUDA-graph replays without recapture.
           )",
           py::arg("hints"),
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_device_transport",
-          &TorchComm::get_device_transport,
-          R"(
-Get a device-allocated transport handle for pipes transport operations.
-
-Returns a device pointer (as int64) to a MultiPeerDeviceHandle that can be
-passed to Triton transport extern functions (transport.send, transport.recv,
-transport.signal, etc.).
-
-The handle is lazily created on first call and cached. The returned pointer
-is valid until the communicator is destroyed.
-
-Returns:
-    int: Device transport pointer as int64, suitable for passing to Triton kernels.
-
-Raises:
-    RuntimeError: If the backend does not support device transport.
-)",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "tensor_register",

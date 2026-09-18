@@ -75,7 +75,9 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
   template <typename T>
   void run(
       const ReduceScatterTestParams& param,
-      const std::string& expectedAlgoSubstr = "") {
+      const std::string& expectedAlgoSubstr = "",
+      const std::string& unexpectedAlgoSubstr = "",
+      bool allowFallback = false) {
     using Traits = DataTypeTraits<T>;
     using HostT = typename Traits::HostT;
 
@@ -102,7 +104,8 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
     }
 
     if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
-        !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
+        !ctranReduceScatterSupport(comm->ctranComm_.get(), algo) &&
+        !allowFallback) {
       GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
     }
 
@@ -178,22 +181,24 @@ class ReduceScatterTest : public NcclxBaseTestFixture {
                        << recvBuf << " with " << errs << " errors with inplace "
                        << inplace;
 
-    // Check algorithm stats (orig algo only; ctran has its own path)
-    // TODO: enable algoState check for Ctran algo
-    if (algo == NCCL_REDUCESCATTER_ALGO::orig) {
-      if (!expectedAlgoSubstr.empty()) {
-        algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
-      }
-      // Verify nChannels for PAT: the actual nChannels used by the
-      // collective should match the channel-reduction logic.
-      if (expectedAlgoSubstr == "PAT") {
-        int expectedNc = 0, expectedNWarps = 0;
-        size_t nBytes = count * numRanks * elemSize;
-        ncclx::computePatAvgChannelsAndWarps(
-            comm, nBytes, &expectedNc, &expectedNWarps);
-        std::string expectedAlgoFull = fmt::format("SIMPLE_PAT_{}", expectedNc);
-        algoStats_.verify(comm, "ReduceScatter", expectedAlgoFull);
-      }
+    if (!expectedAlgoSubstr.empty()) {
+      algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
+    }
+    if (!unexpectedAlgoSubstr.empty()) {
+      algoStats_.verifyNot(comm, "ReduceScatter", unexpectedAlgoSubstr);
+    }
+
+    // Verify nChannels for PAT: the actual nChannels used by the collective
+    // should match the channel-reduction logic.
+    if (algo == NCCL_REDUCESCATTER_ALGO::orig && expectedAlgoSubstr == "PAT") {
+      int expectedNc = 0, expectedNWarps = 0;
+      size_t nBytes = count * numRanks * elemSize;
+      ncclx::computePatAvgChannelsAndWarps(
+          comm, nBytes, &expectedNc, &expectedNWarps);
+      std::string expectedAlgoFull = fmt::format("SIMPLE_PAT_{}", expectedNc);
+      algoStats_.verify(comm, "ReduceScatter", expectedAlgoFull);
+    }
+    if (algo == NCCL_REDUCESCATTER_ALGO::orig || allowFallback) {
       algoStats_.dump(comm, "ReduceScatter");
     }
 

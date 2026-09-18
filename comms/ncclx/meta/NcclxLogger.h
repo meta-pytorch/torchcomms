@@ -11,6 +11,12 @@ namespace ncclx::logging {
 
 inline constexpr std::string_view kNcclxLoggerName = "comms.ncclx";
 
+inline meta::comms::logger::CommsSpdlogLogger& getNcclxLogger() {
+  static auto& logger /* library-local */ =
+      meta::comms::logger::getSpdlogLogger(kNcclxLoggerName);
+  return logger;
+}
+
 } // namespace ncclx::logging
 
 #define NCCLX_LOG_IMPL(spdlog_level, spdlog_macro, ...)                  \
@@ -40,10 +46,9 @@ inline constexpr std::string_view kNcclxLoggerName = "comms.ncclx";
   } while (false)
 #define NCCLX_LOG(level, ...) NCCLX_LOG_##level(__VA_ARGS__)
 #define NCCLX_LOG_STREAM_IF(level, condition) \
-  COMMS_LOG_NAMED_STREAM_IF(                  \
-      ::ncclx::logging::kNcclxLoggerName, level, condition)
+  COMMS_LOGGER_STREAM_IF(::ncclx::logging::getNcclxLogger(), level, condition)
 #define NCCLX_LOG_STREAM(level) \
-  COMMS_LOG_NAMED_STREAM(::ncclx::logging::kNcclxLoggerName, level)
+  COMMS_LOGGER_STREAM(::ncclx::logging::getNcclxLogger(), level)
 
 #define NCCLX_LOG_IF_IMPL(level, spdlog_level, condition, ...)           \
   do {                                                                   \

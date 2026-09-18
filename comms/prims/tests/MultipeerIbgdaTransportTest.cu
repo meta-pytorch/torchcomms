@@ -256,6 +256,43 @@ void testMultiplePutAndSignal(
   }
 }
 
+__global__ void burstPutAndFlushKernel(
+    P2pIbTransportDevice transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    for (int i = 0; i < numPuts; ++i) {
+      transport.put(
+          localBuf.subBuffer(i * bytesPerPut),
+          remoteBuf.subBuffer(i * bytesPerPut),
+          bytesPerPut,
+          /*signalId=*/-1,
+          /*signalVal=*/0);
+    }
+    transport.flush();
+  }
+}
+
+void testBurstPutAndFlush(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    int numBlocks,
+    int blockSize) {
+  burstPutAndFlushKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, bytesPerPut, numPuts);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
 // =============================================================================
 // Kernel: Signal only (no data)
 // =============================================================================
@@ -373,6 +410,66 @@ __global__ void sendRecvKernel(
   }
 }
 
+__global__ void shardedSendRecvIbKernel(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    AbortDevice abortDevice) {
+  auto group = make_block_group();
+  abortDevice.start();
+  // make_block_group() sets group_id = blockIdx.x, and the fixed-channel
+  // send/recv path keys its channel off group_id, so block b drives channel b.
+  // Giving each block its own slice makes that mapping observable end to end.
+  auto* slice = static_cast<char*>(buffer) +
+      static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  if (send) {
+    transport.send(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+  } else {
+    transport.recv(group, slice, bytesPerBlock, maxSignalBytes, abortDevice);
+  }
+}
+
+// Single definition of the sharded pattern, shared by the producer and the
+// checker below. Restating the formula in both is how a test ends up passing
+// or failing for the wrong reason after one side is edited.
+__device__ __forceinline__ uint8_t
+shardedExpectedByte(uint8_t baseValue, unsigned slice, std::size_t i) {
+  return static_cast<uint8_t>(baseValue + slice + (i % 256));
+}
+
+__global__ void fillShardedPatternKernel(
+    uint8_t* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue) {
+  uint8_t* slice =
+      buffer + static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  for (std::size_t i = threadIdx.x; i < bytesPerBlock; i += blockDim.x) {
+    slice[i] = shardedExpectedByte(baseValue, blockIdx.x, i);
+  }
+}
+
+__global__ void verifyShardedPatternKernel(
+    const uint8_t* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice) {
+  const uint8_t* slice =
+      buffer + static_cast<std::size_t>(blockIdx.x) * bytesPerBlock;
+  int local = 0;
+  for (std::size_t i = threadIdx.x; i < bytesPerBlock; i += blockDim.x) {
+    if (slice[i] != shardedExpectedByte(expectedBaseValue, blockIdx.x, i)) {
+      ++local;
+    }
+  }
+  if (local > 0) {
+    atomicAdd(errorCount, local);
+    atomicMin(firstBadSlice, static_cast<int>(blockIdx.x));
+  }
+}
+
 __global__ void twoCallSendThenRecvKernel(
     P2pIbTransportDevice transport,
     const void* sendBuffer,
@@ -404,6 +501,64 @@ void testSendRecv(
     int blockSize) {
   sendRecvKernel<<<numBlocks, blockSize>>>(
       transport, buffer, nbytes, maxSignalBytes, send, testAbortDevice());
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void testShardedSendRecvIb(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize) {
+  shardedSendRecvIbKernel<<<numBlocks, blockSize>>>(
+      transport,
+      buffer,
+      bytesPerBlock,
+      maxSignalBytes,
+      send,
+      testAbortDevice());
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void fillShardedPattern(
+    void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue,
+    int numBlocks,
+    int blockSize) {
+  fillShardedPatternKernel<<<numBlocks, blockSize>>>(
+      static_cast<uint8_t*>(buffer), bytesPerBlock, baseValue);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void verifyShardedPattern(
+    const void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice,
+    int numBlocks,
+    int blockSize) {
+  verifyShardedPatternKernel<<<numBlocks, blockSize>>>(
+      static_cast<const uint8_t*>(buffer),
+      bytesPerBlock,
+      expectedBaseValue,
+      errorCount,
+      firstBadSlice);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -481,19 +636,17 @@ __global__ void progressSendRecvKernel(
   abortDevice.start();
   uint64_t waits = 0;
   if (send) {
-    transport->init_send_progress(group, nbytes, maxSignalBytes);
+    transport->init_send_progress(group, buffer, nbytes, maxSignalBytes);
     IbgdaSendRecvProgressStatus status;
     do {
-      status = transport->progress_send_once(
-          group, buffer, nbytes, maxSignalBytes, abortDevice);
+      status = transport->progress_send_once(group, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   } else {
-    transport->init_recv_progress(group, nbytes, maxSignalBytes);
+    transport->init_recv_progress(group, buffer, nbytes, maxSignalBytes);
     IbgdaSendRecvProgressStatus status;
     do {
-      status = transport->progress_recv_once(
-          group, buffer, nbytes, maxSignalBytes, abortDevice);
+      status = transport->progress_recv_once(group, abortDevice);
       waits += status == IbgdaSendRecvProgressStatus::Waiting;
     } while (status != IbgdaSendRecvProgressStatus::Done);
   }
@@ -508,8 +661,10 @@ __global__ void progressReservationKernel(
     std::size_t sendBytes,
     std::size_t recvBytes) {
   auto group = make_block_group();
-  transport->init_send_progress(group, sendBytes);
-  transport->init_recv_progress(group, recvBytes);
+  // Reservation-only: this kernel inspects nextStep and never calls progress,
+  // so there is no buffer to capture.
+  transport->init_send_progress(group, /*src=*/nullptr, sendBytes);
+  transport->init_recv_progress(group, /*dst=*/nullptr, recvBytes);
 
   if (group.is_leader()) {
     const auto& protoSlot =
@@ -528,11 +683,11 @@ __device__ IbgdaRegisteredSendProgressStatus postRegisteredSend(
     std::size_t maxSignalBytes,
     const AbortDevice& abortDevice,
     RegisteredSendObservation* observation) {
-  transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
+  transport.init_registered_send_progress(
+      group, source, nbytes, maxSignalBytes);
   IbgdaRegisteredSendProgressStatus status;
   do {
-    status = transport.progress_registered_send_once(
-        group, source, nbytes, maxSignalBytes, abortDevice);
+    status = transport.progress_registered_send_once(group, abortDevice);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }
@@ -588,9 +743,10 @@ __global__ void registeredSendRecvKernel(
           abortDevice,
           observation);
       if (zeroByteAfterPosted) {
-        transport.init_registered_send_progress(group, 0, maxSignalBytes);
-        const auto zeroByteStatus = transport.progress_registered_send_once(
-            group, IbgdaLocalBuffer{}, 0, maxSignalBytes, abortDevice);
+        transport.init_registered_send_progress(
+            group, IbgdaLocalBuffer{}, 0, maxSignalBytes);
+        const auto zeroByteStatus =
+            transport.progress_registered_send_once(group, abortDevice);
         if (group.is_leader() && observation != nullptr) {
           observation->record(zeroByteStatus);
         }
@@ -1245,18 +1401,21 @@ __global__ void putSignalCounterKernel(
     int signalId,
     uint64_t signalVal,
     int counterId,
-    uint64_t counterVal) {
+    uint64_t counterVal,
+    int numIterations) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    transport.put(
-        localDataBuf,
-        remoteDataBuf,
-        nbytes,
-        signalId,
-        signalVal,
-        counterId,
-        counterVal);
-    transport.wait_counter(counterId, counterVal);
+    for (int i = 0; i < numIterations; ++i) {
+      transport.put(
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          signalId,
+          signalVal,
+          counterId,
+          counterVal);
+    }
+    transport.wait_counter(counterId, counterVal * numIterations);
   }
 }
 
@@ -1270,7 +1429,8 @@ void testPutSignalCounter(
     int counterId,
     uint64_t counterVal,
     int numBlocks,
-    int blockSize) {
+    int blockSize,
+    int numIterations) {
   putSignalCounterKernel<<<numBlocks, blockSize>>>(
       deviceTransportPtr,
       localDataBuf,
@@ -1279,7 +1439,8 @@ void testPutSignalCounter(
       signalId,
       signalVal,
       counterId,
-      counterVal);
+      counterVal,
+      numIterations);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -1371,21 +1532,35 @@ void testMultiQpPutAndSignal(
 // =============================================================================
 // Kernel: put + flush against a caller-supplied abort handle
 //
-// No signal is posted -- the point is to reach the completion drain, and a
-// signal would only add a second WQE that fails the same way.
+// The first bad-rkey WQE puts the RC QP into error; the later valid-rkey WQEs
+// become flush errors. Posting them before one drain verifies that a collapsed
+// CQ still reports an error after later completions overwrite its single slot.
 // =============================================================================
 
 __global__ void putAndFlushWithAbortKernel(
     P2pIbTransportDevice transport,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
+    IbgdaRemoteBuffer poisonedRemoteBuf,
+    IbgdaRemoteBuffer validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
     abort.start();
     transport.put(
-        localBuf, remoteBuf, nbytes, /*signalId=*/-1, /*signalVal=*/0);
+        localBuf,
+        poisonedRemoteBuf,
+        nbytes,
+        /*signalId=*/-1,
+        /*signalVal=*/0);
+    for (int i = 0; i < 4; ++i) {
+      transport.put(
+          localBuf,
+          validRemoteBuf,
+          nbytes,
+          /*signalId=*/-1,
+          /*signalVal=*/0);
+    }
     transport.flush(abort);
   }
 }
@@ -1432,12 +1607,12 @@ __global__ void registeredSendDrainAbortKernel(
   }
   group.sync();
 
-  transport.init_registered_send_progress(group, nbytes, maxSignalBytes);
+  transport.init_registered_send_progress(
+      group, source, nbytes, maxSignalBytes);
 
   IbgdaRegisteredSendProgressStatus status;
   do {
-    status = transport.progress_registered_send_once(
-        group, source, nbytes, maxSignalBytes, abort);
+    status = transport.progress_registered_send_once(group, abort);
     if (group.is_leader() && observation != nullptr) {
       observation->record(status);
     }
@@ -1504,16 +1679,89 @@ void testRegisteredSendDrainWithAbort(
 #endif
 }
 
+#ifndef __HIP_PLATFORM_AMD__
+__global__ void prepareSendSlotBadRkeyKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort) {
+  auto group = make_block_group();
+  abort.start();
+
+  if (group.is_leader()) {
+    ThreadGroup solo{
+        0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
+    const auto ticket = transport->put(
+        solo,
+        localBuf,
+        poisonedRemoteBuf,
+        nbytes,
+        /*signalId=*/-1,
+        /*signalVal=*/0);
+    detail::record_send_completion<protocol::Simple>(
+        *transport,
+        group.group_id,
+        /*slotId=*/0,
+        /*generation=*/0,
+        ticket);
+  }
+  group.sync();
+
+  const bool unretired = detail::prepare_send_slot<protocol::Simple>(
+      *transport,
+      group,
+      /*slotId=*/0,
+      /*generation=*/1,
+      abort);
+  if (group.is_leader()) {
+    *observedUnretired = static_cast<uint32_t>(unretired);
+  }
+}
+#endif
+
+void testPrepareSendSlotBadRkey(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)localBuf;
+  (void)poisonedRemoteBuf;
+  (void)nbytes;
+  (void)observedUnretired;
+  (void)abort;
+  (void)numBlocks;
+  (void)blockSize;
+  throw std::runtime_error("send-slot CQ error test is NVIDIA-only");
+#else
+  prepareSendSlotBadRkeyKernel<<<numBlocks, blockSize>>>(
+      transport, localBuf, poisonedRemoteBuf, nbytes, observedUnretired, abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    const IbgdaRemoteBuffer& validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort,
     int numBlocks,
     int blockSize) {
   putAndFlushWithAbortKernel<<<numBlocks, blockSize>>>(
-      transport, localBuf, remoteBuf, nbytes, abort);
+      transport, localBuf, poisonedRemoteBuf, validRemoteBuf, nbytes, abort);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

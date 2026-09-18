@@ -14,12 +14,21 @@ class RoceHca {
  public:
   RoceHca(std::string hcaStr, int defaultPort) {
     std::string s = std::move(hcaStr);
-    std::string delim = ":";
 
     std::vector<std::string> hcaStrPair;
-    folly::split(':', s, hcaStrPair);
+    // Stands in for folly::split(':', s, hcaStrPair), which keeps empty tokens:
+    // "mlx5_0:" yields two, and "" yields one.
+    for (size_t pos = 0;;) {
+      const size_t delim = s.find(':', pos);
+      if (delim == std::string::npos) {
+        hcaStrPair.push_back(s.substr(pos));
+        break;
+      }
+      hcaStrPair.push_back(s.substr(pos, delim - pos));
+      pos = delim + 1;
+    }
     if (hcaStrPair.size() == 1) {
-      this->name = s;
+      this->name = hcaStrPair.at(0);
       this->port = defaultPort;
     } else if (hcaStrPair.size() == 2) {
       this->name = hcaStrPair.at(0);
@@ -46,7 +55,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
   ibv_pd* pd = nullptr;
   pd = ibvSymbols.ibv_internal_alloc_pd(context);
   if (!pd) {
-    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", folly::errnoStr(errno));
+    CTRAN_LOG(ERR, "ibv_alloc_pd failed: {}", errnoStr(errno));
     return false;
   }
 
@@ -70,7 +79,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     CTRAN_LOG(
         WARN,
         "ibv_dealloc_pd failed: {} DMA-BUF support status: {}",
-        folly::errnoStr(errno),
+        errnoStr(errno),
         dev_fail);
     return false;
   }
@@ -99,7 +108,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
 // hcaPrefix: use "=" for exact match, "^" for exclude match, "" for prefix
 // match. See guidelines:
 // https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-hca
-folly::Expected<std::vector<IbvDevice>, Error> IbvDevice::ibvGetDeviceList(
+Expected<std::vector<IbvDevice>> IbvDevice::ibvGetDeviceList(
     const std::vector<std::string>& hcaList,
     const std::string& hcaPrefix,
     int defaultPort,
@@ -109,7 +118,7 @@ folly::Expected<std::vector<IbvDevice>, Error> IbvDevice::ibvGetDeviceList(
   int numDevs;
   devs = ibvSymbols.ibv_internal_get_device_list(&numDevs);
   if (!devs) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   auto devices = ibvFilterDeviceList(
       numDevs, devs, hcaList, hcaPrefix, defaultPort, ibDataDirect);
@@ -255,62 +264,59 @@ int32_t IbvDevice::getDeviceId() const {
   return deviceId_;
 }
 
-folly::Expected<IbvPd, Error> IbvDevice::allocPd() {
+Expected<IbvPd> IbvDevice::allocPd() {
   ibv_pd* pd;
   pd = ibvSymbols.ibv_internal_alloc_pd(context_);
   if (!pd) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   return IbvPd(pd, deviceId_, dataDirect_);
 }
 
-folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
+Expected<IbvPd> IbvDevice::allocParentDomain(
     ibv_parent_domain_init_attr* attr) {
   ibv_pd* pd;
 
   if (ibvSymbols.ibv_internal_alloc_parent_domain == nullptr) {
-    return folly::makeUnexpected(Error(ENOSYS));
+    return makeUnexpected(Error(ENOSYS));
   }
 
   pd = ibvSymbols.ibv_internal_alloc_parent_domain(context_, attr);
 
   if (!pd) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   return IbvPd(pd, deviceId_, dataDirect_);
 }
 
-folly::Expected<ibv_device_attr, Error> IbvDevice::queryDevice() const {
+Expected<ibv_device_attr> IbvDevice::queryDevice() const {
   ibv_device_attr deviceAttr{};
   int rc = ibvSymbols.ibv_internal_query_device(context_, &deviceAttr);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
   return deviceAttr;
 }
 
-folly::Expected<ibv_port_attr, Error> IbvDevice::queryPort(
-    uint8_t portNum) const {
+Expected<ibv_port_attr> IbvDevice::queryPort(uint8_t portNum) const {
   ibv_port_attr portAttr{};
   int rc = ibvSymbols.ibv_internal_query_port(context_, portNum, &portAttr);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
   return portAttr;
 }
 
-folly::Expected<ibv_gid, Error> IbvDevice::queryGid(
-    uint8_t portNum,
-    int gidIndex) const {
+Expected<ibv_gid> IbvDevice::queryGid(uint8_t portNum, int gidIndex) const {
   ibv_gid gid{};
   int rc = ibvSymbols.ibv_internal_query_gid(context_, portNum, gidIndex, &gid);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
   return gid;
 }
 
-folly::Expected<IbvCq, Error> IbvDevice::createCq(
+Expected<IbvCq> IbvDevice::createCq(
     int cqe,
     void* cq_context,
     ibv_comp_channel* channel,
@@ -319,58 +325,56 @@ folly::Expected<IbvCq, Error> IbvDevice::createCq(
   cq = ibvSymbols.ibv_internal_create_cq(
       context_, cqe, cq_context, channel, comp_vector);
   if (!cq) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   return IbvCq(cq, deviceId_);
 }
 
-folly::Expected<IbvVirtualCq, Error> IbvDevice::createVirtualCq(
+Expected<IbvVirtualCq> IbvDevice::createVirtualCq(
     int cqe,
     void* cq_context,
     ibv_comp_channel* channel,
     int comp_vector) {
   auto maybeCq = createCq(cqe, cq_context, channel, comp_vector);
   if (maybeCq.hasError()) {
-    return folly::makeUnexpected(maybeCq.error());
+    return makeUnexpected(maybeCq.error());
   }
   return IbvVirtualCq(std::move(*maybeCq), cqe);
 }
 
-folly::Expected<IbvCq, Error> IbvDevice::createCq(
-    ibv_cq_init_attr_ex* attr) const {
+Expected<IbvCq> IbvDevice::createCq(ibv_cq_init_attr_ex* attr) const {
   ibv_cq_ex* cqEx;
   cqEx = ibvSymbols.ibv_internal_create_cq_ex(context_, attr);
   if (!cqEx) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   ibv_cq* cq = ibv_cq_ex_to_cq(cqEx);
   return IbvCq(cq, deviceId_);
 }
 
-folly::Expected<ibv_comp_channel*, Error> IbvDevice::createCompChannel() const {
+Expected<ibv_comp_channel*> IbvDevice::createCompChannel() const {
   ibv_comp_channel* channel;
   channel = ibvSymbols.ibv_internal_create_comp_channel(context_);
   if (!channel) {
-    return folly::makeUnexpected(Error(errno));
+    return makeUnexpected(Error(errno));
   }
   return channel;
 }
 
-folly::Expected<folly::Unit, Error> IbvDevice::destroyCompChannel(
-    ibv_comp_channel* channel) const {
+Status IbvDevice::destroyCompChannel(ibv_comp_channel* channel) const {
   int rc = ibvSymbols.ibv_internal_destroy_comp_channel(channel);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<bool, Error> IbvDevice::isPortActive(
+Expected<bool> IbvDevice::isPortActive(
     uint8_t portNum,
     std::unordered_set<int> linkLayers) const {
   auto maybePortAttr = queryPort(portNum);
   if (maybePortAttr.hasError()) {
-    return folly::makeUnexpected(maybePortAttr.error());
+    return makeUnexpected(maybePortAttr.error());
   }
 
   auto portAttr = maybePortAttr.value();
@@ -389,17 +393,17 @@ folly::Expected<bool, Error> IbvDevice::isPortActive(
   return true;
 }
 
-folly::Expected<uint8_t, Error> IbvDevice::findActivePort(
+Expected<uint8_t> IbvDevice::findActivePort(
     std::unordered_set<int> const& linkLayers) const {
   // If specific port requested, check if it is active
   if (port_ != kIbAnyPort) {
     auto maybeActive = isPortActive(port_, linkLayers);
     if (maybeActive.hasError()) {
-      return folly::makeUnexpected(maybeActive.error());
+      return makeUnexpected(maybeActive.error());
     }
 
     if (!maybeActive.value()) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           EINVAL,
           fmt::format(
               "Port {} is not active on device {}", port_, device_->name)));
@@ -410,7 +414,7 @@ folly::Expected<uint8_t, Error> IbvDevice::findActivePort(
   // No specific port requested, find any active port
   auto maybeDeviceAttr = queryDevice();
   if (maybeDeviceAttr.hasError()) {
-    return folly::makeUnexpected(maybeDeviceAttr.error());
+    return makeUnexpected(maybeDeviceAttr.error());
   }
 
   for (uint8_t port = 1; port <= maybeDeviceAttr->phys_port_cnt; port++) {
@@ -424,7 +428,7 @@ folly::Expected<uint8_t, Error> IbvDevice::findActivePort(
     }
   }
 
-  return folly::makeUnexpected(Error(
+  return makeUnexpected(Error(
       ENODEV, fmt::format("No active port found on device {}", device_->name)));
 }
 

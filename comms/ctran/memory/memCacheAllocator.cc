@@ -110,7 +110,10 @@ commResult_t memCacheAllocator::reset() {
 
 memCacheAllocator::~memCacheAllocator() {
   CTRAN_LOG_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
-  FB_COMMCHECKTHROW_EX_NOCOMM(reset());
+  // Destructors are implicitly noexcept, so a throw here calls terminate.
+  // reset() returns commInvalidUsage when regions are still outstanding, which
+  // is worth a log but must not take the process down.
+  FB_COMMCHECKIGNORE(reset());
 }
 
 std::shared_ptr<memRegion> memCacheAllocator::getFreeMemReg(

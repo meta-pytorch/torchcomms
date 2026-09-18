@@ -7,17 +7,9 @@
 #include <string>
 
 #include <folly/Synchronized.h>
+#include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/utils/commSpecs.h"
-
-// FIXME(alvinyc): move this IB constant to CtranIbBase.h once CtranIb doesn't
-// depend on CtranCtrl and CtranCtrl is removed
-//
-// Sizes the per-NIC arrays in IBDesc::rkeys, CtranIbRemoteAccessKey::rkeys and
-// BusCard. BusCard is exchanged as raw bytes with a sizeof-derived length and
-// carries no version field, so changing this value changes the bootstrap wire
-// format: all CTRAN peers must run the same build.
-constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{4};
 
 namespace ctran {
 namespace regcache {

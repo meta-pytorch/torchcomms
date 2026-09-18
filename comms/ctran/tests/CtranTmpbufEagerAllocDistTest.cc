@@ -21,15 +21,13 @@
 
 // Verifies that ctran collectives still initialize and run correctly when
 // CtranComm::tmpbufEagerAlloc_ is FALSE. With the flag false, the eager tmpbuf
-// slab is skipped during ctranInit: devState_d_ is still allocated
-// (getDevState() stays non-null), nvlTransports_ is skipped
-// (getNvlTransportsBase() returns null), and sharedRes_ stays null. At ppn1
-// (nLocalRanks==1, via nolocal) the covered collectives never touch sharedRes_,
-// so they must still succeed. At ppn>1 (plain 1x8 and vnode) the NVL-staging
-// collectives (AllGatherP/AllToAll/AllToAllP) are skipped because their sync/
-// staging maps are null when sharedRes_ is absent; only the init/memory
-// contract runs there. Each test logs ctran pool usage with the [CTRAN_MEM]
-// tag.
+// slab is skipped during ctranInit: devState_d_ is still allocated and
+// sharedRes_ stays null. At ppn1 (nLocalRanks==1, via nolocal) the covered
+// collectives never touch sharedRes_, so they must still succeed. At ppn>1
+// (plain 1x8 and vnode) the NVL-staging collectives
+// (AllGatherP/AllToAll/AllToAllP) are skipped because their sync/staging maps
+// are null when sharedRes_ is absent; only the init/memory contract runs there.
+// Each test logs ctran pool usage with the [CTRAN_MEM] tag.
 class CtranTmpbufEagerAllocDistTest : public ctran::CtranDistTestFixture,
                                       public CtranBaseTest {
  public:
@@ -49,8 +47,7 @@ class CtranTmpbufEagerAllocDistTest : public ctran::CtranDistTestFixture,
   // is driven by the per-config NCCL_COMM_STATE_DEBUG_TOPO env, not forced
   // here.
   std::unique_ptr<CtranComm> makeEagerAllocFalseComm() {
-    return makeCtranComm(
-        /*noLocal=*/false, /*ibLazyConnect=*/false, /*tmpbufEagerAlloc=*/false);
+    return makeCtranComm(/*noLocal=*/false, /*tmpbufEagerAlloc=*/false);
   }
 
   // Current ctran memory pool in-use bytes; null-safe.
@@ -276,9 +273,8 @@ TEST_F(CtranTmpbufEagerAllocDistTest, InitContractWithEagerAllocFalse) {
             << " initUsedMiB=" << (initUsed / 1024.0 / 1024.0)
             << " devInitUsedMiB=" << (devInitUsed / 1024.0 / 1024.0);
   auto* algo = comm->ctran_->algo.get();
-  // devState_d_ is always allocated; the eager slab / nvlTransports_ are not.
+  // devState_d_ is always allocated while the eager slab is not.
   EXPECT_NE(algo->getDevState(), nullptr);
-  EXPECT_EQ(algo->getNvlTransportsBase(), nullptr);
 }
 
 TEST_F(CtranTmpbufEagerAllocDistTest, AllGatherRing) {

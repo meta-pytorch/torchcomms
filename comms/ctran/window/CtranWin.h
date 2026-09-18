@@ -25,18 +25,6 @@
 #include "comms/ctran/utils/CtranMulticast.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/prims/transport/ibgda/IbgdaBuffer.h"
-#endif
-
-#if defined(ENABLE_PRIMS)
-namespace comms::prims {
-class DeviceWindow;
-class HostWindow;
-struct WindowConfig;
-} // namespace comms::prims
-#endif
-
 class CtranPersistentRequest;
 
 namespace ctran {
@@ -132,27 +120,6 @@ struct CtranWin {
 
   commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
-
-#if defined(ENABLE_PRIMS)
-  // COLLECTIVE on first call: all ranks must call this together.
-  // Prerequisite: allocate() and exchange() must have been called first.
-  // Registers the window data buffer with pipes' MultiPeerTransport for
-  // IBGDA/NVL access and populates the device-side window struct.
-  // Subsequent calls return the cached result (config is ignored).
-  //
-  // @param devWin  Output: populated device-side window handle.
-  // @param config  WindowConfig controlling signal/counter/barrier allocation.
-  commResult_t getDeviceWin(
-      comms::prims::DeviceWindow* devWin,
-      const comms::prims::WindowConfig& config);
-
-  // Returns the pipes HostWindow pointer for this window.
-  // The caller does not take ownership.
-  // Returns nullptr if pipes device window is not initialized.
-  comms::prims::HostWindow* getPipesHostWindow() const {
-    return hostWindow_.get();
-  }
-#endif
 
   commResult_t free(bool skipBarrier = false);
 
@@ -295,10 +262,6 @@ struct CtranWin {
       std::tuple<size_t, size_t, cudaStream_t>,
       CtranPersistentRequest*>>
       persistentReqs_;
-
-#if defined(ENABLE_PRIMS)
-  std::unique_ptr<comms::prims::HostWindow> hostWindow_;
-#endif
 };
 
 commResult_t ctranWinAllocate(

@@ -1015,4 +1015,168 @@ TEST(CommStateXTest, isSameDeviceRackUnknownSerial) {
   EXPECT_FALSE(commState->isSameDeviceRack(rank, 1));
 }
 
+TEST(CommStateXTest, PrecomputedTopologyInstallsExactInterleavedDomains) {
+  constexpr int kNRanks = 5;
+  std::vector<RankTopology> rankTopologies{
+      createRankTopology(0, "uco1", "uco1.z086", kHost0, "rack-a", 100),
+      createRankTopology(1, "uco1", "uco1.z086", kHost1, "rack-b", 200),
+      createRankTopology(2, "uco1", "uco1.z086", kHost0, "rack-a", 101),
+      createRankTopology(3, "uco1", "uco1.z086", kHost1, "rack-b", 201),
+      createRankTopology(4, "uco1", "uco1.z086", kHost0, "rack-a", 102),
+  };
+  CommStateX state{/*rank=*/2,
+                   kNRanks,
+                   /*cudaDev=*/0,
+                   /*cudaArch=*/1030,
+                   /*busId=*/25,
+                   /*commHash=*/0,
+                   /*rankTopologies=*/{},
+                   /*commRanksToWorldRanks=*/{}};
+
+  state.setPrecomputedTopology(
+      rankTopologies,
+      {{0, 2, 4}, {1, 3}},
+      /*fabricActive=*/false);
+
+  EXPECT_TRUE(state.hasPrecomputedTopology());
+  EXPECT_FALSE(state.nvlFabricEnabled());
+  EXPECT_EQ(state.nNodes(), 2);
+  EXPECT_EQ(state.node(), 0);
+  EXPECT_EQ(state.localRank(), 1);
+  EXPECT_EQ(state.localRankToRanks(), (std::vector<int>{0, 2, 4}));
+  EXPECT_EQ(state.node(1), 1);
+  EXPECT_EQ(state.localRank(3), 1);
+  EXPECT_EQ(state.localRankToRank(2, 0), 4);
+  EXPECT_EQ(state.localRankToRank(1, 1), 3);
+  EXPECT_EQ(state.host(2), kHost0);
+  EXPECT_EQ(state.gPid(3), std::string{kHost1} + ":201");
+  EXPECT_EQ(state.dc(4), "uco1");
+  EXPECT_EQ(state.zone(4), "uco1.z086");
+  EXPECT_EQ(state.deviceRack(4), "rack-a");
+  EXPECT_FALSE(state.isSameNvlFabric(0, 2));
+}
+
+TEST(CommStateXTest, PrecomputedFabricUsesExactEffectiveDomains) {
+  constexpr int kNRanks = 4;
+  std::vector<RankTopology> rankTopologies{
+      createRankTopology(0, "uco1", "uco1.z086", kHost0, "rack-a", 100),
+      createRankTopology(1, "uco1", "uco1.z086", kHost1, "rack-b", 200),
+      createRankTopology(2, "uco1", "uco1.z086", kHost2, "rack-a", 300),
+      createRankTopology(3, "uco1", "uco1.z086", kHost3, "rack-b", 400),
+  };
+  CommStateX state{/*rank=*/0,
+                   kNRanks,
+                   /*cudaDev=*/0,
+                   /*cudaArch=*/1030,
+                   /*busId=*/25,
+                   /*commHash=*/0,
+                   /*rankTopologies=*/{},
+                   /*commRanksToWorldRanks=*/{}};
+
+  state.setPrecomputedTopology(
+      std::move(rankTopologies),
+      {{0, 2}, {1, 3}},
+      /*fabricActive=*/true);
+
+  EXPECT_TRUE(state.hasPrecomputedTopology());
+  EXPECT_TRUE(state.nvlFabricEnabled());
+  EXPECT_FALSE(state.nvlFabricCliqueEnabled());
+  EXPECT_EQ(state.nNodes(), 2);
+  EXPECT_EQ(state.node(), 0);
+  EXPECT_EQ(state.node(), state.node(state.rank()));
+  EXPECT_EQ(state.node(2), 0);
+  EXPECT_EQ(state.node(1), 1);
+  EXPECT_EQ(state.localRank(), 0);
+  EXPECT_EQ(state.localRank(), state.localRank(state.rank()));
+  EXPECT_EQ(state.nLocalRanks(), state.nLocalRanks(state.rank()));
+  EXPECT_EQ(state.localRankToRank(state.localRank()), state.rank());
+  EXPECT_EQ(state.localRank(2), 1);
+  EXPECT_EQ(state.nLocalRanks(0), 2);
+  EXPECT_EQ(state.nLocalRanks(1), 2);
+  EXPECT_EQ(state.localRankToRanks(), (std::vector<int>{0, 2}));
+  EXPECT_EQ(state.localRankToRank(1, 0), 2);
+  EXPECT_EQ(state.localRankToRank(1, 1), 3);
+  EXPECT_TRUE(state.isSameNvlFabric(0, 2));
+  EXPECT_TRUE(state.isSameNvlFabric(1, 3));
+  EXPECT_FALSE(state.isSameNvlFabric(0, 1));
+  EXPECT_FALSE(state.isSameNvlFabric(2, 3));
+}
+
+TEST(CommStateXTest, EmptyZoneAndDcDoNotMatch) {
+  std::vector<RankTopology> rankTopologies{
+      createRankTopology(0, "", "", kHost0),
+      createRankTopology(1, "", "", kHost1),
+  };
+  CommStateX state{/*rank=*/0,
+                   /*nRanks=*/2,
+                   /*cudaDev=*/0,
+                   /*cudaArch=*/1030,
+                   /*busId=*/25,
+                   /*commHash=*/0,
+                   std::move(rankTopologies),
+                   /*commRanksToWorldRanks=*/{}};
+
+  EXPECT_FALSE(state.isSameZone(0, 1));
+  EXPECT_FALSE(state.isSameDc(0, 1));
+}
+
+TEST(CommStateXTest, PrecomputedTopologyRejectsInvalidPartitions) {
+  constexpr int kNRanks = 3;
+  const std::vector<RankTopology> rankTopologies{
+      createRankTopology(0, "uco1", "uco1.z086", kHost0),
+      createRankTopology(1, "uco1", "uco1.z086", kHost1),
+      createRankTopology(2, "uco1", "uco1.z086", kHost2),
+  };
+  const auto makeState = [] {
+    return CommStateX{/*rank=*/0,
+                      kNRanks,
+                      /*cudaDev=*/0,
+                      /*cudaArch=*/1030,
+                      /*busId=*/25,
+                      /*commHash=*/0,
+                      /*rankTopologies=*/{},
+                      /*commRanksToWorldRanks=*/{}};
+  };
+  {
+    auto state = makeState();
+    EXPECT_THROW(
+        state.setPrecomputedTopology(
+            rankTopologies,
+            {{0, 1}},
+            /*fabricActive=*/false),
+        std::invalid_argument);
+    EXPECT_FALSE(state.hasPrecomputedTopology());
+  }
+  {
+    auto state = makeState();
+    EXPECT_THROW(
+        state.setPrecomputedTopology(
+            rankTopologies,
+            {{0, 1}, {1, 2}},
+            /*fabricActive=*/false),
+        std::invalid_argument);
+    EXPECT_FALSE(state.hasPrecomputedTopology());
+  }
+  {
+    auto state = makeState();
+    EXPECT_THROW(
+        state.setPrecomputedTopology(
+            rankTopologies,
+            {{0, 1, 3}},
+            /*fabricActive=*/false),
+        std::invalid_argument);
+    EXPECT_FALSE(state.hasPrecomputedTopology());
+  }
+  {
+    auto state = makeState();
+    EXPECT_THROW(
+        state.setPrecomputedTopology(
+            rankTopologies,
+            {{0, 1, 2}},
+            /*fabricActive=*/false),
+        std::invalid_argument);
+    EXPECT_FALSE(state.hasPrecomputedTopology());
+  }
+}
+
 } // namespace ncclx

@@ -104,8 +104,6 @@ except `Abort`, which is limited to algorithms with abort-path coverage.
 | ReduceScatter\_ctdirect      | 1x8, nolocal, vnode         |   x   |    x     |      x      |        x        |     x      |     x      |    x    |       |
 | ReduceScatter\_ctring        | 1x8, nolocal, vnode         |   x   |    x     |      x      |        x        |     x      |     x      |    x    |       |
 | RMA\_put\_wait               | 1x8, nolocal, vnode         |   x   |    x     |      x      |        x        |     x      |     x      |    x    |       |
-| SendRecv\_ctp2p              | 1x8, nolocal, vnode         |   x   |    x     |      x      |        x        |     x      |     x      |    x    |   x   |
-
 Each (algo, pattern) pair generates two test targets (one per topology):
 - `<algo>_<pattern>_1x8_init_none`
 - `<algo>_<pattern>_1x8_nolocal_init_none`

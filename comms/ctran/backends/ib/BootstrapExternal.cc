@@ -42,11 +42,6 @@ std::string BootstrapExternal::getLocalVcId(const int peerRank) {
   std::vector<int> activeDevices(devices_.size());
   std::iota(activeDevices.begin(), activeDevices.end(), 0);
 
-  // Single VC per peer -> per-VC MAX_QPS == per-peer MAX_QPS. Value
-  // depends on the peer's connection class, so resolve per call.
-  int maxQpsPerVc =
-      CtranIbVirtualConn::computeMaxQpsPerVc(comm_, peerRank, /*numVcs=*/1);
-
   auto vc = std::make_shared<CtranIbVirtualConn>(
       devices_,
       peerRank,
@@ -54,7 +49,7 @@ std::string BootstrapExternal::getLocalVcId(const int peerRank) {
       trafficClass_,
       cudaDev_,
       activeDevices,
-      maxQpsPerVc);
+      /*numVcs=*/1);
 
   std::string localBusCard;
   {

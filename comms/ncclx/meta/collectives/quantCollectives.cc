@@ -9,7 +9,6 @@
 #include "meta/wrapper/DataTypeStrUtils.h"
 #include "meta/wrapper/MetaFactory.h"
 
-#include "comms/ctran/Ctran.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
 // For any nccl version that supports ncclReduceScatterQuantize, it should
@@ -85,24 +84,6 @@ static ncclResult_t ncclReduceScatterQuantizeInfoExt(
     cudaStream_t stream) {
   NCCLCHECK(
       validateReduceScatterQuantizeArgs(inputType, transportType, op, seedPtr));
-
-  constexpr auto kDirectIbAlgo = NCCL_REDUCESCATTER_ALGO::ctdirect_ib;
-  if (NCCL_REDUCESCATTER_QUANTIZED_ALGO ==
-          NCCL_REDUCESCATTER_QUANTIZED_ALGO::ctdirect_ib &&
-      comm->useCtran_ && op == ncclSum &&
-      ctranReduceScatterSupport(comm->ctranComm_.get(), kDirectIbAlgo)) {
-    return metaCommToNccl(ctranReduceScatterQuantize(
-        sendbuff,
-        recvbuff,
-        recvcount,
-        ncclToMetaComm(inputType),
-        ncclToMetaComm(transportType),
-        ncclToMetaComm(op),
-        seedPtr,
-        comm->ctranComm_.get(),
-        stream,
-        kDirectIbAlgo));
-  }
 
   auto info = ncclInfo{
       .coll = ncclFuncReduceScatter,

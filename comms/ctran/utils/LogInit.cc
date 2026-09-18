@@ -8,8 +8,8 @@
 
 #include "comms/ctran/utils/CtranLogger.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/LoggerRuntime.h"
-#include "comms/utils/logger/LoggingFormat.h"
 
 namespace ctran::logging {
 

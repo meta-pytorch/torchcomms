@@ -54,23 +54,21 @@ int32_t IbvQp::getDeviceId() const {
   return deviceId_;
 }
 
-folly::Expected<folly::Unit, Error> IbvQp::modifyQp(
-    ibv_qp_attr* attr,
-    int attrMask) {
+Status IbvQp::modifyQp(ibv_qp_attr* attr, int attrMask) {
   int rc = ibvSymbols.ibv_internal_modify_qp(qp_, attr, attrMask);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> IbvQp::queryQp(
+Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>> IbvQp::queryQp(
     int attrMask) const {
   ibv_qp_attr qpAttr{};
   ibv_qp_init_attr initAttr{};
   int rc = ibvSymbols.ibv_internal_query_qp(qp_, &qpAttr, attrMask, &initAttr);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
   return std::make_pair(qpAttr, initAttr);
 }
@@ -135,8 +133,7 @@ bool IbvQp::isRecvQueueAvailable(int maxMsgCntPerQp) const {
   return physicalRecvWrStatus_.size() < maxMsgCntPerQp;
 }
 
-folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
-    device_cq* cq) const noexcept {
+Expected<struct device_qp> IbvQp::getDeviceQp(device_cq* cq) const noexcept {
 #if defined(__HIP_PLATFORM_AMD__)
   throw std::runtime_error("getDeviceQp() is not supported on AMD GPUs");
 #else
@@ -152,7 +149,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
   {
     auto ret = Mlx5dv::initObj(&obj, ibverbx::MLX5DV_OBJ_QP);
     if (ret.hasError()) {
-      return folly::makeUnexpected(ret.error());
+      return makeUnexpected(ret.error());
     }
   }
 
@@ -163,7 +160,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
   {
     auto ret = cudaHostGetDevicePointer(&deviceQp.wq_buf, mlx5_qp.sq.buf, 0);
     if (ret != cudaSuccess) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           static_cast<int>(ret),
           fmt::format(
               "Mapping QP WQE to GPU buffer failed: {}",
@@ -188,7 +185,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
     auto ret =
         cudaHostGetDevicePointer((void**)&gpu_qp_dbrec, mlx5_qp.dbrec, 0);
     if (ret != cudaSuccess) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           static_cast<int>(ret),
           fmt::format(
               "Mapping QP DBREC to GPU buffer failed: {}",
@@ -207,7 +204,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
 
   // Map QP BlueFlame register
   if (mlx5_qp.bf.size <= 0) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         1,
         fmt::format(
             "BlueFlame register not allocated by QP creation: size={}. ",
@@ -220,7 +217,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
         cudaHostRegisterPortable | cudaHostRegisterMapped |
             cudaHostRegisterIoMemory);
     if (ret != cudaSuccess) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           static_cast<int>(ret),
           fmt::format(
               "Registering BlueFlame register failed: {}",
@@ -231,7 +228,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
     auto ret =
         cudaHostGetDevicePointer((void**)&deviceQp.bf_reg, mlx5_qp.bf.reg, 0);
     if (ret != cudaSuccess) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           static_cast<int>(ret),
           fmt::format(
               "Mapping BlueFlame register to GPU buffer failed: {}",
@@ -246,7 +243,7 @@ folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
   }
 
   if (mlx5_qp.sq.stride != WQE_STRIDE) {
-    return folly::makeUnexpected(Error(
+    return makeUnexpected(Error(
         1,
         fmt::format(
             "QP WQE stride does not match: expected={}, actual={}",

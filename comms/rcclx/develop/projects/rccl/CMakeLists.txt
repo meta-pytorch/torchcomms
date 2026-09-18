@@ -44,7 +44,6 @@ option(TRACE                                   "Enable additional tracing"      
 option(FAULT_INJECTION                         "Enable fault injection"                        ON)
 option(QUIET_WARNINGS                          "Supress compiler warnings"                     OFF)
 option(ENABLE_ROCSHMEM                         "Enable rocSHMEM support in RCCL"               OFF)
-option(ENABLE_PRIMS                            "Compile comms/prims (pipes) into RCCLX"        OFF)
 
 # Third-party dependency paths
 #==================================================================================================
@@ -53,7 +52,7 @@ set(CONDA_INCLUDE_DIR "$ENV{CONDA_INCLUDE_DIR}" CACHE PATH "Path to conda includ
 set(CONDA_LIB_DIR "$ENV{CONDA_LIB_DIR}" CACHE PATH "Path to conda lib directory")
 
 # Path to the fbcode root (five levels up from this CMakeLists.txt).
-# Defined once and used for ctran/pipes globs, hipify, and external scripts.
+# Defined once and used for the CTRAN glob, hipify, and external scripts.
 set(FBCODE_DIR "${CMAKE_SOURCE_DIR}/../../../../..")
 get_filename_component(FBCODE_DIR "${FBCODE_DIR}" ABSOLUTE)
 
@@ -824,9 +823,8 @@ set(RCCLX_FILES
   meta/ctran/PersistentCollectives.cc
 )
 
-# Automatically collect all ctran and pipes source files.
-# Glob paths must be absolute because these dirs live outside CMAKE_SOURCE_DIR
-# (at fbcode/comms/ctran/ and fbcode/comms/prims/, not under comms/rcclx/develop/).
+# Automatically collect all ctran source files. Glob paths must be absolute
+# because the directory lives outside CMAKE_SOURCE_DIR.
 file(GLOB_RECURSE CTRAN_SOURCES_ABS
     "${FBCODE_DIR}/comms/ctran/*.cc"
     "${FBCODE_DIR}/comms/ctran/*.cu"
@@ -854,78 +852,6 @@ list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/.*/issues/.*")
 if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     add_compile_definitions(CTRAN_DISABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX "comms/ctran/backends/tcpdevmem/.*")
-endif()
-
-# comms/prims (pipes) sources, gated on ENABLE_PRIMS (default OFF) so the
-# AMD/ROCm build is isolated from comms/prims churn.
-if(ENABLE_PRIMS)
-file(GLOB_RECURSE PIPES_SOURCES_ABS
-    "${FBCODE_DIR}/comms/prims/*.cc"
-    "${FBCODE_DIR}/comms/prims/*.cu"
-    "${FBCODE_DIR}/comms/prims/*.h"
-    "${FBCODE_DIR}/comms/prims/*.cuh"
-)
-
-set(PIPES_SOURCES "")
-foreach(ABS_PATH ${PIPES_SOURCES_ABS})
-    file(RELATIVE_PATH REL_PATH "${FBCODE_DIR}" "${ABS_PATH}")
-    list(APPEND PIPES_SOURCES "${REL_PATH}")
-endforeach()
-
-# Exclude IBGDA/DOCA files — they depend on NVIDIA DOCA and infiniband/verbs.h,
-# not available for ROCm/RCCL builds.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Ii]bgda")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "[Dd]oca")
-# MultiPeerTransport unconditionally includes MultipeerIbgdaTransport.h, so exclude it too.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerTransport\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerTransportAmd\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "AllToAllvAmd\\.")
-# Exclude Dispatchv files (currently disabled)
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "Dispatchv\\.")
-# Exclude tests and benchmarks (they depend on gtest/mpi which are not available in this build)
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/benchmarks/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/tests/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/.*/benchmarks/.*")
-# Exclude all pipes collectives — they depend on CUDA-only headers (cuda_bf16.h,
-# P2pIbgdaTransportDevice.cuh, __trap) that are not available on ROCm/HIP.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/collectives/.*")
-# Exclude rdma files — they depend on spdlog which is not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/rdma/.*")
-# Exclude the ibrc transport and the MultiPeerIbTransport CRTP base. They are
-# the last remaining piece of the multi-peer IB stack (ibgda/rdma/amd are already
-# excluded above) and instantiate comms::prims::GpuNicDiscovery, whose definition
-# lives in the excluded comms/prims/transport/rdma/NicDiscovery.cc (needs spdlog).
-# Leaving them in produces an undefined vtable for GpuNicDiscovery in librccl at
-# load time. No other compiled source references them.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/ibrc/.*")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/MultiPeerIbTransport\\.")
-# Exclude window files — they depend on IbgdaBuffer.h which is excluded.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/window/.*")
-# Exclude GpuMemHandler, NvlMemExchange, CuMemAllocation, CuMemMapping, and
-# CudaDriverLazy — they depend on cudaTypedefs.h / the CUDA driver API which
-# is not available here.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "GpuMemHandler\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "NvlMemExchange\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemAllocation\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "CuMemMapping\\.")
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "CudaDriverLazy\\.")
-# Exclude MultimemHandler — it is NVIDIA-only (NVSwitch multicast) and owns a
-# std::unique_ptr<CuMemMapping>, so its TU emits an out-of-line reference to
-# CuMemMapping::~CuMemMapping(), whose definition lives in the excluded
-# CuMemMapping.cc. Leaving it in compiles clean but leaves that symbol
-# undefined in librccl at load time. No other compiled source references it.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultimemHandler\\.")
-# Exclude MultiPeerNvlTransport — it depends on GpuMemHandler.h which is excluded.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "MultiPeerNvlTransport\\.")
-# Exclude comms/prims/transport/amd/ — the AMD GDA (GPUDirect Async) verbs backend
-# (prims_amd_gda, mlx5/bnxt nic backends) is only consumed by the excluded
-# MultipeerIbgdaTransport, and depends on mlx5dv/bnxt direct-verbs headers
-# (infiniband/mlx5dv.h, BnxtReDv.h) not available in this build.
-list(FILTER PIPES_SOURCES EXCLUDE REGEX "comms/prims/transport/amd/.*")
-else()
-# ENABLE_PRIMS off: compile no comms/prims sources into librccl.
-set(PIPES_SOURCES "")
 endif()
 
 # Run this command to get RCCLX_LIB_FILES:
@@ -971,6 +897,12 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/relay/sharded_relay_allreduce_kernels.h
   comms/rcclx/develop/meta/relay/sharded_relay_graph_scratch.cc
   comms/rcclx/develop/meta/relay/sharded_relay_graph_scratch.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_lp.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_arena.cc
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_arena.h
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.cu
+  comms/rcclx/develop/meta/relay/sharded_relay_lp_kernels.h
   comms/rcclx/develop/meta/relay/sharded_relay_oneshot.cc
   comms/rcclx/develop/meta/relay/sharded_relay_oneshot.h
   comms/rcclx/develop/meta/relay/sharded_relay_reduce_scatter.cc
@@ -989,7 +921,7 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common comms/prims -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
@@ -1115,6 +1047,8 @@ set(COMMON_FILES
   comms/utils/logger/Logger.h
   comms/utils/logger/LoggerRuntime.cc
   comms/utils/logger/LoggerRuntime.h
+  comms/utils/logger/CommsLogging.cc
+  comms/utils/logger/CommsLogging.h
   comms/utils/logger/LoggingFormat.cc
   comms/utils/logger/LoggingFormat.h
   comms/utils/logger/LogTypes.cc
@@ -1248,7 +1182,7 @@ endforeach()
 
 # Different build rules for files that we want to import with their full path.
 # They will be stored in fbcode/comms/rcclx/develop/build/release/hipify/<path/from/fbcode>
-foreach(SRC_FILE ${RCCLX_LIB_FILES} ${COMMON_FILES} ${CTRAN_FILES} ${PIPES_SOURCES})
+foreach(SRC_FILE ${RCCLX_LIB_FILES} ${COMMON_FILES} ${CTRAN_FILES})
   # Check that file exists
   if (NOT EXISTS ${FBCODE_DIR}/${SRC_FILE})
     message(FATAL_ERROR "Unable to find file listed in CMakeLists.txt: ${FBCODE_DIR}/${SRC_FILE}")
@@ -1474,14 +1408,6 @@ target_include_directories(rccl PRIVATE ${ROCMCORE_PATH}/include)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/rcclx/develop/meta/ctran)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran/utils)
 target_include_directories(rccl PRIVATE ${HIPIFY_DIR}/comms/ctran)
-# comms/prims/transport/amd/ is excluded from sources (not hipified), but its
-# headers (HipDeviceCompat.h, nic/NicConfig.h) are included by compiled
-# transport/ibrc code via bare paths, so put the original source dir on the
-# include path. See the EXCLUDE for comms/prims/transport/amd/.* above.
-# Only needed when comms/prims sources are compiled in (ENABLE_PRIMS).
-if(ENABLE_PRIMS)
-target_include_directories(rccl PRIVATE ${FBCODE_DIR}/comms/prims/transport/amd)
-endif()
 
 if(DEMANGLE_DIR)
   target_include_directories(rccl PRIVATE ${DEMANGLE_DIR})
@@ -1531,10 +1457,6 @@ endif()
 if(ENABLE_ROCSHMEM)
   target_compile_definitions(rccl PRIVATE ENABLE_ROCSHMEM)
 endif()
-if(ENABLE_PRIMS)
-  target_compile_definitions(rccl PRIVATE ENABLE_PRIMS)
-endif()
-
 # ==== rocSHMEM integration (optional) ====
 
 if (ENABLE_ROCSHMEM)

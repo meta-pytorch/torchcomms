@@ -40,10 +40,10 @@ struct ProgressChunk {
 /**
  * Register-only geometry for one resumable progress call.
  *
- * This is intentionally not stored in `IbChannelProgress`: callers pass the
- * same static geometry to init and progress, and each progress call derives
- * these values in registers instead of reloading duplicated fields from
- * HBM-backed progress state.
+ * Derived in registers on every call rather than stored: only the two caller
+ * inputs it cannot reach on its own (`activeUserBytes`, `activeMaxSignalBytes`)
+ * live in `IbChannelProgress`; the rest come from `transport.channel_layout()`
+ * and `group`, so caching them would duplicate HBM state for no gain.
  */
 struct ProgressGeometry {
   // Two independent coordinates, never merged: `groupId` is the LOGICAL channel
@@ -153,8 +153,8 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
  *
  * The transport reserves the sender-side byte stream for `group.group_id`
  * and starts the internal state in the sender state machine unless
- * `nbytes == 0`. It does not capture the source pointer; callers pass the
- * pointer to each `progress_send_once()` call.
+ * `nbytes == 0`. It captures `src`, so `progress_send_once()` advances through
+ * the same buffer on every call and cannot be handed a different one.
  *
  * The send progress slot for this group must be idle. Re-initializing a
  * group while a previous send is outstanding traps with a diagnostic instead
@@ -171,6 +171,8 @@ __device__ __forceinline__ uint32_t try_prepare_send_slot(
  * behavior and lets schedulers treat empty operations uniformly.
  *
  * @param group Thread group that will execute all later progress calls.
+ * @param src Source user buffer. The range `[src, src + nbytes)` must remain
+ *            valid until the operation reports `Done`.
  * @param nbytes Number of user-buffer bytes to send for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
@@ -178,6 +180,7 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const void* __restrict__ src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -185,6 +188,10 @@ __device__ __forceinline__ void init_send_progress(
   auto& slot = progress_send_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "send");
   IbChannelProgress state{};
+  // The send path only reads through this; see IbChannelProgress.
+  state.activeUserBuf = const_cast<void*>(src);
+  state.activeUserBytes = nbytes;
+  state.activeMaxSignalBytes = max_signal_bytes;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitLocalCompletion;
@@ -202,6 +209,7 @@ __device__ __forceinline__ void init_send_progress(
 #else
   (void)transport;
   (void)group;
+  (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -211,6 +219,7 @@ template <typename Transport>
 __device__ __forceinline__ void init_registered_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -218,10 +227,22 @@ __device__ __forceinline__ void init_registered_send_progress(
     __threadfence_system();
     group.sync();
   }
-  init_send_progress(transport, group, nbytes, max_signal_bytes);
+  // activeUserBuf stays null: this path never copies through send staging, so
+  // the registered descriptor below is the only source it uses.
+  init_send_progress(
+      transport, group, /*src=*/nullptr, nbytes, max_signal_bytes);
+  // Written after the delegated init, which builds its own local state and
+  // stores it. store_progress_state() does not carry this field, so the slot
+  // keeps what is written here for the whole operation.
+  auto& slot = progress_send_slot<protocol::Simple>(transport, group);
+  if (group.is_leader()) {
+    slot.activeRegisteredBuf = src;
+  }
+  group.sync();
 #else
   (void)transport;
   (void)group;
+  (void)src;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -232,8 +253,8 @@ __device__ __forceinline__ void init_registered_send_progress(
  *
  * The transport reserves the receiver-side byte stream for `group.group_id`
  * and starts the internal state in the receiver state machine unless
- * `nbytes == 0`. It does not capture the destination pointer; callers pass
- * the pointer to each `progress_recv_once()` call.
+ * `nbytes == 0`. It captures `dst`, so `progress_recv_once()` advances through
+ * the same buffer on every call and cannot be handed a different one.
  *
  * The recv progress slot for this group must be idle. Re-initializing a
  * group while a previous recv is outstanding traps with a diagnostic instead
@@ -248,6 +269,8 @@ __device__ __forceinline__ void init_registered_send_progress(
  * behavior and lets schedulers treat empty operations uniformly.
  *
  * @param group Thread group that will execute all later progress calls.
+ * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
+ *            remain valid until the operation reports `Done`.
  * @param nbytes Number of user-buffer bytes to receive for this group.
  * @param max_signal_bytes Maximum signaled sub-chunk size, or 0 for default.
  */
@@ -255,6 +278,7 @@ template <typename Transport, typename Proto>
 __device__ __forceinline__ void init_recv_progress(
     Transport& transport,
     ThreadGroup& group,
+    void* __restrict__ dst,
     std::size_t nbytes,
     std::size_t max_signal_bytes) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -262,6 +286,9 @@ __device__ __forceinline__ void init_recv_progress(
   auto& slot = progress_recv_slot<Proto>(transport, group);
   assert_progress_slot_idle(group, slot, "recv");
   IbChannelProgress state{};
+  state.activeUserBuf = dst;
+  state.activeUserBytes = nbytes;
+  state.activeMaxSignalBytes = max_signal_bytes;
   state.activeStage = nbytes == 0
       ? detail::IbSendRecvProgressStage::Done
       : detail::IbSendRecvProgressStage::WaitDataReady;
@@ -279,6 +306,7 @@ __device__ __forceinline__ void init_recv_progress(
 #else
   (void)transport;
   (void)group;
+  (void)dst;
   (void)nbytes;
   (void)max_signal_bytes;
 #endif
@@ -309,10 +337,6 @@ __device__ __forceinline__ void init_recv_progress(
  *
  * @param transport Owning transport used for every transport op.
  * @param group Thread group matching the one used during initialization.
- * @param src Source user buffer. The range `[src, src + nbytes)` must remain
- *            valid until `Done`.
- * @param nbytes Number of user-buffer bytes from the matching init call.
- * @param max_signal_bytes Maximum signaled sub-chunk size from init.
  * @param abortDevice Optional device abortDevice checked while dependencies
  * wait.
  * @param args Additional arguments forwarded to `CopyOp::send`.
@@ -427,9 +451,6 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
@@ -455,7 +476,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
     return IbgdaSendRecvProgressStatus::Done;
   }
   const ProgressGeometry progress_params = make_progress_geometry<Proto>(
-      channelLayout, group, nbytes, max_signal_bytes, "progress_send_once");
+      channelLayout,
+      group,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
+      "progress_send_once");
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
     if (group.is_leader()) {
       printf(
@@ -522,7 +547,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
         group,
         channelLayout,
         chunk,
-        src,
+        state.activeUserBuf,
         progress_params.payloadBytes,
         args...);
     if (group.is_leader()) {
@@ -698,9 +723,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once_impl(
 #else
   (void)transport;
   (void)group;
-  (void)src;
-  (void)nbytes;
-  (void)max_signal_bytes;
   (void)abortDevice;
   (void)traceContext;
   (void)traceState;
@@ -713,9 +735,6 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const IbgdaLocalBuffer& src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   auto& channelLayout = transport.channel_layout();
@@ -728,8 +747,8 @@ progress_registered_send_once(
   const ProgressGeometry geometry = make_progress_geometry<protocol::Simple>(
       channelLayout,
       group,
-      nbytes,
-      max_signal_bytes,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
       "progress_registered_send_once");
   if (active_payload_offset(state) >= geometry.protocolBytes) {
     if (group.is_leader()) {
@@ -838,7 +857,7 @@ progress_registered_send_once(
           0, 1, group.group_id, group.block_id, 1, SyncScope::THREAD};
       const auto completion = transport.put(
           solo,
-          src.subBuffer(chunk.dataOff),
+          state.activeRegisteredBuf.subBuffer(chunk.dataOff),
           remoteChannel.recvStaging.subBuffer(chunk.stagingOff),
           validBytes,
           remoteChannel.dataReady,
@@ -875,9 +894,6 @@ progress_registered_send_once(
 #else
   (void)transport;
   (void)group;
-  (void)src;
-  (void)nbytes;
-  (void)max_signal_bytes;
   (void)abortDevice;
   return IbgdaRegisteredSendProgressStatus::Drained;
 #endif
@@ -986,15 +1002,15 @@ __device__ __forceinline__ void send_registered(
     std::size_t max_signal_bytes,
     const AbortDevice& abortDevice) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-  init_registered_send_progress(transport, group, nbytes, max_signal_bytes);
+  init_registered_send_progress(
+      transport, group, src, nbytes, max_signal_bytes);
   IbgdaRegisteredSendProgressStatus status;
   // Both loops are unbounded by design: they spin until the NIC makes progress.
   // `Aborted` is the only escape when the NIC never will, so it must terminate
   // them - otherwise an abort on a dead NIC deadlocks here, which is the exact
   // failure this abort plumbing exists to break.
   do {
-    status = progress_registered_send_once(
-        transport, group, src, nbytes, max_signal_bytes, abortDevice);
+    status = progress_registered_send_once(transport, group, abortDevice);
   } while (status != IbgdaRegisteredSendProgressStatus::Posted &&
            status != IbgdaRegisteredSendProgressStatus::Drained &&
            status != IbgdaRegisteredSendProgressStatus::Aborted);
@@ -1016,21 +1032,10 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args) {
   return progress_send_once_impl<Transport, CopyOp, Proto>(
-      transport,
-      group,
-      src,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      nullptr,
-      nullptr,
-      args...);
+      transport, group, abortDevice, nullptr, nullptr, args...);
 }
 
 template <typename Transport, typename CopyOp, typename... Args>
@@ -1038,23 +1043,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_send_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   return progress_send_once_impl<Transport, CopyOp, protocol::Simple>(
-      transport,
-      group,
-      src,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      &traceContext,
-      &traceState,
-      args...);
+      transport, group, abortDevice, &traceContext, &traceState, args...);
 }
 
 /**
@@ -1130,10 +1124,6 @@ __device__ __forceinline__ bool poll_recv_data_ready(
  *
  * @param transport Owning transport used for every transport op.
  * @param group Thread group matching the one used during initialization.
- * @param dst Destination user buffer. The range `[dst, dst + nbytes)` must
- *            remain valid until `Done`.
- * @param nbytes Number of user-buffer bytes from the matching init call.
- * @param max_signal_bytes Maximum signaled sub-chunk size from init.
  * @param abortDevice Optional device abortDevice checked while dependencies
  * wait.
  * @param args Additional arguments forwarded to `CopyOp::recv`.
@@ -1437,9 +1427,6 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext* traceContext,
     PipesTraceProgressState* traceState,
@@ -1463,7 +1450,11 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
     return IbgdaSendRecvProgressStatus::Done;
   }
   const ProgressGeometry progress_params = make_progress_geometry<Proto>(
-      channelLayout, group, nbytes, max_signal_bytes, "progress_recv_once");
+      channelLayout,
+      group,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
+      "progress_recv_once");
   if (active_payload_offset(state) >= progress_params.protocolBytes) {
     if (group.is_leader()) {
       printf(
@@ -1516,7 +1507,7 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
       group,
       channelLayout,
       chunk,
-      dst,
+      state.activeUserBuf,
       progress_params.payloadBytes,
       traceContext,
       qpLane,
@@ -1560,9 +1551,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once_impl(
 #else
   (void)transport;
   (void)group;
-  (void)dst;
-  (void)nbytes;
-  (void)max_signal_bytes;
   (void)abortDevice;
   (void)traceContext;
   (void)traceState;
@@ -1574,21 +1562,10 @@ template <typename Transport, typename CopyOp, typename Proto, typename... Args>
 __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     Args... args) {
   return progress_recv_once_impl<Transport, CopyOp, Proto>(
-      transport,
-      group,
-      dst,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      nullptr,
-      nullptr,
-      args...);
+      transport, group, abortDevice, nullptr, nullptr, args...);
 }
 
 template <typename Transport, typename CopyOp, typename... Args>
@@ -1596,23 +1573,12 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    void* __restrict__ dst,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
     Args... args) {
   return progress_recv_once_impl<Transport, CopyOp, protocol::Simple>(
-      transport,
-      group,
-      dst,
-      nbytes,
-      max_signal_bytes,
-      abortDevice,
-      &traceContext,
-      &traceState,
-      args...);
+      transport, group, abortDevice, &traceContext, &traceState, args...);
 }
 
 /**
@@ -1640,8 +1606,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_acquire_once(
     Transport& transport,
     ThreadGroup& group,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     RecvChunkAcquisition& out) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
@@ -1654,8 +1618,8 @@ progress_recv_acquire_once(
   const ProgressGeometry geometry = make_progress_geometry<Proto>(
       channelLayout,
       group,
-      nbytes,
-      max_signal_bytes,
+      state.activeUserBytes,
+      state.activeMaxSignalBytes,
       "progress_recv_acquire_once");
   // Parity with progress_recv_once: a cursor past the end of the stream while
   // the stage is not Done means the progress state is corrupted or
@@ -1728,8 +1692,6 @@ progress_recv_acquire_once(
 #else
   (void)transport;
   (void)group;
-  (void)nbytes;
-  (void)max_signal_bytes;
   (void)abortDevice;
   (void)out;
   return IbgdaSendRecvProgressStatus::Done;
@@ -1811,6 +1773,9 @@ __device__ __forceinline__ void store_progress_state(
     slot.activeNextByte = state.activeNextByte;
     slot.activeTailPadding = state.activeTailPadding;
     slot.activeBaseStep = state.activeBaseStep;
+    slot.activeUserBytes = state.activeUserBytes;
+    slot.activeMaxSignalBytes = state.activeMaxSignalBytes;
+    slot.activeUserBuf = state.activeUserBuf;
     slot.activeStage = state.activeStage;
   }
   group.sync();

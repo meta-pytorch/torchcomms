@@ -21,6 +21,10 @@ extern int ncclDebugLevel;
 extern uint64_t ncclDebugMask;
 extern FILE *ncclDebugFile;
 
+static inline uint64_t ncclDebugMaskLoad() {
+  return COMPILER_ATOMIC_LOAD(&ncclDebugMask, std::memory_order_relaxed);
+}
+
 #ifdef NCCL_OS_LINUX
 void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *filefunc, int line, const char *fmt, ...) __attribute__ ((format (printf, 5, 6)));
 #elif defined(NCCL_OS_WINDOWS)
@@ -53,14 +57,14 @@ extern char ncclLastError[];
 #define INFO(FLAGS, ...) \
     do{ \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
-        if((level >= NCCL_LOG_INFO && ((unsigned long)(FLAGS) & ncclDebugMask)) || (level < 0)) \
+        if((level >= NCCL_LOG_INFO && ((unsigned long)(FLAGS) & ncclDebugMaskLoad())) || (level < 0)) \
             ncclMetaDebugLog(NCCL_LOG_INFO, (unsigned long)(FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
     } while(0)
 
 #define TRACE_CALL(...) \
     do { \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
-        if((level >= NCCL_LOG_TRACE && (NCCL_CALL & ncclDebugMask)) || (level < 0)) { \
+        if((level >= NCCL_LOG_TRACE && (NCCL_CALL & ncclDebugMaskLoad())) || (level < 0)) { \
             ncclMetaDebugLog(NCCL_LOG_TRACE, NCCL_CALL, __FILE__, __func__, __LINE__, __VA_ARGS__); \
         } \
     } while (0)
@@ -69,7 +73,7 @@ extern char ncclLastError[];
 #define TRACE(FLAGS, ...) \
     do { \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
-        if ((level >= NCCL_LOG_TRACE && ((unsigned long)(FLAGS) & ncclDebugMask)) || (level < 0)) { \
+        if ((level >= NCCL_LOG_TRACE && ((unsigned long)(FLAGS) & ncclDebugMaskLoad())) || (level < 0)) { \
             ncclMetaDebugLog(NCCL_LOG_TRACE, (unsigned long)(FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
         } \
     } while (0)
@@ -85,9 +89,11 @@ extern "C" {
 #undef ncclResetDebugInit
 #endif
 void ncclResetDebugInit();
+void ncclResetDebugInitInternal();
 #ifdef __cplusplus
 }
 #endif
+void ncclRefreshDebugInitInternal() noexcept;
 
 void ncclSetMyThreadLoggingName(std::string_view name);
 

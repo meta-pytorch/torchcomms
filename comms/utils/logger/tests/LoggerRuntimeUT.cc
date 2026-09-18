@@ -35,7 +35,7 @@ TEST_F(LoggerRuntimeTest, ShutdownBeforeInitializationIsNoOp) {
   shutdownCommLoggerRuntime();
 
   EXPECT_EQ(SCUBA_nccl_structured_logging_ptr, nullptr);
-  EXPECT_EQ(SCUBA_nccl_error_logging_ptr, nullptr);
+  EXPECT_EQ(SCUBA_nccl_memory_logging_ptr, nullptr);
 }
 
 TEST_F(LoggerRuntimeTest, LegacyCloseIsSafeWhenNotInitialized) {
@@ -69,7 +69,7 @@ TEST_F(LoggerRuntimeTest, OwnsSharedStateLifecycle) {
   EXPECT_TRUE(isEnabledSubSystemBitwise(INIT));
   EXPECT_FALSE(isEnabledSubSystemBitwise(COLL));
   ASSERT_NE(SCUBA_nccl_structured_logging_ptr, nullptr);
-  ASSERT_NE(SCUBA_nccl_error_logging_ptr, nullptr);
+  ASSERT_NE(SCUBA_nccl_memory_logging_ptr, nullptr);
 
   NCCL_DEBUG_SUBSYS = "COLL";
   initCommLoggerRuntime();
@@ -81,7 +81,7 @@ TEST_F(LoggerRuntimeTest, OwnsSharedStateLifecycle) {
   EXPECT_FALSE(isEnabledSubSystemBitwise(INIT));
   EXPECT_TRUE(isEnabledSubSystemBitwise(COLL));
   ASSERT_NE(SCUBA_nccl_structured_logging_ptr, nullptr);
-  ASSERT_NE(SCUBA_nccl_error_logging_ptr, nullptr);
+  ASSERT_NE(SCUBA_nccl_memory_logging_ptr, nullptr);
 }
 
 } // namespace

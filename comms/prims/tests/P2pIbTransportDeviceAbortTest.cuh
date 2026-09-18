@@ -9,6 +9,18 @@
 
 namespace comms::prims::test {
 
+struct PrepareSendSlotAbortObservation {
+  uint32_t waitReason{0};
+  uint32_t confirmationReason{0};
+  uint32_t slotUnretired{0};
+  uint64_t remainingLaneMask{0};
+  uint64_t generation{0};
+};
+
+void launchPrepareSendSlotAbortForwarding(
+    PrepareSendSlotAbortObservation* observation,
+    comms::fault_tolerance::AbortDevice abort);
+
 /*
  * Runs `wait_signal(group, signal, expected, abort)` on a locally constructed
  * IBRC transport and stores the wait's return value in `waitResult`.

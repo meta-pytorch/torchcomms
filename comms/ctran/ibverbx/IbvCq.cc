@@ -73,16 +73,15 @@ int32_t IbvCq::getDeviceId() const {
   return deviceId_;
 }
 
-folly::Expected<folly::Unit, Error> IbvCq::reqNotifyCq(
-    int solicited_only) const {
+Status IbvCq::reqNotifyCq(int solicited_only) const {
   int rc = cq_->context->ops.req_notify_cq(cq_, solicited_only);
   if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
+    return makeUnexpected(Error(rc));
   }
-  return folly::unit;
+  return ok();
 }
 
-folly::Expected<struct device_cq, Error> IbvCq::getDeviceCq() const noexcept {
+Expected<struct device_cq> IbvCq::getDeviceCq() const noexcept {
 #if defined(__HIP_PLATFORM_AMD__)
   throw std::runtime_error("getDeviceQp() is not supported on AMD GPUs");
 #else
@@ -96,20 +95,20 @@ folly::Expected<struct device_cq, Error> IbvCq::getDeviceCq() const noexcept {
   {
     auto ret = Mlx5dv::initObj(&obj, ibverbx::MLX5DV_OBJ_CQ);
     if (ret.hasError()) {
-      return folly::makeUnexpected(ret.error());
+      return makeUnexpected(ret.error());
     }
   }
 
   // sanity check cqe are initialied to 0xff
   if (!sanityCheckCqInitialization(mlx5_cq.buf)) {
-    return folly::makeUnexpected(Error(1, "CQE not initialized to 0xff"));
+    return makeUnexpected(Error(1, "CQE not initialized to 0xff"));
   }
 
   // Map CQ buffer
   {
     auto ret = cudaHostGetDevicePointer(&deviceCq.cq_buf, mlx5_cq.buf, 0);
     if (ret != cudaSuccess) {
-      return folly::makeUnexpected(Error(
+      return makeUnexpected(Error(
           static_cast<int>(ret),
           fmt::format(
               "Mapping CQ to GPU buffer failed: {}", cudaGetErrorString(ret))));

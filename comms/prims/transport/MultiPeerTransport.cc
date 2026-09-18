@@ -2,6 +2,7 @@
 
 #include "comms/prims/transport/MultiPeerTransport.h"
 
+#include <functional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -18,14 +19,13 @@
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
-#include <glog/logging.h>
-
 #include "comms/common/fault_tolerance/Abort.h"
 #include "comms/prims/bootstrap/NvlBootstrapAdapter.h"
 #include "comms/prims/memory/CuMemAllocation.h"
 #include "comms/prims/topology/TopologyDiscovery.h"
 #include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/logger/SpdlogLogger.h"
 
 namespace comms::prims {
 
@@ -102,8 +102,10 @@ void MultiPeerTransport::initFromTopology(
   if (config.disableIb) {
     // NVL-only mode: validate all non-self peers are NVL-reachable, then
     // force every non-self rank to P2P_NVL. IBGDA is never constructed.
-    LOG(INFO) << "MultiPeerTransport: rank " << myRank_
-              << " IBGDA disabled by config, NVL-only mode";
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} IBGDA disabled by config, NVL-only mode",
+        myRank_);
 
     for (int r = 0; r < nRanks_; ++r) {
       if (r == myRank_) {
@@ -155,13 +157,22 @@ void MultiPeerTransport::initFromTopology(
         ++ibrcCount;
       }
     }
-    LOG(INFO) << "MultiPeerTransport: rank " << myRank_ << "/" << nRanks_
-              << " topology: " << nvlCount << " NVL peers, " << ibgdaCount
-              << " IBGDA peers, " << ibrcCount << " IBRC peers";
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {}/{} topology: {} NVL peers, {} IBGDA peers, {} IBRC peers",
+        myRank_,
+        nRanks_,
+        nvlCount,
+        ibgdaCount,
+        ibrcCount);
   }
   for (int r = 0; r < nRanks_; ++r) {
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " -> rank " << r
-            << ": " << transport_type_name(typePerRank_[r]);
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} -> rank {}: {}",
+        myRank_,
+        r,
+        transport_type_name(typePerRank_[r]));
   }
 
   // Create NVLink sub-transport with NvlBootstrapAdapter
@@ -180,9 +191,12 @@ void MultiPeerTransport::initFromTopology(
         deviceId_,
         nvlBootstrapAdapter_,
         config.nvlConfig);
-    VLOG(1) << "MultiPeerTransport: rank " << myRank_
-            << " created NVL sub-transport, nvlNRanks=" << nvlNRanks_
-            << " nvlLocalRank=" << nvlLocalRank_;
+    COMMS_LOG(
+        DBG,
+        "MultiPeerTransport: rank {} created NVL sub-transport, nvlNRanks={} nvlLocalRank={}",
+        myRank_,
+        nvlNRanks_,
+        nvlLocalRank_);
   }
 
   // Create the IB sub-transport — the universal fallback for all non-NVL peers.
@@ -195,16 +209,27 @@ void MultiPeerTransport::initFromTopology(
       // IBRC's device waits sit on the CPU proxy, so the backend needs the
       // handle itself; IBGDA takes one per call on the wait APIs instead.
       ibrcTransport_ = std::make_unique<MultipeerIbrcTransport>(
-          myRank_, nRanks_, bootstrap_, ibConfig, abortDevice_);
-      VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBRC sub-transport for " << ibPeerRanks_.size()
-              << " peers";
+          myRank_,
+          nRanks_,
+          bootstrap_,
+          ibConfig,
+          abortDevice_,
+          abort_ ? std::function<bool()>(
+                       [abort = abort_] { return abort->isAborted(); })
+                 : nullptr);
+      COMMS_LOG(
+          DBG,
+          "MultiPeerTransport: rank {} created IBRC sub-transport for {} peers",
+          myRank_,
+          ibPeerRanks_.size());
     } else {
       ibgdaTransport_ = std::make_unique<MultipeerIbgdaTransport>(
           myRank_, nRanks_, bootstrap_, ibConfig);
-      VLOG(1) << "MultiPeerTransport: rank " << myRank_
-              << " created IBGDA sub-transport for " << ibPeerRanks_.size()
-              << " peers";
+      COMMS_LOG(
+          DBG,
+          "MultiPeerTransport: rank {} created IBGDA sub-transport for {} peers",
+          myRank_,
+          ibPeerRanks_.size());
     }
   }
 }
@@ -237,6 +262,13 @@ std::optional<int> MultiPeerTransport::ib_max_num_channels() const {
   return std::nullopt;
 }
 
+std::optional<int> MultiPeerTransport::nvl_max_num_channels() const {
+  if (nvlTransport_) {
+    return nvlTransport_->maxNumChannels();
+  }
+  return std::nullopt;
+}
+
 void MultiPeerTransport::setExternalNvlDataBuffers(
     ExternalStagingBuffers externalStagingBuffers) {
   if (nvlTransport_) {
@@ -245,20 +277,15 @@ void MultiPeerTransport::setExternalNvlDataBuffers(
 }
 
 void MultiPeerTransport::exchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error("MultiPeerTransport: exchange previously failed");
+  }
 #ifndef __HIP_PLATFORM_AMD__
-  // CUDA driver-API init is required for the cuMem-based fabric / POSIX-FD
-  // exchange paths. On AMD only the cudaIpc (hipIpc) path is available, so
-  // no driver-API init is needed.
   if (cuda_driver_lazy_init() != 0) {
     throw std::runtime_error(
         "MultiPeerTransport::exchange: failed to initialize CUDA driver API");
   }
 #endif
-
-  VLOG(1) << "MultiPeerTransport: rank " << myRank_ << " exchange()"
-          << " nvl=" << (nvlTransport_ ? "yes" : "no")
-          << " ibgda=" << (ibgdaTransport_ ? "yes" : "no")
-          << " ibrc=" << (ibrcTransport_ ? "yes" : "no");
 
   if (nvlTransport_) {
     nvlTransport_->exchange();
@@ -270,7 +297,90 @@ void MultiPeerTransport::exchange() {
     ibrcTransport_->exchange();
   }
 
-  build_device_handle();
+  build_device_handle(/*allowAllocation=*/true);
+  exchangeState_ = ExchangeState::kExchanged;
+}
+
+void MultiPeerTransport::prepareExchange() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error("MultiPeerTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kPrepared ||
+      exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+
+  try {
+#ifndef __HIP_PLATFORM_AMD__
+    // CUDA driver-API init is required for the cuMem-based fabric / POSIX-FD
+    // exchange paths. On AMD only the cudaIpc (hipIpc) path is available, so
+    // no driver-API init is needed.
+    if (cuda_driver_lazy_init() != 0) {
+      throw std::runtime_error(
+          "MultiPeerTransport::exchange: failed to initialize CUDA driver API");
+    }
+#endif
+
+    if (nvlTransport_) {
+      nvlTransport_->prepareExchange();
+    }
+    if (ibgdaTransport_) {
+      ibgdaTransport_->prepareExchange();
+    }
+
+    transportsHost_.reserve(static_cast<std::size_t>(nRanks_));
+    const std::size_t arrayBytes =
+        static_cast<std::size_t>(nRanks_) * sizeof(Transport);
+    CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    rollbackPreparedExchange();
+    throw;
+  }
+
+  exchangeState_ = ExchangeState::kPrepared;
+}
+
+void MultiPeerTransport::exchangePrepared() {
+  if (exchangeState_ == ExchangeState::kFailed) {
+    throw std::runtime_error("MultiPeerTransport: exchange previously failed");
+  }
+  if (exchangeState_ == ExchangeState::kExchanged) {
+    return;
+  }
+  if (exchangeState_ != ExchangeState::kPrepared) {
+    throw std::logic_error(
+        "MultiPeerTransport::exchangePrepared called before prepareExchange");
+  }
+
+  COMMS_LOG(
+      DBG,
+      "MultiPeerTransport: rank {} exchange() nvl={} ibgda={} ibrc={}",
+      myRank_,
+      nvlTransport_ ? "yes" : "no",
+      ibgdaTransport_ ? "yes" : "no",
+      ibrcTransport_ ? "yes" : "no");
+
+  try {
+    if (nvlTransport_) {
+      nvlTransport_->exchangePrepared();
+    }
+    if (ibgdaTransport_) {
+      ibgdaTransport_->exchangePrepared();
+    }
+    if (ibrcTransport_) {
+      ibrcTransport_->exchange();
+    }
+
+    build_device_handle(/*allowAllocation=*/false);
+  } catch (...) {
+    exchangeState_ = ExchangeState::kFailed;
+    // Keep exchanged CUDA-IPC exports alive until the owner has signaled the
+    // communicator failure. Freeing them here can block on peers that have not
+    // yet closed their imported mappings, preventing the abort from firing.
+    throw;
+  }
+  exchangeState_ = ExchangeState::kExchanged;
 }
 
 TransportType MultiPeerTransport::get_transport_type(int peerRank) const {
@@ -400,54 +510,30 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
       "localRegisterIbgdaBuffer: IB transport not available");
 }
 
-IbBufferRegistrationLease MultiPeerTransport::registerIbBulkBuffer(
+IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
     void* ptr,
     std::size_t size) {
   if (ibgdaTransport_) {
-    return ibgdaTransport_->registerIbBulkBuffer(ptr, size);
+    return ibgdaTransport_->registerIbBufferRange(ptr, size);
   }
   if (ibrcTransport_) {
-    return ibrcTransport_->registerIbBulkBuffer(ptr, size);
+    return ibrcTransport_->registerIbBufferRange(ptr, size);
   }
-  throw std::runtime_error("registerIbBulkBuffer: IB transport not available");
+  throw std::runtime_error("registerIbBufferRange: IB transport not available");
 }
 
-std::optional<IbBufferRegistrationView> MultiPeerTransport::lookupIbBulkBuffer(
-    const IbBufferRegistrationLease& lease,
-    void* ptr,
-    std::size_t size) const {
+void MultiPeerTransport::deregisterIbBufferRange(
+    IbBufferRegistration& registration) {
   if (ibgdaTransport_) {
-    return ibgdaTransport_->lookupIbBulkBuffer(lease, ptr, size);
-  }
-  if (ibrcTransport_) {
-    return ibrcTransport_->lookupIbBulkBuffer(lease, ptr, size);
-  }
-  return std::nullopt;
-}
-
-void MultiPeerTransport::deregisterIbBulkBuffer(
-    IbBufferRegistrationLease& lease) {
-  if (ibgdaTransport_) {
-    ibgdaTransport_->deregisterIbBulkBuffer(lease);
+    ibgdaTransport_->deregisterIbBufferRange(registration);
     return;
   }
   if (ibrcTransport_) {
-    ibrcTransport_->deregisterIbBulkBuffer(lease);
+    ibrcTransport_->deregisterIbBufferRange(registration);
     return;
   }
   throw std::runtime_error(
-      "deregisterIbBulkBuffer: IB transport not available");
-}
-
-bool MultiPeerTransport::isIbBulkBufferViewActive(
-    const IbBufferRegistrationView& view) const {
-  if (ibgdaTransport_) {
-    return ibgdaTransport_->isIbBulkBufferViewActive(view);
-  }
-  if (ibrcTransport_) {
-    return ibrcTransport_->isIbBulkBufferViewActive(view);
-  }
-  return false;
+      "deregisterIbBufferRange: IB transport not available");
 }
 
 void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
@@ -467,6 +553,41 @@ std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
     return ibrcTransport_->exchangeBuffer(localBuf);
   }
   throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
+}
+
+P2pIbrcHostWriter MultiPeerTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->getHostWriter(peerRank, queueIndex);
+  }
+  throw std::runtime_error(
+      "getHostWriter: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
+int MultiPeerTransport::ibNumNics() const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->numNics();
+  }
+  throw std::runtime_error(
+      "ibNumNics: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
+std::size_t MultiPeerTransport::hostLaneCapacity(int peerRank) const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->hostLaneCapacity(peerRank);
+  }
+  throw std::runtime_error(
+      "hostLaneCapacity: IBRC transport not available (build with ibMode=kIbrc)");
+}
+
+P2pIbrcHostLanes MultiPeerTransport::getHostLanes(int peerRank, int numLanes)
+    const {
+  if (ibrcTransport_) {
+    return ibrcTransport_->getHostLanes(peerRank, numLanes);
+  }
+  throw std::runtime_error(
+      "getHostLanes: IBRC transport not available (build with ibMode=kIbrc)");
 }
 
 IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
@@ -672,32 +793,28 @@ void MultiPeerTransport::unmapNvlBuffers(const std::vector<void*>& mappedPtrs) {
   nvlExchangeRecords_.erase(it);
 }
 
-void MultiPeerTransport::build_device_handle() {
-  if (deviceHandleBuilt_) {
-    free_device_handle();
+void MultiPeerTransport::build_device_handle(bool allowAllocation) {
+  if (!allowAllocation &&
+      (transportsGpu_ == nullptr || transportsHost_.capacity() < nRanks_)) {
+    throw std::logic_error(
+        "MultiPeerTransport::build_device_handle called before prepareExchange");
   }
 
-  // Build a host-side Transport array indexed by global rank, then cudaMemcpy
-  // it to GPU. Since Transport has deleted copy constructor, we allocate raw
-  // memory and use placement new.
-  const size_t arrayBytes = nRanks_ * sizeof(Transport);
-  auto* transportsHost = static_cast<Transport*>(
-      std::aligned_alloc(alignof(Transport), arrayBytes));
-  if (!transportsHost) {
-    throw std::runtime_error("Failed to allocate host Transport array");
+  transportsHost_.clear();
+  if (allowAllocation) {
+    transportsHost_.reserve(static_cast<std::size_t>(nRanks_));
   }
-
   for (int r = 0; r < nRanks_; ++r) {
     switch (typePerRank_[r]) {
       case TransportType::SELF:
-        new (&transportsHost[r]) Transport(P2pSelfTransportDevice{});
+        transportsHost_.emplace_back(P2pSelfTransportDevice{});
         break;
 
       case TransportType::P2P_NVL: {
         int nvlLocal = globalToNvlLocal_.at(r);
         P2pNvlTransportDevice nvlDev =
             nvlTransport_->buildP2pTransportDevice(nvlLocal);
-        new (&transportsHost[r]) Transport(nvlDev);
+        transportsHost_.emplace_back(nvlDev);
         break;
       }
 
@@ -705,7 +822,7 @@ void MultiPeerTransport::build_device_handle() {
         P2pIbgdaTransportDevice* devPtr = ibgdaTransport_
             ? ibgdaTransport_->getP2pTransportDeviceSlot(r)
             : nullptr;
-        new (&transportsHost[r]) Transport(devPtr);
+        transportsHost_.emplace_back(devPtr);
         break;
       }
 
@@ -713,24 +830,23 @@ void MultiPeerTransport::build_device_handle() {
         P2pIbrcTransportDevice* devPtr = ibrcTransport_
             ? ibrcTransport_->getP2pTransportDeviceSlot(r)
             : nullptr;
-        new (&transportsHost[r]) Transport(devPtr);
+        transportsHost_.emplace_back(devPtr);
         break;
       }
     }
   }
 
-  // Allocate GPU memory and raw-copy the Transport array.
-  // Transport union members are standard-layout + trivially destructible,
-  // so raw byte copy via cudaMemcpy produces valid device-side objects.
-  CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
-  CUDA_CHECK(cudaMemcpy(
-      transportsGpu_, transportsHost, arrayBytes, cudaMemcpyHostToDevice));
-
-  // Destroy host-side Transport objects and free
-  for (int r = 0; r < nRanks_; ++r) {
-    transportsHost[r].~Transport();
+  const std::size_t arrayBytes =
+      static_cast<std::size_t>(nRanks_) * sizeof(Transport);
+  if (allowAllocation && transportsGpu_ == nullptr) {
+    CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
   }
-  std::free(transportsHost);
+  CUDA_CHECK(cudaMemcpy(
+      transportsGpu_,
+      transportsHost_.data(),
+      arrayBytes,
+      cudaMemcpyHostToDevice));
+  transportsHost_.clear();
 
   deviceHandleBuilt_ = true;
 }
@@ -740,7 +856,17 @@ void MultiPeerTransport::free_device_handle() {
     (void)cudaFree(transportsGpu_);
     transportsGpu_ = nullptr;
   }
+  transportsHost_.clear();
   deviceHandleBuilt_ = false;
+}
+
+void MultiPeerTransport::rollbackPreparedExchange() noexcept {
+  free_device_handle();
+  std::vector<Transport>().swap(transportsHost_);
+  ibrcTransport_.reset();
+  ibgdaTransport_.reset();
+  nvlTransport_.reset();
+  nvlBootstrapAdapter_.reset();
 }
 
 } // namespace comms::prims

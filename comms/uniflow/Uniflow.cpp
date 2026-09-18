@@ -17,6 +17,7 @@ MultiTransportFactoryOptions makeFactoryOptions(
   options.preferredTransport = config.preferredTransport;
   options.intraNodeTransport = config.intraNodeTransport;
   options.interNodeTransport = config.interNodeTransport;
+  options.tcpTransportConfig = config.tcpTransportConfig;
   return options;
 }
 
@@ -49,6 +50,16 @@ UniflowAgent::UniflowAgent(
           "TcpServer init failed: " + status.error().toString());
     }
     server_ = std::move(tcpServer);
+  }
+}
+
+UniflowAgent::~UniflowAgent() noexcept {
+  shutdown();
+}
+
+void UniflowAgent::shutdown() noexcept {
+  if (server_) {
+    server_->shutdown();
   }
 }
 

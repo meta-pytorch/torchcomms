@@ -120,6 +120,54 @@ TEST_P(TcpConnTest, SendRecvBidirectional) {
   EXPECT_TRUE(recv3.empty());
 }
 
+TEST_P(TcpConnTest, SpanRecvRecordsPhaseStats) {
+  auto [clientConn, serverConn] = connectPair();
+  ASSERT_NE(clientConn, nullptr);
+  ASSERT_NE(serverConn, nullptr);
+
+  std::vector<uint8_t> sent(4096, 0xA5);
+  std::vector<uint8_t> received(sent.size());
+  ASSERT_TRUE(clientConn->send(sent).get().hasValue());
+
+  auto recvResult = serverConn->recv(std::span<uint8_t>(received)).get();
+  ASSERT_TRUE(recvResult.hasValue()) << recvResult.error().toString();
+  EXPECT_EQ(recvResult.value(), sent.size());
+  EXPECT_EQ(received, sent);
+
+  auto& stats = serverConn->recvPhaseStats();
+  EXPECT_EQ(stats.frames.load(std::memory_order_relaxed), 1);
+  EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), sent.size());
+
+  // Asserted before the reset, which is the whole point of the split this test
+  // is named for. Checking them only afterwards -- as this test used to --
+  // makes both assertions 0 == 0 whatever the instrumentation did, so the phase
+  // timings could stop being recorded entirely and nothing here would notice.
+  //
+  // Only a lower bound is asserted, and the lower bound is not a guess.
+  // libstdc++'s steady_clock reads CLOCK_MONOTONIC, which reports 1ns
+  // resolution on this platform; 500k back-to-back read pairs with no work
+  // between them produced no zero deltas at all (smallest observed 80ns). The
+  // reads here are far apart than that: each brackets a blocking recv()
+  // syscall, which costs microseconds. So
+  // "> 0" is not a race against clock granularity.
+  //
+  // An upper bound WOULD be a timing assumption, which is what makes tests
+  // flaky under load, so none is asserted. A fake/injected clock was considered
+  // and rejected: it would assert that the code does arithmetic on numbers a
+  // test supplied, losing the only thing these assertions establish -- that the
+  // instrumentation records real elapsed time at all.
+  EXPECT_GT(stats.interFrameStallNs.load(std::memory_order_relaxed), 0u)
+      << "the wait for the length prefix was never recorded";
+  EXPECT_GT(stats.payloadDrainNs.load(std::memory_order_relaxed), 0u)
+      << "the payload drain was never recorded";
+
+  stats.reset();
+  EXPECT_EQ(stats.interFrameStallNs.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.payloadDrainNs.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.frames.load(std::memory_order_relaxed), 0);
+  EXPECT_EQ(stats.payloadBytes.load(std::memory_order_relaxed), 0);
+}
+
 TEST_P(TcpConnTest, SendRecvLargeData) {
   auto [clientConn, serverConn] = connectPair();
   ASSERT_NE(clientConn, nullptr);

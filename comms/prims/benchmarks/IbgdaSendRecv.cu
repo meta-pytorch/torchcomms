@@ -134,19 +134,17 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_recv_kernel(
 
     if (isSender) {
       TiledBuffer<char> tiles(src + offset, sectionBytes, sub);
-      transport->init_send_progress(sub, tiles.bytes(), maxSignalBytes);
-      while (
-          transport->progress_send_once(
-              sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-          IbgdaSendRecvProgressStatus::Done) {
+      transport->init_send_progress(
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes);
+      while (transport->progress_send_once(sub, abortDevice) !=
+             IbgdaSendRecvProgressStatus::Done) {
       }
     } else {
       TiledBuffer<char> tiles(dst + offset, sectionBytes, sub);
-      transport->init_recv_progress(sub, tiles.bytes(), maxSignalBytes);
-      while (
-          transport->progress_recv_once(
-              sub, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-          IbgdaSendRecvProgressStatus::Done) {
+      transport->init_recv_progress(
+          sub, tiles.data(), tiles.bytes(), maxSignalBytes);
+      while (transport->progress_recv_once(sub, abortDevice) !=
+             IbgdaSendRecvProgressStatus::Done) {
       }
     }
   }
@@ -668,11 +666,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
-    transport->init_send_progress(group, tiles.bytes(), maxSignalBytes);
-    while (
-        transport->progress_send_once(
-            group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-        IbgdaSendRecvProgressStatus::Done) {
+    transport->init_send_progress(
+        group, tiles.data(), tiles.bytes(), maxSignalBytes);
+    while (transport->progress_send_once(group, abortDevice) !=
+           IbgdaSendRecvProgressStatus::Done) {
     }
   }
 
@@ -701,12 +698,11 @@ __global__ void __launch_bounds__(512, 1) ibgda_registered_progress_send_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     const auto section = src.subBuffer(s * sectionBytes);
     transport->init_registered_send_progress(
-        group, sectionBytes, maxSignalBytes);
+        group, section, sectionBytes, maxSignalBytes);
     status = IbgdaRegisteredSendProgressStatus::Waiting;
     while (status != IbgdaRegisteredSendProgressStatus::Posted &&
            status != IbgdaRegisteredSendProgressStatus::Drained) {
-      status = transport->progress_registered_send_once(
-          group, section, sectionBytes, maxSignalBytes, abortDevice);
+      status = transport->progress_registered_send_once(group, abortDevice);
     }
   }
   while (status != IbgdaRegisteredSendProgressStatus::Drained) {
@@ -735,11 +731,10 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_kernel(
 
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
-    transport->init_recv_progress(group, tiles.bytes(), maxSignalBytes);
-    while (
-        transport->progress_recv_once(
-            group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-        IbgdaSendRecvProgressStatus::Done) {
+    transport->init_recv_progress(
+        group, tiles.data(), tiles.bytes(), maxSignalBytes);
+    while (transport->progress_recv_once(group, abortDevice) !=
+           IbgdaSendRecvProgressStatus::Done) {
     }
   }
 }
@@ -884,11 +879,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_send_ll_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(src + s * sectionBytes, sectionBytes, group);
     transport->init_send_progress<protocol::LL>(
-        group, tiles.bytes(), maxSignalBytes);
-    while (
-        transport->progress_send_once<Memcpy, protocol::LL>(
-            group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-        IbgdaSendRecvProgressStatus::Done) {
+        group, tiles.data(), tiles.bytes(), maxSignalBytes);
+    while (transport->progress_send_once<Memcpy, protocol::LL>(
+               group, abortDevice) != IbgdaSendRecvProgressStatus::Done) {
     }
   }
 }
@@ -908,11 +901,9 @@ __global__ void __launch_bounds__(512, 1) ibgda_progress_recv_ll_kernel(
   for (std::size_t s = 0; s < totalSections; ++s) {
     TiledBuffer<char> tiles(dst + s * sectionBytes, sectionBytes, group);
     transport->init_recv_progress<protocol::LL>(
-        group, tiles.bytes(), maxSignalBytes);
-    while (
-        transport->progress_recv_once<Memcpy, protocol::LL>(
-            group, tiles.data(), tiles.bytes(), maxSignalBytes, abortDevice) !=
-        IbgdaSendRecvProgressStatus::Done) {
+        group, tiles.data(), tiles.bytes(), maxSignalBytes);
+    while (transport->progress_recv_once<Memcpy, protocol::LL>(
+               group, abortDevice) != IbgdaSendRecvProgressStatus::Done) {
     }
   }
 }

@@ -13,7 +13,7 @@
 // NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
-#if defined(ENABLE_PRIMS)
+#if defined(MCCL_BUILD_PRIMS)
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -375,4 +375,4 @@ __device__ __forceinline__ void load_reduce_at(
 
 } // namespace comms::prims::multimem
 
-#endif // ENABLE_PRIMS
+#endif // MCCL_BUILD_PRIMS

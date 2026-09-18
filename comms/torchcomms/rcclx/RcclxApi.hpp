@@ -277,7 +277,13 @@ class RcclxApi {
   virtual ncclResult_t memAlloc(void** ptr, size_t size) = 0;
   virtual ncclResult_t memFree(void* ptr) = 0;
 
-  // Fused multi-group sharded relay allreduce for 2D sparse parallelism
+  // Fused multi-group sharded relay allreduce for 2D sparse parallelism.
+  //
+  // `lowPrecision` selects the fp8e4m3 wire format where it pays. It is a
+  // COLLECTIVE argument -- identical on every rank of the call, like datatype,
+  // op and the counts -- because ranks that disagree disagree on how many bytes
+  // cross each link, so the call hangs or corrupts rather than degrading. The
+  // same contract applies to all four collectives below.
   virtual ncclResult_t shardedRelayMultiGroupAllReduce(
       const void* const* sendBuffs,
       void* const* recvBuffs,
@@ -288,7 +294,8 @@ class RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) = 0;
+      int nGroups,
+      int lowPrecision) = 0;
 
   // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism
   virtual ncclResult_t shardedRelayMultiGroupReduceScatter(
@@ -301,7 +308,8 @@ class RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) = 0;
+      int nGroups,
+      int lowPrecision) = 0;
 
   // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
   // No reduction op (pure data movement); out-of-place only.
@@ -314,7 +322,8 @@ class RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) = 0;
+      int nGroups,
+      int lowPrecision) = 0;
 
   // Fused multi-group sharded relay all-gather for 2D sparse parallelism.
   // No reduction op (pure data movement); supports in-place and out-of-place.
@@ -327,7 +336,8 @@ class RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) = 0;
+      int nGroups,
+      int lowPrecision) = 0;
 
   // Relay control plane. Host-only: publishes/consumes the plan for one forward
   // through the communicator's shared-memory segment, choosing nothing about
@@ -598,7 +608,8 @@ class DefaultRcclxApi : public RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) override;
+      int nGroups,
+      int lowPrecision) override;
 
   // Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism
   ncclResult_t shardedRelayMultiGroupReduceScatter(
@@ -611,7 +622,8 @@ class DefaultRcclxApi : public RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) override;
+      int nGroups,
+      int lowPrecision) override;
 
   // Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
   // No reduction op (pure data movement); out-of-place only.
@@ -624,7 +636,8 @@ class DefaultRcclxApi : public RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) override;
+      int nGroups,
+      int lowPrecision) override;
 
   // Fused multi-group sharded relay all-gather for 2D sparse parallelism.
   // No reduction op (pure data movement); supports in-place and out-of-place.
@@ -637,7 +650,8 @@ class DefaultRcclxApi : public RcclxApi {
       hipStream_t stream,
       const int* const* allActiveRanks,
       int nActiveRanksPerGroup,
-      int nGroups) override;
+      int nGroups,
+      int lowPrecision) override;
 
   ncclResult_t relayControlPublish(
       ncclComm_t comm,

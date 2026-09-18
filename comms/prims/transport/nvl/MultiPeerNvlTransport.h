@@ -279,6 +279,11 @@ class MultiPeerNvlTransport {
    */
   void exchange();
 
+  // Local-only preparation and the failure-safe collective phase used by
+  // MultiPeerTransport's coordinated initialization path.
+  void prepareExchange();
+  void exchangePrepared();
+
   /**
    * getP2pTransportDevice - Get device handle for P2P communication with a peer
    *
@@ -313,6 +318,14 @@ class MultiPeerNvlTransport {
    */
   int getNRanks() const {
     return nRanks_;
+  }
+
+  /**
+   * @return Logical NVL channels per peer; device code requires
+   * group_id < this.
+   */
+  int maxNumChannels() const {
+    return config_.maxNumChannels;
   }
 
   /**
@@ -470,13 +483,34 @@ class MultiPeerNvlTransport {
   // Allocated when maxNumChannels > 0.
   std::unique_ptr<GpuMemHandler> channelStateHandler_;
   std::size_t perPeerChannelStateSize_{0};
+
+  // Per-peer NvlChannelProgress arrays (length = maxNumChannels per peer,
+  // sliced by localPeerIndex). One allocation holds both directions, send
+  // first, recv at progressDirectionStride_. Plain device memory rather than a
+  // GpuMemHandler because, unlike the channel state, this is never
+  // IPC-exchanged.
+  struct CudaFreeDeleter {
+    void operator()(void* ptr) const noexcept {
+      if (ptr != nullptr) {
+        static_cast<void>(cudaFree(ptr));
+      }
+    }
+  };
+  std::unique_ptr<void, CudaFreeDeleter> progressBase_;
+  std::size_t perPeerChannelProgressSize_{0};
+  std::size_t progressDirectionStride_{0};
   std::size_t perPeerLlBufferSize_{0};
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};
 
+  enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
+  ExchangeState exchangeState_{ExchangeState::kUnprepared};
+
   // Cached memory sharing mode (detected once in constructor)
   MemSharingMode memSharingMode_;
+
+  void rollbackExchange() noexcept;
 };
 
 } // namespace comms::prims

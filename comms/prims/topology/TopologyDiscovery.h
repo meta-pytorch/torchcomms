@@ -2,9 +2,13 @@
 
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +24,9 @@ namespace comms::prims {
  * Return true if P2P access is possible.
  */
 using PeerAccessFn = std::function<bool(int deviceA, int deviceB)>;
+
+/** Returns whether FABRIC memory handles are usable for a CUDA device. */
+using FabricHandleAccessFn = std::function<bool(int deviceId)>;
 
 /**
  * Controls whether Multi-Node NVLink (MNNVL) is used for cross-host
@@ -37,8 +44,8 @@ enum class MnnvlMode {
   // (i.e., fabric info is unavailable).
   kEnabled = 1,
 
-  // Automatic detection (default). Use MNNVL if available, silently fall back
-  // to Tier 2 if not.
+  // Automatic detection (default). Use MNNVL if available, fall back to Tier 2
+  // if not.
   kAuto = 2,
 };
 
@@ -89,6 +96,142 @@ struct TopologyConfig {
   bool p2pDisable{false};
 };
 
+/** Selects the effective domains exposed to MCCL collectives. */
+enum class TopologyDomainMode : std::uint8_t {
+  kSystem = 0,
+  kNoLocal = 1,
+  kVirtual = 2,
+};
+
+/**
+ * Configuration for canonical all-rank topology discovery.
+ *
+ * enableNvlFabricDomains is an upper-layer rollout gate. When false it takes
+ * precedence over mnnvlMode and keeps discovery on same-host P2P domains.
+ * Local metadata fields are rank-local facts and are therefore excluded from
+ * the communicator-wide policy comparison.
+ */
+struct CanonicalTopologyConfig {
+  MnnvlMode mnnvlMode{MnnvlMode::kAuto};
+  std::optional<int64_t> mnnvlUuid;
+  std::optional<int> mnnvlCliqueId;
+  bool p2pDisable{false};
+  bool enableNvlFabricDomains{true};
+  bool mnnvlTrunkDisable{false};
+  TopologyDomainMode domainMode{TopologyDomainMode::kSystem};
+  int virtualDomainSize{0};
+  std::int32_t localPid{-1};
+  std::string localHostname;
+  std::string localZone;
+  std::string localDc;
+  std::string localDeviceRack;
+};
+
+inline constexpr std::uint32_t kCanonicalTopologyWireMagic = 0x50544f50;
+inline constexpr std::uint16_t kCanonicalTopologyWireVersion = 2;
+inline constexpr std::uint16_t kCanonicalTopologyPreambleSize = 16;
+inline constexpr std::uint16_t kCanonicalTopologyWireSize = 328;
+inline constexpr std::size_t kCanonicalTopologyNameLength = 64;
+
+/**
+ * Fixed preamble exchanged before any version-dependent record.
+ *
+ * Version negotiation is intentionally unsupported. Its layout is frozen so
+ * incompatible peers can fail before exchanging version-dependent records.
+ */
+struct alignas(4) CanonicalTopologyPreamble {
+  std::uint32_t magic{kCanonicalTopologyWireMagic};
+  std::uint16_t version{kCanonicalTopologyWireVersion};
+  std::uint16_t headerSize{kCanonicalTopologyPreambleSize};
+  std::uint16_t recordSize{kCanonicalTopologyWireSize};
+  std::uint8_t status{0};
+  std::uint8_t reserved{0};
+  std::int32_t rank{-1};
+};
+
+/** Fixed-width policy embedded in every gathered rank record. */
+struct alignas(8) CanonicalTopologyPolicyWire {
+  std::int64_t mnnvlUuid{0};
+  std::int32_t mnnvlCliqueId{0};
+  std::int32_t virtualDomainSize{0};
+  std::uint8_t mnnvlMode{0};
+  std::uint8_t hasMnnvlUuid{0};
+  std::uint8_t hasMnnvlCliqueId{0};
+  std::uint8_t p2pDisable{0};
+  std::uint8_t enableNvlFabricDomains{0};
+  std::uint8_t mnnvlTrunkDisable{0};
+  std::uint8_t domainMode{0};
+  std::uint8_t reserved{0};
+};
+
+/** Fixed-width record exchanged by canonical topology discovery. */
+struct alignas(8) CanonicalRankTopologyInfo {
+  std::uint32_t magic{kCanonicalTopologyWireMagic};
+  std::uint16_t version{kCanonicalTopologyWireVersion};
+  std::uint16_t recordSize{kCanonicalTopologyWireSize};
+  std::int32_t rank{-1};
+  std::int32_t cudaDevice{-1};
+  std::array<char, NvmlFabricInfo::kUuidLen> clusterUuid{};
+  std::uint32_t cliqueId{0};
+  std::uint8_t fabricInfoAvailable{0};
+  std::uint8_t fabricHandleAvailable{0};
+  std::array<std::uint8_t, 2> reserved{};
+  CanonicalTopologyPolicyWire policy{};
+  std::array<char, kCanonicalTopologyNameLength> hostname{};
+  std::array<char, kCanonicalTopologyNameLength> deviceRack{};
+  std::int32_t pid{-1};
+  std::array<char, kCanonicalTopologyNameLength> zone{};
+  std::array<char, kCanonicalTopologyNameLength> dc{};
+  std::array<std::uint8_t, 4> metadataReserved{};
+};
+
+static_assert(sizeof(CanonicalTopologyPolicyWire) == 24);
+static_assert(std::is_standard_layout_v<CanonicalTopologyPolicyWire>);
+static_assert(std::is_trivially_copyable_v<CanonicalTopologyPolicyWire>);
+static_assert(offsetof(CanonicalTopologyPolicyWire, mnnvlUuid) == 0);
+static_assert(offsetof(CanonicalTopologyPolicyWire, mnnvlCliqueId) == 8);
+static_assert(offsetof(CanonicalTopologyPolicyWire, virtualDomainSize) == 12);
+static_assert(offsetof(CanonicalTopologyPolicyWire, mnnvlMode) == 16);
+static_assert(offsetof(CanonicalTopologyPolicyWire, hasMnnvlUuid) == 17);
+static_assert(offsetof(CanonicalTopologyPolicyWire, hasMnnvlCliqueId) == 18);
+static_assert(offsetof(CanonicalTopologyPolicyWire, p2pDisable) == 19);
+static_assert(
+    offsetof(CanonicalTopologyPolicyWire, enableNvlFabricDomains) == 20);
+static_assert(offsetof(CanonicalTopologyPolicyWire, mnnvlTrunkDisable) == 21);
+static_assert(offsetof(CanonicalTopologyPolicyWire, domainMode) == 22);
+static_assert(offsetof(CanonicalTopologyPolicyWire, reserved) == 23);
+static_assert(
+    sizeof(CanonicalTopologyPreamble) == kCanonicalTopologyPreambleSize);
+static_assert(std::is_standard_layout_v<CanonicalTopologyPreamble>);
+static_assert(std::is_trivially_copyable_v<CanonicalTopologyPreamble>);
+static_assert(offsetof(CanonicalTopologyPreamble, magic) == 0);
+static_assert(offsetof(CanonicalTopologyPreamble, version) == 4);
+static_assert(offsetof(CanonicalTopologyPreamble, headerSize) == 6);
+static_assert(offsetof(CanonicalTopologyPreamble, recordSize) == 8);
+static_assert(offsetof(CanonicalTopologyPreamble, status) == 10);
+static_assert(offsetof(CanonicalTopologyPreamble, reserved) == 11);
+static_assert(offsetof(CanonicalTopologyPreamble, rank) == 12);
+static_assert(sizeof(CanonicalRankTopologyInfo) == kCanonicalTopologyWireSize);
+static_assert(std::is_standard_layout_v<CanonicalRankTopologyInfo>);
+static_assert(std::is_trivially_copyable_v<CanonicalRankTopologyInfo>);
+static_assert(offsetof(CanonicalRankTopologyInfo, magic) == 0);
+static_assert(offsetof(CanonicalRankTopologyInfo, version) == 4);
+static_assert(offsetof(CanonicalRankTopologyInfo, recordSize) == 6);
+static_assert(offsetof(CanonicalRankTopologyInfo, rank) == 8);
+static_assert(offsetof(CanonicalRankTopologyInfo, cudaDevice) == 12);
+static_assert(offsetof(CanonicalRankTopologyInfo, clusterUuid) == 16);
+static_assert(offsetof(CanonicalRankTopologyInfo, cliqueId) == 32);
+static_assert(offsetof(CanonicalRankTopologyInfo, fabricInfoAvailable) == 36);
+static_assert(offsetof(CanonicalRankTopologyInfo, fabricHandleAvailable) == 37);
+static_assert(offsetof(CanonicalRankTopologyInfo, reserved) == 38);
+static_assert(offsetof(CanonicalRankTopologyInfo, policy) == 40);
+static_assert(offsetof(CanonicalRankTopologyInfo, hostname) == 64);
+static_assert(offsetof(CanonicalRankTopologyInfo, deviceRack) == 128);
+static_assert(offsetof(CanonicalRankTopologyInfo, pid) == 192);
+static_assert(offsetof(CanonicalRankTopologyInfo, zone) == 196);
+static_assert(offsetof(CanonicalRankTopologyInfo, dc) == 260);
+static_assert(offsetof(CanonicalRankTopologyInfo, metadataReserved) == 324);
+
 /**
  * Result of topology discovery — identifies NVLink peers and provides
  * the global-to-NVL-local rank mapping.
@@ -114,8 +257,23 @@ struct TopologyResult {
   /// MNNVL fabric clique ID (0 if fabric info unavailable).
   unsigned int cliqueId{0};
 
-  /// Whether MNNVL fabric info was available for this rank.
+  /// Whether this result uses MNNVL fabric. Canonical discovery sets this only
+  /// for communicator-wide activation; legacy discovery retains its local
+  /// capability semantics.
   bool fabricAvailable{false};
+};
+
+/**
+ * Canonical topology shared by MCCL and MultiPeerTransport.
+ *
+ * rankInfo and ranksByDomain are identical on every rank. mptTopology is the
+ * exact rank-local projection to pass to MultiPeerTransport.
+ */
+struct CanonicalTopologyResult {
+  std::vector<CanonicalRankTopologyInfo> rankInfo;
+  std::vector<std::vector<int>> ranksByDomain;
+  TopologyResult mptTopology;
+  bool fabricActive{false};
 };
 
 /**
@@ -216,6 +374,12 @@ class TopologyDiscovery {
    */
   TopologyDiscovery(PeerAccessFn peerAccessFn, LocalInfoFn localInfoFn);
 
+  /** Constructor with all hardware probes injectable for testing. */
+  TopologyDiscovery(
+      PeerAccessFn peerAccessFn,
+      LocalInfoFn localInfoFn,
+      FabricHandleAccessFn fabricHandleAccessFn);
+
   /**
    * Discover topology using local info gathering and bootstrap allGather.
    *
@@ -256,9 +420,40 @@ class TopologyDiscovery {
       std::vector<RankTopologyInfo>& allInfo,
       const TopologyConfig& topoConfig = {});
 
+  /**
+   * Discover and validate one communicator-wide topology snapshot.
+   *
+   * Every rank must collectively agree to call this API before any rank enters
+   * it. Selecting between discover() and discoverCanonical() per rank would
+   * execute different allGather sequences and can hang initialization.
+   *
+   * The final allGather exchanges one same-host reachability row per rank.
+   * The returned mptTopology is derived from ranksByDomain and must be passed
+   * to MultiPeerTransport rather than rediscovering topology there.
+   */
+  CanonicalTopologyResult discoverCanonical(
+      int myRank,
+      int nRanks,
+      int deviceId,
+      meta::comms::IBootstrap& bootstrap,
+      const CanonicalTopologyConfig& topoConfig = {});
+
+  /**
+   * Pure canonical classification entry point for synthetic tests.
+   * peerReachability stores nRanks row-major bit-packed rows, each containing
+   * ceil(nRanks / 8) bytes.
+   */
+  CanonicalTopologyResult classifyCanonical(
+      int myRank,
+      int nRanks,
+      std::vector<CanonicalRankTopologyInfo> rankInfo,
+      const std::vector<std::uint8_t>& peerReachability,
+      const CanonicalTopologyConfig& topoConfig = {});
+
  private:
   PeerAccessFn peerAccessFn_;
   LocalInfoFn localInfoFn_;
+  FabricHandleAccessFn fabricHandleAccessFn_;
 };
 
 } // namespace comms::prims

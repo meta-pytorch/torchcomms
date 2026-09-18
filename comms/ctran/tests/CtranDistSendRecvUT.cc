@@ -43,9 +43,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
-      return;
-    }
     ASSERT_NE(profiler, nullptr);
     EXPECT_EQ(profiler->getOpCount(), opCount);
     uint64_t oneMinUs = 1000 * 1000 * 60;
@@ -277,8 +274,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     }
 
     if (!useGraph) {
-      if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
+      if (globalRank == sendRank) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
       }
@@ -317,9 +313,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           }
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
-          // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctp2p kernel, the opGroup is empty
-          // so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
             if (globalRank == sendRank) {
@@ -377,65 +370,6 @@ TEST_P(CtranTestParamFixture, sendRecv) {
   COMMCHECK_TEST(regCache->destroy());
 }
 
-TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = std::get<1>(GetParam());
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-class CtranP2pUseListTestFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<ctran::CtranEnvs, size_t /* numOpPairsPerPeer */>> {
- protected:
-  void SetUp() override {
-    setUpWithEnvs(std::get<0>(GetParam()));
-  }
-};
-
-TEST_P(CtranP2pUseListTestFixture, sendRecvP2pUseList) {
-  const size_t numOpPairsPerPeer = std::get<1>(GetParam());
-
-  // Need enough total send ops to trigger useList (> kCtranMaxNvlSendRecvOps)
-  if (numOpPairsPerPeer * (numRanks - 1) <=
-      ctran::sendrecv::kCtranMaxNvlSendRecvOps) {
-    GTEST_SKIP() << "Not enough ops to trigger useList with " << numRanks
-                 << " ranks";
-  }
-
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(
-      0 /* offset */,
-      4096 /* count */,
-      1 /* numMaxQp */,
-      1 /* nIter */,
-      kMemNcclMemAlloc,
-      false /* oneToOne */,
-      2 /* numSegments */,
-      numOpPairsPerPeer);
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranP2pUseListTest,
-    CtranP2pUseListTestFixture,
-    ::testing::Combine(
-        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
-        ::testing::Values(
-            /* pool path */ 1,
-            /* ad-hoc alloc path */
-            ctran::sendrecv::kMaxSendRecvOpsPerPoolBuf + 1)),
-    [](const testing::TestParamInfo<CtranP2pUseListTestFixture::ParamType>&
-           info) {
-      return ctran::envSuffix(std::get<0>(info.param)) + "numOpPairsPerPeer_" +
-          std::to_string(std::get<1>(info.param));
-    });
-
 // Envs-only parameterized fixture for tests that have no other params
 class CtranTestEnvFixture
     : public CtranTestFixture,
@@ -456,6 +390,150 @@ TEST_P(CtranTestEnvFixture, oneToOneSendRecv) {
 
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType, true);
 
+  COMMCHECK_TEST(regCache->destroy());
+}
+
+// Source-reuse burst: the sender overwrites the SAME send buffer via a
+// same-stream cudaMemcpyAsync each iteration and posts the send immediately,
+// with no host sync until after the last iteration. If a send signals stream
+// completion while the NIC is still reading the buffer, the next iteration's
+// overwrite corrupts the in-flight payload. The receiver lands each
+// iteration in its own slot and verifies every payload after the single
+// sync, so a torn source read from any send is caught.
+TEST_P(CtranTestEnvFixture, sendRecvSourceReuseBurstNoSync) {
+  const commDataType_t dt = commInt;
+  // Large message so NIC reads of the source buffer stay in flight long
+  // enough for the next iteration's overwrite to race them.
+  constexpr size_t count = 2 * 1024 * 1024;
+  constexpr int kNumIters = 8;
+  const MemAllocType memType = kMemCudaMalloc;
+
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Source-reuse burst requires at least 2 ranks, skip test";
+  }
+
+  regCache->init();
+
+  EnvRAII env(NCCL_CTRAN_IB_MAX_QPS, 4);
+  auto ctranComm = makeCtranComm();
+  ASSERT_NE(nullptr, ctranComm.get());
+  ASSERT_NE(nullptr, ctranComm->ctran_.get());
+
+  for (int peer = 0; peer < ctranComm->statex_->nRanks(); peer++) {
+    if (!ctranSendRecvSupport(peer, ctranComm.get())) {
+      // The reg cache is already initialized; release it so later tests with
+      // a different NCCL_CTRAN_REGISTER config are unaffected by the skip.
+      // Comm teardown deregisters from the cache, so it must go first.
+      ctranComm.reset();
+      COMMCHECK_TEST(regCache->destroy());
+      GTEST_SKIP() << "Skip test since ctran cannot support SendRecv with peer "
+                   << peer;
+    }
+  }
+
+  const int sendRank = 0;
+  const int recvRank = numRanks - 1;
+  const bool isSender = globalRank == sendRank;
+  const bool isReceiver = globalRank == recvRank;
+
+  const size_t sendSize = count * commTypeSize(dt);
+  const size_t slotBytes = pageAligned(sendSize);
+  // The receiver lands each iteration in its own slot (a shared slot would
+  // let later recvs overwrite a corrupted payload before verification); the
+  // sender reuses slot 0 as its single source, so other roles need one slot.
+  const size_t bufSize = isReceiver ? slotBytes * kNumIters : slotBytes;
+  void* base = prepareBuf(bufSize, memType, segments);
+  cudaStream_t stream = 0;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalRegisterWithPtr(segment.ptr, segment.size));
+  }
+
+  int* buf = reinterpret_cast<int*>(base);
+
+  if (isSender) {
+    // Pinned per-iteration payloads so the same-stream cudaMemcpyAsync stays
+    // genuinely asynchronous (no hidden host sync inside the burst).
+    int* payloads = nullptr;
+    CUDACHECK_TEST(
+        cudaHostAlloc(&payloads, kNumIters * sendSize, cudaHostAllocDefault));
+    for (int x = 0; x < kNumIters; x++) {
+      std::iota(payloads + x * count, payloads + (x + 1) * count, sendRank + x);
+    }
+
+    for (int x = 0; x < kNumIters; x++) {
+      CUDACHECK_TEST(cudaMemcpyAsync(
+          buf, payloads + x * count, sendSize, cudaMemcpyDefault, stream));
+      commGroupDepth++;
+      EXPECT_EQ(
+          ctranSend(
+              buf,
+              count,
+              dt,
+              recvRank,
+              ctranComm.get(),
+              stream,
+              NCCL_SENDRECV_ALGO),
+          commSuccess);
+      commGroupDepth--;
+      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+    }
+
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaFreeHost(payloads));
+  } else if (isReceiver) {
+    // Poison the destination on the recv stream: `stream` is non-blocking, so
+    // it does not order against a legacy-default-stream cudaMemset, which
+    // could otherwise land after the first recv's data.
+    CUDACHECK_TEST(cudaMemsetAsync(base, rand(), bufSize, stream));
+    for (int x = 0; x < kNumIters; x++) {
+      commGroupDepth++;
+      EXPECT_EQ(
+          ctranRecv(
+              reinterpret_cast<int*>(
+                  reinterpret_cast<char*>(base) + x * slotBytes),
+              count,
+              dt,
+              sendRank,
+              ctranComm.get(),
+              stream,
+              NCCL_SENDRECV_ALGO),
+          commSuccess);
+      commGroupDepth--;
+      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+    }
+
+    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    for (int x = 0; x < kNumIters; x++) {
+      EXPECT_EQ(
+          checkChunkValue(
+              reinterpret_cast<int*>(
+                  reinterpret_cast<char*>(base) + x * slotBytes),
+              count,
+              sendRank + x,
+              1,
+              this->globalRank),
+          0)
+          << "iteration " << x;
+    }
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  // First deregister buffer to catch potential 'remote access error' caused
+  // by incomplete ctranSend when ctranRecv has returned incorrectly.
+  for (auto& segment : segments) {
+    COMMCHECK_TEST(ctran::globalDeregisterWithPtr(segment.ptr, segment.size));
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  releaseBuf(base, bufSize, memType);
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+
+  // Comm teardown deregisters from the cache, so it must go first.
+  ctranComm.reset();
   COMMCHECK_TEST(regCache->destroy());
 }
 
@@ -623,51 +701,6 @@ INSTANTIATE_TEST_SUITE_P(
           std::to_string(std::get<1>(inner)) + "int_" +
           testMemAllocTypeToStr(std::get<2>(inner));
     });
-
-#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
-
-class CtranP2pCudaGraphTestFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<ctran::CtranEnvs, bool /* oneToOne */>> {
- protected:
-  void SetUp() override {
-    setUpWithEnvs(std::get<0>(GetParam()));
-  }
-};
-
-TEST_P(CtranP2pCudaGraphTestFixture, sendRecvP2p) {
-  const bool oneToOne = std::get<1>(GetParam());
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(
-      0,
-      4096,
-      1 /* numMaxQp */,
-      1 /* nIter */,
-      kMemNcclMemAlloc,
-      oneToOne,
-      2,
-      1,
-      true /* useGraph */);
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranP2pCudaGraphTest,
-    CtranP2pCudaGraphTestFixture,
-    ::testing::Combine(
-        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
-        ::testing::Values(
-            /* useList path */ false,
-            /* non-useList path */ true)),
-    [](const testing::TestParamInfo<CtranP2pCudaGraphTestFixture::ParamType>&
-           info) {
-      return ctran::envSuffix(std::get<0>(info.param)) + "useList_" +
-          std::to_string(!std::get<1>(info.param));
-    });
-
-#endif
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

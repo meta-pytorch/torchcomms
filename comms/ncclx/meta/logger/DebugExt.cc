@@ -8,8 +8,8 @@
 #include "debug.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/CommsLogging.h"
 #include "comms/utils/logger/ErrorStackUtil.h"
-#include "comms/utils/logger/LoggingFormat.h"
 
 // These are Meta's logging implementations, kept out of the baseline debug.cc.
 // Guarded to v2_30+ since older versions keep their own copy in debug.cc.

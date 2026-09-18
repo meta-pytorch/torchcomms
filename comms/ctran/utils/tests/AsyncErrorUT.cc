@@ -3,6 +3,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <stdexcept>
+
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/utils/AsyncError.h"
 #include "comms/ctran/utils/Exception.h"
@@ -15,6 +17,25 @@ class AsyncErrorTest : public ::testing::Test {
   void SetUp() override {}
   void TearDown() override {}
 };
+
+void expectFaultToleranceAbortReason(
+    commResult_t result,
+    comms::fault_tolerance::AbortReason expectedReason) {
+  auto comm = std::make_unique<CtranComm>(
+      comms::fault_tolerance::createAbort(/*enabled=*/true));
+  CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
+      comm, { throw ::ctran::utils::Exception("UT error", result); }, -1, 0);
+
+  const auto abortInfo = comm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(abortInfo->reason, expectedReason);
+  EXPECT_THAT(
+      abortInfo->context,
+      ::testing::AllOf(
+          ::testing::HasSubstr("op_type=-1"),
+          ::testing::HasSubstr("op_count=0"),
+          ::testing::HasSubstr("UT error")));
+}
 
 TEST(CtranAsyncErrorTest, SetAndGet) {
   constexpr auto numThreads = 10;
@@ -81,12 +102,32 @@ TEST(AsyncErrorTest, FaultToleranceDisabled) {
 }
 
 TEST(AsyncErrorTest, FaultToleranceEnabled) {
+  expectFaultToleranceAbortReason(
+      commRemoteError, comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+  expectFaultToleranceAbortReason(
+      commTimeout, comms::fault_tolerance::AbortReason::TIMED_OUT);
+  expectFaultToleranceAbortReason(
+      commUserAbort, comms::fault_tolerance::AbortReason::ABORTED);
+  expectFaultToleranceAbortReason(
+      commInternalError, comms::fault_tolerance::AbortReason::INTERNAL_ERROR);
+}
+
+TEST(AsyncErrorTest, FaultToleranceEnabledRuntimeErrorRecordsInternalAbort) {
   auto comm = std::make_unique<CtranComm>(
       comms::fault_tolerance::createAbort(/*enabled=*/true));
+
   CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(
-      comm,
-      { throw ::ctran::utils::Exception("UT error", commRemoteError); },
-      -1,
-      0);
-  EXPECT_TRUE(comm->testAbort());
+      comm, { throw std::runtime_error("UT runtime error"); }, -1, 0);
+
+  const auto abortInfo = comm->getAbortInfo();
+  ASSERT_TRUE(abortInfo.has_value());
+  EXPECT_EQ(
+      abortInfo->reason, comms::fault_tolerance::AbortReason::INTERNAL_ERROR);
+  EXPECT_THAT(
+      abortInfo->context,
+      ::testing::AllOf(
+          ::testing::HasSubstr("op_type=-1"),
+          ::testing::HasSubstr("op_count=0"),
+          ::testing::HasSubstr("UT runtime error"),
+          ::testing::HasSubstr("commInternalError")));
 }

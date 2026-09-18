@@ -40,6 +40,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
       static_cast<int>(params[0].h_nicDeviceIbgdaResources[0].qps.size());
   int companionQpsPerNic = static_cast<int>(
       params[0].h_nicDeviceIbgdaResources[0].companionQps.size());
+  CHECK(companionQpsPerNic == 0 || companionQpsPerNic == mainQpsPerNic)
+      << "Companion QP count must be zero or equal the main QP count";
   for (int i = 0; i < numPeers; ++i) {
     CHECK_EQ(params[i].maxChannels, params[0].maxChannels)
         << "All peers must have the same maxChannels";
@@ -47,6 +49,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         << "All peers must have the same qpsPerConnection";
     CHECK_EQ(params[i].qpDirectionCount, params[0].qpDirectionCount)
         << "All peers must have the same qpDirectionCount";
+    CHECK_EQ(params[i].collapsedCq, params[0].collapsedCq)
+        << "All local device transports must use the resolved CQ format";
     CHECK_EQ(
         static_cast<int>(params[i].h_nicDeviceIbgdaResources.size()), numNics)
         << "All peers must have the same numNics";
@@ -60,19 +64,12 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
       CHECK_EQ(
           static_cast<int>(
               params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
-          params[i].maxChannels * params[i].qpDirectionCount *
-              params[i].qpsPerConnection)
-          << "Companion QP count must equal maxChannels * qpDirectionCount * "
-             "qpsPerConnection";
+          companionQpsPerNic)
+          << "All peers' NICs must have the same companion QP count";
       CHECK_EQ(
           static_cast<int>(params[i].h_nicDeviceIbgdaResources[n].qps.size()),
           mainQpsPerNic)
           << "All peers' NICs must have the same QP count";
-      CHECK_EQ(
-          static_cast<int>(
-              params[i].h_nicDeviceIbgdaResources[n].companionQps.size()),
-          companionQpsPerNic)
-          << "All peers' NICs must have the same companion QP count";
     }
   }
 
@@ -223,7 +220,10 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
         DeviceSpan<IbLocalChannel>(
             d_allLocalChannels + i * params[i].maxChannels,
             params[i].maxChannels),
-        params[i].channelLayout);
+        params[i].channelLayout,
+        params[i].collapsedCq,
+        params[i].myRank,
+        params[i].peerRank);
   }
 
   // 4. Allocate and copy transport objects to GPU.
@@ -253,6 +253,8 @@ void writeDeviceTransportSlot(
       static_cast<int>(params.h_nicDeviceIbgdaResources[0].qps.size());
   int companionQpsPerNic =
       static_cast<int>(params.h_nicDeviceIbgdaResources[0].companionQps.size());
+  CHECK(companionQpsPerNic == 0 || companionQpsPerNic == mainQpsPerNic)
+      << "Companion QP count must be zero or equal the main QP count";
   for (int n = 0; n < numNics; ++n) {
     CHECK_EQ(
         static_cast<int>(params.h_nicDeviceIbgdaResources[n].qps.size()),
@@ -373,7 +375,10 @@ void writeDeviceTransportSlot(
       params.qpsPerConnection,
       params.qpDirectionCount,
       DeviceSpan<IbLocalChannel>(d_localChannels, params.maxChannels),
-      params.channelLayout);
+      params.channelLayout,
+      params.collapsedCq,
+      params.myRank,
+      params.peerRank);
 
   err = cudaMemcpy(
       deviceArray + peerIndex,

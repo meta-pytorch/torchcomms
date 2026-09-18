@@ -24,14 +24,16 @@ PYBIND11_MODULE(_comms_rcclx, m, py::mod_gil_not_used()) {
              const std::vector<std::vector<int64_t>>& all_active_ranks,
              const std::vector<int64_t>& per_group_counts,
              bool async_op,
-             std::optional<std::vector<at::Tensor>> output_tensors) {
+             std::optional<std::vector<at::Tensor>> output_tensors,
+             bool low_precision) {
             return self.sharded_relay_multi_group_all_reduce(
                 tensors,
                 op,
                 all_active_ranks,
                 per_group_counts,
                 async_op,
-                output_tensors);
+                output_tensors,
+                low_precision);
           },
           R"(
 Fused multi-group sharded relay allreduce for 2D sparse parallelism.
@@ -63,6 +65,14 @@ Args:
         out-of-place into these output tensors while the inputs are preserved;
         the active group's output segments must mirror its input segments in
         count and per-segment numel().
+    low_precision: If True, use the low-precision (fp8e4m3) wire format where
+        it pays. An internal size-only gate decides -- unsupported dtype,
+        counts that are not a multiple of 128, or a message below the measured
+        crossover all decline to full precision SILENTLY, so assert engagement
+        rather than assuming it. COLLECTIVE: pass the same value on every rank
+        of the call, exactly like the dtype and the counts. Ranks that disagree
+        disagree on how many bytes cross each link, so the call hangs or
+        corrupts rather than degrading.
 
 Returns:
     TorchWork object for operation completion if async_op=True
@@ -81,6 +91,7 @@ Example:
           py::arg("per_group_counts"),
           py::arg("async_op") = false,
           py::arg("output_tensors") = py::none(),
+          py::arg("low_precision") = false,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "sharded_relay_multi_group_reduce_scatter",
@@ -90,14 +101,16 @@ Example:
              const ReduceOp& op,
              const std::vector<std::vector<int64_t>>& all_active_ranks,
              const std::vector<int64_t>& per_group_recv_counts,
-             bool async_op) {
+             bool async_op,
+             bool low_precision) {
             return self.sharded_relay_multi_group_reduce_scatter(
                 input_tensors,
                 output_tensors,
                 op,
                 all_active_ranks,
                 per_group_recv_counts,
-                async_op);
+                async_op,
+                low_precision);
           },
           R"(
 Fused multi-group sharded relay reduce-scatter for 2D sparse parallelism.
@@ -126,6 +139,9 @@ Args:
         active ranks.
     per_group_recv_counts: List of OUTPUT element counts (one per group).
     async_op: If True, returns a TorchWork handle for async operation
+    low_precision: If True, use the fp8e4m3 wire format where it pays. See
+        sharded_relay_multi_group_all_reduce -- same gate, same COLLECTIVE
+        contract.
 
 Returns:
     TorchWork object for operation completion if async_op=True
@@ -146,6 +162,7 @@ Example:
           py::arg("all_active_ranks"),
           py::arg("per_group_recv_counts"),
           py::arg("async_op") = false,
+          py::arg("low_precision") = false,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "sharded_relay_multi_group_all_to_all",
@@ -154,13 +171,15 @@ Example:
              std::vector<at::Tensor>& output_tensors,
              const std::vector<std::vector<int64_t>>& all_active_ranks,
              const std::vector<int64_t>& per_group_segment_counts,
-             bool async_op) {
+             bool async_op,
+             bool low_precision) {
             return self.sharded_relay_multi_group_all_to_all(
                 input_tensors,
                 output_tensors,
                 all_active_ranks,
                 per_group_segment_counts,
-                async_op);
+                async_op,
+                low_precision);
           },
           R"(
 Fused multi-group sharded relay all-to-all for 2D sparse parallelism.
@@ -190,6 +209,9 @@ Args:
     all_active_ranks: List of lists of active rank IDs per sparse group.
     per_group_segment_counts: List of per-segment element counts (one per group).
     async_op: If True, returns a TorchWork handle for async operation
+    low_precision: If True, use the fp8e4m3 wire format where it pays. See
+        sharded_relay_multi_group_all_reduce -- same gate, same COLLECTIVE
+        contract.
 
 Returns:
     TorchWork object for operation completion if async_op=True
@@ -199,6 +221,7 @@ Returns:
           py::arg("all_active_ranks"),
           py::arg("per_group_segment_counts"),
           py::arg("async_op") = false,
+          py::arg("low_precision") = false,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "sharded_relay_multi_group_all_gather",
@@ -207,13 +230,15 @@ Returns:
              std::vector<at::Tensor>& output_tensors,
              const std::vector<std::vector<int64_t>>& all_active_ranks,
              const std::vector<int64_t>& per_group_send_counts,
-             bool async_op) {
+             bool async_op,
+             bool low_precision) {
             return self.sharded_relay_multi_group_all_gather(
                 input_tensors,
                 output_tensors,
                 all_active_ranks,
                 per_group_send_counts,
-                async_op);
+                async_op,
+                low_precision);
           },
           R"(
 Fused multi-group sharded relay all-gather for 2D sparse parallelism.
@@ -246,6 +271,9 @@ Args:
     all_active_ranks: List of lists of active rank IDs per sparse group.
     per_group_send_counts: List of per-rank contribution counts (one per group).
     async_op: If True, returns a TorchWork handle for async operation
+    low_precision: If True, use the fp8e4m3 wire format where it pays. See
+        sharded_relay_multi_group_all_reduce -- same gate, same COLLECTIVE
+        contract.
 
 Returns:
     TorchWork object for operation completion if async_op=True
@@ -255,6 +283,7 @@ Returns:
           py::arg("all_active_ranks"),
           py::arg("per_group_send_counts"),
           py::arg("async_op") = false,
+          py::arg("low_precision") = false,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "relay_control_publish",

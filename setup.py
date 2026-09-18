@@ -204,7 +204,21 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRANSPORT_CCA_HOOK={flag_str(USE_TRANSPORT_CCA_HOOK)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
-        build_args = ["--", "-j"]
+        parallel_level = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
+        if parallel_level:
+            try:
+                parallel_jobs = int(parallel_level)
+            except ValueError as error:
+                raise ValueError(
+                    "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer"
+                ) from error
+            if parallel_jobs <= 0:
+                raise ValueError(
+                    "CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer"
+                )
+            build_args = ["--parallel", str(parallel_jobs)]
+        else:
+            build_args = ["--", "-j"]
 
         os.chdir(str(build_temp))
         self.spawn(["cmake", str(cwd)] + cmake_args)

@@ -1,13 +1,29 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <iostream>
+#include <utility>
+
+#include <fmt/format.h>
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
-#include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 #include "comms/torchcomms/ncclx/NcclxGlobalApi.hpp"
 #include "comms/torchcomms/ncclx/tests/integration/cpp/CommDumpTest.hpp"
 
-#define LOG_TEST(msg) XLOG(INFO) << "[Rank " << rank_ << "] " << msg
+namespace {
+
+template <typename... Args>
+void logTest(int rank, fmt::format_string<Args...> format, Args&&... args) {
+  std::cout << fmt::format(
+                   "[Rank {}] {}\n",
+                   rank,
+                   fmt::format(format, std::forward<Args>(args)...))
+            << std::flush;
+}
+
+} // namespace
+
+#define LOG_TEST(...) logTest(rank_, __VA_ARGS__)
 
 TEST_F(CommDumpTest, BasicCommDump) {
   LOG_TEST("Starting BasicCommDump test");
@@ -33,9 +49,9 @@ TEST_F(CommDumpTest, BasicCommDump) {
   }
 
   if (rank_ == 0) {
-    LOG_TEST("comm_dump() returned " << dump.size() << " entries");
+    LOG_TEST("comm_dump() returned {} entries", dump.size());
     for (const auto& [key, val] : dump) {
-      LOG_TEST("  " << key << ": " << val);
+      LOG_TEST("  {}: {}", key, val);
     }
   }
 
@@ -62,7 +78,7 @@ TEST_F(CommDumpTest, CommDumpAfterCollective) {
     auto pastColls = folly::parseJson(dump["CT_pastColls"]);
     EXPECT_GT(pastColls.size(), 0)
         << "CT_pastColls should be non-empty after all_reduce";
-    LOG_TEST("CT_pastColls has " << pastColls.size() << " entries");
+    LOG_TEST("CT_pastColls has {} entries", pastColls.size());
   }
 
   LOG_TEST("CommDumpAfterCollective test passed");
@@ -92,10 +108,9 @@ TEST_F(CommDumpTest, CommDumpAll) {
   }
 
   if (rank_ == 0) {
-    LOG_TEST(
-        "comm_dump_all() returned " << all_dumps.size() << " communicators");
+    LOG_TEST("comm_dump_all() returned {} communicators", all_dumps.size());
     for (const auto& [comm_key, dump] : all_dumps) {
-      LOG_TEST("  Comm " << comm_key << ": " << dump.size() << " entries");
+      LOG_TEST("  Comm {}: {} entries", comm_key, dump.size());
     }
   }
 

@@ -18,6 +18,10 @@
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/colltrace/CollTraceEvent.h"
+#include "comms/utils/colltrace/CollTraceHandle.h"
+#include "comms/utils/colltrace/tests/MockTypes.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
 #include <cupti.h> // @manual
 #include "comms/utils/test_utils/CudaGraphTestUtils.h"
@@ -2574,3 +2578,145 @@ TEST_F(CtranGpeTest, TerminateWaitsForGpeKernelSyncPoolDrain) {
   gpeThread.join();
 }
 #endif
+
+namespace {
+
+// Installs a MockCollTrace on the comm that hands out one real
+// CollTraceHandle, so the launch paths exercise the genuine cancellation
+// gate while the test can observe whether cancel() actually fired. Also turns
+// colltrace on for the probe's lifetime -- getCollTraceHandle short-circuits
+// to nullptr when NCCL_COLLTRACE is empty.
+class ScopedCollTraceProbe {
+ public:
+  explicit ScopedCollTraceProbe(CtranComm* comm) : comm_(comm) {
+    previousCvar_ = NCCL_COLLTRACE;
+    setenv("NCCL_COLLTRACE", "trace", 1);
+    NCCL_COLLTRACE = {"trace"};
+
+    gate_ = std::make_shared<meta::comms::colltrace::EagerCancellationGate>(
+        [this](meta::comms::colltrace::CollTraceEvent&) noexcept {
+          cancelCount_.fetch_add(1, std::memory_order_relaxed);
+          return folly::unit;
+        });
+    handle_ = std::make_shared<meta::comms::colltrace::CollTraceHandle>(
+        collTrace_.get(), &event_, gate_);
+
+    ON_CALL(*collTrace_, recordCollective(testing::_, testing::_))
+        .WillByDefault([this](auto, auto) {
+          recordCount_.fetch_add(1, std::memory_order_relaxed);
+          return meta::comms::CommsMaybe<
+              std::shared_ptr<meta::comms::colltrace::ICollTraceHandle>>(
+              handle_);
+        });
+    ON_CALL(*collTrace_, triggerEventState(testing::_, testing::_))
+        .WillByDefault(testing::Return(folly::unit));
+
+    comm_->colltraceNew_ = collTrace_;
+  }
+
+  ~ScopedCollTraceProbe() {
+    comm_->colltraceNew_ = nullptr;
+    unsetenv("NCCL_COLLTRACE");
+    NCCL_COLLTRACE = previousCvar_;
+  }
+
+  ScopedCollTraceProbe(const ScopedCollTraceProbe&) = delete;
+  ScopedCollTraceProbe& operator=(const ScopedCollTraceProbe&) = delete;
+  ScopedCollTraceProbe(ScopedCollTraceProbe&&) = delete;
+  ScopedCollTraceProbe& operator=(ScopedCollTraceProbe&&) = delete;
+
+  int cancelCount() const {
+    return cancelCount_.load(std::memory_order_relaxed);
+  }
+
+  int recordCount() const {
+    return recordCount_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  CtranComm* comm_;
+  std::vector<std::string> previousCvar_;
+  std::shared_ptr<testing::NiceMock<meta::comms::colltrace::MockCollTrace>>
+      collTrace_{std::make_shared<
+          testing::NiceMock<meta::comms::colltrace::MockCollTrace>>()};
+  meta::comms::colltrace::CollTraceEvent event_{};
+  std::shared_ptr<meta::comms::colltrace::EagerCancellationGate> gate_;
+  std::shared_ptr<meta::comms::colltrace::CollTraceHandle> handle_;
+  std::atomic<int> cancelCount_{0};
+  std::atomic<int> recordCount_{0};
+};
+
+std::vector<std::unique_ptr<struct OpElem>> makeSendOpGroup(
+    CtranComm* comm,
+    uint64_t opCount) {
+  std::vector<std::unique_ptr<struct OpElem>> ops;
+  auto op =
+      std::make_unique<struct OpElem>(OpElem::opType::SEND, comm, opCount);
+  op->send.sendbuff = nullptr;
+  op->send.count = 0;
+  op->send.datatype = commInt8;
+  op->send.peerRank = 0;
+  ops.push_back(std::move(op));
+  return ops;
+}
+
+} // namespace
+
+// The enqueue contract requires a recorded handle to reach either
+// AfterEnqueueKernel or cancel(). A kernel launch that fails after
+// BeforeEnqueueKernel used to take neither path, stranding pendingEnqueueColl_
+// so the next collective reported an overlap and dropped the stale trace.
+// A null kernel forces the launch to fail, as in SubmitOpBadCudaKernel.
+TEST_F(CtranGpeTest, SubmitLaunchFailureCancelsCollTraceHandle) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  ScopedCollTraceProbe probe(dummyComm);
+
+  cudaStream_t stream = nullptr;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  // Empty op group: the kernel launch is the only fallible step, so no GPE
+  // command is left waiting on a flag the failed kernel never signals.
+  std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+  auto kernelConfig =
+      KernelConfig(KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", 0);
+  kernelConfig.args.devState_d = dummyDevState_d;
+
+  EXPECT_NE(
+      gpe->submit(std::move(emptyOps), nullptr, kernelConfig, nullptr),
+      commSuccess);
+
+  EXPECT_EQ(probe.recordCount(), 1) << "the launch path must record a handle";
+  EXPECT_EQ(probe.cancelCount(), 1)
+      << "a failed launch must release the colltrace record";
+
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// The mirror of the above: a submit that reaches AfterEnqueueKernel disarms
+// the guard, so the handle must not be cancelled.
+TEST_F(CtranGpeTest, SubmitSuccessDoesNotCancelCollTraceHandle) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  ScopedCollTraceProbe probe(dummyComm);
+
+  cudaStream_t stream = nullptr;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr uint64_t kOpCount = 101;
+  auto kernelConfig = KernelConfig(
+      KernelConfig::KernelType::SEND, stream, "dummyAlgo", kOpCount);
+  kernelConfig.args.devState_d = dummyDevState_d;
+
+  EXPECT_EQ(
+      gpe->submit(
+          makeSendOpGroup(dummyComm, kOpCount),
+          &CtranGpeTestAlgoFunc,
+          kernelConfig,
+          reinterpret_cast<void*>(CtranGpeTestKernel)),
+      commSuccess);
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  EXPECT_EQ(probe.recordCount(), 1) << "the launch path must record a handle";
+  EXPECT_EQ(probe.cancelCount(), 0)
+      << "a completed enqueue must leave the colltrace record in place";
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}

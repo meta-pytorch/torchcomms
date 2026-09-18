@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <csignal>
+#include <cstdlib>
 #include <string>
 
 #include <cuda_runtime.h>
@@ -61,6 +63,62 @@ class CtranUtilsCheckTest : public ::testing::Test {
  private:
   bool capturingStdout_{false};
 };
+
+TEST_F(CtranUtilsCheckTest, CheckAbortPreservesTwoSynchronousDiagnostics) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+
+  EXPECT_DEATH(
+      {
+        meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName)
+            .configureOutput("/dev/null");
+        FB_CHECKABORT(false, "abort detail {}", 42);
+      },
+      "Check failed: false(.|\\n)*abort detail 42");
+}
+
+TEST_F(CtranUtilsCheckTest, CheckAbortPreservesArgumentEvaluationGates) {
+  int statementEvaluations = 0;
+  int messageEvaluations = 0;
+  FB_CHECKABORT(
+      ++statementEvaluations == 1,
+      "unused abort detail {}",
+      ++messageEvaluations);
+
+  EXPECT_EQ(statementEvaluations, 1);
+  EXPECT_EQ(messageEvaluations, 0);
+
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_EXIT(
+      {
+        meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName)
+            .set_level(spdlog::level::off);
+        FB_CHECKABORT(false, "disabled abort detail {}", []() -> int {
+          std::_Exit(42);
+        }());
+      },
+      ::testing::KilledBySignal(SIGABRT),
+      "");
+}
+
+TEST_F(CtranUtilsCheckTest, SyncErrCompatibilityAliasPreservesLevelGate) {
+  auto& logger =
+      meta::comms::logger::getSpdlogLogger(ctran::logging::kCtranLoggerName);
+  const std::string ctranSyncLogger{"caller argument"};
+  int messageEvaluations = 0;
+
+  logger.set_level(spdlog::level::off);
+  CTRAN_LOG_SYNC_ERR("disabled compatibility log {}", ++messageEvaluations);
+  logger.set_level(spdlog::level::err);
+  CTRAN_LOG_SYNC_ERR("enabled compatibility log {}", ++messageEvaluations);
+  CTRAN_LOG_SYNC_ERR("compatibility log preserves {}", ctranSyncLogger);
+
+  EXPECT_EQ(messageEvaluations, 1);
+  const auto output = getOutput();
+  EXPECT_THAT(output, testing::HasSubstr("enabled compatibility log 1"));
+  EXPECT_THAT(
+      output,
+      testing::HasSubstr("compatibility log preserves caller argument"));
+}
 
 TEST_F(CtranUtilsCheckTest, CudaCheck) {
   auto dummyFn = []() {

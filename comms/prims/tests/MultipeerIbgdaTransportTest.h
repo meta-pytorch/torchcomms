@@ -98,6 +98,19 @@ void testMultiplePutAndSignal(
     int blockSize);
 
 /**
+ * Test kernel: post a burst larger than the SQ, then flush once. Slot reuse
+ * must therefore make progress through reserve_wq_slots' internal CQ poll.
+ */
+void testBurstPutAndFlush(
+    P2pIbTransportDevice deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t bytesPerPut,
+    int numPuts,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Send signal only (no data, slot-index)
  */
 void testSignalOnly(
@@ -162,6 +175,60 @@ struct RegisteredSendObservation {
 void testPipelineGeometry(
     P2pIbTransportDevice transport,
     uint64_t* output,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: blocking pipelined send or recv over the backend-DISPATCHING
+ * `P2pIbTransportDevice`, one fixed channel per block. Block `b` drives
+ * channel `b` over the `bytesPerBlock`-sized slice of `buffer` at
+ * `b * bytesPerBlock`.
+ *
+ * The per-block slice is what makes channel coverage observable. Handing
+ * every block the same buffer (what the single-buffer `testSendRecv` does)
+ * means a channel that silently moves nothing is masked by a sibling block
+ * writing the same bytes, so the verify passes with most channels dead.
+ *
+ * Caller must keep `bytesPerBlock` within one pipeline window: senders then
+ * never block on a peer's SLOT_FREE, so the test cannot deadlock when it runs
+ * more blocks than the GPU can hold resident.
+ */
+void testShardedSendRecvIb(
+    P2pIbTransportDevice transport,
+    void* buffer,
+    std::size_t bytesPerBlock,
+    std::size_t maxSignalBytes,
+    bool send,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Fill `numBlocks` consecutive `bytesPerBlock` slices, keying slice `b` on
+ * `baseValue + b` so every slice is byte-distinguishable from its neighbours.
+ */
+void fillShardedPattern(
+    void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t baseValue,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Verify the layout `fillShardedPattern` writes. `errorCount` accumulates
+ * mismatched bytes; `firstBadSlice` is `atomicMin`-reduced to the lowest slice
+ * index that had any mismatch, which is what tells a failure whether the
+ * channels above the legacy limit were the ones that dropped data.
+ *
+ * The caller must pre-seed `firstBadSlice` with a sentinel above every valid
+ * slice index (`std::numeric_limits<int>::max()`); a clean run leaves it
+ * untouched rather than writing a "no failure" value of its own.
+ */
+void verifyShardedPattern(
+    const void* buffer,
+    std::size_t bytesPerBlock,
+    uint8_t expectedBaseValue,
+    int* errorCount,
+    int* firstBadSlice,
     int numBlocks,
     int blockSize);
 
@@ -405,7 +472,8 @@ void testPutSignalCounter(
     int counterId,
     uint64_t counterVal,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    int numIterations = 1);
 
 /**
  * Test kernel: Wait for local counter to reach expected value (slot-index)
@@ -486,10 +554,24 @@ void testRegisteredSendDrainWithAbort(
     int numBlocks,
     int blockSize);
 
+/**
+ * Test the blocking send-slot retirement error path against a bad-rkey CQE.
+ */
+void testPrepareSendSlotBadRkey(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    std::size_t nbytes,
+    uint32_t* observedUnretired,
+    comms::fault_tolerance::AbortDevice abort,
+    int numBlocks,
+    int blockSize);
+
 void testPutAndFlushWithAbort(
     P2pIbTransportDevice transport,
     const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
+    const IbgdaRemoteBuffer& poisonedRemoteBuf,
+    const IbgdaRemoteBuffer& validRemoteBuf,
     std::size_t nbytes,
     comms::fault_tolerance::AbortDevice abort,
     int numBlocks,

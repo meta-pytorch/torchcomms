@@ -67,6 +67,7 @@ template <typename Transport>
 __device__ __forceinline__ void init_registered_send_progress(
     Transport& transport,
     ThreadGroup& group,
+    const IbgdaLocalBuffer& src,
     std::size_t nbytes,
     std::size_t max_signal_bytes = 0);
 
@@ -75,9 +76,6 @@ __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
 progress_registered_send_once(
     Transport& transport,
     ThreadGroup& group,
-    const IbgdaLocalBuffer& src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes = 0,
     const AbortDevice& abortDevice = AbortDevice());
 
 template <typename Transport>
@@ -92,8 +90,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_recv_acquire_once(
     Transport& transport,
     ThreadGroup& group,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     RecvChunkAcquisition& out);
 
@@ -118,9 +114,6 @@ __device__ __forceinline__ IbgdaSendRecvProgressStatus
 progress_send_once_with_trace(
     Transport& transport,
     ThreadGroup& group,
-    const void* __restrict__ src,
-    std::size_t nbytes,
-    std::size_t max_signal_bytes,
     const AbortDevice& abortDevice,
     const PipesTraceAllReduceContext& traceContext,
     PipesTraceProgressState& traceState,
@@ -371,18 +364,21 @@ struct P2pIbTransportDevice {
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_send_progress(
       ThreadGroup& group,
+      const void* __restrict__ src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
   template <typename = void>
   __device__ __forceinline__ void init_registered_send_progress(
       ThreadGroup& group,
+      const IbgdaLocalBuffer& src,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
   template <typename Proto = protocol::Simple>
   __device__ __forceinline__ void init_recv_progress(
       ThreadGroup& group,
+      void* __restrict__ dst,
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0);
 
@@ -392,9 +388,6 @@ struct P2pIbTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_send_once(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
@@ -402,9 +395,6 @@ struct P2pIbTransportDevice {
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
   progress_registered_send_once(
       ThreadGroup& group,
-      const IbgdaLocalBuffer& src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice());
 
   template <typename = void>
@@ -417,9 +407,6 @@ struct P2pIbTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_send_once_with_trace(
       ThreadGroup& group,
-      const void* __restrict__ src,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,
@@ -428,8 +415,6 @@ struct P2pIbTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_acquire_once(
       ThreadGroup& group,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       detail::RecvChunkAcquisition& out);
 
@@ -445,9 +430,6 @@ struct P2pIbTransportDevice {
       typename... Args>
   __device__ __forceinline__ IbgdaSendRecvProgressStatus progress_recv_once(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice(),
       Args... args);
 
@@ -455,9 +437,6 @@ struct P2pIbTransportDevice {
   __device__ __forceinline__ IbgdaSendRecvProgressStatus
   progress_recv_once_with_trace(
       ThreadGroup& group,
-      void* __restrict__ dst,
-      std::size_t nbytes,
-      std::size_t max_signal_bytes,
       const AbortDevice& abortDevice,
       const PipesTraceAllReduceContext& traceContext,
       PipesTraceProgressState& traceState,

@@ -2,6 +2,7 @@
 
 #include "comms/uniflow/transport/tcp/TcpPinnedSlabPool.h"
 
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -80,6 +81,19 @@ Result<std::shared_ptr<TcpPinnedSlabPool>> TcpPinnedSlabPool::create(
         ErrCode::InvalidArgument,
         "TcpPinnedSlabPool: reservedForReader must leave at least one slab");
   }
+  // create() is the geometry's validation boundary, and the product below is
+  // the one input to it that can wrap. A wrapped product allocates a short
+  // region and the pool then hands out slabs pointing past its end -- and the
+  // pointer-bounds assertions in SlabsAreDistinctWindowsOntoTheRegion would
+  // still pass for the slabs that happen to land inside it. Unreachable while
+  // every caller passes compile-time constants; checked here because the
+  // geometry is heading toward caller-configurable.
+  if (slabCount > std::numeric_limits<size_t>::max() / slabSize) {
+    return Err(
+        ErrCode::InvalidArgument,
+        "TcpPinnedSlabPool: slabCount " + std::to_string(slabCount) +
+            " times slabSize " + std::to_string(slabSize) + " overflows");
+  }
   // cudaHostAllocPortable so the region is pinned with respect to every device
   // context, not just whichever was current here: one transport stages for
   // whatever devices its peer's segments live on.
@@ -138,7 +152,9 @@ TcpPinnedSlab TcpPinnedSlabPool::tryAcquire(bool allowReserved) {
       slabSize_};
 }
 
-Result<std::vector<TcpPinnedSlab>> TcpPinnedSlabPool::acquire(size_t count) {
+Result<std::vector<TcpPinnedSlab>> TcpPinnedSlabPool::acquire(
+    size_t count,
+    std::chrono::milliseconds timeout) {
   if (count == 0) {
     return std::vector<TcpPinnedSlab>{};
   }
@@ -152,11 +168,41 @@ Result<std::vector<TcpPinnedSlab>> TcpPinnedSlabPool::acquire(size_t count) {
   std::vector<size_t> indices;
   {
     std::unique_lock<std::mutex> lk(mu_);
-    freed_.wait(lk, [this, count]() {
+    // wait_for returns the predicate's value, so `satisfied` is false only if
+    // the deadline expired with the pool still short. closed_ is checked first
+    // because a shutdown is the more specific answer: close() makes the
+    // predicate true, so a pool closed while waiting reports closure rather
+    // than a coincidental expiry.
+    const bool satisfied = freed_.wait_for(lk, timeout, [this, count]() {
       return closed_ || free_.size() >= count + reservedForReader_;
     });
     if (closed_) {
       return Err(ErrCode::NotConnected, "TcpPinnedSlabPool: pool is closed");
+    }
+    if (!satisfied) {
+      // Says what was wanted, what was there, and what it means, because the
+      // whole point of the deadline is that this is diagnosable where a hang
+      // was not. A caller seeing this has either lost its peer or is running
+      // more concurrent transfers than the pool was sized for.
+      // NOT the benign, retryable Timeout that readerLoop and the benchmark
+      // rendezvous continue on: that one means "an idle socket had nothing
+      // yet", whereas this means "the pool stayed exhausted for the whole
+      // deadline", which a retry would only repeat. ResourceExhausted is
+      // already taken here for a request that could NEVER be satisfied (count
+      // above unreserved capacity); collapsing the two would lose that
+      // distinction. A caller must not apply the idle-socket retry convention
+      // to this code.
+      return Err(
+          ErrCode::Timeout,
+          "TcpPinnedSlabPool: waited " + std::to_string(timeout.count()) +
+              "ms for " + std::to_string(count) + " slabs, only " +
+              std::to_string(
+                  free_.size() > reservedForReader_
+                      ? free_.size() - reservedForReader_
+                      : 0) +
+              " of " + std::to_string(slabCount_ - reservedForReader_) +
+              " unreserved slabs are free; the peer has stopped draining or "
+              "more transfers are in flight than the pool is sized for");
     }
     indices.assign(free_.end() - static_cast<ptrdiff_t>(count), free_.end());
     free_.resize(free_.size() - count);
