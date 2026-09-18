@@ -24,6 +24,7 @@ BootstrapExternal::BootstrapExternal(
     uint64_t commHash,
     const std::string& commDesc,
     const CommLogData& logData,
+    const CtranIbConfig& ibConfig,
     uint32_t trafficClass)
     : vcState_(vcState),
       devices_(devices),
@@ -32,13 +33,11 @@ BootstrapExternal::BootstrapExternal(
       commHash_(commHash),
       commDesc_(commDesc),
       logData_(logData),
+      ibConfig_(ibConfig),
       trafficClass_(trafficClass) {}
 
 std::string BootstrapExternal::getLocalVcId(const int peerRank) {
-  // External bootstrap supports exactly one VC per peer that spans all
-  // local NICs (no NIC pinning). This matches the legacy single-VC
-  // semantics and avoids depending on the cvar-derived VcLayout used by
-  // the internal bootstrap path.
+  // External bootstrap uses one VC per peer spanning all local NICs.
   std::vector<int> activeDevices(devices_.size());
   std::iota(activeDevices.begin(), activeDevices.end(), 0);
 
@@ -49,7 +48,8 @@ std::string BootstrapExternal::getLocalVcId(const int peerRank) {
       trafficClass_,
       cudaDev_,
       activeDevices,
-      /*numVcs=*/1);
+      /*numVcs=*/1,
+      ibConfig_);
 
   std::string localBusCard;
   {
@@ -88,6 +88,16 @@ commResult_t BootstrapExternal::connectVc(
     }
     vc = std::move(it->second);
     pendingVcs_.erase(it);
+  }
+
+  if (remoteVcIdentifier.size() != vc->getBusCardSize()) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: invalid remote VC identifier size {} (expected {}) for peerRank {}",
+        remoteVcIdentifier.size(),
+        vc->getBusCardSize(),
+        peerRank);
+    return commInvalidArgument;
   }
 
   // External bootstrap publishes a single VC per peer; wrap and delegate

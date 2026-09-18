@@ -202,7 +202,8 @@ class CtranIbVirtualConn {
       uint32_t trafficClass,
       int cudaDev,
       std::vector<int> activeDevices,
-      int numVcs);
+      int numVcs,
+      const CtranIbConfig& ibConfig = {});
   ~CtranIbVirtualConn();
 
   // The data channel may be temporarily unavailable due to run out of local
@@ -568,7 +569,11 @@ class CtranIbVirtualConn {
   std::mutex mutex;
 
  private:
-  commResult_t resolveVcConfig(CtranComm* comm, int peerRank, int numVcs);
+  commResult_t resolveVcConfig(
+      CtranComm* comm,
+      int peerRank,
+      int numVcs,
+      const CtranIbConfig& ibConfig);
   commResult_t prepCtrlMsgs();
   commResult_t prepIbvWrs();
 
@@ -636,23 +641,20 @@ class CtranIbVirtualConn {
   }
 
   inline int getOpQps(const CtranIbConfig* config) {
-    return ctran::utils::getConfigValue(
-        config, &CtranIbConfig::numQps, maxNumQps_);
+    return config && config->numQps.has_value() ? *config->numQps : maxNumQps_;
   }
 
   inline enum NCCL_CTRAN_IB_VC_MODE getOpVcMode(const CtranIbConfig* config) {
-    return ctran::utils::getConfigValue(
-        config, &CtranIbConfig::vcMode, vcMode_);
+    return config && config->vcMode.has_value() ? *config->vcMode : vcMode_;
   }
 
   inline int getOpMaxQpMsgs(const CtranIbConfig* config) {
-    return ctran::utils::getConfigValue(
-        config, &CtranIbConfig::qpMsgs, maxQpMsgs_);
+    return config && config->qpMsgs.has_value() ? *config->qpMsgs : maxQpMsgs_;
   }
 
   inline size_t getOpScalingTh(const CtranIbConfig* config) {
-    return ctran::utils::getConfigValue(
-        config, &CtranIbConfig::qpScalingTh, qpScalingTh_);
+    return config && config->qpScalingTh.has_value() ? *config->qpScalingTh
+                                                     : qpScalingTh_;
   }
 
   // Max size of a single WQE for an op of total size `len` whose payload is

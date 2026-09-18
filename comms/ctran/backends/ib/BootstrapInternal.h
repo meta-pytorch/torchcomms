@@ -15,6 +15,7 @@
 #include <sys/socket.h>
 
 #include "comms/common/fault_tolerance/Abort.h"
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/ib/VcLayout.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
@@ -56,6 +57,7 @@ class Bootstrap {
       const CommLogData& logData,
       CtranComm* comm,
       std::vector<CtranIbDevice>& devices,
+      const CtranIbConfig& ibConfig,
       uint32_t trafficClass,
       int cudaDev,
       int rank,
@@ -110,6 +112,10 @@ class Bootstrap {
   const CommLogData& logData_;
   CtranComm* comm_{nullptr};
   std::vector<CtranIbDevice>& devices_;
+  // The accept thread learns the peer rank after CtranIb::init() returns.
+  // Retain the sparse overrides so VC construction can apply them after the
+  // peer's CommStateX same-zone/same-DC topology override.
+  CtranIbConfig ibConfig_;
   uint32_t trafficClass_{0};
   int cudaDev_{-1};
   int rank_{-1};

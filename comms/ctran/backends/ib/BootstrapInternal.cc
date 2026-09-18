@@ -83,6 +83,7 @@ Bootstrap::Bootstrap(
     const CommLogData& logData,
     CtranComm* comm,
     std::vector<CtranIbDevice>& devices,
+    const CtranIbConfig& ibConfig,
     uint32_t trafficClass,
     int cudaDev,
     int rank,
@@ -95,6 +96,7 @@ Bootstrap::Bootstrap(
       logData_(logData),
       comm_(comm),
       devices_(devices),
+      ibConfig_(ibConfig),
       trafficClass_(trafficClass),
       cudaDev_(cudaDev),
       rank_(rank),
@@ -272,7 +274,8 @@ commResult_t Bootstrap::exchangeAndPublish(
         trafficClass_,
         cudaDev_,
         vcLayout_.vcToActiveDevices[vcIdx],
-        numVcs);
+        numVcs,
+        ibConfig_);
 
     std::string localBusCard, remoteBusCard;
     {

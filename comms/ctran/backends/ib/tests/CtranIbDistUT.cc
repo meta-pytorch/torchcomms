@@ -974,7 +974,7 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
   } catch (const std::bad_alloc&) {
@@ -1056,7 +1056,7 @@ TEST_F(CtranIbTest, InitializeWithoutCommAndExternalBootstrap) {
         cudaDev,
         commHash,
         commDesc,
-        false /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kExternal);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
@@ -1233,7 +1233,7 @@ TEST_F(CtranIbTest, LocalFlush) {
         localRank,
         0,
         "ib_dist_test",
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kDefaultServer);
 
     CtranIbRequest req;
@@ -1628,8 +1628,8 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
 #undef BUF_COUNT
 #define BUF_COUNT 8192
   try {
-    auto ctranIb =
-        std::make_unique<CtranIb>(this->comm, true /* enableLocalFlush */);
+    auto ctranIb = std::make_unique<CtranIb>(
+        this->comm, CtranIbConfig{.enableLocalFlush = true});
     int* buf;
     void* handle = nullptr;
     ControlMsg sendMsg;
@@ -2227,7 +2227,7 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
         cudaDev,
         commHash,
         commDesc,
-        true /*enableLocalFlush*/,
+        CtranIbConfig{.enableLocalFlush = true},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
     constexpr int peerRank = 0;

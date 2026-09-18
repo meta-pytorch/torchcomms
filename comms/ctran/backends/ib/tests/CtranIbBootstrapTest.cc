@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -128,7 +129,8 @@ std::unique_ptr<CtranIb> createCtranIb(
     std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
     std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr,
     std::optional<int> maxNumCqe = std::nullopt,
-    std::optional<int> maxNumNic = std::nullopt) {
+    std::optional<int> maxNumNic = std::nullopt,
+    CtranIbConfig ibConfig = {}) {
   const uint64_t commHash = 0x12345678;
   const std::string commDesc = "test";
 
@@ -136,20 +138,30 @@ std::unique_ptr<CtranIb> createCtranIb(
     socketFactory =
         std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
   }
+  if (!ibConfig.enableLocalFlush.has_value()) {
+    ibConfig.enableLocalFlush = false;
+  }
+  if (maxNumCqe.has_value() || maxNumNic.has_value()) {
+    if (maxNumCqe.has_value()) {
+      ibConfig.maxNumCqe = *maxNumCqe;
+    }
+    if (maxNumNic.has_value()) {
+      ibConfig.maxNumNic = *maxNumNic;
+    }
+  }
 
   return std::make_unique<CtranIb>(
       rank,
       rank, // Use rank as CUDA device identifier
       commHash,
       commDesc,
-      false, // enableLocalFlush
+      ibConfig,
       mode,
       qpServerAddr,
       abortCtrl,
-      socketFactory,
-      maxNumCqe,
-      maxNumNic);
+      socketFactory);
 }
+
 // Helper class to run two-rank tests with address exchange
 class TwoRankTestHelper {
  public:
@@ -158,9 +170,13 @@ class TwoRankTestHelper {
       const folly::SocketAddress& peerAddr,
       AbortPtr abortCtrl)>;
 
-  TwoRankTestHelper(RankAction rank0Action, RankAction rank1Action)
+  TwoRankTestHelper(
+      RankAction rank0Action,
+      RankAction rank1Action,
+      CtranIbConfig ibConfig = {})
       : rank0Action_(std::move(rank0Action)),
-        rank1Action_(std::move(rank1Action)) {}
+        rank1Action_(std::move(rank1Action)),
+        ibConfig_(std::move(ibConfig)) {}
 
   void run() {
     auto [listenAddrPromise0, listenAddrFuture0] =
@@ -173,7 +189,14 @@ class TwoRankTestHelper {
       SocketServerAddr serverAddr = getSocketServerAddress();
       auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
-          0, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+          0,
+          CtranIb::BootstrapMode::kSpecifiedServer,
+          abortCtrl,
+          &serverAddr,
+          /*socketFactory=*/nullptr,
+          /*maxNumCqe=*/std::nullopt,
+          /*maxNumNic=*/std::nullopt,
+          ibConfig_);
 
       auto listenAddr = getAndValidateListenAddr(ctranIb.get());
       listenAddrPromise0.setValue(listenAddr);
@@ -187,7 +210,14 @@ class TwoRankTestHelper {
       SocketServerAddr serverAddr = getSocketServerAddress();
       auto abortCtrl = comms::fault_tolerance::createAbort(/*enabled=*/true);
       auto ctranIb = createCtranIb(
-          1, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+          1,
+          CtranIb::BootstrapMode::kSpecifiedServer,
+          abortCtrl,
+          &serverAddr,
+          /*socketFactory=*/nullptr,
+          /*maxNumCqe=*/std::nullopt,
+          /*maxNumNic=*/std::nullopt,
+          ibConfig_);
 
       auto listenAddr = getAndValidateListenAddr(ctranIb.get());
       listenAddrPromise1.setValue(listenAddr);
@@ -203,6 +233,7 @@ class TwoRankTestHelper {
  private:
   RankAction rank0Action_;
   RankAction rank1Action_;
+  CtranIbConfig ibConfig_;
 };
 
 // Base test class without parameterization for non-parameterized tests
@@ -258,19 +289,26 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
       socketFactory =
           std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
     }
+    CtranIbConfig ibConfig{.enableLocalFlush = false};
+    if (maxNumCqe.has_value() || maxNumNic.has_value()) {
+      if (maxNumCqe.has_value()) {
+        ibConfig.maxNumCqe = *maxNumCqe;
+      }
+      if (maxNumNic.has_value()) {
+        ibConfig.maxNumNic = *maxNumNic;
+      }
+    }
 
     return std::make_unique<CtranIb>(
         rank,
         rank, // Use rank as CUDA device identifier
         commHash,
         commDesc,
-        false, // enableLocalFlush
+        ibConfig,
         mode,
         qpServerAddr,
         abortCtrl,
-        socketFactory,
-        maxNumCqe,
-        maxNumNic);
+        socketFactory);
   }
 };
 
@@ -307,6 +345,109 @@ class CtranIbBootstrapCommonTest : public CtranIbBootstrapTestBase {
     CtranIbBootstrapTestBase::TearDown();
   }
 };
+
+TEST_F(
+    CtranIbBootstrapCommonTest,
+    ExternalBootstrapUsesDefaultQpConfigWhenUnset) {
+  auto ctranIb = ::createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kExternal,
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      /*qpServerAddr=*/std::nullopt,
+      /*socketFactory=*/nullptr,
+      /*maxNumCqe=*/std::nullopt,
+      /*maxNumNic=*/1);
+
+  EXPECT_NE(ctranIb->externalBootstrap(), nullptr);
+}
+
+TEST_F(CtranIbBootstrapCommonTest, EnablesFlushForOldNvidiaGb300AndForceFlush) {
+  CtranIbConfig ibConfig;
+  ibConfig.enableLocalFlush = false;
+  ibConfig.maxNumNic = 1;
+  auto ctranIb = ::createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kExternal,
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      /*qpServerAddr=*/std::nullopt,
+      /*socketFactory=*/nullptr,
+      /*maxNumCqe=*/std::nullopt,
+      /*maxNumNic=*/std::nullopt,
+      ibConfig);
+
+  {
+    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 1);
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(800));
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(900));
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(1000));
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(1030));
+  }
+
+  {
+    EnvRAII envNetForceFlush(NCCL_CTRAN_NET_FORCE_FLUSH, 0);
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(800));
+    EXPECT_FALSE(ctranIb->shouldEnableLocalFlushByDefault(900));
+    EXPECT_FALSE(ctranIb->shouldEnableLocalFlushByDefault(1000));
+    EXPECT_TRUE(ctranIb->shouldEnableLocalFlushByDefault(1030));
+  }
+}
+
+TEST_F(CtranIbBootstrapCommonTest, ExternalBootstrapUsesSingleVcLayout) {
+  const int originalNumVcsPerRank = NCCL_CTRAN_IB_NUM_VCS_PER_RANK;
+  SCOPE_EXIT {
+    NCCL_CTRAN_IB_NUM_VCS_PER_RANK = originalNumVcsPerRank;
+  };
+  NCCL_CTRAN_IB_NUM_VCS_PER_RANK = 4;
+
+  CtranIbConfig ibConfig;
+  ibConfig.numQps = 1;
+  auto ctranIb = ::createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kExternal,
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      /*qpServerAddr=*/std::nullopt,
+      /*socketFactory=*/nullptr,
+      /*maxNumCqe=*/std::nullopt,
+      /*maxNumNic=*/1,
+      ibConfig);
+
+  EXPECT_EQ(ctranIb->getMaxVcsPerPeer(), 1);
+}
+
+TEST_F(CtranIbBootstrapCommonTest, UsesConfiguredTrafficClassFallback) {
+  CtranIbConfig ibConfig;
+  ibConfig.maxNumNic = 1;
+  ibConfig.trafficClass = 42;
+
+  auto ctranIb = ::createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kExternal,
+      comms::fault_tolerance::createAbort(/*enabled=*/false),
+      /*qpServerAddr=*/std::nullopt,
+      /*socketFactory=*/nullptr,
+      /*maxNumCqe=*/std::nullopt,
+      /*maxNumNic=*/std::nullopt,
+      ibConfig);
+
+  EXPECT_EQ(ctranIb->getTrafficClass(), 42);
+}
+
+TEST_F(CtranIbBootstrapCommonTest, RejectsInvalidTrafficClassFallback) {
+  CtranIbConfig ibConfig;
+  ibConfig.trafficClass = 256;
+
+  EXPECT_THROW(
+      ::createCtranIb(
+          /*rank=*/0,
+          CtranIb::BootstrapMode::kExternal,
+          comms::fault_tolerance::createAbort(/*enabled=*/false),
+          /*qpServerAddr=*/std::nullopt,
+          /*socketFactory=*/nullptr,
+          /*maxNumCqe=*/std::nullopt,
+          /*maxNumNic=*/std::nullopt,
+          ibConfig),
+      ctran::utils::Exception);
+}
 
 // Test basic bootstrapStart functionality
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartDefaultServer) {
@@ -571,6 +712,8 @@ std::string createValidRemoteBusCard() {
     uint32_t controlQpn;
     uint32_t notifQpn;
     uint32_t atomicQpn;
+    uint32_t numDataQps;
+    uint32_t numActiveDevices;
     uint32_t dataQpn[kCtranHardcodedMaxQps];
     uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
     union {
@@ -591,6 +734,8 @@ std::string createValidRemoteBusCard() {
   busCard.controlQpn = 100;
   busCard.notifQpn = 101;
   busCard.atomicQpn = 102;
+  busCard.numDataQps = NCCL_CTRAN_IB_MAX_QPS;
+  busCard.numActiveDevices = NCCL_CTRAN_IB_DEVICES_PER_RANK;
 
   for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
     busCard.dataQpn[i] = 200 + i;
@@ -1412,7 +1557,12 @@ TEST_P(CtranIbBootstrapParameterizedTest, BidirectionalCtrlMsg) {
 
 // Test that getVc() returns valid VC after connection establishment
 TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
-  auto rank0Action = [this](
+  constexpr int kExpectedQpsPerVc = 4;
+  EnvRAII envNumVcs(NCCL_CTRAN_IB_NUM_VCS_PER_RANK, 1);
+  CtranIbConfig ibConfig;
+  ibConfig.numQps = kExpectedQpsPerVc;
+
+  auto rank0Action = [this, kExpectedQpsPerVc](
                          CtranIb* ctranIb,
                          const folly::SocketAddress& peerAddr,
                          AbortPtr abortCtrl) {
@@ -1442,7 +1592,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
     EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
     EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
     EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
-    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+    EXPECT_EQ(vcAfterConnection->getMaxNumQp(), kExpectedQpsPerVc);
 
     // Send notifications over the established connection to verify it works
     constexpr int kNumNotifications = 3;
@@ -1466,7 +1616,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
                            << kNumNotifications << " notifications";
   };
 
-  auto rank1Action = [this](
+  auto rank1Action = [this, kExpectedQpsPerVc](
                          CtranIb* ctranIb,
                          const folly::SocketAddress& peerAddr,
                          AbortPtr abortCtrl) {
@@ -1500,7 +1650,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
     EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
     EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
     EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
-    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+    EXPECT_EQ(vcAfterConnection->getMaxNumQp(), kExpectedQpsPerVc);
 
     // Wait to receive notifications from rank 0
     constexpr int kNumNotifications = 3;
@@ -1530,7 +1680,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
                            << notificationsReceived << " notifications";
   };
 
-  TwoRankTestHelper(rank0Action, rank1Action).run();
+  TwoRankTestHelper(rank0Action, rank1Action, ibConfig).run();
 }
 
 // Test that getListenSocketListenAddr() returns consistent address

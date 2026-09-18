@@ -27,6 +27,8 @@ struct BusCard {
   uint32_t controlQpn;
   uint32_t notifQpn;
   uint32_t atomicQpn;
+  uint32_t numDataQps;
+  uint32_t numActiveDevices;
   uint32_t dataQpn[CTRAN_HARDCODED_MAX_QPS];
   uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
   union {
@@ -80,8 +82,11 @@ void applyQpConfigList(
 
 } // namespace
 
-commResult_t
-CtranIbVirtualConn::resolveVcConfig(CtranComm* comm, int peerRank, int numVcs) {
+commResult_t CtranIbVirtualConn::resolveVcConfig(
+    CtranComm* comm,
+    int peerRank,
+    int numVcs,
+    const CtranIbConfig& ibConfig) {
   FB_CHECKABORT(numVcs > 0, "numVcs must be positive");
 
   VcConfig config;
@@ -99,6 +104,19 @@ CtranIbVirtualConn::resolveVcConfig(CtranComm* comm, int peerRank, int numVcs) {
   } else if (!comm) {
     connTyp = ConnectionType::CTRAN_EX;
     applyQpConfigList(NCCL_CTRAN_EX_IB_QP_CONFIG, config);
+  }
+
+  if (ibConfig.numQps.has_value()) {
+    config.numQps = *ibConfig.numQps;
+  }
+  if (ibConfig.qpScalingTh.has_value()) {
+    config.qpScalingTh = *ibConfig.qpScalingTh;
+  }
+  if (ibConfig.vcMode.has_value()) {
+    config.vcMode = *ibConfig.vcMode;
+  }
+  if (ibConfig.qpMsgs.has_value()) {
+    config.qpMsgs = *ibConfig.qpMsgs;
   }
 
   FB_CHECKABORT(
@@ -123,6 +141,16 @@ CtranIbVirtualConn::resolveVcConfig(CtranComm* comm, int peerRank, int numVcs) {
         config.qpMsgs);
     return commInvalidArgument;
   }
+
+  maxNumQps_ = config.numQps;
+  qpScalingTh_ = config.qpScalingTh;
+  vcMode_ = config.vcMode;
+  maxQpMsgs_ = config.qpMsgs;
+  // A per-WQE threshold cannot express whether the aggregate workload should
+  // use multiple NICs, so keep interleaving policy inside the transport rather
+  // than exposing it through CtranIbConfig.
+  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
+  qpInterleaveDevices_ = qpInterleaveMinWqeSize_ > 0;
 
   maxNumQps_ = config.numQps;
   qpScalingTh_ = config.qpScalingTh;
@@ -380,7 +408,8 @@ CtranIbVirtualConn::CtranIbVirtualConn(
     uint32_t trafficClass,
     int cudaDev,
     std::vector<int> activeDevices,
-    int numVcs)
+    int numVcs,
+    const CtranIbConfig& ibConfig)
     : peerRank(peerRank),
       devices_(devices),
       comm_(comm),
@@ -404,9 +433,10 @@ CtranIbVirtualConn::CtranIbVirtualConn(
   atomicDevice_ = activeDevices_.front();
   if (comm != nullptr) {
     FB_COMMCHECKTHROW_EX(
-        resolveVcConfig(comm, peerRank, numVcs), comm->logMetaData_);
+        resolveVcConfig(comm, peerRank, numVcs, ibConfig), comm->logMetaData_);
   } else {
-    FB_COMMCHECKTHROW_EX_NOCOMM(resolveVcConfig(comm, peerRank, numVcs));
+    FB_COMMCHECKTHROW_EX_NOCOMM(
+        resolveVcConfig(comm, peerRank, numVcs, ibConfig));
   }
 
   // Log the IB device ifnames this VC is bound to. Skip entries with
@@ -571,6 +601,8 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   busCard->controlQpn = ibvControlQp_->qp()->qp_num;
   busCard->notifQpn = ibvNotifyQp_->qp()->qp_num;
   busCard->atomicQpn = ibvAtomicQp_->qp()->qp_num;
+  busCard->numDataQps = static_cast<uint32_t>(maxNumQps_);
+  busCard->numActiveDevices = static_cast<uint32_t>(activeDevices_.size());
   for (int i = 0; i < maxNumQps_; i++) {
     busCard->dataQpn[i] = this->ibvDataQps_.at(i).qp()->qp_num;
   }
@@ -585,6 +617,19 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
 
 commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   BusCard* remoteBusCardStruct = reinterpret_cast<BusCard*>(remoteBusCard);
+
+  if (remoteBusCardStruct->numDataQps != maxNumQps_ ||
+      remoteBusCardStruct->numActiveDevices != activeDevices_.size()) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB-VC: peer configuration mismatch: local dataQps={} activeDevices={}, remote dataQps={} activeDevices={} peerRank={}",
+        maxNumQps_,
+        activeDevices_.size(),
+        remoteBusCardStruct->numDataQps,
+        remoteBusCardStruct->numActiveDevices,
+        peerRank);
+    return commInvalidArgument;
+  }
 
   // OOO_RQ negotiation: fail-closed at the receive side so both peers
   // evaluate symmetrically and abort together. Only fires when the local
