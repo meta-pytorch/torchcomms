@@ -982,15 +982,20 @@ commResult_t CtranIb::iflush(
   }
 }
 
-commResult_t CtranIb::getVcConfig(int peerRank, CtranIbVcConfig_t& config) {
+commResult_t CtranIb::getVcConfig(int peerRank, CtranIbConfig& config) {
   std::shared_ptr<CtranIbVirtualConn> vc = vcState_.getVc(peerRank);
   FB_COMMCHECK(checkValidVc(vc, peerRank));
 
-  config = {
-      vc->getQpScalingTh(),
-      vc->getMaxNumQp(),
-      vc->getVcMode(),
-      vc->getMaxQpMsgs()};
+  config = CtranIbConfig{
+      .numQps = vc->getMaxNumQp(),
+      .qpScalingTh = vc->getQpScalingTh(),
+      .vcMode = vc->getVcMode(),
+      .qpMsgs = vc->getMaxQpMsgs(),
+      .enableLocalFlush = enableLocalFlush_,
+      .maxNumCqe = maxCqe,
+      .maxNumNic = numNics,
+      .trafficClass = vc->getTrafficClass(),
+  };
   return commSuccess;
 }
 

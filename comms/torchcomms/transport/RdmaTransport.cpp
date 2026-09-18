@@ -202,25 +202,18 @@ struct RdmaTransport::Work {
 RdmaTransport::RdmaTransport(
     int cudaDev,
     folly::EventBase* evb,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic)
+    const CtranIbConfig& ibConfig)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
-  CtranIbConfig ibConfig;
-  ibConfig.enableLocalFlush = true;
-  if (maxNumCqe.has_value()) {
-    ibConfig.maxNumCqe = *maxNumCqe;
-  }
-  if (maxNumNic.has_value()) {
-    ibConfig.maxNumNic = *maxNumNic;
-  }
+  auto effectiveIbConfig = ibConfig;
+  effectiveIbConfig.enableLocalFlush = true;
   // Create IB Instance
   ib_ = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      ibConfig,
+      effectiveIbConfig,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
@@ -233,6 +226,22 @@ RdmaTransport::RdmaTransport(
         folly::AsyncTimeout::make(*evb_, [this]() noexcept { progress(); });
   }
 }
+
+RdmaTransport::RdmaTransport(
+    int cudaDev,
+    folly::EventBase* evb,
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic)
+    : RdmaTransport(cudaDev, evb, [&] {
+        CtranIbConfig ibConfig;
+        if (maxNumCqe.has_value()) {
+          ibConfig.maxNumCqe = *maxNumCqe;
+        }
+        if (maxNumNic.has_value()) {
+          ibConfig.maxNumNic = *maxNumNic;
+        }
+        return ibConfig;
+      }()) {}
 
 RdmaTransport::~RdmaTransport() {
   // Run cleanup on the EventBase thread to safely cancel the timeout
@@ -324,6 +333,14 @@ int RdmaTransport::getMaxCqe() const {
 
 int RdmaTransport::getNumNics() const {
   return ib_->getNumNics();
+}
+
+std::optional<CtranIbConfig> RdmaTransport::getVcConfig() const {
+  CtranIbConfig config;
+  if (ib_->getVcConfig(kDummyRank, config) != commSuccess) {
+    return std::nullopt;
+  }
+  return config;
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(

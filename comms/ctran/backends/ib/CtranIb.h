@@ -443,9 +443,7 @@ class CtranIb {
 
   int getIbDevPort(int device = 0) const;
 
-  using CtranIbVcConfig_t =
-      std::tuple<size_t, int, enum NCCL_CTRAN_IB_VC_MODE, int>;
-  commResult_t getVcConfig(int peer, CtranIbVcConfig_t& config);
+  commResult_t getVcConfig(int peer, CtranIbConfig& config);
 
   // Release CtranIb backend qps and cq state
   commResult_t releaseRemoteTransStates(bool fromDestructor = false);
