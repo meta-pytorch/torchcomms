@@ -120,9 +120,11 @@ struct MinOp {};
 //   reduce(Op, a, b)  Element-wise reduction: a = Op(a, b), operating on
 //                     all kElemsPerVec elements inside the uint4 pair.
 //
-// To add a new element type: specialize VecOps<NewType> with kElemsPerVec
-// and one reduce() overload per op tag. For 16-bit types that use the
-// __hadd2/__hmax2/__hmin2 intrinsics, inherit from HalfPrecisionVecOps.
+// To add a new element type: specialize VecOps<NewType> with kElemsPerVec and
+// SIX functions -- one reduce() per op tag, operating on a uint4 pair, plus one
+// reduce_scalar() per op tag for the tail element. Supplying only the vector
+// forms compiles until the first tail-handling call site. For 16-bit types that
+// use the __hadd2/__hmax2/__hmin2 intrinsics, inherit from HalfPrecisionVecOps.
 // ============================================================================
 
 template <typename T>
