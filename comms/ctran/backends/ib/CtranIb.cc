@@ -67,6 +67,56 @@ bool CtranIb::shouldEnableLocalFlushByDefault(
 #endif
 }
 
+commResult_t CtranIb::resolveFirstIbvDevice(
+    int maxNumNic,
+    size_t& firstIbvDevice) const {
+  const int defaultNumNics = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  const int deviceStride = NCCL_CTRAN_IB_DEVICE_STRIDE;
+  if (maxNumNic <= 0 || maxNumNic > defaultNumNics) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "maxNumNic ({}) must be in [1, NCCL_CTRAN_IB_DEVICES_PER_RANK ({})]",
+        maxNumNic,
+        defaultNumNics);
+    return commInvalidArgument;
+  }
+  if (deviceStride <= 0) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "NCCL_CTRAN_IB_DEVICE_STRIDE ({}) must be positive",
+        deviceStride);
+    return commInvalidArgument;
+  }
+  if (this->cudaDev < 0) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CUDA device index ({}) must be non-negative",
+        this->cudaDev);
+    return commInvalidArgument;
+  }
+
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
+
+  const size_t resolvedFirstIbvDevice =
+      static_cast<size_t>(this->cudaDev) * defaultNumNics * deviceStride;
+  const size_t availableIbDevices =
+      resolvedFirstIbvDevice < s->ibvDevices.size()
+      ? s->ibvDevices.size() - resolvedFirstIbvDevice
+      : 0;
+  if (static_cast<size_t>(defaultNumNics) > availableIbDevices) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "NCCL_CTRAN_IB_DEVICES_PER_RANK requires {} IB device(s), but only {} are available for CUDA device {}",
+        defaultNumNics,
+        availableIbDevices,
+        this->cudaDev);
+    return commInvalidArgument;
+  }
+  firstIbvDevice = resolvedFirstIbvDevice;
+  return commSuccess;
+}
+
 commResult_t checkEpochLock(CtranIb* ctranIb) {
   if (NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK &&
       NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE && !epochLockedFlags[ctranIb].load()) {
@@ -87,6 +137,16 @@ std::shared_ptr<CtranIbSingleton> CtranIbSingleton::getInstance() {
 }
 
 CtranIbSingleton::CtranIbSingleton() {
+  if (NCCL_CTRAN_IB_DEVICES_PER_RANK <= 0 ||
+      NCCL_CTRAN_IB_DEVICES_PER_RANK > CTRAN_MAX_IB_DEVICES_PER_RANK) {
+    const std::string msg = fmt::format(
+        "NCCL_CTRAN_IB_DEVICES_PER_RANK ({}) must be in [1, {}]",
+        NCCL_CTRAN_IB_DEVICES_PER_RANK,
+        CTRAN_MAX_IB_DEVICES_PER_RANK);
+    CTRAN_ERR(commInvalidArgument, "CTRAN-IB: {}", msg);
+    throw ctran::utils::Exception(msg, commInvalidArgument);
+  }
+
   auto ibvInitResult = ibverbx::ibvInit();
   try {
     FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
@@ -111,17 +171,6 @@ CtranIbSingleton::CtranIbSingleton() {
     throw;
   }
   ibvDevices = std::move(*maybeDeviceList);
-
-  if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
-    std::string msg = fmt::format(
-        "CTRAN-IB: Found {} InfiniBand device(s) but {} required "
-        "(NCCL_CTRAN_IB_DEVICES_PER_RANK). "
-        "Set NCCL_CTRAN_BACKENDS=nvl,socket to use alternative backends.",
-        ibvDevices.size(),
-        NCCL_CTRAN_IB_DEVICES_PER_RANK);
-    CTRAN_ERR(commSystemError, "{}", msg);
-    throw ctran::utils::Exception(msg, commSystemError);
-  }
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
     auto maybePd = this->ibvDevices[i].allocPd();
@@ -419,10 +468,13 @@ void CtranIb::init(
   FB_COMMCHECKTHROW_EX(this->resolveTrafficClass(ibConfig), this->ncclLogData);
   this->bootstrapMode = bootstrapMode;
   const int maxNumCqe = ibConfig.maxNumCqe.value_or(NCCL_CTRAN_IB_MAX_NUM_CQE);
-  this->numNics = std::min(
-      ibConfig.maxNumNic.value_or(NCCL_CTRAN_IB_DEVICES_PER_RANK),
-      NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  FB_CHECKTHROW_EX_LOGDATA(this->numNics > 0, ncclLogData, "numNics > 0");
+  const int maxNumNic =
+      ibConfig.maxNumNic.value_or(NCCL_CTRAN_IB_DEVICES_PER_RANK);
+
+  size_t firstIbvDevice = 0;
+  FB_COMMCHECKTHROW_EX(
+      resolveFirstIbvDevice(maxNumNic, firstIbvDevice), this->ncclLogData);
+  this->numNics = maxNumNic;
 
   auto s = CtranIbSingleton::getInstance();
   CHECK_VALID_IB_SINGLETON(s);
@@ -451,39 +503,8 @@ void CtranIb::init(
         this->commDesc);
   }
 
-  if (NCCL_CTRAN_IB_DEVICES_PER_RANK > CTRAN_MAX_IB_DEVICES_PER_RANK) {
-    std::string msg = "NCCL_CTRAN_IB_DEVICES_PER_RANK (" +
-        std::to_string(NCCL_CTRAN_IB_DEVICES_PER_RANK) +
-        ") exceeds CTRAN_MAX_IB_DEVICES_PER_RANK (" +
-        std::to_string(CTRAN_MAX_IB_DEVICES_PER_RANK) + ")";
-    CTRAN_ERR(commInvalidArgument, "CTRAN-IB: {}", msg);
-    throw ::ctran::utils::Exception(
-        msg.c_str(),
-        commInvalidArgument,
-        this->rank,
-        this->commHash,
-        this->commDesc);
-  }
-
-  // assume NCCL_CTRAN_IB_DEVICES_PER_RANK contexts per cuda device
-  if (cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE >=
-      s->ibvDevices.size()) {
-    std::string msg = "cudaDev (" + std::to_string(cudaDev) +
-        ") * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE exceeds the number of contexts (" +
-        std::to_string(s->ibvDevices.size()) + ")";
-    CTRAN_ERR(commSystemError, "CTRAN-IB: {}", msg);
-    throw ::ctran::utils::Exception(
-        msg.c_str(),
-        commSystemError,
-        this->rank,
-        this->commHash,
-        this->commDesc);
-  }
-
   for (int device = 0; device < numNics; ++device) {
-    int singletonDevIdx =
-        cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
-        device;
+    const size_t singletonDevIdx = firstIbvDevice + device;
     devices[device].ibvDevice = &s->ibvDevices[singletonDevIdx];
     devices[device].ibvPd = &s->getIbvPd(singletonDevIdx);
 

@@ -21,10 +21,10 @@ LocalVirtualConn::LocalVirtualConn(
       commLogData_(std::move(commLogData)),
       tracker_(devices_.size()) {
   FB_CHECKABORT(
-      devices_.size() <= NCCL_CTRAN_IB_DEVICES_PER_RANK,
-      "Invalid number of devices {} received in flush virtual connection compared to NCCL_CTRAN_IB_DEVICES_PER_RANK {}",
+      devices_.size() <= CTRAN_MAX_IB_DEVICES_PER_RANK,
+      "Invalid number of devices {} received in flush virtual connection compared to CTRAN_MAX_IB_DEVICES_PER_RANK {}",
       devices_.size(),
-      NCCL_CTRAN_IB_DEVICES_PER_RANK);
+      CTRAN_MAX_IB_DEVICES_PER_RANK);
   ibvMrs_.reserve(devices_.size());
   ibvQps_.reserve(devices_.size());
   sgs_.resize(devices_.size());
