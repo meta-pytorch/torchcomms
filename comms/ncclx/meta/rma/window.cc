@@ -210,13 +210,6 @@ ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
   return ncclSuccess;
 }
 
-#if defined(ENABLE_PRIMS)
-#include <cuda_runtime_api.h>
-
-#include "comms/prims/transport/MultiPeerTransport.h"
-#include "comms/prims/window/DeviceWindow.cuh"
-#include "comms/prims/window/HostWindow.h"
-
 NCCL_API(
     ncclResult_t,
     ncclWinCreateDeviceWin,
@@ -226,86 +219,17 @@ NCCL_API(
     int barrier_count,
     void** outDevicePtr);
 ncclResult_t ncclWinCreateDeviceWin(
-    ncclWindow_t win,
-    int signal_count,
-    int counter_count,
-    int barrier_count,
-    void** outDevicePtr) {
-  // Creates a DeviceWindow in device memory from the ctran window underlying
-  // the given ncclWindow_t. This is a COLLECTIVE operation on first call —
-  // all ranks must call together because getDeviceWin() does an allGather.
-  //
-  // Subsequent calls on the same window return cached results (config ignored).
-  //
-  // The returned void* is a device pointer to comms::prims::DeviceWindow.
-  // The caller must free it via ncclWinDestroyDeviceWin().
-  if (win == nullptr || outDevicePtr == nullptr) {
-    return ncclInvalidArgument;
-  }
-
-  ncclWin* nw = ncclWinMap().find(win);
-  if (nw == nullptr || nw->ctranWindow == nullptr) {
-    return ncclInternalError;
-  }
-
-  // Build WindowConfig from parameters.
-  comms::prims::WindowConfig config{
-      .peerSignalCount = static_cast<std::size_t>(std::max(signal_count, 0)),
-      .peerCounterCount = static_cast<std::size_t>(std::max(counter_count, 0)),
-      .barrierCount = static_cast<std::size_t>(std::max(barrier_count, 0)),
-  };
-
-  // Populate DeviceWindow on host stack. getDeviceWin() fills in transport
-  // handles, remote buffer descriptors, and signal pointers.
-  comms::prims::DeviceWindow host_dev_win{};
-  auto result = nw->ctranWindow->getDeviceWin(&host_dev_win, config);
-  if (result != commSuccess) {
-    WARN("ncclWinCreateDeviceWin: getDeviceWin failed with error %d", result);
-    return ncclInternalError;
-  }
-
-  // Allocate device memory for DeviceWindow.
-  // NOTE: Uses raw cudaMalloc; the caller frees via ncclWinDestroyDeviceWin()
-  // or cuda_api->free() (which wraps cudaFree — compatible).
-  comms::prims::DeviceWindow* dev_ptr = nullptr;
-  cudaError_t cuda_err = cudaMalloc(
-      reinterpret_cast<void**>(&dev_ptr), sizeof(comms::prims::DeviceWindow));
-  if (cuda_err != cudaSuccess) {
-    WARN(
-        "ncclWinCreateDeviceWin: cudaMalloc failed: %s",
-        cudaGetErrorString(cuda_err));
-    return ncclInternalError;
-  }
-
-  // Copy populated DeviceWindow from host to device.
-  // dev_ptr is non-null here (cudaMalloc succeeded above).
-  // NOLINTNEXTLINE(facebook-hte-NullableDereference,facebook-security-vulnerable-memcpy)
-  cuda_err = cudaMemcpy(
-      dev_ptr,
-      &host_dev_win,
-      sizeof(comms::prims::DeviceWindow),
-      cudaMemcpyHostToDevice);
-  if (cuda_err != cudaSuccess) {
-    WARN(
-        "ncclWinCreateDeviceWin: cudaMemcpy failed: %s",
-        cudaGetErrorString(cuda_err));
-    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check,facebook-hte-NullableDereference)
-    cudaFree(dev_ptr);
-    return ncclInternalError;
-  }
-
-  *outDevicePtr = dev_ptr;
-  return ncclSuccess;
+    ncclWindow_t /*win*/,
+    int /*signal_count*/,
+    int /*counter_count*/,
+    int /*barrier_count*/,
+    void** /*outDevicePtr*/) {
+  return ncclInvalidUsage;
 }
 
 NCCL_API(ncclResult_t, ncclWinDestroyDeviceWin, void* devicePtr);
-ncclResult_t ncclWinDestroyDeviceWin(void* devicePtr) {
-  // Frees device memory allocated by ncclWinCreateDeviceWin.
-  if (devicePtr == nullptr) {
-    return ncclSuccess;
-  }
-  cudaError_t err = cudaFree(devicePtr);
-  return (err == cudaSuccess) ? ncclSuccess : ncclInternalError;
+ncclResult_t ncclWinDestroyDeviceWin(void* /*devicePtr*/) {
+  return ncclInvalidUsage;
 }
 
 NCCL_API(
@@ -316,54 +240,14 @@ NCCL_API(
     size_t size,
     ncclLkeyPerDevice* outLkeys);
 ncclResult_t ncclWinLocalRegisterBuffer(
-    ncclComm_t comm,
-    void* ptr,
-    size_t size,
+    ncclComm_t /*comm*/,
+    void* /*ptr*/,
+    size_t /*size*/,
     ncclLkeyPerDevice* outLkeys) {
-  static_assert(
-      NCCLX_MAX_NICS_PER_GPU == ::comms::prims::kMaxNicsPerGpu,
-      "NCCLX_MAX_NICS_PER_GPU in nccl.h must match comms::prims::kMaxNicsPerGpu");
-  if (comm == nullptr || ptr == nullptr || outLkeys == nullptr) {
-    return ncclInvalidArgument;
+  if (outLkeys != nullptr) {
+    *outLkeys = ncclLkeyPerDevice{};
   }
-
-  // Initialize the result so failure paths leave a well-defined empty
-  // (size=0) result rather than uninitialized data.
-  *outLkeys = ncclLkeyPerDevice{};
-
-  if (!ctranInitialized(comm->ctranComm_.get())) {
-    WARN("ncclWinLocalRegisterBuffer: ctran not initialized");
-    return ncclInternalError;
-  }
-
-  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
-  if (mpt == nullptr) {
-    WARN(
-        "ncclWinLocalRegisterBuffer: MultiPeerTransport not initialized. "
-        "Set NCCL_CTRAN_USE_PIPES=1");
-    return ncclInternalError;
-  }
-
-  // If no IBGDA peers exist (e.g. IB disabled, NVLink-only topology),
-  // skip registration and return success with size=0. The lkeys are only
-  // used for IBGDA WQE construction during RDMA writes; NVLink puts never
-  // read them. This mirrors HostWindow::registerLocalBuffer which guards
-  // the same call with nIbgdaPeers > 0.
-  if (mpt->ib_peer_ranks().empty()) {
-    return ncclSuccess;
-  }
-
-  try {
-    auto ibgdaBuf = mpt->localRegisterIbgdaBuffer(ptr, size);
-    outLkeys->size = ibgdaBuf.lkey_per_device.size;
-    for (int n = 0; n < outLkeys->size; ++n) {
-      outLkeys->values[n] = ibgdaBuf.lkey_per_device[n].value;
-    }
-    return ncclSuccess;
-  } catch (const std::exception& e) {
-    WARN("ncclWinLocalRegisterBuffer: %s", e.what());
-    return ncclInternalError;
-  }
+  return ncclInvalidUsage;
 }
 
 NCCL_API(
@@ -371,30 +255,6 @@ NCCL_API(
     ncclWinLocalDeregisterBuffer,
     ncclComm_t comm,
     void* ptr);
-ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t comm, void* ptr) {
-  if (comm == nullptr || ptr == nullptr) {
-    return ncclInvalidArgument;
-  }
-
-  if (!ctranInitialized(comm->ctranComm_.get())) {
-    WARN("ncclWinLocalDeregisterBuffer: ctran not initialized");
-    return ncclInternalError;
-  }
-
-  auto* mpt = comm->ctranComm_->multiPeerTransport_.get();
-  if (mpt == nullptr) {
-    WARN(
-        "ncclWinLocalDeregisterBuffer: MultiPeerTransport not initialized. "
-        "Set NCCL_CTRAN_USE_PIPES=1");
-    return ncclInternalError;
-  }
-
-  try {
-    mpt->localDeregisterIbgdaBuffer(ptr);
-    return ncclSuccess;
-  } catch (const std::exception& e) {
-    WARN("ncclWinLocalDeregisterBuffer: %s", e.what());
-    return ncclInternalError;
-  }
+ncclResult_t ncclWinLocalDeregisterBuffer(ncclComm_t /*comm*/, void* /*ptr*/) {
+  return ncclInvalidUsage;
 }
-#endif // ENABLE_PRIMS

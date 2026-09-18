@@ -481,12 +481,10 @@ TEST(ConfigHintsUT, InvalidAlgoHintFallsBackToDefault) {
   delete static_cast<ncclx::Config*>(config.ncclxConfig);
 }
 
-// ----- Per-communicator Prims transport overrides -----
+// ----- Deprecated Prims compatibility hints -----
 //
-// These three hints override MCCL_CHANNEL_BUFFER_SIZE,
-// MCCL_CHANNEL_PIPELINE_DEPTH and NCCL_CTRAN_USE_PIPES for a single
-// communicator. `primsChannelBufferSize` is per-channel, per-direction --
-// the same unit as the CVAR it overrides.
+// These hints remain parseable and serializable for compatibility but no
+// longer affect CTRAN communicator construction.
 
 TEST(ConfigHintsUT, PrimsChannelBufferSizeSetViaHint) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
@@ -584,9 +582,7 @@ TEST(ConfigHintsUT, PrimsChannelPipelineDepthRejectsZeroAndNegative) {
   }
 }
 
-// enablePrims is tri-state: absent leaves the optional unset so
-// ctranPrimsEnabled() falls back to NCCL_CTRAN_USE_PIPES; 0 is an explicit
-// disable and must NOT be confused with absent.
+// The deprecated hint remains tri-state for parse/serialization compatibility.
 TEST(ConfigHintsUT, EnablePrimsAcceptsBooleanSpellings) {
   const std::vector<std::pair<const char*, int64_t>> cases = {
       {"1", 1},
@@ -665,9 +661,7 @@ TEST(ConfigHintsUT, PrimsPrefixedKeysMatchBareKeys) {
   delete b;
 }
 
-// An unparseable enablePrims must leave the optional UNSET so every rank falls
-// back to the same CVAR. Resolving a typo to an explicit disable on only the
-// ranks carrying it is what produces a mismatched-transport comm-init hang.
+// Preserve the historical representation of an invalid compatibility hint.
 TEST(ConfigHintsUT, EnablePrimsInvalidLeavesUnset) {
   for (const char* bad : {"maybe", "2x", ""}) {
     ncclConfig_t config = NCCL_CONFIG_INITIALIZER;

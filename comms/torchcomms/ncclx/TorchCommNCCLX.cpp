@@ -13,32 +13,17 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <fmt/core.h>
 #include <folly/String.h>
-#include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+#include "comms/ncclx/headers/nccl.h"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/utils/CudaRAII.h"
 
-#if defined(ENABLE_PRIMS)
-#include "comms/torchcomms/device/prims/PrimsDeviceBackend.hpp"
-#endif
-
 namespace torch::comms {
 
 namespace {
-// Helper function to validate that metadata tensors are int64_t (torch.int64)
-void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
-  if (tensor.scalar_type() != at::kLong) {
-    throw std::runtime_error(
-        fmt::format(
-            "Tensor '{}' must be of type int64 (torch.int64), but has type {}",
-            name,
-            c10::toString(tensor.scalar_type())));
-  }
-}
-
 // Helper function to validate that metadata tensors are int (torch.int)
 void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
   if (tensor.scalar_type() != at::kInt) {
@@ -1753,77 +1738,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   return work;
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::device_alltoallv_single(
-    at::Tensor& output,
-    const at::Tensor& input,
-    const at::Tensor& output_split_sizes,
-    const at::Tensor& input_split_sizes,
-    bool async_op,
-    const std::unordered_map<std::string, std::string>& hints) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
-  ensureTensorContiguous(output_split_sizes);
-  ensureTensorContiguous(input_split_sizes);
-  checkTensorDevice(output);
-  checkTensorDevice(input);
-  checkTensorDevice(output_split_sizes);
-  checkTensorDevice(input_split_sizes);
-
-  // Validate metadata tensor types - all must be int64_t (torch.int64)
-  validateInt64Dtype(input_split_sizes, "input_split_sizes");
-  validateInt64Dtype(output_split_sizes, "output_split_sizes");
-
-  TracingGuard tracingGuard(
-      name_, comm_size_, "device_alltoallv_single", rank_, input, output);
-
-  // Calculate the number of elements per slice along the first dimension.
-  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
-  // dim 0 contains S * D1 * D2 * ... * Dk elements.
-  // The split sizes from the user are in units of dim-0 slices (rows), so we
-  // pass the scaling factor to the kernel which multiplies counts internally
-  // without launching extra kernels.
-  int64_t send_elements_per_slice =
-      input.numel() ? input.numel() / input.size(0) : 0;
-  int64_t recv_elements_per_slice =
-      output.numel() ? output.numel() / output.size(0) : 0;
-
-  cudaStream_t stream = getOperationStream(async_op);
-  graph_event_tracker_.initOnGraphStart(stream);
-  auto work = createWork(
-      stream,
-      options_.timeout,
-      async_op ? std::vector<
-                     at::Tensor>{input, input_split_sizes, output_split_sizes}
-               : std::vector<at::Tensor>{});
-
-  // Record start event before NCCL operation
-  work->recordStart("device_alltoallv_single");
-
-  ncclResult_t result = nccl_api_->deviceAllToAllv(
-      input.data_ptr(),
-      output.data_ptr(),
-      input_split_sizes.data_ptr<int64_t>(),
-      output_split_sizes.data_ptr<int64_t>(),
-      getNcclDataType(input),
-      nccl_comm_,
-      stream,
-      send_elements_per_slice,
-      recv_elements_per_slice,
-      hints);
-
-  NCCLX_CHECK(nccl_api_, nccl_comm_, result, "NCCLX deviceAllToAllv failed");
-
-  // Record end event after NCCL operation
-  work->recordEnd();
-
-  // Enqueue the work after events have been recorded
-  enqueueWork(work, stream);
-
-  return work;
-}
-
 #ifdef NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_quantized(
     at::Tensor& output,
@@ -2159,20 +2073,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 // Window & One-sided Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
-  std::shared_ptr<TorchCommWindow> win;
-#if defined(ENABLE_PRIMS)
-  // Select Pipes backend when NCCL_CTRAN_USE_PIPES is enabled.
-  // Prims uses ctran IBGDA/NVLink instead of GIN for device-side P2P.
-  const char* pipes_env = std::getenv("NCCL_CTRAN_USE_PIPES");
-  if (pipes_env != nullptr && std::string_view(pipes_env) == "1") {
-    win = std::make_shared<TorchCommWindowNCCLXPipes>(
-        nccl_comm_, shared_from_this());
-  } else
-#endif
-  {
-    win = std::make_shared<TorchCommWindowNCCLXGin>(
-        nccl_comm_, shared_from_this());
-  }
+  auto win =
+      std::make_shared<TorchCommWindowNCCLXGin>(nccl_comm_, shared_from_this());
   if (tensor.has_value()) {
     win->tensor_register(tensor.value());
   }
@@ -2385,16 +2287,5 @@ class NCCLXRegistration {
 
 static const NCCLXRegistration registration{};
 } // namespace
-
-#if defined(ENABLE_PRIMS)
-int64_t TorchCommNCCLX::get_device_transport() {
-  if (!device_transport_handle_) {
-    device_transport_handle_ =
-        torchcomms::device::PrimsDeviceBackend::get_device_transport(
-            nccl_comm_, nccl_api_.get(), cuda_api_.get());
-  }
-  return reinterpret_cast<int64_t>(device_transport_handle_.get());
-}
-#endif
 
 } // namespace torch::comms

@@ -336,9 +336,10 @@ class ReduceScatterQuantizeDefaultPatTest
   }
 };
 
-TEST_F(ReduceScatterQuantizeDirectIbTest, SumUsesDirectIbForOddTail) {
+TEST_F(ReduceScatterQuantizeDirectIbTest, SumFallsBackToPatForOddTail) {
   run(ncclSum, 1025);
-  algoStats_.verify(
+  algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
+  algoStats_.verifyNot(
       comm_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 }
 
@@ -364,7 +365,8 @@ TEST_F(
     ReduceScatterQuantizeDirectIbTest,
     QuantizedCallsAreOrderedAcrossStreams) {
   runOnTwoStreams(true);
-  algoStats_.verify(
+  algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
+  algoStats_.verifyNot(
       comm_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 }
 
@@ -372,7 +374,7 @@ TEST_F(
     ReduceScatterQuantizeDirectIbTest,
     UnquantizedCallsAreOrderedAcrossStreams) {
   runOnTwoStreams(false);
-  algoStats_.verify(
+  algoStats_.verifyNot(
       comm_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 }
 
@@ -380,7 +382,8 @@ TEST_F(
     ReduceScatterQuantizeDirectIbTest,
     CapturedCallsAreOrderedAcrossStreamsAndEagerWork) {
   runCapturedOnTwoStreams();
-  algoStats_.verify(
+  algoStats_.verify(comm_->get(), "ReduceScatter", "PAT");
+  algoStats_.verifyNot(
       comm_->get(), "ReduceScatter", "CtranReduceScatterDirectIb");
 }
 

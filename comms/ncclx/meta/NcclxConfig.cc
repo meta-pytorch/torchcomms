@@ -168,7 +168,7 @@ Config::Config(const ncclConfig_t* config) {
     fastInitMode = parseHintBool(
         "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
   }
-  // Per-communicator pipes NVL transport config overrides
+  // Deprecated compatibility hints remain parseable for existing callers.
   {
     std::string val = getHintStr("pipesNvlChunkSize");
     if (!val.empty()) {
@@ -179,24 +179,10 @@ Config::Config(const ncclConfig_t* config) {
       }
     }
   }
-  // Per-communicator Prims transport overrides.
+  // This parsed value is no longer forwarded into CTRAN configuration.
   {
-    // Tri-state: absent leaves the optional unset so ctranPrimsEnabled() falls
-    // back to NCCL_CTRAN_USE_PIPES. When present, accept the same spellings as
-    // every other boolean hint (1/0, true/false, yes/no, y/n, t/f) rather than
-    // digits only -- 'enablePrims=true' silently doing nothing is the kind of
-    // per-rank divergence that surfaces only as a comm-init hang.
-    //
-    // An UNPARSEABLE value leaves the optional unset, degrading to the global
-    // default with a WARN, which matches how every other bool hint in this
-    // file behaves. Note this does NOT make a typo safe: if only some ranks
-    // carry it, those ranks fall back to the CVAR while the rest honour the
-    // hint, and a transport mismatch across a communicator hangs comm init.
-    // Cross-rank hint consistency remains the caller's responsibility.
-    // parseHintBool cannot express the tri-state (its default doubles as the
-    // absent value), so parse the spellings directly here. Unlike
-    // parseHintBool there is deliberately no numeric fallback, so
-    // 'enablePrims=2' is rejected rather than treated as true.
+    // Preserve the historical spellings and tri-state representation so old
+    // serialized configurations continue to parse identically.
     std::string val = getHintStr("enablePrims");
     if (!val.empty()) {
       std::string lower(val.size(), '\0');
@@ -210,7 +196,7 @@ Config::Config(const ncclConfig_t* config) {
         enablePrims = 0;
       } else {
         WARN(
-            "NCCLX hint 'enablePrims': invalid value '%s'; falling back to NCCL_CTRAN_USE_PIPES",
+            "NCCLX hint 'enablePrims': invalid value '%s'; ignored",
             val.c_str());
       }
     }

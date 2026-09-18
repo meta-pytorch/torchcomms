@@ -1,14 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Triton Device Window - generic (backend-agnostic) implementations
+// TorchComms Triton Device Window
 //
 // This file provides extern "C" wrappers around TorchCommDeviceWindow methods.
-// It is compiled TWICE to produce two bitcode files:
-//   - Without USE_PIPES_BACKEND → libdevice_window.bc (GIN/NCCLGinBackend)
-//   - With USE_PIPES_BACKEND    → libdevice_window_pipes.bc
-//   (PrimsDeviceBackend)
-//
-// All functions in this file use the generic TorchCommDeviceWindow API
-// (win->put(), win->signal(), win->flush(), etc.) and work with both backends.
 //
 // For GIN-specific NVLink-optimized put operations (put_block_direct,
 // put_warp_chunked_direct), see device_window_nvl_opt.cu.
@@ -26,20 +19,12 @@
 
 #include <cuda_runtime.h>
 
-#ifdef USE_PIPES_BACKEND
-#include "comms/torchcomms/device/prims/TorchCommDevicePrims.cuh"
-#else
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLX.cuh"
-#endif
 
 using namespace torchcomms::device;
 using torch::comms::RegisteredBuffer;
 
-#ifdef USE_PIPES_BACKEND
-using DeviceWindow = TorchCommDeviceWindow<PrimsDeviceBackend>;
-#else
 using DeviceWindow = TorchCommDeviceWindow<NCCLGinBackend>;
-#endif
 
 extern "C" {
 
@@ -57,22 +42,16 @@ __device__ int torchcomms_self_copy_block(
     unsigned long long bytes) {
   auto* dst = reinterpret_cast<char*>(dst_ptr) + dst_offset;
   auto* src = reinterpret_cast<const char*>(src_ptr) + src_offset;
-#ifdef USE_PIPES_BACKEND
-  auto group = detail::make_prims_thread_group(CoopScope::BLOCK);
-#else
   auto group = detail::make_thread_group(CoopScope::BLOCK);
-#endif
   comms::prims::memcpy_vectorized(dst, src, static_cast<size_t>(bytes), group);
   return 0;
 }
 
 // torchcomms_put_block: block-cooperative data transfer.
 //
-// win->put(CoopScope::BLOCK) handles both paths internally:
+// win->put(CoopScope::BLOCK) handles both GIN paths internally:
 //   - GIN/LSA (NVLink): all threads cooperate on memcpy_vectorized.
 //   - GIN (RDMA): CoopScope::BLOCK → ncclCoopCta{} → __syncthreads__.
-//   - Pipes (NVLink): all threads cooperate via ThreadGroup memcpy.
-//   - Pipes (IBGDA): leader thread posts RDMA write via DOCA GPUNetIO.
 __device__ int torchcomms_put_block(
     void* win_ptr,
     unsigned long long dst_offset,

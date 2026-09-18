@@ -22,17 +22,10 @@ namespace torch::comms {
 // Used by both the host-side virtual interface (TorchCommWindow) and
 // device-side kernel code (TorchCommDeviceWindow) without circular includes.
 
-// Maximum number of IBGDA NICs per GPU surfaced through RegisteredBuffer.
-// Must match NCCLX_MAX_NICS_PER_GPU in nccl.h and comms::prims::kMaxNicsPerGpu
-// — verified by static_assert at the bridge layer (PrimsDeviceBackend.cpp,
-// the only translation unit that pulls in all three headers). Increase
-// only if a future platform supports > 2 NICs per GPU; update all three
-// constants in lockstep.
 inline constexpr int kMaxNicsPerGpu = 2;
 
-// Per-NIC RDMA local keys in network byte order. `size` tracks the actual
-// NIC count populated by the backend (≤ kMaxNicsPerGpu); consumers MUST
-// loop bounded by `size` (entries beyond `size` are zeroed but meaningless).
+// Reserved compatibility layout for backends that supplied per-NIC RDMA
+// registration keys. New code must not depend on these fields.
 struct LkeyPerDevice {
   uint32_t values[kMaxNicsPerGpu]{};
   int size{0};
@@ -43,11 +36,6 @@ struct RegisteredBuffer {
   size_t size{0};
   void* backend_window{
       nullptr}; // Backend-specific window handle (e.g., ncclWindow_t)
-  // Per-NIC RDMA local keys for IBGDA puts (PrimsDeviceBackend). One entry
-  // per NIC up to kMaxNicsPerGpu; the device-side put selects
-  // lkey_per_device.values[nic] based on the slot. `size` is the actual NIC
-  // count populated by the backend (0 for backends that do not use IBGDA,
-  // e.g. NCCLDeviceBackend).
   LkeyPerDevice lkey_per_device{};
 };
 

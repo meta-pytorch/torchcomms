@@ -2006,9 +2006,8 @@ cvars:
    type        : bool
    default     : false
    description : |-
-     Enable Pipes MultiPeerTransport for Ctran. When enabled, Ctran will
-     initialize MultiPeerTransport which provides unified NVLink and IBGDA
-     transport for P2P communication.
+     Deprecated compatibility setting. Ctran no longer initializes a PRiMS
+     MultiPeerTransport; use MCCL_PRIMS_ENABLE for the MCCL-owned runtime.
 
  - name        : MCCL_PRIMS_ENABLE
    type        : bool
@@ -2303,8 +2302,6 @@ cvars:
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
-     ctp2p - Ctran-based point-to-point kernel for NVL
-     ctgraph - Cudagraph-aware: pre-registers buffers during graph capture, falls back to baseline otherwise
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
@@ -2392,7 +2389,7 @@ cvars:
      orig - Copy-based ring algorithm
      ctran - Ctran-based algorithm automatically picked by the library
      ctdirect - Ctran-based direct point-to-point algorithm
-     ctdirect_ib - Ctran-based direct IB algorithm
+     ctdirect_ib - Retired; falls back to baseline ReduceScatter
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctring_ib - Prims-native IBGDA ring algorithm
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
@@ -2404,7 +2401,7 @@ cvars:
    description : |-
      The algorithm to use for quantized ReduceScatter communication
      pat - Parallel Aggregation Tree algorithm
-     ctdirect_ib - Ctran-based direct IB algorithm
+     ctdirect_ib - Retired; falls back to PAT
 
  - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
    type        : bool

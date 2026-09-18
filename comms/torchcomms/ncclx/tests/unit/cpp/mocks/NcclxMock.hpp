@@ -376,39 +376,6 @@ class NcclxMock : public NcclxApi {
 #endif
 #endif
 
-#if defined(ENABLE_PRIMS)
-  MOCK_METHOD(
-      ncclResult_t,
-      winCreateDeviceWin,
-      (NcclxWindow win,
-       int signal_count,
-       int counter_count,
-       int barrier_count,
-       void** outDevicePtr),
-      (override));
-  MOCK_METHOD(ncclResult_t, winDestroyDeviceWin, (void* devicePtr), (override));
-  MOCK_METHOD(
-      ncclResult_t,
-      getMultiPeerDeviceHandle,
-      (ncclComm_t comm,
-       void** outTransportsPtr,
-       int* outMyRank,
-       int* outNRanks,
-       int* outNumNvlPeers,
-       int* outNumIbPeers),
-      (override));
-  MOCK_METHOD(
-      ncclResult_t,
-      winLocalRegisterBuffer,
-      (ncclComm_t comm, void* ptr, size_t size, ncclLkeyPerDevice* outLkeys),
-      (override));
-  MOCK_METHOD(
-      ncclResult_t,
-      winLocalDeregisterBuffer,
-      (ncclComm_t comm, void* ptr),
-      (override));
-#endif
-
   // Group operations
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));

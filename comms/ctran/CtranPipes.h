@@ -25,17 +25,13 @@ inline size_t ctranEffectiveP2pNvlSharedDevbufSize(int nLocalRanks) {
   return static_cast<size_t>(size);
 }
 
-// Create and configure MultiPeerTransport on the CtranComm.
-// exchange() is deferred to ctranInitPipesResources().
+// Retained compatibility entry point; PRiMS policy is permanently disabled.
 commResult_t ctranInitializePipes(CtranComm* comm);
 
-// Resolve the per-communicator override, falling back to the legacy CTRAN
-// CVAR for NCCLX and standalone Ctran callers.
+// Compatibility query for callers that still compile PRiMS-owned code.
 bool ctranPrimsEnabled(const CtranComm* comm);
 
-// Wire SharedResource staging buffers as external data buffers to
-// MultiPeerTransport and exchange handles. Must be called after both
-// CtranAlgo (SharedResource) and MultiPeerTransport have been created.
+// Retained compatibility entry point; no transport exists to wire.
 commResult_t ctranInitPipesResources(CtranAlgo* algo);
 
 #if defined(ENABLE_PRIMS)
