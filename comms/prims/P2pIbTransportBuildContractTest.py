@@ -141,6 +141,28 @@ class P2pIbTransportBuildContractTest(unittest.TestCase):
                 "third-party/nvidia-doca/patches/README.md.",
             )
 
+    def test_warp_proxy_owns_posting_and_retirement(self) -> None:
+        """Keeps posting and completion retirement on the IB proxy warp."""
+        proxy = (self.transport / "ibgda/IbgdaWarpProxy.cuh").read_text()
+        post_start = proxy.index("static void post_send_once(")
+        post_end = proxy.index(
+            "static void retire_send_at_high_watermark_once(", post_start
+        )
+        post = proxy[post_start:post_end]
+        retire_end = proxy.index("static void run_proxy(", post_end)
+        retire = proxy[post_end:retire_end]
+        self.assertIn("tx.publishedBytes[slot] = bytes", proxy)
+        self.assertIn("tx.publishedBytes[slot]", post)
+        self.assertEqual(post.count("stream.transport->put("), 1)
+        self.assertEqual(post.count("/*counterBuf=*/{}"), 1)
+        self.assertEqual(post.count("/*counterVal=*/0"), 1)
+        self.assertEqual(post.count("/*signalPerLane=*/true"), 1)
+        self.assertIn("tx_retire_high_watermark(stream.pipelineDepth)", retire)
+        self.assertIn("detail::try_prepare_send_slot<protocol::Simple>(", retire)
+        proxy_loop = proxy[retire_end:]
+        self.assertIn("post_send_once(", proxy_loop)
+        self.assertIn("retire_send_at_high_watermark_once(", proxy_loop)
+
 
 if __name__ == "__main__":
     unittest.main()
