@@ -15,26 +15,17 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::sendrecv {
-KernelConfig::KernelType getKernelType(
-    bool hasSend,
-    bool hasRecv,
-    bool hasTcpDmRecv,
-    enum NCCL_SENDRECV_ALGO algo);
+KernelConfig::KernelType
+getKernelType(bool hasSend, bool hasRecv, bool hasTcpDmRecv);
 
 commResult_t setupGpeOp(
-    CtranComm* comm,
     std::vector<OpElem*>& allOps,
-    std::vector<OpElem*>& nvlOps,
-    std::vector<OpElem*>& ibOps,
-    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
-    enum NCCL_SENDRECV_ALGO algo);
+    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup);
 
 commResult_t setupKernelConfig(
     CtranComm* comm,
     const std::vector<OpElem*>& opGroup,
-    const std::vector<OpElem*>& nvlOps,
-    KernelConfig& config,
-    ctran::sendrecv::KernArgs& kernArgs);
+    KernelConfig& config);
 } // namespace ctran::sendrecv
 
 // Inner dispatch: batches ops, submits to GPE. Used by both eager and
@@ -44,7 +35,7 @@ commResult_t ctranGroupEndHookImpl(
     enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
-// Cudagraph-aware SendRecv: pre-registers all send/recv buffers during capture.
+// Cudagraph-aware SendRecv: pre-registers send/recv buffers during capture.
 commResult_t ctranSendRecvCudagraphAware(
     std::deque<OpElem*>& opGroup,
     CtranComm* comm,

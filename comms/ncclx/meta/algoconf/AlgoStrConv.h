@@ -13,8 +13,6 @@ inline void algoStrToVal(const std::string& str, enum NCCL_SENDRECV_ALGO& val) {
     val = NCCL_SENDRECV_ALGO::ctran;
   } else if (str == "ctzcopy") {
     val = NCCL_SENDRECV_ALGO::ctzcopy;
-  } else if (str == "ctp2p") {
-    val = NCCL_SENDRECV_ALGO::ctp2p;
   } else if (str == "ctgraph") {
     val = NCCL_SENDRECV_ALGO::ctgraph;
   } else {
@@ -124,8 +122,6 @@ inline std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
       return "ctran";
     case NCCL_SENDRECV_ALGO::ctzcopy:
       return "ctzcopy";
-    case NCCL_SENDRECV_ALGO::ctp2p:
-      return "ctp2p";
     case NCCL_SENDRECV_ALGO::ctgraph:
       return "ctgraph";
   }

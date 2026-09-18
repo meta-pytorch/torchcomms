@@ -1640,13 +1640,6 @@ cvars:
      Number of threads in each thread block used for intra-node zero-copy
      sendrecv kernel. Default -1 to use the recommended size by CUDA runtime
 
- - name        : NCCL_CTRAN_NVL_SENDRECV_P2P_THREAD_BLOCK_SIZE
-   type        : int
-   default     : 512
-   description : |-
-     Number of threads in each thread block used for intra-node p2p
-     sendrecv kernel.
-
  - name        : NCCL_CTRAN_REDUCESCATTER_RING_MAX_NUM_THREAD_BLOCKS
    type        : int
    default     : 4
@@ -2296,12 +2289,13 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctp2p, ctgraph
+   choices     : orig, ctran, ctzcopy, ctgraph
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
+     ctgraph - Ctran-based CUDA graph-aware sendrecv for IB peers
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
@@ -2383,13 +2377,12 @@ cvars:
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctdirect_ib, ctring, ctring_ib, ctrhd
+   choices     : orig, ctran, ctdirect, ctring, ctring_ib, ctrhd
    description : |-
      The algorithm to use for ReduceScatter communication
      orig - Copy-based ring algorithm
      ctran - Ctran-based algorithm automatically picked by the library
      ctdirect - Ctran-based direct point-to-point algorithm
-     ctdirect_ib - Retired; falls back to baseline ReduceScatter
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctring_ib - Prims-native IBGDA ring algorithm
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
@@ -2397,11 +2390,10 @@ cvars:
  - name        : NCCL_REDUCESCATTER_QUANTIZED_ALGO
    type        : enum
    default     : pat
-   choices     : pat, ctdirect_ib
+   choices     : pat
    description : |-
      The algorithm to use for quantized ReduceScatter communication
      pat - Parallel Aggregation Tree algorithm
-     ctdirect_ib - Retired; falls back to PAT
 
  - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
    type        : bool
@@ -3337,17 +3329,6 @@ cvars:
      phase, the effective Ring block cap may decrease but cannot exceed the
      capacity established when the communicator was created.
 
- - name        : MCCL_PRIMS_TMA
-   type        : bool
-   default     : true
-   description : |-
-     Use Blackwell bulk TMA (cp.async.bulk) to stage the receive operands of the
-     quantized prims ReduceScatter through shared memory. Ignored on devices
-     below compute capability 10.0 and on any device that cannot opt into the
-     required dynamic shared memory; those fall back to the register load path,
-     which is functionally identical but slower. This is a kill switch for the
-     TMA path.
-
  - name        : MCCL_ABORT_TIMEOUT_MS
    type        : float
    default     : 30000.0
@@ -4116,30 +4097,6 @@ cvars:
      arguments are checked symmetrically across all ranks to detect mismatched
      buffer addresses, counts, or operation types. Possible values: ""
      (default/disabled), "DEBUG_LOCAL", "DEBUG_GLOBAL".
-
- - name        : NCCL_CTRAN_DA2A_LL128_BUFFER_SIZE
-   type        : int64_t
-   default     : 0
-   description : |-
-     Per-peer LL128 buffer size in bytes for DeviceAllToAllv. When set to 0
-     (default), the buffer size is auto-computed from a 256KB default using
-     ll128_buffer_size(256 * 1024). Override for workloads with known larger
-     per-peer message sizes. Only takes effect when
-     NCCL_CTRAN_DA2A_LL128_THRESHOLD is non-zero.
-
- - name        : NCCL_CTRAN_DA2A_LL128_THRESHOLD
-   type        : int64_t
-   default     : 0
-   description : |-
-     Per-peer byte threshold for LL128 protocol selection in DeviceAllToAllv.
-     When non-zero, LL128 buffers are allocated at init time and the kernel
-     uses LL128 for per-peer transfers <= this many bytes (and meeting 16-byte
-     alignment), with Simple (send/recv) fallback for larger or misaligned
-     transfers. When 0 (default), LL128 is disabled and only Simple protocol
-     is used. Set to 262144 (256KB) to enable LL128 for typical workloads.
-     LL128 uses 128-byte cache-line-atomic packets with inline flag signaling,
-     providing better performance for small/medium messages. Requires per-peer
-     byte counts (count * elementSize) to be multiples of 16.
 
 # ============================================================================
 # NCCL 2.30 new parameters

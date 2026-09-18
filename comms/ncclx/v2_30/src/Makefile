@@ -13,7 +13,7 @@ SRCDIR = $(abspath ./)
 NCCLDIR = $(abspath ../)
 SHAREDDIR = $(abspath ${NCCLDIR}/..)
 
-# fbcode/prims CUDA sources include Folly headers that require C++20.
+# The shared CTRAN sources require C++20.
 CXXSTD ?= -std=c++20
 
 include ../makefiles/common.mk
@@ -168,34 +168,6 @@ LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/SendRecv/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/Broadcast/*.cc)
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/algos/RMA/*.cc)
 
-ifeq ($(ENABLE_PRIMS),1)
-LIBSRCFILES += ${BASE_DIR}/comms/prims/platform/CudaDriverLazy.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemAllocation.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMemMapping.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/CuMulticastAllocation.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/GpuMemHandler.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/MultimemHandler.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/memory/NvlMemExchange.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultimemNvlTransportConfig.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultimemNvlTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/nvl/MultiPeerNvlTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/trace/PipesTrace.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/MultiPeerIbTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransport.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibrc/MultipeerIbrcTransportCuda.cu
-LIBSRCFILES += ${BASE_DIR}/comms/prims/topology/TopologyDiscovery.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/window/HostWindow.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/IbHcaParser.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/rdma/NicDiscovery.cc
-LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllGatherLauncher.cu
-LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/AllToAllv.cu
-LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIb.cu
-LIBSRCFILES += ${BASE_DIR}/comms/prims/collectives/ReduceScatterDirectIbLauncher.cu
-LIBSRCFILES += ${BASE_DIR}/comms/prims/transport/ibgda/MultipeerIbgdaTransportCuda.cu
-endif
-
 INCLUDES := -Iinclude
 INCLUDES += -Iinclude/plugin
 INCLUDES += -I${NCCLDIR}/
@@ -308,9 +280,6 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
-ifeq ($(ENABLE_PRIMS),1)
-LDFLAGS    += -ldoca_gpunetio -libverbs -lmlx5
-endif
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.

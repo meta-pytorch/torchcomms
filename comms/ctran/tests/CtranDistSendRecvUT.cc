@@ -43,9 +43,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctp2p) {
-      return;
-    }
     ASSERT_NE(profiler, nullptr);
     EXPECT_EQ(profiler->getOpCount(), opCount);
     uint64_t oneMinUs = 1000 * 1000 * 60;
@@ -277,8 +274,7 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
     }
 
     if (!useGraph) {
-      if (globalRank == sendRank &&
-          (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctp2p)) {
+      if (globalRank == sendRank) {
         verifyBackendsUsed(
             ctranComm->ctran_.get(), ctranComm->statex_.get(), memType);
       }
@@ -317,9 +313,6 @@ class CtranTestFixture : public ctran::CtranDistTestFixture,
           }
           // algoName is always populated
           EXPECT_EQ(algoName, expAlgoName);
-          // opName and count are only populated when GPE opGroup is non-empty
-          // (i.e., the default algo). For ctp2p kernel, the opGroup is empty
-          // so opName/count are not set.
           if (!opName.empty() && coll.count("count")) {
             EXPECT_EQ(opName, globalRank == sendRank ? "Send" : "Recv");
             if (globalRank == sendRank) {
@@ -376,65 +369,6 @@ TEST_P(CtranTestParamFixture, sendRecv) {
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
   COMMCHECK_TEST(regCache->destroy());
 }
-
-TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
-  const auto& [offset, count, numMaxQp, memType] = std::get<1>(GetParam());
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
-
-  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-class CtranP2pUseListTestFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<ctran::CtranEnvs, size_t /* numOpPairsPerPeer */>> {
- protected:
-  void SetUp() override {
-    setUpWithEnvs(std::get<0>(GetParam()));
-  }
-};
-
-TEST_P(CtranP2pUseListTestFixture, sendRecvP2pUseList) {
-  const size_t numOpPairsPerPeer = std::get<1>(GetParam());
-
-  // Need enough total send ops to trigger useList (> kCtranMaxNvlSendRecvOps)
-  if (numOpPairsPerPeer * (numRanks - 1) <=
-      ctran::sendrecv::kCtranMaxNvlSendRecvOps) {
-    GTEST_SKIP() << "Not enough ops to trigger useList with " << numRanks
-                 << " ranks";
-  }
-
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(
-      0 /* offset */,
-      4096 /* count */,
-      1 /* numMaxQp */,
-      1 /* nIter */,
-      kMemNcclMemAlloc,
-      false /* oneToOne */,
-      2 /* numSegments */,
-      numOpPairsPerPeer);
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranP2pUseListTest,
-    CtranP2pUseListTestFixture,
-    ::testing::Combine(
-        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
-        ::testing::Values(
-            /* pool path */ 1,
-            /* ad-hoc alloc path */
-            ctran::sendrecv::kMaxSendRecvOpsPerPoolBuf + 1)),
-    [](const testing::TestParamInfo<CtranP2pUseListTestFixture::ParamType>&
-           info) {
-      return ctran::envSuffix(std::get<0>(info.param)) + "numOpPairsPerPeer_" +
-          std::to_string(std::get<1>(info.param));
-    });
 
 // Envs-only parameterized fixture for tests that have no other params
 class CtranTestEnvFixture
@@ -767,51 +701,6 @@ INSTANTIATE_TEST_SUITE_P(
           std::to_string(std::get<1>(inner)) + "int_" +
           testMemAllocTypeToStr(std::get<2>(inner));
     });
-
-#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
-
-class CtranP2pCudaGraphTestFixture
-    : public CtranTestFixture,
-      public ::testing::WithParamInterface<
-          std::tuple<ctran::CtranEnvs, bool /* oneToOne */>> {
- protected:
-  void SetUp() override {
-    setUpWithEnvs(std::get<0>(GetParam()));
-  }
-};
-
-TEST_P(CtranP2pCudaGraphTestFixture, sendRecvP2p) {
-  const bool oneToOne = std::get<1>(GetParam());
-  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
-  regCache->init();
-  runTest(
-      0,
-      4096,
-      1 /* numMaxQp */,
-      1 /* nIter */,
-      kMemNcclMemAlloc,
-      oneToOne,
-      2,
-      1,
-      true /* useGraph */);
-  COMMCHECK_TEST(regCache->destroy());
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    CtranP2pCudaGraphTest,
-    CtranP2pCudaGraphTestFixture,
-    ::testing::Combine(
-        ::testing::Values(ctran::kDefaultEnvs, ctran::kNolocalEnvs),
-        ::testing::Values(
-            /* useList path */ false,
-            /* non-useList path */ true)),
-    [](const testing::TestParamInfo<CtranP2pCudaGraphTestFixture::ParamType>&
-           info) {
-      return ctran::envSuffix(std::get<0>(info.param)) + "useList_" +
-          std::to_string(!std::get<1>(info.param));
-    });
-
-#endif
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
