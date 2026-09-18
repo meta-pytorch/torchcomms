@@ -97,7 +97,7 @@ jobs:
           RUNNER_NAME: ${{ runner.name }}
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
           DISABLED_TESTS: ${{ vars.DISABLED_TESTS }}
-          OMIX_VERSION: 0.3.0
+          OMIX_VERSION: 0.4.0
           OMIX_REPO: intel-omix-pvc
         timeout-minutes: 120
         run: |
