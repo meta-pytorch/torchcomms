@@ -6,7 +6,6 @@
 #
 
 ENABLE_TCPDM ?= 0
-ENABLE_PRIMS ?= 1
 
 # Assuming calling from src directory
 SRCDIR = $(abspath ./)
@@ -49,11 +48,6 @@ endif
 
 ifeq ($(ENABLE_TCPDM),0)
 CXXFLAGS += -DCTRAN_DISABLE_TCPDM
-endif
-
-ifeq ($(ENABLE_PRIMS),1)
-CXXFLAGS += -DENABLE_PRIMS
-NVCUFLAGS += -DENABLE_PRIMS
 endif
 
 ##### src files

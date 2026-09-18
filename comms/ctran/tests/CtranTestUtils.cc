@@ -16,9 +16,9 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
-#include "comms/mccl/utils/Utils.h"
 #include "comms/utils/InitFolly.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/CommsLogging.h"
 
 namespace ctran {
 

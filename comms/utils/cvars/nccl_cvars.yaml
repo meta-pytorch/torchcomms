@@ -1676,8 +1676,8 @@ cvars:
    default     : 2
    description : |-
      Number of staging lanes per channel used by the Prims NVL multimem
-     transport. Ctran consumes this value when constructing the transport DTO.
-     Values must be in [1, UINT32_MAX].
+     transport. MCCL consumes this value when constructing the direct-runtime
+     transport configuration. Values must be in [1, UINT32_MAX].
 
  - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
    type        : uint64_t
@@ -1995,13 +1995,6 @@ cvars:
    description : |-
      Fails at collective scheduling time if the buffer is not pre-registered by user.
 
- - name        : NCCL_CTRAN_USE_PIPES
-   type        : bool
-   default     : false
-   description : |-
-     Deprecated compatibility setting. Ctran no longer initializes a PRiMS
-     MultiPeerTransport; use MCCL_PRIMS_ENABLE for the MCCL-owned runtime.
-
  - name        : MCCL_PRIMS_ENABLE
    type        : bool
    default     : true
@@ -2114,14 +2107,6 @@ cvars:
      expose ooo_recv_wrs_caps.max_rc >= 128 or the peer doesn't advertise
      support, the connection is aborted.
 
- - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
-   type        : uint64_t
-   default     : 1
-   description : |-
-     Number of signal slots per peer for IBGDA transport in Pipes
-     MultiPeerTransport. Each slot is a 64-bit counter used for
-     signaling between peers.
-
  - name        : NCCL_CTRAN_IBGDA_MIN_RNR_TIMER
    type        : uint64_t
    default     : 12
@@ -2137,14 +2122,6 @@ cvars:
      RNR retry count for IBGDA transport in Pipes MultiPeerTransport.
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
-
- - name        : NCCL_CTRAN_IBGDA_LAZY_CONNECT
-   type        : bool
-   default     : true
-   description : |-
-     Deprecated compatibility knob. Per-peer transport state is always
-     initialized on demand; setting this false no longer enables eager
-     all-peer allocation.
 
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
@@ -2293,8 +2270,8 @@ cvars:
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
-     ctran - Ctran-based communication auto-select
-     ctzcopy - Ctran-based zero-copy kernel for NVL
+     ctran - Ctran-based communication
+     ctzcopy - Legacy alias of ctran
      ctgraph - Ctran-based CUDA graph-aware sendrecv for IB peers
 
  - name        : NCCL_ALLGATHER_P_ALGO
@@ -2868,8 +2845,8 @@ cvars:
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - ctran-based ring algorithm
-     ctree - Ctran-based tree algorithm (Pipes-native)
-     cthierarchical_ring - Ctran-based hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
+     ctree - MCCL-owned tree algorithm (Prims-native)
+     cthierarchical_ring - MCCL-owned hierarchical ring algorithm (Prims-native): NVL ReduceScatter + inter-node IBGDA ring + NVL AllGather
      ctmdirect - MCCL-native direct algorithm (Prims-native): NVL ReduceScatter + flat rail-based inter-node IB + NVL AllGather
 
  - name        : NCCL_ALLREDUCE_TYPE

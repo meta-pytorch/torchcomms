@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(ENABLE_PRIMS)
+#if defined(MCCL_BUILD_PRIMS)
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
 #endif
@@ -23,7 +23,7 @@ __host__ __device__ constexpr bool is_multimem_store_valid(
 
 } // namespace comms::prims::detail
 
-#if defined(ENABLE_PRIMS)
+#if defined(MCCL_BUILD_PRIMS)
 
 namespace comms::prims::detail {
 
@@ -191,4 +191,4 @@ __device__ __forceinline__ void store(
 
 } // namespace comms::prims::multimem
 
-#endif // ENABLE_PRIMS
+#endif // MCCL_BUILD_PRIMS

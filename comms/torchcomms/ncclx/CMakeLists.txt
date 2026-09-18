@@ -82,12 +82,6 @@ else()
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
 
-if("$ENV{ENABLE_PRIMS}" STREQUAL "1")
-    set(TORCHCOMMS_ENABLE_PRIMS ON)
-else()
-    set(TORCHCOMMS_ENABLE_PRIMS OFF)
-endif()
-
 set(TORCHCOMMS_NCCLX_LOGGER_SOURCES "")
 if(USE_SYSTEM_LIBS)
     # CudaRAII.cc calls into CommsSpdlogLogger, whose out-of-line definitions
@@ -166,17 +160,8 @@ if(USE_SYSTEM_LIBS)
         spdlog::spdlog
     )
 else()
-    set(TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS "")
-    if(TORCHCOMMS_ENABLE_PRIMS)
-        list(APPEND TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS
-            "-ldoca_gpunetio"
-            "-libverbs"
-            "-lmlx5"
-        )
-    endif()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
-        ${TORCHCOMMS_NCCLX_PRIMS_LINK_LIBS}
         "-l:libfolly.a"
         "-l:libcrypto.a"
         "-l:libssl.a"

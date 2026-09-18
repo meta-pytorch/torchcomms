@@ -168,104 +168,6 @@ Config::Config(const ncclConfig_t* config) {
     fastInitMode = parseHintBool(
         "fastInitMode", NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid);
   }
-  // Deprecated compatibility hints remain parseable for existing callers.
-  {
-    std::string val = getHintStr("pipesNvlChunkSize");
-    if (!val.empty()) {
-      try {
-        pipesNvlChunkSize = std::stoull(val);
-      } catch (const std::exception&) {
-        WARN("NCCLX hint 'pipesNvlChunkSize': invalid value '%s'", val.c_str());
-      }
-    }
-  }
-  // This parsed value is no longer forwarded into CTRAN configuration.
-  {
-    // Preserve the historical spellings and tri-state representation so old
-    // serialized configurations continue to parse identically.
-    std::string val = getHintStr("enablePrims");
-    if (!val.empty()) {
-      std::string lower(val.size(), '\0');
-      std::transform(val.begin(), val.end(), lower.begin(), ::tolower);
-      if (lower == "1" || lower == "yes" || lower == "true" || lower == "y" ||
-          lower == "t") {
-        enablePrims = 1;
-      } else if (
-          lower == "0" || lower == "no" || lower == "false" || lower == "n" ||
-          lower == "f") {
-        enablePrims = 0;
-      } else {
-        WARN(
-            "NCCLX hint 'enablePrims': invalid value '%s'; ignored",
-            val.c_str());
-      }
-    }
-  }
-  {
-    std::string val = getHintStr("primsChannelBufferSize");
-    if (!val.empty()) {
-      try {
-        // std::stoull silently wraps a leading '-', so "-1" would parse as
-        // 2^64-1 and pass the positivity check. Reject the sign explicitly.
-        if (val.find('-') != std::string::npos) {
-          WARN(
-              "NCCLX hint 'primsChannelBufferSize': value must be positive, got '%s'",
-              val.c_str());
-        } else if (auto parsed = std::stoull(val); parsed > 0) {
-          primsChannelBufferSize = parsed;
-        } else {
-          WARN("NCCLX hint 'primsChannelBufferSize': value must be positive");
-        }
-      } catch (const std::exception&) {
-        WARN(
-            "NCCLX hint 'primsChannelBufferSize': invalid value '%s'",
-            val.c_str());
-      }
-    }
-  }
-  {
-    std::string val = getHintStr("primsChannelPipelineDepth");
-    if (!val.empty()) {
-      try {
-        auto parsed = std::stoll(val);
-        if (parsed > 0) {
-          primsChannelPipelineDepth = static_cast<int64_t>(parsed);
-        } else {
-          WARN(
-              "NCCLX hint 'primsChannelPipelineDepth': value must be positive");
-        }
-      } catch (const std::exception&) {
-        WARN(
-            "NCCLX hint 'primsChannelPipelineDepth': invalid value '%s'",
-            val.c_str());
-      }
-    }
-  }
-
-  for (const auto& [key, field] :
-       {std::pair<const char*, std::optional<int64_t>*>{
-            "primsMaxChannels", &primsMaxChannels},
-        std::pair<const char*, std::optional<int64_t>*>{
-            "primsMaxBlocks", &primsMaxBlocks}}) {
-    std::string val = getHintStr(key);
-    if (val.empty()) {
-      continue;
-    }
-    try {
-      auto parsed = std::stoll(val);
-      if (parsed > 0) {
-        *field = static_cast<int64_t>(parsed);
-      } else {
-        WARN("NCCLX hint '%s': value must be positive", key);
-      }
-    } catch (const std::exception&) {
-      WARN("NCCLX hint '%s': invalid value '%s'", key, val.c_str());
-    }
-  }
-
-  deviceIbLazyConnect =
-      parseHintBool("deviceIbLazyConnect", NCCL_CTRAN_IBGDA_LAZY_CONNECT);
-
   tmpbufEagerAlloc = parseHintBool("ctranTmpbufEagerAlloc", true);
 
   // vCliqueSize: hint only (no flat ncclConfig_t field)
@@ -469,7 +371,6 @@ void ncclxLogCommConfig(ncclComm_t comm) {
         fmt::format(
             "winRegisterEnableSignal={}", xCfg->winRegisterEnableSignal));
     append(fmt::format("winRegisterSymmetric={}", xCfg->winRegisterSymmetric));
-    append(fmt::format("deviceIbLazyConnect={}", xCfg->deviceIbLazyConnect));
     appendAlgo("sendrecvAlgo", xCfg->sendrecvAlgo);
     appendAlgo("allgatherAlgo", xCfg->allgatherAlgo);
     appendAlgo("allreduceAlgo", xCfg->allreduceAlgo);
@@ -484,12 +385,6 @@ void ncclxLogCommConfig(ncclComm_t comm) {
     if (xCfg->vCliqueSize != 0) {
       append(fmt::format("vCliqueSize={}", xCfg->vCliqueSize));
     }
-    appendIfSet("pipesNvlChunkSize", xCfg->pipesNvlChunkSize);
-    appendIfSet("enablePrims", xCfg->enablePrims);
-    appendIfSet("primsChannelBufferSize", xCfg->primsChannelBufferSize);
-    appendIfSet("primsChannelPipelineDepth", xCfg->primsChannelPipelineDepth);
-    appendIfSet("primsMaxChannels", xCfg->primsMaxChannels);
-    appendIfSet("primsMaxBlocks", xCfg->primsMaxBlocks);
     appendIfSet("ncclBuffSize", xCfg->ncclBuffSize);
     appendIfSet("ibSplitDataOnQps", xCfg->ibSplitDataOnQps);
     appendIfSet("ibQpsPerConnection", xCfg->ibQpsPerConnection);

@@ -60,13 +60,10 @@ target_include_directories(prims PRIVATE
     ${CUDA_INCLUDE_DIRS}/cccl
 )
 
-# prims is only compiled when the top level does add_subdirectory(comms/prims),
-# so reaching this file means prims is enabled: set ENABLE_PRIMS unconditionally
-# rather than referencing the higher-level MCCL_ENABLE_PRIMS option. PRIVATE:
-# bakes the macro into prims' own objects. (Consumers that include ctran/mccl
-# headers set ENABLE_PRIMS themselves for the ODR/export boundary; see the
-# top-level CMakeLists.txt.)
-target_compile_definitions(prims PRIVATE ENABLE_PRIMS=1)
+# Prims is only compiled when the top level enables MCCL's direct runtime, so
+# reaching this file means prims is enabled. Keep the definition private to its
+# objects; MCCL exposes its own matching interface definition.
+target_compile_definitions(prims PRIVATE MCCL_BUILD_PRIMS=1)
 
 # Some prims translation units include CTRAN public headers that use spdlog.
 # Keep their active level consistent with the CTRAN target. Consume spdlog
@@ -101,10 +98,9 @@ else()
     target_link_libraries(prims PUBLIC "-libverbs" "-lmlx5")
 endif()
 
-# Install prims' public headers (ctran's installed headers #include
-# "comms/prims/..." under ENABLE_PRIMS, so these must ship for the exported
-# Ctran/Mccl packages to compile). Owned here so prims specifies what/where to
-# install. The EXCLUDE list is an intentional lean-package boundary, kept
+# Install prims' public headers required by exported MCCL headers. Owned here so
+# prims specifies what and where to install. The EXCLUDE list is an intentional
+# lean-package boundary, kept
 # co-located with the source glob above (lines ~11-21) so both are maintained in
 # one place. DESTINATION must stay include/comms/prims to match those includes;
 # file(REAL_PATH) resolves the symlinked OSS source tree.
@@ -113,3 +109,7 @@ install(DIRECTORY ${_PRIMS_SRC_DIR}/ DESTINATION include/comms/prims
     FILES_MATCHING PATTERN "*.h" PATTERN "*.cuh"
     PATTERN "tests" EXCLUDE PATTERN "benchmarks" EXCLUDE
     PATTERN "amd" EXCLUDE PATTERN "link_ep" EXCLUDE PATTERN "triton" EXCLUDE)
+
+# CUDA-facing public headers use the HIP compatibility shims unconditionally.
+install(FILES ${_PRIMS_SRC_DIR}/transport/amd/HipHostCompat.h
+    DESTINATION include/comms/prims/transport/amd)
