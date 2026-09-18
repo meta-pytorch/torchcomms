@@ -1728,11 +1728,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
 
   // Validate all tensors
   for (int i = 0; i < comm_size_; ++i) {
-    if (input_tensor_list[i].numel() != output_tensor_list[i].numel())
-        [[unlikely]] {
-      throw std::runtime_error(
-          "Input and output tensor sizes must match for all_to_all");
-    }
     ensureTensorContiguous(input_tensor_list[i]);
     ensureTensorContiguous(output_tensor_list[i]);
   }
