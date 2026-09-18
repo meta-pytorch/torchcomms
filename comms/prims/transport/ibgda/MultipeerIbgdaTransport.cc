@@ -58,6 +58,9 @@ constexpr uint32_t kCollapsedCqProbeDepth = 32;
 #ifndef __HIP_PLATFORM_AMD__
 bool allQpsErrorBeforeDestroyEnabled() {
   static const bool enabled = [] {
+    // Standalone Link-EP does not initialize NCCL CVARs, so this teardown gate
+    // must read the environment directly. Remove this bypass when every IBGDA
+    // transport consumer initializes CVARs before construction.
     const char* value = std::getenv("MCCL_FT_ALL_QPS_ERROR_BEFORE_DESTROY");
     // Keep this fail-stop mitigation an explicit opt-in; only the documented
     // canonical value enables it.
@@ -183,8 +186,7 @@ void detail::requireQpTransitionSuccess(
     return;
   }
   LOG(FATAL) << "MultipeerIbgdaTransport: QP transition failed; refusing to "
-                "release memory that may still be referenced by outstanding "
-                "WQEs"
+                "continue teardown while the QP may remain active"
              << " qp_kind=" << qpKind << " nic_index=" << nicIndex
              << " qp_index=" << qpIndex
              << " status=" << static_cast<int>(status) << " ("
@@ -1750,28 +1752,46 @@ void MultipeerIbgdaTransport::connectPeerMainQps(
 }
 
 void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
-  for (int nic = 0; nic < numNics_; nic++) {
-    auto& qpSlots = nicDoca_[nic].qpSlots;
-    const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
-    for (int slot = 0; slot < slotsPerPeer; slot++) {
-      const int slotIdx = peerIndex * slotsPerPeer + slot;
-      auto& resources = qpSlots[slotIdx];
-      if (resources.group != nullptr) {
-        doca_gpu_verbs_destroy_qp_group_hl(resources.group);
-        resources.group = nullptr;
-      }
-      if (resources.standaloneMain != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(resources.standaloneMain);
-        resources.standaloneMain = nullptr;
-      }
-      if (resources.loopback != nullptr) {
-        doca_gpu_verbs_destroy_qp_hl(resources.loopback);
-        resources.loopback = nullptr;
+  const int slotsPerPeer = config_.fixedChannelMainQpsPerPeerPerNic();
+  auto releasePeerResources = [&]() {
+    for (int nic = 0; nic < numNics_; nic++) {
+      auto& qpSlots = nicDoca_[nic].qpSlots;
+      for (int slot = 0; slot < slotsPerPeer; slot++) {
+        const int slotIdx = peerIndex * slotsPerPeer + slot;
+        auto& resources = qpSlots[slotIdx];
+        if (resources.group != nullptr) {
+          doca_gpu_verbs_destroy_qp_group_hl(resources.group);
+          resources.group = nullptr;
+        }
+        if (resources.standaloneMain != nullptr) {
+          doca_gpu_verbs_destroy_qp_hl(resources.standaloneMain);
+          resources.standaloneMain = nullptr;
+        }
+        if (resources.loopback != nullptr) {
+          doca_gpu_verbs_destroy_qp_hl(resources.loopback);
+          resources.loopback = nullptr;
+        }
       }
     }
-  }
-  cleanupSendRecvBufferForPeer(peerIndex);
-  cleanupPeerSignalCounterResources(peerIndex);
+    cleanupSendRecvBufferForPeer(peerIndex);
+    cleanupPeerSignalCounterResources(peerIndex);
+  };
+
+#ifndef __HIP_PLATFORM_AMD__
+  detail::quiescePeerQpsThenReleaseResources(
+      allQpsErrorBeforeDestroyEnabled(),
+      nicDoca_,
+      static_cast<std::size_t>(peerIndex),
+      static_cast<std::size_t>(slotsPerPeer),
+      [](doca_gpu_verbs_qp_group_hl* group) {
+        return transitionQpGroupToError(group);
+      },
+      [](doca_gpu_verbs_qp_hl* qp) { return transitionQpToError(qp); },
+      releasePeerResources);
+#else
+  releasePeerResources();
+#endif
+
   peerMaterialized_[peerIndex] = false;
   if (peerTransportsGpu_ != nullptr && peerTransportSize_ != 0) {
     cudaError_t err = cudaMemset(
