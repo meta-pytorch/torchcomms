@@ -497,17 +497,14 @@ void MultiPeerTransport::connectPeers() {
   }
 }
 
-IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
-    void* ptr,
-    size_t size) {
+IbLocalBuffer MultiPeerTransport::registerIbBuffer(void* ptr, size_t size) {
   if (ibgdaTransport_) {
     return ibgdaTransport_->registerBuffer(ptr, size);
   }
   if (ibrcTransport_) {
     return ibrcTransport_->registerBuffer(ptr, size);
   }
-  throw std::runtime_error(
-      "localRegisterIbgdaBuffer: IB transport not available");
+  throw std::runtime_error("registerIbBuffer: IB transport not available");
 }
 
 IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
@@ -536,7 +533,7 @@ void MultiPeerTransport::deregisterIbBufferRange(
       "deregisterIbBufferRange: IB transport not available");
 }
 
-void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
+void MultiPeerTransport::deregisterIbBuffer(void* ptr) {
   if (ibgdaTransport_) {
     ibgdaTransport_->deregisterBuffer(ptr);
   } else if (ibrcTransport_) {
@@ -544,15 +541,15 @@ void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
   }
 }
 
-std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
-    const IbgdaLocalBuffer& localBuf) {
+std::vector<IbRemoteBuffer> MultiPeerTransport::exchangeIbBuffer(
+    const IbLocalBuffer& localBuf) {
   if (ibgdaTransport_) {
     return ibgdaTransport_->exchangeBuffer(localBuf);
   }
   if (ibrcTransport_) {
     return ibrcTransport_->exchangeBuffer(localBuf);
   }
-  throw std::runtime_error("exchangeIbgdaBuffer: IB transport not available");
+  throw std::runtime_error("exchangeIbBuffer: IB transport not available");
 }
 
 P2pIbrcHostWriter MultiPeerTransport::getHostWriter(
@@ -590,7 +587,7 @@ P2pIbrcHostLanes MultiPeerTransport::getHostLanes(int peerRank, int numLanes)
       "getHostLanes: IBRC transport not available (build with ibMode=kIbrc)");
 }
 
-IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
+IbLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     std::size_t size,
     void** hostPtr) {
   *hostPtr = nullptr;
@@ -601,20 +598,20 @@ IbgdaLocalBuffer MultiPeerTransport::allocateIbCounterBuffer(
     CUDA_CHECK(cudaHostGetDevicePointer(&device, host, 0));
     std::memset(host, 0, size);
     *hostPtr = host;
-    return IbgdaLocalBuffer(device, NetworkLKeys{});
+    return IbLocalBuffer(device, NetworkLKeys{});
   }
   if (ibgdaTransport_) {
     void* ptr = nullptr;
     CUDA_CHECK(cudaMalloc(&ptr, size));
     CUDA_CHECK(cudaMemset(ptr, 0, size));
-    return IbgdaLocalBuffer(ptr, NetworkLKeys{});
+    return IbLocalBuffer(ptr, NetworkLKeys{});
   }
   throw std::runtime_error(
       "allocateIbCounterBuffer: IB transport not available");
 }
 
-IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
-    const IbgdaLocalBuffer& buffer,
+IbLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
+    const IbLocalBuffer& buffer,
     std::size_t size) {
   if (ibgdaTransport_) {
     return ibgdaTransport_->registerBuffer(buffer.ptr, size);
@@ -627,7 +624,7 @@ IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
 }
 
 void MultiPeerTransport::freeIbCounterBuffer(
-    IbgdaLocalBuffer& buffer,
+    IbLocalBuffer& buffer,
     void*& hostPtr) noexcept {
   if (buffer.ptr == nullptr) {
     return;
@@ -641,7 +638,7 @@ void MultiPeerTransport::freeIbCounterBuffer(
   } else {
     (void)cudaFree(buffer.ptr);
   }
-  buffer = IbgdaLocalBuffer{};
+  buffer = IbLocalBuffer{};
 }
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(

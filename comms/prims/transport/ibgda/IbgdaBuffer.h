@@ -281,7 +281,7 @@ struct NetworkRKeys {
 // =============================================================================
 
 /**
- * IbgdaLocalBuffer - Local buffer descriptor for RDMA operations
+ * IbLocalBuffer - Local buffer descriptor for RDMA operations
  *
  * Represents a buffer in the local GPU's memory that can be used as a
  * source for RDMA writes or destination for RDMA reads. Carries one local
@@ -294,54 +294,60 @@ struct NetworkRKeys {
  *
  * This struct is usable from both host and device code.
  */
-struct IbgdaLocalBuffer {
+struct IbLocalBuffer {
   void* ptr{nullptr};
   NetworkLKeys lkey_per_device{};
 
-  IbgdaLocalBuffer() = default;
+  IbLocalBuffer() = default;
 
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer(void* p, const NetworkLKeys& keys)
+  IBGDA_HOST_DEVICE IbLocalBuffer(void* p, const NetworkLKeys& keys)
       : ptr(p), lkey_per_device(keys) {}
 
   /**
    * Create a sub-buffer at the given byte offset.
    * Propagates all NICs' lkeys. A null base stays null for optional buffers.
    */
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer subBuffer(std::size_t offset) const {
-    return IbgdaLocalBuffer(
+  IBGDA_HOST_DEVICE IbLocalBuffer subBuffer(std::size_t offset) const {
+    return IbLocalBuffer(
         ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
         lkey_per_device);
   }
 };
 
 /**
- * IbgdaRemoteBuffer - Remote buffer descriptor for RDMA operations
+ * IbRemoteBuffer - Remote buffer descriptor for RDMA operations
  *
- * Mirror of IbgdaLocalBuffer for remote buffers. Carries one remote key
+ * Mirror of IbLocalBuffer for remote buffers. Carries one remote key
  * per NIC (`rkey_per_device`) for multi-NIC IBGDA support. Indexing
  * `rkey_per_device[n]` traps if `n >= rkey_per_device.size`.
  *
  * This struct is usable from both host and device code.
  */
-struct IbgdaRemoteBuffer {
+struct IbRemoteBuffer {
   void* ptr{nullptr};
   NetworkRKeys rkey_per_device{};
 
-  IbgdaRemoteBuffer() = default;
+  IbRemoteBuffer() = default;
 
-  IBGDA_HOST_DEVICE IbgdaRemoteBuffer(void* p, const NetworkRKeys& keys)
+  IBGDA_HOST_DEVICE IbRemoteBuffer(void* p, const NetworkRKeys& keys)
       : ptr(p), rkey_per_device(keys) {}
 
   /**
    * Create a sub-buffer at the given byte offset.
    * Propagates all NICs' rkeys. A null base stays null for optional buffers.
    */
-  IBGDA_HOST_DEVICE IbgdaRemoteBuffer subBuffer(std::size_t offset) const {
-    return IbgdaRemoteBuffer(
+  IBGDA_HOST_DEVICE IbRemoteBuffer subBuffer(std::size_t offset) const {
+    return IbRemoteBuffer(
         ptr == nullptr ? nullptr : static_cast<char*>(ptr) + offset,
         rkey_per_device);
   }
 };
+
+// Transitional spellings for callers not yet migrated. The descriptors carry
+// only an address and per-NIC keys, so they are transport-neutral and the IBRC
+// backend uses them too; prefer IbLocalBuffer / IbRemoteBuffer in new code.
+using IbgdaLocalBuffer = IbLocalBuffer;
+using IbgdaRemoteBuffer = IbRemoteBuffer;
 
 // =============================================================================
 // Signal Operation Types
@@ -384,11 +390,11 @@ enum class IbgdaCmpOp {
  * Represents a buffer's address and remote key in host byte order,
  * suitable for serialization and exchange between peers. The rkey
  * is stored in host byte order and will be converted to network
- * byte order when creating an IbgdaRemoteBuffer for RDMA operations.
+ * byte order when creating an IbRemoteBuffer for RDMA operations.
  *
  * Use case:
  *   - Exchange buffer registration info between peers via bootstrap
- *   - Convert to IbgdaRemoteBuffer after receiving from peer
+ *   - Convert to IbRemoteBuffer after receiving from peer
  */
 struct IbgdaBufferExchInfo {
   uint64_t addr{0};
@@ -400,15 +406,15 @@ struct IbgdaBufferExchInfo {
   IbgdaBufferExchInfo() = default;
 
   /**
-   * Convert to IbgdaRemoteBuffer for RDMA operations.
+   * Convert to IbRemoteBuffer for RDMA operations.
    * The result's NetworkRKeys.size matches this->numNics.
    */
-  IbgdaRemoteBuffer toRemoteBuffer() const {
+  IbRemoteBuffer toRemoteBuffer() const {
     NetworkRKeys keys(numNics);
     for (int n = 0; n < numNics; ++n) {
       keys[n] = NetworkRKey(rkey_per_device[n]);
     }
-    return IbgdaRemoteBuffer(reinterpret_cast<void*>(addr), keys);
+    return IbRemoteBuffer(reinterpret_cast<void*>(addr), keys);
   }
 
   /**
@@ -458,7 +464,7 @@ struct IbChannelProgress {
   // Source of a registered send, which the NIC reads directly and so needs the
   // lkey too. Shares the send slot with activeUserBuf; exactly one of the two
   // is live, decided by which init started the operation.
-  IbgdaLocalBuffer activeRegisteredBuf{};
+  IbLocalBuffer activeRegisteredBuf{};
   detail::IbSendRecvProgressStage activeStage{
       detail::IbSendRecvProgressStage::Done};
   // CopyOp category of the most recent op driven on this channel (true =
@@ -485,17 +491,16 @@ IBGDA_HOST_DEVICE inline std::size_t sendRecvSignalSlotOffset(int slot) {
 }
 
 struct IbChannelLayout {
-  IbgdaLocalBuffer
-      sendStagingBuf; ///< Registered sendStaging (lkey for put src)
-  IbgdaRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
+  IbLocalBuffer sendStagingBuf; ///< Registered sendStaging (lkey for put src)
+  IbRemoteBuffer recvStagingBuf; ///< Peer's recvStaging (rkey for put dst)
   char* sendStagingPtr{
       nullptr}; ///< Raw sendStaging pointer (memcpy addressing)
   char* recvStagingPtr{
       nullptr}; ///< Raw local recvStaging pointer (recv memcpy)
-  IbgdaLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
-  IbgdaRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
-  IbgdaLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
-  IbgdaLocalBuffer localCounterCompletionBuf; ///< Transport completion target
+  IbLocalBuffer localSignalBuf; ///< Signal inbox (DATA_READY + SLOT_FREE)
+  IbRemoteBuffer remoteSignalBuf; ///< Peer's signal inbox
+  IbLocalBuffer localCounterBuf; ///< GPU-readable NIC_DONE counter inbox
+  IbLocalBuffer localCounterCompletionBuf; ///< Transport completion target
   int maxChannels{0}; ///< Number of provisioned channel/protocol slots.
   int numChannels{0}; ///< Logical channels; a caller's group_id selects within
                       ///< [0, numChannels). Also the QP channel: protocols
@@ -534,35 +539,32 @@ struct IbChannelLayout {
     return channelId;
   }
 
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer localDataReadySignal(int channelId) const {
+  IBGDA_HOST_DEVICE IbLocalBuffer localDataReadySignal(int channelId) const {
     return localSignalBuf.subBuffer(
         sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
   }
 
-  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
-  remoteDataReadySignal(int channelId) const {
+  IBGDA_HOST_DEVICE IbRemoteBuffer remoteDataReadySignal(int channelId) const {
     return remoteSignalBuf.subBuffer(
         sendRecvSignalSlotOffset(dataReadySignalSlot(channelId)));
   }
 
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer localSlotFreeSignal(int channelId) const {
+  IBGDA_HOST_DEVICE IbLocalBuffer localSlotFreeSignal(int channelId) const {
     return localSignalBuf.subBuffer(
         sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
   }
 
-  IBGDA_HOST_DEVICE IbgdaRemoteBuffer
-  remoteSlotFreeSignal(int channelId) const {
+  IBGDA_HOST_DEVICE IbRemoteBuffer remoteSlotFreeSignal(int channelId) const {
     return remoteSignalBuf.subBuffer(
         sendRecvSignalSlotOffset(slotFreeSignalSlot(channelId)));
   }
 
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer localCounter(int channelId) const {
+  IBGDA_HOST_DEVICE IbLocalBuffer localCounter(int channelId) const {
     return localCounterBuf.subBuffer(
         sendRecvSignalSlotOffset(counterSlot(channelId)));
   }
 
-  IBGDA_HOST_DEVICE IbgdaLocalBuffer
-  localCompletionCounter(int channelId) const {
+  IBGDA_HOST_DEVICE IbLocalBuffer localCompletionCounter(int channelId) const {
     return localCounterCompletionBuf.subBuffer(
         sendRecvSignalSlotOffset(counterSlot(channelId)));
   }
@@ -649,10 +651,10 @@ struct IbChannelProtoSlot {
   //    slots are zeroed (channel construction AND the device reset kernel).
   uint64_t recvLaneExpected[kIbMaxQpLanesPerChannelDirection]{};
 
-  IbgdaLocalBuffer dataReady;
-  IbgdaLocalBuffer slotFree;
-  IbgdaLocalBuffer nicDoneWait;
-  IbgdaLocalBuffer nicDoneCompletion;
+  IbLocalBuffer dataReady;
+  IbLocalBuffer slotFree;
+  IbLocalBuffer nicDoneWait;
+  IbLocalBuffer nicDoneCompletion;
 
   IbSendCompletionSlot* sendCompletionSlots{nullptr};
 };
@@ -690,9 +692,9 @@ struct IbLocalChannel {
 static_assert(std::is_trivially_copyable_v<IbLocalChannel>);
 
 struct IbRemoteChannel {
-  IbgdaRemoteBuffer dataReady;
-  IbgdaRemoteBuffer slotFree;
-  IbgdaRemoteBuffer recvStaging;
+  IbRemoteBuffer dataReady;
+  IbRemoteBuffer slotFree;
+  IbRemoteBuffer recvStaging;
 };
 
 IBGDA_HOST_DEVICE inline IbLocalChannel makeIbLocalChannel(

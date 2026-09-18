@@ -265,14 +265,14 @@ class P2pIbrcHostLanes {
    */
   void put_striped(
       const LaneLayout& layout,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      const IbgdaRemoteBuffer& remoteSignalBase,
+      const IbLocalBuffer& localBuf,
+      const IbRemoteBuffer& remoteBuf,
+      const IbRemoteBuffer& remoteSignalBase,
       uint64_t signalVal = 1) {
     checkLayout(layout, "put_striped");
     const auto& ranges = layout.ranges();
     for (std::size_t l = 0; l < ranges.size(); ++l) {
-      const IbgdaRemoteBuffer sig =
+      const IbRemoteBuffer sig =
           remoteSignalBase.subBuffer(l * layout.signalStride());
       writers_[l].put(
           localBuf.subBuffer(ranges[l].offset),

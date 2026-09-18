@@ -304,40 +304,52 @@ class MultiPeerTransport {
 
   void connectPeers();
 
-  // --- IBGDA buffer registration (delegates to ibgdaTransport_) ---
+  // --- IB buffer registration (delegates to whichever IB transport is set) ---
 
   /**
-   * Register a user-provided buffer for IBGDA RDMA access.
+   * Register a user-provided buffer for RDMA access by this rank's NICs.
    *
    * @param ptr Pointer to GPU memory
    * @param size Size of the buffer in bytes
-   * @return IbgdaLocalBuffer with valid lkey for local RDMA operations
-   * @throws std::runtime_error if no IBGDA transport or registration fails
+   * @return IbLocalBuffer with valid lkey for local RDMA operations
+   * @throws std::runtime_error if no IB transport or registration fails
    */
-  IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
+  IbLocalBuffer registerIbBuffer(void* ptr, size_t size);
 
   IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
 
   void deregisterIbBufferRange(IbBufferRegistration& registration);
 
   /**
-   * Deregister a previously registered IBGDA buffer.
+   * Deregister a previously registered buffer.
    *
    * @param ptr Pointer to the buffer to deregister
    */
-  void localDeregisterIbgdaBuffer(void* ptr);
+  void deregisterIbBuffer(void* ptr);
 
   /**
-   * Collectively exchange IBGDA buffer info with all peers.
+   * Collectively exchange buffer info with all peers.
    *
    * COLLECTIVE OPERATION: All ranks MUST call this with their local buffer.
-   * Returns remote buffer info for all IBGDA peers.
+   * Returns remote buffer info for all IB peers.
    *
-   * @param localBuf Local buffer registered with localRegisterIbgdaBuffer()
-   * @return Vector of remote buffers, one per IBGDA peer (size = nRanks - 1)
+   * @param localBuf Local buffer registered with registerIbBuffer()
+   * @return Vector of remote buffers, one per IB peer (size = nRanks - 1)
    */
-  std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
-      const IbgdaLocalBuffer& localBuf);
+  std::vector<IbRemoteBuffer> exchangeIbBuffer(const IbLocalBuffer& localBuf);
+
+  // Transitional spellings for callers not yet migrated. Nothing about these
+  // registrations is IBGDA-specific; the IBRC backend serves them too.
+  IbLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size) {
+    return registerIbBuffer(ptr, size);
+  }
+  void localDeregisterIbgdaBuffer(void* ptr) {
+    deregisterIbBuffer(ptr);
+  }
+  std::vector<IbRemoteBuffer> exchangeIbgdaBuffer(
+      const IbLocalBuffer& localBuf) {
+    return exchangeIbBuffer(localBuf);
+  }
 
   /**
    * Host-driven RDMA writer for one peer (CPU posts put/signal into the IBRC
@@ -372,11 +384,11 @@ class MultiPeerTransport {
    */
   P2pIbrcHostLanes getHostLanes(int peerRank, int numLanes) const;
 
-  IbgdaLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
-  IbgdaLocalBuffer registerIbCounterBuffer(
-      const IbgdaLocalBuffer& buffer,
+  IbLocalBuffer allocateIbCounterBuffer(std::size_t size, void** hostPtr);
+  IbLocalBuffer registerIbCounterBuffer(
+      const IbLocalBuffer& buffer,
       std::size_t size);
-  void freeIbCounterBuffer(IbgdaLocalBuffer& buffer, void*& hostPtr) noexcept;
+  void freeIbCounterBuffer(IbLocalBuffer& buffer, void*& hostPtr) noexcept;
 
   /**
    * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.

@@ -12,8 +12,8 @@
 
 namespace comms::prims {
 struct MultipeerIbgdaDeviceTransport;
-struct IbgdaRemoteBuffer;
-struct IbgdaLocalBuffer;
+struct IbRemoteBuffer;
+struct IbLocalBuffer;
 } // namespace comms::prims
 
 namespace comms::prims::link_ep::kernels {
@@ -45,13 +45,13 @@ void low_latency_combine(
     void* workspace,
     void** buffer_ptrs,
     // IBGDA cross-node hybrid path. May be nullptr (single-node mode).
-    // local_x_buf: local x tensor as registered IbgdaLocalBuffer.
+    // local_x_buf: local x tensor as registered IbLocalBuffer.
     // peer_remote_recv_x: each peer's combine_recv_x descriptor.
     // peer_remote_recv_flag: each peer's combine_recv_flag descriptor.
     comms::prims::MultipeerIbgdaDeviceTransport* device_transport,
-    const comms::prims::IbgdaLocalBuffer* local_x_buf,
-    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_x,
-    const comms::prims::IbgdaRemoteBuffer* peer_remote_recv_flag,
+    const comms::prims::IbLocalBuffer* local_x_buf,
+    const comms::prims::IbRemoteBuffer* peer_remote_recv_x,
+    const comms::prims::IbRemoteBuffer* peer_remote_recv_flag,
     int phase,
     bool zero_copy,
     cudaStream_t stream);

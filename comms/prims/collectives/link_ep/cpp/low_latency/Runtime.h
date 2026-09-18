@@ -26,8 +26,8 @@ class MultipeerIbgdaTransport;
 class MultiPeerNvlTransport;
 class GpuMemHandler;
 struct MultipeerIbgdaDeviceTransport;
-struct IbgdaLocalBuffer;
-struct IbgdaRemoteBuffer;
+struct IbLocalBuffer;
+struct IbRemoteBuffer;
 } // namespace comms::prims
 
 namespace comms::prims::link_ep {
@@ -171,27 +171,26 @@ class LowLatencyRuntime {
 
   /** Per-peer arrays (numRanks entries; self-rank entry zero-init). nullptr
    *  if IBGDA not set up. */
-  const comms::prims::IbgdaLocalBuffer* getLocalRdmaXBufDevice()
-      const noexcept {
+  const comms::prims::IbLocalBuffer* getLocalRdmaXBufDevice() const noexcept {
     return ibgdaLocalRdmaXBufDevice_;
   }
-  const comms::prims::IbgdaLocalBuffer* getLocalCombineXBufDevice()
+  const comms::prims::IbLocalBuffer* getLocalCombineXBufDevice()
       const noexcept {
     return ibgdaLocalCombineXBufDevice_;
   }
-  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteRecvXDevice()
+  const comms::prims::IbRemoteBuffer* getPeerRemoteRecvXDevice()
       const noexcept {
     return ibgdaPeerRemoteRecvXDevice_;
   }
-  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteRecvCountDevice()
+  const comms::prims::IbRemoteBuffer* getPeerRemoteRecvCountDevice()
       const noexcept {
     return ibgdaPeerRemoteRecvCountDevice_;
   }
-  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteCombineRecvXDevice()
+  const comms::prims::IbRemoteBuffer* getPeerRemoteCombineRecvXDevice()
       const noexcept {
     return ibgdaPeerRemoteCombineRecvXDevice_;
   }
-  const comms::prims::IbgdaRemoteBuffer* getPeerRemoteCombineRecvFlagDevice()
+  const comms::prims::IbRemoteBuffer* getPeerRemoteCombineRecvFlagDevice()
       const noexcept {
     return ibgdaPeerRemoteCombineRecvFlagDevice_;
   }
@@ -213,13 +212,12 @@ class LowLatencyRuntime {
   // [0..numRanks); self-rank entry is zero-initialized.
   comms::prims::MultipeerIbgdaDeviceTransport* ibgdaDeviceTransportPtr_{
       nullptr};
-  comms::prims::IbgdaLocalBuffer* ibgdaLocalRdmaXBufDevice_{nullptr};
-  comms::prims::IbgdaLocalBuffer* ibgdaLocalCombineXBufDevice_{nullptr};
-  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteRecvXDevice_{nullptr};
-  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteRecvCountDevice_{nullptr};
-  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteCombineRecvXDevice_{nullptr};
-  comms::prims::IbgdaRemoteBuffer* ibgdaPeerRemoteCombineRecvFlagDevice_{
-      nullptr};
+  comms::prims::IbLocalBuffer* ibgdaLocalRdmaXBufDevice_{nullptr};
+  comms::prims::IbLocalBuffer* ibgdaLocalCombineXBufDevice_{nullptr};
+  comms::prims::IbRemoteBuffer* ibgdaPeerRemoteRecvXDevice_{nullptr};
+  comms::prims::IbRemoteBuffer* ibgdaPeerRemoteRecvCountDevice_{nullptr};
+  comms::prims::IbRemoteBuffer* ibgdaPeerRemoteCombineRecvXDevice_{nullptr};
+  comms::prims::IbRemoteBuffer* ibgdaPeerRemoteCombineRecvFlagDevice_{nullptr};
 
   // The big LL data buffer — uncached on AMD (BNXT dma-buf parity).
   // If ownsRdmaBuffer_ is false, the buffer is externally owned.

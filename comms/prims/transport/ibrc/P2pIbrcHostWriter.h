@@ -132,10 +132,10 @@ class P2pIbrcHostWriter {
    * @return the reserved sequence number for this descriptor.
    */
   uint64_t put(
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
+      const IbLocalBuffer& localBuf,
+      const IbRemoteBuffer& remoteBuf,
       std::size_t nbytes,
-      const IbgdaRemoteBuffer* signalBuf = nullptr,
+      const IbRemoteBuffer* signalBuf = nullptr,
       uint64_t signalVal = 1,
       uint64_t* counterHost = nullptr,
       uint64_t counterVal = 1) {
@@ -193,7 +193,7 @@ class P2pIbrcHostWriter {
   }
 
   /** Post a standalone SIGNAL (RDMA fetch-add into the remote signal slot). */
-  uint64_t signal(const IbgdaRemoteBuffer& signalBuf, uint64_t signalVal = 1) {
+  uint64_t signal(const IbRemoteBuffer& signalBuf, uint64_t signalVal = 1) {
     IbrcDesc desc{};
     desc.op = static_cast<uint16_t>(IbrcOp::SIGNAL);
     fill_signal(desc, signalBuf, signalVal);
@@ -393,7 +393,7 @@ class P2pIbrcHostWriter {
    */
   void fill_signal(
       IbrcDesc& desc,
-      const IbgdaRemoteBuffer& signalBuf,
+      const IbRemoteBuffer& signalBuf,
       uint64_t signalVal) const {
     if (signalBuf.ptr == nullptr) {
       throw std::runtime_error("P2pIbrcHostWriter: null signal buffer");
