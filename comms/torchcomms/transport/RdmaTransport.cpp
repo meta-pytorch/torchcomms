@@ -206,19 +206,25 @@ RdmaTransport::RdmaTransport(
     std::optional<int> maxNumNic)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
+  CtranIbConfig ibConfig;
+  ibConfig.enableLocalFlush = true;
+  if (maxNumCqe.has_value()) {
+    ibConfig.maxNumCqe = *maxNumCqe;
+  }
+  if (maxNumNic.has_value()) {
+    ibConfig.maxNumNic = *maxNumNic;
+  }
   // Create IB Instance
   ib_ = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      true /* enableLocalFlush */,
+      ibConfig,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
-      nullptr /* socketFactory */,
-      maxNumCqe,
-      maxNumNic);
+      nullptr /* socketFactory */);
 
   if (evb_) {
     // Optionally create progress timeout; skip it if the transport is never
@@ -271,12 +277,14 @@ bool queryRdmaSupport() {
   folly::call_once(queryRdmaSupportOnceFlag, [] {
     XLOG(INFO) << "Querying RdmaTransport support";
     try {
+      CtranIbConfig ibConfig;
+      ibConfig.enableLocalFlush = true;
       auto ib = std::make_unique<CtranIb>(
           kDummyRank,
           kDummyDevice,
           -1 /* commHash */,
           "Query-RDMA-Support",
-          true /* enableLocalFlush */,
+          ibConfig,
           CtranIb::BootstrapMode::kExternal);
     } catch (const std::exception& e) {
       XLOG(WARN)
