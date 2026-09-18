@@ -3,7 +3,6 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/BootstrapExternal.h"
 #include "comms/ctran/backends/ib/BootstrapInternal.h"
-#include "comms/ctran/backends/ib/CtranIb.h"
 
 #include <fmt/core.h>
 #include <folly/ScopeGuard.h>
@@ -48,19 +47,23 @@ constexpr int kMaxTrafficClass = 255;
 
 thread_local std::unordered_map<void*, std::atomic_bool> epochLockedFlags;
 
-bool CtranIb::shouldEnableLocalFlushByDefault(int cudaArch) {
+bool CtranIb::shouldEnableLocalFlushByDefault(
+    std::optional<int> cudaArch) const {
 #if defined(USE_ROCM)
   // AMD GPUs always require local flush.
   // https://ontrack.amd.com/browse/FBA-633
   return true;
 #else
+  const int resolvedCudaArch = cudaArch.has_value()
+      ? *cudaArch
+      : ncclx::CommStateX::getCudaArch(cudaDev);
   // Turn on flush by default for NVidia GPUs older than H100 and for GB300.
   // Multi-NIC topologies with cross-NIC DMA ordering hazards must opt in via
   // NCCL_CTRAN_NET_FORCE_FLUSH=1.
   // TODO: Replace the GB300 CUDA-arch proxy with a topology query similar to
   // baseline ncclTopoNeedFlush(); CUDA arch is not precise topology detection.
-  return cudaArch < kH100CudaArch || cudaArch == kGb300CudaArch ||
-      NCCL_CTRAN_NET_FORCE_FLUSH;
+  return resolvedCudaArch < kH100CudaArch ||
+      resolvedCudaArch == kGb300CudaArch || NCCL_CTRAN_NET_FORCE_FLUSH;
 #endif
 }
 
@@ -329,9 +332,8 @@ void CtranIbSingleton::ibAsyncEventHandler(const int cudaDev) {
 
 CtranIb::CtranIb(
     CtranComm* comm,
-    std::optional<bool> enableLocalFlush,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe)
+    const CtranIbConfig& ibConfig,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory)
     : comm(comm) {
   init(
       comm,
@@ -339,15 +341,11 @@ CtranIb::CtranIb(
       comm->statex_->cudaDev(),
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
-      // Honor a caller-specified value; otherwise use the platform default.
-      enableLocalFlush.has_value()
-          ? *enableLocalFlush
-          : shouldEnableLocalFlushByDefault(comm->statex_->cudaArch()),
+      ibConfig,
       BootstrapMode::kDefaultServer,
       std::nullopt,
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
-      socketFactory,
-      maxNumCqe);
+      socketFactory);
   CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
@@ -362,29 +360,22 @@ CtranIb::CtranIb(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    // FIXME: Unlike IB with comm, we require user to always specify
-    // enableLocalFlush because we don't have access to statex->cudaArch() for
-    // default config detection
-    bool enableLocalFlush,
+    const CtranIbConfig& ibConfig,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic) {
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
   init(
       nullptr,
       rank,
       cudaDev,
       commHash,
       commDesc,
-      enableLocalFlush,
+      ibConfig,
       bootstrapMode,
       qpServerAddr,
       abortCtrl,
-      socketFactory,
-      maxNumCqe,
-      maxNumNic);
+      socketFactory);
 
   CTRAN_LOG_SUBSYS(
       INFO,
@@ -404,13 +395,11 @@ void CtranIb::init(
     int cudaDev,
     uint64_t commHash,
     const std::string& commDesc,
-    bool enableLocalFlush,
+    const CtranIbConfig& ibConfig,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
     std::shared_ptr<Abort> abortCtrl,
-    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic) {
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
   bool foundPort = false;
   this->comm = comm;
   this->rank = rank;
@@ -424,18 +413,22 @@ void CtranIb::init(
       .commDesc = commDesc,
       .rank = rank,
       .nRanks = comm ? comm->statex_->nRanks() : 1};
-  this->enableLocalFlush_ = enableLocalFlush;
+  this->enableLocalFlush_ = ibConfig.enableLocalFlush.has_value()
+      ? *ibConfig.enableLocalFlush
+      : shouldEnableLocalFlushByDefault();
+  FB_COMMCHECKTHROW_EX(this->resolveTrafficClass(ibConfig), this->ncclLogData);
   this->bootstrapMode = bootstrapMode;
-  this->numNics = maxNumNic
-      ? std::min(*maxNumNic, NCCL_CTRAN_IB_DEVICES_PER_RANK)
-      : NCCL_CTRAN_IB_DEVICES_PER_RANK;
+  const int maxNumCqe = ibConfig.maxNumCqe.value_or(NCCL_CTRAN_IB_MAX_NUM_CQE);
+  this->numNics = std::min(
+      ibConfig.maxNumNic.value_or(NCCL_CTRAN_IB_DEVICES_PER_RANK),
+      NCCL_CTRAN_IB_DEVICES_PER_RANK);
   FB_CHECKTHROW_EX_LOGDATA(this->numNics > 0, ncclLogData, "numNics > 0");
-  this->devices.resize(this->numNics);
-  this->cqs.reserve(this->numNics);
-  FB_COMMCHECKTHROW_EX(this->resolveTrafficClass(), this->ncclLogData);
 
   auto s = CtranIbSingleton::getInstance();
   CHECK_VALID_IB_SINGLETON(s);
+
+  this->devices.resize(this->numNics);
+  this->cqs.reserve(this->numNics);
 
   const bool dmaBufSupported = s->getDevToDmaBufSupport(cudaDev);
 
@@ -606,18 +599,17 @@ void CtranIb::init(
 #endif
 
     // Cap CQ size to avoid excessive memory usage.
-    // Per-transport maxNumCqe takes precedence over env
-    // NCCL_CTRAN_IB_MAX_NUM_CQE. Default -1 (or nullopt) to use the
-    // device-reported maximum.
-    const int cqeCap = maxNumCqe.value_or(NCCL_CTRAN_IB_MAX_NUM_CQE);
+    // The IB config defaults to NCCL_CTRAN_IB_MAX_NUM_CQE. A non-positive
+    // value leaves the device-reported maximum unchanged.
+    const int cqeCap = maxNumCqe;
     if (cqeCap > 0 && maxCqe > cqeCap) {
       CTRAN_LOG(
           INFO,
           "CTRAN-IB: Capping CQ size from {} to {} ({}) to reduce memory overhead",
           maxCqe,
           cqeCap,
-          maxNumCqe.has_value() ? "per-transport"
-                                : "NCCL_CTRAN_IB_MAX_NUM_CQE");
+          ibConfig.maxNumCqe.has_value() ? "IB config"
+                                         : "NCCL_CTRAN_IB_MAX_NUM_CQE");
       maxCqe = cqeCap;
     } else {
       CTRAN_LOG(INFO, "CTRAN-IB: CQ size is {}", maxCqe);
@@ -633,7 +625,7 @@ void CtranIb::init(
     // FIXME: use initRemoteTransStates() to create cq
   }
 
-  if (enableLocalFlush) {
+  if (enableLocalFlush_) {
     localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
   }
 
@@ -664,16 +656,19 @@ void CtranIb::init(
   // Legacy single-VC (NCCL_CTRAN_IB_NUM_VCS_PER_RANK <= 0) is normalized to
   // 1, so the layout (and per-VC active-NIC vector) is well-defined in
   // every configuration.
-  int maxVcsPerPeer = NCCL_CTRAN_IB_NUM_VCS_PER_RANK;
+  int maxVcsPerPeer = this->bootstrapMode == BootstrapMode::kExternal
+      ? 1
+      : NCCL_CTRAN_IB_NUM_VCS_PER_RANK;
   if (maxVcsPerPeer <= 0) {
     maxVcsPerPeer = 1;
   }
-  if (NCCL_CTRAN_IB_MAX_QPS < maxVcsPerPeer) {
+  const int maxQpsPerPeer = ibConfig.numQps.value_or(NCCL_CTRAN_IB_MAX_QPS);
+  if (maxQpsPerPeer < maxVcsPerPeer) {
     std::string msg = fmt::format(
-        "CTRAN-IB: invalid VC sizing: NCCL_CTRAN_IB_MAX_QPS={} must be "
-        ">= NCCL_CTRAN_IB_NUM_VCS_PER_RANK={} so that each per-peer VC "
+        "CTRAN-IB: invalid VC sizing: per-peer MAX_QPS={} must be "
+        ">= max VCs per peer={} so that each per-peer VC "
         "gets at least one data QP.",
-        NCCL_CTRAN_IB_MAX_QPS,
+        maxQpsPerPeer,
         maxVcsPerPeer);
     CTRAN_ERR(commInvalidArgument, "{}", msg);
     throw ctran::utils::Exception(msg, commInvalidArgument);
@@ -682,11 +677,11 @@ void CtranIb::init(
   CTRAN_LOG_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-IB: VC layout: {} (numNics={}, NCCL_CTRAN_IB_MAX_QPS={}). "
+      "CTRAN-IB: VC layout: {} (numNics={}, per-peer MAX_QPS={}). "
       "Per-VC data-QP count is determined per connection class inside CtranIbVirtualConn.",
       vcLayout_.describe(),
       numNics,
-      NCCL_CTRAN_IB_MAX_QPS);
+      maxQpsPerPeer);
 
   // Optionally start internal bootstrap service.
   // If kExternal, external callsite would explicitly manage it and thus we skip
@@ -700,6 +695,7 @@ void CtranIb::init(
         commHash,
         commDesc,
         ncclLogData,
+        ibConfig,
         getTrafficClass());
     CTRAN_LOG_SUBSYS(
         INFO,
@@ -717,6 +713,7 @@ void CtranIb::init(
         ncclLogData,
         comm,
         devices,
+        ibConfig,
         getTrafficClass(),
         cudaDev,
         rank,
@@ -1134,12 +1131,34 @@ const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {
   }
 }
 
-commResult_t CtranIb::resolveTrafficClass() {
+commResult_t CtranIb::resolveTrafficClass(const CtranIbConfig& ibConfig) {
   // Precedence:
-  //   1. per-comm NcclConfig.traffic_class hint (int in [0, kMaxTrafficClass])
-  //   2. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map matched on commDesc prefix
-  //   3. NCCL_IB_TC global fallback
+  //   1. explicit CtranIbConfig override
+  //   2. per-comm NcclConfig.traffic_class hint (int in [0, kMaxTrafficClass])
+  //   3. NCCL_CTRAN_IB_PG_TRAFFIC_CLASS env-map matched on commDesc prefix
+  //   4. NCCL_IB_TC global fallback
   // Called once from CtranIb::init(); result stored in trafficClass_.
+
+  if (ibConfig.trafficClass.has_value()) {
+    if (*ibConfig.trafficClass < 0 ||
+        *ibConfig.trafficClass > kMaxTrafficClass) {
+      CTRAN_ERR(
+          commInvalidArgument,
+          "CTRAN-IB: traffic class must be in [0, {}], got {}",
+          kMaxTrafficClass,
+          *ibConfig.trafficClass);
+      return commInvalidArgument;
+    }
+    trafficClass_ = static_cast<uint32_t>(*ibConfig.trafficClass);
+    CTRAN_LOG_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-IB: commHash {:x}, commDesc {} trafficClass={} (from IB config override)",
+        commHash,
+        commDesc,
+        trafficClass_);
+    return commSuccess;
+  }
 
   // 1. Per-comm hint. A negative value means the hint was never set (the
   // ctranConfig default, and NCCL_CONFIG_UNDEF_INT upstream). A value above
@@ -1230,7 +1249,7 @@ commResult_t CtranIb::resolveTrafficClass() {
     return commSuccess;
   }
 
-  // 3. Global fallback.
+  // 4. Global fallback.
   trafficClass_ = static_cast<uint32_t>(NCCL_IB_TC);
   CTRAN_LOG_SUBSYS(
       INFO,

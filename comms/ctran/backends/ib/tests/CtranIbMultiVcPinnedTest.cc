@@ -106,12 +106,11 @@ class CtranIbMultiVcPinnedTest : public ::testing::Test {
         rank, // cudaDev
         /*commHash=*/0xc4ac4a1ull,
         std::string("channel-test"),
-        /*enableLocalFlush=*/false,
+        /*ibConfig=*/CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &serverAddr,
         abortCtrl,
-        std::make_shared<ctran::bootstrap::AbortableSocketFactory>(),
-        /*maxNumCqe=*/std::nullopt);
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>());
   }
 };
 
@@ -133,12 +132,11 @@ void runTwoRanks(Action0 action0, Action1 action1) {
         0,
         0xc4ac4a1ull,
         std::string("channel-test"),
-        false,
+        CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &serverAddr,
         abortCtrl,
-        std::make_shared<ctran::bootstrap::AbortableSocketFactory>(),
-        std::nullopt);
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>());
     auto maybeListen = ib->getListenSocketListenAddr();
     ASSERT_FALSE(maybeListen.hasError());
     addr0Promise.setValue(maybeListen.value());
@@ -158,12 +156,11 @@ void runTwoRanks(Action0 action0, Action1 action1) {
         1,
         0xc4ac4a1ull,
         std::string("channel-test"),
-        false,
+        CtranIbConfig{.enableLocalFlush = false},
         CtranIb::BootstrapMode::kSpecifiedServer,
         &serverAddr,
         abortCtrl,
-        std::make_shared<ctran::bootstrap::AbortableSocketFactory>(),
-        std::nullopt);
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>());
     auto maybeListen = ib->getListenSocketListenAddr();
     ASSERT_FALSE(maybeListen.hasError());
     addr1Promise.setValue(maybeListen.value());
@@ -590,12 +587,11 @@ void runNRanks(int nRanks, Action action) {
           rank,
           0xc4ac4a1ull,
           std::string("channel-test"),
-          /*enableLocalFlush=*/false,
+          /*ibConfig=*/CtranIbConfig{.enableLocalFlush = false},
           CtranIb::BootstrapMode::kSpecifiedServer,
           &serverAddr,
           abortCtrl,
-          std::make_shared<ctran::bootstrap::AbortableSocketFactory>(),
-          /*maxNumCqe=*/std::nullopt);
+          std::make_shared<ctran::bootstrap::AbortableSocketFactory>());
       auto maybeListen = ib->getListenSocketListenAddr();
       ASSERT_FALSE(maybeListen.hasError());
       auto listen = maybeListen.value();

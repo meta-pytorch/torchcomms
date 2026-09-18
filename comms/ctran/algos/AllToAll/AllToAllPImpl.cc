@@ -230,8 +230,9 @@ commResult_t ctranAllToAllPIbImpl(
   // comm's lifetime. Nullptr means fall back to the VC's default config.
   static thread_local auto alltoallpIbConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::ALLTOALL);
-  const size_t qpScalingTh = alltoallpIbConfig
-      ? alltoallpIbConfig->qpScalingTh
+  const size_t qpScalingTh =
+      alltoallpIbConfig && alltoallpIbConfig->qpScalingTh.has_value()
+      ? *alltoallpIbConfig->qpScalingTh
       : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD;
 
   CTRAN_PROFILER_IF(
