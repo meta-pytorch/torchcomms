@@ -75,10 +75,9 @@ struct alignas(128) BarrierState {
    * Blocking: Spins until the condition is met (or abortDevice expires).
    * Warning: Only one thread should call wait() per synchronization round.
    *
-   * @param abortDevice Optional abort handle (default: disabled, infinite wait)
+   * @param abortDevice Caller-supplied abort handle
    */
-  __device__ __forceinline__ void wait(
-      const AbortDevice& abortDevice = AbortDevice()) {
+  __device__ __forceinline__ void wait(const AbortDevice& abortDevice) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
       FT_ABORT_BREAK(
@@ -115,13 +114,13 @@ struct alignas(128) BarrierState {
    * barrier before proceeding.
    *
    * @param group ThreadGroup for cooperative synchronization
-   * @param abortDevice Optional abort handle (default: disabled, infinite wait)
+   * @param abortDevice Caller-supplied abort handle
    *
    * All threads in the group must call this function (collective operation).
    */
   __device__ __forceinline__ void wait(
       ThreadGroup& group,
-      const AbortDevice& abortDevice = AbortDevice()) {
+      const AbortDevice& abortDevice) {
     if (group.is_leader()) {
       wait(abortDevice);
     }
