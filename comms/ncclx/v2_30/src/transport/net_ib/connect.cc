@@ -491,6 +491,8 @@ fail:
 
 #define NCCL_IB_SL_DEFAULT 0
 #define NCCL_IB_TC_DEFAULT 0
+// Traffic class travels in the 8-bit IP traffic_class byte.
+#define NCCL_IB_MAX_TRAFFIC_CLASS 255
 
 // The function creates and initializes QPs (modifies the QPs to INIT) on the
 // sender side. Afterwards it populates the metadata structure, provided to the
@@ -829,8 +831,15 @@ ib_recv_dev_list:
   }
   trafficClass = ncclIbGetTrafficClass(ctx);
   meta.addr = (uint64_t)comm->ctsFifo;
+  // Service level keeps upstream precedence: NCCL_IB_SL > per-comm hint > default.
   meta.sl = (ncclParamIbSl() != -1) ? ncclParamIbSl() : (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? trafficClass : NCCL_IB_SL_DEFAULT;
-  meta.tc = (ncclParamIbTc() != -1) ? ncclParamIbTc() : (trafficClass != NCCL_NET_TRAFFIC_CLASS_UNDEF) ? trafficClass : NCCL_IB_TC_DEFAULT;
+  if (trafficClass >= 0 && trafficClass <= NCCL_IB_MAX_TRAFFIC_CLASS) {
+    meta.tc = trafficClass;
+  } else if (ncclParamIbTc() != -1) {
+    meta.tc = static_cast<int>(ncclParamIbTc());
+  } else {
+    meta.tc = NCCL_IB_TC_DEFAULT;
+  }
   strncpy(meta.devName, mergedDev->devName, MAX_MERGED_DEV_NAME);
 
   stage->state = ncclIbCommStateSend;
