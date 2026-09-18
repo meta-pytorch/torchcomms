@@ -598,6 +598,11 @@ class CtranIb {
   // Called once from init(); result stored in trafficClass_.
   commResult_t resolveTrafficClass(const CtranIbConfig& ibConfig);
 
+  // Map cudaDev to its first IB device using the global device count and
+  // stride.
+  commResult_t resolveFirstIbvDevice(int maxNumNic, size_t& firstIbvDevice)
+      const;
+
   const char* ibv_wc_status_str(enum ibverbx::ibv_wc_status status);
 
   inline bool canTransfer(CtranIbVirtualConn* vc) {
