@@ -55,6 +55,11 @@ using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 
 namespace detail {
 
+enum class PeerRkeyExposureState {
+  kLocalOnly,
+  kPossiblyExposed,
+};
+
 struct IbgdaQpSlotResources {
   doca_gpu_verbs_qp_group_hl* group{nullptr};
   doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
@@ -253,6 +258,10 @@ class MultipeerIbgdaTransport
     return collapsedCq_;
   }
 
+  bool requiresProcessLifetimeQuarantine() const {
+    return requiresProcessLifetimeQuarantine_;
+  }
+
  private:
   using QpSlotResources = detail::IbgdaQpSlotResources;
 
@@ -367,6 +376,14 @@ class MultipeerIbgdaTransport
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  // Once phase 2 hands our payload to bootstrap_->send, local failure cannot
+  // reveal whether the peer received our rkeys. That state is sticky.
+  std::vector<detail::PeerRkeyExposureState> peerRkeyExposureStates_;
+  // Once set, the owning dispatcher detaches this object for process lifetime.
+  // A direct owner that reaches the destructor instead retains every underlying
+  // QP, MR, and referenced allocation rather than releasing exposed resources.
+  bool requiresProcessLifetimeQuarantine_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
   ExchangeState exchangeState_{ExchangeState::kUnprepared};

@@ -2,13 +2,100 @@
 
 #pragma once
 
-#ifndef __HIP_PLATFORM_AMD__
-
 #include <cstddef>
+#include <exception>
+#include <memory>
+#include <optional>
+#include <string_view>
+#include <utility>
 
+#include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
+
+#ifndef __HIP_PLATFORM_AMD__
 #include <doca_gpunetio_host.h>
+#endif
 
 namespace comms::prims::detail {
+
+template <typename ExchangePeerBuffers>
+decltype(auto) exchangePeerBufferPayloadWithExposureTracking(
+    PeerRkeyExposureState& exposureState,
+    ExchangePeerBuffers&& exchangePeerBuffers) {
+  return std::forward<ExchangePeerBuffers>(exchangePeerBuffers)(
+      [&exposureState]() {
+        exposureState = PeerRkeyExposureState::kPossiblyExposed;
+      });
+}
+
+template <typename PeerRkeyExposureStates>
+std::optional<std::size_t> findPossiblyExposedPeer(
+    const PeerRkeyExposureStates& exposureStates) {
+  for (std::size_t peerIndex = 0; peerIndex < exposureStates.size();
+       ++peerIndex) {
+    if (exposureStates[peerIndex] == PeerRkeyExposureState::kPossiblyExposed) {
+      return peerIndex;
+    }
+  }
+  return std::nullopt;
+}
+
+template <typename Transport>
+Transport* releaseTransportForProcessLifetimeIfQuarantined(
+    std::unique_ptr<Transport>& transport,
+    bool processLifetimeQuarantineRequired) {
+  return processLifetimeQuarantineRequired ? transport.release() : nullptr;
+}
+
+template <typename Transport, typename Operation, typename Quarantine>
+decltype(auto) runWithProcessLifetimeQuarantineOnFailure(
+    Transport& transport,
+    Operation&& operation,
+    Quarantine&& quarantine) {
+  try {
+    return std::forward<Operation>(operation)(transport);
+  } catch (const std::exception& ex) {
+    if (transport.requiresProcessLifetimeQuarantine()) {
+      quarantine(ex.what());
+    }
+    throw;
+  } catch (...) {
+    if (transport.requiresProcessLifetimeQuarantine()) {
+      quarantine("unknown IBGDA peer materialization failure");
+    }
+    throw;
+  }
+}
+
+template <typename Operation, typename Quarantine>
+decltype(auto) runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+    bool& rkeysPossiblyExposed,
+    Operation&& operation,
+    Quarantine&& quarantine) {
+  try {
+    return std::forward<Operation>(operation)();
+  } catch (const std::exception& ex) {
+    if (rkeysPossiblyExposed) {
+      quarantine(ex.what());
+    }
+    throw;
+  } catch (...) {
+    if (rkeysPossiblyExposed) {
+      quarantine("unknown rkey exchange failure");
+    }
+    throw;
+  }
+}
+
+template <typename ReleaseResources>
+void releaseUnlessProcessLifetimeQuarantined(
+    bool processLifetimeQuarantineRequired,
+    ReleaseResources&& releaseResources) {
+  if (!processLifetimeQuarantineRequired) {
+    std::forward<ReleaseResources>(releaseResources)();
+  }
+}
+
+#ifndef __HIP_PLATFORM_AMD__
 
 void requireQpTransitionSuccess(
     doca_error_t status,
@@ -99,6 +186,6 @@ void quiescePeerQpsThenReleaseResources(
   releasePeerResources();
 }
 
-} // namespace comms::prims::detail
-
 #endif
+
+} // namespace comms::prims::detail

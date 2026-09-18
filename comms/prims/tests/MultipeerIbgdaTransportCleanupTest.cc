@@ -3,10 +3,14 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <functional>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "comms/common/bootstrap/tests/MockBootstrap.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
@@ -18,6 +22,84 @@ struct FakeNicResources {
 };
 
 using Event = std::pair<std::string, const void*>;
+using StrictMockBootstrap =
+    ::testing::StrictMock<meta::comms::testing::MockBootstrap>;
+
+[[noreturn]] void throwLocalValidationFailure() {
+  throw std::runtime_error("local validation failure");
+}
+
+class PeerExchangeHarness final : private MultiPeerIbTransportBase {
+ public:
+  PeerExchangeHarness(
+      int myRank,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
+      : MultiPeerIbTransportBase(
+            myRank,
+            /*nRanks=*/2,
+            std::move(bootstrap),
+            makeConfig()) {}
+
+  int exchange(
+      int peerRank,
+      int localPayload,
+      const std::function<void()>& beforeSend) {
+    return exchangeWithPeer(peerRank, localPayload, /*tag=*/0, beforeSend);
+  }
+
+ private:
+  static MultipeerIbTransportConfig makeConfig() {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    return config;
+  }
+};
+
+class MaterializationFailureHarness final
+    : public MultiPeerIbTransport<MaterializationFailureHarness> {
+ public:
+  explicit MaterializationFailureHarness(
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
+      : MultiPeerIbTransport(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::move(bootstrap),
+            makeConfig()) {
+    peerMaterialized_.resize(1, false);
+  }
+
+  [[noreturn]] void doMaterializePeer(int) {
+    rkeysPossiblyExposed_ = true;
+    throw std::runtime_error("original materialization failure");
+  }
+
+  void cleanupPeerOnFailure(int) {
+    cleanupCalled_ = true;
+    if (rkeysPossiblyExposed_) {
+      requiresProcessLifetimeQuarantine_ = true;
+      return;
+    }
+  }
+
+  bool requiresProcessLifetimeQuarantine() const {
+    return requiresProcessLifetimeQuarantine_;
+  }
+
+  bool cleanupCalled() const {
+    return cleanupCalled_;
+  }
+
+ private:
+  static MultipeerIbTransportConfig makeConfig() {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    return config;
+  }
+
+  bool rkeysPossiblyExposed_{false};
+  bool requiresProcessLifetimeQuarantine_{false};
+  bool cleanupCalled_{false};
+};
 
 TEST(
     MultipeerIbgdaTransportCleanupTest,
@@ -117,6 +199,210 @@ TEST(
           {"single", &failedPeerLoopback1},
           {"release_peer", nullptr},
       }));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    LowerRankReceiveFailureKeepsRkeysLocal) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 1, ::testing::_))
+      .WillOnce([] { return folly::makeSemiFuture(-1); });
+  EXPECT_CALL(*bootstrap, send(::testing::_, ::testing::_, 1, ::testing::_))
+      .Times(0);
+  PeerExchangeHarness transport(/*myRank=*/0, bootstrap);
+  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
+
+  EXPECT_THROW(
+      exchangePeerBufferPayloadWithExposureTracking(
+          exposureState,
+          [&](const auto& beforeSend) {
+            return transport.exchange(/*peerRank=*/1, 7, beforeSend);
+          }),
+      std::runtime_error);
+  EXPECT_EQ(exposureState, PeerRkeyExposureState::kLocalOnly);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    LowerRankSendFailureMarksRkeysPossiblyExposed) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 1, ::testing::_))
+      .WillOnce([](void* payload, int, int, int) {
+        *static_cast<int*>(payload) = 11;
+        return folly::makeSemiFuture(0);
+      });
+  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
+  EXPECT_CALL(*bootstrap, send(::testing::_, sizeof(int), 1, ::testing::_))
+      .WillOnce([&](void*, int, int, int) {
+        EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
+        return folly::makeSemiFuture(-1);
+      });
+  PeerExchangeHarness transport(/*myRank=*/0, bootstrap);
+
+  EXPECT_THROW(
+      exchangePeerBufferPayloadWithExposureTracking(
+          exposureState,
+          [&](const auto& beforeSend) {
+            return transport.exchange(/*peerRank=*/1, 7, beforeSend);
+          }),
+      std::runtime_error);
+  EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    HigherRankReceiveFailureLeavesRkeysPossiblyExposed) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  PeerRkeyExposureState exposureState = PeerRkeyExposureState::kLocalOnly;
+  EXPECT_CALL(*bootstrap, send(::testing::_, sizeof(int), 0, ::testing::_))
+      .WillOnce([&](void*, int, int, int) {
+        EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
+        return folly::makeSemiFuture(0);
+      });
+  EXPECT_CALL(*bootstrap, recv(::testing::_, sizeof(int), 0, ::testing::_))
+      .WillOnce([] { return folly::makeSemiFuture(-1); });
+  PeerExchangeHarness transport(/*myRank=*/1, bootstrap);
+
+  EXPECT_THROW(
+      exchangePeerBufferPayloadWithExposureTracking(
+          exposureState,
+          [&](const auto& beforeSend) {
+            return transport.exchange(/*peerRank=*/0, 7, beforeSend);
+          }),
+      std::runtime_error);
+  EXPECT_EQ(exposureState, PeerRkeyExposureState::kPossiblyExposed);
+}
+
+TEST(MultipeerIbgdaTransportCleanupTest, FindsFirstPossiblyExposedPeer) {
+  const std::vector<PeerRkeyExposureState> exposureStates = {
+      PeerRkeyExposureState::kPossiblyExposed,
+      PeerRkeyExposureState::kLocalOnly,
+      PeerRkeyExposureState::kPossiblyExposed,
+  };
+
+  EXPECT_EQ(findPossiblyExposedPeer(exposureStates), 0);
+}
+
+TEST(MultipeerIbgdaTransportCleanupTest, NoPossiblyExposedPeerReturnsNullopt) {
+  const std::vector<PeerRkeyExposureState> exposureStates(
+      2, PeerRkeyExposureState::kLocalOnly);
+
+  EXPECT_EQ(findPossiblyExposedPeer(exposureStates), std::nullopt);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    ProcessLifetimeQuarantineDetachesOnlyWhenOwnerIsDestroyed) {
+  bool destroyed = false;
+  struct DestructionProbe {
+    explicit DestructionProbe(bool& destroyed) : destroyed(destroyed) {}
+    ~DestructionProbe() {
+      destroyed = true;
+    }
+    bool& destroyed;
+  };
+  auto owner = std::make_unique<DestructionProbe>(destroyed);
+  auto* quarantined = releaseTransportForProcessLifetimeIfQuarantined(
+      owner, /*processLifetimeQuarantineRequired=*/true);
+
+  EXPECT_EQ(owner, nullptr);
+  EXPECT_FALSE(destroyed);
+
+  delete quarantined;
+  EXPECT_TRUE(destroyed);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    RkeyExchangeFailureAfterExposureQuarantinesAndPreservesOriginalError) {
+  bool rkeysPossiblyExposed = false;
+  bool quarantined = false;
+  std::string quarantineContext;
+
+  try {
+    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+        rkeysPossiblyExposed,
+        [&]() {
+          rkeysPossiblyExposed = true;
+          throw std::runtime_error("original window exchange failure");
+        },
+        [&](std::string_view context) {
+          quarantined = true;
+          quarantineContext = context;
+        });
+    FAIL() << "expected original window exchange failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "original window exchange failure");
+  }
+
+  EXPECT_TRUE(quarantined);
+  EXPECT_EQ(quarantineContext, "original window exchange failure");
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    RkeyExchangeFailureBeforeExposureDoesNotQuarantine) {
+  bool rkeysPossiblyExposed = false;
+  bool quarantined = false;
+
+  EXPECT_THROW(
+      runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+          rkeysPossiblyExposed,
+          throwLocalValidationFailure,
+          [&](std::string_view) { quarantined = true; }),
+      std::runtime_error);
+  EXPECT_FALSE(quarantined);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    MaterializationFailurePreservesOriginalErrorAfterOwnerQuarantine) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  auto owner = std::make_unique<MaterializationFailureHarness>(bootstrap);
+  MaterializationFailureHarness* quarantinedTransport = nullptr;
+  bool quarantined = false;
+  bool poisoned = false;
+  auto materialize = [&]() {
+    runWithProcessLifetimeQuarantineOnFailure(
+        *owner,
+        [](auto& transport) { transport.materializePeer(/*peerRank=*/1); },
+        [&](std::string_view context) {
+          EXPECT_EQ(context, "original materialization failure");
+          quarantined = true;
+          poisoned = true;
+        });
+  };
+
+  try {
+    materialize();
+    FAIL() << "expected original materialization failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "original materialization failure");
+  }
+  EXPECT_NE(owner, nullptr);
+  EXPECT_TRUE(quarantined);
+  EXPECT_TRUE(poisoned);
+  quarantinedTransport =
+      releaseTransportForProcessLifetimeIfQuarantined(owner, quarantined);
+  ASSERT_NE(quarantinedTransport, nullptr);
+  EXPECT_TRUE(quarantinedTransport->cleanupCalled());
+
+  delete quarantinedTransport;
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    ProcessLifetimeQuarantineRetainsDependentResources) {
+  bool released = false;
+  releaseUnlessProcessLifetimeQuarantined(true, [&]() { released = true; });
+  EXPECT_FALSE(released);
+
+  releaseUnlessProcessLifetimeQuarantined(false, [&]() { released = true; });
+  EXPECT_TRUE(released);
 }
 
 TEST(
