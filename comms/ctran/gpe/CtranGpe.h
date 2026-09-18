@@ -49,7 +49,6 @@ struct OpElem {
     ALLTOALL,
     ALLTOALLP,
     ALLTOALLV,
-    DEVICE_ALLTOALLV,
     ALLTOALLV_DEDUP,
     BROADCAST,
     REDUCESCATTER,
@@ -161,13 +160,6 @@ struct OpElem {
       commDataType_t datatype;
     } alltoallv;
     struct {
-      const void* sendbuff;
-      void* recvbuff;
-      const int64_t* sendcounts_d; // device pointer
-      const int64_t* recvcounts_d; // device pointer
-      commDataType_t datatype;
-    } device_alltoallv;
-    struct {
       // Reference to persistent algo fields
       void* pArgs;
       void* algoResource;
@@ -269,9 +261,7 @@ struct KernelConfig {
     SENDRECV,
     RECV_UNPACK,
     SENDRECV_UNPACK,
-    SENDRECV_P2P,
     ALLTOALL,
-    DEVICE_ALLTOALLV,
     ALLTOALLV,
     ALLTOALLV_DEDUP,
     BROADCAST,
@@ -295,10 +285,8 @@ struct KernelConfig {
   void* algoArgs{nullptr};
   void* unpackPool{nullptr};
 
-  // Post-kernel cleanup callback. Populated by algorithm setup (e.g.,
-  // SendRecv P2P useList path); transferred to CtranGpeCmd on submit,
-  // invoked by GPE thread after the kernel signals completion via
-  // kernelFlag.
+  // Optional cleanup transferred to CtranGpeCmd and invoked after the kernel
+  // signals completion through kernelFlag.
   std::function<void()> postKernelCleanup{nullptr};
 
   // KernelElems marked persistent during graph capture by allocKernelElems().
@@ -390,8 +378,6 @@ inline const char* ctranCollectiveOpName(OpElem::opType t) {
       return "alltoallp";
     case OpElem::ALLTOALLV:
       return "alltoallv";
-    case OpElem::DEVICE_ALLTOALLV:
-      return "device_alltoallv";
     case OpElem::ALLTOALLV_DEDUP:
       return "alltoallv_dedup";
     case OpElem::BROADCAST:
@@ -600,11 +586,6 @@ extern __global__ void ncclKernelSendRecv(
     ctran::gpe::KernelFlagDev* flag,
     CtranAlgoDeviceState* devState,
     ctran::sendrecv::KernelSendRecvArgs args);
-
-extern __global__ void ncclKernelSendRecvP2p(
-    ctran::gpe::KernelFlagDev* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::sendrecv::KernArgs args);
 
 template <bool UNPACK>
 __global__ void ncclKernelBroadcast(

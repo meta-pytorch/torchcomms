@@ -122,7 +122,7 @@ __device__ __forceinline__ bool mbarrier_try_wait_parity(
 template <bool kUseTma>
 struct QuantizedReduceScatterCopyOpT {
   // Whether the receive path stages its operands through shared memory with
-  // bulk TMA. Selected at launch through MCCL_PRIMS_TMA.
+  // bulk TMA. Selected by the launcher's template instantiation.
   //
   // This must NOT depend on COMMS_PRIMS_QUANT_TMA_AVAILABLE: that macro keys
   // off

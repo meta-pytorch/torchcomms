@@ -5,7 +5,6 @@
 
 #include <chrono>
 
-#include "comms/ctran/algos/AllReduce/AllReduceFusedImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 

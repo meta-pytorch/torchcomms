@@ -8,7 +8,6 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
-#include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/algos/PersistentCleanup.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -23,13 +22,6 @@
 
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
-
-#if defined(ENABLE_PRIMS)
-#include "comms/ctran/algos/common/OrderedWorkStreamGuard.h"
-#include "comms/prims/trace/PipesTrace.h"
-#include "comms/prims/transport/MultiPeerDeviceHandle.cuh"
-#include "comms/prims/transport/MultiPeerTransport.h"
-#endif // defined(ENABLE_PRIMS)
 
 Ctran::Ctran(
     CtranComm* comm,
@@ -118,21 +110,6 @@ uint64_t Ctran::getCtranOpCount() const {
   return comm_->getCtranOpCount();
 }
 
-#if defined(ENABLE_PRIMS)
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
-    const std::vector<int>& peers) {
-  if (!multiPeerTransport_) {
-    return nullptr;
-  }
-  return multiPeerTransport_->get_device_handle(peers).transports.data();
-}
-#else
-comms::prims::Transport* CtranComm::getMultiPeerTransportsPtr(
-    const std::vector<int>& /*peers*/) {
-  return nullptr;
-}
-#endif // defined(ENABLE_PRIMS)
-
 std::optional<meta::comms::colltrace::AlgoStatDump> CtranComm::dumpAlgoStats()
     const {
   if (!algoStats_) {
@@ -190,11 +167,6 @@ commResult_t ctranInit(
     }
   }
 
-  auto res = ctranInitializePipes(comm);
-  if (res != commSuccess) {
-    return res;
-  }
-
   initEvent.lapAndRecord("CtranInit COMPLETE");
   return commSuccess;
 }
@@ -238,14 +210,6 @@ void CtranComm::destroy() {
   // All smart pointers are automatically de-initialized, but we want to
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
-#if defined(ENABLE_PRIMS)
-  primsOrderedWorkStreamGuard_.reset();
-  pipesTrace_.reset();
-  // Must be destroyed before ctran_ (which owns SharedResource staging
-  // buffers used as external data buffers) and before bootstrap_ (since
-  // multiPeerTransport_ holds a non-owning reference to it).
-  multiPeerTransport_.reset();
-#endif // defined(ENABLE_PRIMS)
   // Release every outstanding persistent request's pooled pipeSync + scoped
   // registration before ctran_.reset() (which triggers CtranGpe::terminate()'s
   // pool-drain spin-wait). Runs each cleanup token at most once; tokens already

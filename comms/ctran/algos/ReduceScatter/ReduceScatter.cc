@@ -12,14 +12,6 @@ bool ctranReduceScatterSupport(
   if (!ctranInitialized(comm)) {
     return false;
   }
-  if (algo == NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
-    CTRAN_LOG_EVERY_MS(
-        WARN,
-        60000,
-        "ctranReduceScatterSupport: ctdirect_ib is retired; falling back to baseline");
-    return false;
-  }
-
   const int nRanks = comm->statex_->nRanks();
   const int rank = comm->statex_->rank();
   const int nNodes = comm->statex_->nNodes();
@@ -85,8 +77,6 @@ bool ctranReduceScatterSupport(
         return false;
       }
       break;
-    case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-      return false;
     case NCCL_REDUCESCATTER_ALGO::ctring_ib:
       // Hosted by MCCL; CTRAN reports unsupported so non-MCCL callers fall
       // back.
@@ -107,8 +97,7 @@ commResult_t ctranReduceScatter(
     CtranComm* comm,
     cudaStream_t stream,
     enum NCCL_REDUCESCATTER_ALGO algo) {
-  if (comm->statex_->nRanks() == 1 &&
-      algo != NCCL_REDUCESCATTER_ALGO::ctdirect_ib) {
+  if (comm->statex_->nRanks() == 1) {
     return reduceScatterSingleRankImpl(
         sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
   }
@@ -142,8 +131,6 @@ commResult_t ctranReduceScatter(
     case NCCL_REDUCESCATTER_ALGO::ctrhd:
       return ctranReduceScatterRHD(
           sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
-    case NCCL_REDUCESCATTER_ALGO::ctdirect_ib:
-      return commInvalidUsage;
     default:
       CTRAN_ERR(
           commInternalError,

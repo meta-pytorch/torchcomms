@@ -19,11 +19,6 @@
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/ctran/window/Types.h"
 #include "comms/ctran/window/WinHintUtils.h"
-#if defined(ENABLE_PRIMS)
-#include "comms/prims/transport/MultiPeerTransport.h"
-#include "comms/prims/window/DeviceWindow.cuh"
-#include "comms/prims/window/HostWindow.h"
-#endif
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/ScubaLogger.h"
 
@@ -333,8 +328,6 @@ commResult_t setupMulticast(
 
 } // namespace
 
-// Defined here (not in header) so that unique_ptr<HostWindow> destructor
-// sees the complete HostWindow type.
 // Invariant: free() must run before a CtranWin is deleted, so the comm's window
 // range cache never retains a dangling pointer to a destroyed window.
 CtranWin::~CtranWin() = default;
@@ -854,11 +847,6 @@ commResult_t CtranWin::free(bool skipBarrier) {
     ownedDataSegHdls_.clear();
   }
 
-#if defined(ENABLE_PRIMS)
-  // HostWindow handles cleanup via RAII
-  hostWindow_.reset();
-#endif
-
   // winBasePtr is null on the register path with signals disabled (nothing was
   // allocated), so only free a real allocation.
   if (winBasePtr != nullptr) {
@@ -900,45 +888,6 @@ bool CtranWin::nvlEnabled(int rank) const {
   return isGpuMem() &&
       mapper->hasBackend(resourceRank, CtranMapperBackend::NVL);
 }
-
-#if defined(ENABLE_PRIMS)
-commResult_t CtranWin::getDeviceWin(
-    comms::prims::DeviceWindow* devWin,
-    const comms::prims::WindowConfig& config) {
-  auto* transport = comm->multiPeerTransport_.get();
-  if (!transport) {
-    FB_ERRORRETURN(
-        commInternalError, "getDeviceWin: multiPeerTransport is null.");
-  }
-
-  if (!hostWindow_) {
-    const auto myRank = transport->my_rank();
-
-    CTRAN_LOG_SUBSYS(
-        INFO,
-        INIT,
-        "CTRAN-WINDOW: Rank {} creating HostWindow with signalCount={} "
-        "counterCount={} barrierCount={} dataPtr={} dataBytes={}",
-        myRank,
-        config.peerSignalCount,
-        config.peerCounterCount,
-        config.barrierCount,
-        winDataPtr,
-        dataBytes);
-
-    hostWindow_ = std::make_unique<comms::prims::HostWindow>(
-        *transport, config, winDataPtr, dataBytes);
-
-    hostWindow_->exchange();
-
-    CTRAN_LOG_SUBSYS(
-        INFO, INIT, "CTRAN-WINDOW: Rank {} device window built", myRank);
-  }
-
-  new (devWin) comms::prims::DeviceWindow(hostWindow_->getDeviceWindow());
-  return commSuccess;
-}
-#endif // ENABLE_PRIMS
 
 commResult_t ctranWinAllocate(
     size_t size,

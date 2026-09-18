@@ -63,10 +63,8 @@ target_include_directories(ctran PRIVATE
     ${CUDA_INCLUDE_DIRS}/cccl
 )
 
-# ctran is the primary prims consumer: enabling this activates the (otherwise
-# compiled-out) prims-backed code — CtranPipes, CtranAlgo, AllToAll/SendRecv,
-# window, hierarchical ring — which #include "comms/prims/..." (resolved via
-# ROOT) and link against the prims OBJECT library.
+# Transitional compatibility definition retained until the build dependency
+# cleanup; CTRAN no longer contains PRiMS-backed runtime code.
 if(MCCL_ENABLE_PRIMS)
     target_compile_definitions(ctran PRIVATE ENABLE_PRIMS=1)
 endif()
