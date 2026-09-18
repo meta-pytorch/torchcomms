@@ -592,36 +592,116 @@ void testTwoCallSendThenRecv(
 
 #ifndef __HIP_PLATFORM_AMD__
 constexpr uint32_t kWarpProxyTestWorkerThreads = 512;
-using WarpProxyTest = IbgdaWarpProxy<kWarpProxyTestWorkerThreads>;
+using WarpProxyTest = IbgdaWarpProxy<
+    kWarpProxyTestWorkerThreads,
+    /*MaxStreams=*/1>;
 
 __global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
     warpProxySendRecvKernel(
         P2pIbgdaTransportDevice* transport,
         void* buffer,
         std::size_t nbytes,
-        std::size_t maxSignalBytes,
         bool send,
-        uint32_t queueDepth,
-        uint64_t* queueFullCount,
         AbortDevice abortDevice) {
   abortDevice.start();
   auto block = make_block_group();
   __shared__ WarpProxyTest::SharedState sharedState;
-  WarpProxyTest::run(
-      sharedState,
-      block,
-      WarpProxyTest::Config{
-          .queueDepth = queueDepth,
-          .queueFullCount = queueFullCount,
-      },
-      abortDevice,
-      [&](auto& ops) {
-        if (send) {
-          ops.send(*transport, buffer, nbytes, maxSignalBytes);
-        } else {
-          ops.recv(*transport, buffer, nbytes, maxSignalBytes);
+  WarpProxyTest::run(sharedState, block, abortDevice, [&](auto& ops) {
+    if (send) {
+      ops.send(*transport, buffer, nbytes);
+    } else {
+      ops.recv(*transport, buffer, nbytes);
+    }
+  });
+}
+
+__global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
+    warpProxyStalledDemandRecvKernel(
+        P2pIbgdaTransportDevice* transport,
+        std::size_t slotBytes,
+        uint32_t* completedAttempts,
+        uint32_t* unexpectedSuccesses,
+        AbortDevice abortDevice) {
+  abortDevice.start();
+  auto block = make_block_group();
+  __shared__ WarpProxyTest::SharedState sharedState;
+  WarpProxyTest::run(sharedState, block, abortDevice, [&](auto& ops) {
+    auto& workers = ops.group();
+    uint32_t completed = 0;
+    uint32_t successes = 0;
+    for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+      const uint64_t sequence =
+          ops.wait_recv(*transport, workers, slotBytes, abortDevice);
+      ++completed;
+      successes += ops.recv_wait_succeeded(sequence);
+    }
+    if (workers.is_leader()) {
+      *completedAttempts = completed;
+      *unexpectedSuccesses = successes;
+    }
+  });
+}
+
+__global__ void __launch_bounds__(WarpProxyTest::kBlockThreads, 1)
+    exactWarpProxyDepthOneSlotReuseKernel(
+        P2pIbgdaTransportDevice* transport,
+        const void* sendBuffer,
+        void* recvStagingSnapshots,
+        std::size_t slotBytes,
+        uint8_t tailValue,
+        bool send,
+        AbortDevice abortDevice) {
+  constexpr std::size_t kPublicationBytes[] = {128, 1024, 256};
+  constexpr std::size_t kPublications =
+      sizeof(kPublicationBytes) / sizeof(kPublicationBytes[0]);
+
+  abortDevice.start();
+  auto block = make_block_group();
+  __shared__ WarpProxyTest::SharedState sharedState;
+  WarpProxyTest::run(sharedState, block, abortDevice, [&](auto& ops) {
+    auto& workers = ops.group();
+    if (send) {
+      const auto* source = static_cast<const char*>(sendBuffer);
+      std::size_t offset = 0;
+      for (const std::size_t bytes : kPublicationBytes) {
+        ops.send(*transport, source + offset, bytes);
+        offset += bytes;
+      }
+      return;
+    }
+
+    ops.declare_expected_recvs(*transport, kPublications);
+    auto* snapshots = static_cast<uint8_t*>(recvStagingSnapshots);
+    auto* staging = reinterpret_cast<uint8_t*>(
+        transport->channel_layout().recvStagingPtr +
+        static_cast<std::size_t>(workers.group_id) *
+            transport->channel_layout().perChannelBufferSize);
+    for (std::size_t publication = 0; publication < kPublications;
+         ++publication) {
+      const uint64_t sequence =
+          ops.wait_recv(*transport, workers, slotBytes, abortDevice);
+      if (!ops.recv_wait_succeeded(sequence)) {
+        return;
+      }
+      for (std::size_t i = workers.thread_id_in_group; i < slotBytes;
+           i += workers.group_size) {
+        snapshots[publication * slotBytes + i] = staging[i];
+      }
+      workers.sync();
+
+      if (publication == 1) {
+        for (std::size_t i = kPublicationBytes[2] + workers.thread_id_in_group;
+             i < slotBytes;
+             i += workers.group_size) {
+          staging[i] = tailValue;
         }
-      });
+        workers.sync();
+        __threadfence_system();
+        workers.sync();
+      }
+      ops.publish_recv(*transport, workers, slotBytes, sequence);
+    }
+  });
 }
 
 __global__ void progressSendRecvKernel(
@@ -865,28 +945,47 @@ void testWarpProxySendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes,
-    bool send,
-    uint32_t queueDepth,
-    uint64_t* queueFullCount) {
+    bool send) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)buffer;
   (void)nbytes;
-  (void)maxSignalBytes;
   (void)send;
-  (void)queueDepth;
-  (void)queueFullCount;
   throw std::runtime_error("warp proxy is NVIDIA-only");
 #else
   warpProxySendRecvKernel<<<1, WarpProxyTest::kBlockThreads>>>(
+      transport, buffer, nbytes, send, testAbortDevice());
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+#endif
+}
+
+void testExactWarpProxyDepthOneSlotReuse(
+    P2pIbgdaTransportDevice* transport,
+    const void* sendBuffer,
+    void* recvStagingSnapshots,
+    std::size_t slotBytes,
+    uint8_t tailValue,
+    bool send) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)sendBuffer;
+  (void)recvStagingSnapshots;
+  (void)slotBytes;
+  (void)tailValue;
+  (void)send;
+  throw std::runtime_error("warp proxy is NVIDIA-only");
+#else
+  exactWarpProxyDepthOneSlotReuseKernel<<<1, WarpProxyTest::kBlockThreads>>>(
       transport,
-      buffer,
-      nbytes,
-      maxSignalBytes,
+      sendBuffer,
+      recvStagingSnapshots,
+      slotBytes,
+      tailValue,
       send,
-      queueDepth,
-      queueFullCount,
       testAbortDevice());
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
@@ -900,15 +999,11 @@ void launchWarpProxyStalledSend(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes,
-    uint32_t queueDepth,
     comms::fault_tolerance::AbortDevice abort) {
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)buffer;
   (void)nbytes;
-  (void)maxSignalBytes;
-  (void)queueDepth;
   (void)abort;
   throw std::runtime_error("warp proxy is NVIDIA-only");
 #else
@@ -916,10 +1011,7 @@ void launchWarpProxyStalledSend(
       transport,
       buffer,
       nbytes,
-      maxSignalBytes,
       /*send=*/true,
-      queueDepth,
-      /*queueFullCount=*/nullptr,
       abort);
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
@@ -927,6 +1019,31 @@ void launchWarpProxyStalledSend(
         std::string("Kernel launch failed: ") + cudaGetErrorString(err));
   }
   // Deliberately no synchronize: the caller aborts while this is parked.
+#endif
+}
+
+void launchWarpProxyStalledDemandRecvs(
+    P2pIbgdaTransportDevice* transport,
+    std::size_t slotBytes,
+    uint32_t* completedAttempts,
+    uint32_t* unexpectedSuccesses,
+    comms::fault_tolerance::AbortDevice abort) {
+#ifdef __HIP_PLATFORM_AMD__
+  (void)transport;
+  (void)slotBytes;
+  (void)completedAttempts;
+  (void)unexpectedSuccesses;
+  (void)abort;
+  throw std::runtime_error("warp proxy is NVIDIA-only");
+#else
+  warpProxyStalledDemandRecvKernel<<<1, WarpProxyTest::kBlockThreads>>>(
+      transport, slotBytes, completedAttempts, unexpectedSuccesses, abort);
+  const cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+  // Deliberately no synchronize: the caller aborts while the first recv waits.
 #endif
 }
 

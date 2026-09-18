@@ -1464,7 +1464,7 @@ __device__ __forceinline__ void send_impl(
             static_cast<uint8_t>(kPipesTraceQpLaneMask),
             bytesThis);
       }
-      const bool slotUnretired = [&] {
+      const bool sendSlotNotReusable = [&] {
         if constexpr (std::is_void_v<IbOps>) {
           return prepare_send_slot<Proto>(
               transport, group, slot, pipelineCycle, abortDevice);
@@ -1473,7 +1473,7 @@ __device__ __forceinline__ void send_impl(
               transport, group, slot, pipelineCycle, abortDevice);
         }
       }();
-      if (slotUnretired) {
+      if (sendSlotNotReusable) {
         break;
       }
       if (group.is_leader()) {
@@ -1620,9 +1620,7 @@ __device__ __forceinline__ void send_impl(
             protocolBytesThis,
             slotFreeExpected,
             static_cast<uint32_t>(slot),
-            pipelineCycle,
-            /*requiredRecvCredit=*/0,
-            abortDevice);
+            pipelineCycle);
       }
       dataOff += payloadBytes;
     }
@@ -2018,9 +2016,9 @@ __device__ __forceinline__ void recv_impl(
               protocolBytesThis);
         }
       } else {
-        const uint64_t recvToken =
+        const auto recvToken =
             ibOps->wait_recv(transport, group, protocolBytesThis, abortDevice);
-        if (!ibOps->recv_token_valid(recvToken)) {
+        if (!ibOps->recv_wait_succeeded(recvToken)) {
           break;
         }
         const std::size_t validBytes =
@@ -2463,9 +2461,9 @@ __device__ __forceinline__ void forward_impl(
       }
       group.sync();
     } else {
-      const uint64_t recvToken = ibOps->wait_recv(
+      const auto recvToken = ibOps->wait_recv(
           transport, group, recvProtocolBytesThis, abortDevice);
-      if (!ibOps->recv_token_valid(recvToken)) {
+      if (!ibOps->recv_wait_succeeded(recvToken)) {
         break;
       }
       if (ibOps->prepare_send_slot(
@@ -2505,9 +2503,7 @@ __device__ __forceinline__ void forward_impl(
           fwdProtocolBytesThis,
           fwdSlotFreeExpected,
           static_cast<uint32_t>(fwdSlot),
-          fwdPipelineCycle,
-          recvToken + 1,
-          abortDevice);
+          fwdPipelineCycle);
     }
     dataOff += payloadBytes;
   }

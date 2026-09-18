@@ -56,11 +56,6 @@ DEFINE_bool(
     false,
     "Create companion and loopback QPs for resource-shape comparisons");
 DEFINE_int32(ibgda_sendrecv_warmup_iters, 5, "Warmup iterations");
-DEFINE_uint32(
-    ibgda_warp_proxy_queue_depth,
-    comms::prims::benchmark::kDefaultIbgdaWarpProxyQueueDepth,
-    "Maximum outstanding commands per IB warp proxy queue");
-
 namespace comms::prims::benchmark {
 namespace {
 
@@ -808,14 +803,7 @@ class IbgdaSendRecvBenchmarkContext {
       } else if (api == SendRecvApi::WarpProxy) {
         CHECK(!useLL);
         launch_ibgda_warp_proxy_send(
-            deviceTransport_,
-            sendBuf,
-            nbytes,
-            numBlocks_,
-            stream_,
-            /*maxSignalBytes=*/0,
-            AbortDevice(),
-            FLAGS_ibgda_warp_proxy_queue_depth);
+            deviceTransport_, sendBuf, nbytes, numBlocks_, stream_);
       } else {
         LOG(FATAL) << "unsupported send/recv API";
       }
@@ -846,14 +834,7 @@ class IbgdaSendRecvBenchmarkContext {
     } else if (api == SendRecvApi::WarpProxy) {
       CHECK(!useLL);
       launch_ibgda_warp_proxy_recv(
-          deviceTransport_,
-          recvBuf,
-          nbytes,
-          numBlocks_,
-          stream_,
-          /*maxSignalBytes=*/0,
-          AbortDevice(),
-          FLAGS_ibgda_warp_proxy_queue_depth);
+          deviceTransport_, recvBuf, nbytes, numBlocks_, stream_);
     } else {
       LOG(FATAL) << "unsupported send/recv API";
     }
@@ -933,9 +914,6 @@ static unsigned int ibgdaSendRecv(
         folly::UserMetric::Type::METRIC);
     counters["slot_bytes"] = folly::UserMetric(
         static_cast<double>(context.pipelineChunkBytes()),
-        folly::UserMetric::Type::METRIC);
-    counters["warp_proxy_queue_depth"] = folly::UserMetric(
-        static_cast<double>(FLAGS_ibgda_warp_proxy_queue_depth),
         folly::UserMetric::Type::METRIC);
     counters["num_channels"] = folly::UserMetric(
         static_cast<double>(context.numBlocks()),
