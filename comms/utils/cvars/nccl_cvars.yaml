@@ -2069,6 +2069,16 @@ cvars:
      MCCL_ALLREDUCE_ZERO_COPY_MODE=force and must be set identically on every
      rank. Production behavior is unchanged by default.
 
+ - name        : MCCL_ALLREDUCE_ROUTE_EVIDENCE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Emit one MCCL_ROUTE_EVIDENCE_V1 WARN record per communicator, rank,
+     message shape, datatype, and buffer placement for MCCL Ring AllReduce.
+     The record reports whether the rank participates in the IB phase, whether
+     the IBGDA Warp proxy engaged, and the exact local decision reason. This is
+     an opt-in benchmark/test signal and does not alter collective routing.
+
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
    default     : true
