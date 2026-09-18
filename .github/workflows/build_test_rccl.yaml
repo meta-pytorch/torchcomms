@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/build_test_rccl.yaml
+      - build_rccl.sh
+      - comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
+      - comms/torchcomms/rccl/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
@@ -22,9 +27,8 @@ jobs:
           - name: RCCL
             runs-on: linux.rocm.gpu.meta-pytorch.mi350.4
             gpu-arch-type: "rocm"
-            gpu-arch-version: "7.2"
-            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.2'
-            docker-image: pytorch/manylinux2_28-builder:rocm7.2
+            gpu-arch-version: "10.0"
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm10.0'
             cmake-version: "latest"
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
@@ -32,6 +36,7 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      job-name: RCCL ROCm ${{ matrix.gpu-arch-version }}
       script: |
         set -ex
         # use faster libmamba solver
@@ -62,8 +67,40 @@ jobs:
         pip install -r requirements.txt
         pip install -r dev-requirements.txt
 
-        export ROCM_HOME=/opt/rocm
-        export RCCL_INCLUDE=$ROCM_HOME/include/rccl
+        # TheRock: SDK is under site-packages/_rocm_sdk_devel, not /opt/rocm. The
+        # torch wheel only pulls rocm[libraries,device-all], which ships
+        # librccl.so.1 but no headers, so RCCL_INCLUDE has to come from the
+        # image's devel tree exported by /etc/rocm_env.sh. rocm-sdk-devel is not
+        # published on the nightly index, so `rocm-sdk path` can fail here; only
+        # take its answer when it resolves to a tree that actually has RCCL.
+        if [ -f /etc/rocm_env.sh ]; then
+          # shellcheck source=/dev/null
+          source /etc/rocm_env.sh
+        fi
+        if command -v rocm-sdk >/dev/null 2>&1; then
+          _rocm_root="$(rocm-sdk path --root 2>/dev/null || true)"
+          _rocm_bin="$(rocm-sdk path --bin 2>/dev/null || true)"
+          if [ -n "${_rocm_root}" ] && [ -f "${_rocm_root}/lib/librccl.so" ]; then
+            export ROCM_HOME="${_rocm_root}"
+            if [ -n "${_rocm_bin}" ]; then
+              export PATH="${_rocm_bin}:${PATH}"
+            fi
+          fi
+        fi
+        if [ -z "${ROCM_HOME:-}" ] && [ -f /opt/rocm/lib/librccl.so ]; then
+          export ROCM_HOME=/opt/rocm
+        fi
+        if [ -z "${ROCM_HOME:-}" ] || [ ! -f "${ROCM_HOME}/lib/librccl.so" ]; then
+          echo "Could not find librccl.so (ROCM_HOME=${ROCM_HOME:-unset})" >&2
+          exit 1
+        fi
+        if [ ! -f "${ROCM_HOME}/include/rccl/rccl.h" ]; then
+          echo "Found librccl.so but no rccl.h under ${ROCM_HOME}/include/rccl" >&2
+          exit 1
+        fi
+        export RCCL_INCLUDE="${ROCM_HOME}/include/rccl"
+        export LD_LIBRARY_PATH="${ROCM_HOME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        echo "Using ROCM_HOME=${ROCM_HOME}"
 
         ./build_rccl.sh
         pip install numpy
