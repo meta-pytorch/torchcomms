@@ -2057,6 +2057,18 @@ cvars:
              ineligible or registration fails collectively use the copy path.
              Invalid or rank-mismatched requests return an error.
 
+ - name        : MCCL_ALLREDUCE_REQUIRE_ZERO_COPY
+   type        : bool
+   default     : false
+   description : |-
+     Require a forced MCCL-native AllReduce to use its registered zero-copy
+     path. After the existing eligibility and registration agreements finish,
+     return an error instead of launching the copy fallback when zero-copy is
+     unavailable during CUDA graph capture. Eager warmups retain the existing
+     copy path. This benchmark/test guard requires
+     MCCL_ALLREDUCE_ZERO_COPY_MODE=force and must be set identically on every
+     rank. Production behavior is unchanged by default.
+
  - name        : MCCL_ALLREDUCE_RING_BIDIRECTIONAL_ENABLE
    type        : bool
    default     : true
