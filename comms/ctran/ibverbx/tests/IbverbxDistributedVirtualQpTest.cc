@@ -296,7 +296,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
     }
     const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
 
-    // Get the business card and serialize it to JSON
+    // Get the business card and serialize it
     std::string serializedCard =
         virtualQp.getVirtualQpBusinessCard().serialize();
 
@@ -395,7 +395,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpModifyVirtualQp) {
   }
   const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
 
-  // Get the business card and serialize it to JSON
+  // Get the business card and serialize it
   std::string serializedCard =
       virtualQp->getVirtualQpBusinessCard().serialize();
 
@@ -530,7 +530,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   }
   const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
 
-  // Get the business card and serialize it to JSON
+  // Get the business card and serialize it
   std::string serializedCard =
       virtualQp->getVirtualQpBusinessCard().serialize();
 
