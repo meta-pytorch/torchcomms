@@ -276,7 +276,7 @@ void testTwoCallSendThenRecv(
     int blockSize);
 
 /**
- * Test kernel: Warp-proxy send or recv with queue-full observation.
+ * Test kernel: Warp-proxy send or recv with full-slot control accounting.
  */
 // The device budget comes from `testAbortDevice()` inside the launcher, as with
 // the other kernels here; there is no caller-supplied cycle count since the
@@ -285,10 +285,21 @@ void testWarpProxySendRecv(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes,
-    bool send,
-    uint32_t queueDepth,
-    uint64_t* queueFullCount);
+    bool send);
+
+/**
+ * Test kernel: exact-length depth-one send sequence 128B -> 1024B -> 256B.
+ *
+ * The receiver snapshots the complete physical staging slot before crediting
+ * each publication and restores the final publication's tail to `tailValue`.
+ */
+void testExactWarpProxyDepthOneSlotReuse(
+    P2pIbgdaTransportDevice* transport,
+    const void* sendBuffer,
+    void* recvStagingSnapshots,
+    std::size_t slotBytes,
+    uint8_t tailValue,
+    bool send);
 
 /**
  * Test kernel: warp-proxy send against a peer that never runs its own proxy.
@@ -304,8 +315,19 @@ void launchWarpProxyStalledSend(
     P2pIbgdaTransportDevice* transport,
     void* buffer,
     std::size_t nbytes,
-    std::size_t maxSignalBytes,
-    uint32_t queueDepth,
+    comms::fault_tolerance::AbortDevice abort);
+
+/**
+ * Test kernel: two demand-mode recv requests against a peer that never sends.
+ *
+ * Launches asynchronously so the caller can abort the first wait. Both recv
+ * attempts must return without consuming a slot after the abort.
+ */
+void launchWarpProxyStalledDemandRecvs(
+    P2pIbgdaTransportDevice* transport,
+    std::size_t slotBytes,
+    uint32_t* completedAttempts,
+    uint32_t* unexpectedSuccesses,
     comms::fault_tolerance::AbortDevice abort);
 
 /**
