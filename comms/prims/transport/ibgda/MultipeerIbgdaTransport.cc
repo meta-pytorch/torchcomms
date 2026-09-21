@@ -1416,6 +1416,8 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
       nic.qpSlots.resize(static_cast<size_t>(numPeers) * slotsPerPeer);
     }
     peerMaterialized_.resize(numPeers, false);
+    peerRkeyExposureStates_.resize(
+        numPeers, detail::PeerRkeyExposureState::kLocalOnly);
 
     // Allocate and register sink buffer for atomic return values
     allocateResources();
@@ -1443,6 +1445,20 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
 
 void MultipeerIbgdaTransport::cleanup() {
   auto& symbols = ibverbx::ibvSymbols;
+
+  const auto exposedPeerIndex = materializationFailed_
+      ? detail::findPossiblyExposedPeer(peerRkeyExposureStates_)
+      : std::nullopt;
+  if (exposedPeerIndex.has_value()) {
+    requiresProcessLifetimeQuarantine_ = true;
+    retainOwnedBuffersForProcessLifetime();
+    LOG(ERROR)
+        << "MultipeerIbgdaTransport: retaining QPs, MRs, and buffers for "
+           "process lifetime after ambiguous rkey exposure; "
+           "exposed_peer_index="
+        << *exposedPeerIndex;
+    return;
+  }
 
   auto releaseGpuAllocations = [&]() {
     // Free all GPU memory (transport objects + QP pointer arrays).
@@ -1777,6 +1793,12 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
     cleanupPeerSignalCounterResources(peerIndex);
   };
 
+  if (detail::findPossiblyExposedPeer(peerRkeyExposureStates_).has_value()) {
+    requiresProcessLifetimeQuarantine_ = true;
+    retainOwnedBuffersForProcessLifetime();
+    return;
+  }
+
 #ifndef __HIP_PLATFORM_AMD__
   detail::quiescePeerQpsThenReleaseResources(
       allQpsErrorBeforeDestroyEnabled(),
@@ -1792,6 +1814,8 @@ void MultipeerIbgdaTransport::cleanupPeerOnFailure(int peerIndex) {
   releasePeerResources();
 #endif
 
+  peerRkeyExposureStates_[peerIndex] =
+      detail::PeerRkeyExposureState::kLocalOnly;
   peerMaterialized_[peerIndex] = false;
   if (peerTransportsGpu_ != nullptr && peerTransportSize_ != 0) {
     cudaError_t err = cudaMemset(
@@ -1895,8 +1919,11 @@ void MultipeerIbgdaTransport::doMaterializePeer(int peerRank) {
       localBuf,
       IbCounterStorage::Device,
       /*allocateDiscardSignal=*/true);
-  auto remoteBuf =
-      exchangeWithPeer(peerRank, localBuf, kIbPeerBufferExchangeTag);
+  auto remoteBuf = detail::exchangePeerBufferPayloadWithExposureTracking(
+      peerRkeyExposureStates_[peerIndex], [&](const auto& beforeSend) {
+        return exchangeWithPeer(
+            peerRank, localBuf, kIbPeerBufferExchangeTag, beforeSend);
+      });
   applyRemoteSendRecvBuffer(peerIndex, remoteBuf);
   applyRemoteSignalCounterResources(
       peerIndex, remoteBuf, /*hasDiscardSignal=*/true);

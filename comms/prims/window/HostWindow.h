@@ -112,6 +112,12 @@ class HostWindow {
   }
 
   /**
+   * Returns true when IBGDA target allocations registered by this window must
+   * remain alive until process exit. This includes caller-owned buffers.
+   */
+  bool requiresProcessLifetimeQuarantine() const noexcept;
+
+  /**
    * getDeviceWindow - Get the flattened device-side window handle
    *
    * Returns a DeviceWindow with all signal, barrier, counter, and
@@ -159,6 +165,9 @@ class HostWindow {
    *              it dispatches on, so passing only NIC0's lkey would corrupt
    *              WQEs for any slot landing on NIC[1..N-1] on multi-NIC
    *              hardware (GB200/GB300).
+   *
+   * If requiresProcessLifetimeQuarantine() becomes true, the caller must keep
+   * ptr allocated and mapped until process exit.
    */
   std::optional<NetworkLKeys> registerLocalBuffer(void* ptr, std::size_t size);
 
@@ -171,6 +180,10 @@ class HostWindow {
    *
    * Each DeviceWindow supports exactly one exchanged dst buffer. Calling
    * this more than once is an error.
+   *
+   * If this operation or later transport materialization fails and
+   * requiresProcessLifetimeQuarantine() becomes true, the caller must keep
+   * ptr allocated and mapped until process exit.
    *
    * @param ptr   Local GPU buffer pointer
    * @param size  Buffer size in bytes
@@ -220,6 +233,8 @@ class HostWindow {
   void* get_nvlink_address(int peer, std::size_t offset = 0) const;
 
  private:
+  void exchangeImpl();
+  void registerAndExchangeBufferImpl(void* ptr, std::size_t size);
   DeviceWindow buildDeviceWindowImpl(MultiPeerDeviceHandle handle) const;
   void uploadRegistrationsToDevice();
 
@@ -290,6 +305,8 @@ class HostWindow {
 
   bool userBufferRegistered_{false};
   bool exchanged_{false};
+  // Sticky once an IBGDA all-gather may publish this window's target rkeys.
+  bool ibgdaRkeysPossiblyExposed_{false};
 };
 
 } // namespace comms::prims
