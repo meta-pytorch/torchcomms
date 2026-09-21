@@ -410,10 +410,9 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBusinessCardSerializeAndDeserialize) {
       virtualQp->getNotifyQpRef().qp()->qp_num);
 
   // Deserialize fail case
-  std::string emptyStr;
-  std::string& jsonStr = emptyStr;
+  const std::string emptyStr;
   auto maybeDeserializedVirtualQpBusinessCardError =
-      IbvVirtualQpBusinessCard::deserialize(jsonStr);
+      IbvVirtualQpBusinessCard::deserialize(emptyStr);
   ASSERT_FALSE(maybeDeserializedVirtualQpBusinessCardError);
 }
 
@@ -910,6 +909,102 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBuildPhysicalSendWr) {
     // imm_data should have notify bit set (last fragment)
     ASSERT_NE(sendWr.imm_data & (1U << kNotifyBit), 0);
   }
+}
+
+// The business card crosses hosts during bootstrap, so its encoding is a wire
+// format. These cases need no NIC and pin the exact bytes a peer will read.
+TEST(IbvVirtualQpBusinessCardWire, SerializesToTheEstablishedByteFormat) {
+  const IbvVirtualQpBusinessCard card({123u, 4567u, 89u}, 777u);
+
+  const std::string expected{
+      "\x03\x00\x00\x00" // numQpNums = 3
+      "\x09\x03\x00\x00" // notifyQpNum = 777
+      "\x7b\x00\x00\x00" // qpNums[0] = 123
+      "\xd7\x11\x00\x00" // qpNums[1] = 4567
+      "\x59\x00\x00\x00", // qpNums[2] = 89
+      20};
+  EXPECT_EQ(card.serialize(), expected);
+}
+
+// An empty QP list still carries the header, so a peer reads a well-formed
+// card rather than an empty buffer.
+TEST(IbvVirtualQpBusinessCardWire, SerializesAnEmptyQpNumsArray) {
+  const IbvVirtualQpBusinessCard card({}, 0u);
+
+  EXPECT_EQ(card.serialize(), std::string(8, '\0'));
+}
+
+// Every card of a given QP count must be the same length: the distributed
+// bootstrap slices an allgathered buffer using the local card's size.
+TEST(IbvVirtualQpBusinessCardWire, SerializesToAFixedWidthForAGivenQpCount) {
+  const IbvVirtualQpBusinessCard small({1u, 2u}, 3u);
+  const IbvVirtualQpBusinessCard large({4294967295u, 4294967294u}, 4294967293u);
+
+  EXPECT_EQ(small.serialize().size(), large.serialize().size());
+  EXPECT_EQ(small.serialize().size(), 16u);
+}
+
+TEST(IbvVirtualQpBusinessCardWire, RoundTripsThroughSerialization) {
+  const IbvVirtualQpBusinessCard card({1u, 4294967295u}, 42u);
+
+  const auto parsed = IbvVirtualQpBusinessCard::deserialize(card.serialize());
+
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->qpNums_, card.qpNums_);
+  EXPECT_EQ(parsed->notifyQpNum_, card.notifyQpNum_);
+}
+
+// qpNums order is the QP pairing, so it must survive the round trip exactly
+// rather than merely as a set.
+TEST(IbvVirtualQpBusinessCardWire, PreservesQpNumOrder) {
+  const std::vector<uint32_t> qpNums{300u, 100u, 200u};
+  const IbvVirtualQpBusinessCard card(qpNums, 1u);
+
+  const auto parsed = IbvVirtualQpBusinessCard::deserialize(card.serialize());
+
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->qpNums_, qpNums);
+}
+
+TEST(IbvVirtualQpBusinessCardWire, RoundTripsAnEmptyQpNumsArray) {
+  const IbvVirtualQpBusinessCard card({}, 7u);
+
+  const auto parsed = IbvVirtualQpBusinessCard::deserialize(card.serialize());
+
+  ASSERT_TRUE(parsed);
+  EXPECT_TRUE(parsed->qpNums_.empty());
+  EXPECT_EQ(parsed->notifyQpNum_, 7u);
+}
+
+// A card shorter than the header carries no count to validate against, so it
+// is rejected before any field is read.
+TEST(IbvVirtualQpBusinessCardWire, RejectsACardShorterThanTheHeader) {
+  EXPECT_FALSE(IbvVirtualQpBusinessCard::deserialize(""));
+  EXPECT_FALSE(IbvVirtualQpBusinessCard::deserialize(std::string(7, '\0')));
+}
+
+// The declared count is cross-checked against the byte length, so a truncated
+// card and one with trailing bytes are both rejected instead of decoding to
+// the wrong QP set.
+TEST(IbvVirtualQpBusinessCardWire, RejectsALengthDisagreeingWithTheCount) {
+  const IbvVirtualQpBusinessCard card({123u, 456u}, 789u);
+  const std::string encoded = card.serialize();
+
+  EXPECT_TRUE(IbvVirtualQpBusinessCard::deserialize(encoded));
+  // one byte short
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          encoded.substr(0, encoded.size() - 1)));
+  // a whole QP number short
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          encoded.substr(0, encoded.size() - 4)));
+  // trailing bytes past the declared count
+  EXPECT_FALSE(IbvVirtualQpBusinessCard::deserialize(encoded + "trailing"));
+  // count claims more QPs than the payload holds
+  EXPECT_FALSE(
+      IbvVirtualQpBusinessCard::deserialize(
+          std::string("\xff\x00\x00\x00\x00\x00\x00\x00", 8)));
 }
 
 } // namespace ibverbx

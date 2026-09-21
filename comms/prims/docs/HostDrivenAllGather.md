@@ -110,7 +110,7 @@ the existing channel and IBRC settings:
 requested_lanes =
   MCCL_MAX_NCHANNELS *
   selected_nics *
-  NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC
+  MCCL_IB_QPS_PER_BLOCK_PER_NIC
 ```
 
 `MCCL_MAX_NCHANNELS` remains the user-facing collective-channel width. A
@@ -430,7 +430,7 @@ The following development controls are not selection APIs:
 
 Hostring should not grow a parallel set of knobs for concepts already covered
 by `MCCL_MAX_NCHANNELS`, `MCCL_CHANNEL_BUFFER_SIZE`,
-`NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC`, and common multimem enablement.
+`MCCL_IB_QPS_PER_BLOCK_PER_NIC`, and common multimem enablement.
 
 For direct receive-buffer multicast in either hierarchical or NVL-only mode, the
 receive allocation must be registered in the symmetric multicast-capable path

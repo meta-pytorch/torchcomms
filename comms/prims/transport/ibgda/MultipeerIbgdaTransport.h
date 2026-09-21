@@ -53,6 +53,42 @@ using MultipeerIbgdaTransportConfig = MultipeerIbTransportConfig;
 using IbgdaTransportExchInfo = IbTransportExchInfo;
 using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 
+namespace detail {
+
+enum class PeerRkeyExposureState {
+  kLocalOnly,
+  kPossiblyExposed,
+};
+
+struct IbgdaQpSlotResources {
+  doca_gpu_verbs_qp_group_hl* group{nullptr};
+  doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
+  doca_gpu_verbs_qp_hl* loopback{nullptr};
+
+  doca_gpu_verbs_qp_hl* main() const {
+    return group != nullptr ? &group->qp_main : standaloneMain;
+  }
+
+  doca_gpu_verbs_qp_hl* companion() const {
+    return group != nullptr ? &group->qp_companion : nullptr;
+  }
+
+  template <typename VisitGroup, typename VisitQp>
+  void forEachQp(VisitGroup visitGroup, VisitQp visitQp) const {
+    if (group != nullptr) {
+      visitGroup(group, "group");
+    }
+    if (standaloneMain != nullptr) {
+      visitQp(standaloneMain, "standalone_main");
+    }
+    if (loopback != nullptr) {
+      visitQp(loopback, "loopback_companion");
+    }
+  }
+};
+
+} // namespace detail
+
 /**
  * MultipeerIbgdaTransport - Host-side multi-peer RDMA transport manager
  *
@@ -222,20 +258,12 @@ class MultipeerIbgdaTransport
     return collapsedCq_;
   }
 
+  bool requiresProcessLifetimeQuarantine() const {
+    return requiresProcessLifetimeQuarantine_;
+  }
+
  private:
-  struct QpSlotResources {
-    doca_gpu_verbs_qp_group_hl* group{nullptr};
-    doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
-    doca_gpu_verbs_qp_hl* loopback{nullptr};
-
-    doca_gpu_verbs_qp_hl* main() const {
-      return group != nullptr ? &group->qp_main : standaloneMain;
-    }
-
-    doca_gpu_verbs_qp_hl* companion() const {
-      return group != nullptr ? &group->qp_companion : nullptr;
-    }
-  };
+  using QpSlotResources = detail::IbgdaQpSlotResources;
 
   // Helper methods
   void initDocaGpu();
@@ -348,6 +376,14 @@ class MultipeerIbgdaTransport
 
   // Exchange info received from peers
   std::vector<IbgdaTransportExchInfo> peerExchInfo_;
+
+  // Once phase 2 hands our payload to bootstrap_->send, local failure cannot
+  // reveal whether the peer received our rkeys. That state is sticky.
+  std::vector<detail::PeerRkeyExposureState> peerRkeyExposureStates_;
+  // Once set, the owning dispatcher detaches this object for process lifetime.
+  // A direct owner that reaches the destructor instead retains every underlying
+  // QP, MR, and referenced allocation rather than releasing exposed resources.
+  bool requiresProcessLifetimeQuarantine_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
   ExchangeState exchangeState_{ExchangeState::kUnprepared};

@@ -2,9 +2,6 @@
 
 #pragma once
 
-#include <folly/dynamic.h>
-#include <folly/json.h>
-
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvDevice.h" // IWYU pragma: keep
 #include "comms/ctran/ibverbx/Ibvcore.h"

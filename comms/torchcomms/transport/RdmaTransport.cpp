@@ -202,23 +202,22 @@ struct RdmaTransport::Work {
 RdmaTransport::RdmaTransport(
     int cudaDev,
     folly::EventBase* evb,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic)
+    const CtranIbConfig& ibConfig)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
+  auto effectiveIbConfig = ibConfig;
+  effectiveIbConfig.enableLocalFlush = true;
   // Create IB Instance
   ib_ = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      true /* enableLocalFlush */,
+      effectiveIbConfig,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
-      nullptr /* socketFactory */,
-      maxNumCqe,
-      maxNumNic);
+      nullptr /* socketFactory */);
 
   if (evb_) {
     // Optionally create progress timeout; skip it if the transport is never
@@ -227,6 +226,22 @@ RdmaTransport::RdmaTransport(
         folly::AsyncTimeout::make(*evb_, [this]() noexcept { progress(); });
   }
 }
+
+RdmaTransport::RdmaTransport(
+    int cudaDev,
+    folly::EventBase* evb,
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic)
+    : RdmaTransport(cudaDev, evb, [&] {
+        CtranIbConfig ibConfig;
+        if (maxNumCqe.has_value()) {
+          ibConfig.maxNumCqe = *maxNumCqe;
+        }
+        if (maxNumNic.has_value()) {
+          ibConfig.maxNumNic = *maxNumNic;
+        }
+        return ibConfig;
+      }()) {}
 
 RdmaTransport::~RdmaTransport() {
   // Run cleanup on the EventBase thread to safely cancel the timeout
@@ -271,12 +286,14 @@ bool queryRdmaSupport() {
   folly::call_once(queryRdmaSupportOnceFlag, [] {
     XLOG(INFO) << "Querying RdmaTransport support";
     try {
+      CtranIbConfig ibConfig;
+      ibConfig.enableLocalFlush = true;
       auto ib = std::make_unique<CtranIb>(
           kDummyRank,
           kDummyDevice,
           -1 /* commHash */,
           "Query-RDMA-Support",
-          true /* enableLocalFlush */,
+          ibConfig,
           CtranIb::BootstrapMode::kExternal);
     } catch (const std::exception& e) {
       XLOG(WARN)
@@ -316,6 +333,14 @@ int RdmaTransport::getMaxCqe() const {
 
 int RdmaTransport::getNumNics() const {
   return ib_->getNumNics();
+}
+
+std::optional<CtranIbConfig> RdmaTransport::getVcConfig() const {
+  CtranIbConfig config;
+  if (ib_->getVcConfig(kDummyRank, config) != commSuccess) {
+    return std::nullopt;
+  }
+  return config;
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(

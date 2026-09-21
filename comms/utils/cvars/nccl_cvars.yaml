@@ -1331,7 +1331,7 @@ cvars:
      Split messages larger than NCCL_CTRAN_AG_RING_MIN_SPLIT_SIZE into this many
      messages.
 
- - name        : NCCL_CTRAN_HIER_AG_IB_NUM_BLOCKS
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_IB_NUM_BLOCKS
    type        : int
    default     : 16
    description : |-
@@ -1339,7 +1339,7 @@ cvars:
      ring phase. For 4x1 IB-only tests, this is the full hierarchical kernel
      grid size because the NVLink fanout degenerates to nvl_size=1.
 
- - name        : NCCL_CTRAN_HIER_AG_OVERLAP_ENABLE
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_OVERLAP_ENABLE
    type        : bool
    default     : false
    description : |-
@@ -1347,33 +1347,26 @@ cvars:
      When enabled, dedicated IB blocks publish chunk-ready counters and
      dedicated NVLink blocks fan out chunks as soon as they arrive.
 
- - name        : NCCL_CTRAN_HIER_AG_OVERLAP_CHUNK_BYTES
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_OVERLAP_CHUNK_BYTES
    type        : uint64_t
    default     : 0
    description : |-
      Override for the logical chunk size, in bytes, used by the experimental
      overlapped cthierarchical_ring AllGather kernel for IB-ready notification
-     and NVLink fanout scheduling. When zero, ctran selects a chunk size from
+     and NVLink fanout scheduling. When zero, MCCL selects a chunk size from
      {512KiB, 1MiB, 2MiB, 4MiB, 8MiB} based on the send message size.
 
- - name        : NCCL_CTRAN_HIER_AG_NVL_SHARED_DEVBUF_SIZE
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_NVL_SHARED_BUFFER_SIZE
    type        : uint64_t
    default     : 67108864
    description : |-
      Minimum total per-peer NVLink shared device-buffer size to use when the
      experimental overlapped cthierarchical_ring AllGather kernel is enabled.
-     This value is divided by NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH before
+     This value is divided by MCCL_NVL_COPY_PIPELINE_DEPTH before
      configuring each pipeline slot. 0 disables this algorithm-specific
-     minimum and uses NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE directly.
+     minimum and uses MCCL_NVL_SHARED_BUFFER_SIZE directly.
 
- - name        : NCCL_CTRAN_HIER_AG_IB_QPS_PER_PEER_PER_NIC
-   type        : int
-   default     : 4
-   description : |-
-     Number of IBGDA QP sets per peer per NIC for the cthierarchical_ring
-     AllGather algorithm.
-
- - name        : NCCL_CTRAN_HIER_AG_IB_SIGNAL_BYTES
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_IB_SIGNAL_BYTES
    type        : uint64_t
    default     : 0
    description : |-
@@ -1381,7 +1374,7 @@ cvars:
      send/recv phase. 0 means each block signals once per per-block staging
      slot.
 
- - name        : NCCL_CTRAN_HIER_AG_NVL_SIGNAL_BYTES
+ - name        : MCCL_ALLGATHER_HIERARCHICAL_NVL_SIGNAL_BYTES
    type        : uint64_t
    default     : 0
    description : |-
@@ -1661,13 +1654,21 @@ cvars:
     each is used with a dedicated NVLink peer. It serves as a bi-directional
     point-to-point staged data copy channel between every two peers.
 
+ - name        : MCCL_NVL_SHARED_BUFFER_SIZE
+   type        : uint64_t
+   default     : 8388608
+   description : |-
+    Total per-peer NVLink staging-buffer size used by the MCCL-owned direct
+    PRiMS runtime. The buffer is divided into pipeline slots according to
+    MCCL_NVL_COPY_PIPELINE_DEPTH.
+
  - name        : MCCL_NVL_MULTIMEM_BUFSIZE
    type        : uint64_t
    default     : 33554432
    description : |-
     Size in bytes of the nvlmm (NVLink multimem) staging window, per rank.
     This allocation is independent of
-    NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE. A larger window means fewer staging
+    MCCL_NVL_SHARED_BUFFER_SIZE. A larger window means fewer staging
     rounds, which is the dominant nvlmm throughput lever at large message
     sizes. Set to 0 to disable the NVL multimem transport. Default 32 MiB.
 
@@ -1687,7 +1688,7 @@ cvars:
      = 16M/128k (maximum staging buffer / minimum chunk size). Currently unused
      after the cooperative chunk-state path was removed.
 
- - name        : NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH
+ - name        : MCCL_NVL_COPY_PIPELINE_DEPTH
    type        : size_t
    default     : 2
    description : |-
@@ -2053,43 +2054,43 @@ cvars:
      that schedule. A divergent value across ranks fails communicator
      initialization.
 
- - name        : NCCL_CTRAN_PIPES_TRACE_ENABLE
+ - name        : MCCL_PRIMS_TRACE_ENABLE
    type        : bool
    default     : false
    description : |-
-     Enable generic Pipes algorithm tracing. When enabled, CTA leaders write
+     Enable direct PRiMS algorithm tracing. When enabled, CTA leaders write
      compact per-phase events to an HRDW ring buffer and a host background
      thread polls the buffer on an interval, so breadcrumbs are logged while
      the kernel is still running (including when it hangs). This value is
      sampled when the communicator initializes; leave it false for the normal
      untraced kernel path.
 
- - name        : NCCL_CTRAN_PIPES_TRACE_RING_SIZE
+ - name        : MCCL_PRIMS_TRACE_RING_SIZE
    type        : uint64_t
    default     : 1048576
    description : |-
      Number of HRDW ring-buffer entries reserved per communicator for
-     NCCL_CTRAN_PIPES_TRACE_ENABLE.
+     MCCL_PRIMS_TRACE_ENABLE.
 
- - name        : NCCL_CTRAN_PIPES_TRACE_POLL_INTERVAL_MS
+ - name        : MCCL_PRIMS_TRACE_POLL_INTERVAL_MS
    type        : uint64_t
    default     : 50
    description : |-
      Interval in milliseconds at which the host background thread polls the
-     HRDW ring buffer for NCCL_CTRAN_PIPES_TRACE_ENABLE. Smaller values reduce
+     HRDW ring buffer for MCCL_PRIMS_TRACE_ENABLE. Smaller values reduce
      the chance of losing events to ring wraparound on high-rate kernels at the
      cost of more frequent polling; a final drain always runs on teardown.
 
- - name        : NCCL_CTRAN_PIPES_DISABLE_IB
+ - name        : MCCL_PRIMS_DISABLE_IB
    type        : bool
    default     : false
    description : |-
-     Disable IBGDA transport in Pipes MultiPeerTransport. When set to true,
+     Disable IB transport in the MCCL-owned direct PRiMS runtime. When true,
      IBGDA transport is never constructed and all non-self peers are assumed
      to be NVL-connected. All data movement and sync operations go over
      NVLink. Requires that all ranks are in the same NVL domain.
 
- - name        : NCCL_CTRAN_IB_QPS_PER_BLOCK_PER_NIC
+ - name        : MCCL_IB_QPS_PER_BLOCK_PER_NIC
    type        : int
    default     : 1
    description : |-
@@ -2107,19 +2108,19 @@ cvars:
      expose ooo_recv_wrs_caps.max_rc >= 128 or the peer doesn't advertise
      support, the connection is aborted.
 
- - name        : NCCL_CTRAN_IBGDA_MIN_RNR_TIMER
+ - name        : MCCL_IBGDA_MIN_RNR_TIMER
    type        : uint64_t
    default     : 12
    description : |-
-     Minimum RNR NAK Timer field value for IBGDA transport in Pipes
-     MultiPeerTransport. Controls the delay before a receiver sends
+     Minimum RNR NAK Timer field value for the direct PRiMS IBGDA transport.
+     Controls the delay before a receiver sends
      a RNR NAK. See InfiniBand specification Volume 1, Table 46.
 
- - name        : NCCL_CTRAN_IBGDA_RNR_RETRY
+ - name        : MCCL_IBGDA_RNR_RETRY
    type        : uint64_t
    default     : 7
    description : |-
-     RNR retry count for IBGDA transport in Pipes MultiPeerTransport.
+     RNR retry count for the direct PRiMS IBGDA transport.
      Number of times to retry after receiving an RNR NAK.
      7 means infinite retry.
 
@@ -3335,11 +3336,81 @@ cvars:
    default     : "allreduce:ring"
    description : |-
      MCCL-native algorithm override: [<collective>:]<algorithm>[:<protocol>].
-     "none" keeps the collective's existing selection; bare tree/ring/direct
-     are AllReduce aliases. The protocol token (simple, ll) is AllReduce-only,
-     requires the collective token, and defaults to simple. Pinning :ll bypasses
-     the LL size threshold but still requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0,
-     which is what arms the LL path.
+     MCCL-native algorithm override: [<collective>:]<algorithm>[:<protocol>].
+     "none" keeps the collective's existing selection, and is required for
+     MCCL_TUNER_ALLREDUCE_ENABLE to take effect; bare tree/ring/direct are
+     AllReduce aliases. The protocol token (simple, ll) is AllReduce-only and
+     defaults to simple. Pinning :ll bypasses the LL size threshold but still
+     requires MCCL_ALLREDUCE_LL_MAX_BYTES != 0, which is what arms the LL path.
+
+ - name        : MCCL_TUNER_ALLREDUCE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Let the tuner choose the AllReduce algorithm and protocol. OFF by default,
+     so a build carrying the tuner behaves exactly as one without it.
+
+     Enabling it takes TWO variables:
+
+       MCCL_TUNER_ALLREDUCE_ENABLE=1 MCCL_ALGO=none
+
+     MCCL_ALGO defaults to a value naming AllReduce, and an MCCL_ALGO naming a
+     collective always outranks the tuner for it, so setting this alone leaves
+     the tuner unreachable. MCCL_ALGO=none is what yields the selection to it.
+
+     Even then the tuner decides only for communicators that reach it:
+     NCCL_ALLREDUCE_ALGO left at `orig`, and ppn == 1 (the shape every table was
+     swept in). Anything else is untouched, and off is not a degraded mode --
+     it is today's behaviour.
+
+     MUST be identical on every rank -- ranks that disagree would select
+     different algorithms and DEADLOCK. Read once when the communicator is
+     created.
+
+ - name        : MCCL_TUNER_LOG_SELECTION
+   type        : bool
+   default     : false
+   description : |-
+     Log every MCCL tuner decision at INFO -- the query (bytes, rank count,
+     requested block cap) and the resulting algorithm and protocol -- and also
+     log why the tuner was skipped when an explicit override or the envelope
+     gate suppressed it. Diagnostic only; noisy in steady state.
+
+ - name        : MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS
+   type        : int
+   default     : 64
+   description : |-
+     Rank floor of the AllReduce tuner's Tree region. Named per-collective on
+     purpose: the tuner covers AllReduce only today, and another collective
+     would get its own bounds rather than sharing these. The tuner selects
+     Tree/Simple only when the communicator has at least this many ranks AND
+     the message is at or below MCCL_TUNER_ALLREDUCE_TREE_MAX_BYTES; otherwise it selects
+     Ring/Simple.
+
+     The default 64 comes from the GB300 ppn-1 sweep (config_id ch20s10-nozc),
+     where the Tree->Ring crossover grows with rank count -- roughly 2 MiB at
+     16 ranks, 9 MiB at 64 -- so the pair of bounds describes a rectangle that
+     stays inside measured territory. Retuning one bound without the other
+     leaves that rectangle, and values far from the swept range are
+     extrapolation with no measurement behind them.
+
+     MUST be identical on every rank. The algorithm is never negotiated on the
+     wire, so ranks that disagree select different algorithms and DEADLOCK.
+     Read once when the communicator is created; later changes do not affect an
+     existing communicator.
+
+ - name        : MCCL_TUNER_ALLREDUCE_TREE_MAX_BYTES
+   type        : uint64_t
+   default     : 9437184
+   description : |-
+     Size ceiling of the AllReduce tuner's Tree region, in total message bytes
+     (the full buffer, not the per-rank share). See MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS
+     for how the two bounds combine and where the defaults come from; 9437184
+     is 9 MiB. Setting this to 0 disables the Tree region entirely -- including
+     for a zero-byte collective -- leaving Ring/Simple everywhere.
+
+     MUST be identical on every rank, and is read once at communicator
+     creation, for the same reasons as MCCL_TUNER_ALLREDUCE_TREE_MIN_RANKS.
 
  - name        : MCCL_ALLREDUCE_IB_SIGNAL_BYTES
    type        : uint64_t

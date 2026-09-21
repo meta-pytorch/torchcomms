@@ -4,8 +4,8 @@
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
 #include <dlfcn.h>
-#include <folly/synchronization/CallOnce.h>
 #include <cstdlib>
+#include <mutex>
 
 namespace ibverbx {
 
@@ -13,7 +13,7 @@ extern IbvSymbols ibvSymbols;
 
 namespace {
 
-folly::once_flag initIbvSymbolOnce;
+std::once_flag initIbvSymbolOnce;
 
 // Read at the point of use rather than through a cvar, so every ibverbx
 // consumer sees it regardless of whether it initializes ncclx cvars.
@@ -23,7 +23,7 @@ constexpr const char* kIbverbsSoEnv = "IBVERBX_IBVERBS_SO";
 
 Status ibvInit() {
   static std::atomic<int> errNum{1};
-  folly::call_once(initIbvSymbolOnce, [&]() {
+  std::call_once(initIbvSymbolOnce, [&]() {
     const char* path = std::getenv(kIbverbsSoEnv);
     errNum = buildIbvSymbols(ibvSymbols, path != nullptr ? path : "");
   });

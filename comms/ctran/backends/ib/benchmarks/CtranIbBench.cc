@@ -103,19 +103,20 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   const size_t regLen = ((bufferSize + pageSize - 1) / pageSize) * pageSize;
 
   // Initialize senderIb and receiverIb
+  const CtranIbConfig ibConfig{.enableLocalFlush = true};
   auto senderIb = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev0,
       -1 /* commHash */,
       "RDMA-Transport",
-      true /* enableLocalFlush */,
+      ibConfig,
       CtranIb::BootstrapMode::kExternal);
   auto receiverIb = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev1,
       -1 /* commHash */,
       "RDMA-Transport",
-      true /* enableLocalFlush */,
+      ibConfig,
       CtranIb::BootstrapMode::kExternal);
 
   // Connect senderIb and receiverIb

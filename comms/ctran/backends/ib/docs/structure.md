@@ -80,7 +80,8 @@ CtranIb(...)                         ──►   init(...)
                       vcState_, devices, comm,       abortCtrl_, ncclLogData,
                       cudaDev, commHash, commDesc,   comm, devices,
                       ncclLogData,                   trafficClass, cudaDev,
-                      trafficClass);                 rank, commHash, commDesc);
+                      ibConfig);                     ibConfig, rank, commHash,
+                                                    commDesc);
                                                    bootstrap_->start(qpServerAddr);
                                                      ↓
                                                    spawns accept thread

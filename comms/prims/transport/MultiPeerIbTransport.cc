@@ -374,6 +374,15 @@ MultiPeerIbTransportBase::MultiPeerIbTransportBase(
 // header).
 MultiPeerIbTransportBase::~MultiPeerIbTransportBase() = default;
 
+void MultiPeerIbTransportBase::retainOwnedBuffersForProcessLifetime() noexcept {
+  static_cast<void>(sendRecvSendStagingBulk_.release());
+  static_cast<void>(sendRecvRecvStagingBulk_.release());
+  static_cast<void>(sendRecvControlBulk_.release());
+  for (auto& buffer : lazyPeerBufs_) {
+    static_cast<void>(buffer.release());
+  }
+}
+
 // ---- shared send/recv staging-ring lifecycle (eager mode) ----
 
 void MultiPeerIbTransportBase::validateSendRecvConfig() const {
@@ -2208,7 +2217,8 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
     const void* localPayload,
     void* remotePayload,
     std::size_t bytes,
-    int phase) {
+    int phase,
+    const std::function<void()>& beforeSend) {
   constexpr int64_t kPrimsPeerTagBase = 1 << 16;
   const int lowRank = std::min(myRank_, peerRank);
   const int highRank = std::max(myRank_, peerRank);
@@ -2232,6 +2242,9 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
               peerRank,
               recvResult));
     }
+    if (beforeSend) {
+      beforeSend();
+    }
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
     int sendResult = std::move(sendFuture).get();
@@ -2244,6 +2257,9 @@ void MultiPeerIbTransportBase::exchangeRawWithPeer(
               sendResult));
     }
   } else {
+    if (beforeSend) {
+      beforeSend();
+    }
     auto sendFuture = bootstrap_->send(
         const_cast<void*>(localPayload), bytes, peerRank, /*tag=*/tag);
     int sendResult = std::move(sendFuture).get();

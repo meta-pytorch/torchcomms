@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "comms/ctran/backends/CtranIbConfig.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/utils/commSpecs.h"
 
@@ -41,6 +42,7 @@ class BootstrapExternal {
       uint64_t commHash,
       const std::string& commDesc,
       const CommLogData& logData,
+      const CtranIbConfig& ibConfig,
       uint32_t trafficClass);
   ~BootstrapExternal() = default;
 
@@ -68,6 +70,9 @@ class BootstrapExternal {
   uint64_t commHash_{0};
   std::string commDesc_;
   const CommLogData& logData_;
+  // getLocalVcId() creates VCs after CtranIb::init() returns, so retain the
+  // sparse overrides until the peer-specific VC is constructed.
+  CtranIbConfig ibConfig_;
   uint32_t trafficClass_{0};
 
   // VCs created by getLocalVcId() awaiting a matching connectVc() call.
