@@ -318,8 +318,8 @@ PostHookArgs = (
 class CommOptions:
     abort_process_on_timeout_or_error: bool
     timeout: timedelta
+    is_high_priority_stream: bool
     store: Any
-    name: str
     enable_reconfigure: bool
     hints: Dict[str, str]
     def __init__(self) -> None: ...
@@ -746,10 +746,11 @@ class TorchComm:
 def new_comm(
     backend: str,
     device: Any,
+    name: str,
     abort_process_on_timeout_or_error: bool | None = ...,
     timeout: timedelta | None = ...,
+    is_high_priority_stream: bool | None = ...,
     store: Any | None = ...,
-    name: str | None = ...,
     enable_reconfigure: bool = False,
     hints: Dict[str, str] | None = ...,
 ) -> TorchComm: ...
