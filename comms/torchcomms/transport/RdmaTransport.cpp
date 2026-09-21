@@ -335,11 +335,17 @@ int RdmaTransport::getNumNics() const {
   return ib_->getNumNics();
 }
 
-std::optional<CtranIbConfig> RdmaTransport::getVcConfig() const {
+std::string RdmaTransport::getIbDevName(int device) const {
+  return ib_->getIbDevName(device);
+}
+
+int RdmaTransport::getIbDevPort(int device) const {
+  return ib_->getIbDevPort(device);
+}
+
+CtranIbConfig RdmaTransport::getVcConfig() const {
   CtranIbConfig config;
-  if (ib_->getVcConfig(kDummyRank, config) != commSuccess) {
-    return std::nullopt;
-  }
+  FB_COMMCHECKTHROW(ib_->getVcConfig(kDummyRank, config));
   return config;
 }
 

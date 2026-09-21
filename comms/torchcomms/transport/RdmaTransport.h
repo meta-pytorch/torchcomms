@@ -383,8 +383,14 @@ class __attribute__((visibility("default"))) RdmaTransport {
    */
   int getNumNics() const;
 
-  /* Return the effective peer VC settings, or empty before connect(). */
-  std::optional<CtranIbConfig> getVcConfig() const;
+  /* Return the bound IB device name; device must be in [0, getNumNics()). */
+  std::string getIbDevName(int device) const;
+
+  /* Return the 1-based IB port; device must be in [0, getNumNics()). */
+  int getIbDevPort(int device) const;
+
+  /* Return the effective peer VC settings. Throws without a connected VC. */
+  CtranIbConfig getVcConfig() const;
 
   /*
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer
