@@ -1657,12 +1657,37 @@ P2pIbrcHostLanes MultipeerIbrcTransport::getHostLanes(
   std::vector<P2pIbrcHostWriter> writers;
   writers.reserve(static_cast<std::size_t>(numLanes));
   for (int l = 0; l < numLanes; ++l) {
-    writers.push_back(getHostWriter(peerRank, static_cast<uint32_t>(l)));
+    writers.push_back(makeHostWriter(peerRank, static_cast<uint32_t>(l)));
   }
   return P2pIbrcHostLanes(std::move(writers), std::move(owner));
 }
 
 P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
+    int peerRank,
+    uint32_t queueIndex) const {
+  {
+    /*
+     * Same claim getHostLanes() takes, for the same reason: a lanes object and
+     * a bare writer on one peer are two producers on rings only one of them may
+     * drive. Per peer rather than per ring, matching the claim's granularity --
+     * one producer mechanism per peer, lanes or writers, never both.
+     */
+    const int peerIndex = rankToPeerIndex(peerRank);
+    const std::lock_guard<std::mutex> lock(hostLanesMutex_);
+    if (peerIndex >= 0 &&
+        peerIndex < static_cast<int>(hostLanesIssued_.size()) &&
+        !hostLanesIssued_[peerIndex].expired()) {
+      throw std::runtime_error(
+          fmt::format(
+              "getHostWriter: peerRank={} rings are held by a live lanes "
+              "object; one logical producer per peer",
+              peerRank));
+    }
+  }
+  return makeHostWriter(peerRank, queueIndex);
+}
+
+P2pIbrcHostWriter MultipeerIbrcTransport::makeHostWriter(
     int peerRank,
     uint32_t queueIndex) const {
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
