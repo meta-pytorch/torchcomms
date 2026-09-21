@@ -53,6 +53,37 @@ using MultipeerIbgdaTransportConfig = MultipeerIbTransportConfig;
 using IbgdaTransportExchInfo = IbTransportExchInfo;
 using IbgdaTransportExchInfoAll = IbTransportExchInfoAll;
 
+namespace detail {
+
+struct IbgdaQpSlotResources {
+  doca_gpu_verbs_qp_group_hl* group{nullptr};
+  doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
+  doca_gpu_verbs_qp_hl* loopback{nullptr};
+
+  doca_gpu_verbs_qp_hl* main() const {
+    return group != nullptr ? &group->qp_main : standaloneMain;
+  }
+
+  doca_gpu_verbs_qp_hl* companion() const {
+    return group != nullptr ? &group->qp_companion : nullptr;
+  }
+
+  template <typename VisitGroup, typename VisitQp>
+  void forEachQp(VisitGroup visitGroup, VisitQp visitQp) const {
+    if (group != nullptr) {
+      visitGroup(group, "group");
+    }
+    if (standaloneMain != nullptr) {
+      visitQp(standaloneMain, "standalone_main");
+    }
+    if (loopback != nullptr) {
+      visitQp(loopback, "loopback_companion");
+    }
+  }
+};
+
+} // namespace detail
+
 /**
  * MultipeerIbgdaTransport - Host-side multi-peer RDMA transport manager
  *
@@ -223,19 +254,7 @@ class MultipeerIbgdaTransport
   }
 
  private:
-  struct QpSlotResources {
-    doca_gpu_verbs_qp_group_hl* group{nullptr};
-    doca_gpu_verbs_qp_hl* standaloneMain{nullptr};
-    doca_gpu_verbs_qp_hl* loopback{nullptr};
-
-    doca_gpu_verbs_qp_hl* main() const {
-      return group != nullptr ? &group->qp_main : standaloneMain;
-    }
-
-    doca_gpu_verbs_qp_hl* companion() const {
-      return group != nullptr ? &group->qp_companion : nullptr;
-    }
-  };
+  using QpSlotResources = detail::IbgdaQpSlotResources;
 
   // Helper methods
   void initDocaGpu();

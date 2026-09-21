@@ -17,6 +17,26 @@ void requireQpTransitionSuccess(
     std::size_t qpIndex);
 
 template <
+    typename QpSlotResources,
+    typename TransitionQpGroup,
+    typename TransitionQp>
+void quiesceQpSlot(
+    const QpSlotResources& resources,
+    std::size_t nicIndex,
+    std::size_t qpIndex,
+    TransitionQpGroup transitionQpGroup,
+    TransitionQp transitionQp) {
+  resources.forEachQp(
+      [&](auto* group, const char* qpKind) {
+        requireQpTransitionSuccess(
+            transitionQpGroup(group), qpKind, nicIndex, qpIndex);
+      },
+      [&](auto* qp, const char* qpKind) {
+        requireQpTransitionSuccess(transitionQp(qp), qpKind, nicIndex, qpIndex);
+      });
+}
+
+template <
     typename NicResources,
     typename TransitionQpGroup,
     typename TransitionQp,
@@ -33,31 +53,50 @@ void quiesceQpsThenReleaseBuffers(
     for (std::size_t nicIndex = 0; nicIndex < nicResources.size(); ++nicIndex) {
       const auto& nic = nicResources[nicIndex];
       for (std::size_t qpIndex = 0; qpIndex < nic.qpSlots.size(); ++qpIndex) {
-        const auto& resources = nic.qpSlots[qpIndex];
-        if (resources.group != nullptr) {
-          requireQpTransitionSuccess(
-              transitionQpGroup(resources.group), "group", nicIndex, qpIndex);
-        }
-        if (resources.standaloneMain != nullptr) {
-          requireQpTransitionSuccess(
-              transitionQp(resources.standaloneMain),
-              "standalone_main",
-              nicIndex,
-              qpIndex);
-        }
-        if (resources.loopback != nullptr) {
-          requireQpTransitionSuccess(
-              transitionQp(resources.loopback),
-              "loopback_companion",
-              nicIndex,
-              qpIndex);
-        }
+        quiesceQpSlot(
+            nic.qpSlots[qpIndex],
+            nicIndex,
+            qpIndex,
+            transitionQpGroup,
+            transitionQp);
       }
     }
   }
 
   releaseGpuAllocations();
   releaseSendRecvBuffers();
+}
+
+template <
+    typename NicResources,
+    typename TransitionQpGroup,
+    typename TransitionQp,
+    typename ReleasePeerResources>
+void quiescePeerQpsThenReleaseResources(
+    bool shouldQuiesceQps,
+    const NicResources& nicResources,
+    std::size_t peerIndex,
+    std::size_t slotsPerPeer,
+    TransitionQpGroup transitionQpGroup,
+    TransitionQp transitionQp,
+    ReleasePeerResources releasePeerResources) {
+  if (shouldQuiesceQps) {
+    const std::size_t firstQpIndex = peerIndex * slotsPerPeer;
+    for (std::size_t nicIndex = 0; nicIndex < nicResources.size(); ++nicIndex) {
+      const auto& nic = nicResources[nicIndex];
+      for (std::size_t slot = 0; slot < slotsPerPeer; ++slot) {
+        const std::size_t qpIndex = firstQpIndex + slot;
+        quiesceQpSlot(
+            nic.qpSlots[qpIndex],
+            nicIndex,
+            qpIndex,
+            transitionQpGroup,
+            transitionQp);
+      }
+    }
+  }
+
+  releasePeerResources();
 }
 
 } // namespace comms::prims::detail
