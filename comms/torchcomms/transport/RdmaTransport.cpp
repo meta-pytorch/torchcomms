@@ -495,6 +495,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::flush(
   if (broken_.load(std::memory_order_relaxed)) {
     return commInternalError;
   }
+  auto currentMockType = mockContext_.rlock()->type;
   CHECK_THROW(evb_, std::runtime_error);
 
   CHECK_EQ(cudaDev_, localBuffer->getDevice());
@@ -505,22 +506,25 @@ folly::SemiFuture<commResult_t> RdmaTransport::flush(
   auto work = std::make_unique<Work>();
   // Flush has the same completion and timeout behavior as write.
   work->type = Work::Type::Write;
+  work->mockContext.type = currentMockType;
   auto sf = work->promise.getSemiFuture();
 
-  CtranIbEpochRAII epochRAII(ib_.get());
-  const auto ibRes =
-      ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
-  if (ibRes != commSuccess && ibRes != commInProgress) {
-    XLOGF(
-        ERR,
-        "RdmaTransport::flush: iflush failed with {}",
-        static_cast<int>(ibRes));
-    broken_.store(true, std::memory_order_relaxed);
-    // iflush may have stored a pointer to work->ibReq in the local VC
-    // queues before failing; park the work instead of destroying it.
-    work->promise.setValue(ibRes);
-    retiredWorks_.wlock()->emplace_back(std::move(work));
-    return sf;
+  if (currentMockType == MockType::None) {
+    CtranIbEpochRAII epochRAII(ib_.get());
+    const auto ibRes =
+        ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
+    if (ibRes != commSuccess && ibRes != commInProgress) {
+      XLOGF(
+          ERR,
+          "RdmaTransport::flush: iflush failed with {}",
+          static_cast<int>(ibRes));
+      broken_.store(true, std::memory_order_relaxed);
+      // iflush may have stored a pointer to work->ibReq in the local VC
+      // queues before failing; park the work instead of destroying it.
+      work->promise.setValue(ibRes);
+      retiredWorks_.wlock()->emplace_back(std::move(work));
+      return sf;
+    }
   }
   if (timeout.has_value()) {
     work->timeout = timeout;

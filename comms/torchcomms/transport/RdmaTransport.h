@@ -422,7 +422,6 @@ class __attribute__((visibility("default"))) RdmaTransport {
   folly::SemiFuture<commResult_t> flush(
       RdmaMemory::View localBuffer,
       std::optional<std::chrono::milliseconds> timeout = std::nullopt);
-  // TODO: Add flush fault injection when ibverbx supports it.
 
   /*
    * Mock type for testing RDMA transport error scenarios
@@ -441,7 +440,7 @@ class __attribute__((visibility("default"))) RdmaTransport {
   };
 
   /*
-   * Inject software mock for testing. Any write while mock is enabled
+   * Inject software mock for testing. Any write or flush while mock is enabled
    * will behave according to the mock configuration:
    * - Timeout: works stay pending until timeout fires (requires a timeout
    *            to be specified in the write() call) or transport is destroyed
@@ -449,8 +448,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * - None: reset to disable mock
    *
    * The mock type is captured when operations are created, not when they
-   * complete. Changing the mock config after calling write does not affect
-   * already-created operations.
+   * complete. Changing the mock config after starting an operation does not
+   * affect already-created operations.
    *
    * The control is per RdmaTransport instance, and the state is shared with
    * all threads accessing the instance.
