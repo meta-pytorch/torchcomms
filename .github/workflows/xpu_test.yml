@@ -10,6 +10,8 @@ on:
 permissions:
   id-token: write
   contents: read
+  # REQUIRED: Allow reading actions runner statuses from the API
+  actions: read
 
 concurrency:
   group: xpu_ci_test-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -20,7 +22,7 @@ jobs:
     # Don't run on forked repos or empty test matrix
     if: github.repository_owner == 'meta-pytorch'
     timeout-minutes: 120
-    runs-on: linux.idc.xpu.dist
+    runs-on: ["linux.idc.xpu.dist", "linux.client.xpu.dist"]
     env:
       DOCKER_IMAGE: ubuntu:24.04
     steps:
@@ -74,8 +76,28 @@ jobs:
         shell: bash
         run: |
           # Add render group for container creation.
-          render_gid=`cat /etc/group | grep render | cut -d: -f3`
+          render_gid=$(cat /etc/group | grep render | cut -d: -f3)
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
+      
+      # Cleaned API Label Query (Pure If / Else matching your custom runner environments)
+      - name: Select OMIX Repo via GitHub API
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUNNER_NAME: ${{ runner.name }}
+        run: |
+          # Fetch runner labels from the GitHub API using the current runner's name
+          RUNNER_LABELS=$(gh api "repos/${{ github.repository }}/actions/runners" \
+            --jq ".runners[] | select(.name == \"$RUNNER_NAME\") | .labels[].name")
+          
+          # Match exactly the labels for either the IDC or Client groups
+          if echo "$RUNNER_LABELS" | grep -q "^linux.idc.xpu.dist$"; then
+            echo "OMIX_REPO=intel-omix-pvc" >> $GITHUB_ENV
+            echo "Selected Data Center PVC OMIX channel"
+          else
+            echo "OMIX_REPO=intel-omix" >> $GITHUB_ENV
+            echo "Selected Client BMG OMIX channel"
+          fi
 
       - name: Get docker image
         run: |
@@ -98,7 +120,7 @@ jobs:
           ZE_AFFINITY_MASK: ${{ env.ZE_AFFINITY_MASK }}
           DISABLED_TESTS: ${{ vars.DISABLED_TESTS }}
           OMIX_VERSION: 0.4.0
-          OMIX_REPO: intel-omix-pvc
+          OMIX_REPO: ${{ env.OMIX_REPO }}
         timeout-minutes: 120
         run: |
           set -x
@@ -143,7 +165,6 @@ jobs:
       - name: Stop container before exit
         if: always()
         run: |
-          # Workaround for multiple runners on same IDC node
           docker stop "${{ env.CONTAINER_NAME }}"
 
       - name: Teardown XPU
