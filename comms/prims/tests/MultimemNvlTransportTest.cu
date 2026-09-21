@@ -56,7 +56,7 @@ __global__ void waitAndReadUserSignalKernel(
     uint64_t expected,
     uint64_t* out) {
   auto group = make_warp_group();
-  transport.wait_signal_until(group, signalId, op, expected);
+  transport.wait_signal_until(group, signalId, op, expected, AbortDevice{});
   if (group.is_leader()) {
     *out = transport.read_signal(signalId);
   }
@@ -69,7 +69,8 @@ __global__ void waitAndReadInternalSignalKernel(
     uint64_t expected,
     uint64_t* out) {
   auto group = make_warp_group();
-  transport.wait_internal_signal_until(group, signalId, op, expected);
+  transport.wait_internal_signal_until(
+      group, signalId, op, expected, AbortDevice{});
   if (group.is_leader()) {
     *out = transport.read_internal_signal(signalId);
   }
@@ -629,10 +630,10 @@ __global__ void reduceBroadcastKernel(
   const auto* source =
       reinterpret_cast<const T*>(transport.multimemData) + sourceOffsetElems;
 
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
   multimem::reduce_broadcast_at<T, 4, kAccF32>(
       block, destination + first, source + first, count);
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 }
 
 template <int kUnroll>
@@ -655,14 +656,14 @@ __global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
     local[threadIdx.x] =
         reductionValue<T>(phasedReduceBlockRankValue(transport.nvlRank));
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 
   uint4 reduced{};
   if (block.is_leader()) {
     reduced = multimem::load_reduce_block16<T, kAccF32>(
         reinterpret_cast<const T*>(transport.multimemData));
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 
   if (block.is_leader()) {
     const std::size_t ownedFirstLane = kElements *
@@ -677,7 +678,7 @@ __global__ void phasedReduceBlockKernel(MultimemNvlTransportDevice transport) {
         ownedFirstLane,
         ownedEndLane - ownedFirstLane);
   }
-  nvl_block_barrier(transport, /*channel=*/0, block);
+  (void)nvl_block_barrier(transport, /*channel=*/0, block, AbortDevice{});
 }
 
 __global__ void stageLayoutKernel(
