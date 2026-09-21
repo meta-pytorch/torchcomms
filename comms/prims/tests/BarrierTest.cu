@@ -35,15 +35,17 @@ __global__ void testRawBarrierWaitKernel(
     BarrierState* barrier_d,
     GroupType groupType) {
   auto group = make_group(groupType);
-  barrier_d->wait(group);
+  const AbortDevice abortDevice;
+  barrier_d->wait(group, abortDevice);
 }
 
 __global__ void testRawBarrierArriveWaitKernel(
     BarrierState* barrier_d,
     GroupType groupType) {
   auto group = make_group(groupType);
+  const AbortDevice abortDevice;
   barrier_d->arrive(group);
-  barrier_d->wait(group);
+  barrier_d->wait(group, abortDevice);
 }
 
 __global__ void testReadBarrierCurrentCounterKernel(
