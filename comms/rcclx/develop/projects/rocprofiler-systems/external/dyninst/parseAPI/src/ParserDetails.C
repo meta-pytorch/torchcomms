@@ -27,6 +27,7 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+#include <algorithm>
 #include "ParseData.h"
 
 #include "CodeObject.h"
@@ -330,7 +331,7 @@ void Parser::ProcessUnresBranchEdge(
 
     bool valid;
     Address addr;
-    boost::tie(valid, addr) = ah->getCFT();
+    std::tie(valid, addr) = ah->getCFT();
     if (!valid) {
         det.data.unres.dynamic = true;
         det.data.unres.absolute_address = true;

@@ -1,7 +1,7 @@
 #include <iostream>
 #include <hip/hip_runtime.h>
 
-extern "C" void launch_kernel(int device_id);
+extern "C" int launch_kernel(int device_id);
 
 #define HIP_CALL(call)                                                                             \
     do                                                                                             \
@@ -10,7 +10,7 @@ extern "C" void launch_kernel(int device_id);
         if(err != hipSuccess)                                                                      \
         {                                                                                          \
             std::cerr << hipGetErrorString(err) << std::endl;                                      \
-            abort();                                                                               \
+            return(-1);                                                                            \
         }                                                                                          \
     } while(0)
 
@@ -36,7 +36,7 @@ kernelC(T* C_d, const T* A_d, size_t N)
     }
 }
 
-void launch_kernel(int device_id) {
+int launch_kernel(int device_id) {
     const int NUM_LAUNCH = 1;
 
     HIP_CALL(hipSetDevice(device_id));
@@ -47,4 +47,6 @@ void launch_kernel(int device_id) {
     }
 
     HIP_CALL(hipDeviceSynchronize());
+
+    return 0;
 }

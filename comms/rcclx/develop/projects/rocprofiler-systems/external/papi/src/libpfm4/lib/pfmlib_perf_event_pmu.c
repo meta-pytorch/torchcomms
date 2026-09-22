@@ -568,7 +568,7 @@ event_exist(perf_event_t *e)
 {
 	char buf[PATH_MAX];
 
-	snprintf(buf, PATH_MAX, "/sys/devices/%s/events/%s", e->pmu ? e->pmu : "cpu", e->name);
+	snprintf(buf, PATH_MAX, "%s/%s/events/%s", SYSFS_PMU_DEVICES_DIR, e->pmu ? e->pmu : "cpu", e->name);
 
 	return access(buf, F_OK) == 0;
 }

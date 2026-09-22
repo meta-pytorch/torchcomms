@@ -58,7 +58,7 @@
 #include <bitset>
 
 #include "impl/wddm/types.h"
-#include "impl/thunk_proxy/thunk_proxy.h"
+#include "wkmi.h"
 #include "impl/wddm/va_mgr.h"
 #include "impl/wddm/status.h"
 #include "impl/wddm/types.h"
@@ -78,16 +78,26 @@ class WDDMQueue;
 #define IS_OVERLAPPING(start1, size1, start2, size2) \
   ((start1 < (start2 + size2)) && (start2 < (start1 + size1)))
 
+enum class SegmentKind {
+  kUnknown = 0,
+  kAperture,
+  kLocalMemory,
+  kSystemMemory,
+};
+
 struct SegmentInfo {
   uint32_t segment_id;
-  uint32_t segment_type;    // 0=aperture, 1=gpu memory, 2=system memory
-  bool aperture;
-  bool system_memory;
-  uint64_t commit_limit;
+  SegmentKind kind;
+  // Raw segment flags — kind collapses aperture+system_memory into kAperture,
+  // so preserve the source bits to identify non-local-heap segments later.
+  bool is_aperture;
+  bool is_system_memory;
 
   SegmentInfo()
-      : segment_id(0), segment_type(0), aperture(false),
-        system_memory(false), commit_limit(0) {}
+      : segment_id(0),
+        kind(SegmentKind::kUnknown),
+        is_aperture(false),
+        is_system_memory(false) {}
 };
 
 class WDDMDevice {
@@ -158,21 +168,26 @@ public:
   }
   uint32_t GetComputeEngine() { return device_info_.compute_schedid; }
 
-  uint64_t VramAvail();
+  hsa_status_t VramAvail(uint64_t* available_bytes);
 
   void GetClockCounters(uint64_t *gpu, uint64_t *cpu);
   uint32_t GetNumCpQueues() { return device_info_.num_cp_queues; }
   uint32_t NumXcc() const { return device_info_.num_xcc; }
 
   bool CreateSyncobj(D3DKMT_HANDLE *handle, uint64_t **addr);
-  void DestroySyncobj(D3DKMT_HANDLE handle);
+  // Returns true on STATUS_SUCCESS. Internal cleanup callers (queue
+  // teardown / rollback) intentionally ignore the result; the external
+  // semaphore close path propagates it so silent leaks become visible.
+  bool DestroySyncobj(D3DKMT_HANDLE handle);
+  bool OpenSyncobjFromNtHandle(void *nt_handle, D3DKMT_HANDLE *out_handle);
 
-  bool CreateQueue(WDDMQueue *queue);
+  bool CreateQueue(WDDMQueue *queue, uint64_t debugger_data = 0);
   void DestroyQueue(WDDMQueue *queue);
   bool CreateHwQueue(WDDMQueue *queue);
   bool DestroyHwQueue(WDDMQueue *queue);
   bool SubmitToSwQueue(WDDMQueue *queue, uint64_t command_addr,
                       uint64_t command_size, uint64_t fence_value);
+  bool SetCuMask(uint32_t doorbell, uint32_t cu_mask_count, const uint32_t* queue_cu_mask);
   bool SubmitToHwQueue(WDDMQueue *queue, uint64_t command_addr,
                       uint64_t command_size, uint64_t fence_value);
   bool SubmitToAqlQueue(WDDMQueue* queue, uint64_t command_addr, uint64_t command_size,
@@ -208,7 +223,7 @@ public:
   }
 
   bool IsHwsEnabled(int engine) {
-    return thunk_proxy::GetHwsEnabled(engine, &device_info_);
+    return Wkmi::GetHwsEnabled(engine, &device_info_);
   }
 
   void UpdatePageFence(uint64_t fence_value);
@@ -219,7 +234,7 @@ public:
   LUID GetLuid() const { return adapter_luid_; }
   D3DKMT_HANDLE GetAdapter() const { return adapter_; }
 
-  const thunk_proxy::DeviceInfo& DeviceInfo() const { return device_info_; }
+  const Wkmi::DeviceInfo& DeviceInfo() const { return device_info_; }
 
   ErrorCode CreateGpuMemory(const GpuMemoryCreateInfo &create_info, GpuMemory **gpu_mem, gpusize *gpu_va = nullptr);
   uint32_t RegisterEvent(uint32_t type, HANDLE event_handle, uint64_t* mailbox);
@@ -228,8 +243,13 @@ public:
   device_init_result InitStatus() const { return init_status_; }
   uint32_t GbAddrConfig() const { return device_info_.gb_addr_config; }
 
+  // Debugger support
+  bool GetKmdDbgVersion(struct Wkmi::KmdDbgVersion *version) const;
+  bool RegisterRuntimeState(uint32_t runtime_state, const void* r_debug, bool ttmp_setup_hint) const;
+  bool SetTrapHandler(uint64_t tba, uint64_t tma) const;
+
 private:
-  bool Escape(void* priv_data, uint32_t priv_size, bool hw_access);
+  bool Escape(void* priv_data, uint32_t priv_size, bool hw_access) const;
   NTSTATUS ParseDeviceInfo(void);
   void DestroyDeviceInfo(void);
   bool CreateDevice(void);
@@ -238,14 +258,14 @@ private:
   bool DestroyPagingQueue(void);
   void *Lock(D3DKMT_HANDLE handle);
   bool Unlock(D3DKMT_HANDLE handle);
-  bool CreateContext(int engine, D3DKMT_HANDLE *handle);
+  bool CreateContext(int engine, D3DKMT_HANDLE *handle, uint64_t debugger_data = 0);
   bool DestroyContext(D3DKMT_HANDLE handle);
 
   void SetPowerOptimization(bool restore);
   void InitCmdbufInfo(void);
 
   bool QuerySegmentInfo();
-  bool GetSegmentId(D3DKMT_QUERYSTATISTICS_SEGMENT_TYPE segment_type, uint32_t &segment_id);
+  bool FindSegmentId(SegmentKind segment_kind, uint32_t *segment_id);
 
   D3DKMT_HANDLE adapter_;
   LUID adapter_luid_;
@@ -261,7 +281,7 @@ private:
   static const uint32_t cmdbuf_aql_frame_num_;
   uint32_t node_id_;
   // device info
-  thunk_proxy::DeviceInfo device_info_;
+  Wkmi::DeviceInfo device_info_;
   std::vector<struct SegmentInfo> segment_infos_;
   //CmdUtil cmd_util;
   device_init_result init_status_;

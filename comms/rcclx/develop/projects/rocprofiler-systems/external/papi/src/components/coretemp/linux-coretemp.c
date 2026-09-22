@@ -72,7 +72,7 @@ insert_in_list(char *name, char *units,
 		   /* Because this is a function, it is possible */
 		   /* we are called with root!=NULL but no last  */
 		   /* so add this to keep coverity happy         */
-		   free(temp);
+		   papi_free(temp);
 		   PAPIERROR("This shouldn't be possible\n");
 
 		   return PAPI_ECMP;
@@ -762,6 +762,7 @@ papi_vector_t _coretemp_vector = {
 				 .fast_virtual_timer = 0,
 				 .attach = 0,
 				 .attach_must_ptrace = 0,
+				 .kernel_multiplex = 1,
 				 }
 	,
 

@@ -1,9 +1,9 @@
 #if _WIN32
 
-    #include "includes.h"
-    #include "test_sink.h"
+#include "includes.h"
+#include "test_sink.h"
 
-    #include "spdlog/sinks/win_eventlog_sink.h"
+#include "spdlog/sinks/win_eventlog_sink.h"
 
 static const LPCSTR TEST_SOURCE = "spdlog_test";
 

@@ -23,7 +23,7 @@
  
 int main(int argc, char** argv) {
   int EventSet = PAPI_NULL;
-  const char* names[NUM_EVENTS] = {"OPEN_CALLS", "OPEN_FDS", "READ_CALLS", "READ_BYTES", "READ_USEC", "READ_ERR", "READ_INTERRUPTED", "READ_WOULD_BLOCK", "WRITE_CALLS","WRITE_BYTES","WRITE_USEC","WRITE_WOULD_BLOCK"};
+  const char* names[NUM_EVENTS] = {"appio:::OPEN_CALLS", "appio:::OPEN_FDS", "appio:::READ_CALLS", "appio:::READ_BYTES", "appio:::READ_USEC", "appio:::READ_ERR", "appio:::READ_INTERRUPTED", "appio:::READ_WOULD_BLOCK", "appio:::WRITE_CALLS", "appio:::WRITE_BYTES", "appio:::WRITE_USEC", "appio:::WRITE_WOULD_BLOCK"};
   long long values[NUM_EVENTS];
 
   char *infile = "/etc/group";

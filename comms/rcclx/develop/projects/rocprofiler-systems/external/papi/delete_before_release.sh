@@ -16,3 +16,5 @@ rm src/.gitignore
 rm src/ftests/.gitignore
 rm src/testlib/.gitignore
 rm src/components/.gitignore
+rm .gitattributes
+rm -rf .github

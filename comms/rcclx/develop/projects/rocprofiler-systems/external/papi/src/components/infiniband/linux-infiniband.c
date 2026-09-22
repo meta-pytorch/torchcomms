@@ -303,11 +303,12 @@ add_ib_device(const char* name, int port)
         return (0);
     }
 
-    new_dev->dev_name = strdup(name);
+    new_dev->dev_name = papi_strdup(name);
     new_dev->dev_port = port;
     if (new_dev->dev_name==0)
     {
         PAPIERROR("cannot allocate memory for device internal fields");
+        papi_free(new_dev->dev_name);
         papi_free(new_dev);
         return (0);
     }
@@ -328,8 +329,8 @@ add_ib_counter(const char* name, const char* file_name, int extended, ib_device_
         return (0);
     }
 
-    new_cnt->ev_name = strdup(name);
-    new_cnt->ev_file_name = strdup(file_name);
+    new_cnt->ev_name = papi_strdup(name);
+    new_cnt->ev_file_name = papi_strdup(file_name);
     new_cnt->extended = extended;
     new_cnt->ev_device = device;
     if (new_cnt->ev_name==0 || new_cnt->ev_file_name==0)
@@ -599,9 +600,9 @@ deallocate_infiniband_resources()
     {
         for (i=0 ; i<num_events ; ++i) {
             if (infiniband_native_events[i].name)
-                free(infiniband_native_events[i].name);
+                papi_free(infiniband_native_events[i].name);
             if (infiniband_native_events[i].file_name)
-                free(infiniband_native_events[i].file_name);
+                papi_free(infiniband_native_events[i].file_name);
             if (infiniband_native_events[i].description)
                 papi_free(infiniband_native_events[i].description);
         }
@@ -612,7 +613,7 @@ deallocate_infiniband_resources()
     while (iter != 0) 
     {
         if (iter->dev_name)
-            free(iter->dev_name);
+            papi_free(iter->dev_name);
 
         ib_device_t *tmp = iter;
         iter = iter->next;
@@ -983,7 +984,7 @@ papi_vector_t _infiniband_vector = {
         .context = sizeof (infiniband_context_t),
         .control_state = sizeof (infiniband_control_state_t),
         .reg_value = sizeof (infiniband_register_t),
-        /* .reg_alloc = sizeof (infiniband_reg_alloc_t), */
+        .reg_alloc = 1 /* unused */
     },
     /* function pointers in this component */
     .init_thread =          _infiniband_init_thread,

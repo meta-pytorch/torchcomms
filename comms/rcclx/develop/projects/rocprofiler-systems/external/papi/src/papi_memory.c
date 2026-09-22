@@ -47,7 +47,7 @@ static pmem_t *mem_head = NULL;
 
 /* Local Prototypes */
 static pmem_t *get_mem_ptr( void *ptr );
-static pmem_t *init_mem_ptr( void *, int, char *, int );
+static pmem_t *init_mem_ptr( void *, int, const char *, int );
 static void insert_mem_ptr( pmem_t * );
 static void remove_mem_ptr( pmem_t * );
 static int set_epilog( pmem_t * mem_ptr );
@@ -74,7 +74,7 @@ static int set_epilog( pmem_t * mem_ptr );
  * Checks for NULL pointers and returns NULL if error.
  */
 void *
-_papi_realloc( char *file, int line, void *ptr, size_t size )
+_papi_realloc( const char *file, int line, void *ptr, size_t size )
 {
 	size_t nsize = size + MEM_PROLOG;
 	pmem_t *mem_ptr;
@@ -110,7 +110,7 @@ _papi_realloc( char *file, int line, void *ptr, size_t size )
 }
 
 void *
-_papi_calloc( char *file, int line, size_t nmemb, size_t size )
+_papi_calloc( const char *file, int line, size_t nmemb, size_t size )
 {
 	void *ptr = _papi_malloc( file, line, size * nmemb );
 
@@ -121,7 +121,7 @@ _papi_calloc( char *file, int line, size_t nmemb, size_t size )
 }
 
 void *
-_papi_malloc( char *file, int line, size_t size )
+_papi_malloc( const char *file, int line, size_t size )
 {
 	void *ptr;
 	void **tmp;
@@ -166,7 +166,7 @@ _papi_malloc( char *file, int line, size_t size )
 }
 
 char *
-_papi_strdup( char *file, int line, const char *s )
+_papi_strdup( const char *file, int line, const char *s )
 {
 	size_t size;
 	char *ptr;
@@ -188,7 +188,7 @@ _papi_strdup( char *file, int line, const char *s )
 /** Only frees the memory if PAPI malloced it 
   * returns 1 if pointer was valid; 0 if not */
 int
-_papi_valid_free( char *file, int line, void *ptr )
+_papi_valid_free( const char *file, int line, void *ptr )
 {
 	pmem_t *tmp;
 	int valid = 0;
@@ -223,7 +223,7 @@ _papi_valid_free( char *file, int line, void *ptr )
 
 /** Frees up the ptr */
 void
-_papi_free( char *file, int line, void *ptr )
+_papi_free( const char *file, int line, void *ptr )
 {
 	pmem_t *mem_ptr = get_mem_ptr( ptr );
 
@@ -355,7 +355,7 @@ get_mem_ptr( void *ptr )
 
 /* Allocate and initialize a memory pointer */
 pmem_t *
-init_mem_ptr( void *ptr, int size, char *file, int line )
+init_mem_ptr( void *ptr, int size, const char *file, int line )
 {
 	pmem_t *mem_ptr = NULL;
 	if ( ( mem_ptr = ( pmem_t * ) malloc( sizeof ( pmem_t ) ) ) == NULL )

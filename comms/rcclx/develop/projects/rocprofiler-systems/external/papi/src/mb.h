@@ -39,6 +39,9 @@
 #elif defined(__aarch64__)
 #define rmb()           asm volatile("dmb ld" ::: "memory")
 
+#elif defined(__loongarch64)
+#define rmb()           __asm__ __volatile__("dbar 0" : : : "memory")
+
 #elif defined(__mips__)
 #define rmb()           asm volatile(                                   \
                                 ".set   mips2\n\t"                      \

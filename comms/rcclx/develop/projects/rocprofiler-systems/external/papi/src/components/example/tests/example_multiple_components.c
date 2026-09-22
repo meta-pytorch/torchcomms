@@ -89,10 +89,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_CONSTANT", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_CONSTANT", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_ZERO not found\n",retval );
+		      "example:::EXAMPLE_ZERO not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet1, code);
@@ -122,7 +122,7 @@ int main (int argc, char **argv)
 		      "NO CPU component found\n", retval );
 	}
 
-	if (!quiet) printf("\nStarting EXAMPLE_CONSTANT and PAPI_TOT_CYC at the same time\n");
+	if (!quiet) printf("\nStarting example:::EXAMPLE_CONSTANT and PAPI_TOT_CYC at the same time\n");
 
 	/* Start CPU component event */
 	retval = PAPI_start( EventSet2 );
@@ -153,10 +153,10 @@ int main (int argc, char **argv)
 	   test_fail(  __FILE__, __LINE__, "PAPI_stop failed\n", retval);
 	}
 
-	if (!quiet) printf("Stopping EXAMPLE_CONSTANT and PAPI_TOT_CYC\n\n");
+	if (!quiet) printf("Stopping example:::EXAMPLE_CONSTANT and PAPI_TOT_CYC\n\n");
 
 
-	if (!quiet) printf("Results from EXAMPLE_CONSTANT: %lld\n",values1[0]);
+	if (!quiet) printf("Results from example:::EXAMPLE_CONSTANT: %lld\n",values1[0]);
 
 	if (values1[0]!=42) {
 	   test_fail(  __FILE__, __LINE__, "Result should be 42!\n", 0);

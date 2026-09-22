@@ -1,21 +1,9 @@
 /*
- * Copyright (c) 2025 Advanced Micro Devices, Inc. All rights reserved.
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
  */
+
 #include <hip_test_common.hh>
 #include <hip_test_defgroups.hh>
 /**
@@ -44,7 +32,7 @@
  *  - HIP_VERSION >= 7.1
  */
 #if HT_AMD
-TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_D2D_Functional", "", char, int,
+HIP_TEMPLATE_TEST_CASE(Unit_hipMemcpyBatchAsync_D2D_Functional, char, int,
                    float) {
   const size_t count = 2;
   size_t numAttrs = 0;
@@ -115,7 +103,7 @@ TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_D2D_Functional", "", char, int,
  * ------------------------
  *  - HIP_VERSION >= 7.1
  */
-TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_H2D_Functional", "", char, int,
+HIP_TEMPLATE_TEST_CASE(Unit_hipMemcpyBatchAsync_H2D_Functional, char, int,
                    float) {
   const size_t count = 2;
   size_t numAttrs = 0;
@@ -183,7 +171,7 @@ TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_H2D_Functional", "", char, int,
  * ------------------------
  *  - HIP_VERSION >= 7.1
  */
-TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_D2H_Functional", "", char, int,
+HIP_TEMPLATE_TEST_CASE(Unit_hipMemcpyBatchAsync_D2H_Functional, char, int,
                    float) {
   const size_t count = 2;
   size_t numAttrs = 0;
@@ -253,7 +241,7 @@ TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_D2H_Functional", "", char, int,
  * ------------------------
  *  - HIP_VERSION >= 7.1
  */
-TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_H2H_Functional", "", char, int,
+HIP_TEMPLATE_TEST_CASE(Unit_hipMemcpyBatchAsync_H2H_Functional, char, int,
                    float) {
   const size_t count = 2;
   size_t numAttrs = 0;
@@ -301,6 +289,77 @@ TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_H2H_Functional", "", char, int,
   // Clean up
   HIP_CHECK(hipStreamDestroy(stream));
 }
+
+/**
+ * Test Description
+ * ------------------------
+ * - Verify hipMemcpyBatchAsync with hipMemcpyFlagExtOpSwap exchanges the
+ *   contents of two device buffers.
+ * 1. Allocate two device buffers and fill with distinct values.
+ * 2. Issue hipMemcpyBatchAsync with swap attribute.
+ * 3. Read back both buffers and verify values are exchanged.
+ * Test source
+ * ------------------------
+ * - catch/unit/memory/hipMemcpyBatchAsync.cc
+ */
+HIP_TEST_CASE(Unit_hipMemcpyBatchAsync_swap_cp) {
+  constexpr size_t kNumElements = 4096;
+  constexpr size_t kSizeBytes = kNumElements * sizeof(int);
+  constexpr int kValA = 42;
+  constexpr int kValB = 99;
+
+  // Allocate device buffers
+  void* d_a = nullptr;
+  void* d_b = nullptr;
+  HIP_CHECK(hipMalloc(&d_a, kSizeBytes));
+  HIP_CHECK(hipMalloc(&d_b, kSizeBytes));
+
+  // Fill with distinct values
+  std::vector<int> hostA(kNumElements, kValA);
+  std::vector<int> hostB(kNumElements, kValB);
+  HIP_CHECK(hipMemcpy(d_a, hostA.data(), kSizeBytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(d_b, hostB.data(), kSizeBytes, hipMemcpyHostToDevice));
+
+  // Set up batch swap: dst=d_a, src=d_b with swap flag
+  hipStream_t stream;
+  HIP_CHECK(hipStreamCreate(&stream));
+
+  void* dsts[] = {d_a};
+  void* srcs[] = {d_b};
+  size_t sizes[] = {kSizeBytes};
+  size_t attrsIdxs[] = {0};
+
+  hipMemcpyAttributes attr{};
+  attr.flags = hipMemcpyFlagExtOpSwap;
+  attr.srcAccessOrder = hipMemcpySrcAccessOrderStream;
+
+  size_t failIdx = 0;
+  hipError_t err = hipMemcpyBatchAsync(dsts, srcs, sizes, 1, &attr, attrsIdxs, 1,
+                                       &failIdx, stream);
+  if (err == hipErrorNotSupported) {
+    HIP_CHECK(hipStreamDestroy(stream));
+    HIP_CHECK(hipFree(d_a));
+    HIP_CHECK(hipFree(d_b));
+    HIP_SKIP_TEST(HipTest::SkipReason::kSdmaSwapUnsupported);
+  }
+  HIP_CHECK(err);
+  HIP_CHECK(hipStreamSynchronize(stream));
+
+  // Read back and verify swap
+  std::vector<int> resultA(kNumElements);
+  std::vector<int> resultB(kNumElements);
+  HIP_CHECK(hipMemcpy(resultA.data(), d_a, kSizeBytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(resultB.data(), d_b, kSizeBytes, hipMemcpyDeviceToHost));
+
+  for (size_t i = 0; i < kNumElements; i++) {
+    REQUIRE(resultA[i] == kValB);
+    REQUIRE(resultB[i] == kValA);
+  }
+
+  HIP_CHECK(hipFree(d_a));
+  HIP_CHECK(hipFree(d_b));
+  HIP_CHECK(hipStreamDestroy(stream));
+}
 #endif
 /**
  * Test Description
@@ -320,7 +379,7 @@ TEMPLATE_TEST_CASE("Unit_hipMemcpyBatchAsync_H2H_Functional", "", char, int,
  * ------------------------
  *  - HIP_VERSION >= 7.1
  */
-TEST_CASE("Unit_hipMemcpyBatchAsync_NegativeTsts") {
+HIP_TEST_CASE(Unit_hipMemcpyBatchAsync_NegativeTsts) {
   const size_t count = 2;
   size_t numAttrs = 0;
   size_t sizes[2];

@@ -5,7 +5,7 @@ datarootdir = @datarootdir@
 datadir = ../../..
 testlibdir = $(datadir)/testlib
 validationlibdir = $(datadir)/validation_tests
-INCLUDE = -I. -I$(datadir) -I$(testlibdir) -I$(validationlibdir) -I@includedir@
+INCLUDE = -I. -I$(datadir) -I$(testlibdir) -I$(validationlibdir)
 LIBDIR  = @libdir@
 LIBRARY = @LIBRARY@
 SHLIB   = @SHLIB@
@@ -27,7 +27,7 @@ BUILD_LIBSDE_STATIC = @BUILD_LIBSDE_STATIC@
 NO_MPI_TESTS = @NO_MPI_TESTS@
 NVPPC64LEFLAGS = @NVPPC64LEFLAGS@
 ENABLE_FORTRAN_TESTS = @ENABLE_FORTRAN_TESTS@
-
+CPU_ENABLED = @CPU_ENABLED@
 
 tests: $(NAME)_tests
 

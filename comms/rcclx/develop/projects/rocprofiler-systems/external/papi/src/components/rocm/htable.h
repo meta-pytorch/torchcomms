@@ -325,7 +325,7 @@ create_table_entry(const char *key, void *val, struct hash_table_entry **entry)
     if (*entry == NULL) {
         return HTABLE_ENOMEM;
     }
-    (*entry)->key = strdup(key);
+    (*entry)->key = papi_strdup(key);
     (*entry)->val = val;
     (*entry)->next = NULL;
 

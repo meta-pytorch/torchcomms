@@ -513,6 +513,13 @@ generate_csv(const output_config&                                               
 }
 
 void
+generate_csv(const output_config& /*cfg*/,
+             const metadata& /*tool_metadata*/,
+             const generator<tool_buffer_tracing_kfd_record_t>& /*data*/,
+             const stats_entry_t& /*stats*/)
+{}
+
+void
 generate_csv(const output_config&                                             cfg,
              const metadata&                                                  tool_metadata,
              const generator<rocprofiler_buffer_tracing_marker_api_record_t>& data,
@@ -1014,5 +1021,13 @@ generate_csv(const output_config& cfg,
         ofs << _row.str() << std::flush;
     }
 }
+
+void
+generate_csv(const output_config& /*  cfg*/,
+             const metadata& /*tool_metadata*/,
+             const generator<tool_spm_counter_record_t>& /*data*/,
+             const stats_entry_t& /*stats*/)
+{}
+
 }  // namespace tool
 }  // namespace rocprofiler

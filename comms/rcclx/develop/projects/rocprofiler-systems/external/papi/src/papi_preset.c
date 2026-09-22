@@ -9,7 +9,6 @@
 *          Merge of the libpfm3/libpfm4/pmapi-ppc64_events preset code
 */
 
-
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
@@ -25,8 +24,11 @@
 // A place to put user defined events
 extern hwi_presets_t user_defined_events[];
 extern int user_defined_events_count;
+extern int num_all_presets;
+extern int _papi_hwi_start_idx[PAPI_NUM_COMP];
 
 static int papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag);
+static int papi_load_derived_events_component (char *comp_str, char *arch_str, int cidx);
 
 
 /* This routine copies values from a dense 'findem' array of events
@@ -87,6 +89,10 @@ _papi_hwi_setup_all_presets( hwi_search_t * findem, int cidx )
 
 	   INTDBG( "This preset has %d terms.\n", j );
 	   _papi_hwi_presets[preset_index].count = j;
+
+       // Set the component index to that of the first native event used to define it.
+       // Make sure we later check that all native events in a preset come from same comp.
+	   _papi_hwi_presets[preset_index].component_index = _papi_hwi_component_index(findem[pnum].native[0]);
  
            _papi_hwi_presets[preset_index].derived_int = findem[pnum].derived;
 	   for(k=0;k<j;k++) {
@@ -113,27 +119,36 @@ _papi_hwi_setup_all_presets( hwi_search_t * findem, int cidx )
 int
 _papi_hwi_cleanup_all_presets( void )
 {
-        int preset_index,cidx;
-	unsigned int j;
+    int preset_index,cidx;
+    unsigned int j;
+    hwi_presets_t *_papi_hwi_list;
 
-	for ( preset_index = 0; preset_index < PAPI_MAX_PRESET_EVENTS;
-		  preset_index++ ) {
-	    if ( _papi_hwi_presets[preset_index].postfix != NULL ) {
-	       papi_free( _papi_hwi_presets[preset_index].postfix );
-	       _papi_hwi_presets[preset_index].postfix = NULL;
-	    }
-	    if ( _papi_hwi_presets[preset_index].note != NULL ) {
-	       papi_free( _papi_hwi_presets[preset_index].note );
-	       _papi_hwi_presets[preset_index].note = NULL;
-	    }
-	    for(j=0; j<_papi_hwi_presets[preset_index].count;j++) {
-           papi_free(_papi_hwi_presets[preset_index].name[j]);
-	    }
-	}
-
-	for(cidx=0;cidx<papi_num_components;cidx++) {
-	   _papi_hwd[cidx]->cmp_info.num_preset_events = 0;
-	}
+    for(cidx=0;cidx<papi_num_components;cidx++) {
+      _papi_hwi_list = _papi_hwi_comp_presets[cidx];
+      for ( preset_index = 0; preset_index < _papi_hwi_max_presets[cidx]; preset_index++ ) {
+        /* Free the postfix. */
+        if ( _papi_hwi_list[preset_index].postfix != NULL ) {
+           papi_free( _papi_hwi_list[preset_index].postfix );
+           _papi_hwi_list[preset_index].postfix = NULL;
+        }
+        /* Free the note. */
+        if ( _papi_hwi_list[preset_index].note != NULL ) {
+           papi_free( _papi_hwi_list[preset_index].note );
+           _papi_hwi_list[preset_index].note = NULL;
+        }
+        /* Free the event names used to define the preset. */
+        for(j=0; j<_papi_hwi_list[preset_index].count;j++) {
+           free(_papi_hwi_list[preset_index].name[j]);
+           free(_papi_hwi_list[preset_index].base_name[j]);
+           free(_papi_hwi_list[preset_index].default_name[j]);
+        }
+        /* Free the qualifier names and descriptions. */
+        for(j=0; j<_papi_hwi_list[preset_index].num_quals;j++) {
+           free(_papi_hwi_list[preset_index].quals[j]);
+           free(_papi_hwi_list[preset_index].quals_descrs[j]);
+        }
+      }
+    }
 
 #if defined(ITANIUM2) || defined(ITANIUM3)
 	/* NOTE: This memory may need to be freed for BG/P builds as well */
@@ -688,7 +703,6 @@ check_derived_events(char *target, int derived_type, hwi_presets_t* results, hwi
 				results->code[results->count] = search[j].code[k];
 				INTDBG("results: %p, name[%d]: %s, code[%d]: %#x\n", results, results->count, results->name[results->count], results->count, results->code[results->count]);
 
-				results->count++;
 			}
 		}
 
@@ -718,16 +732,8 @@ check_native_events(char *target, hwi_presets_t* results)
 		return 0;
 	}
 
-	// if this native event is not for component 0, return to show it can not be used in derived events
-	// it should be possible to create derived events for other components as long as all events in the derived event are associated with the same component
-	if ( _papi_hwi_component_index(results->code[results->count]) != 0 ) {
-		INTDBG( "EXIT: returned: 0, new event not associated with component 0 (current limitation with derived events)\n");
-		return 0;
-	}
-
 	//	  found = 1;
 	INTDBG("\tFound a native event %s\n", target);
-	results->name[results->count++] = papi_strdup(target);
 
 	INTDBG( "EXIT: returned: 1\n");
 	return 1;
@@ -782,6 +788,22 @@ int _papi_load_preset_table(char *pmu_str, int pmu_type, int cidx) {
 
 	// go load the user defined event definitions if any are defined
 	retval = papi_load_derived_events(pmu_str, pmu_type, cidx, 0);
+
+	SUBDBG("EXIT: retval: %d\n", retval);
+	return retval;
+}
+
+int _papi_load_preset_table_component(char *comp_str, char *arch_str, int cidx) {
+	SUBDBG("ENTER: arch_str: %s, cidx: %d\n", arch_str, cidx);
+
+	int retval;
+
+	// go load papi preset events for component index 'cidx'
+	retval = papi_load_derived_events_component(comp_str, arch_str, cidx);
+	if (retval != PAPI_OK) {
+		SUBDBG("EXIT: retval: %d\n", retval);
+		return retval;
+	}
 
 	SUBDBG("EXIT: retval: %d\n", retval);
 	return retval;
@@ -966,6 +988,7 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 	int preset = 0;
 	int get_events = 0; /* only process derived events after CPU type they apply to is identified      */
 	int found_events = 0; /* flag to track if event definitions (PRESETS) are found since last CPU declaration */
+    int breakAfter = 0; /* flag to break parsing events file if component 'arch' has already been parsed */
 #ifdef PAPI_DATADIR
 		char path[PATH_MAX];
 #endif
@@ -1064,6 +1087,8 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 			if (strcasecmp(t, pmu_name) == 0) {
 				int type;
 
+                breakAfter = 1;
+
 				SUBDBG( "Process events for PMU %s found at line %d of %s.\n", t, line_no, name);
 
 				t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
@@ -1078,9 +1103,7 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 				}
 			}
 			continue;
-		}
-
-		if ((strcasecmp(t, "PRESET") == 0)  || (strcasecmp(t, "EVENT") == 0)) {
+		} else if ((strcasecmp(t, "PRESET") == 0)  || (strcasecmp(t, "EVENT") == 0)) {
 
 			if (get_events == 0)
 				continue;
@@ -1106,6 +1129,7 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 			(void) preset;
 
 			SUBDBG( "Use event code: %#x for %s\n", preset, t);
+	        _papi_hwi_presets[res_idx].component_index = cidx;
 
 			t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
 			if ((t == NULL) || (strlen(t) == 0)) {
@@ -1192,6 +1216,14 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 					break;
 				}
 
+                /* If it is a valid event, then update the preset fields here. */
+                /* Initially, the event name should be those with a default, mandatory qualifiers. */
+                results[res_idx].name[results[res_idx].count]         = strdup(t);
+                results[res_idx].base_name[results[res_idx].count]    = strdup(t);
+                results[res_idx].default_name[results[res_idx].count] = strdup(t);
+                results[res_idx].default_code[results[res_idx].count] = results[res_idx].code[results[res_idx].count];
+                results[res_idx].count++;
+
 				i++;
 			} while (results[res_idx].count < PAPI_EVENTS_IN_DERIVED_EVENT);
 
@@ -1275,10 +1307,13 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 				} while (t != NULL);
 			}
 			(*event_count)++;
-			continue;
-		}
 
-		PAPIERROR("Unrecognized token %s at line %d of %s -- ignoring", t, line_no, name);
+			continue;
+		} else {
+            if( breakAfter ) break; // Break this while-loop once all presets for the given component's arch have been parsed.
+        }
+
+		//PAPIERROR("Unrecognized token %s at line %d of %s -- ignoring", t, line_no, name);
 	}
 
 	if (event_file) {
@@ -1290,6 +1325,480 @@ papi_load_derived_events (char *pmu_str, int pmu_type, int cidx, int preset_flag
 }
 
 
+static int
+papi_load_derived_events_component (char *comp_str, char *arch_str, int cidx) {
+	SUBDBG( "ENTER: arch_str: %s, cidx: %d\n", arch_str, cidx);
+
+	char arch_name[PAPI_MIN_STR_LEN];
+	char line[LINE_MAX];
+	char name[PATH_MAX] = "builtin papi_events_table";
+	char *event_file_path=NULL;
+	char *event_table_ptr=NULL;
+	int event_type_bits = 0;
+	char *tmpn;
+	char *tok_save_ptr=NULL;
+	FILE *event_file = NULL;
+	hwi_presets_t *results=NULL;
+	int result_size = 0;
+	int *event_count = NULL;
+	int invalid_event;
+	int line_no = 0;  /* count of lines read from event definition input */
+	int derived = 0;
+	int res_idx = 0;  /* index into results array for where to store next event */
+	int preset = 0;
+	int get_events = 0; /* only process derived events after CPU type they apply to is identified      */
+	int found_events = 0; /* flag to track if event definitions (PRESETS) are found since last CPU declaration */
+    int breakAfter = 0; /* flag to break parsing events file if component 'arch' has already been parsed */
+    int status = 0;
+#ifdef PAPI_DATADIR
+		char path[PATH_MAX];
+#endif
+
+
+	/* try the environment variable first */
+	if ((tmpn = getenv("PAPI_CSV_EVENT_FILE")) && (strlen(tmpn) > 0)) {
+		event_file_path = tmpn;
+	}
+	/* if no valid environment variable, look for built-in table */
+	else if (papi_events_table) {
+		event_table_ptr = papi_events_table;
+	}
+	/* if no env var and no built-in, search for default file */
+	else {
+#ifdef PAPI_DATADIR
+		sprintf( path, "%s/%s", PAPI_DATADIR, PAPI_EVENT_FILE );
+		event_file_path = path;
+#else
+		event_file_path = PAPI_EVENT_FILE;
+#endif
+	}
+	event_type_bits = PAPI_PRESET_MASK;
+	results = &_papi_hwi_comp_presets[cidx][0];
+	result_size = _papi_hwi_max_presets[cidx];
+	event_count = &_papi_hwd[cidx]->cmp_info.num_preset_events;
+
+	// if we have an event file pathname, open it and read event definitions from the file
+	if (event_file_path != NULL) {
+		if ((event_file = open_event_table(event_file_path)) == NULL) {
+			// if file open fails, return an error
+			SUBDBG("EXIT: Event file open failed.\n");
+			return PAPI_ESYS;
+		}
+		strncpy(name, event_file_path, sizeof(name)-1);
+		name[sizeof(name)-1] = '\0';
+	} else if (event_table_ptr == NULL) {
+		// if we do not have a path name or table pointer, return an error
+		SUBDBG("EXIT: Both event_file_path and event_table_ptr are NULL.\n");
+		return PAPI_ESYS;
+	}
+
+	/* copy the arch identifier, stripping commas if found */
+	tmpn = arch_name;
+	while (*arch_str) {
+		if (*arch_str != ',')
+			*tmpn++ = *arch_str;
+		arch_str++;
+	}
+	*tmpn = '\0';
+
+	/* at this point we have either a valid file pointer or built-in table pointer */
+	while (get_event_line(line, event_file, &event_table_ptr)) {
+		char *t;
+		int i;
+
+		// increment number of lines we have read
+		line_no++;
+
+		t = trim_string(strtok_r(line, ",", &tok_save_ptr));
+
+		/* Skip blank lines */
+		if ((t == NULL) || (strlen(t) == 0))
+			continue;
+
+		/* Skip comments */
+		if (t[0] == '#') {
+			continue;
+		}
+
+		if (strcasecmp(t, comp_str) == 0) {
+			if (get_events != 0 && found_events != 0) {
+				SUBDBG( "Ending event scanning at line %d of %s.\n", line_no, name);
+				get_events = 0;
+				found_events = 0;
+			}
+
+			t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+			if ((t == NULL) || (strlen(t) == 0)) {
+				PAPIERROR("Expected name after component-name token at line %d of %s -- ignoring", line_no, name);
+				continue;
+			}
+
+			if (strcasecmp(t, arch_name) == 0) {
+				int type;
+
+                breakAfter = 1;
+
+				SUBDBG( "Process events for ARCH %s found at line %d of %s.\n", t, line_no, name);
+
+				t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+				if ((t == NULL) || (strlen(t) == 0)) {
+					SUBDBG("No additional qualifier found, matching on string.\n");
+					get_events = 1;
+				}
+			}
+			continue;
+		} else if ((strcasecmp(t, "PRESET") == 0)  || (strcasecmp(t, "EVENT") == 0)) {
+
+			if (get_events == 0)
+				continue;
+
+			found_events = 1;
+			t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+
+			if ((t == NULL) || (strlen(t) == 0)) {
+				PAPIERROR("Expected name after PRESET token at line %d of %s -- ignoring", line_no, name);
+				continue;
+			}
+
+			SUBDBG( "Examining event %s\n", t);
+
+			// see if this event already exists in the results array, if not already known it sets up event in unused entry
+			if ((res_idx = find_event_index (results, result_size, t)) < 0) {
+				PAPIERROR("No room left for event %s -- ignoring", t);
+				continue;
+			}
+
+
+			// add the proper event bits (preset or user defined bits)
+			preset = res_idx | event_type_bits;
+			(void) preset;
+
+			SUBDBG( "Use event code: %#x for %s\n", preset, t);
+	        _papi_hwi_comp_presets[cidx][res_idx].component_index = cidx;
+
+			t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+			if ((t == NULL) || (strlen(t) == 0)) {
+				// got an error, make this entry unused
+                if (results[res_idx].symbol != NULL){
+                    papi_free (results[res_idx].symbol);
+                    results[res_idx].symbol = NULL;
+                }
+				PAPIERROR("Expected derived type after PRESET token at line %d of %s -- ignoring", line_no, name);
+				continue;
+			}
+
+			if (_papi_hwi_derived_type(t, &derived) != PAPI_OK) {
+				// got an error, make this entry unused
+                if (results[res_idx].symbol != NULL){
+                    papi_free (results[res_idx].symbol);
+                    results[res_idx].symbol = NULL;
+                }
+				PAPIERROR("Invalid derived name %s after PRESET token at line %d of %s -- ignoring", t, line_no, name);
+				continue;
+			}
+
+			/****************************************/
+			/* Have an event, let's start assigning */
+			/****************************************/
+
+			SUBDBG( "Adding event: %s, code: %#x, derived: %d results[%d]: %p.\n", t, preset, derived, res_idx, &results[res_idx]);
+
+			results[res_idx].derived_int = derived;
+
+			/* Derived support starts here */
+			/* Special handling for postfix and infix */
+			if ((derived == DERIVED_POSTFIX)  || (derived == DERIVED_INFIX)) {
+				t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+				if ((t == NULL) || (strlen(t) == 0)) {
+					// got an error, make this entry unused
+                    if (results[res_idx].symbol != NULL){
+                        papi_free (results[res_idx].symbol);
+                        results[res_idx].symbol = NULL;
+                    }
+					PAPIERROR("Expected Operation string after derived type DERIVED_POSTFIX or DERIVED_INFIX at line %d of %s -- ignoring", line_no, name);
+					continue;
+				}
+
+				// if it is an algebraic formula, we need to convert it to postfix
+				if (derived == DERIVED_INFIX) {
+					SUBDBG( "Converting InFix operations %s\n", t);
+					t = infix_to_postfix( t );
+					results[res_idx].derived_int = DERIVED_POSTFIX;
+				}
+
+				SUBDBG( "Saving PostFix operations %s\n", t);
+				results[res_idx].postfix = papi_strdup(t);
+			}
+
+			/* All derived terms collected here */
+			i = 0;
+			invalid_event = 0;
+			results[res_idx].count = 0;
+            int firstTerm = 1;
+			do {
+				t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+				if ((t == NULL) || (strlen(t) == 0))
+					break;
+				if (strcasecmp(t, "NOTE") == 0)
+					break;
+				if (strcasecmp(t, "LDESC") == 0)
+					break;
+				if (strcasecmp(t, "SDESC") == 0)
+					break;
+
+				SUBDBG( "Adding term (%d) %s to derived event %#x, current native event count: %d.\n", i, t, preset, results[res_idx].count);
+
+				// show that we do not have an event code yet (the component may create one and update this info)
+				// this also clears any values left over from a previous call
+				_papi_hwi_set_papi_event_code(-1, -1);
+
+                unsigned int eventCode;
+                char *tmpEvent, *tmpQuals;
+                char *qualDelim = ":";
+                PAPI_event_info_t eventInfo;
+                hwi_presets_t *prstPtr = &(_papi_hwi_comp_presets[cidx][res_idx]);
+
+                if( firstTerm ) {
+
+                    // Convert native event to code and check that it's valid.
+                    status = _papi_hwi_native_name_to_code(t, &eventCode);
+                    if( status != PAPI_OK ) {
+					    invalid_event = 1;
+					    PAPIERROR("Failed to get code for native event %s, used in derived event %s", t, results[res_idx].symbol);
+					    break;
+                    }
+
+                    // Call get_event_info, and use the qualifier string that comes after the
+                    // single instance of ":" and the description that comes after "masks:"
+                    status = _papi_hwi_get_native_event_info( (unsigned int)eventCode, &eventInfo );
+                    if ( status != PAPI_OK ) {
+					    invalid_event = 1;
+					    PAPIERROR("Failed to get info for native event %s, used in derived event %s", t, results[res_idx].symbol);
+					    break;
+                    }
+
+                    /* Get the qualifiers. */
+                    char *wholeName = strdup(eventInfo.symbol);
+                    char *qualPtr = strtok( wholeName, qualDelim );
+
+                    /* Skip over PMU name or component prefix. */
+                    qualPtr = strtok( NULL, qualDelim );
+
+                    /* Skip over basename. */
+                    qualPtr = strtok( NULL, qualDelim );
+
+                    while( qualPtr != NULL ) {
+
+                        /* Store the qualifier in the preset struct. */
+                        size_t qualLen = 1+strlen(qualDelim)+strlen(qualPtr);
+                        prstPtr->quals[prstPtr->num_quals] = (char*)malloc(qualLen*sizeof(char));
+                        if( NULL != prstPtr->quals[prstPtr->num_quals] ) {
+                            status = snprintf(prstPtr->quals[prstPtr->num_quals], qualLen, "%s%s", qualDelim, qualPtr);
+                            if( status < 0 || status >= qualLen ) {
+                                invalid_event = 1;
+                                PAPIERROR("Failed to store qualifier for native event %s,",
+                                          " used in derived event %s",
+                                           t, results[res_idx].symbol);
+                                break;
+                            }
+                            prstPtr->num_quals++;
+                        }
+                        qualPtr = strtok( NULL, qualDelim );
+                    }
+                    free(wholeName);
+
+                    /* Get the qualifier descriptions. */
+                    int count = 0;
+                    char *desc = strdup(eventInfo.long_descr);
+                    char *descStart = strstr( desc, "masks:" );
+                    char *descPtr = strtok( descStart, qualDelim );
+
+                    /* Skip over 'masks'. */
+                    descPtr = strtok( NULL, qualDelim );
+
+                    while( descPtr != NULL ) {
+
+                        /* Store the qualifier's description in the preset struct. */
+                        size_t descLen = 1+strlen(descPtr);
+                        prstPtr->quals_descrs[count] = (char*)malloc(descLen*sizeof(char));
+                        if( NULL != prstPtr->quals_descrs[count] ) {
+                            status = snprintf(prstPtr->quals_descrs[count], descLen, "%s", descPtr);
+                            if( status < 0 || status >= descLen ) {
+                                invalid_event = 1;
+                                PAPIERROR("Failed to store qualifier description for native event %s,",
+                                          " used in derived event %s",
+                                          t, results[res_idx].symbol);
+                                break;
+                            }
+                            count++;
+                        }
+                        descPtr = strtok( NULL, qualDelim );
+                    }
+                    free(desc);
+
+                    firstTerm = 0;
+                }
+
+                char *localname = strdup(t);
+                char *basename  = strtok(localname, ":");
+                basename = strtok(NULL, ":");
+                if( NULL == basename ) {
+                    basename = t;
+                }
+
+                /* Keep track of all qualifiers provided in the papi_events.csv file. */
+                status = overwrite_qualifiers(prstPtr, t, 0);
+                if( status < 0 ) {
+                    invalid_event = 1;
+                }
+
+                /* Construct event with all qualifiers. */
+                int k, strLenSum = 0, baseLen = 1+strlen(basename);
+                for (k = 0; k < prstPtr->num_quals; k++){
+                    strLenSum += strlen(prstPtr->quals[k]);
+                }
+                strLenSum += baseLen;
+
+                /* Allocate space for constructing fully qualified event. */
+                tmpEvent = (char*)malloc(strLenSum*sizeof(char));
+                tmpQuals = (char*)malloc(strLenSum*sizeof(char));
+
+                if( NULL == tmpQuals || NULL == tmpEvent ) {
+                    SUBDBG("EXIT: Could not allocate memory.\n");
+                    return PAPI_ENOMEM;
+                }
+
+                /* Print the basename to a string. */
+                status = snprintf(tmpEvent, baseLen, "%s", basename);
+                if( status < 0 || status >= baseLen ) {
+                    invalid_event = 1;
+                    PAPIERROR("Event basename %s was truncated to %s in derived event %s",
+                               basename, tmpEvent, results[res_idx].symbol);
+                    return PAPI_ENOMEM;
+                }
+
+                /* Concatenate the qualifiers onto the string. */
+                status = 0;
+                for (k = 0; k < prstPtr->num_quals; k++) {
+                    status = snprintf(tmpQuals, strLenSum, "%s%s", tmpEvent, prstPtr->quals[k]);
+                    strcpy(tmpEvent, tmpQuals);
+                }
+                if( status < 0 || status >= strLenSum ) {
+                    invalid_event = 1;
+                    PAPIERROR("Event %s with qualifiers was truncated to %s in derived event %s",
+                              basename, tmpEvent, results[res_idx].symbol);
+                    return PAPI_ENOMEM;
+                }
+
+				// make sure that this term in the derived event is a valid event name
+				// this call replaces preset and user event names with the equivalent native events in our results table
+				// it also updates formulas for derived events so that they refer to the correct native event index
+				if (is_event(tmpEvent, results[res_idx].derived_int, &results[res_idx], i) == 0) {
+					invalid_event = 1;
+					PAPIERROR("Missing event %s, used in derived event %s", basename, results[res_idx].symbol);
+					break;
+				}
+
+                /* If it is a valid event, then update the preset fields here. */
+                /* Initially, the event name should be those with a default, mandatory qualifiers. */
+                results[res_idx].name[results[res_idx].count]         = strdup(tmpEvent);
+                results[res_idx].base_name[results[res_idx].count]    = strdup(basename);
+                results[res_idx].default_name[results[res_idx].count] = strdup(tmpEvent);
+                results[res_idx].default_code[results[res_idx].count] = results[res_idx].code[results[res_idx].count];
+                results[res_idx].count++;
+
+                /* Free dynamically allocated strings. */
+                free(tmpQuals);
+                free(tmpEvent);
+                free(localname);
+
+				i++;
+
+			} while (results[res_idx].count < PAPI_EVENTS_IN_DERIVED_EVENT);
+
+			/* preset code list must be PAPI_NULL terminated */
+			if (i < PAPI_EVENTS_IN_DERIVED_EVENT) {
+				results[res_idx].code[results[res_idx].count] = PAPI_NULL;
+			}
+
+			if (invalid_event) {
+				// got an error, make this entry unused
+			        // preset table is statically allocated, user defined is dynamic
+                unsigned int j;
+                for (j = 0; j < results[res_idx].count; j++){
+                    if (results[res_idx].name[j] != NULL){
+                        papi_free( results[res_idx].name[j] );
+                        results[res_idx].name[j] = NULL;
+                    }
+                }
+
+				continue;
+			}
+
+			/* End of derived support */
+
+			// if we did not find any terms to base this derived event on, report error
+			if (i == 0) {
+				// got an error, make this entry unused
+                PAPIERROR("Expected PFM event after DERIVED token at line %d of %s -- ignoring", line_no, name);
+				continue;
+			}
+
+			if (i == PAPI_EVENTS_IN_DERIVED_EVENT) {
+				t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+			}
+
+			// if something was provided following the list of events to be used by the operation, process it
+			if ( t!= NULL  && strlen(t) > 0 ) {
+				do {
+					// save the field name
+					char *fptr = papi_strdup(t);
+
+					// get the value to be used with this field
+					t = trim_note(strtok_r(NULL, ",", &tok_save_ptr));
+					if ( t== NULL  || strlen(t) == 0 ) {
+						papi_free(fptr);
+						break;
+					}
+
+					// Handle optional short descriptions, long descriptions and notes
+					if (strcasecmp(fptr, "SDESC") == 0) {
+						results[res_idx].short_descr = papi_strdup(t);
+					}
+					if (strcasecmp(fptr, "LDESC") == 0) {
+						results[res_idx].long_descr = papi_strdup(t);
+					}
+					if (strcasecmp(fptr, "NOTE") == 0) {
+						results[res_idx].note = papi_strdup(t);
+					}
+
+					SUBDBG( "Found %s (%s) on line %d\n", fptr, t, line_no);
+					papi_free (fptr);
+
+					// look for another field name
+					t = trim_string(strtok_r(NULL, ",", &tok_save_ptr));
+					if ( t== NULL  || strlen(t) == 0 ) {
+						break;
+					}
+				} while (t != NULL);
+			}
+			(*event_count)++;
+
+			continue;
+		} else {
+            if( breakAfter ) break; // Break this while-loop once all presets for the given component's 'arch' have been parsed.
+        }
+
+		//PAPIERROR("Unrecognized token %s at line %d of %s -- ignoring", t, line_no, name);
+	}
+
+	if (event_file) {
+		fclose(event_file);
+	}
+
+	SUBDBG("EXIT: Done processing derived event file.\n");
+	return PAPI_OK;
+}
 
 
 /* The following code is proof of principle for reading preset events from an

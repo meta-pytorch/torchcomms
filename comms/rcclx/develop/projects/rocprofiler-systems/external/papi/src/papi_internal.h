@@ -97,7 +97,8 @@ extern char **_papi_errlist;
 #define NEED_CONTEXT		1
 #define DONT_NEED_CONTEXT 	0
 
-#define PAPI_EVENTS_IN_DERIVED_EVENT	8
+#define PAPI_EVENTS_IN_DERIVED_EVENT	12
+#define PAPI_MAX_COMP_QUALS	8
 
 
 /* these vestigial pointers are to structures defined in the components
@@ -447,6 +448,7 @@ void _papi_hwi_free_papi_event_string();
 void _papi_hwi_set_papi_event_code (unsigned int event_code, int update_flag);
 unsigned int _papi_hwi_get_papi_event_code (void);
 int _papi_hwi_get_ntv_idx (unsigned int papi_evt_code);
+void _papi_hwi_obtain_prefix(const char *full_event_name, char *prefix);
 int _papi_hwi_is_sw_multiplex( EventSetInfo_t * ESI );
 hwd_context_t *_papi_hwi_get_context( EventSetInfo_t * ESI, int *is_dirty );
 
@@ -468,6 +470,7 @@ int _papi_hwi_read( hwd_context_t * context, EventSetInfo_t * ESI,
 int _papi_hwi_cleanup_eventset( EventSetInfo_t * ESI );
 int _papi_hwi_convert_eventset_to_multiplex( _papi_int_multiplex_t * mpx );
 int _papi_hwi_init_global( int PE_OR_PEU );
+int _papi_hwi_init_global_presets( void );
 int _papi_hwi_init_global_internal( void );
 int _papi_hwi_init_os(void);
 void _papi_hwi_init_errors(void);
@@ -521,5 +524,11 @@ typedef struct {
 int _papi_hwi_enum_dev_type(int enum_modifier, void **handle);
 int _papi_hwi_get_dev_type_attr(void *handle, PAPI_dev_type_attr_e attr, void *val);
 int _papi_hwi_get_dev_attr(void *handle, int id, PAPI_dev_attr_e attr, void *val);
+
+int construct_qualified_event(hwi_presets_t *prstPtr);
+int overwrite_qualifiers(hwi_presets_t *prstPtr, const char *in, int is_preset);
+int get_first_cmp_preset_idx( void );
+int get_preset_cmp( unsigned int *index );
+hwi_presets_t* get_preset( int event_code );
 
 #endif /* PAPI_INTERNAL_H */

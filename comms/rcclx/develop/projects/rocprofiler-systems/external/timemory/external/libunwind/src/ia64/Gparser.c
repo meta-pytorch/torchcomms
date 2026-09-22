@@ -688,7 +688,7 @@ desc_spill_sprel_p (unsigned char qp, unw_word t, unsigned char abreg,
 #define UNW_DEC_RESTORE(f,t,a,arg)              desc_restore_p(0,t,a,arg)
 
 #include "unwind_decoder.h"
-
+
 #ifdef _U_dyn_op
 
 /* parse dynamic unwind info */
@@ -916,7 +916,7 @@ parse_dynamic (struct cursor *c, struct ia64_state_record *sr)
 #else
 # define parse_dynamic(c,sr)    (-UNW_EINVAL)
 #endif /* _U_dyn_op */
-
+
 
 HIDDEN int
 ia64_fetch_proc_info (struct cursor *c, unw_word_t ip, int need_unwind_info)

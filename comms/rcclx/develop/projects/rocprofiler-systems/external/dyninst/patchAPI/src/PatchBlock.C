@@ -29,6 +29,7 @@
  */
 /* Public Interface */
 
+#include <algorithm>
 #include "PatchCommon.h"
 #include "PatchCFG.h"
 #include "AddrSpace.h"
@@ -36,7 +37,7 @@
 #include "PatchMgr.h"
 #include "PatchCallback.h"
 #include "Point.h"
-#include <boost/shared_ptr.hpp>
+#include <dyncompat/shared_ptr.hpp>
 
 using namespace std;
 using namespace Dyninst;
@@ -256,7 +257,7 @@ PatchBlock::containsDynamicCall() {
                       rit != regs.end(); rit++)
                  {
                      if (RegisterAST::makePC(obj()->co()->cs()->getArch()).getID() != 
-                         boost::dynamic_pointer_cast<RegisterAST>(*rit)->getID()) 
+                         dyncompat::dynamic_pointer_cast<RegisterAST>(*rit)->getID()) 
                      {
                          return true;
                      }

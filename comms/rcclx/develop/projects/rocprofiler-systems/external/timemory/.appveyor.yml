@@ -34,7 +34,7 @@ environment:
   CONTINUOUS_INTEGRATION: "true"
   matrix:
     - CONDA: 38
-      CPP: 17
+      CPP: 20
       CONFIG: Release
       TOOLS: "OFF"
       WINSOCK: "OFF"
@@ -47,7 +47,7 @@ environment:
       BUILD_EXAMPLES: "OFF"
       RUN_EXAMPLES: "OFF"
     - PYTHON: 37
-      CPP: 14
+      CPP: 20
       CONFIG: Debug
       TOOLS: "ON"
       WINSOCK: "OFF"

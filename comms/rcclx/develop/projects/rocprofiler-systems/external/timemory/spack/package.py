@@ -75,8 +75,8 @@ class Timemory(CMakePackage, PythonPackage):
                          '(min/max/stddev)'))
     variant('extra_optimizations', default=True,
             description='Build timemory with extra optimization flags')
-    variant('cxxstd', default='14', description='C++ language standard',
-            values=('14', '17', '20'), multi=False)
+    variant('cxxstd', default='20', description='C++ language standard',
+            values=('17', '20', '23'), multi=False)
     variant('mpip_library', default=False,
             description='Build stand-alone timemory-mpip GOTCHA library')
     variant('ompt', default=False, description=('Enable OpenMP tools support'))

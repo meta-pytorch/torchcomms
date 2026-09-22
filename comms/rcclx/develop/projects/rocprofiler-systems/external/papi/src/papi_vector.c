@@ -218,7 +218,7 @@ _papi_hwi_innoculate_os_vector( papi_os_vector_t * v )
 	if ( !v->update_shlib_info )
 		v->update_shlib_info = ( int ( * )( papi_mdi_t * ) ) vec_int_dummy;
 	if ( !v->get_system_info )
-		v->get_system_info = ( int ( * )(  ) ) vec_int_dummy;
+		v->get_system_info = ( int ( * )( papi_mdi_t * ) ) vec_int_dummy;
 
 	if ( !v->get_memory_info )
 		v->get_memory_info =

@@ -20,7 +20,7 @@
  */
 
 /*
- *  This test case tests time based data collection on ntel GPU performance metrics
+ *  This test case tests time-based data collection on Intel GPU performance metrics
  *
  *  @ brief Collect  metric data for a certain time interval, with one or more loops.
  *          By default, the metric data will aggregate overtime for each loop.
@@ -59,8 +59,14 @@ main(int argc, char ** argv) {
         printf("usage: %s -d <duration> [ -l <loops>][-s][-m metric[:device=0][:tile=0]]\n", argv[0]);
         return 0;
     }
-    // unset variable ZET_ENABLE_API_TRACING_EXP to enable time base collection
-    retVal = putenv("ZET_ENABLE_API_TRACING_EXP=0");
+
+    retVal = putenv("ZE_ENABLE_TRACING_LAYER=0");
+    if (retVal) {
+        fprintf(stderr, "Failed to set ZE_ENABLE_TRACING_LAYER=0.\n");
+        fprintf(stderr, "Unset variable ZE_ENABLE_TRACING_LAYER to enable time-based collection.\n");
+        return 1;
+    }
+
     retVal = parseInputParam(argc, argv, &param);
     if (retVal) {
         printf("Invalid input parameters.\n");

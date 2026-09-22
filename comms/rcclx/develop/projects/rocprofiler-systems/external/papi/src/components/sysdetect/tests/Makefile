@@ -21,7 +21,8 @@ endif
 intel_compilers := ifort ifx
 cray_compilers := ftn crayftn
 
-ifeq ($(notdir $(F77)),gfortran)
+gfortran_variants := $(shell echo "$(F77)" | grep --ignore-case --fixed-strings --silent gfortran; echo $$?)
+ifeq ($(gfortran_variants), 0)
     FFLAGS +=-ffree-form -ffree-line-length-none
 else ifeq ($(patsubst %flang,,$(notdir $(F77))),)  # compiler name ends with flang
     FFLAGS +=-ffree-form

@@ -30,6 +30,19 @@ struct ncclInfo {
   int chunkSteps;
   int sliceSteps;
   const void* acc;
+#ifdef ENABLE_ROCSHMEM
+  // Optional per-operation metadata for rocSHMEM collectives.
+  size_t* sizes;
+#endif
+  bool useDirect;
+  // One-sided ops
+  size_t peerWinOffset;
+  ncclWindow_t peerWin;
+  int sigIdx;
+  int ctx;
+  unsigned int flags;
+  int nDesc;
+  ncclWaitSignalDesc_t* signalDescs;
 };
 
 #endif

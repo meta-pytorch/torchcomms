@@ -17,14 +17,14 @@ PAPI_CUDA_ROOT ?= /opt/cuda
 
 # Both at compile time and run time, the software depends on PAPI_CUDA_ROOT.
 # There are three libraries used by the NVML component, they are 
-# libcuda.so
-# libcudart.so 
-# libnvidia-ml.so
+# A variation of the shared object libcuda (e.g. libcuda.so or libcuda.so.1)
+# A variation of the shared object libcudart (e.g. libcudart.so or libcudart.so.12)
+# A variation of the shared object libnvidia-ml (e.g libnvidia-ml.so or libnvidia-ml.so.1)
 
 # The standard installed locations for these libraries, with overrides:
-# $(PAPI_CUDA_ROOT)/lib64/libcuda.so               #O.R. PAPI_CUDA_MAIN
-# $(PAPI_CUDA_ROOT)/lib64/libcudart.so             #O.R. PAPI_CUDA_RUNTIME
-# $(PAPI_CUDA_ROOT)/lib64/libnvidia-ml.so          #O.R. PAPI_NVML_MAIN
+# $(PAPI_CUDA_ROOT)/lib64/libcuda.so (or libcuda.so.1)            #O.R. PAPI_CUDA_MAIN
+# $(PAPI_CUDA_ROOT)/lib64/libcudart.so (or libcudart.so.12)       #O.R. PAPI_CUDA_RUNTIME
+# $(PAPI_CUDA_ROOT)/lib64/libnvidia-ml.so (or libnvidia-ml.so.1)  #O.R. PAPI_NVML_MAIN
 # 
 # There are many ways to cause these paths to be known. 
 # Spack is a package manager used on supercomputers, Linux and MacOS. If Spack
@@ -59,6 +59,8 @@ PAPI_NVML_MAIN = \"\"
 
 # An example of an override:
 # PAPI_NVML_MAIN = \"$(PAPI_CUDA_ROOT)/lib64/libnvidia-ml.so\"
+# NOTE: libnvidia-ml.so was replaced with libnvidia-ml.so.1 with drivers
+# 560+ see: https://github.com/NVIDIA/yum-packaging-nvidia-driver/issues/9.
 
 # Note:  PAPI_CUDA_MAIN and PAPI_CUDA_RUNTIME, if set, will also apply to the
 #        CUDA component, which uses the same libraries.

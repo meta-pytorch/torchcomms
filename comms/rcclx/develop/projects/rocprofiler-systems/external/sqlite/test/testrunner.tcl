@@ -212,8 +212,7 @@ proc default_njob {} {
   if {$nCore<=2} {
     set nHelper 1
   } else {
-    set nHelper [expr int($nCore*0.8)]
-    if {$nHelper>20} {set nHelper 20}
+    set nHelper [expr int($nCore*0.5)]
   }
   return $nHelper
 }
@@ -707,18 +706,9 @@ if {[llength $argv]>=1
     }
   }
 
-  set once 1
-  while {![file readable $TRG(dbname)]} {
-    if {$delay==0} {
-      puts "Database missing: $TRG(dbname)"
-      exit
-    }
-    if {$once} {
-      set once 0
-      puts "Waiting for testing to start...."
-      flush stdout
-    }
-    after [expr {$delay*1000}]
+  if {![file readable $TRG(dbname)]} {
+    puts "Database missing: $TRG(dbname)"
+    exit
   }
   sqlite3 mydb $TRG(dbname)
   mydb timeout 2000
@@ -1278,26 +1268,6 @@ proc add_fuzztest_jobs {buildname patternlist} {
     set bldDone 0
     set subcmd [lrange $interpreter 1 end]
     set interpreter [lindex $interpreter 0]
-
-    # For fuzzcheck-asan and fuzzcheck-ubsan, break up some
-    # fuzzdata files into multiple slices, for improved
-    # concurrency.
-    #
-    if {[string match *fuzzcheck-*san $interpreter]} {
-      set newscripts {}
-      foreach s $scripts {
-        if {[string match {*fuzzdata[12].db} $s]
-            && ![string match slice $s]} {
-          set N 6
-          for {set i 0} {$i<$N} {incr i} {
-            lappend newscripts [list --slice $i $N $s]
-          }
-        } else {
-          lappend newscripts $s
-        }
-      }
-      set scripts $newscripts
-    }
 
     if {[string match fuzzcheck* $interpreter]
      && [info exists env(FUZZDB)]

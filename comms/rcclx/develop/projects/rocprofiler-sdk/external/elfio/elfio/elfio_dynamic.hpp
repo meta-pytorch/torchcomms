@@ -28,10 +28,12 @@ THE SOFTWARE.
 namespace ELFIO {
 
 //------------------------------------------------------------------------------
+// Template class for accessing dynamic sections
 template <class S> class dynamic_section_accessor_template
 {
   public:
     //------------------------------------------------------------------------------
+    // Constructor
     explicit dynamic_section_accessor_template( const elfio& elf_file,
                                                 S*           section )
         : elf_file( elf_file ), dynamic_section( section ), entries_num( 0 )
@@ -39,6 +41,7 @@ template <class S> class dynamic_section_accessor_template
     }
 
     //------------------------------------------------------------------------------
+    // Returns the number of entries in the dynamic section
     Elf_Xword get_entries_num() const
     {
         size_t needed_entry_size = -1;
@@ -70,6 +73,7 @@ template <class S> class dynamic_section_accessor_template
     }
 
     //------------------------------------------------------------------------------
+    // Retrieves an entry from the dynamic section
     bool get_entry( Elf_Xword    index,
                     Elf_Xword&   tag,
                     Elf_Xword&   value,
@@ -106,6 +110,7 @@ template <class S> class dynamic_section_accessor_template
     }
 
     //------------------------------------------------------------------------------
+    // Adds an entry to the dynamic section
     void add_entry( Elf_Xword tag, Elf_Xword value )
     {
         if ( elf_file.get_class() == ELFCLASS32 ) {
@@ -117,6 +122,7 @@ template <class S> class dynamic_section_accessor_template
     }
 
     //------------------------------------------------------------------------------
+    // Adds an entry with a string value to the dynamic section
     void add_entry( Elf_Xword tag, const std::string& str )
     {
         string_section_accessor strsec(
@@ -125,35 +131,48 @@ template <class S> class dynamic_section_accessor_template
         add_entry( tag, value );
     }
 
-    //------------------------------------------------------------------------------
   private:
     //------------------------------------------------------------------------------
+    // Returns the index of the string table
     Elf_Half get_string_table_index() const
     {
         return (Elf_Half)dynamic_section->get_link();
     }
 
     //------------------------------------------------------------------------------
+    // Retrieves a generic entry from the dynamic section
     template <class T>
     void generic_get_entry_dyn( Elf_Xword  index,
                                 Elf_Xword& tag,
                                 Elf_Xword& value ) const
     {
-        const endianess_convertor& convertor = elf_file.get_convertor();
+        const endianness_convertor& convertor = elf_file.get_convertor();
 
         // Check unusual case when dynamic section has no data
         if ( dynamic_section->get_data() == nullptr ||
-             ( index + 1 ) * dynamic_section->get_entry_size() >
-                 dynamic_section->get_size() ||
              dynamic_section->get_entry_size() < sizeof( T ) ) {
             tag   = DT_NULL;
             value = 0;
             return;
         }
 
+        // Check for integer overflow in size calculation
+        if (index > (dynamic_section->get_size() / dynamic_section->get_entry_size()) - 1) {
+            tag   = DT_NULL;
+            value = 0;
+            return;
+        }
+
+        // Check for integer overflow in pointer arithmetic
+        Elf_Xword offset = index * dynamic_section->get_entry_size();
+        if (offset > dynamic_section->get_size() - sizeof(T)) {
+            tag   = DT_NULL;
+            value = 0;
+            return;
+        }
+
         const T* pEntry = reinterpret_cast<const T*>(
-            dynamic_section->get_data() +
-            index * dynamic_section->get_entry_size() );
+            dynamic_section->get_data() + offset );
         tag = convertor( pEntry->d_tag );
         switch ( tag ) {
         case DT_NULL:
@@ -200,10 +219,11 @@ template <class S> class dynamic_section_accessor_template
     }
 
     //------------------------------------------------------------------------------
+    // Adds a generic entry to the dynamic section
     template <class T>
     void generic_add_entry_dyn( Elf_Xword tag, Elf_Xword value )
     {
-        const endianess_convertor& convertor = elf_file.get_convertor();
+        const endianness_convertor& convertor = elf_file.get_convertor();
 
         T entry;
 
@@ -258,13 +278,16 @@ template <class S> class dynamic_section_accessor_template
                                       sizeof( entry ) );
     }
 
-    //------------------------------------------------------------------------------
   private:
-    const elfio&      elf_file;
-    S*                dynamic_section;
+    // Reference to the ELF file
+    const elfio& elf_file;
+    // Pointer to the dynamic section
+    S* dynamic_section;
+    // Number of entries in the dynamic section
     mutable Elf_Xword entries_num;
 };
 
+// Type aliases for dynamic section accessors
 using dynamic_section_accessor = dynamic_section_accessor_template<section>;
 using const_dynamic_section_accessor =
     dynamic_section_accessor_template<const section>;

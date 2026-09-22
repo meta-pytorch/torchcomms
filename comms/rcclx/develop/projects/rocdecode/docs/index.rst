@@ -8,26 +8,24 @@ rocDecode documentation
 
 rocDecode provides APIs, utilities, and samples that you can use to easily access the video decoding
 features of your media engines (VCNs). It also allows interoperability with other compute engines on
-the GPU using Video Acceleration API (VA-API)/HIP. To learn more, see :doc:`what-is-rocDecode`
+the GPU using Video Acceleration API (VA-API)/HIP. 
 
-The rocDecode public repository is located at `https://github.com/ROCm/rocDecode <https://github.com/ROCm/rocDecode>`_.
+rocDecode is delivered as part of `TheRock <https://github.com/ROCm/TheRock>`_. The rocDecode source code is located at https://github.com/ROCm/rocm-systems/tree/develop/projects/rocdecode.
 
 .. grid:: 2
   :gutter: 3
 
   .. grid-item-card:: Install
 
-    * :doc:`rocDecode prerequisites <./install/rocDecode-prerequisites>`
-    * :doc:`Installing rocDecode with the package installer <./install/rocDecode-package-install>`
-    * :doc:`Building and installing rocDecode from source code <./install/rocDecode-build-and-install>`
-    * `rocDecode Docker containers <https://github.com/ROCm/rocDecode/tree/develop/docker>`_
+    * :doc:`Install rocDecode <./install/rocDecode-install>`
+    * :doc:`Build from source <./install/rocDecode-build-and-install>`
 
 .. grid:: 2
   :gutter: 3
 
   .. grid-item-card:: Conceptual
 
-    * :doc:`Video decoding pipeline <./conceptual/video-decoding-pipeline>`
+    * :doc:`rocDecode decoding pipeline <./conceptual/rocDecode-decoding-pipelines>`
     * :doc:`rocDecode surface memory locations <./conceptual/rocDecode-memory-types>`
 
   .. grid-item-card:: How to
@@ -50,8 +48,15 @@ The rocDecode public repository is located at `https://github.com/ROCm/rocDecode
       * :doc:`The rocDecode parser API <./reference/rocDecode-parser>`
       * :doc:`The rocDecode hardware decoder API <./reference/rocDecode-hw-decoder>`
       * :doc:`The rocDecode software decoder API <./reference/rocDecode-sw-decoder>`
-      
+    
+    * :doc:`The rocDecode utility classes <./reference/rocDecode-utility-classes>`
+
+      * :doc:`The rocDecode RocVideoDecoder<./reference/rocDecode-util-decoder>`
+      * :doc:`The rocDecode demultiplexer <./reference/rocDecode-demux>`
+      * :doc:`The rocDecode FFMpeg decoder <./reference/rocDecode-ffmpeg-decoder>`
+
     * :doc:`rocDecode logging levels <./reference/rocDecode-logging-control>`
+    * :doc:`rocDecode environment variables <./reference/rocDecode-env-vars>`
     * :doc:`rocDecode codec support and hardware capabilities <./reference/rocDecode-formats-and-architectures>`
     * :doc:`API library <../doxygen/html/files>`
     * :doc:`Functions <../doxygen/html/globals>`

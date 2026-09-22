@@ -104,7 +104,8 @@ class ScratchBufferCache {
     // concurrently on other streams. Measured either way it is in the noise, so
     // this is hygiene rather than a fix for anything.
     struct ncclCudaGraph graph;
-    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    if (ncclCudaGetCapturingGraph(&graph, stream, /*graphUsageMode=*/0) !=
+        ncclSuccess) {
       return nullptr;
     }
     if (ncclCudaGraphValid(graph)) {
@@ -1042,7 +1043,8 @@ static bool tryOneShotAllReduce(
   // synchronous hipMemset. Using one that already exists is fine, so under
   // capture take the path only if the region is already up.
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     return false;
   }
   if (ncclCudaGraphValid(graph) && !rcclx::relay::oneShotReady(comm)) {
@@ -1262,7 +1264,8 @@ bool a2LpPrepare(
   // one that already exists is fine, so under capture take the path only if the
   // arena is already up. Same precedent as the one-shot region.
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
     return false;
   }
@@ -1500,7 +1503,8 @@ bool flatLpPrepare(
     return false;
   }
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
     return false;
   }

@@ -24,6 +24,7 @@ CFLAGS += -I$(PAPI_ROCM_ROOT)/include                  \
           -I$(PAPI_ROCM_ROOT)/rocm_smi/include         \
           -I$(PAPI_ROCM_ROOT)/rocm_smi/include/rocm_smi
 endif
+CFLAGS += -I/opt/amdgpu/include
 
 ifneq ($(PAPI_CUDA_ROOT),)
 CFLAGS += -I$(PAPI_CUDA_ROOT)/include

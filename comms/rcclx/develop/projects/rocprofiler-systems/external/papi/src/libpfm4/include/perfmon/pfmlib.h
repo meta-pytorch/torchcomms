@@ -835,6 +835,8 @@ typedef enum {
 	PFM_PMU_INTEL_GNR_UNC_IMC9,	/* Intel GraniteRapids IMC channel 9 */
 	PFM_PMU_INTEL_GNR_UNC_IMC10,	/* Intel GraniteRapids IMC channel 10 */
 	PFM_PMU_INTEL_GNR_UNC_IMC11,	/* Intel GraniteRapids IMC channel 10 */
+
+	PFM_PMU_ARM_CORTEX_X4,		/* ARM Cortex X4 (ARMv9) */
 	/* MUST ADD NEW PMU MODELS HERE */
 
 	PFM_PMU_MAX			/* end marker */

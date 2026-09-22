@@ -2,11 +2,11 @@
 # File: configure.in
 
 # cross compile sample
-# ARCH=mips CC=scgcc ./configure --with-arch=mips --host=mips64el-gentoo-linux-gnu- --with-ffsll --with-libpfm4 --with-perf-events --with-virtualtimer=times --with-walltimer=gettimeofday --with-tls=__thread --with-CPU=mips
+# ARCH=mips CC=scgcc ./configure --with-arch=mips --host=mips64el-gentoo-linux-gnu- --with-ffsll --with-perf-events --with-virtualtimer=times --with-walltimer=gettimeofday --with-tls=__thread --with-CPU=mips
 # cross compiling should work differently...
 
 AC_PREREQ(2.59)
-AC_INIT(PAPI, 7.2.0.0b2, ptools-perfapi@icl.utk.edu)
+AC_INIT(PAPI, 7.3.0.0, ptools-perfapi@icl.utk.edu)
 AC_CONFIG_SRCDIR([papi.c])
 AC_CONFIG_HEADER([config.h])
 
@@ -336,10 +336,10 @@ fi
 
 AC_MSG_CHECKING(for tests)
 AC_ARG_WITH(tests,
-           [AS_HELP_STRING([--with-tests=<"ctests ftests mpitests", no>],
+           [AS_HELP_STRING([--with-tests=<"ctests ftests mpitests comp_tests", no>],
            [Specify which tests to run on install, or "no" tests (default: all available tests)])],
     [tests=$withval],
-    [tests="ctests ftests mpitests"])
+    [tests="ctests ftests mpitests comp_tests"])
 
 if test "$tests" = "no"; then
   AC_MSG_RESULT($tests)
@@ -360,38 +360,50 @@ else
           ;;
   esac
   case "$tests" in
+      *comp_tests*)
+          tmp_tests+="comp_tests "
+          ;;
+  esac
+  case "$tests" in
       *mpitests*)
           # we already checked if mpicc is working
           if test "x$MPICC" != "x"; then
             if test "x$NO_MPI_TESTS" = "x"; then
               mpi_tests=yes
               # mpitests only works together with ctests
-              if test "x$tmp_tests" = "x"; then
-                AC_MSG_RESULT(no)
-              else
-                AC_MSG_RESULT($tmp_tests mpitests)
+              if test "x$tmp_tests" != "x"; then
+                tmp_tests+="mpitests "
               fi
-            fi
-          else
-            NO_MPI_TESTS=yes
-            if test "x$tmp_tests" = "x"; then
-              AC_MSG_RESULT(no)
-            else
-              AC_MSG_RESULT($tmp_tests)
             fi
           fi
           ;;
   esac
-  # do not list mpi_tests for makefile target
+
+  if test "x$tmp_tests" = "x"; then
+    AC_MSG_RESULT(no)
+  else
+    AC_MSG_RESULT($tmp_tests)
+  fi
+
+  # do not list mpitests for makefile target
+  case "$tmp_tests" in
+    *mpitests* )
+        tmp_tests=$(echo "$tmp_tests" | sed 's/ mpitests//')
+        ;;
+  esac
+
   tests=$tmp_tests
   
-  # mpi_tests is not listed by the user
+  # mpitests is not listed by the user
   if test "$mpi_tests" = "no"; then
     NO_MPI_TESTS=yes
   fi
 fi
 
 AC_MSG_CHECKING(for debug build)
+
+# default value for --with-debug if not set by user
+debug="no"
 AC_ARG_WITH(debug,
             [AS_HELP_STRING([--with-debug=<yes,memory,no>],
             [Build a debug version, debug version plus memory tracker or none])],
@@ -1188,6 +1200,7 @@ fi
 perf_events=yes
 force_perf_events=no
 perf_events_uncore=yes
+CPU_ENABLED="yes"
 
 if test "x$mic" = "xno"; then
        perf_events=no
@@ -1211,6 +1224,7 @@ AC_ARG_ENABLE(cpu,
               [Disable cpu component])])
 
 AS_IF([test "x$enable_cpu" = "xno"],[
+	CPU_ENABLED="no"
 	perf_events=no
   force_perf_events=no
   perf_events_uncore=no
@@ -1236,6 +1250,7 @@ AC_ARG_ENABLE(perf_event,
               [Disable perf_event component])])
 
 AS_IF([test "x$enable_perf_event" = "xno"],[
+	CPU_ENABLED="no"
 	perf_events=no
   force_perf_events=no
 
@@ -1253,6 +1268,7 @@ AS_IF([test "x$enable_perf_event" = "xno"],[
     '  "$FILE_PATH" > "$TEMP_FILE"
   mv "$TEMP_FILE" "$FILE_PATH" 
 ])
+AC_SUBST(CPU_ENABLED)
 
 AC_ARG_ENABLE(perf_event_uncore,
               [AS_HELP_STRING([--disable-perf-event-uncore],
@@ -1860,12 +1876,164 @@ AC_ARG_WITH([components],
     ]
 )
 
+# Enable sysdetect unless the user has explicitly told us not to.
+if test "$with_sysdetect" = "yes"; then
+  if test "$perf_events" != "no"; then
+    components="$components sysdetect"
+    fi
+fi
+
+AC_MSG_RESULT($components)
+
+# Check whether rocm and rocp_sdk were configured together
+rocm_found=0
+rocp_sdk_found=0
+for comp in $components
+do
+    if test "$comp" = "rocm"; then
+        rocm_found=1
+    fi
+
+    if test "$comp" = "rocp_sdk"; then
+        rocp_sdk_found=1
+    fi
+done
+if test $rocm_found -eq 1 && test $rocp_sdk_found -eq 1; then
+    echo "WARNING: Components rocm and rocp_sdk should not be configured together. See components/rocm/README.md for more details."
+fi
+
+# If both SMI components were requested, select the one that matches the
+# available ROCm stack. amd_smi should be used for ROCm >= 6.4.0, while
+# rocm_smi remains the fallback for older releases.
+amd_smi_found=0
+rocm_smi_found=0
+for comp in $components
+do
+    case "$comp" in
+    amd_smi)
+        amd_smi_found=1
+        ;;
+    rocm_smi)
+        rocm_smi_found=1
+        ;;
+    esac
+done
+
+if test $amd_smi_found -eq 1 && test $rocm_smi_found -eq 1; then
+    rocm_version=""
+
+    for root in "$PAPI_AMDSMI_ROOT" "$PAPI_ROCMSMI_ROOT" "$PAPI_ROCM_ROOT"
+    do
+        if test "x$root" != "x"; then
+            for probe in "$root/.info/version" "$root/../.info/version" "$root/version.txt"
+            do
+                if test -f "$probe"; then
+                    rocm_version=`head -n 1 "$probe" 2>/dev/null`
+                    break 2
+                fi
+            done
+        fi
+    done
+
+    if test "x$rocm_version" = "x"; then
+        if command -v hipconfig >/dev/null 2>&1; then
+            rocm_version=`hipconfig --rocm-version 2>/dev/null | head -n 1`
+        elif command -v rocminfo >/dev/null 2>&1; then
+            rocm_version=`rocminfo --version 2>/dev/null | head -n 1`
+        elif command -v amd-smi >/dev/null 2>&1; then
+            rocm_version=`amd-smi --version 2>/dev/null | head -n 1`
+        elif command -v rocm-smi >/dev/null 2>&1; then
+            rocm_version=`rocm-smi --version 2>/dev/null | head -n 1`
+        fi
+    fi
+
+    rocm_version_clean=`echo "$rocm_version" | sed -n 's/[[^0-9]]*\([[0-9]][[0-9]]*\.[[0-9]][[0-9]]*\(\.[[0-9]][[0-9]]*\)\?\).*/\1/p'`
+    if test "x$rocm_version_clean" = "x"; then
+        rocm_version_clean=`echo "$rocm_version" | tr -cd '0-9.'`
+    fi
+
+    have_amd_smi_lib=0
+    have_rocm_smi_lib=0
+    for root in "$PAPI_AMDSMI_ROOT" "$PAPI_ROCM_ROOT"
+    do
+        if test "x$root" != "x"; then
+            if test -f "$root/lib/libamd_smi.so" || test -f "$root/lib64/libamd_smi.so"; then
+                have_amd_smi_lib=1
+            fi
+        fi
+    done
+    for root in "$PAPI_ROCMSMI_ROOT" "$PAPI_ROCM_ROOT"
+    do
+        if test "x$root" != "x"; then
+            if test -f "$root/lib/librocm_smi64.so" || test -f "$root/lib64/librocm_smi64.so"; then
+                have_rocm_smi_lib=1
+            fi
+        fi
+    done
+
+    selected_smi="amd_smi"
+    rocm_version_value=""
+    if test "x$rocm_version_clean" != "x"; then
+        rocm_major=`echo "$rocm_version_clean" | cut -d. -f1`
+        rocm_minor=`echo "$rocm_version_clean" | cut -d. -f2`
+        rocm_patch=`echo "$rocm_version_clean" | cut -d. -f3`
+        if test "x$rocm_minor" = "x"; then
+            rocm_minor=0
+        fi
+        if test "x$rocm_patch" = "x"; then
+            rocm_patch=0
+        fi
+        rocm_version_value=$((10#$rocm_major * 10000 + 10#$rocm_minor * 100 + 10#$rocm_patch))
+        if test $rocm_version_value -lt 60400; then
+            selected_smi="rocm_smi"
+        fi
+    else
+        if test $have_amd_smi_lib -eq 0 && test $have_rocm_smi_lib -eq 1; then
+            selected_smi="rocm_smi"
+        elif test $have_amd_smi_lib -eq 0 && test $have_rocm_smi_lib -eq 0; then
+            echo "WARNING: Unable to determine ROCm version or locate AMD/ROCm SMI libraries. Defaulting to amd_smi when both components are requested."
+        else
+            echo "WARNING: Unable to determine ROCm version. Defaulting to amd_smi when both SMI components are requested."
+        fi
+    fi
+
+    filtered_components=""
+    for comp in $components
+    do
+        if test "$comp" = "amd_smi" && test "$selected_smi" = "rocm_smi"; then
+            continue
+        fi
+        if test "$comp" = "rocm_smi" && test "$selected_smi" = "amd_smi"; then
+            continue
+        fi
+        filtered_components="$filtered_components $comp"
+    done
+    components=`echo $filtered_components`
+
+    if test "x$rocm_version_clean" != "x"; then
+        if test "$selected_smi" = "amd_smi"; then
+            echo "INFO: Detected ROCm version $rocm_version_clean. Building amd_smi and skipping rocm_smi."
+        else
+            echo "INFO: Detected ROCm version $rocm_version_clean. Building rocm_smi and skipping amd_smi."
+        fi
+    else
+        if test $have_amd_smi_lib -eq 1 && test $have_rocm_smi_lib -eq 0; then
+            echo "INFO: Only AMD SMI libraries were found. Building amd_smi and skipping rocm_smi."
+        elif test $have_rocm_smi_lib -eq 1 && test $have_amd_smi_lib -eq 0; then
+            echo "INFO: Only ROCm SMI libraries were found. Building rocm_smi and skipping amd_smi."
+        elif test "$selected_smi" = "rocm_smi"; then
+            echo "INFO: Falling back to rocm_smi because AMD SMI libraries were not detected."
+        else
+            echo "INFO: Defaulting to amd_smi when both SMI components are requested."
+        fi
+    fi
+fi
 
 # This is an ugly hack to keep building on configurations covered by any-null in the past.
 if test "$VECTOR" = "_papi_dummy_vector"; then
 	if test "x$components" = "x"; then 
 		echo "papi_vector_t ${VECTOR} = {" >> components_config.h 
- 		echo "	.size = {
+		echo "	.size = {
 		.context = sizeof ( int ),
 		.control_state = sizeof ( int ),
 		.reg_value = sizeof ( int ),
@@ -1914,12 +2082,111 @@ elif test "x$VECTOR" != "x"; then
    echo "extern papi_vector_t ${VECTOR};" >> components_config.h
 fi
 
-# Enable sysdetect unless the user has explicitly told us not to.
-if test "$with_sysdetect" = "yes"; then
-  if test "$perf_events" != "no"; then
-    components="$components sysdetect"
+
+# construct papi_components_config_event_defs.h
+echo "#ifndef _PAPICOMPCFGEVENTDEFS"  > papi_components_config_event_defs.h
+echo "#define _PAPICOMPCFGEVENTDEFS" >> papi_components_config_event_defs.h
+echo "" >> papi_components_config_event_defs.h
+numLine=`grep "#define PAPI_MAX_PRESET_EVENTS" papiStdEventDefs.h`
+sumNum=`echo ${numLine} | awk '{print $3}'`
+for comp in $components; do
+  idx=`echo "$comp" | sed -n "s/\/.*//p" | wc -c`
+  if test "$idx" = 0; then
+    subcomp=$comp
+  else
+    subcomp=`echo $comp | sed -E "s/^.{${idx}}//"`
+  fi
+  if test "${subcomp}" != "perf_event"; then
+    subcomp_defs_inc=components/${subcomp}/papi_${subcomp}_std_event_defs.h
+    if test -f ${subcomp_defs_inc}; then
+        `cp ${subcomp_defs_inc} ./`
+        `echo "#define PAPI_${subcomp}_PRESET_OFFSET ${sumNum}" >> papi_components_config_event_defs.h`
+        numLine=`grep "#define PAPI_MAX_${subcomp}_PRESETS" ${subcomp_defs_inc}`
+        singleNum=`echo ${numLine} | awk '{print $3}'`
+        sumNum=$(( ${sumNum} + ${singleNum} ))
     fi
-fi
+  fi
+done
+echo "" >> papi_components_config_event_defs.h
+for comp in $components; do
+  idx=`echo "$comp" | sed -n "s/\/.*//p" | wc -c`
+  if test "$idx" = 0; then
+    subcomp=$comp
+  else
+    subcomp=`echo $comp | sed -E "s/^.{${idx}}//"`
+  fi
+  if test "${subcomp}" != "perf_event"; then
+    subcomp_defs_inc=components/${subcomp}/papi_${subcomp}_std_event_defs.h
+    if test -f ${subcomp_defs_inc}; then
+        `echo "#include \"papi_${subcomp}_std_event_defs.h\"" >> papi_components_config_event_defs.h`
+    fi
+  fi
+done
+echo "" >> papi_components_config_event_defs.h
+echo "#endif" >> papi_components_config_event_defs.h
+
+# includes for preset headers
+for comp in $components; do
+  idx=`echo "$comp" | sed -n "s/\/.*//p" | wc -c`
+  if test "$idx" = 0; then
+    subcomp=$comp
+  else
+    subcomp=`echo $comp | sed -E "s/^.{${idx}}//"`
+  fi
+  if test "${subcomp}" != "perf_event"; then
+    subcomp_preset_inc=components/${subcomp}/papi_${subcomp}_presets.h
+    AC_CHECK_FILE(${subcomp_preset_inc}, [`echo "#include \"${subcomp_preset_inc}\"" >> components_config.h`])
+  fi
+done
+echo "" >> components_config.h
+
+# array tracking max number of presets per component
+echo "int _papi_hwi_max_presets[[]] = {" >> components_config.h
+for comp in $components; do
+  idx=`echo "$comp" | sed -n "s/\/.*//p" | wc -c`
+  if test "$idx" = 0; then
+    subcomp=$comp
+  else
+    subcomp=`echo $comp | sed -E "s/^.{${idx}}//"`
+  fi
+  if test "${subcomp}" != "perf_event"; then
+    subcomp_preset_inc=components/${subcomp}/papi_${subcomp}_presets.h
+    if test -f ${subcomp_preset_inc}; then
+        `echo "   PAPI_MAX_${subcomp}_PRESETS," >> components_config.h`
+    else
+        `echo "   0," >> components_config.h`
+    fi
+  else
+      `echo "   PAPI_MAX_PRESET_EVENTS," >> components_config.h`
+  fi
+done
+echo "   0" >> components_config.h
+echo "};" >> components_config.h
+echo "" >> components_config.h
+
+# preset arrays
+echo "hwi_presets_t *_papi_hwi_comp_presets[[]] = {" >> components_config.h
+for comp in $components; do
+  idx=`echo "$comp" | sed -n "s/\/.*//p" | wc -c`
+  if test "$idx" = 0; then
+    subcomp=$comp
+  else
+    subcomp=`echo $comp | sed -E "s/^.{${idx}}//"`
+  fi
+  if test "${subcomp}" != "perf_event"; then
+    subcomp_preset_inc=components/${subcomp}/papi_${subcomp}_presets.h
+    if test -f ${subcomp_preset_inc}; then
+        `echo "   _${subcomp}_presets," >> components_config.h`
+    else
+        `echo "   NULL," >> components_config.h`
+    fi
+  else
+      `echo "   _papi_hwi_presets," >> components_config.h`
+  fi
+done
+echo "   NULL" >> components_config.h
+echo "};" >> components_config.h
+echo "" >> components_config.h
 
 PAPI_NUM_COMP=0
 for comp in $components; do
@@ -1960,7 +2227,6 @@ for comp in $components; do
 	COMPONENTS="$COMPONENTS $comp"
   fi
 done
-tests="$tests comp_tests"
 
 for comp in $components; do
   # check for SDE component to determine linking flags.
@@ -2001,8 +2267,6 @@ for comp in $components; do
 done
 
 CFLAGS="$CFLAGS -DPAPI_NUM_COMP=$PAPI_NUM_COMP"
-
-AC_MSG_RESULT($components)
 
 AC_MSG_CHECKING(for PAPI event CSV filename to use)
 if test "x$PAPI_EVENTS_CSV" == "x"; then
@@ -2136,7 +2400,8 @@ if test "$have_paranoid" = "yes"; then
 ***************************************************************************
 * Insufficient permissions for accessing any hardware counters.           *
 * Your current paranoid level is $paranoid_level.                                       *
-* Set /proc/sys/kernel/perf_event_paranoid to 2 (or less) or run as root. *
+* Set /proc/sys/kernel/perf_event_paranoid to 2 (or less), run as root,   *
+* or use CAP_PERFMON/CAP_SYS_ADMIN.                                       *
 *                                                                         *
 * Example:                                                                *
 * sudo sh -c \"echo 2 > /proc/sys/kernel/perf_event_paranoid\"              *

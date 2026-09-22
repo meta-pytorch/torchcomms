@@ -42,6 +42,20 @@ performance counters in a system, including the new software-defined events.
 
 ***
 
+# Preferred Citation
+
+If PAPI is used in a project or publication, please cite the following paper:
+
+> Jagode H, Danalis A, Congiu G, Barry D, Castaldo A, Dongarra J. 
+> **Advancements of PAPI for the exascale generation.**
+> *The International Journal of High Performance Computing Applications.* 
+> 2024;39(2):251-268. 
+> [doi:10.1177/10943420241303884](https://journals.sagepub.com/doi/10.1177/10943420241303884)
+
+**This helps us track the impact of the project and supports ongoing development. Thank you!**
+
+
+***
 
 # Getting Help
 
@@ -96,7 +110,8 @@ you will need to do the following:
 
 # License
 
-    Copyright (c) 2024, University of Tennessee
+    Copyright (c) 2025, Innovative Computing Laboratory, 
+    University of Tennessee Knoxville
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -120,3 +135,5 @@ you will need to do the following:
     ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+    This open source software license conforms to the BSD License template.

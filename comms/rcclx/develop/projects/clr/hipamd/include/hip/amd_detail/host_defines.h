@@ -1,24 +1,8 @@
 /*
-Copyright (c) 2015 - 2025 Advanced Micro Devices, Inc. All rights reserved.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 /**
  *  @file  amd_detail/host_defines.h
@@ -117,6 +101,106 @@ template <typename _Tp, bool = is_arithmetic<_Tp>::value> struct is_signed : pub
 template <typename _Tp> struct is_signed<_Tp, true> : public true_or_false_type<_Tp(-1) < _Tp(0)> {
 };
 
+template< class... >
+using void_t = void;
+
+#if defined(_WIN32)
+#pragma push_macro("min")
+#pragma push_macro("max")
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+#endif
+
+template <typename _Tp> struct numeric_limits {
+  static constexpr bool is_specialized = false;
+  static constexpr _Tp min() noexcept { return _Tp(); }
+  static constexpr _Tp max() noexcept { return _Tp(); }
+  static constexpr _Tp lowest() noexcept { return _Tp(); }
+};
+
+template <size_t _NumBytes> struct __hip_internal_unsigned_of_size;
+template <> struct __hip_internal_unsigned_of_size<1> {
+  using type = unsigned char;
+};
+template <> struct __hip_internal_unsigned_of_size<2> {
+  using type = unsigned short;
+};
+template <> struct __hip_internal_unsigned_of_size<4> {
+  using type = unsigned int;
+};
+template <> struct __hip_internal_unsigned_of_size<8> {
+  using type = unsigned long long;
+};
+
+template <typename _Type>
+constexpr _Type __hip_internal_unsigned_max() noexcept {
+  return static_cast<_Type>(~static_cast<_Type>(0));
+}
+
+template <typename _Type>
+constexpr _Type __hip_internal_signed_max() noexcept {
+  using _UnsignedType = typename __hip_internal_unsigned_of_size<sizeof(_Type)>::type;
+  return static_cast<_Type>(__hip_internal_unsigned_max<_UnsignedType>() >> 1);
+}
+
+template <typename _Type>
+constexpr _Type __hip_internal_signed_min() noexcept {
+  return static_cast<_Type>(-__hip_internal_signed_max<_Type>() - 1);
+}
+
+#define __HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(_Type)                                          \
+  template <> struct numeric_limits<_Type> {                                                         \
+    static constexpr bool is_specialized = true;                                                     \
+    static constexpr bool is_signed = true;                                                          \
+    static constexpr _Type min() noexcept { return __hip_internal_signed_min<_Type>(); }            \
+    static constexpr _Type max() noexcept { return __hip_internal_signed_max<_Type>(); }            \
+    static constexpr _Type lowest() noexcept { return min(); }                                       \
+  }
+
+#define __HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(_Type)                                        \
+  template <> struct numeric_limits<_Type> {                                                         \
+    static constexpr bool is_specialized = true;                                                     \
+    static constexpr bool is_signed = false;                                                         \
+    static constexpr _Type min() noexcept { return static_cast<_Type>(0); }                         \
+    static constexpr _Type max() noexcept { return __hip_internal_unsigned_max<_Type>(); }          \
+    static constexpr _Type lowest() noexcept { return min(); }                                       \
+  }
+
+__HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(signed char);
+__HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(unsigned char);
+__HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(short);
+__HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(unsigned short);
+__HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(int);
+__HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(unsigned int);
+__HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(long);
+__HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(unsigned long);
+__HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER(long long);
+__HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER(unsigned long long);
+template <> struct numeric_limits<char> {
+  static constexpr bool is_specialized = true;
+  static constexpr bool is_signed = __hip_internal::is_signed<char>::value;
+  static constexpr char min() noexcept {
+    return is_signed ? __hip_internal_signed_min<char>() : static_cast<char>(0);
+  }
+  static constexpr char max() noexcept {
+    return is_signed ? __hip_internal_signed_max<char>()
+                     : static_cast<char>(__hip_internal_unsigned_max<unsigned char>());
+  }
+  static constexpr char lowest() noexcept { return min(); }
+};
+
+#if defined(_WIN32)
+#pragma pop_macro("max")
+#pragma pop_macro("min")
+#endif
+
+#undef __HIP_INTERNAL_NUMERIC_LIMITS_SIGNED_INTEGER
+#undef __HIP_INTERNAL_NUMERIC_LIMITS_UNSIGNED_INTEGER
+
 template <class T> auto test_returnable(int)
     -> decltype(void(static_cast<T (*)()>(nullptr)), true_type{});
 template <class> auto test_returnable(...) -> false_type;
@@ -157,6 +241,24 @@ template <class T> struct remove_cv<const volatile T> {
   typedef T type;
 };
 
+template <typename T>
+struct remove_reference
+{ using type = T; };
+
+template <typename T>
+struct remove_reference<T&>
+{ using type = T; };
+
+template <typename T>
+struct remove_reference<T&&>
+{ using type = T; };
+
+template <typename T>
+struct remove_cvref {
+  using type = typename remove_cv<typename remove_reference<T>::type>::type;
+};
+
+
 template <class T> struct is_void : public is_same<void, typename remove_cv<T>::type> {};
 
 template <class From, class To> struct is_convertible
@@ -174,7 +276,8 @@ template <typename _Tp> struct is_standard_layout
     : public integral_constant<bool, __is_standard_layout(_Tp)> {};
 
 template <typename _Tp> struct is_trivial : public integral_constant<bool, __is_trivial(_Tp)> {};
-
+template <typename _Tp> struct is_trivially_copyable :
+  public integral_constant<bool, __is_trivially_copyable(_Tp)> {};
 
 template <bool B, class T, class F> struct conditional {
   using type = T;

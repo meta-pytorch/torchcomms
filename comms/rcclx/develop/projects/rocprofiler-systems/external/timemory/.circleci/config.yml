@@ -80,7 +80,7 @@ jobs:
             --disable-vtune
             --disable-build-caliper
             --disable-build-gotcha
-            --cxx-standard=17
+            --cxx-standard=20
             -- -DTIMEMORY_REQUIRE_PACKAGES=OFF -DTIMEMORY_BUILD_COMPILER_INSTRUMENTATION=OFF -DTIMEMORY_BUILD_KOKKOS_CONFIG=OFF -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_USE_LIBUNWIND=OFF -- -j1 &&
             rm -f .hold &&
             SUBPACKAGES="api bundle common component hardware_counters mpi bundle options plotting profiler region roofline settings signals trace units util";
@@ -123,7 +123,7 @@ jobs:
             --gotcha
             --stats
             --tools mpip mallocp dyninst kokkos
-            --cxx-standard=17
+            --cxx-standard=20
             --compile-time-perf ${HOME}/ctp
             -- -V --output-on-failure
             -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DTIMEMORY_UNITY_BUILD=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install
@@ -174,7 +174,7 @@ jobs:
             --mpi
             --gotcha
             --tools mpip mallocp dyninst
-            --cxx-standard=17
+            --cxx-standard=20
             -j 2
             -- -V --output-on-failure -E dynamic_instrument
             -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install &&
@@ -229,7 +229,7 @@ jobs:
             --dart
             --cuda
             --tools avail
-            --cxx-standard=17
+            --cxx-standard=20
             --compile-time-perf ${HOME}/ctp
             -- -V --output-on-failure -E cuda
             -- -DTIMEMORY_BUILD_{CALIPER,GOTCHA,COMPILER_INSTRUMENTATION}=OFF -DPYTHON_EXECUTABLE=$(which python) -DTIMEMORY_BUILD_ERT=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install
@@ -273,7 +273,7 @@ jobs:
             --dart
             --python
             --tools avail timem
-            --cxx-standard=17
+            --cxx-standard=20
             --compile-time-perf ${HOME}/ctp
             -- -V --output-on-failure
             -- -DTIMEMORY_BUILD_{CALIPER,COMPILER_INSTRUMENTATION}=OFF -DPYTHON_EXECUTABLE=$(which python) -DTIMEMORY_BUILD_PYTHON_HATCHET=OFF -DCMAKE_INSTALL_PREFIX=${HOME}/timemory-install

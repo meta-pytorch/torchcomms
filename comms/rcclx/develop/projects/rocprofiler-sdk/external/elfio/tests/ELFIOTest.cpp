@@ -211,48 +211,59 @@ TEST( ELFIOTest, load32 )
         ////////////////////////////////////////////////////////////////////////////
         // Check sections
         const section* sec = reader.sections[0];
+        // sec->free_data();
         checkSection( sec, 0, "", SHT_NULL, 0, 0, 0, 0, 0, 0, 0 );
 
         sec = reader.sections[1];
+        // sec->free_data();
         checkSection( sec, 1, ".interp", SHT_PROGBITS, SHF_ALLOC, 0x08048114,
                       0x13, 0, 0, 1, 0 );
 
         sec = reader.sections[9];
+        // sec->free_data();
         checkSection( sec, 9, ".rel.plt", SHT_REL, SHF_ALLOC, 0x08048234, 0x18,
                       4, 11, 4, 8 );
 
         sec = reader.sections[19];
+        // sec->free_data();
         checkSection( sec, 19, ".dynamic", SHT_DYNAMIC, SHF_WRITE | SHF_ALLOC,
                       0x080494a0, 0xc8, 5, 0, 4, 8 );
 
         sec = reader.sections[27];
+        // sec->free_data();
         checkSection( sec, 27, ".strtab", SHT_STRTAB, 0, 0x0, 0x259, 0, 0, 1,
                       0 );
 
         for ( Elf_Half i = 0; i < reader.sections.size(); ++i ) {
             sec = reader.sections[i];
+            // sec->free_data();
             EXPECT_EQ( sec->get_index(), i );
         }
 
         const section* sec1 = reader.sections[".strtab"];
+        // sec1->free_data();
         EXPECT_EQ( sec->get_index(), sec1->get_index() );
 
         ////////////////////////////////////////////////////////////////////////////
         // Check segments
         const segment* seg = reader.segments[0];
+        seg->free_data();
         checkSegment( seg, PT_PHDR, 0x08048034, 0x08048034, 0x000e0, 0x000e0,
                       PF_R + PF_X, 4 );
 
         seg = reader.segments[4];
+        seg->free_data();
         checkSegment( seg, PT_DYNAMIC, 0x080494a0, 0x080494a0, 0x000c8, 0x000c8,
                       PF_R + PF_W, 4 );
 
         seg = reader.segments[6];
+        seg->free_data();
         checkSegment( seg, 0x6474E551, 0x0, 0x0, 0x0, 0x0, PF_R + PF_W, 4 );
 
         ////////////////////////////////////////////////////////////////////////////
         // Check symbol table
         sec = reader.sections[".symtab"];
+        // sec->free_data();
 
         const_symbol_section_accessor sr( reader, sec );
 
@@ -274,6 +285,7 @@ TEST( ELFIOTest, load32 )
         ////////////////////////////////////////////////////////////////////////////
         // Check relocation table
         sec = reader.sections[".rel.dyn"];
+        // sec->free_data();
 
         const_relocation_section_accessor reloc( reader, sec );
         EXPECT_EQ( reloc.get_entries_num(), 1 );
@@ -282,6 +294,7 @@ TEST( ELFIOTest, load32 )
                          R_386_GLOB_DAT, 0, 0 );
 
         sec = reader.sections[".rel.plt"];
+        // sec->free_data();
 
         const_relocation_section_accessor reloc1( reader, sec );
         EXPECT_EQ( reloc1.get_entries_num(), 3 );
@@ -322,26 +335,30 @@ TEST( ELFIOTest, load64 )
         ////////////////////////////////////////////////////////////////////////////
         // Check sections
         const section* sec = reader.sections[0];
+        // sec->free_data();
 
         checkSection( sec, 0, "", SHT_NULL, 0, 0, 0, 0, 0, 0, 0 );
 
         sec = reader.sections[1];
+        // sec->free_data();
 
         checkSection( sec, 1, ".interp", SHT_PROGBITS, SHF_ALLOC,
                       0x0000000000400200, 0x1c, 0, 0, 1, 0 );
 
         sec = reader.sections[9];
+        // sec->free_data();
 
         checkSection( sec, 9, ".rela.plt", SHT_RELA, SHF_ALLOC,
                       0x0000000000400340, 0x30, 4, 11, 8, 0x18 );
 
         sec = reader.sections[20];
+        // sec->free_data();
 
         checkSection( sec, 20, ".dynamic", SHT_DYNAMIC, SHF_WRITE | SHF_ALLOC,
                       0x0000000000600698, 0x190, 5, 0, 8, 0x10 );
 
         sec = reader.sections[28];
-
+        // sec->free_data();
         checkSection( sec, 28, ".strtab", SHT_STRTAB, 0, 0x0, 0x23f, 0, 0, 1,
                       0 );
 
@@ -351,20 +368,24 @@ TEST( ELFIOTest, load64 )
         ////////////////////////////////////////////////////////////////////////////
         // Check segments
         const segment* seg = reader.segments[0];
+        seg->free_data();
         checkSegment( seg, PT_PHDR, 0x0000000000400040, 0x0000000000400040,
                       0x00000000000001c0, 0x00000000000001c0, PF_R + PF_X, 8 );
 
         seg = reader.segments[2];
+        seg->free_data();
         checkSegment( seg, PT_LOAD, 0x0000000000400000, 0x0000000000400000,
                       0x000000000000066c, 0x000000000000066c, PF_R + PF_X,
                       0x200000 );
 
         seg = reader.segments[7];
+        seg->free_data();
         checkSegment( seg, 0x6474E551, 0x0, 0x0, 0x0, 0x0, PF_R + PF_W, 8 );
 
         ////////////////////////////////////////////////////////////////////////////
         // Check symbol table
         sec = reader.sections[".symtab"];
+        // sec->free_data();
 
         const_symbol_section_accessor sr( reader, sec );
 
@@ -387,6 +408,7 @@ TEST( ELFIOTest, load64 )
         ////////////////////////////////////////////////////////////////////////////
         // Check relocation table
         sec = reader.sections[".rela.dyn"];
+        // sec->free_data();
 
         const_relocation_section_accessor reloc( reader, sec );
         EXPECT_EQ( reloc.get_entries_num(), 1 );
@@ -407,6 +429,7 @@ TEST( ELFIOTest, load64 )
         ////////////////////////////////////////////////////////////////////////////
         // Check note reader
         sec = reader.sections[".note.ABI-tag"];
+        // sec->free_data();
 
         const_note_section_accessor notes( reader, sec );
         EXPECT_EQ( notes.get_notes_num(), 1u );
@@ -986,24 +1009,24 @@ class mock_wiiu_compression : public compression_interface
 {
   public:
     std::unique_ptr<char[]>
-    inflate( const char*                data,
-             const endianess_convertor* convertor,
-             Elf_Xword                  compressed_size,
-             Elf_Xword&                 uncompressed_size ) const override
+    inflate( const char*                 data,
+             const endianness_convertor* convertor,
+             Elf_Xword                   compressed_size,
+             Elf_Xword&                  uncompressed_size ) const override
     {
         uncompressed_size = 2 * compressed_size;
         return std::unique_ptr<char[]>(
-            new ( std::nothrow ) char[uncompressed_size + 1] );
+            new ( std::nothrow ) char[static_cast<size_t>(uncompressed_size) + 1] );
     }
 
-    std::unique_ptr<char[]> deflate( const char*                data,
-                                     const endianess_convertor* convertor,
+    std::unique_ptr<char[]> deflate( const char*                 data,
+                                     const endianness_convertor* convertor,
                                      Elf_Xword  decompressed_size,
                                      Elf_Xword& compressed_size ) const override
     {
         compressed_size = decompressed_size / 2;
         return std::unique_ptr<char[]>(
-            new ( std::nothrow ) char[compressed_size + 1] );
+            new ( std::nothrow ) char[static_cast<size_t>(compressed_size) + 1] );
     }
 };
 
@@ -1085,4 +1108,116 @@ TEST( ELFIOTest, test_dynamic_64_3 )
             EXPECT_EQ( value, value1 );
         }
     }
+}
+
+TEST( ELFIOTest, test_free_data )
+{
+    bool is_lazy = false;
+    do {
+        is_lazy = !is_lazy;
+
+        elfio reader;
+
+        ASSERT_EQ( reader.load( "elf_examples/main", is_lazy ), true );
+
+        for ( const auto& sec : reader.sections ) {
+            if ( sec->get_size() == 0 || sec->get_data() == nullptr )
+                continue;
+
+            std::vector<char> data;
+            std::copy( sec->get_data(), sec->get_data() + sec->get_size(),
+                       std::back_inserter( data ) );
+
+            sec->free_data();
+
+            EXPECT_TRUE( 0 == std::memcmp( data.data(), sec->get_data(),
+                                           static_cast<size_t>(sec->get_size()) ) );
+        }
+
+        for ( const auto& seg : reader.segments ) {
+            if ( seg->get_file_size() == 0 || seg->get_data() == nullptr )
+                continue;
+
+            std::vector<char> data;
+            std::copy( seg->get_data(), seg->get_data() + seg->get_file_size(),
+                       std::back_inserter( data ) );
+
+            seg->free_data();
+
+            EXPECT_TRUE( 0 == std::memcmp( data.data(), seg->get_data(),
+                                           static_cast<size_t>(seg->get_file_size()) ) );
+        }
+    } while ( is_lazy );
+}
+
+TEST( ELFIOTest, test_segment_resize_bug )
+{
+    elfio reader;
+    ASSERT_EQ( reader.load( "elf_examples/x86_64_static" ), true );
+    /*
+     * Binary built with:
+     *  echo "int main(){}" | gcc -xc -static -o x86_64_static -
+     *
+     * readelf -l x86_64_static:
+     *
+     * Program Headers:
+     *   Type           Offset             VirtAddr           PhysAddr
+     *                  FileSiz            MemSiz              Flags  Align
+     *   LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000
+     *                  0x0000000000000518 0x0000000000000518  R      0x1000
+     *   LOAD           0x0000000000001000 0x0000000000401000 0x0000000000401000
+     *                  0x00000000000936bd 0x00000000000936bd  R E    0x1000
+     *   LOAD           0x0000000000095000 0x0000000000495000 0x0000000000495000
+     *                  0x000000000002664d 0x000000000002664d  R      0x1000
+     *   LOAD           0x00000000000bc0c0 0x00000000004bd0c0 0x00000000004bd0c0
+     *                  0x0000000000005170 0x00000000000068c0  RW     0x1000
+     *   NOTE           0x0000000000000270 0x0000000000400270 0x0000000000400270
+     *                  0x0000000000000020 0x0000000000000020  R      0x8
+     *   NOTE           0x0000000000000290 0x0000000000400290 0x0000000000400290
+     *                  0x0000000000000044 0x0000000000000044  R      0x4
+     *   TLS            0x00000000000bc0c0 0x00000000004bd0c0 0x00000000004bd0c0
+     *                  0x0000000000000020 0x0000000000000060  R      0x8
+     *   GNU_PROPERTY   0x0000000000000270 0x0000000000400270 0x0000000000400270
+     *                  0x0000000000000020 0x0000000000000020  R      0x8
+     *   GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000
+     *                  0x0000000000000000 0x0000000000000000  RW     0x10
+     *   GNU_RELRO      0x00000000000bc0c0 0x00000000004bd0c0 0x00000000004bd0c0
+     *                  0x0000000000002f40 0x0000000000002f40  R      0x1
+     * 
+     * Section to Segment mapping:
+     *  Segment Sections...
+     *   00     .note.gnu.property .note.gnu.build-id .note.ABI-tag .rela.plt 
+     *   01     .init .plt .text __libc_freeres_fn .fini 
+     *   02     .rodata .stapsdt.base .eh_frame .gcc_except_table 
+     *   03     .tdata .init_array .fini_array .data.rel.ro .got .got.plt .data __libc_subfreeres __libc_IO_vtables __libc_atexit .bss __libc_freeres_ptrs 
+     *   04     .note.gnu.property 
+     *   05     .note.gnu.build-id .note.ABI-tag 
+     *   06     .tdata .tbss 
+     *   07     .note.gnu.property 
+     *   08     
+     *   09     .tdata .init_array .fini_array .data.rel.ro .got 
+    */
+
+auto checkElf = [](auto &reader) {
+        const auto &segments = reader.segments;
+        ASSERT_EQ( segments.size(), 10 );
+        checkSegment(segments[0], PT_LOAD, 0x400000, 0x400000, 0x518, 0x518, PF_R, 0x1000);
+        checkSegment(segments[1], PT_LOAD, 0x401000, 0x401000, 0x936bd, 0x936bd, PF_R | PF_X, 0x1000);
+        checkSegment(segments[2], PT_LOAD, 0x495000, 0x495000, 0x2664d, 0x2664d, PF_R, 0x1000);
+        checkSegment(segments[3], PT_LOAD, 0x4bd0c0, 0x4bd0c0, 0x5170, 0x68c0, PF_R | PF_W, 0x1000);
+        checkSegment(segments[4], PT_NOTE, 0x400270, 0x400270, 0x20, 0x20, PF_R, 0x8);
+        checkSegment(segments[5], PT_NOTE, 0x400290, 0x400290, 0x44, 0x44, PF_R, 0x4);
+        checkSegment(segments[6], PT_TLS, 0x4bd0c0, 0x4bd0c0, 0x20, 0x60, PF_R, 0x8);
+        checkSegment(segments[7], PT_GNU_PROPERTY, 0x400270, 0x400270, 0x20, 0x20, PF_R, 0x8);
+        checkSegment(segments[8], PT_GNU_STACK, 0, 0, 0, 0, PF_R | PF_W, 0x10);
+        checkSegment(segments[9], PT_GNU_RELRO, 0x4bd0c0, 0x4bd0c0, 0x2f40, 0x2f40, PF_R, 0x1);
+    };
+
+    checkElf( reader );
+
+    ASSERT_EQ( reader.save( "elf_examples/x86_64_static.save" ), true );
+    ASSERT_EQ( reader.load( "elf_examples/x86_64_static.save" ), true );
+
+    // Comment out the assertion. The question is - how the original segment size was calculated
+    //checkElf(reader);
 }

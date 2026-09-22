@@ -33,31 +33,6 @@
 #include "pfmlib_perf_event_priv.h"
 
 static int
-find_pmu_type_by_name(const char *name)
-{
-	char filename[PATH_MAX];
-	FILE *fp;
-	int ret, type;
-
-	if (!name)
-		return PFM_ERR_NOTSUPP;
-
-	sprintf(filename, "/sys/bus/event_source/devices/%s/type", name);
-
-	fp = fopen(filename, "r");
-	if (!fp)
-		return PFM_ERR_NOTSUPP;
-
-	ret = fscanf(fp, "%d", &type);
-	if (ret != 1)
-		type = PFM_ERR_NOTSUPP;
-
-	fclose(fp);
-
-	return type;
-}
-
-static int
 has_ldlat(void *this, pfmlib_event_desc_t *e)
 {
 	pfmlib_event_attr_info_t *a;
@@ -109,8 +84,9 @@ pfm_intel_x86_get_perf_encoding(void *this, pfmlib_event_desc_t *e)
 	 * This allows this function to use used by some uncore PMUs
 	 */
 	if (pmu->perf_name) {
-		int type = find_pmu_type_by_name(pmu->perf_name);
-		if (type == PFM_ERR_NOTSUPP) {
+		int type;
+		ret = pfm_perf_find_pmu_type(pmu, &type);
+		if (ret != PFM_SUCCESS) {
 			DPRINT("perf PMU %s, not supported by OS\n", pmu->perf_name);
 		} else {
 			DPRINT("PMU %s perf type=%d\n", pmu->name, type);
@@ -191,7 +167,7 @@ pfm_intel_nhm_unc_get_perf_encoding(void *this, pfmlib_event_desc_t *e)
 	pfmlib_pmu_t *pmu = this;
 	struct perf_event_attr *attr = e->os_data;
 	pfm_intel_x86_reg_t reg;
-	int ret;
+	int ret, type;
 
 	if (!pmu->get_event_encoding[PFM_OS_NONE])
 		return PFM_ERR_NOTSUPP;
@@ -200,11 +176,11 @@ pfm_intel_nhm_unc_get_perf_encoding(void *this, pfmlib_event_desc_t *e)
 	if (ret != PFM_SUCCESS)
 		return ret;
 
-	ret = find_pmu_type_by_name(pmu->perf_name);
-	if (ret < 0)
+	ret = pfm_perf_find_pmu_type(pmu, &type);
+	if (ret != PFM_SUCCESS)
 		return ret;
 
-	attr->type = ret;
+	attr->type = type;
 
 	reg.val = e->codes[0];
 
@@ -362,6 +338,6 @@ pfm_intel_x86_perf_detect(void *this)
 	pfmlib_pmu_t *pmu = this;
 	char file[64];
 
-	snprintf(file,sizeof(file), "/sys/devices/%s", pmu->perf_name);
+	snprintf(file,sizeof(file), "%s/%s", SYSFS_PMU_DEVICES_DIR, pmu->perf_name);
 	return access(file, R_OK|X_OK) ? PFM_ERR_NOTSUPP : PFM_SUCCESS;
 }

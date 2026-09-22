@@ -1,7 +1,11 @@
 # $Id$
 
+# If root is not specified, use default location.
+PAPI_INTEL_GPU_ROOT ?= /usr
+
 ## the following set are used to define oneAPI Level Zero Metric API based implementation
-INTEL_L0_HEADERS ?= /usr/include
+INTEL_L0_HEADERS = $(PAPI_INTEL_GPU_ROOT)/include
+INTEL_L0_LIB64   = $(PAPI_INTEL_GPU_ROOT)/lib
 
 GPUCOMP = components/intel_gpu
 GPU_INTERNAL = $(GPUCOMP)/internal
@@ -14,7 +18,7 @@ COMPSRCS += $(GPUSRCS) $(GPULIBSRCS)
 GPUOBJS = GPUMetricInterface.o GPUMetricHandler.o linux_intel_gpu_metrics.o
 COMPOBJS += $(GPUOBJS)
 
-CFLAGS += $(LDL) -g -DDEBUG  -I$(GPU_INTERNAL) -I$(GPU_INTERNAL)/inc -D_GLIBCXX_USE_CXX11_ABI=1
+CFLAGS += $(LDL) -g -I$(GPU_INTERNAL) -I$(GPU_INTERNAL)/inc -D_GLIBCXX_USE_CXX11_ABI=1
 LDFLAGS += -ldl
 
 GPUMetricInterface.o:  $(GPU_INTERNAL)/src/GPUMetricInterface.cpp $(GPUHEADER)

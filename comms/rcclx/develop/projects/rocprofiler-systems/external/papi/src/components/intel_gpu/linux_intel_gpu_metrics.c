@@ -205,8 +205,10 @@ intel_gpu_init_component(int cidx)
 		goto fn_fail;
 	}
 	if (GPUDetectDevice(&avail_devices, &num_avail_devices) || (num_avail_devices==0)) {
-		errStr = "The intel_gpu component does not detect metrics device.";
-		strncpy_se(_intel_gpu_vector.cmp_info.disabled_reason, PAPI_MAX_STR_LEN,
+		errStr = "The intel_gpu component does not detect metrics device. Ensure\n" \
+                 "                 that LD_LIBRARY_PATH contains the dependencies libze_loader.so,\n" \
+                 "                 libigdmd.so, and libigdml.so";
+		strncpy_se(_intel_gpu_vector.cmp_info.disabled_reason, PAPI_2MAX_STR_LEN,
 				   errStr, strlen(errStr));
 		retval = PAPI_ENOSUPP;
 		goto fn_fail;

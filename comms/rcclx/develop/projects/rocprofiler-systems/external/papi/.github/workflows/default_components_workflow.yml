@@ -11,6 +11,9 @@ on:
   # allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   component_tests:
     strategy:
@@ -21,6 +24,6 @@ jobs:
     runs-on: [self-hosted, cpu_intel]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: default components tests
-        run: .github/workflows/ci_default_components.sh ${{matrix.debug}} ${{matrix.shlib}}
+        run: .github/workflows_scripts/ci_default_components.sh ${{matrix.debug}} ${{matrix.shlib}}

@@ -359,7 +359,11 @@ join(config _cfg, Args&&... _args)
                                  << impl::join_arg<TraitT>(_cfg, _args));
     auto   _ret = _ss.str();
     auto&& _len = _cfg.delimiter.length();
-    auto   _cmp = strncmp(std::string_view{ _ret }.data(),
+    // Guard strncmp: it is declared __attribute__((nonnull(1, 2))), so passing a
+    // nullptr data() is UB even when n == 0. A default-constructed string_view
+    // (the default for config::delimiter) has data() == nullptr.
+    auto   _cmp = (_len > 0) &&
+                strncmp(std::string_view{ _ret }.data(),
                         std::string_view{ _cfg.delimiter }.data(), _len) == 0;
     return (_ret.length() > _len)
                ? (std::string{ _cfg.prefix } + ((_cmp) ? _ret.substr(_len) : _ret) +

@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -35,10 +36,10 @@
 #include <unistd.h>
 #include <libgen.h>
 
-#include <boost/crc.hpp>
-#include <boost/assign/list_of.hpp>
-#include <boost/assign/std/set.hpp>
-#include <boost/assign/std/vector.hpp>
+#include <dyncompat/crc.hpp>
+#include <dyncompat/assign/list_of.hpp>
+#include <dyncompat/assign/std/set.hpp>
+#include <dyncompat/assign/std/vector.hpp>
 
 #include "common/src/headers.h"
 #include "unaligned_memory_access.h"
@@ -53,8 +54,8 @@
 #endif
 
 using namespace std;
-using boost::crc_32_type;
-using namespace boost::assign;
+using dyncompat::crc_32_type;
+using namespace dyncompat::assign;
 
 using namespace Dyninst;
 
@@ -1731,7 +1732,7 @@ bool Elf_X::findDebugFile(std::string origfilename, string &output_name, char* &
         if (!result)
            continue;
 
-        boost::crc_32_type crcComputer;
+        dyncompat::crc_32_type crcComputer;
         crcComputer.process_bytes(output_buffer, output_buffer_size);
         if(crcComputer.checksum() != debugFileCrc) {
            munmap(output_buffer, output_buffer_size);

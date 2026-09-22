@@ -69,9 +69,9 @@ int main (int argc, char **argv)
                     cmpinfo->num_native_events,
                     cmpinfo->name);
         }
-        if (strstr(cmpinfo->name,"io")) {
+        if (strncmp(cmpinfo->name, "io", strlen("io")) == 0) {
             /* FOUND! */
-            example_cid=cid;
+            example_cid = cid;
         }
     }
 

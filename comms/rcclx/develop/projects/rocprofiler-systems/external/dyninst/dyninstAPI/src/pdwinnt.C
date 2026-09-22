@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include <iomanip>
 #include <string>
 #include "common/src/headers.h"
@@ -44,7 +45,7 @@
 #include "dyninstAPI/src/inst-x86.h"
 #include "dyninstAPI/src/registerSpace.h"
 #include "image.h"
-#include <boost/tuple/tuple.hpp>
+#include <dyncompat/tuple/tuple.hpp>
 
 #include "dyninstAPI/src/ast.h"
 

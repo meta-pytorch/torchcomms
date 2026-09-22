@@ -54,14 +54,20 @@ typedef union pfm_arm_reg {
 } pfm_arm_reg_t;
 
 typedef struct {
-	int implementer;
-	int architecture;
-	int part;
+	int init_cpuinfo_done;
 } pfm_arm_config_t;
 
 extern pfm_arm_config_t pfm_arm_cfg;
 
-extern int pfm_arm_detect(void *this);
+typedef struct {
+	int impl;
+	int arch;
+	int part;
+	/* if number of fields altered, update ARM_NUM_ATTR_FIELDS */
+} arm_cpuid_t;
+#define ARM_NUM_ATTR_FIELDS 3 /* number of fields on arm_cpuid_t */
+
+extern int pfm_arm_detect(arm_cpuid_t *attr, arm_cpuid_t *match_attr);
 extern int pfm_arm_get_encoding(void *this, pfmlib_event_desc_t *e);
 extern int pfm_arm_get_event_first(void *this);
 extern int pfm_arm_get_event_next(void *this, int idx);

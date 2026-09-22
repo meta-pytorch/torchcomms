@@ -45,57 +45,98 @@ TEST(Alloc, ncclIbMallocDebugZeroSize)
     EXPECT_EQ(ptr, nullptr);
 }
 
+#if ROCM_VERSION < 71200
+// These tests exercise the unsupported-fallback path of ncclCuMemHostAlloc/Free
+// that returns ncclInternalError. On ROCm 7.12+ the real implementation is
+// compiled in, so the fallback no longer exists and these tests are not applicable.
 TEST(Alloc, ncclCuMemHostAlloc)
 {
-    void*        ptr    = NULL;
-    void*        handle = NULL;
-    size_t       size   = 1024;
-    ncclResult_t result = ncclCuMemHostAlloc(&ptr, handle, size);
-    ASSERT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemHostAlloc",
+        []()
+        {
+            void*        ptr    = NULL;
+            void*        handle = NULL;
+            size_t       size   = 1024;
+            ncclResult_t result = ncclCuMemHostAlloc(&ptr, handle, size);
+            ASSERT_EQ(result, ncclInternalError);
+        }
+    );
 }
 
 TEST(Alloc, ncclCuMemHostFree)
 {
-    void*        dummyPtr = reinterpret_cast<void*>(0x1234); // any dummy address
-    ncclResult_t result   = ncclCuMemHostFree(dummyPtr);
-    ASSERT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemHostFree",
+        []()
+        {
+            void*        dummyPtr = reinterpret_cast<void*>(0x1234);
+            ncclResult_t result   = ncclCuMemHostFree(dummyPtr);
+            ASSERT_EQ(result, ncclInternalError);
+        }
+    );
 }
+#endif // ROCM_VERSION < 71200
 
 #if ROCM_VERSION < 70000
 // This test is only valid for ROCm versions < 7.0.0
 // In ROCm 7.0.0+, the ncclCuMemAlloc signature changed
 TEST(Alloc, ncclCuMemAlloc)
 {
-    void*                      ptr    = reinterpret_cast<void*>(0x1234); // dummy non-null input
-    void*                      handle = reinterpret_cast<void*>(0x5678); // dummy non-null input
-    size_t                     size   = 1024;
-    hipMemAllocationHandleType type   = hipMemHandleTypeNone;
-    ncclResult_t               result = ncclCuMemAlloc(&ptr, &handle, type, size);
-    EXPECT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemAlloc",
+        []()
+        {
+            void*                      ptr    = reinterpret_cast<void*>(0x1234);
+            void*                      handle = reinterpret_cast<void*>(0x5678);
+            size_t                     size   = 1024;
+            hipMemAllocationHandleType type   = hipMemHandleTypeNone;
+            ncclResult_t               result = ncclCuMemAlloc(&ptr, &handle, type, size, /*manager=*/nullptr);
+            EXPECT_EQ(result, ncclInternalError);
+        }
+    );
 }
 
 TEST(Alloc, ncclCuMemFree)
 {
-    void*        dummyPtr = reinterpret_cast<void*>(0xdeadbeef); // arbitrary non-null
-    ncclResult_t result   = ncclCuMemFree(dummyPtr);
-    EXPECT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemFree",
+        []()
+        {
+            void*        dummyPtr = reinterpret_cast<void*>(0xdeadbeef);
+            ncclResult_t result   = ncclCuMemFree(dummyPtr, /*manager=*/nullptr);
+            EXPECT_EQ(result, ncclInternalError);
+        }
+    );
 }
 
 TEST(Alloc, ncclCuMemAllocAddr)
 {
-    void*                           ptr = reinterpret_cast<void*>(0x1111); // Dummy non-null input
-    hipMemGenericAllocationHandle_t handle
-        = reinterpret_cast<hipMemGenericAllocationHandle_t>(0x1234);
-    size_t       size   = 4096;
-    ncclResult_t result = ncclCuMemAllocAddr(&ptr, &handle, size);
-    ASSERT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemAllocAddr",
+        []()
+        {
+            void* ptr = reinterpret_cast<void*>(0x1111);
+            hipMemGenericAllocationHandle_t handle
+                = reinterpret_cast<hipMemGenericAllocationHandle_t>(0x1234);
+            size_t       size   = 4096;
+            ncclResult_t result = ncclCuMemAllocAddr(&ptr, &handle, size);
+            ASSERT_EQ(result, ncclInternalError);
+        }
+    );
 }
 
 TEST(Alloc, ncclCuMemFreeAddr)
 {
-    void*        testPtr = reinterpret_cast<void*>(0xbeefcafe); // Arbitrary non-null pointer
-    ncclResult_t result  = ncclCuMemFreeAddr(testPtr);
-    ASSERT_EQ(result, ncclInternalError);
+    RUN_ISOLATED_TEST(
+        "ncclCuMemFreeAddr",
+        []()
+        {
+            void*        testPtr = reinterpret_cast<void*>(0xbeefcafe);
+            ncclResult_t result  = ncclCuMemFreeAddr(testPtr, /*manager=*/nullptr);
+            ASSERT_EQ(result, ncclInternalError);
+        }
+    );
 }
 #endif // ROCM_VERSION < 70000
 
@@ -105,6 +146,9 @@ TEST(Alloc, NcclCudaMemcpy)
         "NcclCudaMemcpy",
         []()
         {
+            // Initialize HIP device in forked process
+            ASSERT_EQ(hipSetDevice(0), hipSuccess);
+
             constexpr size_t N     = 128;
             float *          d_src = nullptr, *d_dst = nullptr;
             float            h_src[N], h_dst[N];
@@ -139,8 +183,8 @@ TEST(Alloc, NcclCudaMemcpy)
                 EXPECT_EQ(h_src[i], h_dst[i]) << "Mismatch at index " << i;
             }
             // Free memory
-            hipFree(d_src);
-            hipFree(d_dst);
+            ASSERT_EQ(hipFree(d_src), hipSuccess);
+            ASSERT_EQ(hipFree(d_dst), hipSuccess);
         }
     );
 }
@@ -151,6 +195,9 @@ TEST(Alloc, ZeroElementMemcpy)
         "ZeroElementMemcpy",
         []()
         {
+            // Initialize HIP device in forked process
+            ASSERT_EQ(hipSetDevice(0), hipSuccess);
+
             float *d_src = nullptr, *d_dst = nullptr;
             ASSERT_EQ(hipMalloc(&d_src, sizeof(float)), hipSuccess);
             ASSERT_EQ(hipMalloc(&d_dst, sizeof(float)), hipSuccess);
@@ -158,8 +205,8 @@ TEST(Alloc, ZeroElementMemcpy)
             ncclResult_t result = ncclCudaMemcpy<float>(d_dst, d_src, 0);
             EXPECT_EQ(result, ncclSuccess) << "Zero-element copy should succeed (no-op)";
 
-            hipFree(d_src);
-            hipFree(d_dst);
+            ASSERT_EQ(hipFree(d_src), hipSuccess);
+            ASSERT_EQ(hipFree(d_dst), hipSuccess);
         }
     );
 }
@@ -170,6 +217,9 @@ TEST(Alloc, MemcpyNullSrcOrDstPointer)
         "MemcpyNullSrcOrDstPointer",
         []()
         {
+            // Initialize HIP device in forked process
+            ASSERT_EQ(hipSetDevice(0), hipSuccess);
+
             constexpr size_t N       = 16;
             float*           d_valid = nullptr;
             ASSERT_EQ(hipMalloc(&d_valid, N * sizeof(float)), hipSuccess);
@@ -184,7 +234,7 @@ TEST(Alloc, MemcpyNullSrcOrDstPointer)
             EXPECT_EQ(result, ncclUnhandledCudaError)
                 << "Expected ncclUnhandledCudaError when dst is nullptr";
 
-            hipFree(d_valid);
+            ASSERT_EQ(hipFree(d_valid), hipSuccess);
         }
     );
 }

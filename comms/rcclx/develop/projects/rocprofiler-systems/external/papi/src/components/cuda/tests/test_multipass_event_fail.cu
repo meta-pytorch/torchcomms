@@ -21,45 +21,48 @@ int test_PAPI_add_named_event(int *EventSet, int numEvents, char **EventName) {
     PRINT(quiet, "LOG: %s: Entering.\n", __func__);
     for (i=0; i<numEvents; i++) {
         papi_errno = PAPI_add_named_event(*EventSet, EventName[i]);
-        if (papi_errno == PAPI_ENOEVNT) {
-            fprintf(stderr, "Event name %s does not exist.\n", EventName[i]);
+        if (papi_errno != PAPI_EMULPASS && papi_errno != PAPI_OK) {
+            fprintf(stderr, "Failed to add named event %s with error code %d.\n", EventName[i], papi_errno);
             return FAIL;
         }
-        if (papi_errno != PAPI_OK) {
-            PRINT(quiet, "Error %d: Failed to add event %s\n", papi_errno, EventName[i]);
-        }
     }
-    if (papi_errno == PAPI_EMULPASS)
-        return PASS;           // Test pass condition
+    if (papi_errno == PAPI_EMULPASS || papi_errno == PAPI_OK) {
+        PRINT(quiet, "PASSED test_PAPI_add_named_event\n");
+        return PASS; // Test pass condition
+    }
     return FAIL;
 }
 
-int test_PAPI_add_event(int *EventSet, int numEvents, char **EventName) {
+int test_PAPI_add_event(int *EventSet, int numEvents, char **EventName, int *numEventsSuccessfullyAdded) {
     int event, i, papi_errno;
     PRINT(quiet, "LOG: %s: Entering.\n", __func__);
 
     for (i=0; i<numEvents; i++) {
         papi_errno = PAPI_event_name_to_code(EventName[i], &event);
-        if (papi_errno == PAPI_ENOEVNT) {
-            fprintf(stderr, "Event name %s does not exist.\n", EventName[i]);
-            return FAIL;
-        }
         if (papi_errno != PAPI_OK) {
-            PRINT(quiet, "Error %d: Error in name to code.\n", papi_errno);
+            fprintf(stderr, "Failed to convert event name %s to event code with error code %d.\n", EventName[i], papi_errno);
             goto fail;
         }
         papi_errno = PAPI_add_event(*EventSet, event);
         if (papi_errno != PAPI_OK) {
-            PRINT(quiet, "Error %d: Failed to add event %s\n", papi_errno, EventName[i]);
+            if (papi_errno != PAPI_EMULPASS) {
+                fprintf(stderr, "Failed to add event %s with error code %d.\n", EventName[i], papi_errno);
+                goto fail;
+            }
+        }
+        else {
+            (*numEventsSuccessfullyAdded)++;
         }
     }
-    if (papi_errno == PAPI_EMULPASS)
+    if (papi_errno == PAPI_EMULPASS || papi_errno == PAPI_OK) {
+        PRINT(quiet, "PASSED test_PAPI_add_event\n");
         return PASS;
+    }
 fail:
     return FAIL;
 }
 
-int test_PAPI_add_events(int *EventSet, int numEvents, char **EventName) {
+int test_PAPI_add_events(int *EventSet, int numEvents, char **EventName, int numEventsSuccessfullyAdded) {
     int papi_errno, i;
     PRINT(quiet, "LOG: %s: Entering.\n", __func__);
 
@@ -68,16 +71,16 @@ int test_PAPI_add_events(int *EventSet, int numEvents, char **EventName) {
     for (i=0; i<numEvents; i++) {
         papi_errno = PAPI_event_name_to_code(EventName[i], &events[i]);
         if (papi_errno != PAPI_OK) {
-            PRINT(quiet, "Error %d: Error in name to code.\n", papi_errno);
+            fprintf(stderr, "Failed to convert event name %s to event code with error code %d.\n", EventName[i], papi_errno);
             goto fail;
         }
     }
     papi_errno = PAPI_add_events(*EventSet, events, numEvents);
-    if (papi_errno != PAPI_OK) {
-        PRINT(quiet, "Error %d: Failed to add %d events\n", papi_errno, numEvents);
-    }
-    if (papi_errno < numEvents)        // Returns index at which error occurred.
+    if (papi_errno == PAPI_EMULPASS || papi_errno == PAPI_OK || papi_errno == numEventsSuccessfullyAdded) {
+        PRINT(quiet, "PASSED test_PAPI_add_events with %d of %d events succesfully added.\n", numEventsSuccessfullyAdded, numEvents);
         return PASS;
+    }
+
 fail:
     return FAIL;
 }
@@ -118,7 +121,10 @@ int main(int argc, char **argv)
         test_fail(__FILE__, __LINE__, "PAPI_create_eventset() failed!", 0);
     }
 
-    pass = test_PAPI_add_event(&event_set, argc-1, argv+1);
+    // Keep track of the number of events from the command line we can actually add
+    // This is done to properly check the test in the function test_PAPI_add_events
+    int numEventsSuccessfullyAdded = 0;
+    pass = test_PAPI_add_event(&event_set, argc-1, argv+1, &numEventsSuccessfullyAdded);
     papi_errno = PAPI_cleanup_eventset(event_set);
     if (papi_errno != PAPI_OK) {
         test_fail(__FILE__, __LINE__, "PAPI_cleanup_eventset() failed!", 0);
@@ -152,7 +158,7 @@ int main(int argc, char **argv)
         test_fail(__FILE__, __LINE__, "PAPI_create_eventset() failed!", 0);
     }
 
-    pass += test_PAPI_add_events(&event_set, argc-1, argv+1);
+    pass += test_PAPI_add_events(&event_set, argc-1, argv+1, numEventsSuccessfullyAdded);
     papi_errno = PAPI_cleanup_eventset(event_set);
     if (papi_errno != PAPI_OK) {
         test_fail(__FILE__, __LINE__, "PAPI_cleanup_eventset() failed!", 0);

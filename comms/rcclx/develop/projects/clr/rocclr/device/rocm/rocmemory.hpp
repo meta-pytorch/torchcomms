@@ -1,24 +1,12 @@
-/* Copyright (c) 2016 - 2023 Advanced Micro Devices, Inc.
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE. */
+/*
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 #pragma once
+
+#include <atomic>
 
 #include "top.hpp"
 #include "platform/memory.hpp"
@@ -27,6 +15,10 @@
 #include "device/rocm/rocglinterop.hpp"
 
 namespace amd::roc {
+
+// Forward declaration for friend access
+class OwningAgentGuard;
+
 class Memory : public device::Memory {
  public:
   enum MEMORY_KIND {
@@ -115,6 +107,13 @@ class Memory : public device::Memory {
 
   void* PersistentHostPtr() const { return persistent_host_ptr_; }
 
+  //! Get the owning HSA agent for this memory (computed during create(), thread-safe)
+  hsa_agent_t getOwningAgent() const {
+    hsa_agent_t agent;
+    agent.handle = owningAgentHandle_.load(std::memory_order_acquire);
+    return agent;
+  }
+
   //! Validates allocated memory for possible workarounds
   virtual bool ValidateMemory() { return true; }
 
@@ -123,6 +122,11 @@ class Memory : public device::Memory {
 
   // Decrement map count
   void decIndMapCount() override;
+
+  //! Set the owning agent (called during create() after allocation, thread-safe)
+  void setOwningAgent(hsa_agent_t agent) {
+    owningAgentHandle_.store(agent.handle, std::memory_order_release);
+  }
 
   // Free / deregister device memory.
   virtual void destroy() = 0;
@@ -169,10 +173,14 @@ class Memory : public device::Memory {
   // Disable operator=
   Memory& operator=(const Memory&);
 
-  amd::Memory* pinnedMemory_;  //!< Memory used as pinned system memory
+  amd::Memory* pinnedMemory_;        //!< Memory used as pinned system memory
+  std::atomic<uint64_t> owningAgentHandle_;  //!< HSA agent handle (atomic for thread-safety)
 };
 
 class Buffer : public roc::Memory {
+  // Allow guard to call computeAndSetOwningAgent()
+  friend class OwningAgentGuard;
+
  public:
   Buffer(const roc::Device& dev, amd::Memory& owner);
   Buffer(const roc::Device& dev, size_t size);
@@ -204,6 +212,9 @@ class Buffer : public roc::Memory {
 
   // Free device memory.
   void destroy();
+
+  // Compute and cache the owning HSA agent
+  void computeAndSetOwningAgent();
 };
 
 class Image : public roc::Memory {

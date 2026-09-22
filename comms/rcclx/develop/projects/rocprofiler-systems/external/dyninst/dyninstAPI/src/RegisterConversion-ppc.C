@@ -28,11 +28,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include "RegisterConversion.h"
 #include "registerSpace.h"
 
 #include <map>
-#include <boost/assign/list_of.hpp>
+#include <dyncompat/assign/list_of.hpp>
 
 #include "Register.h"
 #include "registers/ppc32_regs.h"
@@ -42,7 +43,7 @@
 using namespace Dyninst;
 using namespace Dyninst::InstructionAPI;
 using namespace std;
-using namespace boost::assign;
+using namespace dyncompat::assign;
 
 multimap<Register, MachRegister> regToMachReg32 = map_list_of
   (registerSpace::r0, ppc32::r0)

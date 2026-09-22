@@ -141,7 +141,7 @@ static void verror_msg_helper(const char *s,
   if (flags & LOGMODE_STDIO)
     {
       fflush(stdout);
-      write(STDERR_FILENO, msg, used + msgeol_len);
+      ssize_t written UNUSED = write(STDERR_FILENO, msg, used + msgeol_len);
     }
   msg[used] = '\0'; /* remove msg_eol (usually "\n") */
   if (flags & LOGMODE_SYSLOG)
@@ -244,8 +244,7 @@ void handle_sigsegv(int sig, siginfo_t *info, void *ucontext)
   {
     /* glibc extension */
     void *array[50];
-    int size;
-    size = backtrace(array, 50);
+    int size UNUSED = backtrace(array, 50);
 #if defined __linux__ && HAVE_EXECINFO_H
     backtrace_symbols_fd(array, size, 2);
 #endif

@@ -356,7 +356,7 @@ def configure():
         "--cxx-standard",
         help="C++ standard",
         type=str,
-        default="17",
+        default="20",
         choices=("17", "20", "23"),
     )
     parser.add_argument(

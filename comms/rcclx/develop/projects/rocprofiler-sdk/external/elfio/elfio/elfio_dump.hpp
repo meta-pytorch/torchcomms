@@ -636,7 +636,7 @@ static const struct note_tag_t
       { { NT_SPU, "NT_SPU", "" }
       } },
     { "GNU",
-      { 
+      {
         { NT_GNU_ABI_TAG,          "NT_GNU_ABI_TAG",         "GNU ABI tag" },
         { NT_GNU_HWCAP,            "NT_GNU_HWCAP",           "Used by ld.so and kernel vDSO" },
         { NT_GNU_BUILD_ID,         "NT_GNU_BUILD_ID",        "Build ID of the binary" },
@@ -672,6 +672,7 @@ static const struct note_tag_t
 static const ELFIO::Elf_Xword MAX_DATA_ENTRIES = 64;
 
 //------------------------------------------------------------------------------
+// Class representing the ELF dump functionality
 class dump
 {
 #define DUMP_DEC_FORMAT( width ) \
@@ -685,6 +686,7 @@ class dump
 
   public:
     //------------------------------------------------------------------------------
+    // Dumps the ELF header information
     static void header( std::ostream& out, const elfio& reader )
     {
         if ( !reader.get_header_size() ) {
@@ -705,14 +707,15 @@ class dump
             << std::endl
             << "  Version:    " << str_version( reader.get_version() )
             << std::endl
-            << "  Entry:      "
-            << "0x" << std::hex << reader.get_entry() << std::endl
-            << "  Flags:      "
-            << "0x" << std::hex << reader.get_flags() << std::endl
+            << "  Entry:      " << "0x" << std::hex << reader.get_entry()
+            << std::endl
+            << "  Flags:      " << "0x" << std::hex << reader.get_flags()
+            << std::endl
             << std::endl;
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the section headers information
     static void section_headers( std::ostream& out, const elfio& reader )
     {
         Elf_Half n = reader.sections.size();
@@ -748,6 +751,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps a single section header information
     static void section_header( std::ostream&  out,
                                 Elf_Half       no,
                                 const section* sec,
@@ -792,6 +796,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the segment headers information
     static void segment_headers( std::ostream& out, const elfio& reader )
     {
         Elf_Half n = reader.segments.size();
@@ -821,9 +826,22 @@ class dump
         }
 
         out << std::endl;
+        for ( Elf_Half i = 0; i < n; ++i ) {
+            out << "[" << i << "]" << " ";
+            const segment* seg = reader.segments[i];
+            for ( Elf_Half j = 0; j < seg->get_sections_num(); j++ ) {
+                const section* sec =
+                    reader.sections[seg->get_section_index_at( j )];
+                out << sec->get_name() << " ";
+            }
+            out << std::endl;
+        }
+
+        out << std::endl;
     }
 
     //------------------------------------------------------------------------------
+    // Dumps a single segment header information
     static void segment_header( std::ostream&  out,
                                 Elf_Half       no,
                                 const segment* seg,
@@ -844,7 +862,7 @@ class dump
         }
         else { // Output for 64-bit
             out << "[" << DUMP_DEC_FORMAT( 5 ) << no << "] "
-                << DUMP_STR_FORMAT( 14 ) << str_segment_type( seg->get_type() ) << " " 
+                << DUMP_STR_FORMAT( 14 ) << str_segment_type( seg->get_type() ) << " "
                 << DUMP_HEX0x_FORMAT( 16 ) << seg->get_offset()           << " "
                 << DUMP_HEX0x_FORMAT( 16 ) << seg->get_virtual_address()  << " "
                 << DUMP_HEX0x_FORMAT( 16 ) << seg->get_physical_address()
@@ -853,7 +871,7 @@ class dump
                 << DUMP_HEX0x_FORMAT( 16 ) << seg->get_file_size()         << " "
                 << DUMP_HEX0x_FORMAT( 16 ) << seg->get_memory_size()       << "  "
                 << DUMP_STR_FORMAT(  3 ) << str_segment_flag( seg->get_flags() ) << "    "
-                << DUMP_HEX0x_FORMAT(  1 ) << seg->get_align() 
+                << DUMP_HEX0x_FORMAT(  1 ) << seg->get_align()
                 << std::endl;
         }
         // clang-format on
@@ -862,6 +880,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the symbol tables information
     static void symbol_tables( std::ostream& out, const elfio& reader )
     {
         for ( const auto& sec : reader.sections ) { // For all sections
@@ -906,6 +925,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps a single symbol table entry information
     static void symbol_table( std::ostream&      out,
                               Elf_Xword          no,
                               const std::string& name,
@@ -942,6 +962,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the notes information
     static void notes( std::ostream& out, const elfio& reader )
     {
         for ( const auto& sec : reader.sections ) { // For all sections
@@ -1006,6 +1027,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps a single note information
     static void note( std::ostream&      out,
                       int                no,
                       Elf_Word           type,
@@ -1053,6 +1075,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the module information
     static void modinfo( std::ostream& out, const elfio& reader )
     {
         for ( const auto& sec : reader.sections ) { // For all sections
@@ -1076,7 +1099,8 @@ class dump
     }
 
     //------------------------------------------------------------------------------
-    static void dynamic_tags( std::ostream& out, const elfio& reader )
+    // Dumps the dynamic tags information
+    static void dynamic_tags( std::ostream& out, const elfio& reader, bool name_only = false )
     {
         for ( const auto& sec : reader.sections ) { // For all sections
             if ( SHT_DYNAMIC == sec->get_type() ) {
@@ -1085,34 +1109,45 @@ class dump
                 Elf_Xword dyn_no = dynamic.get_entries_num();
                 if ( dyn_no == 0 )
                     continue;
-
-                out << "Dynamic section (" << sec->get_name() << ")"
-                    << std::endl;
-                out << "[  Nr ] Tag              Name/Value" << std::endl;
+                if ( !name_only ) {
+                    out << "Dynamic section (" << sec->get_name() << ")"
+                        << std::endl;
+                    out << "[  Nr ] Tag              Name/Value" << std::endl;
+                }
                 for ( Elf_Xword i = 0; i < dyn_no; ++i ) {
                     Elf_Xword   tag   = 0;
                     Elf_Xword   value = 0;
                     std::string str;
                     dynamic.get_entry( i, tag, value, str );
-                    dynamic_tag( out, i, tag, value, str, reader.get_class() );
+                    dynamic_tag( out, i, tag, value, str, reader.get_class(), name_only );
                     if ( DT_NULL == tag ) {
                         break;
                     }
                 }
-
-                out << std::endl;
+                if ( !name_only ) {
+                    out << std::endl;
+                }
             }
         }
     }
 
     //------------------------------------------------------------------------------
+    // Dumps a single dynamic tag information
     static void dynamic_tag( std::ostream&      out,
                              Elf_Xword          no,
                              Elf_Xword          tag,
                              Elf_Xword          value,
                              const std::string& str,
-                             unsigned int /*elf_class*/ )
+                             unsigned int /*elf_class*/,
+                             bool               name_only = false )
     {
+        if ( name_only ) {
+            if ( str.empty() || tag != DT_NEEDED ) {
+                return;
+            }
+            out << str << std::endl;
+            return;
+        }
         out << "[" << DUMP_DEC_FORMAT( 5 ) << no << "] "
             << DUMP_STR_FORMAT( 16 ) << str_dynamic_tag( tag ) << " ";
         if ( str.empty() ) {
@@ -1125,6 +1160,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the section data
     static void section_data( std::ostream& out, const section* sec )
     {
         std::ios_base::fmtflags original_flags = out.flags();
@@ -1157,6 +1193,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps all sections data
     static void section_datas( std::ostream& out, const elfio& reader )
     {
         Elf_Half n = reader.sections.size();
@@ -1179,6 +1216,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps the segment data
     static void
     segment_data( std::ostream& out, Elf_Half no, const segment* seg )
     {
@@ -1212,6 +1250,7 @@ class dump
     }
 
     //------------------------------------------------------------------------------
+    // Dumps all segments data
     static void segment_datas( std::ostream& out, const elfio& reader )
     {
         Elf_Half n = reader.segments.size();

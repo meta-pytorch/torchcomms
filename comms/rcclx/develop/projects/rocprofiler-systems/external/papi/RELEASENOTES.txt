@@ -4,6 +4,73 @@ order.
 For details on installing PAPI on your machine, consult the INSTALL.txt file
 in this directory.
 
+
+===============================================================================
+PAPI 7.2.0 RELEASE NOTES                                               Jun 2025
+===============================================================================
+
+PAPI 7.2.0 is now available as the next major release. This release officially
+introduces two new components:
+  +++ rocp_sdk: Supports AMD GPUs and APUs via the ROCprofiler-SDK interface.
+  +++ topdown: Provides proper support for Intel topdown metrics.
+PAPI 7.2.0 also introduces preset events for non-CPU devices, starting with
+CUDA events. In addition, component code has been extended to include a
+statistics qualifier (e.g., for CUDA events), offering more concise and
+functional output in the papi_native_avail utility.
+
+
+Additional Major Changes are:
+-----------------------------
+
+Component Updates:
+------------------
+
+* RAPL: Support for Intel Emerald Rapids, and Intel Comet Lake S/H CPUs.
+
+* ROCM/ROCP_SDK:
+  +++ Numerous improvements to error handling, shutdown behavior, and
+      initialization in `rocm` and `rocp_sdk` components.
+  +++ Added multiple libhsa search paths.
+  +++ Correct handling if all events are removed.
+  +++ Improved interoperability between `rocm` and `rocp_sdk` components.
+
+* CUDA:
+  +++ Added statisitcs qualifier to CUDA events, which offers a more concise
+      and functional output for the papi_native_avail utility.
+  +++ Added `partially enabled` support for systems with multiple compute
+      capabilities: <7.0, =7.0, >7.0.
+  +++ Support for MetricsEvaluator API (CUDA ≥ 11.3).
+  +++ Fixed `cuptid_init` return value and potential overflows.
+
+* Sysdetect, Coretemp, Infiniband, NVML, Net, ROCM_SMI:
+  +++ Improved robustness and memory safety across components.
+  +++ coretemp: Enabled support for event multiplexing.
+
+* Topdown:
+  +++ New component to interface with Intel's PERF_METRICS MSR.
+  +++ Converts raw metrics into user-friendly percentages.
+  +++ Provides access to topdown metrics on supported CPUs:
+      heterogeneous Intel CPUs (e.g., Raptor Lake), Sapphire Rapids,
+	  Alder Lake, Granite Rapids.
+  +++ Integrated `librseq` to protect `rdpmc` instruction execution.
+
+
+Preset Events & CAT updates:
+----------------------------
+
+* AMD Family 17h: Corrected presets for IC accesses/misses.
+* ARM Cortex A57/A72/A76: Added/updated preset support.
+* CAT: Added scalar operations to vector-FLOPs Benchmarks.
+
+
+Acknowledgements:
+This release is the result of contributions from many people. The PAPI team
+would like to extend a special thank you to Vince Weaver, Willow Cunningham,
+Stephane Eranian (for libpfm4), William Cohen, Steve Kaufmann, Dandan Zhang,
+Yoshihiro Furudera, Akio Kakuno, Richard Evans, Humberto Gomes and Phil Mucci.
+
+
+
 ===============================================================================
 PAPI 7.2.0b2 RELEASE NOTES                                          24 Feb 2025
 ===============================================================================

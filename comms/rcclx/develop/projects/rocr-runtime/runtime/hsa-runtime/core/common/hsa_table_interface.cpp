@@ -870,6 +870,11 @@ hsa_status_t HSA_API
     return amdExtTable->hsa_amd_profiling_async_copy_enable_fn(enable);
 }
 
+hsa_status_t HSA_API
+  hsa_amd_agent_preload(hsa_agent_t agent, uint64_t flags) {
+    return amdExtTable->hsa_amd_agent_preload_fn(agent, flags);
+}
+
 // Mirrors Amd Extension Apis
 hsa_status_t HSA_API hsa_amd_profiling_get_dispatch_time(
     hsa_agent_t agent, hsa_signal_t signal,
@@ -1001,6 +1006,17 @@ hsa_status_t HSA_API
                                      dst, dst_agent, src, src_agent, size,
                                      num_dep_signals, dep_signals, completion_signal,
                                      engine_id, force_copy_on_sdma);
+}
+
+// Mirrors Amd Extension Apis
+hsa_status_t HSA_API
+    hsa_amd_memory_async_batch_copy(const hsa_amd_memory_copy_op_t* copy_ops,
+                              uint32_t num_copy_ops,
+                              uint32_t num_dep_signals,
+                              const hsa_signal_t* dep_signals) {
+  return amdExtTable->hsa_amd_memory_async_batch_copy_fn(
+                                     copy_ops, num_copy_ops,
+                                     num_dep_signals, dep_signals);
 }
 
 // Mirrors Amd Extension Apis
@@ -1312,6 +1328,17 @@ hsa_status_t HSA_API hsa_amd_vmem_retain_alloc_handle(hsa_amd_vmem_alloc_handle_
   return amdExtTable->hsa_amd_vmem_retain_alloc_handle_fn(handle, addr);
 }
 
+hsa_status_t HSA_API hsa_amd_vmem_export_fabric_handle(hsa_fabric_handle_t *fabric_handle,
+                                                       hsa_amd_vmem_alloc_handle_t handle,
+                                                       uint64_t flags) {
+  return amdExtTable->hsa_amd_vmem_export_fabric_handle_fn(fabric_handle, handle, flags);
+}
+
+hsa_status_t HSA_API hsa_amd_vmem_import_fabric_handle(hsa_fabric_handle_t fabric_handle,
+                                               hsa_amd_vmem_alloc_handle_t* handle) {
+  return amdExtTable->hsa_amd_vmem_import_fabric_handle_fn(fabric_handle, handle);
+}
+
 hsa_status_t HSA_API hsa_amd_vmem_get_alloc_properties_from_handle(
     hsa_amd_vmem_alloc_handle_t alloc_handle, hsa_amd_memory_pool_t* pool,
     hsa_amd_memory_type_t* type) {
@@ -1355,6 +1382,30 @@ hsa_status_t HSA_API hsa_amd_counted_queue_acquire(
 
 hsa_status_t HSA_API hsa_amd_counted_queue_release(hsa_queue_t* queue) {
   return amdExtTable->hsa_amd_counted_queue_release_fn(queue);
+}
+
+hsa_status_t HSA_API hsa_amd_svm_discard_batch_async(void** ptrs, size_t* sizes, uint32_t count, uint32_t num_dep_signals,
+                          const hsa_signal_t* dep_signals, hsa_signal_t completion_signal) {
+  return amdExtTable->hsa_amd_svm_discard_batch_async_fn(ptrs, sizes, count, num_dep_signals, dep_signals,
+                                                   completion_signal);
+}
+
+hsa_status_t HSA_API hsa_amd_signal_get_event_id(hsa_signal_t signal, uint32_t *event_id) {
+  return amdExtTable->hsa_amd_signal_get_event_id_fn(signal, event_id);
+}
+
+// Mirrors Amd Extension Apis
+hsa_status_t HSA_API hsa_amd_external_semaphore_handle_open(
+    hsa_agent_t agent,
+    const hsa_amd_external_semaphore_handle_descriptor_t *desc,
+    hsa_amd_external_semaphore_t *out_sem) {
+  return amdExtTable->hsa_amd_external_semaphore_handle_open_fn(agent, desc, out_sem);
+}
+
+// Mirrors Amd Extension Apis
+hsa_status_t HSA_API hsa_amd_external_semaphore_handle_close(
+    hsa_amd_external_semaphore_t sem) {
+  return amdExtTable->hsa_amd_external_semaphore_handle_close_fn(sem);
 }
 
 // Tools only table interfaces.

@@ -33,6 +33,7 @@
  * Object-elf.C: Object class for ELF file format
  ************************************************************************/
 
+#include <algorithm>
 #include "common/src/vgannotations.h"
 #include "unaligned_memory_access.h"
 #include <dwarf_cu_info.h>
@@ -76,13 +77,13 @@ using namespace std;
 
 #include <fstream>
 
-#include <boost/assign/list_of.hpp>
-#include <boost/assign/std/set.hpp>
-#include <boost/filesystem.hpp>
+#include <dyncompat/assign/list_of.hpp>
+#include <dyncompat/assign/std/set.hpp>
+#include <filesystem>
 
 #include "SymReader.h"
 #include <endian.h>
-using namespace boost::assign;
+using namespace dyncompat::assign;
 
 // add some space to avoid looking for functions in data regions
 #define EXTRA_SPACE 8
@@ -104,6 +105,26 @@ static bool pdelf_check_ehdr(Elf_X &elf) {
              || ((elf.e_phoff() != 0) && (elf.e_phnum() != 0))
             )
     );
+}
+
+template <typename RelrT>
+static void decodeRelrEntries(const RelrT *entries, size_t count,
+                              std::vector<Offset> &relocs) {
+    Offset next = 0;
+    for (size_t i = 0; i < count; ++i) {
+        RelrT entry = entries[i];
+        if ((entry & 1) == 0) {
+            relocs.push_back(static_cast<Offset>(entry));
+            next = static_cast<Offset>(entry + sizeof(RelrT));
+        } else {
+            entry >>= 1;
+            for (size_t bit = 0; entry != 0; ++bit, entry >>= 1) {
+                if (entry & 1)
+                    relocs.push_back(next + bit * sizeof(RelrT));
+            }
+            next += (sizeof(RelrT) * 8 - 1) * sizeof(RelrT);
+        }
+    }
 }
 
 const char *pdelf_get_shnames(Elf_X *elf) {
@@ -223,6 +244,20 @@ Region::perm_t getRegionPerms(unsigned long flags) {
         return Region::RP_R;
 }
 
+// Older elf.h headers may not define RELR section/dynamic tag constants
+#if !defined(SHT_RELR)
+#define SHT_RELR 19
+#endif
+#if !defined(DT_RELRSZ)
+#define DT_RELRSZ 35
+#endif
+#if !defined(DT_RELR)
+#define DT_RELR 36
+#endif
+#if !defined(DT_RELRENT)
+#define DT_RELRENT 37
+#endif
+
 Region::RegionType getRegionType(unsigned long type, unsigned long flags, const char *reg_name) {
     switch (type) {
         case SHT_DYNSYM:
@@ -235,6 +270,8 @@ Region::RegionType getRegionType(unsigned long type, unsigned long flags, const 
             return Region::RT_REL;
         case SHT_RELA:
             return Region::RT_RELA;
+        case SHT_RELR:
+            return Region::RT_RELR;
         case SHT_NOBITS:
             //Darn it, Linux/PPC has the PLT as a NOBITS.  Can't just default
             // call this bss
@@ -392,6 +429,9 @@ bool Object::loaded_elf(Offset &txtaddr, Offset &dataddr,
     rel_addr_ = 0;
     rel_size_ = 0;
     rel_entry_size_ = 0;
+    relr_addr_ = 0;
+    relr_size_ = 0;
+    relr_entry_size_ = 0;
     dwarvenDebugInfo = false;
 
     txtaddr = 0;
@@ -471,6 +511,10 @@ bool Object::loaded_elf(Offset &txtaddr, Offset &dataddr,
                         hasReladyn_ = true;
                         secAddrTagMapping[dynsecData.d_ptr(j)] = dynsecData.d_tag(j);
                         break;
+                    case DT_RELR:
+                        hasRelrdyn_ = true;
+                        secAddrTagMapping[dynsecData.d_ptr(j)] = dynsecData.d_tag(j);
+                        break;
                     case DT_JMPREL:
                         secAddrTagMapping[dynsecData.d_ptr(j)] = dynsecData.d_tag(j);
                         break;
@@ -497,6 +541,9 @@ bool Object::loaded_elf(Offset &txtaddr, Offset &dataddr,
                         break;
                     case DT_RELASZ:
                         secTagSizeMapping[DT_RELA] = dynsecData.d_val(j);
+                        break;
+                    case DT_RELRSZ:
+                        secTagSizeMapping[DT_RELR] = dynsecData.d_val(j);
                         break;
                     case DT_PLTRELSZ:
                         secTagSizeMapping[DT_JMPREL] = dynsecData.d_val(j);
@@ -526,6 +573,7 @@ bool Object::loaded_elf(Offset &txtaddr, Offset &dataddr,
                 // Only sections with these tags are moved in the new rewritten binary
                 case DT_REL:
                 case DT_RELA:
+                case DT_RELR:
                 case DT_JMPREL:
                 case DT_SYMTAB:
                 case DT_STRTAB:
@@ -912,6 +960,7 @@ void Object::parseDynamic(Elf_X_Shdr *&dyn_scnp, Elf_X_Shdr *&dynsym_scnp,
     Elf_X_Data data = dyn_scnp->get_data();
     Elf_X_Dyn dyns = data.get_dyn();
     int rel_scnp_index = -1;
+    int relr_scnp_index = -1;
 
     for (unsigned i = 0; i < dyns.count(); ++i) {
         switch (dyns.d_tag(i)) {
@@ -920,6 +969,10 @@ void Object::parseDynamic(Elf_X_Shdr *&dyn_scnp, Elf_X_Shdr *&dynsym_scnp,
                 /*found Relocation section*/
                 rel_addr_ = (Offset) dyns.d_ptr(i);
                 rel_scnp_index = getRegionHdrIndexByAddr(dyns.d_ptr(i));
+                break;
+            case DT_RELR:
+                relr_addr_ = (Offset) dyns.d_ptr(i);
+                relr_scnp_index = getRegionHdrIndexByAddr(dyns.d_ptr(i));
                 break;
             case DT_JMPREL:
                 rel_plt_addr_ = (Offset) dyns.d_ptr(i);
@@ -937,6 +990,12 @@ void Object::parseDynamic(Elf_X_Shdr *&dyn_scnp, Elf_X_Shdr *&dynsym_scnp,
                 /* Maybe */
                 //rel_plt_entry_size_ = dyns.d_val(i);
                 break;
+            case DT_RELRSZ:
+                relr_size_ = dyns.d_val(i);
+                break;
+            case DT_RELRENT:
+                relr_entry_size_ = dyns.d_val(i);
+                break;
             case DT_INIT:
                 init_addr_ = dyns.d_val(i);
                 break;
@@ -949,7 +1008,51 @@ void Object::parseDynamic(Elf_X_Shdr *&dyn_scnp, Elf_X_Shdr *&dynsym_scnp,
     }
     if (rel_scnp_index != -1)
         get_relocationDyn_entries(rel_scnp_index, dynsym_scnp, dynstr_scnp);
+    if (relr_scnp_index != -1)
+        get_relocationRelr_entries(relr_scnp_index);
 }
+
+/* parse relative relocations for the section represented by DT_RELR in
+ * the dynamic section. This section is encoded as RELR entries, which
+ * decode to relocation addresses
+ */
+bool Object::get_relocationRelr_entries(unsigned relr_scnp_index) {
+    Elf_X_Shdr *relr_scnp = getRegionHdrByIndex(relr_scnp_index);
+    if (!relr_scnp) return false;
+
+    Elf_X_Data relrdata = relr_scnp->get_data();
+    if (!relrdata.isValid()) return false;
+
+    unsigned char *ident = elfHdr ? elfHdr->e_ident() : NULL;
+    if (!ident) return false;
+
+    size_t entry_size = 0;
+    if (ident[EI_CLASS] == ELFCLASS32)
+        entry_size = sizeof(uint32_t);
+    else if (ident[EI_CLASS] == ELFCLASS64)
+        entry_size = sizeof(uint64_t);
+    else
+        return false;
+
+    // DT_RELRENT must match the Elf{32,64}_Relr entry size, and DT_RELRSZ
+    // must describe the byte size of the encoded RELR table
+    if (relr_entry_size_ != entry_size) return false;
+    if (relr_size_ != relrdata.d_size()) return false;
+    if (relr_size_ % entry_size != 0) return false;
+
+    size_t entry_count = relr_size_ / entry_size;
+    if (entry_size == sizeof(uint32_t)) {
+        decodeRelrEntries(reinterpret_cast<uint32_t *>(relrdata.d_buf()),
+                          entry_count,
+                          relr_relocation_table_);
+    } else {
+        decodeRelrEntries(reinterpret_cast<uint64_t *>(relrdata.d_buf()),
+                          entry_count,
+                          relr_relocation_table_);
+    }
+
+    return true;
+ }
 
 /* parse relocations for the sections represented by DT_REL/DT_RELA in
  * the dynamic section. This section is the one we would want to emit
@@ -2283,9 +2386,9 @@ void Object::find_code_and_data(Elf_X &elf,
         // txtaddr=0, so in this case we set these values by
         // identifying the segment that contains the entryAddress
         if (((phdr.p_vaddr() <= txtaddr) &&
-             (phdr.p_vaddr() + phdr.p_filesz() >= txtaddr)) ||
+             (phdr.p_vaddr() + phdr.p_filesz() > txtaddr)) ||
             (!txtaddr && ((phdr.p_vaddr() <= entryAddress_) &&
-                          (phdr.p_vaddr() + phdr.p_filesz() >= entryAddress_)))) {
+                          (phdr.p_vaddr() + phdr.p_filesz() > entryAddress_)))) {
 
             if (code_ptr_ == 0 && code_off_ == 0 && code_len_ == 0) {
                 code_ptr_ = (char *) (void *) &file_ptr[phdr.p_offset()];
@@ -2294,7 +2397,7 @@ void Object::find_code_and_data(Elf_X &elf,
             }
 
         } else if (((phdr.p_vaddr() <= dataddr) &&
-                    (phdr.p_vaddr() + phdr.p_filesz() >= dataddr)) ||
+                    (phdr.p_vaddr() + phdr.p_filesz() > dataddr)) ||
                    (!dataddr && (phdr.p_type() == PT_LOAD))) {
             if (data_ptr_ == 0 && data_off_ == 0 && data_len_ == 0) {
                 data_ptr_ = (char *) (void *) &file_ptr[phdr.p_offset()];
@@ -2312,6 +2415,7 @@ Object::Object(MappedFile *mf_, bool, void (*err_func)(const char *),
         elfHdr(NULL),
         hasReldyn_(false),
         hasReladyn_(false),
+        hasRelrdyn_(false),
         hasRelplt_(false),
         hasRelaplt_(false),
         relType_(Region::RT_REL),
@@ -2326,6 +2430,7 @@ Object::Object(MappedFile *mf_, bool, void (*err_func)(const char *),
         plt_addr_(0), plt_size_(0), plt_entry_size_(0),
         rel_plt_addr_(0), rel_plt_size_(0), rel_plt_entry_size_(0),
         rel_addr_(0), rel_size_(0), rel_entry_size_(0),
+        relr_addr_(0), relr_size_(0), relr_entry_size_(0),
         opd_addr_(0), opd_size_(0),
         dwarvenDebugInfo(false),
         loadAddress_(0), entryAddress_(0),
@@ -2461,6 +2566,9 @@ const ostream &Object::dump_state_info(ostream &s)
   s << " rel_plt_entry_size_ = " << rel_plt_entry_size_ << endl;
   s << " rel_size_ = " << rel_size_ << endl;
   s << " rel_entry_size_ = " << rel_entry_size_ << endl;
+  s << " relr_addr_ = " << relr_addr_ << endl;
+  s << " relr_size_ = " << relr_size_ << endl;
+  s << " relr_entry_size_ = " << relr_entry_size_ << endl;
   s << " dwarvenDebugInfo = " << dwarvenDebugInfo << endl;
 
   // and dump the relocation table....
@@ -3198,7 +3306,7 @@ void Object::parseLineInfoForCU(Offset offset_, LineInformation* li_for_module)
     }
 
     StringTablePtr strings(li_for_module->getStrings());
-    boost::unique_lock<dyn_mutex> l(strings->lock);
+    dyncompat::unique_lock<dyn_mutex> l(strings->lock);
     Dwarf_Files *files;
     size_t offset = strings->size();
     size_t filecount;
@@ -3228,7 +3336,7 @@ void Object::parseLineInfoForCU(Offset offset_, LineInformation* li_for_module)
         return s_name;
     };
 
-    using namespace boost::filesystem;
+    using namespace std::filesystem;
     for(size_t i = 0; i < filecount; i++)
     {
         auto filename = dwarf_filesrc(files, i, nullptr, nullptr);
@@ -3444,7 +3552,7 @@ InlinedFunction* Object::recordAnInlinedFunction(
 
     // Use the filename and line number from the caller 
     const string& src_file = (*strings)[caller.string_table_index].str;                
-    ifunc->callsite_file_number = strings->project<0>(strings->get<1>().insert(StringTableEntry(src_file,"")).first) - strings->begin();      
+    ifunc->callsite_file_number = strings->ensure(src_file);      
     ifunc->callsite_line = caller.line_number;
     
     // Use the function name from the callee
@@ -3515,10 +3623,10 @@ LineInformation* Object::parseLineInfoForObject(StringTablePtr strings)
     if (status != 0) break;
       
 
-    boost::unique_lock<dyn_mutex> l(strings->lock);
+    dyncompat::unique_lock<dyn_mutex> l(strings->lock);
     size_t offset = strings->size();
 
-    using namespace boost::filesystem;
+    using namespace std::filesystem;
     for(size_t i = 0; i < fileCount; i++)
     {
         auto filename = dwarf_filesrc(files, i, nullptr, nullptr);

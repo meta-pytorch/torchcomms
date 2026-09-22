@@ -15,7 +15,7 @@ This test runner provides a maintainable, extensible alternative to shell-based 
 - **Custom Library Support**: Use pre-built RCCL libraries from custom locations via environment variables
 - **Configurable Build System**: Customize CMake options, environment variables, and parallel jobs via config
 - **MPI Support**: Full support for multi-rank and multi-node tests
-- **Flexible Test Filtering**: Run all tests, specific test suites, or individual tests
+- **Flexible Test Filtering**: Both `--test-name` and `--suite-name` accept gtest-style glob patterns (`P2P*` = prefix, `*SHM*` = contains, `*:-NET*` = exclude; colon = OR; case-sensitive); filter by individual test name or by suite name
 - **Build Integration**: Automated RCCL building with CMake
 - **Code Coverage**: Integrated LLVM coverage report generation (HTML and text)
 - **Clean Output**: Automatic filtering of MPI verbose messages (enable with --verbose)
@@ -32,8 +32,20 @@ python test_runner.py --config my_tests.json
 # Run with verbose output
 python test_runner.py --config my_tests.json --verbose
 
-# Run specific test by name
+# Run a specific test by exact name (searches all enabled suites for a match)
 python test_runner.py --config my_tests.json --test-name SHM_ComprehensiveWorkflow
+
+# Run all tests whose name starts with 'P2P' (glob prefix match)
+python test_runner.py --config my_tests.json --test-name "P2P_*"
+
+# Run multiple tests (colon-separated globs)
+python test_runner.py --config my_tests.json --test-name "P2P_*:SHM_Basic"
+
+# Run all suites whose name starts with 'P2P' (glob prefix match)
+python test_runner.py --config my_tests.json --suite-name "P2P*"
+
+# Run two specific suites by exact name (colon-separated)
+python test_runner.py --config my_tests.json --suite-name "P2P Tests - 2-Rank:P2P Tests - 4-Rank"
 ```
 
 ### Generate Coverage Report
@@ -61,6 +73,30 @@ python test_runner.py --config test_config_sample.json
 # --no-build is not needed
 ```
 
+### Rerun Failed Tests with Debug Environment
+
+```bash
+# Run tests and automatically rerun any failures with additional debug environment variables
+python test_runner.py --config test_config_sample.json --rerun-failed
+
+# Combine with verbose mode for detailed output
+python test_runner.py --config test_config_sample.json --rerun-failed --verbose
+
+# Stop immediately if a rerun also fails (fail-fast mode)
+python test_runner.py --config test_config_sample.json --rerun-failed --stop-on-rerun-failure
+```
+
+### Skip MPI Tests
+
+```bash
+# Skip MPI entirely: removes --enable-mpi-tests from build flags,
+# skips MPI installation check, and skips tests with num_ranks > 1
+python test_runner.py --config mi300x_mellanox_ib.json --skip-mpi-check
+
+# Useful for single-rank unit tests that don't require MPI
+python test_runner.py --config unit_tests_only.json --skip-mpi-check
+```
+
 ## Environment Variables
 
 The test runner supports the following environment variables to customize behavior:
@@ -72,6 +108,8 @@ The test runner supports the following environment variables to customize behavi
 | `RCCL_LIB_PATH` | Path to pre-built RCCL library directory (contains `librccl.so` and `test/` subdirectory). When set, the build step is automatically skipped. | `/path/to/rccl/build` |
 | `RCCL_BUILD_DIR` | Alternative name for `RCCL_LIB_PATH`. Either variable can be used. | `/path/to/rccl/build` |
 | `RCCL_TEST_MPI_HOSTFILE` | Path to MPI hostfile for multi-node tests. | `~/.mpi_hostfile` |
+| `RCCL_MPI_LOG_ALL_RANKS` | Set to `1` to capture stdout/stderr from every MPI rank into `rccl_test_rank_<N>.log` in the working directory (rank 0 is tee'd to console + file; ranks 1-N go to file only). Useful for debugging failures on non-zero ranks. | `RCCL_MPI_LOG_ALL_RANKS=1` |
+| `RCCL_TEST_GPUS_PER_NODE` | Override the detected number of GPUs per node (used for `"auto"` sizing and GPU-count skipping). See [GPU Count Detection](#gpu-count-detection-and-auto-sizing). | `4` |
 
 ### Configuration Path Variables
 
@@ -91,11 +129,11 @@ When determining which RCCL library to use, the test runner follows this priorit
    - Skips build automatically
    - Must contain `librccl.so` and `test/` subdirectory
 2. **`--no-build` flag with local build**
-   - Uses local `build_debug_cov_on_tests_on/` directory
+   - Uses local `build/debug/` or `build/release/` directory (based on `install_flags`)
    - Requires prior build
 3. **Default build process** (lowest priority)
-   - Builds RCCL in timestamped directory
-   - Uses CMake configuration from JSON
+   - Builds RCCL via `install.sh` into `build/debug/` or `build/release/`
+   - Uses `install_flags` and `cmake_options` from JSON config
 
 **Example Usage:**
 
@@ -292,11 +330,13 @@ Used for custom validation scripts or any non-GTest executables.
 | `binary` | Yes | string | Test binary name (relative to build/test/) |
 | `test_filter` | Optional | string | Test filter (GTest filter syntax for gtest, plain argument for non-gtest) |
 | `command_args` | Optional | string | Additional command-line arguments |
-| `num_ranks` | Optional | integer | Number of MPI ranks (default: 1) |
+| `num_ranks` | Optional | integer or `"auto"` | Number of MPI ranks (default: 1). `"auto"` = detected GPUs/node × `num_nodes` (use all GPUs). See [GPU Count Detection](#gpu-count-detection-and-auto-sizing). |
 | `num_nodes` | Optional | integer | Number of nodes (default: 1) |
-| `num_gpus` | Optional | integer | GPUs per node - controls rank distribution (default: 8) |
+| `num_gpus` | Optional | integer or `"auto"` | GPUs per node - controls rank distribution. `"auto"` (also the default when omitted) = detected GPUs/node. |
 | `timeout` | Optional | integer | Timeout in seconds (0 = unlimited) |
 | `env_variables` | Optional | object | Test-specific environment variables |
+| `rerun_env_variables` | Optional | object | Additional environment variables for failed test reruns (merged with env_variables) |
+| `mpi_args` | Optional | string or list | Extra `mpirun`/MCA arguments appended to the base MPI arguments (MPI tests only). See [Custom MPI Arguments](#custom-mpi-arguments). |
 
 ### Configuration Inheritance
 
@@ -405,15 +445,20 @@ To reduce repetition, you can specify default values at multiple levels with a c
 
 ```
 Required:
-  -c, --config CONFIG       Test configuration file (JSON format)
+  -c, --config CONFIG           Test configuration file (JSON format)
 
 Optional:
   -v, --verbose             Enable verbose output (shows build paths, commands, etc.)
   -o, --output DIR          Output directory for logs and reports
-  --test-name NAME          Run only specific test by name
+  --test-name GLOB[:GLOB…]  Run only tests matching any glob pattern; ':' = OR, '*' = wildcard, '-' prefix = exclude, case-sensitive (e.g. 'P2P_*' = all P2P tests; '*:-SHM*' = all except SHM)
+  --suite-name GLOB[:GLOB…] Run only suites matching any glob pattern; ':' = OR, '*' = wildcard, '-' prefix = exclude, case-sensitive (e.g. 'P2P*' = all P2P suites; '*:-NET*' = all except NET)
   --no-build                Skip build step and use existing build
   --skip-tests              Skip test execution (useful with --coverage-report)
   --coverage-report         Generate code coverage report (HTML + text)
+  --build-dir PATH          Custom build directory path (default: <workdir>/build/debug or build/release)
+  --rerun-failed            Rerun failed tests with additional environment variables
+  --skip-mpi-check          Skip MPI: removes --enable-mpi-tests from build, skips MPI check, skips tests with num_ranks > 1
+  --stop-on-rerun-failure   Stop testing immediately if a rerun also fails (requires --rerun-failed)
   --overwrite               Overwrite previous workspace directories
   --report-suffix SUFFIX    Suffix for report directory (default: blank)
   -h, --help                Show help message and exit
@@ -461,10 +506,35 @@ When `--coverage-report` is specified, the runner generates:
 python test_runner.py --config test_config_sample.json --verbose
 ```
 
-### Run Specific Test
+### Run Specific Tests or Suites
+
+Both `--test-name` and `--suite-name` accept gtest-style glob patterns:
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `Name` | Exact match | `--test-name P2P_AllTests` |
+| `Name*` | Prefix match | `--test-name "P2P_*"` |
+| `*Name*` | Contains match | `--test-name "*AllReduce*"` |
+| `A:B` | A or B (OR) | `--test-name "P2P_*:SHM_Basic"` |
+| `-Name` | Exclude | `--test-name "*:-SHM*"` |
+
+Matching is against the `"name"` field (tests) or suite name (suites), and is case-sensitive.
 
 ```bash
+# Single test by exact name
 python test_runner.py --config test_config_sample.json --test-name P2P_AllTests
+
+# All tests whose name starts with 'P2P_'
+python test_runner.py --config test_config_sample.json --test-name "P2P_*"
+
+# All tests except SHM tests
+python test_runner.py --config test_config_sample.json --test-name "*:-SHM*"
+
+# All suites whose name starts with 'P2P' (glob prefix match)
+python test_runner.py --config test_config_sample.json --suite-name "P2P*"
+
+# Two specific suites matched by exact name (colon-separated)
+python test_runner.py --config test_config_sample.json --suite-name "P2P Tests - 2-Rank:P2P Tests - 4-Rank"
 ```
 
 ### Skip Build (Use Existing)
@@ -493,10 +563,23 @@ python test_runner.py --config adhoc_test_config.json --no-build --skip-tests --
 python test_runner.py --config test_config_sample.json -o /path/to/output --verbose
 ```
 
-### Run with Overwrite (Clean Previous Results)
+### Run with Custom Build Directory
 
 ```bash
-python test_runner.py --config test_config_sample.json --overwrite --coverage-report
+python test_runner.py --config test_config_sample.json --build-dir /tmp/my_rccl_build --coverage-report
+```
+
+### Rerun Failed Tests with Debug Environment
+
+```bash
+# Automatically rerun failed tests with enhanced debug environment variables
+python test_runner.py --config test_config_sample.json --rerun-failed --verbose
+
+# Combine with coverage report
+python test_runner.py --config test_config_sample.json --rerun-failed --coverage-report
+
+# Fail-fast mode: stop if rerun also fails
+python test_runner.py --config test_config_sample.json --rerun-failed --stop-on-rerun-failure
 ```
 
 ## Environment Variable Merging
@@ -598,27 +681,394 @@ node01 slots=8
 node02 slots=8
 ```
 
+## GPU Count Detection and Auto-Sizing
+
+To make configurations portable across nodes with different GPU counts (e.g. 4-GPU vs 8-GPU nodes), the runner can detect how many GPUs a node has and size/skip tests accordingly.
+
+### Detection
+
+The GPUs-per-node count is detected once, using this priority:
+
+1. `RCCL_TEST_GPUS_PER_NODE` environment variable (explicit override)
+2. Visible-device masks: `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, or `CUDA_VISIBLE_DEVICES` (counts the listed IDs)
+3. `rocminfo` GPU-agent count
+
+If none of these yield a value, detection returns "unknown" and the runner falls back to defaults (treating `"auto"` as 8) and disables GPU-count-based skipping.
+
+### `"auto"` values
+
+Both `num_gpus` and `num_ranks` accept the literal string `"auto"`:
+
+- `num_gpus: "auto"` → resolves to the detected GPUs per node. **This is also the default when `num_gpus` is omitted.**
+- `num_ranks: "auto"` → resolves to `num_gpus × num_nodes` (i.e. use *all* GPUs across all nodes).
+
+Example — a single-node test that always uses every GPU on the node:
+
+```json
+{
+  "implicit_launch_order": {
+    "is_gtest": true,
+    "binary": "rccl-UnitTestsMPI",
+    "num_ranks": "auto",
+    "num_nodes": 1,
+    "tests": [ { "name": "MultiCommunicatorChain", "test_filter": "..." } ]
+  }
+}
+```
+
+On an 8-GPU node this runs with 8 ranks; on a 4-GPU node, 4 ranks — no config change required.
+
+### Automatic skipping on insufficient GPUs
+
+When the GPU count is known, a test is automatically **SKIPPED** (not failed) if the node does not have enough GPUs:
+
+- **Single-node** tests: skipped when `num_ranks` > detected GPUs/node.
+- **Multi-node** tests: skipped when `num_gpus` (ranks per node) > detected GPUs/node.
+
+This lets fixed-size tests (e.g. an 8-rank test whose gtest filters require exactly 8 ranks) live in one shared config and simply self-skip on smaller nodes, instead of failing. Use `RCCL_TEST_GPUS_PER_NODE` to force a specific value (or to re-enable skipping in environments where detection fails).
+
+## Custom MPI Arguments
+
+For MPI tests (`num_ranks > 1`), the runner builds the `mpirun` command line as:
+
+```
+mpirun -np <ranks> <host args> <map-by args> <mpi_args> ./<binary> ...
+```
+
+The `<mpi_args>` portion is resolved from the `mpi_args` field, which can be
+specified at multiple levels. **Every `mpi_args` value may be either a string or
+a list of strings** (lists are joined with spaces), so both of these are
+equivalent:
+
+```json
+"mpi_args": "--bind-to none --oversubscribe"
+"mpi_args": ["--bind-to none", "--oversubscribe"]
+```
+
+### Resolution and Merge Order
+
+There are two categories of `mpi_args`:
+
+1. **Base arguments** — *replace* the built-in defaults. The base is chosen with
+   this priority:
+   1. Top-level `mpi_args` dict entry matching the active `--system`
+   2. Top-level `mpi_args` string/list (applies to all systems)
+   3. Built-in defaults (`--mca btl ^vader,openib --mca pml ucx --bind-to none`
+      for Open MPI, `-bind-to none` for MPICH)
+2. **Additive arguments** — *appended* on top of the base, regardless of
+   `--system`:
+   - Test-suite-level `mpi_args`
+   - Individual test-level `mpi_args`
+
+Final command arguments are:
+
+```
+<base args>  <suite mpi_args>  <test mpi_args>
+```
+
+> **Note:** Because base arguments *replace* the defaults, a top-level
+> `mpi_args` should include any default flags you still want (e.g.
+> `--bind-to none`). Suite- and test-level `mpi_args` are purely additive and do
+> not remove anything.
+
+### Per-System Arguments (top-level dict)
+
+Use a dict keyed by system name and select it with `--system`:
+
+```json
+{
+  "mpi_args": {
+    "mellanox": "--mca oob_tcp_if_include eth1 --mca btl ^vader,openib --bind-to none",
+    "thor2":    "--oversubscribe --mca plm_rsh_agent srun --mca btl ^openib --bind-to none"
+  }
+}
+```
+
+```bash
+python test_runner.py --config net_ib_transport.json --system mellanox
+```
+
+If `--system` is not given (or has no matching key), the built-in defaults are
+used as the base.
+
+### Global Arguments (top-level string/list)
+
+Apply the same base arguments to every MPI test:
+
+```json
+{
+  "mpi_args": ["--mca pml ucx", "--bind-to none", "--oversubscribe"]
+}
+```
+
+### Suite- and Test-Level Arguments (additive)
+
+These are appended to the base and work regardless of `--system`:
+
+```json
+{
+  "test_suites": [
+    {
+      "name": "Oversubscribed_Suite",
+      "config": "perf_tests",
+      "mpi_args": "--oversubscribe"
+    }
+  ],
+  "test_configurations": {
+    "perf_tests": {
+      "tests": [
+        {
+          "name": "AllReduce_Perf",
+          "is_gtest": false,
+          "binary": "all_reduce_perf",
+          "command_args": "-b 8 -e 128M -f 2",
+          "num_ranks": 2,
+          "mpi_args": "--mca btl_tcp_if_include eth0"
+        }
+      ]
+    }
+  }
+}
+```
+
+For the example above (no `--system`, no top-level `mpi_args`), the AllReduce
+test runs with:
+
+```
+mpirun -np 2 <host args> --mca btl ^vader,openib --mca pml ucx --bind-to none --oversubscribe --mca btl_tcp_if_include eth0 ./all_reduce_perf ...
+```
+
+(base defaults + suite `--oversubscribe` + test `--mca btl_tcp_if_include eth0`)
+
+### Inheritance
+
+When using the `extends` directive, list-form `mpi_args` are appended and
+de-duplicated across parent/child configurations (see
+[Configuration Inheritance](#configuration-inheritance)).
+
 ## Advanced Features
+
+### Rerun Failed Tests with Enhanced Debugging
+
+When tests fail, it's often helpful to rerun them with additional debug output. The `--rerun-failed` flag automatically reruns any failed or timed-out tests with enhanced environment variables specified in the configuration.
+
+#### Configuration
+
+Add `rerun_env_variables` at the configuration level or individual test level:
+
+```json
+{
+  "test_configurations": {
+    "unit_tests": {
+      "env_variables": {
+        "NCCL_DEBUG": ""
+      },
+      "rerun_env_variables": {
+        "NCCL_DEBUG": "INFO"
+      },
+      "tests": [
+        {
+          "name": "MyTest",
+          "test_filter": "MyTest.*"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Usage
+
+```bash
+# Run tests and automatically rerun failures with debug environment
+python test_runner.py --config my_tests.json --rerun-failed
+
+# Behavior:
+# 1. Test runs and fails
+# 2. Test is IMMEDIATELY rerun with rerun_env_variables
+# 3. Continue to next test (regardless of rerun result)
+# No need to wait for all tests to complete - reruns happen inline
+```
+
+#### Environment Variable Merging
+
+The rerun environment variables are **merged** with the original test environment:
+
+1. Original test environment variables
+2. Plus `rerun_env_variables` (overrides original if same key)
+
+**Example:**
+
+```json
+{
+  "env_variables": {
+    "NCCL_DEBUG": "WARN",
+    "NCCL_LAUNCH_MODE": "GROUP"
+  },
+  "rerun_env_variables": {
+    "NCCL_DEBUG": "INFO",
+    "NCCL_DEBUG_SUBSYS": "ALL"
+  }
+}
+```
+
+**Rerun environment:**
+- `NCCL_DEBUG=INFO` (overridden)
+- `NCCL_LAUNCH_MODE=GROUP` (inherited)
+- `NCCL_DEBUG_SUBSYS=ALL` (added)
+
+#### Hierarchical Rerun Variables
+
+Like other configuration fields, `rerun_env_variables` supports hierarchical inheritance:
+
+```json
+{
+  "test_configurations": {
+    "default": {
+      "rerun_env_variables": {
+        "NCCL_DEBUG": "INFO"
+      }
+    },
+    "shm_tests": {
+      "extends": "default",
+      "rerun_env_variables": {
+        "NCCL_DEBUG_SUBSYS": "SHM"
+      }
+      // Inherits NCCL_DEBUG=INFO from default
+      // Adds NCCL_DEBUG_SUBSYS=SHM
+    }
+  }
+}
+```
+
+#### Test-Level Overrides
+
+Individual tests can override rerun environment variables:
+
+```json
+{
+  "test_configurations": {
+    "unit_tests": {
+      "rerun_env_variables": {
+        "NCCL_DEBUG": "INFO"
+      },
+      "tests": [
+        {
+          "name": "StandardTest"
+          // Uses NCCL_DEBUG=INFO for reruns
+        },
+        {
+          "name": "VerboseTest",
+          "rerun_env_variables": {
+            "NCCL_DEBUG": "TRACE",
+            "NCCL_DEBUG_SUBSYS": "ALL"
+          }
+          // Uses TRACE and ALL for reruns instead
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Output Format
+
+When a test fails and `--rerun-failed` is set, it is immediately rerun:
+
+```
+Running test: MyTest
+  Result: FAILED (2.345 seconds)
+
+================================================================================
+RERUNNING FAILED TEST IMMEDIATELY
+================================================================================
+
+Rerunning test: MyTest
+  Original result: FAILED
+  Additional env variables:
+    NCCL_DEBUG=INFO
+
+Running test: MyTest (rerun)
+  Result: PASSED (2.456 seconds)
+  Rerun exit code: 0
+================================================================================
+
+# Next test continues...
+```
+
+At the end, both original and rerun results are summarized:
+
+```
+Detailed Results:
+--------------------------------------------------------------------------------
+Test Suite                               Test Name            Result     Duration
+--------------------------------------------------------------------------------
+Unit Tests                               MyTest               FAILED     2.345 seconds
+--------------------------------------------------------------------------------
+
+Rerun Results (with additional environment variables):
+--------------------------------------------------------------------------------
+Test Name                                                    Result     Duration
+--------------------------------------------------------------------------------
+MyTest                                                       PASSED     2.456 seconds
+--------------------------------------------------------------------------------
+```
+
+#### Execution Flow
+
+When `--rerun-failed` is set:
+
+1. **Test runs** → If it passes, continue to next test
+2. **Test fails** → Immediately rerun with `rerun_env_variables`
+3. **Rerun completes** → Continue to next test (regardless of rerun pass/fail)
+4. **All tests complete** → Summary shows both original and rerun results
+
+The test suite continues executing even if reruns fail, ensuring all tests get a chance to run.
+
+#### Fail-Fast Mode
+
+Add `--stop-on-rerun-failure` to stop immediately if a rerun fails:
+
+1. **Test runs** → If it passes, continue to next test
+2. **Test fails** → Immediately rerun with `rerun_env_variables`
+3. **Rerun passes** → Continue to next test
+4. **Rerun fails** → **STOP** - No more tests executed
+
+This is useful when:
+- You want to fail fast and investigate the first persistent failure
+- Running in CI/CD and want to save time if a test fails even after rerun
+- Debugging a specific issue and don't need to run all tests
+
+Example:
+```bash
+# Stop immediately if any test fails after rerun
+python test_runner.py --config test_config.json --rerun-failed --stop-on-rerun-failure
+```
+
+#### Use Cases
+
+- **Debugging flaky tests:** Add verbose logging only for failed tests
+- **Network issues:** Enable network subsystem debugging for NET transport failures
+- **Memory issues:** Add memory debugging flags for allocation failures
+- **CI/CD pipelines:** Automatically gather more information on failures without verbose output for all tests
+- **Immediate feedback:** See rerun results right after a failure instead of waiting for all tests
 
 ### Build Configuration (New!)
 
 Customize the RCCL build process through the `build_configuration` section in your JSON config file.
+The test runner invokes `install.sh` directly, so build options map to `install.sh` flags.
 
 #### Basic Structure
 
 ```json
 {
   "build_configuration": {
-    "cmake_options": {
-      "CMAKE_BUILD_TYPE": "Debug",
-      "ENABLE_CODE_COVERAGE": "ON",
-      "ONLY_FUNCS": "SendRecv|AllReduce"
-    },
+    "install_flags": ["--debug", "-c", "-t", "-l", "--log-trace", "--enable-mpi-tests", "--no_clean"],
+    "cmake_options": "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     "env_variables": {
       "HIPCC_COMPILE_FLAGS_APPEND": "-g -O1"
     },
-    "parallel_jobs": 64,
-    "generator": "Unix Makefiles"
+    "parallel_jobs": 64
   }
 }
 ```
@@ -629,10 +1079,18 @@ Customize the RCCL build process through the `build_configuration` section in yo
 ```json
 {
   "build_configuration": {
-    "cmake_options": {
-      "ENABLE_CODE_COVERAGE": "OFF"
-    },
+    "install_flags": ["-t", "-l", "--no_clean"],
     "parallel_jobs": 128
+  }
+}
+```
+
+**Debug Build with Coverage:**
+```json
+{
+  "build_configuration": {
+    "install_flags": ["--debug", "-c", "-t", "-l", "--log-trace", "--no_clean"],
+    "cmake_options": "-DCMAKE_CXX_FLAGS=-Wl,--build-id=sha1"
   }
 }
 ```
@@ -641,11 +1099,7 @@ Customize the RCCL build process through the `build_configuration` section in yo
 ```json
 {
   "build_configuration": {
-    "cmake_options": {
-      "CMAKE_BUILD_TYPE": "Release",
-      "TRACE": "OFF",
-      "COLLTRACE": "OFF"
-    }
+    "install_flags": ["-t", "-l", "--no_clean"]
   }
 }
 ```
@@ -654,20 +1108,17 @@ Customize the RCCL build process through the `build_configuration` section in yo
 ```json
 {
   "build_configuration": {
-    "cmake_options": {
-      "ONLY_FUNCS": "Broadcast|Reduce"
-    }
+    "install_flags": ["--debug", "-t", "--no_clean"],
+    "cmake_options": "-DONLY_FUNCS=Broadcast|Reduce"
   }
 }
 ```
 
 **All Options:**
-- `cmake_options` - Any CMake option (user values override defaults)
+- `install_flags` - List of `install.sh` command-line flags (e.g. `--debug`, `-t`, `-c`, `-l`)
+- `cmake_options` - Additional CMake options string passed via `install.sh --cmake-options` (e.g. `-DFOO=BAR`)
 - `env_variables` - Build environment variables
-- `parallel_jobs` - Number of parallel build threads (default: 64)
-- `generator` - CMake generator: "Unix Makefiles", "Ninja", etc.
-
-See `BUILD_CONFIGURATION_GUIDE.md` for complete documentation.
+- `parallel_jobs` - Number of parallel build threads (passed via `-j`)
 
 ### Enhanced Environment Variable Expansion
 
@@ -696,7 +1147,7 @@ Specify test binary locations in multiple ways for maximum flexibility:
   "binary": "all_reduce_perf"
 }
 ```
-Result: `<workdir>/build_debug_cov_on_tests_on/test/all_reduce_perf`
+Result: `<workdir>/build/debug/test/all_reduce_perf`
 
 #### 2. Absolute Path
 
@@ -785,7 +1236,7 @@ python test_runner.py --config test.json --verbose
 Output includes:
 ```
 Binary:  all_reduce_perf
-Binary path: /home/user/code/rti/scripts/rccl/build_debug_cov_on_tests_on/test/all_reduce_perf
+Binary path: /home/user/code/rti/scripts/rccl/build/debug/test/all_reduce_perf
 ```
 
 ### Configuration Best Practices
@@ -845,7 +1296,7 @@ python test_runner.py --config test_config_sample.json --skip-tests --verbose
 1. Add test definition to appropriate configuration in JSON file
 2. Specify `is_gtest`, `description`, and required fields
 3. Test with dry run first: `--skip-tests --verbose`
-4. Run actual test: `--test-name YourTest --verbose`
+4. Run actual test: `--test-name YourTest --verbose` (exact name) or `--test-name "YourTest*" --verbose` (glob) or `--suite-name "My Suite" --verbose`
 
 ### Test Type Handling
 
@@ -925,8 +1376,10 @@ These override the paths specified in the JSON configuration file:
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `RCCL_TEST_MPI_HOSTFILE` | Path to MPI hostfile for multi-node tests | `export RCCL_TEST_MPI_HOSTFILE=~/.mpi_hostfile` |
+| `RCCL_MPI_LOG_ALL_RANKS` | Set to `1` to redirect each MPI rank's stdout/stderr to `rccl_test_rank_<N>.log` (rank 0 is also tee'd to the console). Useful when debugging failures on non-zero ranks or when tests read per-rank log files for assertions. | `export RCCL_MPI_LOG_ALL_RANKS=1` |
+| `RCCL_TEST_GPUS_PER_NODE` | Override the detected GPUs-per-node count used for `"auto"` rank/GPU sizing and for skipping tests that need more GPUs than the node has. See [GPU Count Detection](#gpu-count-detection-and-auto-sizing). | `export RCCL_TEST_GPUS_PER_NODE=4` |
 
-**Note**: Falls back to `~/.mpi_hostfile` if not set. For SLURM environments, hostfile is auto-generated from `SLURM_NODELIST`.
+**Note**: `RCCL_TEST_MPI_HOSTFILE` falls back to `~/.mpi_hostfile` if not set. For SLURM environments, hostfile is auto-generated from `SLURM_NODELIST`.
 
 ### Test-Specific Variables
 

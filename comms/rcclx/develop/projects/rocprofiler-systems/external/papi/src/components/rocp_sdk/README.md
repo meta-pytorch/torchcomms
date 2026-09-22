@@ -3,10 +3,10 @@
 The ROCP\_SDK component exposes numerous performance events on AMD GPUs and APUs.
 The component is an adapter to the ROCm profiling library ROCprofiler-SDK which is included in a standard ROCM release.
 
-* [Enabling the ROCP\_SDK Component](#enabling-the-rocm-component)
+* [Enabling the ROCP\_SDK Component](#enabling-the-rocp_sdk-component)
 * [Environment Variables](#environment-variables)
+* [Hardware and Software Support](#hardware-and-software-support)
 * [Known Limitations](#known-limitations)
-* [FAQ](#faq)
 ***
 ## Enabling the ROCP\_SDK Component
     
@@ -53,6 +53,17 @@ Example:
 
 Note that this variable takes precedence over PAPI\_ROCP\_SDK\_ROOT.
 
+Additionally, the component supports installations where ROCprofiler-SDK does not reside inside the ROCm installation. For example, if installed from source (https://github.com/ROCm/rocprofiler-sdk). In such a case, the PAPI user must set PAPI_ROCP_SDK_ROOT to point to the ROCprofiler-SDK installation and PAPI_ROCM_ROOT to point to the ROCm installation.
+
+Example:
+    export PAPI_ROCP_SDK_ROOT=${HOME}/my_packages
+    export PAPI_ROCM_ROOT=/opt/rocm
+
+## Hardware and Software Support
+
+To see the ROCP\_SDK component's current supported hardware and software please visit the GitHub wiki page [Hardware and Software Support - ROCP\_SDK](https://github.com/icl-utk-edu/papi/wiki/Hardware-and-Software-Support-%E2%80%90-ROCP_SDK-Component).
+
 ## Known Limitations
 
 * In dispatch mode, PAPI may read zeros if reading takes place immediately after the return of a GPU kernel. This is not a PAPI bug. It may occur because calls such as hipDeviceSynchronize() do not guarantee that ROCprofiler has been called and all counter buffers have been flushed.  Therefore, it is recommended that the user code adds a delay between the return of a kernel and calls to PAPI_read(), PAPI_stop(), etc.
+* If an application is linked against the static PAPI library libpapi.a, then the application must call PAPI_library_init() before calling any hip routines (e.g. hipInit(), hipGetDeviceCount(), hipLaunchKernelGGL(), etc). If the application is linked against the dynamic library libpapi.so, then the order of operations does not matter.

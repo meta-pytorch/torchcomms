@@ -1,24 +1,5 @@
-// MIT License
-//
-// Copyright (c) 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all
-// copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
+// Copyright (c) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: MIT
 
 #include "module_function.hpp"
 #include "InstructionCategories.h"
@@ -54,6 +35,16 @@ module_function::update_width(const module_function& rhs)
     get_width()[0] = std::max<size_t>(get_width()[0], rhs.module_name.length());
     get_width()[1] = std::max<size_t>(get_width()[1], rhs.function_name.length());
     get_width()[2] = std::max<size_t>(get_width()[2], rhs.signature.get().length());
+}
+
+string_t
+module_function::get_source_object_name(procedure_t* func)
+{
+    if(!func) return string_t{};
+    auto* module = func->getModule();
+    auto* object = (module) ? module->getObject() : nullptr;
+    auto  _name  = (object) ? object->name() : string_t{};
+    return _name;
 }
 
 module_function::module_function(module_t* mod, procedure_t* proc)
@@ -459,22 +450,25 @@ module_function::is_internal_constrained() const
     else if(std::regex_search(function_name, std::regex{ "9perfetto|perfetto(::|_)" }))
         return _report("Excluding", "function", "perfetto", 3);
 
-    if(_gnu_libs.contains(module_name) || _gnu_libs.contains(_module_real) ||
-       _gnu_libs.contains(_module_base))
+    if(_gnu_libs.find(module_name) != _gnu_libs.end() ||
+       _gnu_libs.find(_module_real) != _gnu_libs.end() ||
+       _gnu_libs.find(_module_base) != _gnu_libs.end())
         return _report("Excluding", "module", "internal library", 3);
 
     for(const auto& litr : _gnu_libs)
     {
         if(_module_base == _basename(litr.first) ||
-           litr.second.contains(_module_base) || _module_real == litr.first ||
-           litr.second.contains(_module_real) || litr.second.contains(module_name))
+           litr.second.find(_module_base) != litr.second.end() ||
+           _module_real == litr.first ||
+           litr.second.find(_module_real) != litr.second.end() ||
+           litr.second.find(module_name) != litr.second.end())
             return _report("Excluding", "module",
                            join(" ", "internal library", litr.first), 3);
 
         for(const auto& fitr : litr.second)
         {
             using ::timemory::join::join;
-            if(fitr.second.contains(function_name))
+            if(fitr.second.find(function_name) != fitr.second.end())
                 return _report("Excluding", "function",
                                join(" ", "internal library", litr.first), 3);
         }
@@ -774,14 +768,16 @@ bool
 module_function::is_visibility_constrained() const
 {
     auto _visibility = get_visibility();
-    return (_visibility != SV_UNKNOWN && !enabled_visibility.contains(_visibility));
+    return (_visibility != SV_UNKNOWN &&
+            enabled_visibility.find(_visibility) == enabled_visibility.end());
 }
 
 bool
 module_function::is_linkage_constrained() const
 {
     auto _linkage = get_linkage();
-    return (_linkage != SL_UNKNOWN && !enabled_linkage.contains(_linkage));
+    return (_linkage != SL_UNKNOWN &&
+            enabled_linkage.find(_linkage) == enabled_linkage.end());
 }
 
 bool
@@ -862,17 +858,30 @@ module_function::is_exit_trap_constrained() const
 
 std::pair<size_t, size_t>
 module_function::operator()(address_space_t* _addr_space, procedure_t* _entr_trace,
-                            procedure_t* _exit_trace) const
+                            procedure_t* _entr_trace_args, procedure_t* _exit_trace) const
 {
     std::pair<size_t, size_t> _count = { 0, 0 };
 
     if(!function || !module) return _count;
 
-    auto _name       = signature.get();
-    auto _trace_entr = rocprofsys_call_expr(_name.c_str());
+    auto _name            = signature.get();
+    auto _source_obj_name = get_source_object_name(function);
+
+    // Arguments passed to rocprofsys_push_trace_with_args must be serialized into
+    // the shared wire format (see rocprofsys::get_args_string)
+    rocprofsys::function_args_t _args{};
+    if(!_source_obj_name.empty())
+        _args.push_back({ 0U, "string", "source_object", _source_obj_name });
+    auto _serialized_args = rocprofsys::get_args_string(_args);
+    bool use_args_entr    = (!_serialized_args.empty() && _entr_trace_args);
+
+    auto _trace_entr = (use_args_entr)
+                           ? rocprofsys_call_expr(_name.c_str(), _serialized_args)
+                           : rocprofsys_call_expr(_name.c_str());
     auto _trace_exit = rocprofsys_call_expr(_name.c_str());
-    auto _entr       = _trace_entr.get(_entr_trace);
-    auto _exit       = _trace_exit.get(_exit_trace);
+
+    auto _entr = _trace_entr.get((use_args_entr) ? _entr_trace_args : _entr_trace);
+    auto _exit = _trace_exit.get(_exit_trace);
 
     if(insert_instr(_addr_space, function, _entr, BPatch_entry) &&
        insert_instr(_addr_space, function, _exit, BPatch_exit))
@@ -920,10 +929,12 @@ module_function::operator()(address_space_t* _addr_space, procedure_t* _entr_tra
                            "loop-exit-point-trap-instrumentation", _lname))
             continue;
 
-        auto _ltrace_entr = rocprofsys_call_expr(_lname.c_str());
+        auto _ltrace_entr = (use_args_entr)
+                                ? rocprofsys_call_expr(_lname.c_str(), _serialized_args)
+                                : rocprofsys_call_expr(_lname.c_str());
         auto _ltrace_exit = rocprofsys_call_expr(_lname.c_str());
-        auto _lentr       = _ltrace_entr.get(_entr_trace);
-        auto _lexit       = _ltrace_exit.get(_exit_trace);
+        auto _lentr = _ltrace_entr.get((use_args_entr) ? _entr_trace_args : _entr_trace);
+        auto _lexit = _ltrace_exit.get(_exit_trace);
 
         if(insert_instr(_addr_space, function, _lentr, BPatch_entry, flow_graph, itr,
                         instr_loop_traps) &&

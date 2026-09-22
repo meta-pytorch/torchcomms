@@ -36,7 +36,7 @@ foreach(target_id ${GPU_TARGETS})
                    ${target_id}_agent_kernels.hsaco)
 endforeach()
 
-add_custom_target(agent_hasco_targets DEPENDS ${HSACO_TARGET_LIST})
+add_custom_target(agent_hsaco_targets DEPENDS ${HSACO_TARGET_LIST})
 
 install(
     FILES ${HSACO_TARGET_LIST}
@@ -61,7 +61,7 @@ target_link_libraries(
 
 set(ROCPROFILER_LIB_COUNTER_TEST_SOURCES
     metrics_test.cpp evaluate_ast_test.cpp dimension.cpp core.cpp code_object_loader.cpp
-    device_counting.cpp)
+    device_counting.cpp firmware_restrictions.cpp)
 set(ROCPROFILER_LIB_COUNTER_TEST_HEADERS code_object_loader.hpp device_counting.hpp)
 
 add_executable(counter-tests)
@@ -69,7 +69,7 @@ add_executable(counter-tests)
 target_sources(counter-tests PRIVATE ${ROCPROFILER_LIB_COUNTER_TEST_SOURCES}
                                      ${ROCPROFILER_LIB_COUNTER_TEST_HEADERS})
 
-add_dependencies(counter-tests agent_hasco_targets)
+add_dependencies(counter-tests agent_hsaco_targets)
 
 target_link_libraries(
     counter-tests
@@ -92,7 +92,7 @@ rocprofiler_add_unit_test(
     TIMEOUT 45
     ENVIRONMENT
         "ROCPROFILER_METRICS_PATH=${_ROCPROFILER_SHARE_DIR}"
-        "LD_LIBRARY_PATH=${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/llvm/lib:/opt/rocm/lib:/opt/rocm/llvm/lib:$ENV{LD_LIBRARY_PATH}"
+        "LD_LIBRARY_PATH=${PROJECT_BINARY_DIR}/${CMAKE_INSTALL_LIBDIR}:${CMAKE_LIBRARY_OUTPUT_DIRECTORY}:${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/llvm/lib:${ROCM_PATH}/lib:${ROCM_PATH}/llvm/lib:$ENV{LD_LIBRARY_PATH}"
     FAIL_REGULAR_EXPRESSION "${ROCPROFILER_DEFAULT_FAIL_REGEX}"
     SKIP_REGULAR_EXPRESSION
         "Running non-intercept test(.*)could not be locked for profiling due to lack of permissions.*"
@@ -107,18 +107,22 @@ rocprofiler_add_unit_test(
 
 set(ROCPROFILER_LIB_CONSUMER_TEST_SOURCES consumer_test.cpp)
 
-add_executable(consumer-tests)
-target_sources(consumer-tests PRIVATE ${ROCPROFILER_LIB_CONSUMER_TEST_SOURCES})
+add_executable(consumer-test)
+target_sources(consumer-test PRIVATE ${ROCPROFILER_LIB_CONSUMER_TEST_SOURCES})
 
 target_link_libraries(
-    consumer-tests rocprofiler-sdk::rocprofiler-sdk-hsa-runtime
-    rocprofiler-sdk::rocprofiler-sdk-hip rocprofiler-sdk::rocprofiler-sdk-common-library
-    rocprofiler-sdk::rocprofiler-sdk-static-library GTest::gtest GTest::gtest_main)
+    consumer-test
+    PRIVATE rocprofiler-sdk::rocprofiler-sdk-hsa-runtime
+            rocprofiler-sdk::rocprofiler-sdk-hip
+            rocprofiler-sdk::rocprofiler-sdk-common-library
+            rocprofiler-sdk::rocprofiler-sdk-static-library
+            GTest::gtest
+            GTest::gtest_main)
 
-rocprofiler_add_unit_test(
-    TARGET consumer-tests
+gtest_add_tests(
+    TARGET consumer-test
     SOURCES ${ROCPROFILER_LIB_CONSUMER_TEST_SOURCES}
-    TIMEOUT 45
-    ENVIRONMENT
-        "LD_LIBRARY_PATH=${CMAKE_INSTALL_PREFIX}/lib:${CMAKE_INSTALL_PREFIX}/llvm/lib:/opt/rocm/lib:/opt/rocm/llvm/lib:$ENV{LD_LIBRARY_PATH}"
-    FAIL_REGULAR_EXPRESSION "${ROCPROFILER_DEFAULT_FAIL_REGEX}")
+    TEST_LIST consumer-tests_TESTS
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
+set_tests_properties(${consumer-tests_TESTS} PROPERTIES TIMEOUT 45 LABELS "unittests")

@@ -80,7 +80,7 @@ static int
 _sysdetect_init_component( int cidx )
 {
 
-    SUBDBG( "_sysdetect_init_component..." );
+    SUBDBG( "_sysdetect_init_component...\n" );
 
     /* Export the component id */
     _sysdetect_vector.cmp_info.CmpIdx = cidx;
@@ -99,7 +99,7 @@ static int
 _sysdetect_shutdown_component( void )
 {
 
-    SUBDBG( "_sysdetect_shutdown_component..." );
+    SUBDBG( "_sysdetect_shutdown_component...\n" );
 
     cleanup_dev_info( );
 
@@ -474,6 +474,14 @@ papi_vector_t _sysdetect_vector = {
                  .support_version = "n/a",
                  .kernel_version = "n/a",
                 },
+
+    /* Sizes of framework-opaque component-private structures */
+    .size = {
+        .context = 1, /* unused */
+        .control_state = 1, /* unused */
+        .reg_value = 1, /* unused */
+        .reg_alloc = 1, /* unused */
+    },
 
     /* Used for general PAPI interactions */
     .init_component = _sysdetect_init_component,

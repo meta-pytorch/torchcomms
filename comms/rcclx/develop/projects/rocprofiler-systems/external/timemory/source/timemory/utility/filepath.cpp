@@ -136,7 +136,9 @@ makedir(std::string _dir, int umask)
                 if(!direxists(_base))
                 {
                     auto _err = _make_dir(_base);
-                    if(_err != 0)
+                    // If two competing MPI ranks call makedir() on same dir
+                    // simultaneously, first rank creates dir, second gets EEXIST
+                    if(_err != 0 && _err != EEXIST)
                     {
                         TIMEMORY_PRINTF_WARNING(stderr, "mkdir(\"%s\", %i) failed: %s\n",
                                                 _base.c_str(), umask, strerror(_err));
@@ -177,18 +179,24 @@ makedir(std::string _dir, int umask)
 TIMEMORY_UTILITY_INLINE std::string&
                         replace(std::string& _path, char _c, const char* _v)
 {
-    auto _pos = std::string::npos;
+    // Take an owning copy of the replacement so the std::string overload
+    // of std::string::replace is selected (vs. const char*), which lets
+    // the compiler prove no aliasing with _path's buffer.
+    const std::string _to{ _v };
+    auto              _pos = std::string::npos;
     while((_pos = _path.find(_c)) != std::string::npos)
-        _path.replace(_pos, 1, _v);
+        _path.replace(_pos, 1, _to);
     return _path;
 }
 
 TIMEMORY_UTILITY_INLINE std::string&
                         replace(std::string& _path, const char* _c, const char* _v)
 {
-    auto _pos = std::string::npos;
-    while((_pos = _path.find(_c)) != std::string::npos)
-        _path.replace(_pos, strlen(_c), _v);
+    const std::string _from{ _c };
+    const std::string _to{ _v };
+    auto              _pos = std::string::npos;
+    while((_pos = _path.find(_from)) != std::string::npos)
+        _path.replace(_pos, _from.size(), _to);
     return _path;
 }
 
@@ -210,9 +218,7 @@ TIMEMORY_UTILITY_INLINE std::string
                         osrepr(std::string _path)
 {
     // OS-dependent representation
-    while(_path.find('/') != std::string::npos)
-        _path.replace(_path.find('/'), 1, "\\");
-    return _path;
+    return replace(_path, '/', "\\");
 }
 
 #elif defined(TIMEMORY_UNIX)
@@ -233,11 +239,8 @@ TIMEMORY_UTILITY_INLINE std::string
 osrepr(std::string _path)
 {
     // OS-dependent representation
-    while(_path.find("\\\\") != std::string::npos)
-        _path.replace(_path.find("\\\\"), 2, "/");
-    while(_path.find('\\') != std::string::npos)
-        _path.replace(_path.find('\\'), 1, "/");
-    return _path;
+    replace(_path, "\\\\", "/");
+    return replace(_path, '\\', "/");
 }
 
 #endif
@@ -257,7 +260,10 @@ TIMEMORY_UTILITY_INLINE std::string
     replace(_path, "//", "/");
 
     if(_path.find("./") == 0)
-        _path = _path.replace(0, 1, get_cwd());
+    {
+        const auto _cwd = get_cwd();
+        _path.replace(0, 1, _cwd);
+    }
     else if(_path.find("../") == 0)
         _path = _path.insert(0, get_cwd() + "/");
 
@@ -290,16 +296,13 @@ TIMEMORY_UTILITY_INLINE std::string
 {
 #if defined(TIMEMORY_UNIX)
     // _fname = realpath(_fname, nullptr, false);
-    while(_fname.find("\\\\") != std::string::npos)
-        _fname.replace(_fname.find("\\\\"), 2, "/");
-    while(_fname.find('\\') != std::string::npos)
-        _fname.replace(_fname.find('\\'), 1, "/");
+    replace(_fname, "\\\\", "/");
+    replace(_fname, '\\', "/");
 
     auto _pos = _fname.find_last_of('/');
     return (_pos != std::string::npos) ? _fname.substr(0, _pos) : _fname;
 #elif defined(TIMEMORY_WINDOWS)
-    while(_fname.find('/') != std::string::npos)
-        _fname.replace(_fname.find('/'), 1, "\\");
+    replace(_fname, '/', "\\");
 
     _fname = _fname.substr(0, _fname.find_last_of('\\'));
     return (_fname.at(_fname.length() - 1) == '\\')

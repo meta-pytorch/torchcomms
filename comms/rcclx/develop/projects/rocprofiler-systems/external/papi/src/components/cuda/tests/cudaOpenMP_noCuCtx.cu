@@ -74,6 +74,60 @@ do {                                                                           \
 
 #define MAX_THREADS (32)
 
+
+/** @class add_events_from_command_line
+  * @brief Try and add each event provided on the command line by the user.
+  *
+  * @param EventSet
+  *   A PAPI eventset.
+  * @param totalEventCount
+  *   Number of events from the command line.
+  * @param gpu_id
+  *   NVIDIA device index.
+  * @param eventNamesFromCommandLine
+  *   Events provided on the command line.
+  * @param *numEventsSuccessfullyAdded
+  *   Total number of successfully added events.
+  * @param **eventsSuccessfullyAdded
+  *   Events that we are able to add to the EventSet.
+  * @param *numMultipassEvents
+  *   Counter to see if a multiple pass event was provided on the command line.
+*/
+static void add_events_from_command_line(int EventSet, int totalEventCount, int gpu_id, char **eventNamesFromCommandLine, int *numEventsSuccessfullyAdded, char **eventsSuccessfullyAdded, int *numMultipassEvents)
+{
+    int i;
+    for (i = 0; i < totalEventCount; i++) {
+        char tmpEventName[PAPI_MAX_STR_LEN];
+        int strLen = snprintf(tmpEventName, PAPI_MAX_STR_LEN, "%s:device=%d", eventNamesFromCommandLine[i], gpu_id);
+        if (strLen < 0 || strLen >= PAPI_MAX_STR_LEN) {
+            fprintf(stderr, "Failed to fully write event name with appended device qualifier.\n");
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+
+        int papi_errno = PAPI_add_named_event(EventSet, tmpEventName);
+        if (papi_errno != PAPI_OK) {
+            if (papi_errno != PAPI_EMULPASS) {
+                fprintf(stderr, "Unable to add event %s to the EventSet with error code %d.\n", tmpEventName, papi_errno);
+                test_skip(__FILE__, __LINE__, "", 0);
+            }
+
+            // Handle multiple pass events
+            (*numMultipassEvents)++;
+            continue;
+        }
+
+        // Handle successfully added events
+        strLen = snprintf(eventsSuccessfullyAdded[(*numEventsSuccessfullyAdded)], PAPI_MAX_STR_LEN, "%s", tmpEventName);
+        if (strLen < 0 || strLen >= PAPI_MAX_STR_LEN) {
+            fprintf(stderr, "Failed to fully write successfully added event.\n");
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+        (*numEventsSuccessfullyAdded)++;
+    }
+
+    return;
+}
+
 int main(int argc, char *argv[])
 {
     quiet = 0;
@@ -131,6 +185,7 @@ int main(int argc, char *argv[])
     omp_init_lock(&lock);
 
     omp_set_num_threads(num_threads);  // create as many CPU threads as there are CUDA devices
+    int numMultipassEvents = 0;
 #pragma omp parallel
     {
         unsigned int cpu_thread_id = omp_get_thread_num();
@@ -145,16 +200,30 @@ int main(int argc, char *argv[])
         PAPI_CALL(PAPI_create_eventset(&EventSet));
 
         PRINT(quiet, "CPU thread %d (of %d) uses CUDA device %d @ eventset %d\n", cpu_thread_id, num_cpu_threads, gpu_id, EventSet);
-        char tmpEventName[64];
-        for (j = 0; j < event_count; j++) {
-            snprintf(tmpEventName, 64, "%s:device=%d", argv[j+1], gpu_id);
-            PRINT(quiet, "Adding event name %s\n", tmpEventName);
-            errno = PAPI_add_named_event( EventSet, tmpEventName );
-            if (errno != PAPI_OK) {
-                fprintf(stderr, "Error adding event %s\n", tmpEventName);
+
+        int numEventsSuccessfullyAdded = 0;
+        char **eventsSuccessfullyAdded, **metricNames = argv + 1;
+        eventsSuccessfullyAdded = (char **) malloc(event_count * sizeof(char *));
+        if (eventsSuccessfullyAdded == NULL) {
+            fprintf(stderr, "Failed to allocate memory for successfully added events.\n");
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+        for (i = 0; i < event_count; i++) {
+            eventsSuccessfullyAdded[i] = (char *) malloc(PAPI_MAX_STR_LEN * sizeof(char));
+            if (eventsSuccessfullyAdded[i] == NULL) {
+                fprintf(stderr, "Failed to allocate memory for command line argument.\n");
                 test_skip(__FILE__, __LINE__, "", 0);
             }
         }
+
+        add_events_from_command_line(EventSet, event_count, gpu_id, metricNames, &numEventsSuccessfullyAdded, eventsSuccessfullyAdded, &numMultipassEvents);
+
+        // Only multiple pass events were provided on the command line
+        if (numEventsSuccessfullyAdded == 0) {
+            fprintf(stderr, "Events provided on the command line could not be added to an EventSet as they require multiple passes.\n");
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+
         PAPI_CALL(PAPI_start(EventSet));
 #endif
         VectorAddSubtract(50000*(cpu_thread_id+1), quiet);  // gpu work
@@ -162,10 +231,15 @@ int main(int argc, char *argv[])
         PAPI_CALL(PAPI_stop(EventSet, values));
 
         PRINT(quiet, "User measured values.\n");
-        for (j = 0; j < event_count; j++) {
-            snprintf(tmpEventName, 64, "%s:device=%d", argv[j+1], gpu_id);
-            PRINT(quiet, "%s\t\t%lld\n", tmpEventName, values[j]);
+        for (j = 0; j < numEventsSuccessfullyAdded; j++) {
+            PRINT(quiet, "%s\t\t%lld\n", eventsSuccessfullyAdded[j], values[j]);
         }
+
+        // Free allocated memory
+        for (i = 0; i < event_count; i++) {
+            free(eventsSuccessfullyAdded[i]);
+        }
+        free(eventsSuccessfullyAdded);
 
         errno = PAPI_cleanup_eventset(EventSet);
         if (errno != PAPI_OK) {
@@ -183,6 +257,12 @@ int main(int argc, char *argv[])
     omp_destroy_lock(&lock);
 #ifdef PAPI
     PAPI_shutdown();
+
+    // Output a note that a multiple pass event was provided on the command line
+    if (numMultipassEvents > 0) {
+        PRINT(quiet, "\033[0;33mNOTE: From the events provided on the command line, an event or events requiring multiple passes was detected and not added to the EventSet. Check your events with utils/papi_native_avail.\n\033[0m");
+    }
+
     test_pass(__FILE__);
 #endif
     return 0;

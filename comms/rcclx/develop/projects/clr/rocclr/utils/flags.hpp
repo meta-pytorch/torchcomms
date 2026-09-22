@@ -1,22 +1,8 @@
-/* Copyright (c) 2009 - 2025 Advanced Micro Devices, Inc.
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE. */
+/*
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 #ifndef FLAGS_HPP_
 #define FLAGS_HPP_
@@ -32,6 +18,8 @@ release(cstring, AMD_LOG_LEVEL_FILE, "",                                      \
         "Set output file for AMD_LOG_LEVEL, Default is stderr")               \
 release(size_t, AMD_LOG_LEVEL_SIZE, 2048,                                     \
         "The max size of AMD_LOG generated in MB if printed to a file")       \
+release(bool, AMD_LOG_ASYNC, true,                                            \
+        "Async logging with in-memory buffer and background thread (set 0 to disable)")\
 debug(uint, DEBUG_GPU_FLAGS, 0,                                               \
         "The debug options for GPU device")                                   \
 release(size_t, CQ_THREAD_STACK_SIZE, 256*Ki, /* @todo: that much! */         \
@@ -192,7 +180,7 @@ release(uint, ROC_ACTIVE_WAIT_TIMEOUT, 0,                                     \
         "Forces active wait of GPU interrup for the timeout(us)")             \
 release(bool, ROC_ENABLE_LARGE_BAR, true,                                     \
         "Enable Large Bar if supported by the device")                        \
-release(bool, ROC_CPU_WAIT_FOR_SIGNAL, true,                                  \
+release(bool, ROC_CPU_WAIT_FOR_SIGNAL, false,                                 \
         "Enable CPU wait for dependent HSA signals.")                         \
 release(bool, ROC_SYSTEM_SCOPE_SIGNAL, true,                                  \
         "Enable system scope for signals (uses interrupts).")                 \
@@ -215,8 +203,8 @@ release(cstring, ROC_GLOBAL_CU_MASK, "",                                      \
         "Each active bit represents using one CU (e.g., 0xf enables only 4 CUs)") \
 release(size_t, PAL_PREPINNED_MEMORY_SIZE, 64,                                \
         "Size in KBytes of prepinned memory")                                 \
-release(bool, AMD_CPU_AFFINITY, false,                                        \
-        "Reset CPU affinity of any runtime threads")                          \
+release(bool, AMD_CPU_AFFINITY, false,                                         \
+        "Prefer GPU-local NUMA CPU affinity when the application has not set a CPU mask") \
 release(bool, ROC_USE_FGS_KERNARG, true,                                      \
         "Use fine grain kernel args segment for supported asics")             \
 release(uint, ROC_P2P_SDMA_SIZE, 1024,                                        \
@@ -245,6 +233,8 @@ release(cstring, HIPRTC_COMPILE_OPTIONS_APPEND, "",                           \
         "Set compile options needed for hiprtc compilation")                  \
 release(cstring, HIPRTC_LINK_OPTIONS_APPEND, "",                              \
         "Set link options needed for hiprtc compilation")                     \
+release(cstring, GPU_CLR_PROFILE_OUTPUT, "",                                  \
+        "Enable built-in HIP profiling and write Chrome trace JSON to this path on exit") \
 release(bool, HIP_VMEM_MANAGE_SUPPORT, true,                                  \
         "Virtual Memory Management Support")                                  \
 release(uint, DEBUG_HIP_GRAPH_DOT_PRINT, 0,                               \
@@ -263,21 +253,30 @@ release(uint, DEBUG_CLR_MAX_BATCH_SIZE, 1000,                                 \
         "Forces the callback to clean-up CPU submission queue")               \
 release(bool, DEBUG_CLR_SYSMEM_POOL, false,                                   \
         "Use sysmem pool implementation in runtime for amd commands")         \
-release(bool, DEBUG_HIP_KERNARG_COPY_OPT, true,                               \
-        "Enable/Disable multiple kern arg copies")                            \
 release(bool, DEBUG_CLR_KERNARG_HDP_FLUSH_WA, false,                          \
         "Toggle kernel arg copy workaround")                                  \
-release(uint, DEBUG_HIP_DYNAMIC_QUEUES, 2,                                    \
-        "Dynamic queue management: 0=off, 1=Queue depth heuristic,"           \
-        "2= Queue Depth + Pipe distribution")                                 \
+release(uint, DEBUG_HIP_DYNAMIC_QUEUES, 1,                                    \
+        "Dynamic queue management: 0=off, 1=Depth heuristic,"                 \
+        " 2=1 + dedicated null-stream queue")                                 \
 release(bool, DEBUG_HIP_IGNORE_STREAM_PRIORITY, false,                        \
         "Ignore priority streams")                                            \
 release(uint, HIP_SKIP_ABORT_ON_GPU_ERROR, true,                              \
         "Set this to true, to avoid host side abort for GPU errors")          \
 release(bool, HIP_FORCE_SPIRV_CODEOBJECT, false,                              \
         "Force use of SPIRV instead of device specific code object.")         \
-release(uint, DEBUG_CLR_BATCH_CPU_SYNC_SIZE, 8,                               \
-        "Forces the minimum batch size for CPU sync")  // clang-format on
+release(uint, DEBUG_CLR_BATCH_CPU_SYNC_SIZE, 16,                               \
+        "Forces the minimum batch size for CPU sync")                         \
+release(bool, DEBUG_CLR_DISABLE_IMAGE, false,                                 \
+        "1 = Disable Image support for ROC path")                             \
+release(bool, DEBUG_CLR_ENABLE_PREFETCH_METADATA, true,                       \
+        "Enable metadata prefetch for some Aql packets")                      \
+release(cstring, HIP_HRR_CAPTURE_OUTPUT, "",                                  \
+        "Set to a directory path to enable HRR capture; archive written there") \
+release(uint, DEBUG_CLR_DOORBELL_SKIP, 16,                                    \
+        "Number of consecutive dispatches that may skip the doorbell flush.") \
+release(bool, DEBUG_CLR_DISABLE_FALLBACK, false,                              \
+        "Disables certain fallback paths")
+
 
 namespace amd {
 

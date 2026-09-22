@@ -445,6 +445,7 @@ _rapl_init_component( int cidx )
 		case 94:	/* Skylake Desktop (H/S) */
 		case 142:	/* Kabylake Mobile */
 		case 158:	/* Kabylake Desktop */
+		case 165:	/* Comet Lake S/H */
 			package_avail=1;
 			pp0_avail=1;
 			pp1_avail=0;
@@ -476,7 +477,16 @@ _rapl_init_component( int cidx )
 			psys_avail=0;
 			different_units=1;
 			break;
-
+			
+		case 143:      /* Sapphire Rapids-SP */
+		case 207:      /* Emerald Rapids */
+		        package_avail=1;
+			pp0_avail=0;
+			pp1_avail=0;
+			dram_avail=1;
+			psys_avail=0;
+			different_units=0;
+			break;
 
 		case 87:	/* Knights Landing (KNL) */
 		case 133:	/* Knights Mill (KNM) */

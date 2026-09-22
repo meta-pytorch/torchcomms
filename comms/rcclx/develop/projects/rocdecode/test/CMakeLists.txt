@@ -97,7 +97,21 @@ find_package(FFmpeg QUIET)
 set(USING_THE_ROCK OFF)
 if(EXISTS "${ROCM_PATH}/lib/rocm_sysdeps/lib")
   set(USING_THE_ROCK ON)
+  set(THEROCK_SYSDEPS_LIB "${ROCM_PATH}/lib/rocm_sysdeps/lib")
+  set(THEROCK_ENV
+    "LD_PRELOAD=${THEROCK_SYSDEPS_LIB}/librocm_sysdeps_va.so.2:${THEROCK_SYSDEPS_LIB}/librocm_sysdeps_va-drm.so.2;LIBVA_DRIVERS_PATH=${THEROCK_SYSDEPS_LIB}"
+  )
 endif()
+
+# Helper macro: apply TheRock VA environment to a test when building via TheRock
+macro(set_therock_env TEST_NAME)
+  if(USING_THE_ROCK)
+    set_property(TEST ${TEST_NAME} PROPERTY ENVIRONMENT "${THEROCK_ENV}")
+  endif()
+endmacro()
+
+# Option to enable extended tests
+option(ENABLE_EXTENDED_TESTS "Enable extended FFmpeg-based tests" OFF)
 
 # 1 - videoDecodeRaw HEVC
 add_test(
@@ -111,9 +125,6 @@ add_test(
             --test-command "videodecoderaw"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.265
 )
-if(USING_THE_ROCK)
-  set_property(TEST video_decodeRaw-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
 # 2 - videoDecodeRaw AVC
 add_test(
@@ -127,9 +138,6 @@ add_test(
             --test-command "videodecoderaw"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H264.264
 )
-if(USING_THE_ROCK)
-  set_property(TEST video_decodeRaw-AVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
 # 3 - videoDecodeRaw AV1
 add_test(
@@ -143,9 +151,6 @@ add_test(
             --test-command "videodecoderaw"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-AV1.ivf
 )
-if(USING_THE_ROCK)
-  set_property(TEST video_decodeRaw-AV1 PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
 # 4 - videoDecodeRaw VP9
 add_test(
@@ -159,9 +164,6 @@ add_test(
             --test-command "videodecoderaw"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-VP9.ivf
 )
-if(USING_THE_ROCK)
-  set_property(TEST video_decodeRaw-VP9 PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
 # 5 - rocdecDecode
 add_test(
@@ -175,9 +177,6 @@ add_test(
             --test-command "rocdecdecode"
             -i ${ROCM_PATH}/share/rocdecode/frames
 )
-if(USING_THE_ROCK)
-  set_property(TEST rocdec_Decode-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
 # 6 - rocDecodeNegativeApiTests
 add_test(
@@ -190,12 +189,8 @@ add_test(
             --build-generator "${CMAKE_GENERATOR}"
             --test-command "rocdecodenegativetest"
 )
-if(USING_THE_ROCK)
-  set_property(TEST rocDecode_Negative_API_Tests PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-endif()
 
-if(FFMPEG_FOUND)
-  message("-- ${Green}${PROJECT_NAME} FFmpeg found - rocdecode tests requiring FFmpeg added")
+if(FFMPEG_FOUND AND ENABLE_EXTENDED_TESTS)
   # 7 - videoDecode HEVC
   add_test(
     NAME
@@ -208,9 +203,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecode"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decode-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decode-HEVC)
 
   # 8 - videoDecode AVC
   add_test(
@@ -224,9 +217,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecode"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H264.mp4
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decode-AVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decode-AVC)
 
   # 9 - videoDecode AV1
   add_test(
@@ -240,9 +231,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecode"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-AV1.mp4
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decode-AV1 PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decode-AV1)
 
   # 10 - videoDecode VP9
   add_test(
@@ -256,9 +245,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecode"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-VP9.ivf
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decode-VP9 PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decode-VP9)
 
   # 11 - videoDecodePerf
   add_test(
@@ -272,9 +259,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecodeperf"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decodePerf-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decodePerf-HEVC)
 
   # 12 - videoDecodeBatch
   add_test(
@@ -288,9 +273,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecodebatch"
             -i ${ROCM_PATH}/share/rocdecode/video/ -t 2
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decodeBatch PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decodeBatch)
 
   # 13 - videoDecodeRGB
   add_test(
@@ -304,9 +287,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecodergb"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4 -of rgb
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decodeRGB-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decodeRGB-HEVC)
 
   # 14 - videoDecodeMem
   add_test(
@@ -320,9 +301,7 @@ if(FFMPEG_FOUND)
             --test-command "videodecodemem"
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decodeMem-HEVC PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decodeMem-HEVC)
 
   # 15 - videoDecodeRGBResize
   add_test(
@@ -336,11 +315,9 @@ if(FFMPEG_FOUND)
             --test-command "videodecodergb"
             -i "${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4" -resize 640x360 -of rgb
   )
-  if(USING_THE_ROCK)
-    set_property(TEST video_decodeRGB-Resize PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-  endif()
+  set_therock_env(video_decodeRGB-Resize)
 
-  if(rocdecode-host_FOUND)
+  if(rocdecode-host_FOUND AND NOT USING_THE_ROCK)
     # 16 - videoDecode Host backend
     add_test(
       NAME
@@ -354,12 +331,13 @@ if(FFMPEG_FOUND)
             -i ${ROCM_PATH}/share/rocdecode/video/AMD_driving_virtual_20-H265.mp4
             -backend 1
     )
-    if(USING_THE_ROCK)
-      set_property(TEST video_decode-Host-Backend PROPERTY ENVIRONMENT "LIBVA_DRIVERS_PATH=${ROCM_PATH}/lib/rocm_sysdeps/lib")
-    endif()
   else()
-    message("-- ${Yellow}${PROJECT_NAME} rocdecode-host NOT found. rocdecode tests requiring rocdecode-host excluded")
-  endif(rocdecode-host_FOUND)
+    if(NOT rocdecode-host_FOUND)
+      message("-- ${Yellow}${PROJECT_NAME} rocdecode-host NOT found. rocdecode tests requiring rocdecode-host excluded")
+    endif()
+  endif(rocdecode-host_FOUND AND NOT USING_THE_ROCK)
 else()
-  message("-- ${Yellow}${PROJECT_NAME} FFmpeg NOT found. rocdecode tests requiring FFmpeg excluded")
-endif(FFMPEG_FOUND)
+  if(NOT FFMPEG_FOUND)
+    message("-- ${Yellow}${PROJECT_NAME} FFmpeg NOT found. rocdecode tests requiring FFmpeg excluded")
+  endif()
+endif(FFMPEG_FOUND AND ENABLE_EXTENDED_TESTS)

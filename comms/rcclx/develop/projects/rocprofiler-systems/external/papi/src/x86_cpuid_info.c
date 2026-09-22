@@ -345,7 +345,7 @@ init_amd( PAPI_mh_info_t * mh_info, int *num_levels )
     *  (cpuid instruction section)
     * 
     * Pretviously the information was provided by
-    * "Intelï¿½ Processor Identification and the CPUID Instruction",
+    * "Intel® Processor Identification and the CPUID Instruction",
     * Application Note, AP-485, Nov 2008, 241618-033
     * Updated to AP-485, Aug 2009, 241618-036
     *

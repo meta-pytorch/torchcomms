@@ -1,4 +1,4 @@
-.TH "PAPI_read" 3 "Mon Feb 24 2025 21:11:21" "Version 7.2.0.0b2" "PAPI" \" -*- nroff -*-
+.TH "PAPI_read" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -22,7 +22,7 @@ PAPI_read() copies the counters of the indicated event set into the provided arr
 .PP
 The counters continue counting after the read\&.
 .PP
-Note the differences between PAPI_read() and PAPI_accum()\&. Specifically, PAPI_accum() adds the values of the counters to the values stored in the array (the second parameter in PAPI_accum()) and then resets the counters to zero\&.
+Note the differences between PAPI_read() and PAPI_accum(), specifically that PAPI_accum() resets the values array to zero\&.
 .PP
 PAPI_read() assumes an initialized PAPI library and a properly added event set\&.
 .PP

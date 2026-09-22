@@ -6,9 +6,9 @@ TIMEMORY_SOURCE_DIR=${2}
 : ${NPROC:=4}
 : ${CMAKE_ARGS:="-DTIMEMORY_BUILD_PYTHON_HATCHET=OFF"}
 if [ -n "$(which mpicc)" ]; then
-    : ${BUILD_ARGS:="--minimal --build-libs shared --python --mpi --cxx-standard=17"}
+    : ${BUILD_ARGS:="--minimal --build-libs shared --python --mpi --cxx-standard=20"}
 else
-    : ${BUILD_ARGS:="--minimal --build-libs shared --python --cxx-standard=17"}
+    : ${BUILD_ARGS:="--minimal --build-libs shared --python --cxx-standard=20"}
 fi
 
 if [ -z "${CONDA_PREFIX}" ]; then

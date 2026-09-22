@@ -42,93 +42,61 @@
 static int
 pfm_arm_detect_cortex_a7(void *this)
 {
+	/* ARM Cortex A7 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 7, .part = 0xc07 };
 
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-			(pfm_arm_cfg.part == 0xc07)) { /* Cortex-A7 */
-		return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a8(void *this)
 {
+	/* ARM Cortex A8 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 7, .part = 0xc08 };
 
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-			(pfm_arm_cfg.part == 0xc08)) { /* Cortex-A8 */
-		return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a9(void *this)
 {
+	/* ARM Cortex A9 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 7, .part = 0xc09 };
 
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-			(pfm_arm_cfg.part==0xc09)) { /* Cortex-A8 */
-		return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a15(void *this)
 {
+	/* ARM Cortex A15 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 7, .part = 0xc0f };
 
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-			(pfm_arm_cfg.part==0xc0f)) { /* Cortex-A15 */
-		return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_krait(void *this)
 {
-
+	/* Qualcomm Krait */
+	/* Check that [15:10] of midr is 0x01 which	*/
+	/* indicates Krait rather than Scorpion	CPU	*/
+	/* match_attr.part is (midr>>4)&0xfff		*/
+	/* if (pfm_arm_cfg.part >> 6 == 0x1) {		*/
+	/*	return PFM_SUCCESS;			*/
+	arm_cpuid_t attr = { .impl = 0x51, .arch = 7, .part = 1 << 6 };
+	arm_cpuid_t match_attr;
 	int ret;
 
-	ret = pfm_arm_detect(this);
+	ret = pfm_arm_detect(&attr, &match_attr);
 	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
+		return ret;
 
-	/* Check for Qualcomm */
-	if (pfm_arm_cfg.implementer == 0x51) {
-		/* Check that [15:10] of midr is 0x01 which	*/
-		/* indicates Krait rather than Scorpion	CPU	*/
-		/* pfm_arm_cfg.part is (midr>>4)&0xfff		*/
-		if (pfm_arm_cfg.part >> 6 == 0x1) {
-			return PFM_SUCCESS;
-		}
-	}
-	return PFM_ERR_NOTSUPP;
+	if ((match_attr.part >> 6) == 0x1)
+		return PFM_SUCCESS;
+
+	return PFM_ERR_NOTFOUND;
 }
-
 
 /* Cortex A7 support */
 pfmlib_pmu_t arm_cortex_a7_support={

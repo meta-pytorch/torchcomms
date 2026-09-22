@@ -1,5 +1,9 @@
 Net component changelog:
 
+2026-03-10 Aleksandar Janicijevic
+
+* Add support for environment variable PAPI_NET_REFRESH_LATENCY
+
 2011-11-07 Jose Pedro Oliveira
 
  * Dynamically detects the network interfaces
@@ -15,4 +19,3 @@ Net component changelog:
  * Adds support for PAPI_event_name_to_code()
 
  * Adds a couple of small tests/examples
-

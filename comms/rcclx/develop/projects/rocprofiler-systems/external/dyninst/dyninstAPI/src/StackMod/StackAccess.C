@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include <sstream>
 
 #include "debug.h"
@@ -686,7 +687,7 @@ bool getMemoryOffset(ParseAPI::Function *func,
                 if (children.size() == 1) {
                     InstructionAPI::InstructionAST::Ptr child =
                         children.front();
-                    val = boost::dynamic_pointer_cast<InstructionAPI::
+                    val = dyncompat::dynamic_pointer_cast<InstructionAPI::
                         Expression>(child);
                 }
             }

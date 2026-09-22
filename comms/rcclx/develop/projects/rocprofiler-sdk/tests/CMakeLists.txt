@@ -89,14 +89,21 @@ add_subdirectory(rocjpeg)
 add_subdirectory(hip-host-tracing)
 add_subdirectory(code-object-multi-threaded)
 
+# environment variable tests
+add_subdirectory(environment)
+
 # rocpd validation tests
 add_subdirectory(rocpd)
+add_subdirectory(rocpd-api)
 
 # rocattach validation tests
 add_subdirectory(rocattach)
 
 # rocprofv3 validation tests
 add_subdirectory(rocprofv3)
+
+# late-start tracing validation tests
+add_subdirectory(late-start-tracing)
 
 # python bindings
 add_subdirectory(python-bindings)

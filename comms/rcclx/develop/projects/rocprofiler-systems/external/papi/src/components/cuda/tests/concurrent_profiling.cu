@@ -51,6 +51,9 @@ using ::std::thread;
 #include <vector>
 using ::std::vector;
 
+#include <algorithm>
+using ::std::find;
+
 #define PRINT(quiet, format, args...) {if (!quiet) {fprintf(stderr, format, ## args);}}
 int quiet;
 
@@ -140,6 +143,50 @@ vector<size_t> elements(numKernels);
 // For 4 calls, this is 4k elements * 2 arrays * (1 + 2 + 3 + 4 stream mul) * 8B/elem =~ 640KB
 int const blockSize = 4 * 1024;
 
+// Globals for successfully added and multiple pass events
+int numMultipassEvents = 0;
+vector<string> eventsSuccessfullyAdded;
+
+/** @class add_events_from_command_line
+  * @brief Try and add each event provided on the command line by the user.
+  *
+  * @param d
+  *   Per device data.
+  * @param EventSet
+  *   A PAPI eventset.
+  * @param metricNames
+  *   Events provided on the command line.
+  * @param successfullyAddedEvents
+  *   Events successfully added to the EventSet.
+  * @param *numMultipassEvents
+  *   Counter to see if a multiple pass event was provided on the command line.
+*/
+static void add_events_from_command_line(perDeviceData &d, int EventSet, vector<string> const &metricNames, vector<string> successfullyAddedEvents, int *numMultipassEvents)
+{
+    int i;
+    for (i = 0; i < metricNames.size(); i++) {
+        string evt_name = metricNames[i] + std::to_string(d.config.device);
+        int papi_errno = PAPI_add_named_event(EventSet, evt_name.c_str());
+        if (papi_errno != PAPI_OK) {
+            if (papi_errno != PAPI_EMULPASS) {
+                fprintf(stderr, "Unable to add event %s to the EventSet with error code %d.\n", evt_name.c_str(), papi_errno);
+                test_skip(__FILE__, __LINE__, "", 0);
+            }
+
+            // Handle multiple pass events
+            (*numMultipassEvents)++;
+            continue;
+        }
+
+        // Handle successfully added events
+        if (find(eventsSuccessfullyAdded.begin(), eventsSuccessfullyAdded.end(), metricNames[i]) == eventsSuccessfullyAdded.end()) {
+            eventsSuccessfullyAdded.push_back(metricNames[i]);
+        }
+    }
+
+    return;
+}
+
 // Wrapper which will launch numKernel kernel calls on a single device
 // The device streams vector is used to control which stream each call is made on
 // If 'serial' is non-zero, the device streams are ignored and instead the default stream is used
@@ -151,18 +198,17 @@ void profileKernels(perDeviceData &d,
     RUNTIME_API_CALL(cudaSetDevice(d.config.device));  // Orig code has mistake here
     DRIVER_API_CALL(cuCtxSetCurrent(d.config.context));
 #ifdef PAPI
-    int eventset = PAPI_NULL, i, papi_errno;
+    int eventset = PAPI_NULL;
     PAPI_CALL(PAPI_create_eventset(&eventset));
-    string evt_name;
-    for (i = 0; i < metricNames.size(); i++) {
-        evt_name = metricNames[i] + std::to_string(d.config.device);
-        PRINT(quiet, "Adding event name: %s\n", evt_name.c_str());
-        papi_errno = PAPI_add_named_event(eventset, evt_name.c_str());
-        if (papi_errno != PAPI_OK) {
-            fprintf(stderr, "Failed to add event %s\n", evt_name.c_str());
-            test_skip(__FILE__, __LINE__, "", 0);
-        }
+
+    add_events_from_command_line(d, eventset, metricNames, eventsSuccessfullyAdded, &numMultipassEvents);
+
+    // Only multiple pass events were provided on the command line
+    if (eventsSuccessfullyAdded.size() == 0) {
+        fprintf(stderr, "Events provided on the command line could not be added to an EventSet as they require multiple passes.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
     }
+
     PAPI_CALL(PAPI_start(eventset));
 #endif
 
@@ -198,7 +244,7 @@ void print_measured_values(perDeviceData &d, vector<string> const &metricNames)
     PRINT(quiet, "%s\n", std::string(80, '-').c_str());
     for (int i=0; i < metricNames.size(); i++) {
         evt_name = metricNames[i] + std::to_string(d.config.device);
-        PRINT(quiet, "%s\t\t\t%ld\n", evt_name.c_str(), d.values[i]);
+        PRINT(quiet, "%s\t\t\t%lld\n", evt_name.c_str(), d.values[i]);
     }
 }
 
@@ -304,7 +350,12 @@ int main(int argc, char **argv)
         // config.maxLaunchesPerPass = 1;     // Must be >= maxRangesPerPass.  Set this to the largest count of kernel launches which may be encountered in any Pass in this Session
 
         // // Device 0 has max of 3 passes; other devices only run one pass in this sample code
-        DRIVER_API_CALL(cuCtxCreate(&(config.context), 0, device)); // Either set to a context, or may be NULL if a default context has been created
+        int flags = 0;
+#if defined(CUDA_TOOLKIT_GE_13)
+        DRIVER_API_CALL( cuCtxCreate(&(config.context), (CUctxCreateParams*)0, flags, device) );
+#else
+        DRIVER_API_CALL( cuCtxCreate(&(config.context), flags, device) );
+#endif
         deviceData[device].config = config;// Save this device config
 
         // Initialize CUPTI Profiling structures
@@ -426,7 +477,7 @@ int main(int argc, char **argv)
     PRINT(quiet, "\nMetrics for device #0:\n");
     PRINT(quiet, "Look at the sm__cycles_elapsed.max values for each test.\n");
     PRINT(quiet, "This value represents the time spent on device to run the kernels in each case, and should be longest for the serial range, and roughly equal for the single and multi device concurrent ranges.\n");
-    print_measured_values(deviceData[0], metricNames);
+    print_measured_values(deviceData[0], eventsSuccessfullyAdded);
 
     // Only display next device info if needed
     if (numDevices > 1)
@@ -437,9 +488,16 @@ int main(int argc, char **argv)
     for (int i = 1; i < numDevices; i++)
     {
         PRINT(quiet, "\nMetrics for device #%d:\n", i);
-        print_measured_values(deviceData[i], metricNames);
+        print_measured_values(deviceData[i], eventsSuccessfullyAdded);
     }
+
     PAPI_shutdown();
+
+    // Output a note that a multiple pass event was provided on the command line
+    if (numMultipassEvents > 0) {
+        PRINT(quiet, "\033[0;33mNOTE: From the events provided on the command line, an event or events requiring multiple passes was detected and not added to the EventSet. Check your events with utils/papi_native_avail.\n\033[0m");
+    }
+
     test_pass(__FILE__);
 #endif
     return 0;

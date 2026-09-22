@@ -1,0 +1,17 @@
+/*************************************************************************
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * See LICENSE.txt for more license information
+ *************************************************************************/
+
+// Stands in for the staged name add_file_unique() would produce for
+// param/param.h, whose basename clashes with include/param.h. RCCLX disables
+// that renaming, so the _tmp name the sources include must resolve on its own.
+
+#ifndef PARAM_PARAM_TMP_H_INCLUDED
+#define PARAM_PARAM_TMP_H_INCLUDED
+
+#include "param.h"
+
+#endif // PARAM_PARAM_TMP_H_INCLUDED

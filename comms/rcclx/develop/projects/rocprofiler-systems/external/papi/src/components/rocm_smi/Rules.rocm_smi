@@ -87,11 +87,29 @@ COMPOBJS += linux-rocm-smi.o \
 CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/../include/rocm_smi
 CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/../include
 CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/include/rocm_smi
+CFLAGS += -I$(PAPI_ROCMSMI_ROOT)/include
+CFLAGS += -I/opt/amdgpu/include
 CFLAGS += -g
 LDFLAGS += $(LDL) -g
+
+ROCM_SMI_FLAGS =
+# The function rsmi_dev_current_socket_power_get was not available until rocm_smi
+# version 6.0.0. Due to this, we create a SUPPORT_SOCKET define to only enable
+# the function pointer and the subsequent internal worfklow when the rocm_smi version
+# major is greater than or equal to 6. For this check we look at #define rocm_smi_VERSION_MAJOR
+# in rocm_smi64Config.h.
+# NOTE: ROCm had a different directory structure prior to version 5.2. Due to this, rocm_smi_version_major
+# would end up as empty and we would skip the inner conditional check. This is fine as we need a version major
+# >= 6 anyways.
+rocm_smi_version_major = $(shell cat $(PAPI_ROCMSMI_ROOT)/include/rocm_smi/rocm_smi64Config.h 2>/dev/null | grep rocm_smi_VERSION_MAJOR | awk {'print $$3'})
+ifneq ($(rocm_smi_version_major),)
+    ifeq ($(shell test $(rocm_smi_version_major) -ge 6; echo $$?), 0)
+        ROCM_SMI_FLAGS += -DSUPPORT_SOCKET
+    endif
+endif
 
 linux-rocm-smi.o: components/rocm_smi/linux-rocm-smi.c $(HEADERS)
 	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/rocm_smi/linux-rocm-smi.c -o linux-rocm-smi.o
 
 rocs.o: components/rocm_smi/rocs.c $(HEADERS)
-	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/rocm_smi/rocs.c -o rocs.o
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) $(ROCM_SMI_FLAGS) -c components/rocm_smi/rocs.c -o rocs.o

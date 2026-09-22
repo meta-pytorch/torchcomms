@@ -21,11 +21,9 @@
 */
 }
 
-// Setup for the parser stack
-%stack_size        50                        // Initial stack size
-%stack_size_limit  parserStackSizeLimit      // Function returning max stack size
-%realloc           parserStackRealloc        // realloc() for the stack
-%free              parserStackFree           // free() for the stack
+// Function used to enlarge the parser stack, if needed
+%realloc parserStackRealloc
+%free    sqlite3_free
 
 // All token codes are small integers with #defines that begin with "TK_"
 %token_prefix TK_
@@ -51,7 +49,7 @@
   }
 }
 %stack_overflow {
-  if( pParse->nErr==0 ) sqlite3ErrorMsg(pParse, "Recursion limit");
+  sqlite3OomFault(pParse->db);
 }
 
 // The name of the generated procedure that implements the parser
@@ -585,23 +583,8 @@ cmd ::= select(X).  {
   ** sqlite3_realloc() that includes a call to sqlite3FaultSim() to facilitate
   ** testing.
   */
-  static void *parserStackRealloc(
-    void *pOld,               /* Prior allocation */
-    sqlite3_uint64 newSize,   /* Requested new alloation size */
-    Parse *pParse             /* Parsing context */
-  ){
-    void *p = sqlite3FaultSim(700) ? 0 : sqlite3_realloc(pOld, newSize);
-    if( p==0 ) sqlite3OomFault(pParse->db);
-    return p;
-  }
-  static void parserStackFree(void *pOld, Parse *pParse){
-    (void)pParse;
-    sqlite3_free(pOld); 
-  }
-
-  /* Return an integer that is the maximum allowed stack size */
-  static int parserStackSizeLimit(Parse *pParse){
-    return pParse->db->aLimit[SQLITE_LIMIT_PARSER_DEPTH];
+  static void *parserStackRealloc(void *pOld, sqlite3_uint64 newSize){
+    return sqlite3FaultSim(700) ? 0 : sqlite3_realloc(pOld, newSize);
   }
 }
 
@@ -1848,41 +1831,21 @@ cmd ::= ANALYZE nm(X) dbnm(Y).  {sqlite3Analyze(pParse, &X, &Y);}
 cmd ::= ALTER TABLE fullname(X) RENAME TO nm(Z). {
   sqlite3AlterRenameTable(pParse,X,&Z);
 }
-
-// The ALTER TABLE ADD COLUMN command. This is broken into two sections so
-// that sqlite3AlterBeginAddColumn() is called before parsing the various
-// constraints and so on (carglist) attached to the new column definition.
-cmd ::= alter_add(Y) carglist. {
+cmd ::= ALTER TABLE add_column_fullname
+        ADD kwcolumn_opt columnname(Y) carglist. {
   Y.n = (int)(pParse->sLastToken.z-Y.z) + pParse->sLastToken.n;
   sqlite3AlterFinishAddColumn(pParse, &Y);
 }
-alter_add(A) ::= ALTER TABLE fullname(X) ADD kwcolumn_opt nm(Y) typetoken(Z). {
-  disableLookaside(pParse);
-  sqlite3AlterBeginAddColumn(pParse, X);
-  sqlite3AddColumn(pParse, Y, Z);
-  A = Y;
-}
-
 cmd ::= ALTER TABLE fullname(X) DROP kwcolumn_opt nm(Y). {
   sqlite3AlterDropColumn(pParse, X, &Y);
 }
+
+add_column_fullname ::= fullname(X). {
+  disableLookaside(pParse);
+  sqlite3AlterBeginAddColumn(pParse, X);
+}
 cmd ::= ALTER TABLE fullname(X) RENAME kwcolumn_opt nm(Y) TO nm(Z). {
   sqlite3AlterRenameColumn(pParse, X, &Y, &Z);
-}
-cmd ::= ALTER TABLE fullname(X) DROP CONSTRAINT nm(Y). {
-  sqlite3AlterDropConstraint(pParse, X, &Y, 0);
-}
-cmd ::= ALTER TABLE fullname(X) ALTER kwcolumn_opt nm(Y) DROP NOT NULL. {
-  sqlite3AlterDropConstraint(pParse, X, 0, &Y);
-}
-cmd ::= ALTER TABLE fullname(X) ALTER kwcolumn_opt nm(Y) SET NOT(Z) NULL onconf. {
-  sqlite3AlterSetNotNull(pParse, X, &Y, &Z);
-}
-cmd ::= ALTER TABLE fullname(X) ADD CONSTRAINT(Y) nm(Z) CHECK LP(A) expr RP(B) onconf. {
-  sqlite3AlterAddConstraint(pParse, X, &Y, &Z, A.z+1, (B.z-A.z-1));
-}
-cmd ::= ALTER TABLE fullname(X) ADD CHECK(Y) LP(A) expr RP(B) onconf. {
-  sqlite3AlterAddConstraint(pParse, X, &Y, 0, A.z+1, (B.z-A.z-1));
 }
 
 kwcolumn_opt ::= .

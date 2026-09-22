@@ -23,7 +23,7 @@
  
 int main(int argc, char** argv) {
   int EventSet = PAPI_NULL;
-  const char* names[NUM_EVENTS] = {"SELECT_USEC"};
+  const char* names[NUM_EVENTS] = {"appio:::SELECT_USEC"};
   long long values[NUM_EVENTS];
 
   /* Set TESTS_QUIET variable */

@@ -1,6 +1,6 @@
 Test examples:
 To collect metrics, set ZET_ENABLE_METRICS=1
-To collect metrics in query mode, set ZET_ENABLE_API_TRACING_EXP=1
+To collect metrics in query mode, set ZE_ENABLE_TRACING_LAYER=1
 
 ---------------------------
 gpu_metric_list:
@@ -36,6 +36,6 @@ gpu_query_gemm
 		repeats: execution repeat tiems
 		-m <metric1,metric2,...,>   metrics list.
 	example:
-		export ZET_ENABLE_API_TRACING_EXP=1
+		export ZE_ENABLE_TRACING_LAYER=1
 		gpu_query_gemm 4096 1 -m ComputeBasic.GpuTime,ComputeBasic.ComputeBasic.GpuCoreClocks,ComputeBasic.AvgGpuCoreFrequencyMHz
 

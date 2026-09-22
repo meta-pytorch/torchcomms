@@ -389,8 +389,8 @@ private:
     /// suppresses the exit hook during termination
     static bool& f_use_exit_hook() { return f_manager_persistent_data().use_exit_hook; }
     static auto  f_settings() { return f_manager_persistent_data().config; }
-    static auto  f_debug() { return f_settings() ? false : f_settings()->get_debug(); }
-    static auto  f_verbose() { return f_settings() ? 0 : f_settings()->get_verbose(); }
+    static auto  f_debug() { return f_settings() ? f_settings()->get_debug() : false; }
+    static auto  f_verbose() { return f_settings() ? f_settings()->get_verbose() : 0; }
 
 public:
     /// This function stores the primary manager instance for the application

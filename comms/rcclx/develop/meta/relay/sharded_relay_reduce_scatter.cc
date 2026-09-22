@@ -75,7 +75,8 @@ class ScratchBufferCache {
     // concurrently on other streams. Measured either way it is in the noise, so
     // this is hygiene rather than a fix for anything.
     struct ncclCudaGraph graph;
-    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    if (ncclCudaGetCapturingGraph(&graph, stream, /*graphUsageMode=*/0) !=
+        ncclSuccess) {
       return nullptr;
     }
     if (ncclCudaGraphValid(graph)) {
@@ -1002,7 +1003,8 @@ static bool tryOneShotReduceScatter(
   // synchronous hipMemset. Using one that already exists is fine, so under
   // capture take the path only if the region is already up.
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     return false;
   }
   if (ncclCudaGraphValid(graph) && !rcclx::relay::oneShotReady(comm)) {
@@ -1382,7 +1384,8 @@ bool rsLpAcquireArena(
     cudaStream_t stream,
     rcclx::relay::LpArenaLease* lease) {
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
     return false;
   }
@@ -2497,7 +2500,8 @@ static ncclResult_t shardedRelayReduceScatter2ActivePipelined(
       recvcount * static_cast<size_t>(cfg.nActiveRanks) * elementSize >=
           rcclx::relay::kRelayOverlapReduceMinBytes) {
     struct ncclCudaGraph graph;
-    NCCLCHECK(ncclCudaGetCapturingGraph(&graph, stream));
+    NCCLCHECK(
+        ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode));
     ovl = ReduceOverlapCache::getInstance().get(stream, graph);
   }
 

@@ -6,3 +6,4 @@ To use the python bindings, you need the following packages:
 2. python-dev (http://www.python.org)
 3. module-linux (http://code.google.com/p/module-linux)
    linux.sched is python package that comes with module-linux.
+4. python3-setuptools (https://pypi.org/project/setuptools/)

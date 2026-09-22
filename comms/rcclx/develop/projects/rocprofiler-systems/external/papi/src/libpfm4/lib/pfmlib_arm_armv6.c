@@ -37,24 +37,17 @@
 static int
 pfm_arm_detect_1176(void *this)
 {
+	/* ARM 1176 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 7, .part = 0xb76 };
 
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-			(pfm_arm_cfg.part==0xb76)) { /* 1176 */
-		return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 /* ARM1176 support */
 pfmlib_pmu_t arm_1176_support={
 	.desc			= "ARM1176",
 	.name			= "arm_1176",
+	.perf_name		= "armv6_1176",
 	.pmu			= PFM_PMU_ARM_1176,
 	.pme_count		= LIBPFM_ARRAY_SIZE(arm_1176_pe),
 	.type			= PFM_PMU_TYPE_CORE,

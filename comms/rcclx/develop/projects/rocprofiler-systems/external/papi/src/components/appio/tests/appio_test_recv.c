@@ -15,7 +15,7 @@
 
 main(int argc, char *argv[]) {
   int EventSet = PAPI_NULL; 
-  const char* names[NUM_EVENTS] = {"RECV_CALLS", "RECV_BYTES", "RECV_USEC", "RECV_ERR", "RECV_INTERRUPTED", "RECV_WOULD_BLOCK"};
+  const char* names[NUM_EVENTS] = {"appio:::RECV_CALLS", "appio:::RECV_BYTES", "appio:::RECV_USEC", "appio:::RECV_ERR", "appio:::RECV_INTERRUPTED", "appio:::RECV_WOULD_BLOCK"};
   long long values[NUM_EVENTS];
 
   /* Set TESTS_QUIET variable */

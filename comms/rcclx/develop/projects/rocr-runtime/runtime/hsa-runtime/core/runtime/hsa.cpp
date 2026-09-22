@@ -498,9 +498,12 @@ hsa_status_t hsa_system_get_major_extension_table(uint16_t extension, uint16_t v
       return HSA_STATUS_ERROR;
     }
 
-    os::LibHandle lib = os::LoadLib(kAqlProfileLib);
+    // Use the cached aqlprofile library handle from Runtime instead of
+    // opening a new one.  The handle is loaded once during Runtime::Load()
+    // and closed in Runtime::Unload(), avoiding a dlopen handle leak.
+    os::LibHandle lib = core::Runtime::runtime_singleton_->AqlProfileLib();
     if (lib == NULL) {
-      debug_print("Loading '%s' failed\n", kAqlProfileLib);
+      debug_print("AQL profile library '%s' is unavailable.\n", kAqlProfileLib);
       return HSA_STATUS_ERROR;
     }
 
@@ -749,7 +752,7 @@ hsa_status_t hsa_queue_create(
 
   core::Queue* cmd_queue = nullptr;
   status = agent->QueueCreate(size, type, queue_create_flags, callback, data, private_segment_size,
-                              group_segment_size, &cmd_queue);
+                              group_segment_size, true, &cmd_queue);
   if (status != HSA_STATUS_SUCCESS) return status;
 
   assert(cmd_queue != nullptr && "Queue not returned but status was success.\n");
@@ -2805,6 +2808,12 @@ hsa_status_t hsa_status_string(
       *status_string =
           "HSA_STATUS_ERROR_OUT_OF_REGISTERS: Kernel has requested more VGPRs than are available "
           "on this agent";
+      break;
+    case HSA_STATUS_ERROR_INVALID_DISPATCH_PARAMETERS:
+      *status_string =
+          "HSA_STATUS_ERROR_INVALID_DISPATCH_PARAMETERS: Kernel dispatch packet parameters "
+          "exceed hardware limits for this agent (e.g. register usage, work-group dimensions, "
+          "or other dispatch constraints)";
       break;
     default:
       return HSA_STATUS_ERROR_INVALID_ARGUMENT;

@@ -6,10 +6,10 @@ libpfm_intel_knm - support for Intel Knights Mill core PMU
 .B #include <perfmon/pfmlib.h>
 .sp
 .B PMU name: knm
-.B PMU desc: Intel Kinghts Mill
+.B PMU desc: Intel Knights Mill
 .sp
 .SH DESCRIPTION
-The library supports the Intel Kinghts Mill core PMU. It should be noted that
+The library supports the Intel Knights Mill core PMU. It should be noted that
 this PMU model only covers each core's PMU and not the socket level PMU.
 
 On Knights Mill, the number of generic counters is 4. There is 4-way HyperThreading support.
@@ -17,7 +17,7 @@ The \fBpfm_get_pmu_info()\fR function returns the maximum number of generic coun
 in \fBnum_cntrs\fr.
 
 .SH MODIFIERS
-The following modifiers are supported on Intel Kinghts Mill processors:
+The following modifiers are supported on Intel Knights Mill processors:
 .TP
 .B u
 Measure at user level which includes privilege levels 1, 2, 3. This corresponds to \fBPFM_PLM3\fR.

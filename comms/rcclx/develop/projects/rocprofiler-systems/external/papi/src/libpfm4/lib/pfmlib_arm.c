@@ -41,53 +41,89 @@ const pfmlib_attr_desc_t arm_mods[]={
 };
 
 pfm_arm_config_t pfm_arm_cfg = {
-	.implementer  = -1,
-	.architecture = -1,
-	.part	      = -1,
+	.init_cpuinfo_done = 0,
 };
+
+#define MAX_ARM_CPUIDS	8
+
+static arm_cpuid_t arm_cpuids[MAX_ARM_CPUIDS];
+static int num_arm_cpuids;
+
+static int pfmlib_find_arm_cpuid(arm_cpuid_t *attr, arm_cpuid_t *match_attr)
+{
+	int i;
+
+	if (attr == NULL)
+		return PFM_ERR_NOTFOUND;
+
+	for (i=0; i < num_arm_cpuids; i++) {
+#if 0
+/*
+ * disabled due to issues with expected arch vs. reported
+ * arch by the Linux kernel cpuinfo
+ */
+		if (arm_cpuids[i].arch != attr->arch)
+			continue;
+#endif
+		if (arm_cpuids[i].impl != attr->impl)
+			continue;
+		if (arm_cpuids[i].part != attr->part)
+			continue;
+		if (match_attr)
+			*match_attr = arm_cpuids[i];
+		return PFM_SUCCESS;
+	}
+	return PFM_ERR_NOTSUPP;
+}
 
 #ifdef CONFIG_PFMLIB_OS_LINUX
 /*
- * helper function to retrieve one value from /proc/cpuinfo
- * for internal libpfm use only
- * attr: the attribute (line) to look for
- * ret_buf: a buffer to store the value of the attribute (as a string)
- * maxlen : number of bytes of capacity in ret_buf
- *
- * ret_buf is null terminated.
- *
- * Return:
- * 	0 : attribute found, ret_buf populated
- * 	-1: attribute not found
+ * Function populates the arm_cpuidsp[] table with each unique
+ * core identifications found on the host. In the case of hybrids
+ * that number is greater than 1
  */
-
 static int
-pfmlib_getcpuinfo_attr(const char *attr, char *ret_buf, size_t maxlen)
+pfmlib_init_cpuids(void)
 {
+	arm_cpuid_t attr = {0, };
 	FILE *fp = NULL;
 	int ret = -1;
-	size_t attr_len, buf_len = 0;
+	size_t buf_len = 0;
 	char *p, *value = NULL;
 	char *buffer = NULL;
+	int nattrs = 0;
 
-	if (attr == NULL || ret_buf == NULL || maxlen < 1)
-		return -1;
+	if (pfm_arm_cfg.init_cpuinfo_done == 1)
+		return PFM_SUCCESS;
 
-	attr_len = strlen(attr);
-
-	fp = fopen("/proc/cpuinfo", "r");
-	if (fp == NULL)
-		return -1;
+	fp = fopen(pfm_cfg.proc_cpuinfo, "r");
+	if (fp == NULL) {
+		DPRINT("pfmlib_init_cpuids: cannot open %s\n", pfm_cfg.proc_cpuinfo);
+		return PFM_ERR_NOTFOUND;
+	}
 
 	while(pfmlib_getl(&buffer, &buf_len, fp) != -1){
+		if (nattrs == ARM_NUM_ATTR_FIELDS) {
+			if (pfmlib_find_arm_cpuid(&attr, NULL) != PFM_SUCCESS) {
+				/* must add */
+				if (num_arm_cpuids == MAX_ARM_CPUIDS) {
+					DPRINT("pfmlib_init_cpuids: too many cpuids num_arm_cpuids=%d\n", num_arm_cpuids);
+					ret = PFM_ERR_TOOMANY;
+					goto error;
+				}
+				arm_cpuids[num_arm_cpuids++] = attr;
+				__pfm_vbprintf("Detected ARM CPU impl=0x%x arch=%d part=0x%x\n", attr.impl, attr.arch, attr.part);
+			}
+			nattrs = 0;
+		}
 
 		/* skip  blank lines */
-		if (*buffer == '\n')
+		if (*buffer == '\n' || *buffer == '\r')
 			continue;
 
 		p = strchr(buffer, ':');
 		if (p == NULL)
-			goto error;
+			continue;
 
 		/*
 		 * p+2: +1 = space, +2= firt character
@@ -98,20 +134,38 @@ pfmlib_getcpuinfo_attr(const char *attr, char *ret_buf, size_t maxlen)
 
 		value[strlen(value)-1] = '\0';
 
-		if (!strncmp(attr, buffer, attr_len))
-			break;
+		if (!strncmp("CPU implementer", buffer, 15)) {
+			attr.impl = strtoul(value, NULL, 0);
+			nattrs++;
+			continue;
+		}
+		if (!strncmp("CPU architecture", buffer, 16)) {
+			attr.arch = strtoul(value, NULL, 0);
+			nattrs++;
+			continue;
+		}
+		if (!strncmp("CPU part", buffer, 8)) {
+			attr.part = strtoul(value, NULL, 0);
+			nattrs++;
+			continue;
+		}
 	}
-	strncpy(ret_buf, value, maxlen-1);
-	ret_buf[maxlen-1] = '\0';
-	ret = 0;
+	ret = PFM_SUCCESS;
+	DPRINT("num_arm_cpuids=%d\n", num_arm_cpuids);
 error:
+	for (nattrs = 0; nattrs < num_arm_cpuids; nattrs++) {
+		DPRINT("cpuids[%d] = impl=0x%x arch=%d part=0x%x\n", nattrs, arm_cpuids[nattrs].impl, arm_cpuids[nattrs].arch, arm_cpuids[nattrs].part);
+	}
+	pfm_arm_cfg.init_cpuinfo_done = 1;
+
 	free(buffer);
 	fclose(fp);
+
 	return ret;
 }
 #else
 static int
-pfmlib_getcpuinfo_attr(const char *attr, char *ret_buf, size_t maxlen)
+pfmlib_init_cpuids(void)
 {
 	return -1;
 }
@@ -151,34 +205,15 @@ pfm_arm_display_reg(void *this, pfmlib_event_desc_t *e, pfm_arm_reg_t reg)
 }
 
 int
-pfm_arm_detect(void *this)
+pfm_arm_detect(arm_cpuid_t *attr, arm_cpuid_t *match_attr)
 {
-
 	int ret;
-	char buffer[128];
 
-	if (pfm_arm_cfg.implementer == -1) {
-		ret = pfmlib_getcpuinfo_attr("CPU implementer", buffer, sizeof(buffer));
-		if (ret == -1)
-			return PFM_ERR_NOTSUPP;
-		pfm_arm_cfg.implementer = strtol(buffer, NULL, 16);
-	}
-   
-	if (pfm_arm_cfg.part == -1) {
-		ret = pfmlib_getcpuinfo_attr("CPU part", buffer, sizeof(buffer));
-		if (ret == -1)
-			return PFM_ERR_NOTSUPP;
-		pfm_arm_cfg.part = strtol(buffer, NULL, 16);
-	}
+	ret = pfmlib_init_cpuids();
+	if (ret != PFM_SUCCESS)
+		return PFM_ERR_NOTSUPP;
 
-	if (pfm_arm_cfg.architecture == -1) {
-		ret = pfmlib_getcpuinfo_attr("CPU architecture", buffer, sizeof(buffer));
-		if (ret == -1)
-			return PFM_ERR_NOTSUPP;
-		pfm_arm_cfg.architecture = strtol(buffer, NULL, 16);
-	}
-   
-	return PFM_SUCCESS;
+	return pfmlib_find_arm_cpuid(attr, match_attr);
 }
 
 int

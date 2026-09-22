@@ -22,7 +22,7 @@
 #include "papi.h"
 #include "papi_test.h"
 
-/* number of events we want to add to the PAPI EventSet */
+/* maximum number of events we want to add to the PAPI EventSet */
 #define NUM_EVENTS 3
 
 int main(int argc, char **argv)
@@ -64,7 +64,7 @@ int main(int argc, char **argv)
         test_fail(__FILE__, __LINE__, "PAPI_enum_cmp_event", retval);
     }   
 
-    /* enumerate UNITL we find 3 Core and max temp events  */ 
+    /* enumerate through the available lmsensors events and add a maximum of three */
     modifier = PAPI_ENUM_EVENTS;
     do {
         retval = PAPI_event_code_to_name(EventCode, EventName);
@@ -72,21 +72,22 @@ int main(int argc, char **argv)
             test_fail(__FILE__, __LINE__, "PAPI_event_code_to_name", retval);
         }
 
-        /* filter for only core and max temp events, max of three events to be added  */
-        if (strstr(EventName, "Core") && strstr(EventName, "max")) {
-            retval = PAPI_add_named_event(EventSet, EventName);
-            if (retval != PAPI_OK) {
-                test_fail(__FILE__, __LINE__, "PAPI_add_named_event", retval); 
-            }
-              
-            if (!TESTS_QUIET) { 
-                printf("Successfully added %s to the EventSet.\n", EventName);
-            }
-            
-            /* store current event name and increment count */
-            strncpy(lm_events[event_cnt], EventName, PAPI_MAX_STR_LEN);
-            event_cnt++;
+        retval = PAPI_add_named_event(EventSet, EventName);
+        if (retval != PAPI_OK) {
+            test_fail(__FILE__, __LINE__, "PAPI_add_named_event", retval);
         }
+
+        if (!TESTS_QUIET) {
+            printf("Successfully added %s to the EventSet.\n", EventName);
+        }
+
+        /* store current event name and increment count */
+        int strLen = snprintf(lm_events[event_cnt], PAPI_MAX_STR_LEN, "%s", EventName);
+        if (strLen < 0 || strLen >= PAPI_MAX_STR_LEN) {
+            fprintf(stderr, "Failed to fully write event name: %s into array.\n", EventName);
+            return PAPI_EBUF;
+        }
+        event_cnt++;
     } while( ( PAPI_enum_cmp_event(&EventCode, modifier, cidx) == PAPI_OK ) && ( event_cnt < NUM_EVENTS ) );
 
     /* start counting */
@@ -107,11 +108,11 @@ int main(int argc, char **argv)
         test_fail(__FILE__, __LINE__, "PAPI_stop", retval);
     }
 
-    /* print out temp values for each event  */
+    /* for each event successfully added print their counter values */
     if (!TESTS_QUIET) {
-        printf("Max temp output for events:\n");
-        for (i = 0; i < NUM_EVENTS; i++) {
-            printf("%s: %d\n", lm_events[i], values[i]);       
+        printf("Read counters from the EventSet:\n");
+        for (i = 0; i < event_cnt; i++) {
+            printf("Event: %s, Counter Value: %lld\n", lm_events[i], values[i]);
         }
     } 
    

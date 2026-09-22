@@ -28,7 +28,8 @@ ncclResult_t collTraceInit(ncclComm* comm) {
   if (!enableCollTrace()) {
     return ncclSuccess;
   }
-  comm->ctrace = std::make_unique<CollTrace>(comm);
+  if (comm->ctrace) delete comm->ctrace;
+  comm->ctrace = new CollTrace(comm);
   return ncclSuccess;
 }
 
@@ -36,7 +37,8 @@ ncclResult_t collTraceDestroy(ncclComm* comm) {
   if (comm->ctrace == nullptr) {
     return ncclSuccess;
   }
-  comm->ctrace.reset();
+  delete comm->ctrace;
+  comm->ctrace = nullptr;
   return ncclSuccess;
 }
 
@@ -95,7 +97,7 @@ std::unique_ptr<CollTraceEvent> collTraceAquireEventCommon(
     return nullptr;
   }
   struct ncclCudaGraph graph;
-  auto res = ncclCudaGetCapturingGraph(&graph, stream);
+  auto res = ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode);
   if (res != ncclSuccess) {
     WARN("Internal error: ncclCudaGetCapturingGraph failed by %d", res);
     return nullptr;

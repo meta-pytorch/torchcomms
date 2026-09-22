@@ -22,19 +22,21 @@ variable to the directory containing ``librocm_smi64.so`` (usually
 ```
 
 ```{note}
-The environment variable ``AMDSMI_GPU_METRICS_CACHE_MS`` may be set to
-control the internal GPU metrics cache duration (ms).
-Default 1, set to 0 to disable.
-```
+The following environment variables can be set to control internal cache
+durations:
 
-```{note}
-The environment variable ``AMDSMI_ASIC_INFO_CACHE_MS`` may be set to
-control the internal GPU asic info cache duration (ms).
-Default 10000 ms, set to 0 to disable.
+| Variable | Description | Default |
+|---|---|---|
+| ``AMDSMI_GPU_METRICS_CACHE_MS`` | GPU metrics cache duration (ms) | 1 ms (set to 0 to disable) |
+| ``AMDSMI_ASIC_INFO_CACHE_MS`` | GPU ASIC info cache duration (ms) | 10000 ms (set to 0 to disable) |
+
+These can be set in the shell before running your application:
+
+    export AMDSMI_GPU_METRICS_CACHE_MS=200
 ```
 
 ```{seealso}
-Refer to the [C++ library API reference](../reference/amdsmi-cpp-api.md).
+Refer to the [C/C++ library API reference](../reference/amdsmi-cpp-api/index.md).
 ```
 
 (device_socket_handle)=
@@ -44,7 +46,9 @@ Many functions in the library take a _socket handle_ or _device handle_. A
 _socket_ refers to a physical hardware socket, abstracted by the library to
 represent the hardware more effectively to the user. While there is always one
 unique GPU per socket, an APU may house both a GPU and CPU on the same socket.
-For MI200 GPUs, multiple GCDs may reside within a single socket
+For MI200 GPUs, multiple GCDs may reside within a single socket, so a single socket can
+own several processor handles. GPU socket IDs are derived from the device's BDF, whereas
+CPU socket IDs correspond to the physical CPU package.
 
 To identify the sockets in a system, use the `amdsmi_get_socket_handles()`
 function, which returns a list of socket handles. These handles can then be used
@@ -133,7 +137,7 @@ driver and make sure that any resources held by AMD SMI are released.
        for (uint32_t j=0; j < device_count; j++) {
          // Get device type. Since the amdsmi is initialized with
          // AMD_SMI_INIT_AMD_GPUS, the processor_type must be AMDSMI_PROCESSOR_TYPE_AMD_GPU.
-         processor_type_t processor_type;
+         amdsmi_processor_type_t processor_type;
          ret = amdsmi_get_processor_type(processor_handles[j], &processor_type);
          if (processor_type != AMDSMI_PROCESSOR_TYPE_AMD_GPU) {
            std::cout << "Expect AMDSMI_PROCESSOR_TYPE_AMD_GPU device type!\n";
@@ -200,7 +204,7 @@ driver and make sure that any resources held by AMD SMI are released.
            uint32_t cpu_count = 0;
 
            // Set processor type as AMDSMI_PROCESSOR_TYPE_AMD_CPU
-           processor_type_t processor_type = AMDSMI_PROCESSOR_TYPE_AMD_CPU;
+           amdsmi_processor_type_t processor_type = AMDSMI_PROCESSOR_TYPE_AMD_CPU;
            ret = amdsmi_get_processor_handles_by_type(sockets[i], processor_type, nullptr, &cpu_count);
 
            // Allocate the memory for the cpus

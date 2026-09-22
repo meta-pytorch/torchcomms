@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <net/if.h>
+#include <errno.h>
 
 /* Headers required by PAPI */
 #include "papi.h"
@@ -39,7 +40,7 @@ papi_vector_t _net_vector;
  ********************************************************************/
 
 /* Network stats refresh latency in usec (default: 1 sec) */
-#define NET_REFRESH_LATENCY   1000000
+static long long NET_REFRESH_LATENCY = 1000000;
 
 #define NET_PROC_FILE          "/proc/net/dev"
 
@@ -173,7 +174,7 @@ generateNetEventList( void )
             } else if (last) {
                 last->next = temp;
             } else {
-                free(temp);
+                papi_free(temp);
                 fclose(fin);
                 PAPIERROR("This shouldn't be possible\n");
                 snprintf(_net_vector.cmp_info.disabled_reason, PAPI_MAX_STR_LEN-2,
@@ -366,6 +367,24 @@ _net_init_component( int cidx  )
 
     /* Export the component id */
     _net_vector.cmp_info.CmpIdx = cidx;
+
+    /* Set the net refresh latency */
+    char *refresh_latency = getenv("PAPI_NET_REFRESH_LATENCY");
+    if (refresh_latency != NULL) {
+        char *endptr;
+        int base = 10;
+        errno = 0;
+        long long buffer_refresh = strtoll(refresh_latency, &endptr, base);
+        if (errno != 0) {
+            SUBDBG("strtoll failed with error code %d. Net refresh latency is the default (%lld).\n", errno, NET_REFRESH_LATENCY);
+        }
+        else if (*endptr != '\0' || endptr == refresh_latency) {
+            SUBDBG("PAPI_NET_REFRESH_LATENCY was not set properly. Net refresh latency is the default (%lld).\n", NET_REFRESH_LATENCY);
+        }
+        else {
+            NET_REFRESH_LATENCY = buffer_refresh;
+        }
+    }
 
   fn_exit:
     _papi_hwd[cidx]->cmp_info.disabled = retval;

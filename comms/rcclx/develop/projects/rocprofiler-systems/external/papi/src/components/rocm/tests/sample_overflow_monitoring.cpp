@@ -30,6 +30,9 @@ int main(int argc, char **argv)
     long long counter_values[1] = { 0 };
     quiet = tests_quiet(argc, argv);
 
+    fprintf(stdout, "The rocm component does not support overflow monitoring as of now. This will be added in a future release.\n");
+    test_skip(__FILE__, __LINE__,"", papi_errno);
+
     setenv("ROCP_HSA_INTERCEPT", "0", 1);
 
     setup_PAPI(&event_set, EV_THRESHOLD);

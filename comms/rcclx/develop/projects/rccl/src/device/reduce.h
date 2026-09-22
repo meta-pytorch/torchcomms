@@ -10,7 +10,7 @@
 #include "primitives.h"
 
 namespace {
-  template<typename T, typename RedOp, typename Proto, int USE_ACC, int COLL_UNROLL, int Pipeline>
+  template<typename T, typename RedOp, typename Proto, int USE_ACC, int COLL_UNROLL, int Pipeline, int UserRegMode = 0>
 #if defined(USE_INDIRECT_FUNCTION_CALL) && !defined(__gfx942__) && !defined(__gfx950__)
   __device__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
 #else
@@ -18,7 +18,9 @@ namespace {
 #endif
 #ifdef ENABLE_WARP_SPEED
     int warp = threadIdx.x / WARP_SIZE;
-    ncclRing *ring = &ncclShmem.warpChannel[warp].ring;
+    ncclRing *ring = ncclShmem.warpComm
+        ? &ncclShmem.warpChannel[warp].ring
+        : &ncclShmem.channel.ring;
 #else
     ncclRing *ring = &ncclShmem.channel.ring;
 #endif
@@ -67,23 +69,23 @@ namespace {
   }
 }
 
-template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
-struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, USE_ACC, COLL_UNROLL, Pipeline> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline, int UserRegMode>
+struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     using Proto = ProtoSimple<REDUCE_CHUNKSTEPS/REDUCE_SLICESTEPS, REDUCE_SLICESTEPS, USE_ACC, COLL_UNROLL>;
     runRing<T, RedOp, Proto, USE_ACC, COLL_UNROLL, Pipeline>(tid, nthreads, work);
   }
 };
 
-template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
-struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL, USE_ACC, COLL_UNROLL, Pipeline> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline, int UserRegMode>
+struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     runRing<T, RedOp, ProtoLL, USE_ACC, COLL_UNROLL, 0>(tid, nthreads, work);
   }
 };
 
-template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
-struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL128, USE_ACC, COLL_UNROLL, Pipeline> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline, int UserRegMode>
+struct RunWorkColl<ncclFuncReduce, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_LL128, USE_ACC, COLL_UNROLL, Pipeline, UserRegMode> {
   __device__ __forceinline__ void run(int tid, int nthreads, struct ncclDevWorkColl* work) {
     runRing<T, RedOp, ProtoLL128, USE_ACC, COLL_UNROLL, 0>(tid, nthreads, work);
   }

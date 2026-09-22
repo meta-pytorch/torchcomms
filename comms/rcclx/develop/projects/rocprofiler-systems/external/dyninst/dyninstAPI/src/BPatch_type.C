@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include <stdio.h>
 
 #define BPATCH_FILE
@@ -80,7 +81,7 @@ BPatch_type *BPatch_type::createFake(const char *_name) {
  * 
  */
 
-BPatch_type::BPatch_type(boost::shared_ptr<Type> typ_): ID(typ_->getID()), typ(typ_),
+BPatch_type::BPatch_type(dyncompat::shared_ptr<Type> typ_): ID(typ_->getID()), typ(typ_),
     refCount(1)
 {
 	// if a derived type, make sure the upPtr is set for the base type.
@@ -129,7 +130,7 @@ BPatch_type::BPatch_type(const char *_name, int _ID, BPatch_dataClass _type) :
 	type_map[typ.get()] = this;
 }
 
-BPatch_type *BPatch_type::findOrCreateType(boost::shared_ptr<Dyninst::SymtabAPI::Type> type)  
+BPatch_type *BPatch_type::findOrCreateType(dyncompat::shared_ptr<Dyninst::SymtabAPI::Type> type)  
 {
    std::map<Dyninst::SymtabAPI::Type*, BPatch_type *>::iterator elem = type_map.find(type.get());
    if (elem != type_map.end()) {
@@ -161,12 +162,12 @@ const char *BPatch_type::getName() const
    return typ->getName().c_str(); 
 }
 
-boost::shared_ptr<Type> BPatch_type::getSymtabType(Type::do_share_t) const 
+dyncompat::shared_ptr<Type> BPatch_type::getSymtabType(Type::do_share_t) const 
 {
     return typ;
 }    
 
-boost::shared_ptr<Type> SymtabAPI::convert(const BPatch_type *t, Type::do_share_t) {
+dyncompat::shared_ptr<Type> SymtabAPI::convert(const BPatch_type *t, Type::do_share_t) {
 	return t->getSymtabType(Type::share);
 }
 
@@ -182,7 +183,7 @@ bool BPatch_type::isCompatible(BPatch_type *otype)
 
 BPatch_type *BPatch_type::getConstituentType() const 
 {
-   boost::shared_ptr<Type> ctype;
+   dyncompat::shared_ptr<Type> ctype;
 
    // Pointer, reference, typedef
    if (typ->isDerivedType()) ctype = typ->asDerivedType().getConstituentType(Type::share);

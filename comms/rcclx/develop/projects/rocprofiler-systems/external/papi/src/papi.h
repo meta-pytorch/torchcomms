@@ -223,7 +223,7 @@
 
 /* This is the official PAPI version */
 /* The final digit represents the patch count */
-#define PAPI_VERSION  			PAPI_VERSION_NUMBER(7,2,0,0)
+#define PAPI_VERSION  			PAPI_VERSION_NUMBER(7,3,0,0)
 #define PAPI_VER_CURRENT 		(PAPI_VERSION & 0xffff0000)
 
   /* Tests for checking event code type */
@@ -280,7 +280,8 @@ failure.
 #define PAPI_ECMP_DISABLED	-25    /**< Component containing event is disabled */
 #define PAPI_EDELAY_INIT -26   /**< Delayed initialization component */
 #define PAPI_EMULPASS   -27    /**< Event exists, but cannot be counted due to multiple passes required by hardware */
-#define PAPI_NUM_ERRORS	 28    /**< Number of error messages specified in this API */
+#define PAPI_PARTIAL    -28    /**< Component is partially disabled */
+#define PAPI_NUM_ERRORS	 29    /**< Number of error messages specified in this API */
 
 #define PAPI_NOT_INITED		0
 #define PAPI_LOW_LEVEL_INITED 	1       /* Low level has called library init */
@@ -488,6 +489,7 @@ All of the functions in the PerfAPI should use the following set of constants.
 enum {
    PAPI_ENUM_EVENTS = 0,		/**< Always enumerate all events */
    PAPI_ENUM_FIRST,				/**< Enumerate first event (preset or native) */
+   PAPI_PRESET_ENUM_FIRST_COMP,	/**< Enumerate first component preset event */
    PAPI_PRESET_ENUM_AVAIL, 		/**< Enumerate events that exist here */
 
    /* PAPI PRESET section */
@@ -503,6 +505,8 @@ enum {
    PAPI_PRESET_ENUM_L3,			/**< L3 cache related preset events */
    PAPI_PRESET_ENUM_TLB,		/**< Translation Lookaside Buffer events */
    PAPI_PRESET_ENUM_FP,			/**< Floating Point related preset events */
+   PAPI_PRESET_ENUM_CPU,		/**< CPU preset events */
+   PAPI_PRESET_ENUM_CPU_AVAIL,	/**< Available CPU preset events */
 
    /* PAPI native event related section */
    PAPI_NTV_ENUM_UMASKS,		/**< all individual bits for given group */
@@ -634,6 +638,8 @@ typedef void *vptr_t;
      char kernel_version[PAPI_MIN_STR_LEN];  /**< Version of the kernel PMC support driver */
      char disabled_reason[PAPI_HUGE_STR_LEN]; /**< Reason for failure of initialization */
      int disabled;   /**< 0 if enabled, otherwise error code from initialization */
+     char partially_disabled_reason[PAPI_HUGE_STR_LEN]; /**< Reason for partial initialization */
+     int partially_disabled; /**< 1 if component is partially disabled, 0 otherwise */
      int initialized;                        /**< Component is ready to use */
      int CmpIdx;				/**< Index into the vector array for this component; set at init time */
      int num_cntrs;               /**< Number of hardware counters the component supports */
@@ -895,6 +901,7 @@ typedef char* PAPI_user_defined_events_file_t;
 #define PAPIF_DMEM_MAXVAL     12
 
 #define PAPI_MAX_INFO_TERMS  12		   /* should match PAPI_EVENTS_IN_DERIVED_EVENT defined in papi_internal.h */
+#define PAPI_MAX_COMP_QUALS  8
 
 
 /** @ingroup papi_data_structures 
@@ -1010,6 +1017,9 @@ enum {
                                                 to delineate platform specific 
 						anomalies or restrictions */
 
+     int  num_quals;                                       /**< number of qualifiers */
+     char quals[PAPI_MAX_COMP_QUALS][PAPI_HUGE_STR_LEN];   /**< qualifiers */
+     char quals_descrs[PAPI_MAX_COMP_QUALS][PAPI_HUGE_STR_LEN];  /**< qualifier descriptions */
    } PAPI_event_info_t;
 
 

@@ -1217,7 +1217,7 @@ def test_apply_cypher(mock_graph_literal):
     query = CypherQuery(path)
     assert query.apply(gf) == match
 
-    gf.dataframe["time"] = np.Inf
+    gf.dataframe["time"] = np.inf
     gf.dataframe.at[gf.graph.roots[0], "time"] = 5.0
     path = """MATCH ("*", p)
     WHERE p."time" IS NOT INF"""
@@ -1226,7 +1226,7 @@ def test_apply_cypher(mock_graph_literal):
     assert query.apply(gf) == match
 
     gf.dataframe["time"] = 5.0
-    gf.dataframe.at[gf.graph.roots[0], "time"] = np.Inf
+    gf.dataframe.at[gf.graph.roots[0], "time"] = np.inf
     path = """MATCH ("*", p)
     WHERE p."time" IS INF"""
     match = [gf.graph.roots[0]]

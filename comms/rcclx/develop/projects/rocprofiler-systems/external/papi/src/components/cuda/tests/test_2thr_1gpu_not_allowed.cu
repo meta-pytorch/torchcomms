@@ -79,8 +79,14 @@ void *thread_gpu(void * ptinfo)
 
     papi_errno = PAPI_add_named_event(EventSet, g_evt_names[idx]);
     if (papi_errno != PAPI_OK) {
-        fprintf(stderr, "Failed to add event %s\n", g_evt_names[idx]);
-        test_skip(__FILE__, __LINE__, "", 0);
+        if (papi_errno == PAPI_EMULPASS) {
+            fprintf(stderr, "Event %s requires multiple passes and cannot be added to an EventSet. Two single pass events are needed for this test see utils/papi_native_avail for more Cuda native events.\n", g_evt_names[idx]);
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+        else {
+            fprintf(stderr, "Unable to add event %s to the EventSet with error code %d.\n", g_evt_names[idx], papi_errno);
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
     }
 
     papi_errno = PAPI_start(EventSet);
@@ -119,6 +125,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "No eventnames specified at command line.\n");
         test_skip(__FILE__, __LINE__, "", 0);
     }
+    else if (g_event_count != 2) {
+        fprintf(stderr, "Two single pass events are needed for this test to run properly.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
+    }
+
     g_evt_names = argv + 1;
 #endif
     int rc, i;
@@ -140,7 +151,14 @@ int main(int argc, char **argv)
     for(i = 0; i < NUM_THREADS; i++)
     {
         data[i].idx = i;
-        DRIVER_API_CALL(cuCtxCreate(&(data[i].cuCtx), 0, 0));
+
+        int flags = 0;
+        CUdevice device = 0;
+#if defined(CUDA_TOOLKIT_GE_13)
+        DRIVER_API_CALL( cuCtxCreate(&(data[i].cuCtx), (CUctxCreateParams*)0, flags, device) );
+#else
+        DRIVER_API_CALL( cuCtxCreate(&(data[i].cuCtx), flags, device) );
+#endif
         DRIVER_API_CALL(cuCtxPopCurrent(&(data[i].cuCtx)));
 
         rc = pthread_create(&data[i].tid, NULL, thread_gpu, &(data[i]));

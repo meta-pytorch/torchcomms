@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright (c) 2024 - 2025 Advanced Micro Devices, Inc.
+# Copyright (c) 2024 - 2026 Advanced Micro Devices, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -23,68 +23,107 @@
 
 include_guard(DIRECTORY)
 
-# find rocDecode - library and headers
-find_path(
-    rocDecode_ROOT_DIR
-    NAMES include/rocdecode
-    HINTS ${ROCM_PATH}
-    PATHS ${ROCM_PATH})
+# Prefer the upstream rocdecode CONFIG package (installed lowercase as `rocdecode`). Fall
+# back to manual path/library discovery for older install layouts. Re-read the version
+# header only when CONFIG did not supply a version.
 
-mark_as_advanced(rocDecode_ROOT_DIR)
+find_package(rocdecode CONFIG QUIET)
 
-find_path(
-    rocDecode_INCLUDE_DIR
-    NAMES rocdecode/rocdecode.h
-    HINTS ${rocDecode_ROOT_DIR}
-    PATHS ${rocDecode_ROOT_DIR}
-    PATH_SUFFIXES include)
+# handle the case where CONFIG is found but does not specify an include directory (which
+# generally shouldn't happen)
+if(rocdecode_FOUND AND NOT rocdecode_INCLUDE_DIR)
+    message(
+        WARNING
+            "Found rocdecode CONFIG package but it did not specify an include directory. Ignoring CONFIG results."
+        )
+    set(rocdecode_FOUND OFF)
+endif()
 
-find_library(
-    rocDecode_LIBRARY
-    NAMES rocdecode
-    HINTS ${rocDecode_ROOT_DIR}
-    PATHS ${rocDecode_ROOT_DIR}
-    PATH_SUFFIXES lib)
+if(rocdecode_FOUND)
+    set(_rocdecode_FOUND_CONFIG ON)
+    # for backwards compatibility, set the root dir to the parent of the include dir
+    get_filename_component(_rocdecode_ROOT_DIR ${rocdecode_INCLUDE_DIR} DIRECTORY)
+    set(rocdecode_ROOT_DIR
+        ${_rocdecode_ROOT_DIR}
+        CACHE INTERNAL "Root directory of rocdecode installation")
+else()
+    set(_rocdecode_FOUND_CONFIG OFF)
+    # find rocdecode - library and headers
+    find_path(
+        rocdecode_ROOT_DIR
+        NAMES include/rocdecode
+        HINTS ${ROCM_PATH}
+        PATHS ${ROCM_PATH})
 
-function(_rocdecode_read_version_header _VERSION_VAR)
-    if(rocDecode_INCLUDE_DIR AND EXISTS
-                                 "${rocDecode_INCLUDE_DIR}/rocdecode/rocdecode_version.h")
-        file(READ "${rocDecode_INCLUDE_DIR}/rocdecode/rocdecode_version.h"
-             _rocdecode_version)
-        macro(_rocdecode_get_version_num _VAR _NAME)
-            string(REGEX MATCH "define([ \t]+)${_NAME}([ \t]+)([0-9]+)" _tmp
-                         "${_rocdecode_version}")
-            set(${_VAR} 0)
-            if(_tmp MATCHES "([0-9]+)")
-                string(REGEX REPLACE "(.*${_NAME}[ ]+)([0-9]+)" "\\2" ${_VAR} "${_tmp}")
-            endif()
-        endmacro()
+    mark_as_advanced(rocdecode_ROOT_DIR)
 
-        _rocdecode_get_version_num(_major "ROCDECODE_MAJOR_VERSION")
-        _rocdecode_get_version_num(_minor "ROCDECODE_MINOR_VERSION")
-        _rocdecode_get_version_num(_patch "ROCDECODE_PATCH_VERSION")
-        set(${_VERSION_VAR}
-            ${_major}.${_minor}.${_patch}
-            PARENT_SCOPE)
-    endif()
-endfunction()
+    find_path(
+        rocdecode_INCLUDE_DIR
+        NAMES rocdecode/rocdecode.h
+        HINTS ${rocdecode_ROOT_DIR}
+        PATHS ${rocdecode_ROOT_DIR}
+        PATH_SUFFIXES include)
 
-_rocdecode_read_version_header(rocDecode_VERSION)
+    find_library(
+        rocdecode_LIBRARY
+        NAMES rocdecode
+        HINTS ${rocdecode_ROOT_DIR}
+        PATHS ${rocdecode_ROOT_DIR}
+        PATH_SUFFIXES lib)
+
+endif()
+
+# if rocdecode_VERSION is not set by CONFIG or manual discovery, read it from the version
+# header
+if(NOT rocdecode_VERSION OR NOT _rocdecode_FOUND_CONFIG)
+    function(_rocdecode_read_version_header _VERSION_VAR)
+        if(rocdecode_INCLUDE_DIR
+           AND EXISTS "${rocdecode_INCLUDE_DIR}/rocdecode/rocdecode_version.h")
+            file(READ "${rocdecode_INCLUDE_DIR}/rocdecode/rocdecode_version.h"
+                 _rocdecode_version)
+            macro(_rocdecode_get_version_num _VAR)
+                foreach(_NAME ${ARGN})
+                    string(REGEX MATCH "define([ \t]+)${_NAME}([ \t]+)([0-9]+)" _tmp
+                                 "${_rocdecode_version}")
+                    set(${_VAR} 0)
+
+                    if(_tmp MATCHES "([0-9]+)")
+                        string(REGEX REPLACE "(.*${_NAME}[ ]+)([0-9]+)" "\\2" ${_VAR}
+                                             "${_tmp}")
+                        break()
+                    endif()
+                endforeach()
+            endmacro()
+
+            _rocdecode_get_version_num(_major "ROCDECODE_VERSION_MAJOR"
+                                       "ROCDECODE_MAJOR_VERSION")
+            _rocdecode_get_version_num(_minor "ROCDECODE_VERSION_MINOR"
+                                       "ROCDECODE_MINOR_VERSION")
+            _rocdecode_get_version_num(_patch "ROCDECODE_VERSION_PATCH"
+                                       "ROCDECODE_MICRO_VERSION")
+            set(${_VERSION_VAR}
+                ${_major}.${_minor}.${_patch}
+                PARENT_SCOPE)
+        endif()
+    endfunction()
+
+    _rocdecode_read_version_header(rocdecode_VERSION)
+endif()
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(
-    rocDecode
-    FOUND_VAR rocDecode_FOUND
-    VERSION_VAR rocDecode_VERSION
-    REQUIRED_VARS rocDecode_INCLUDE_DIR rocDecode_LIBRARY)
+    rocdecode
+    FOUND_VAR rocdecode_FOUND
+    VERSION_VAR rocdecode_VERSION
+    REQUIRED_VARS rocdecode_INCLUDE_DIR rocdecode_LIBRARY)
 
-if(rocDecode_FOUND)
-    if(NOT TARGET rocDecode::rocDecode)
-        add_library(rocDecode::rocDecode INTERFACE IMPORTED)
-        target_link_libraries(rocDecode::rocDecode INTERFACE ${rocDecode_LIBRARY})
-        target_include_directories(rocDecode::rocDecode
-                                   INTERFACE ${rocDecode_INCLUDE_DIR})
+if(rocdecode_FOUND)
+    if(NOT TARGET rocdecode::rocdecode)
+        add_library(rocdecode::rocdecode INTERFACE IMPORTED)
+        target_link_libraries(rocdecode::rocdecode INTERFACE ${rocdecode_LIBRARY})
+        target_include_directories(rocdecode::rocdecode
+                                   INTERFACE ${rocdecode_INCLUDE_DIR})
     endif()
 endif()
 
-mark_as_advanced(rocDecode_INCLUDE_DIR rocDecode_LIBRARY)
+mark_as_advanced(rocdecode_INCLUDE_DIR rocdecode_LIBRARY)

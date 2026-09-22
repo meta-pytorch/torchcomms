@@ -23,6 +23,7 @@
 #include "display_error.h"
 
 #include "matrix_multiply.h"
+#include "testcode.h"
 
 #define SLEEP_RUNS 3
 
@@ -101,26 +102,32 @@ int main(int argc, char **argv) {
 		test_fail( __FILE__, __LINE__, "idle average", retval );
 	}
 
-	/*****************************/
-	/* testing Matrix Matrix GHz */
-	/*****************************/
+	/***********************************/
+	/* testing a large number of loads */
+	/***********************************/
 
 	if (!quiet) {
-		printf("\nTesting with matrix matrix multiply\n");
+		printf("\nTesting a large number of loads\n");
 	}
+
+	expected=naive_matrix_multiply_estimated_loads(quiet);
 
 	PAPI_reset(eventset);
 	PAPI_start(eventset);
 
-	naive_matrix_multiply(quiet);
+	retval = execute_loads(expected);
+	if (retval == CODE_UNIMPLEMENTED) {
+		if (!quiet) {
+			printf("\tNo asm test found for the current hardware. Testing matrix multiply\n");
+		}
+		naive_matrix_multiply(quiet);
+	}
 
 	retval=PAPI_stop(eventset,&count);
 
 	if (retval!=PAPI_OK) {
 		test_fail( __FILE__, __LINE__, "Problem stopping!", retval );
 	}
-
-	expected=naive_matrix_multiply_estimated_loads(quiet);
 
 	if (!quiet) {
 		printf("\tActual measured loads = %lld\n",count);
@@ -154,7 +161,13 @@ int main(int argc, char **argv) {
 	PAPI_start(eventset);
 
 	for(i=0;i<REPITITIONS;i++) {
-		naive_matrix_multiply(quiet);
+		retval = execute_loads(expected);
+		if (retval == CODE_UNIMPLEMENTED) {
+			if (!quiet) {
+				printf("\tNo asm test found for the current hardware. Testing matrix multiply\n");
+			}
+			naive_matrix_multiply(quiet);
+		}
 	}
 
 	retval=PAPI_stop(eventset,&count);

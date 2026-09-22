@@ -94,7 +94,7 @@
 # resulting files are packaged into the final VSIX file.
 #
 package require Tcl 8.4
-
+
 proc fail { {error ""} {usage false} } {
   if {[string length $error] > 0} then {
     puts stdout $error
@@ -108,7 +108,7 @@ proc fail { {error ""} {usage false} } {
 
   exit 1
 }
-
+
 proc getEnvironmentVariable { name } {
   #
   # NOTE: Returns the value of the specified environment variable or an empty
@@ -117,7 +117,7 @@ proc getEnvironmentVariable { name } {
   #
   return [expr {[info exists ::env($name)] ? $::env($name) : ""}]
 }
-
+
 proc getTemporaryPath {} {
   #
   # NOTE: Returns the normalized path to the first temporary directory found
@@ -141,7 +141,7 @@ proc getTemporaryPath {} {
 
   return ""
 }
-
+
 proc appendArgs { args } {
   #
   # NOTE: Returns all passed arguments joined together as a single string with
@@ -149,7 +149,7 @@ proc appendArgs { args } {
   #
   eval append result $args
 }
-
+
 proc readFile { fileName } {
   #
   # NOTE: Reads and returns the entire contents of the specified file, which
@@ -161,7 +161,7 @@ proc readFile { fileName } {
   close $file_id
   return $result
 }
-
+
 proc writeFile { fileName data } {
   #
   # NOTE: Writes the entire contents of the specified file, which may contain
@@ -173,7 +173,7 @@ proc writeFile { fileName data } {
   close $file_id
   return ""
 }
-
+
 #
 # TODO: Modify this procedure when a new version of Visual Studio is released.
 #
@@ -196,7 +196,7 @@ proc getMinVsVersionXmlChunk { vsVersion } {
     }
   }
 }
-
+
 #
 # TODO: Modify this procedure when a new version of Visual Studio is released.
 #
@@ -232,7 +232,7 @@ proc getMaxPlatformVersionXmlChunk { packageFlavor vsVersion } {
     }
   }
 }
-
+
 #
 # TODO: Modify this procedure when a new version of Visual Studio is released.
 #
@@ -270,7 +270,7 @@ proc getExtraFileListXmlChunk { packageFlavor vsVersion } {
     }
   }
 }
-
+
 proc replaceFileNameTokens { fileName name buildName platformName } {
   #
   # NOTE: Returns the specified file name containing the platform name instead
@@ -279,7 +279,7 @@ proc replaceFileNameTokens { fileName name buildName platformName } {
   return [string map [list <build> $buildName <platform> $platformName \
       <name> $name] $fileName]
 }
-
+
 proc substFile { fileName } {
   #
   # NOTE: Performs all Tcl command, variable, and backslash substitutions in
@@ -288,7 +288,7 @@ proc substFile { fileName } {
   #
   return [writeFile $fileName [uplevel 1 [list subst [readFile $fileName]]]]
 }
-
+
 #
 # NOTE: This is the entry point for this script.
 #

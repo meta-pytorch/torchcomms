@@ -59,22 +59,30 @@ THE SOFTWARE.
 namespace ELFIO {
 
 //------------------------------------------------------------------------------
+//! \class elfio
+//! \brief The elfio class represents an ELF file and provides methods to manipulate it.
 class elfio
 {
   public:
     //------------------------------------------------------------------------------
+    //! \brief Default constructor
     elfio() noexcept : sections( this ), segments( this )
     {
         create( ELFCLASS32, ELFDATA2LSB );
     }
 
-    explicit elfio( compression_interface* compression ) noexcept
-        : sections( this ), segments( this ),
-          compression( std::shared_ptr<compression_interface>( compression ) )
+    //------------------------------------------------------------------------------
+    //! \brief Constructor with compression interface
+    //! \param compression Pointer to the compression interface
+    explicit elfio( compression_interface* compression_ptr ) noexcept : elfio()
     {
-        elfio();
+        this->compression =
+            std::shared_ptr<compression_interface>( compression_ptr );
     }
 
+    //------------------------------------------------------------------------------
+    //! \brief Move constructor
+    //! \param other The other elfio object to move from
     elfio( elfio&& other ) noexcept
         : sections( this ), segments( this ),
           current_file_pos( other.current_file_pos )
@@ -92,6 +100,10 @@ class elfio
         other.compression = nullptr;
     }
 
+    //------------------------------------------------------------------------------
+    //! \brief Move assignment operator
+    //! \param other The other elfio object to move from
+    //! \return Reference to this object
     elfio& operator=( elfio&& other ) noexcept
     {
         if ( this != &other ) {
@@ -113,13 +125,15 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
-    // clang-format off
+    //! \brief Delete copy constructor and copy assignment operator
     elfio( const elfio& )            = delete;
     elfio& operator=( const elfio& ) = delete;
     ~elfio()                         = default;
-    // clang-format on
 
     //------------------------------------------------------------------------------
+    //! \brief Create a new ELF file with the specified class and encoding
+    //! \param file_class The class of the ELF file (ELFCLASS32 or ELFCLASS64)
+    //! \param encoding The encoding of the ELF file (ELFDATA2LSB or ELFDATA2MSB)
     void create( unsigned char file_class, unsigned char encoding )
     {
         sections_.clear();
@@ -129,17 +143,28 @@ class elfio
         create_mandatory_sections();
     }
 
+    //------------------------------------------------------------------------------
+    //! \brief Set address translation
+    //! \param addr_trans Vector of address translations
     void set_address_translation( std::vector<address_translation>& addr_trans )
     {
         addr_translator.set_address_translation( addr_trans );
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Load an ELF file from a file
+    //! \param file_name The name of the file to load
+    //! \param is_lazy Whether to load the file lazily
+    //! \return True if successful, false otherwise
     bool load( const std::string& file_name, bool is_lazy = false )
     {
         pstream = std::make_unique<std::ifstream>();
+        if ( !pstream ) {
+            return false;
+        }
+
         pstream->open( file_name.c_str(), std::ios::in | std::ios::binary );
-        if ( pstream == nullptr || !*pstream ) {
+        if ( !*pstream ) {
             return false;
         }
 
@@ -153,6 +178,10 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Load an ELF file from a stream
+    //! \param stream The input stream to load from
+    //! \param is_lazy Whether to load the file lazily
+    //! \return True if successful, false otherwise
     bool load( std::istream& stream, bool is_lazy = false )
     {
         sections_.clear();
@@ -195,6 +224,9 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Save the ELF file to a file
+    //! \param file_name The name of the file to save to
+    //! \return True if successful, false otherwise
     bool save( const std::string& file_name )
     {
         std::ofstream stream;
@@ -207,6 +239,9 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Save the ELF file to a stream
+    //! \param stream The output stream to save to
+    //! \return True if successful, false otherwise
     bool save( std::ostream& stream )
     {
         if ( !stream || header == nullptr ) {
@@ -263,9 +298,14 @@ class elfio
     ELFIO_HEADER_ACCESS_GET_SET( Elf_Half, section_name_str_index );
 
     //------------------------------------------------------------------------------
-    const endianess_convertor& get_convertor() const { return convertor; }
+    //! \brief Get the endianness convertor
+    //! \return Reference to the endianness convertor
+    const endianness_convertor& get_convertor() const { return convertor; }
 
     //------------------------------------------------------------------------------
+    //! \brief Get the default entry size for a section type
+    //! \param section_type The type of the section
+    //! \return The default entry size for the section type
     Elf_Xword get_default_entry_size( Elf_Word section_type ) const
     {
         switch ( section_type ) {
@@ -303,9 +343,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
-    //! returns an empty string if no problems are detected,
-    //! or a string containing an error message if problems are found,
-    //! with one error per line.
+    //! \brief Validate the ELF file
+    //! \return An empty string if no problems are detected, or a string containing an error message if problems are found, with one error per line.
     std::string validate() const
     {
         // clang-format off
@@ -319,15 +358,15 @@ class elfio
                 const section* b = sections[j];
                 if (   ( ( a->get_type() & SHT_NOBITS) == 0 )
                     && ( ( b->get_type() & SHT_NOBITS) == 0 )
-                    && ( a->get_size() > 0 )
-                    && ( b->get_size() > 0 )
-                    && ( a->get_offset() > 0 )
-                    && ( b->get_offset() > 0 )
-                    && ( is_offset_in_section( a->get_offset(), b )
-                      || is_offset_in_section( a->get_offset()+a->get_size()-1, b )
-                      || is_offset_in_section( b->get_offset(), a )
-                      || is_offset_in_section( b->get_offset()+b->get_size()-1, a ) ) ) {
-                        errors += "Sections " + a->get_name() + " and " + b->get_name() + " overlap in file\n";
+                      && ( a->get_size() > 0 )
+                      && ( b->get_size() > 0 )
+                      && ( a->get_offset() > 0 )
+                      && ( b->get_offset() > 0 )
+                      && ( is_offset_in_section( a->get_offset(), b )
+                        || is_offset_in_section( a->get_offset()+a->get_size()-1, b )
+                        || is_offset_in_section( b->get_offset(), a )
+                        || is_offset_in_section( b->get_offset()+b->get_size()-1, a ) ) ) {
+                            errors += "Sections " + a->get_name() + " and " + b->get_name() + " overlap in file\n";
                 }
             }
         }
@@ -368,6 +407,10 @@ class elfio
 
   private:
     //------------------------------------------------------------------------------
+    //! \brief Check if an offset is within a section
+    //! \param offset The offset to check
+    //! \param sec Pointer to the section
+    //! \return True if the offset is within the section, false otherwise
     static bool is_offset_in_section( Elf64_Off offset, const section* sec )
     {
         return ( offset >= sec->get_offset() ) &&
@@ -375,12 +418,19 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Get the virtual address of an offset within a section
+    //! \param offset The offset within the section
+    //! \param sec Pointer to the section
+    //! \return The virtual address of the offset within the section
     static Elf64_Addr get_virtual_addr( Elf64_Off offset, const section* sec )
     {
         return sec->get_address() + offset - sec->get_offset();
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Find the section that contains a given offset
+    //! \param offset The offset to find
+    //! \return Pointer to the section that contains the offset, or nullptr if not found
     const section* find_prog_section_for_offset( Elf64_Off offset ) const
     {
         for ( const auto& sec : sections ) {
@@ -393,6 +443,10 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Create an ELF header
+    //! \param file_class The class of the ELF file (ELFCLASS32 or ELFCLASS64)
+    //! \param encoding The encoding of the ELF file (ELFDATA2LSB or ELFDATA2MSB)
+    //! \return Unique pointer to the created ELF header
     std::unique_ptr<elf_header> create_header( unsigned char file_class,
                                                unsigned char encoding )
     {
@@ -416,6 +470,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Create a new section
+    //! \return Pointer to the created section
     section* create_section()
     {
         if ( auto file_class = get_class(); file_class == ELFCLASS64 ) {
@@ -440,6 +496,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Create a new segment
+    //! \return Pointer to the created segment
     segment* create_segment()
     {
         if ( auto file_class = header->get_class(); file_class == ELFCLASS64 ) {
@@ -464,6 +522,7 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Create mandatory sections
     void create_mandatory_sections()
     {
         // Create null section without calling to 'add_section' as no string
@@ -480,6 +539,10 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Load sections from a stream
+    //! \param stream The input stream to load from
+    //! \param is_lazy Whether to load the sections lazily
+    //! \return True if successful, false otherwise
     bool load_sections( std::istream& stream, bool is_lazy )
     {
         unsigned char file_class = header->get_class();
@@ -496,6 +559,9 @@ class elfio
 
         for ( Elf_Half i = 0; i < num; ++i ) {
             section* sec = create_section();
+
+            // Load return value is ignored here
+            // This allows retrieval of information from corrupted sections
             sec->load( stream,
                        static_cast<std::streamoff>( offset ) +
                            static_cast<std::streampos>( i ) * entry_size,
@@ -521,9 +587,14 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
-    //! Checks whether the addresses of the section entirely fall within the given segment.
+    //! \brief Checks whether the addresses of the section entirely fall within the given segment.
     //! It doesn't matter if the addresses are memory addresses, or file offsets,
     //!  they just need to be in the same address space
+    //! \param sect_begin The beginning address of the section
+    //! \param sect_size The size of the section
+    //! \param seg_begin The beginning address of the segment
+    //! \param seg_end The end address of the segment
+    //! \return True if the section is within the segment, false otherwise
     static bool is_sect_in_seg( Elf64_Off sect_begin,
                                 Elf_Xword sect_size,
                                 Elf64_Off seg_begin,
@@ -538,6 +609,10 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Load segments from a stream
+    //! \param stream The input stream to load from
+    //! \param is_lazy Whether to load the segments lazily
+    //! \return True if successful, false otherwise
     bool load_segments( std::istream& stream, bool is_lazy )
     {
         unsigned char file_class = header->get_class();
@@ -595,6 +670,14 @@ class elfio
                                            segVEndAddr )
                          : is_sect_in_seg( psec->get_offset(), psec->get_size(),
                                            segBaseOffset, segEndOffset ) ) {
+
+                    // If it is a TLS segment, add TLS sections only and vice versa
+                    if ( ( ( seg->get_type() == PT_TLS ) &&
+                           ( ( psec->get_flags() & SHF_TLS ) != SHF_TLS ) ) ||
+                         ( ( ( psec->get_flags() & SHF_TLS ) == SHF_TLS ) &&
+                           ( seg->get_type() != PT_TLS ) ) )
+                        continue;
+
                     // Alignment of segment shall not be updated, to preserve original value
                     // It will be re-calculated on saving.
                     seg->add_section_index( psec->get_index(), 0 );
@@ -606,12 +689,18 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Save the ELF header to a stream
+    //! \param stream The output stream to save to
+    //! \return True if successful, false otherwise
     bool save_header( std::ostream& stream ) const
     {
         return header->save( stream );
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Save the sections to a stream
+    //! \param stream The output stream to save to
+    //! \return True if successful, false otherwise
     bool save_sections( std::ostream& stream ) const
     {
         for ( const auto& sec : sections_ ) {
@@ -627,6 +716,9 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Save the segments to a stream
+    //! \param stream The output stream to save to
+    //! \return True if successful, false otherwise
     bool save_segments( std::ostream& stream ) const
     {
         for ( const auto& seg : segments_ ) {
@@ -642,6 +734,9 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Check if a section is without a segment
+    //! \param section_index The index of the section
+    //! \return True if the section is without a segment, false otherwise
     bool is_section_without_segment( unsigned int section_index ) const
     {
         bool found = false;
@@ -657,6 +752,10 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Check if a segment is a subsequence of another segment
+    //! \param seg1 Pointer to the first segment
+    //! \param seg2 Pointer to the second segment
+    //! \return True if seg1 is a subsequence of seg2, false otherwise
     static bool is_subsequence_of( const segment* seg1, const segment* seg2 )
     {
         // Return 'true' if sections of seg1 are a subset of sections in seg2
@@ -673,6 +772,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Get ordered segments
+    //! \return Vector of ordered segments
     std::vector<segment*> get_ordered_segments() const
     {
         std::vector<segment*> res;
@@ -719,6 +820,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Layout sections without segments
+    //! \return True if successful, false otherwise
     bool layout_sections_without_segments()
     {
         for ( unsigned int i = 0; i < sections_.size(); ++i ) {
@@ -747,6 +850,7 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Calculate segment alignment
     void calc_segment_alignment() const
     {
         for ( const auto& seg : segments_ ) {
@@ -760,6 +864,8 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Layout segments and their sections
+    //! \return True if successful, false otherwise
     bool layout_segments_and_their_sections()
     {
         std::vector<segment*> worklist;
@@ -796,9 +902,9 @@ class elfio
                 Elf64_Off cur_page_alignment = current_file_pos % align;
                 Elf64_Off req_page_alignment =
                     seg->get_virtual_address() % align;
-                Elf64_Off error = req_page_alignment - cur_page_alignment;
+                Elf64_Off adjustment = req_page_alignment - cur_page_alignment;
 
-                current_file_pos += ( seg->get_align() + error ) % align;
+                current_file_pos += ( seg->get_align() + adjustment ) % align;
                 seg_start_pos = current_file_pos;
             }
             else if ( seg->get_sections_num() > 0 ) {
@@ -829,16 +935,25 @@ class elfio
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Layout the section table
+    //! \return True if successful, false otherwise
     bool layout_section_table()
     {
         // Simply place the section table at the end for now
-        Elf64_Off alignmentError = current_file_pos % 4;
-        current_file_pos += ( 4 - alignmentError ) % 4;
+        Elf64_Off alignmentError = current_file_pos % 16;
+        current_file_pos += 16 - alignmentError;
         header->set_sections_offset( current_file_pos );
         return true;
     }
 
     //------------------------------------------------------------------------------
+    //! \brief Write segment data
+    //! \param seg Pointer to the segment
+    //! \param section_generated Vector of section generated flags
+    //! \param segment_memory Reference to the segment memory size
+    //! \param segment_filesize Reference to the segment file size
+    //! \param seg_start_pos The start position of the segment
+    //! \return True if successful, false otherwise
     bool write_segment_data( const segment*     seg,
                              std::vector<bool>& section_generated,
                              Elf_Xword&         segment_memory,
@@ -932,20 +1047,29 @@ class elfio
 
     //------------------------------------------------------------------------------
   public:
+    //! \class Sections
+    //! \brief The Sections class provides methods to manipulate sections in an ELF file.
     friend class Sections;
     class Sections
     {
       public:
         //------------------------------------------------------------------------------
+        //! \brief Constructor
+        //! \param parent Pointer to the parent elfio object
         explicit Sections( elfio* parent ) : parent( parent ) {}
 
         //------------------------------------------------------------------------------
+        //! \brief Get the number of sections
+        //! \return The number of sections
         Elf_Half size() const
         {
             return static_cast<Elf_Half>( parent->sections_.size() );
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a section by index
+        //! \param index The index of the section
+        //! \return Pointer to the section, or nullptr if not found
         section* operator[]( unsigned int index ) const
         {
             section* sec = nullptr;
@@ -958,6 +1082,9 @@ class elfio
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a section by name
+        //! \param name The name of the section
+        //! \return Pointer to the section, or nullptr if not found
         section* operator[]( const std::string_view& name ) const
         {
             section* sec = nullptr;
@@ -973,6 +1100,9 @@ class elfio
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Add a new section
+        //! \param name The name of the section
+        //! \return Pointer to the created section
         section* add( const std::string& name ) const
         {
             section* new_section = parent->create_section();
@@ -988,24 +1118,32 @@ class elfio
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get an iterator to the beginning of the sections
+        //! \return Iterator to the beginning of the sections
         std::vector<std::unique_ptr<section>>::iterator begin()
         {
             return parent->sections_.begin();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get an iterator to the end of the sections
+        //! \return Iterator to the end of the sections
         std::vector<std::unique_ptr<section>>::iterator end()
         {
             return parent->sections_.end();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a const iterator to the beginning of the sections
+        //! \return Const iterator to the beginning of the sections
         std::vector<std::unique_ptr<section>>::const_iterator begin() const
         {
             return parent->sections_.cbegin();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a const iterator to the end of the sections
+        //! \return Const iterator to the end of the sections
         std::vector<std::unique_ptr<section>>::const_iterator end() const
         {
             return parent->sections_.cend();
@@ -1013,52 +1151,71 @@ class elfio
 
         //------------------------------------------------------------------------------
       private:
-        elfio* parent;
+        elfio* parent; //!< Pointer to the parent elfio object
     };
-    Sections sections;
+    Sections sections; //!< Sections object
 
     //------------------------------------------------------------------------------
+    //! \class Segments
+    //! \brief The Segments class provides methods to manipulate segments in an ELF file.
     friend class Segments;
     class Segments
     {
       public:
         //------------------------------------------------------------------------------
+        //! \brief Constructor
+        //! \param parent Pointer to the parent elfio object
         explicit Segments( elfio* parent ) : parent( parent ) {}
 
         //------------------------------------------------------------------------------
+        //! \brief Get the number of segments
+        //! \return The number of segments
         Elf_Half size() const
         {
             return static_cast<Elf_Half>( parent->segments_.size() );
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a segment by index
+        //! \param index The index of the segment
+        //! \return Pointer to the segment, or nullptr if not found
         segment* operator[]( unsigned int index ) const
         {
             return parent->segments_[index].get();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Add a new segment
+        //! \return Pointer to the created segment
         segment* add() { return parent->create_segment(); }
 
         //------------------------------------------------------------------------------
+        //! \brief Get an iterator to the beginning of the segments
+        //! \return Iterator to the beginning of the segments
         std::vector<std::unique_ptr<segment>>::iterator begin()
         {
             return parent->segments_.begin();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get an iterator to the end of the segments
+        //! \return Iterator to the end of the segments
         std::vector<std::unique_ptr<segment>>::iterator end()
         {
             return parent->segments_.end();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a const iterator to the beginning of the segments
+        //! \return Const iterator to the beginning of the segments
         std::vector<std::unique_ptr<segment>>::const_iterator begin() const
         {
             return parent->segments_.cbegin();
         }
 
         //------------------------------------------------------------------------------
+        //! \brief Get a const iterator to the end of the segments
+        //! \return Const iterator to the end of the segments
         std::vector<std::unique_ptr<segment>>::const_iterator end() const
         {
             return parent->segments_.cend();
@@ -1066,21 +1223,23 @@ class elfio
 
         //------------------------------------------------------------------------------
       private:
-        elfio* parent;
+        elfio* parent; //!< Pointer to the parent elfio object
     };
-    Segments segments;
+    Segments segments; //!< Segments object
 
     //------------------------------------------------------------------------------
   private:
-    std::unique_ptr<std::ifstream>         pstream = nullptr;
-    std::unique_ptr<elf_header>            header  = nullptr;
-    std::vector<std::unique_ptr<section>>  sections_;
-    std::vector<std::unique_ptr<segment>>  segments_;
-    endianess_convertor                    convertor;
-    address_translator                     addr_translator;
-    std::shared_ptr<compression_interface> compression = nullptr;
+    std::unique_ptr<std::ifstream> pstream =
+        nullptr; //!< Pointer to the input stream
+    std::unique_ptr<elf_header> header = nullptr; //!< Pointer to the ELF header
+    std::vector<std::unique_ptr<section>> sections_; //!< Vector of sections
+    std::vector<std::unique_ptr<segment>> segments_; //!< Vector of segments
+    endianness_convertor                  convertor; //!< Endianness convertor
+    address_translator addr_translator;              //!< Address translator
+    std::shared_ptr<compression_interface> compression =
+        nullptr; //!< Pointer to the compression interface
 
-    Elf_Xword current_file_pos = 0;
+    Elf_Xword current_file_pos = 0; //!< Current file position
 };
 
 } // namespace ELFIO

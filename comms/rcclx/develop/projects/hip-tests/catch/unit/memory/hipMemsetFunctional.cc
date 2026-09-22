@@ -1,20 +1,7 @@
 /*
- * Copyright (c) 2022 Advanced Micro Devices, Inc. All rights reserved.
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANNTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER INN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR INN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
  */
 
 /**
@@ -146,11 +133,11 @@ void checkMemset(T value, size_t count, MemsetType memsetType, bool async = fals
   }
 }
 
-// Macro which defines a TEST_CASE which calls and then checks the result of the 1D memset macros
+// Macro which defines a HIP_TEST_CASE which calls and then checks the result of the 1D memset macros
 // for all combinations of sync/async and hipMalloc/hipHostMalloc, given the value and memory range.
-#define DEFINE_1D_BASIC_TEST_CASE(suffix, memsetType, T, value, count)                             \
-  TEST_CASE("Unit_hipMemsetFunctional_" + std::string(suffix)) {                                   \
-    const std::string memsetStr = std::string(suffix);                                             \
+#define DEFINE_1D_BASIC_TEST(suffix, memsetType, T, value, count)                                  \
+  HIP_TEST_CASE(Unit_hipMemsetFunctional_##suffix) {                                               \
+    const std::string memsetStr = std::string(#suffix);                                            \
     SECTION(memsetStr + " - Device Malloc") {                                                      \
       checkMemset(static_cast<T>(value), count, memsetType, false, hipDeviceMalloc_t);             \
     }                                                                                              \
@@ -165,20 +152,20 @@ void checkMemset(T value, size_t count, MemsetType memsetType, bool async = fals
     }                                                                                              \
   }
 
-DEFINE_1D_BASIC_TEST_CASE("ZeroValue_hipMemset", hipMemsetTypeDefault, float, 0, 1024)
-DEFINE_1D_BASIC_TEST_CASE("ZeroValue_hipMemsetD32", hipMemsetTypeD32, uint32_t, 0, 1024)
-DEFINE_1D_BASIC_TEST_CASE("ZeroValue_hipMemsetD16", hipMemsetTypeD16, int16_t, 0, 1024)
-DEFINE_1D_BASIC_TEST_CASE("ZeroValue_hipMemsetD8", hipMemsetTypeD8, int8_t, 0, 1024)
+DEFINE_1D_BASIC_TEST(ZeroValue_hipMemset, hipMemsetTypeDefault, float, 0, 1024)
+DEFINE_1D_BASIC_TEST(ZeroValue_hipMemsetD32, hipMemsetTypeD32, uint32_t, 0, 1024)
+DEFINE_1D_BASIC_TEST(ZeroValue_hipMemsetD16, hipMemsetTypeD16, int16_t, 0, 1024)
+DEFINE_1D_BASIC_TEST(ZeroValue_hipMemsetD8, hipMemsetTypeD8, int8_t, 0, 1024)
 
-DEFINE_1D_BASIC_TEST_CASE("SmallSize_hipMemset", hipMemsetTypeDefault, char, 0x42, 1)
-DEFINE_1D_BASIC_TEST_CASE("SmallSize_hipMemsetD32", hipMemsetTypeD32, uint32_t, 0x101, 1)
-DEFINE_1D_BASIC_TEST_CASE("SmallSize_hipMemsetD16", hipMemsetTypeD16, int16_t, 0x10, 1)
-DEFINE_1D_BASIC_TEST_CASE("SmallSize_hipMemsetD8", hipMemsetTypeD8, int8_t, 0x1, 1)
+DEFINE_1D_BASIC_TEST(SmallSize_hipMemset, hipMemsetTypeDefault, char, 0x42, 1)
+DEFINE_1D_BASIC_TEST(SmallSize_hipMemsetD32, hipMemsetTypeD32, uint32_t, 0x101, 1)
+DEFINE_1D_BASIC_TEST(SmallSize_hipMemsetD16, hipMemsetTypeD16, int16_t, 0x10, 1)
+DEFINE_1D_BASIC_TEST(SmallSize_hipMemsetD8, hipMemsetTypeD8, int8_t, 0x1, 1)
 
-DEFINE_1D_BASIC_TEST_CASE("ZeroSize_hipMemset", hipMemsetTypeDefault, char, 0x42, 0)
-DEFINE_1D_BASIC_TEST_CASE("ZeroSize_hipMemsetD32", hipMemsetTypeD32, uint32_t, 0x101, 0)
-DEFINE_1D_BASIC_TEST_CASE("ZeroSize_hipMemsetD16", hipMemsetTypeD16, int16_t, 0x10, 0)
-DEFINE_1D_BASIC_TEST_CASE("ZeroSize_hipMemsetD8", hipMemsetTypeD8, int8_t, 0x1, 0)
+DEFINE_1D_BASIC_TEST(ZeroSize_hipMemset, hipMemsetTypeDefault, char, 0x42, 0)
+DEFINE_1D_BASIC_TEST(ZeroSize_hipMemsetD32, hipMemsetTypeD32, uint32_t, 0x101, 0)
+DEFINE_1D_BASIC_TEST(ZeroSize_hipMemsetD16, hipMemsetTypeD16, int16_t, 0x10, 0)
+DEFINE_1D_BASIC_TEST(ZeroSize_hipMemsetD8, hipMemsetTypeD8, int8_t, 0x1, 0)
 
 // Helper function that sets a full region of memory with an initial value, sets a smaller subregion
 // with another value and check that the memset API do not write outside of the subregion of data.
@@ -201,7 +188,7 @@ template <typename T> void partialMemsetTest(T valA, T valB, size_t count, size_
   HIP_CHECK(hipFree(devPtr));
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_PartialSet_1D") {
+HIP_TEST_CASE(Unit_hipMemsetFunctional_PartialSet_1D) {
   auto widthOffset = GENERATE(8, 16, 32, 64, 128, 256, 512, 1024);
   SECTION("hipMemset - Partial Set") {
     partialMemsetTest<char>(0x1, 0x42, 1024, widthOffset, hipMemsetTypeDefault, false);
@@ -278,8 +265,7 @@ template <typename T> void checkMemset2D(T value, size_t width, size_t height, b
   HIP_CHECK(hipStreamDestroy(stream));
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_ZeroValue_2D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_ZeroValue_2D) {
 
   constexpr size_t width{128};
   constexpr size_t height{128};
@@ -288,16 +274,14 @@ TEST_CASE("Unit_hipMemsetFunctional_ZeroValue_2D") {
   SECTION("hipMemset2DAsync - Zero Value") { checkMemset2D(memsetVal, width, height, true); }
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_SmallSize_2D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_SmallSize_2D) {
 
   constexpr char memsetVal = 0x42;
   SECTION("hipMemset2D - Small Size") { checkMemset2D(memsetVal, 1, 1, false); }
   SECTION("hipMemset2DAsync - Small Size") { checkMemset2D(memsetVal, 1, 1, true); }
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_ZeroSize_2D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_ZeroSize_2D) {
 
   size_t pitch{0};
   size_t width{10};
@@ -378,11 +362,11 @@ template <typename T> void partialMemsetTest2D(T valA, T valB, size_t width, siz
   HIP_CHECK(hipFree(devPtr));
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_PartialSet_2D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_PartialSet_2D) {
 
-  for (auto widthOffset = 8; widthOffset <= 128; widthOffset *= 2) {
-    for (auto heightOffset = 8; heightOffset <= 128; heightOffset *= 2) {
+  const auto maxOffset = isQuickLevel() ? 32 : 128;
+  for (auto widthOffset = 8; widthOffset <= maxOffset; widthOffset *= 2) {
+    for (auto heightOffset = 8; heightOffset <= maxOffset; heightOffset *= 2) {
       SECTION("hipMemset2D - Partial Set") {
         partialMemsetTest2D('a', 'b', 200, 200, widthOffset, heightOffset, false);
       }
@@ -431,15 +415,12 @@ void check_device_data_3D(hipPitchedPtr& devPitchedPtr, T value, hipExtent exten
   }
 }
 
-// Helper function for allocating memory, setting data with the specified 3D memset API and then
-// checking result of operation.
+// Helper function that sets data on a pre-allocated buffer with the specified 3D memset API and
+// then checks the result of the operation.
 template <typename T>
 void checkMemset3D(hipPitchedPtr& devPitchedPtr, T value, hipExtent extent, bool async = false) {
   hipStream_t stream{nullptr};
   HIP_CHECK(hipStreamCreate(&stream));
-  if (devPitchedPtr.ptr == nullptr) {
-    HIP_CHECK(hipMalloc3D(&devPitchedPtr, extent));
-  }
   if (!async) {
     INFO("Testing hipMemset3D call");
     HIP_CHECK(hipMemset3D(devPitchedPtr, value, extent));
@@ -456,56 +437,45 @@ void checkMemset3D(hipPitchedPtr& devPitchedPtr, T value, hipExtent extent, bool
 
 void check_memset_3D(std::string sectionStr, size_t width, size_t height, size_t depth,
                      char value) {
-  hipPitchedPtr devPitchedPtr;
-  hipExtent fullExtent;
   constexpr char fullVal = 0x21;
   hipExtent extent = make_hipExtent(width, height, depth);
-  // Check if any of the dimensions are zero
+  // Check if any of the dimensions are zero.
   bool anyZero = width * height * depth == 0;
+
+  hipExtent allocExtent = anyZero ? make_hipExtent(FULL_DIM, FULL_DIM, FULL_DIM) : extent;
+  hipPitchedPtr devPitchedPtr{};
+  HIP_CHECK(hipMalloc3D(&devPitchedPtr, allocExtent));
   if (anyZero) {
-    // If they are zero then set a full region with memset value to later check if it's changed.
-    devPitchedPtr.ptr = nullptr;
-    fullExtent = make_hipExtent(FULL_DIM, FULL_DIM, FULL_DIM);
-    checkMemset3D(devPitchedPtr, fullVal, fullExtent, false);
+    checkMemset3D(devPitchedPtr, fullVal, allocExtent, false);
   }
   SECTION("hipMemset3D - " + sectionStr) {
-    if (!anyZero) {
-      devPitchedPtr.ptr = nullptr;
-    }
     checkMemset3D(devPitchedPtr, value, extent, false);
     if (anyZero) {
-      // Check to make sure memsets with a zero dimension did not affect above set region.
-      check_device_data_3D(devPitchedPtr, fullVal, fullExtent);
+      // Check to make sure memsets with a zero dimension did not affect the region set above.
+      check_device_data_3D(devPitchedPtr, fullVal, allocExtent);
     }
-    HIP_CHECK(hipFree(devPitchedPtr.ptr));
   }
   SECTION("hipMemset3DAsync - " + sectionStr) {
-    if (!anyZero) {
-      devPitchedPtr.ptr = nullptr;
-    }
     checkMemset3D(devPitchedPtr, value, extent, true);
     if (anyZero) {
-      // Check to make sure memsets with a zero dimension did not affect above set region.
-      check_device_data_3D(devPitchedPtr, fullVal, fullExtent);
+      // Check to make sure memsets with a zero dimension did not affect the region set above.
+      check_device_data_3D(devPitchedPtr, fullVal, allocExtent);
     }
-    HIP_CHECK(hipFree(devPitchedPtr.ptr));
   }
+  HIP_CHECK(hipFree(devPitchedPtr.ptr));
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_ZeroValue_3D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_ZeroValue_3D) {
 
   check_memset_3D("Zero Value", 128, 128, 10, 0);
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_SmallSize_3D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_SmallSize_3D) {
 
   check_memset_3D("Small Size", 1, 1, 1, 0x42);
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_ZeroSize_3D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_ZeroSize_3D) {
 
   constexpr size_t elementSize = sizeof(char);
   check_memset_3D("Zero Width", 0, FULL_DIM, FULL_DIM, 0x23);
@@ -525,10 +495,10 @@ void partialMemsetTest3D(T valA, T valB, size_t width, size_t height, size_t dep
   size_t subWidth{width - widthOffset};
   size_t subHeight{height - heightOffset};
   size_t subDepth{depth - depthOffset};
-  hipPitchedPtr devPitchedPtr;
-  devPitchedPtr.ptr = nullptr;
   hipExtent extent = make_hipExtent(width * sizeof(T), height, depth);
   hipExtent subExtent = make_hipExtent(subWidth * sizeof(T), subHeight, subDepth);
+  hipPitchedPtr devPitchedPtr{};
+  HIP_CHECK(hipMalloc3D(&devPitchedPtr, extent));
 
   // Set entire region to be first value.
   INFO("Setting full cuboid region");
@@ -560,12 +530,13 @@ void partialMemsetTest3D(T valA, T valB, size_t width, size_t height, size_t dep
   HIP_CHECK(hipFree(devPitchedPtr.ptr));
 }
 
-TEST_CASE("Unit_hipMemsetFunctional_PartialSet_3D") {
-  CHECK_IMAGE_SUPPORT
+HIP_TEST_CASE(Unit_hipMemsetFunctional_PartialSet_3D) {
 
-  for (auto widthOffset = 8; widthOffset <= 128; widthOffset *= 2) {
-    for (auto heightOffset = 8; heightOffset <= 128; heightOffset *= 2) {
-      for (auto depthOffset = 2; depthOffset <= 5; depthOffset++) {
+  const auto maxWH = isQuickLevel() ? 32 : 128;
+  const auto maxD = isQuickLevel() ? 3 : 5;
+  for (auto widthOffset = 8; widthOffset <= maxWH; widthOffset *= 2) {
+    for (auto heightOffset = 8; heightOffset <= maxWH; heightOffset *= 2) {
+      for (auto depthOffset = 2; depthOffset <= maxD; depthOffset++) {
         SECTION("hipMemset3D - Partial Set") {
           partialMemsetTest3D('a', 'b', 200, 200, 10, widthOffset, heightOffset, depthOffset,
                               false);

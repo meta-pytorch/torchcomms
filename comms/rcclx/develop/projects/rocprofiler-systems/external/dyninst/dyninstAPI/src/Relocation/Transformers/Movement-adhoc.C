@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include "Transformer.h"
 #include "Movement-adhoc.h"
 #include "dyninstAPI/src/debug.h"
@@ -144,7 +145,7 @@ bool adhocMovementTransformer::process(RelocBlock *cur, RelocGraph *cfg) {
     Absloc aloc;
 
     if (isPCDerefCF(*iter, insn, target)) {
-       CFWidget::Ptr cf = boost::dynamic_pointer_cast<CFWidget>(*iter);
+       CFWidget::Ptr cf = dyncompat::dynamic_pointer_cast<CFWidget>(*iter);
        assert(cf);
        cf->setOrigTarget(target);
     }

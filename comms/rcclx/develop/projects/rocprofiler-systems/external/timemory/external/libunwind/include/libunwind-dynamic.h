@@ -174,7 +174,7 @@ extern void _U_dyn_register (unw_dyn_info_t *);
    This routine is NOT signal-safe.  */
 extern void _U_dyn_cancel (unw_dyn_info_t *);
 
-
+
 /* Convenience routines.  */
 
 #define _U_dyn_op(_tag, _qp, _when, _reg, _val)                         \

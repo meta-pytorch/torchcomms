@@ -267,7 +267,7 @@ if(NOT BUILD_SHARED_LIBS AND NOT BUILD_STATIC_LIBS)
 endif()
 
 if(${PROJECT_NAME}_MAIN_PROJECT OR TIMEMORY_LANGUAGE_STANDARDS)
-    if("${CMAKE_CXX_STANDARD}" LESS 17)
+    if("${CMAKE_CXX_STANDARD}" LESS 20)
         unset(CMAKE_CXX_STANDARD CACHE)
     endif()
 
@@ -282,7 +282,7 @@ if(${PROJECT_NAME}_MAIN_PROJECT OR TIMEMORY_LANGUAGE_STANDARDS)
         11
         CACHE STRING "C language standard")
     set(CMAKE_CXX_STANDARD
-        17
+        20
         CACHE STRING "CXX language standard")
     if(CMAKE_VERSION VERSION_LESS 3.18.0)
         set(CMAKE_CUDA_STANDARD
@@ -308,7 +308,7 @@ if(${PROJECT_NAME}_MAIN_PROJECT OR TIMEMORY_LANGUAGE_STANDARDS)
     # extensions
     timemory_add_option(CMAKE_C_EXTENSIONS "C language standard extensions (e.g. gnu11)"
                         OFF)
-    timemory_add_option(CMAKE_CXX_EXTENSIONS "C++ language standard (e.g. gnu++17)"
+    timemory_add_option(CMAKE_CXX_EXTENSIONS "C++ language standard (e.g. gnu++20)"
                         ${_CXX_EXT})
     timemory_add_option(CMAKE_CUDA_EXTENSIONS "CUDA language standard (e.g. gnu++14)" OFF)
 else()
@@ -317,15 +317,15 @@ else()
     timemory_add_feature(CMAKE_CUDA_STANDARD_REQUIRED "Require C++ language standard")
     timemory_add_feature(CMAKE_C_EXTENSIONS "C language standard extensions (e.g. gnu11)")
     timemory_add_feature(CMAKE_CXX_EXTENSIONS
-                         "C++ language standard extensions (e.g. gnu++17)")
+                         "C++ language standard extensions (e.g. gnu++20)")
     timemory_add_feature(CMAKE_CUDA_EXTENSIONS "CUDA language standard (e.g. gnu++14)")
 
     if(NOT DEFINED CMAKE_CXX_STANDARD)
         timemory_message(
             AUTHOR_WARNING
-            "timemory requires settings CMAKE_CXX_STANDARD. Defaulting CMAKE_CXX_STANDARD to 17..."
+            "timemory requires settings CMAKE_CXX_STANDARD. Defaulting CMAKE_CXX_STANDARD to 20..."
             )
-        set(CMAKE_CXX_STANDARD 17)
+        set(CMAKE_CXX_STANDARD 20)
     endif()
 endif()
 

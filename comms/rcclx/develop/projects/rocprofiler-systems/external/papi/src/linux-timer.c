@@ -246,6 +246,22 @@ get_cycles( void )
 }
 
 /************************/
+/* loongarch64 get_cycles() */
+/************************/
+
+#elif defined(__loongarch64)
+static inline long long
+get_cycles( void )
+{
+	int rid = 0;
+	unsigned long ret;
+
+	__asm__ __volatile__ ( "rdtime.d %0, %1" : "=r" (ret), "=r" (rid) );
+
+	return ret;
+}
+
+/************************/
 /* POWER get_cycles()   */
 /************************/
 

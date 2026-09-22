@@ -133,9 +133,11 @@
 ** Which sqlite3.c we're using needs to be configurable to enable
 ** building against a custom copy, e.g. the SEE variant. We have to
 ** include sqlite3.c, as opposed to sqlite3.h, in order to get access
-** to some internal details like SQLITE_MAX_... and friends, and keep
-** those consistent with this build. This increases the rebuild time
-** considerably, however.
+** to some internal details like SQLITE_MAX_... and friends. This
+** increases the rebuild time considerably but we need this in order
+** to access some internal functionality and keep the to-Java-exported
+** values of SQLITE_MAX_... and SQLITE_LIMIT_... in sync with the C
+** build.
 */
 #ifndef SQLITE_C
 # define SQLITE_C sqlite3.c
@@ -333,7 +335,7 @@ struct S3JniNphOp {
   const char * const zMember  /* Name of member property */;
   const char * const zTypeSig /* JNI type signature of zMember */;
   /*
-  ** klazz is a global ref to the class represented by zName.
+  ** klazz is a global ref to the class represented by pRef.
   **
   ** According to:
   **
@@ -997,20 +999,19 @@ static S3JniEnv * S3JniEnv__get(JNIEnv * const env){
 ** JNI bindings such as sqlite3_prepare_v2/v3(), and definitely not
 ** from client code.
 **
-** Returns err_code _unless_ err_code is 0 and sqlite3_set_errmsg()
-** fails with OOM, in which case it may return SQLITE_OOM or fail
-** fatally.
-**
-** This function predates sqlite3_set_errmsg(), which is why it has a
-** slightly different interface. Before that function was introduced,
-** this code used the SQLite-internal APIs to do this.
+** Returns err_code.
 */
-static int s3jni_db_error(JNIEnv * env, sqlite3* const db,
-                          int err_code, const char * const zMsg){
+static int s3jni_db_error(sqlite3* const db, int err_code,
+                          const char * const zMsg){
   if( db!=0 ){
-    int const rc = sqlite3_set_errmsg(db, err_code, zMsg);
-    s3jni_oom_fatal(0==rc);
-    if( rc && !err_code ) err_code=rc;
+    if( 0==zMsg ){
+      sqlite3Error(db, err_code);
+    }else{
+      const int nMsg = sqlite3Strlen30(zMsg);
+      sqlite3_mutex_enter(sqlite3_db_mutex(db));
+      sqlite3ErrorWithMsg(db, err_code, "%.*s", nMsg, zMsg);
+      sqlite3_mutex_leave(sqlite3_db_mutex(db));
+    }
   }
   return err_code;
 }
@@ -1234,11 +1235,11 @@ static int s3jni__db_exception(JNIEnv * const env, sqlite3 * const pDb,
     char * zMsg;
     S3JniExceptionClear;
     zMsg = s3jni_exception_error_msg(env, ex);
-    s3jni_db_error(env, pDb, errCode, zMsg ? zMsg : zDfltMsg);
+    s3jni_db_error(pDb, errCode, zMsg ? zMsg : zDfltMsg);
     sqlite3_free(zMsg);
     S3JniUnrefLocal(ex);
   }else if( zDfltMsg ){
-    s3jni_db_error(env, pDb, errCode, zDfltMsg);
+    s3jni_db_error(pDb, errCode, zDfltMsg);
   }
   return errCode;
 }
@@ -1956,6 +1957,15 @@ static void S3JniUdf_finalizer(void * s){
 }
 
 /*
+** Helper for processing args to UDF handlers with signature
+** (sqlite3_context*,int,sqlite3_value**).
+*/
+typedef struct {
+  jobject jcx         /* sqlite3_context */;
+  jobjectArray jargv  /* sqlite3_value[] */;
+} udf_jargs;
+
+/*
 ** Converts the given (cx, argc, argv) into arguments for the given
 ** UDF, writing the result (Java wrappers for cx and argv) in the
 ** final 2 arguments. Returns 0 on success, SQLITE_NOMEM on allocation
@@ -1996,7 +2006,7 @@ error_oom:
 /*
 ** Requires that jCx and jArgv are sqlite3_context
 ** resp. array-of-sqlite3_value values initialized by udf_args(). The
-** (argc,argv) are (0,NULL) for UDF types with no arguments. This
+** latter will be 0-and-NULL for UDF types with no arguments. This
 ** function zeroes out the nativePointer member of jCx and each entry
 ** in jArgv. This is a safety-net precaution to avoid undefined
 ** behavior if a Java-side UDF holds a reference to its context or one
@@ -2089,19 +2099,19 @@ static int udf_xFSI(sqlite3_context* const pCx, int argc,
                     sqlite3_value** const argv, S3JniUdf * const s,
                     jmethodID xMethodID, const char * const zFuncType){
   S3JniDeclLocal_env;
-  jobject jcx        = 0 /* sqlite3_context */;
-  jobjectArray jargv = 0 /* sqlite3_value[] */;
-  int rc = udf_args(env, pCx, argc, argv, &jcx, &jargv);
+  udf_jargs args = {0,0};
+  int rc = udf_args(env, pCx, argc, argv, &args.jcx, &args.jargv);
+
   if( 0 == rc ){
-    (*env)->CallVoidMethod(env, s->jObj, xMethodID, jcx, jargv);
+    (*env)->CallVoidMethod(env, s->jObj, xMethodID, args.jcx, args.jargv);
     S3JniIfThrew{
       rc = udf_report_exception(env, 'F'==zFuncType[1]/*xFunc*/, pCx,
                                 s->zFuncName, zFuncType);
     }
-    udf_unargs(env, jcx, argc, jargv);
+    udf_unargs(env, args.jcx, argc, args.jargv);
   }
-  S3JniUnrefLocal(jcx);
-  S3JniUnrefLocal(jargv);
+  S3JniUnrefLocal(args.jcx);
+  S3JniUnrefLocal(args.jargv);
   return rc;
 }
 
@@ -3290,7 +3300,7 @@ static jobject s3jni_commit_rollback_hook(int isCommit, JNIEnv * const env,
   S3JniDb_mutex_enter;
   ps = S3JniDb_from_jlong(jpDb);
   if( !ps ){
-    s3jni_db_error(env, ps->pDb, SQLITE_MISUSE, 0);
+    s3jni_db_error(ps->pDb, SQLITE_MISUSE, 0);
     S3JniDb_mutex_leave;
     return 0;
   }
@@ -3310,14 +3320,13 @@ static jobject s3jni_commit_rollback_hook(int isCommit, JNIEnv * const env,
     else sqlite3_rollback_hook(ps->pDb, 0, 0);
   }else{
     jclass const klazz = (*env)->GetObjectClass(env, jHook);
-    jmethodID const xCallback =
-      (*env)->GetMethodID(env, klazz, "call",
-                          isCommit ? "()I" : "()V");
+    jmethodID const xCallback = (*env)->GetMethodID(env, klazz, "call",
+                                                    isCommit ? "()I" : "()V");
     S3JniUnrefLocal(klazz);
     S3JniIfThrew {
       S3JniExceptionReport;
       S3JniExceptionClear;
-      s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
+      s3jni_db_error(ps->pDb, SQLITE_ERROR,
                      "Cannot not find matching call() method in"
                      "hook object.");
     }else{
@@ -3597,7 +3606,7 @@ S3JniApi(sqlite3_create_collation() sqlite3_create_collation_v2(),
     (*env)->GetMethodID(env, klazz, "call", "([B[B)I");
   S3JniUnrefLocal(klazz);
   S3JniIfThrew{
-    rc = s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
+    rc = s3jni_db_error(ps->pDb, SQLITE_ERROR,
                         "Could not get call() method from "
                         "CollationCallback object.");
   }else{
@@ -3636,15 +3645,15 @@ S3JniApi(sqlite3_create_function() sqlite3_create_function_v2()
 
   if( !pDb || !jFuncName ){
     return SQLITE_MISUSE;
-  }else if( !encodingTypeIsValid(eTextRep & 0x0f) ){
-    return s3jni_db_error(env, pDb, SQLITE_FORMAT,
+  }else if( !encodingTypeIsValid(eTextRep) ){
+    return s3jni_db_error(pDb, SQLITE_FORMAT,
                           "Invalid function encoding option.");
   }
   s = S3JniUdf_alloc(env, jFunctor);
   if( !s ) return SQLITE_NOMEM;
 
   if( UDF_UNKNOWN_TYPE==s->type ){
-    rc = s3jni_db_error(env, pDb, SQLITE_MISUSE,
+    rc = s3jni_db_error(pDb, SQLITE_MISUSE,
                         "Cannot unambiguously determine function type.");
     S3JniUdf_free(env, s, 1);
     goto error_cleanup;
@@ -4003,7 +4012,7 @@ S3JniApi(sqlite3_jni_db_error(), jint, 1jni_1db_1error)(
     zStr = jStr
       ? s3jni_jstring_to_utf8( jStr, 0)
       : NULL;
-    rc = s3jni_db_error(env,  ps->pDb, (int)jRc, zStr );
+    rc = s3jni_db_error( ps->pDb, (int)jRc, zStr );
     sqlite3_free(zStr);
   }
   return rc;
@@ -4312,7 +4321,7 @@ static void s3jni_updatepre_hook_impl(void * pState, sqlite3 *pDb, int opId,
   jTable = jDbName ? s3jni_utf8_to_jstring( zTable, -1) : 0;
   S3JniIfThrew {
     S3JniExceptionClear;
-    s3jni_db_error(env, ps->pDb, SQLITE_NOMEM, 0);
+    s3jni_db_error(ps->pDb, SQLITE_NOMEM, 0);
   }else{
     assert( hook.jObj );
     assert( hook.midCallback );
@@ -4414,7 +4423,7 @@ static jobject s3jni_updatepre_hook(JNIEnv * env, int isPre, jlong jpDb, jobject
   S3JniUnrefLocal(klazz);
   S3JniIfThrew {
     S3JniExceptionClear;
-    s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
+    s3jni_db_error(ps->pDb, SQLITE_ERROR,
                    "Cannot not find matching callback on "
                    "(pre)update hook object.");
   }else{
@@ -4523,7 +4532,7 @@ S3JniApi(sqlite3_progress_handler(),void,1progress_1handler)(
     S3JniUnrefLocal(klazz);
     S3JniIfThrew {
       S3JniExceptionClear;
-      s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
+      s3jni_db_error(ps->pDb, SQLITE_ERROR,
                      "Cannot not find matching xCallback() on "
                      "ProgressHandler object.");
     }else{
@@ -4897,9 +4906,8 @@ S3JniApi(sqlite3_set_authorizer(),jint,1set_1authorizer)(
                                              ")I");
     S3JniUnrefLocal(klazz);
     S3JniIfThrew {
-      rc = s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
-                          "Error setting up Java parts of "
-                          "authorizer hook.");
+      rc = s3jni_db_error(ps->pDb, SQLITE_ERROR,
+                          "Error setting up Java parts of authorizer hook.");
     }else{
       rc = sqlite3_set_authorizer(ps->pDb, s3jni_xAuth, ps);
     }
@@ -5183,7 +5191,7 @@ S3JniApi(sqlite3_trace_v2(),jint,1trace_1v2)(
     S3JniUnrefLocal(klazz);
     S3JniIfThrew {
       S3JniExceptionClear;
-      rc = s3jni_db_error(env, ps->pDb, SQLITE_ERROR,
+      rc = s3jni_db_error(ps->pDb, SQLITE_ERROR,
                           "Cannot not find matching call() on "
                           "TracerCallback object.");
     }else{

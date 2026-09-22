@@ -1,6 +1,6 @@
 Summary: Performance Application Programming Interface
 Name: papi
-Version: 7.2.0.0b2
+Version: 7.3.0.0
 Release: 1%{?dist}
 License: BSD
 Group: Development/System
@@ -13,6 +13,21 @@ BuildRequires: kernel-headers >= 2.6.32
 BuildRequires: chrpath
 #Right now libpfm does not know anything about s390 and will fail
 ExcludeArch: s390 s390x
+
+# Conditional for rocm_smi support
+%bcond_with rocm_smi
+
+# rocm_smi path detection
+%if %{with rocm_smi}
+# First try user-defined path, then default locations
+%define rocm_smi_path %{?_rocm_smi_path:%{_rocm_smi_path}}%{!?_rocm_smi_path:/opt/rocm}
+
+# Verify rocm_smi exists at the expected path
+%{!?__rocm_smi_exists:%global __rocm_smi_exists %(test -e %{rocm_smi_path} && echo 1 || echo 0)}
+%if !%{__rocm_smi_exists}
+  %{error: rocm_smi not found at %{rocm_smi_path}, install rocm_smi or specify alternate path with --define="_rocm_smi_path /path/to/rocm_smi"}
+%endif
+%endif
 
 %description
 PAPI provides a programmer interface to monitor the performance of
@@ -35,6 +50,10 @@ cd src
 %configure --with-static-lib=no --with-shared-lib=yes --with-shlib
 #DBG workaround to make sure libpfm just uses the normal CFLAGS
 DBG="" make
+%if %{with rocm_smi}
+    PAPI_ROCMSMI_ROOT=%{rocm_smi_path} \
+    --with-rocm-smi \
+%endif
 
 #%check
 #cd src
@@ -78,7 +97,7 @@ rm -rf $RPM_BUILD_ROOT
 * Wed Dec 8 2010 Dan Terpstra <terpstra@eecs.utk.edu> - 4.1.2-1
 - Rebase to papi-4.1.2
 
-* Mon Jun 8 2010 William Cohen <wcohen@redhat.com> - 4.1.0-1
+* Tue Jun 8 2010 William Cohen <wcohen@redhat.com> - 4.1.0-1
 - Rebase to papi-4.1.0
 
 * Mon May 17 2010 William Cohen <wcohen@redhat.com> - 4.0.0-5

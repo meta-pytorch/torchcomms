@@ -57,7 +57,7 @@ static std::condition_variable agent_cond_var = {};
 static bool data_is_ready = false;
 static std::string _rocp_sdk_error_string;
 static long long int *_counter_values = NULL;
-static int rpsdk_profiling_mode = RPSDK_MODE_DISPATCH;
+static int rpsdk_profiling_mode = RPSDK_MODE_DEVICE_SAMPLING;
 
 static agent_map_t gpu_agents = agent_map_t{};
 
@@ -74,12 +74,31 @@ static std::unordered_map<std::string, unsigned int> event_instance_name_to_papi
 /* *** */
 typedef rocprofiler_status_t (* rocprofiler_flush_buffer_t) (rocprofiler_buffer_id_t buffer_id);
 
-typedef rocprofiler_status_t (* rocprofiler_sample_device_counting_service_t) (rocprofiler_context_id_t context_id, rocprofiler_user_data_t user_data, rocprofiler_counter_flag_t flags, rocprofiler_record_counter_t* output_records, size_t* rec_count);
-
-typedef rocprofiler_status_t (* rocprofiler_configure_callback_dispatch_counting_service_t) (rocprofiler_context_id_t context_id, rocprofiler_dispatch_counting_service_callback_t dispatch_callback, void *dispatch_callback_args, rocprofiler_profile_counting_record_callback_t record_callback, void *record_callback_args);
-
-typedef rocprofiler_status_t (* rocprofiler_configure_device_counting_service_t) (rocprofiler_context_id_t context_id, rocprofiler_buffer_id_t buffer_id, rocprofiler_agent_id_t agent_id, rocprofiler_device_counting_service_callback_t cb, void *user_data);
-
+#if defined(ROCPROFILER_VERSION_MAJOR) && ROCPROFILER_VERSION_MAJOR >= 1
+    // ROCm 7.0+ (ROCprofiler SDK 1.x) - use new types
+    typedef rocprofiler_status_t (*rocprofiler_sample_device_counting_service_t)(
+        rocprofiler_context_id_t, rocprofiler_user_data_t, rocprofiler_counter_flag_t,
+        rocprofiler_counter_record_t *output_records, size_t *rec_count);
+    typedef rocprofiler_status_t (*rocprofiler_configure_callback_dispatch_counting_service_t)(
+        rocprofiler_context_id_t,
+        rocprofiler_dispatch_counting_service_cb_t dispatch_callback, void *dispatch_callback_args,
+        rocprofiler_dispatch_counting_record_cb_t record_callback, void *record_callback_args);
+    typedef rocprofiler_status_t (*rocprofiler_configure_device_counting_service_t)(
+        rocprofiler_context_id_t, rocprofiler_buffer_id_t, rocprofiler_agent_id_t,
+        rocprofiler_device_counting_service_cb_t cb, void *user_data);
+#else
+    // Pre-7.0 ROCm - use old types
+    typedef rocprofiler_status_t (*rocprofiler_sample_device_counting_service_t)(
+        rocprofiler_context_id_t, rocprofiler_user_data_t, rocprofiler_counter_flag_t,
+        rocprofiler_record_counter_t *output_records, size_t *rec_count);
+    typedef rocprofiler_status_t (*rocprofiler_configure_callback_dispatch_counting_service_t)(
+        rocprofiler_context_id_t,
+        rocprofiler_dispatch_counting_service_callback_t dispatch_callback, void *dispatch_callback_args,
+        rocprofiler_profile_counting_record_callback_t record_callback, void *record_callback_args);
+    typedef rocprofiler_status_t (*rocprofiler_configure_device_counting_service_t)(
+        rocprofiler_context_id_t, rocprofiler_buffer_id_t, rocprofiler_agent_id_t,
+        rocprofiler_device_counting_service_callback_t cb, void *user_data);
+#endif
 
 
 typedef rocprofiler_status_t (* rocprofiler_create_buffer_t) (rocprofiler_context_id_t context, unsigned long size, unsigned long watermark, rocprofiler_buffer_policy_t policy, rocprofiler_buffer_tracing_cb_t callback, void *callback_data, rocprofiler_buffer_id_t *buffer_id);
@@ -133,6 +152,7 @@ rocprofiler_stop_context_t rocprofiler_stop_context_FPTR;
 rocprofiler_context_is_active_t rocprofiler_context_is_active_FPTR;
 rocprofiler_context_is_valid_t rocprofiler_context_is_valid_FPTR;
 rocprofiler_create_profile_config_t rocprofiler_create_profile_config_FPTR;
+rocprofiler_destroy_profile_config_t rocprofiler_destroy_profile_config_FPTR;
 rocprofiler_force_configure_t rocprofiler_force_configure_FPTR;
 rocprofiler_get_status_string_t rocprofiler_get_status_string_FPTR;
 rocprofiler_get_thread_id_t rocprofiler_get_thread_id_FPTR;
@@ -186,34 +206,58 @@ obtain_function_pointers()
 {
     static bool first_time = true;
     void *dllHandle = nullptr;
+    const char* pathname;
+    const char *rocm_root;
+    const char *ret_val = NULL;
 
-    if( !first_time )
-        return NULL;
+    if( !first_time ){
+        ret_val = NULL;
+        goto fn_exit;
+    }
 
-    const char* pathname = std::getenv("PAPI_ROCP_SDK_LIB");
+    pathname = std::getenv("PAPI_ROCP_SDK_LIB");
 
     // If the user gave us an explicit path to librocprofiler-sdk.so, use it.
     if ( nullptr != pathname && strlen(pathname) <= PATH_MAX ) {
         dllHandle = dlopen(pathname, RTLD_NOW | RTLD_GLOBAL);
-    }
-
-    // If we were not given an explicit path, or the path didn't work, try elsewhere.
-    if ( NULL == pathname || nullptr == dllHandle ) {
-        std::string path2;
-        const char *rocm_root = std::getenv("PAPI_ROCP_SDK_ROOT");
-        if( nullptr == rocm_root || strlen(rocm_root) > PATH_MAX ){
-            set_error_string("Did not find path for librocprofiler-sdk.so. Set either PAPI_ROCP_SDK_ROOT, or ROCP_SDK_LIB.");
-            return get_error_string().c_str();
+        if ( nullptr == dllHandle ) {
+            std::string err_str = std::string("Invalid path in PAPI_ROCP_SDK_LIB: ")+pathname;
+            set_error_string(err_str);
+            ret_val = strdup(err_str.c_str());
+            SUBDBG("%s\n",ret_val);
+            goto fn_fail;
         }
-        path2 = std::string(rocm_root) + "/lib/librocprofiler-sdk.so";
+    }else{
+        // If we were not given an explicit path to the library, try elsewhere.
+        rocm_root = std::getenv("PAPI_ROCP_SDK_ROOT");
+        if( nullptr == rocm_root || strlen(rocm_root) > PATH_MAX ){
+            // If we are here, the user has not given us any hint about the
+            // location of the library, so we let dlopen() try the default paths.
+            pathname = "librocprofiler-sdk.so";
+        }else{
+            int err;
+            struct stat stat_info;
 
-        // Clear previous errors.
-        (void)dlerror();
+            std::string tmp_str = std::string(rocm_root) + "/lib/librocprofiler-sdk.so";
+            pathname = strdup(tmp_str.c_str());
+            err = stat(pathname, &stat_info);
+            if (err != 0 || !S_ISREG(stat_info.st_mode)) {
+                std::string err_str = std::string("Invalid path in PAPI_ROCP_SDK_ROOT: ")+tmp_str;
+                set_error_string(err_str);
+                ret_val = strdup(err_str.c_str());
+                SUBDBG("%s\n",ret_val);
+                goto fn_fail;
+            }
+        }
 
-        dllHandle = dlopen(path2.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        dllHandle = dlopen(pathname, RTLD_NOW | RTLD_GLOBAL);
         if (dllHandle == NULL) {
-            set_error_string(std::string("Could not dlopen() librocprofiler-sdk.so. Set either PAPI_ROCP_SDK_ROOT, or ROCP_SDK_LIB. Error: ")+dlerror());
-            return dlerror();
+            // Nothing worked. Giving up.
+            std::string err_str = std::string("Could not dlopen() librocprofiler-sdk.so. Set either PAPI_ROCP_SDK_ROOT, or PAPI_ROCP_SDK_LIB.");
+            set_error_string(err_str);
+            ret_val = strdup(err_str.c_str());
+            SUBDBG("%s\n",ret_val);
+            goto fn_fail;
         }
     }
 
@@ -227,7 +271,13 @@ obtain_function_pointers()
     DLL_SYM_CHECK(rocprofiler_stop_context, rocprofiler_stop_context_t);
     DLL_SYM_CHECK(rocprofiler_context_is_valid, rocprofiler_context_is_valid_t);
     DLL_SYM_CHECK(rocprofiler_context_is_active, rocprofiler_context_is_active_t);
-    DLL_SYM_CHECK(rocprofiler_create_profile_config, rocprofiler_create_profile_config_t);
+    DLL_SYM_CHECK(rocprofiler_create_profile_config,
+                     "rocprofiler_create_counter_config",
+                     rocprofiler_create_profile_config_t);
+
+    DLL_SYM_CHECK(rocprofiler_destroy_profile_config,
+                   "rocprofiler_destroy_counter_config",
+                     rocprofiler_destroy_profile_config_t);
     DLL_SYM_CHECK(rocprofiler_force_configure, rocprofiler_force_configure_t);
     DLL_SYM_CHECK(rocprofiler_get_status_string, rocprofiler_get_status_string_t);
     DLL_SYM_CHECK(rocprofiler_get_thread_id, rocprofiler_get_thread_id_t);
@@ -241,10 +291,12 @@ obtain_function_pointers()
     DLL_SYM_CHECK(rocprofiler_query_record_counter_id, rocprofiler_query_record_counter_id_t);
     DLL_SYM_CHECK(rocprofiler_query_record_dimension_position, rocprofiler_query_record_dimension_position_t);
 
-    // Make sure we don't run this code multiple times.
-    first_time = false;
-
-    return NULL;
+    fn_exit:
+      // Make sure we don't run this code multiple times.
+      first_time = false;
+      return ret_val;
+    fn_fail:
+      goto fn_exit;
 }
 
 /**
@@ -359,11 +411,13 @@ record_callback(rocprofiler_dispatch_counting_service_data_t dispatch_data,
                 continue;
             }
             event_instance_info_t e_inst = e_tmp->second;
+            uint32_t e_id_32 = static_cast<uint32_t>(e_inst.counter_info.id.handle);
 
             for(int i=0; i<record_count; ++i){
                 rec_info_t &rec_info = event_set_to_rec_mapping[i];
+                uint32_t r_id_32 = static_cast<uint32_t>(rec_info.counter_id.handle);
                 if( ( e_inst.device != rec_info.device ) ||
-                    ( e_inst.counter_info.id.handle != rec_info.counter_id.handle ) ||
+                    ( e_id_32 != r_id_32 ) ||
                     !dimensions_match(e_inst.dim_instances, rec_info.recorded_dims)
                   ){
                     continue;
@@ -394,13 +448,6 @@ record_callback(rocprofiler_dispatch_counting_service_data_t dispatch_data,
 
     _papi_hwi_unlock(_rocp_sdk_lock);
 
-#if defined(DEBUG_OUTPUT_OF_RECORDED_VALUES)
-    for(size_t i = 0; i < record_count; ++i){
-        rocprofiler_counter_id_t counter_id;
-        ROCPROFILER_CALL(rocprofiler_query_record_counter_id_FPTR(record_data[i].id, &counter_id), "Could not retrieve counter_id");
-        std::cerr << " ## record_data[" << i << "].id: " << record_data[i].id << " -> counter_id: " << counter_id.handle << " Value= " << record_data[i].counter_value << std::endl;
-    }
-#endif
     return;
 }
 
@@ -490,9 +537,14 @@ buffered_callback(rocprofiler_context_id_t,
 int
 tool_init(rocprofiler_client_finalize_t fini_func, void* tool_data)
 {
-
-
     assert(tool_data != nullptr);
+
+    if( NULL != getenv("PAPI_ROCP_SDK_DISPATCH_MODE") ){
+        rpsdk_profiling_mode = RPSDK_MODE_DISPATCH;
+    }
+
+    // Obtain the list of available (GPU) agents.
+    gpu_agents = get_GPU_agent_info();
 
     ROCPROFILER_CALL(rocprofiler_create_context_FPTR(&get_client_ctx()), "context creation");
 
@@ -505,6 +557,13 @@ tool_init(rocprofiler_client_finalize_t fini_func, void* tool_data)
                                                tool_data,
                                                &get_buffer()),
                          "buffer creation failed");
+
+        // Configure device_counting_service for all devices.
+        for(auto g_it=gpu_agents.begin(); g_it!=gpu_agents.end(); ++g_it){
+            ROCPROFILER_CALL(rocprofiler_configure_device_counting_service_FPTR(
+                                 get_client_ctx(), get_buffer(), g_it->second->id, set_profile, nullptr),
+                             "Could not setup sampling");
+        }
     }else{
         ROCPROFILER_CALL(rocprofiler_configure_callback_dispatch_counting_service_FPTR(
                              get_client_ctx(), dispatch_callback, tool_data, record_callback, tool_data),
@@ -512,7 +571,6 @@ tool_init(rocprofiler_client_finalize_t fini_func, void* tool_data)
     }
 
     return 0;
-
 }
 
 /* ** */
@@ -613,22 +671,11 @@ void stop_counting(void){
 /* ** */
 void
 start_counting(vendorp_ctx_t ctx){
-    static bool is_device_counting_configured = false;
 
     // Store a pointer to the counter value array in a global variable so that
     // our functions that are called from the ROCprofiler-SDK (instead of our
     // API) can still find the array.
     _counter_values = ctx->counters;
-
-    if( (RPSDK_MODE_DEVICE_SAMPLING == get_profiling_mode()) && !is_device_counting_configured ){
-        is_device_counting_configured = true;
-        // Configure device_counting_service for all devices.
-        for(auto g_it=gpu_agents.begin(); g_it!=gpu_agents.end(); ++g_it){
-            ROCPROFILER_CALL(rocprofiler_configure_device_counting_service_FPTR(
-                                 get_client_ctx(), get_buffer(), g_it->second->id, set_profile, nullptr),
-                             "Could not setup sampling");
-        }
-    }
 
     ROCPROFILER_CALL(rocprofiler_start_context_FPTR(get_client_ctx()), "start context");
 }
@@ -678,11 +725,6 @@ read_sample(){
             ROCPROFILER_CALL(rocprofiler_query_record_counter_id_FPTR(output_records[i].id, &counter_id), "Could not retrieve counter_id");
             rec_info.counter_id = counter_id;
 
-#if defined(DEBUG_OUTPUT)
-            printf(" ## output_records[%d].id: %lu -> counter_id: %lu Value= %lf\n", i, output_records[i].id, counter_id.handle, output_records[i].counter_value);
-	    fflush(stdout);
-#endif // DEBUG_OUTPUT
-
             std::vector<rocprofiler_record_dimension_info_t> dimensions = counter_dimensions(counter_id);
             for(auto& dim : dimensions ){
                 unsigned long pos=0;
@@ -702,11 +744,13 @@ read_sample(){
                 continue;
             }
             event_instance_info_t e_inst = tmp->second;
+            uint32_t e_id_32 = static_cast<uint32_t>(e_inst.counter_info.id.handle);
 
             for(int i=0; i<rec_count; ++i){
                 rec_info_t &rec_info = event_set_to_rec_mapping[i];
+                uint32_t r_id_32 = static_cast<uint32_t>(rec_info.counter_id.handle);
                 if( ( e_inst.device != rec_info.device ) ||
-                    ( e_inst.counter_info.id.handle != rec_info.counter_id.handle ) ||
+                    ( e_id_32 != r_id_32 ) ||
                     !dimensions_match(e_inst.dim_instances, rec_info.recorded_dims)
                   ){
                     continue;
@@ -800,7 +844,7 @@ build_event_info_from_name(std::string event_name, event_instance_info_t *ev_ins
         // All qualifiers must have the form "qual_name=qual_value".
         pos=qual.find('=');
         if( pos == qual.npos){
-            return PAPI_EINVAL;
+            return PAPI_ENOEVNT;
         }
 
         std::string qual_name = qual.substr(0, pos-0);
@@ -819,7 +863,7 @@ build_event_info_from_name(std::string event_name, event_instance_info_t *ev_ins
                 if( qual_name.compare(dim.name) == 0 ){
                     // Make sure that the qualifier value is within the proper range.
                     if( qual_val >= dim.instance_size ){
-                        return PAPI_EINVAL;
+                        return PAPI_ENOEVNT;
                     }
                     dim_instances.emplace_back( std::make_pair(dim.id, qual_val) );
                     // Mark which qualifiers we have found based on the order in which they appear in
@@ -1040,13 +1084,12 @@ int setup() {
 
     const char *error_msg = obtain_function_pointers();
     if( NULL != error_msg ){
-        set_error_string("Could not obtain all functions from librocprofiler-sdk.so. Possible library version mismatch.");
-        SUBDBG("dlsym(): %s\n", error_msg);
+        if( get_error_string().empty() ){
+            set_error_string("Could not obtain all functions from librocprofiler-sdk.so. Possible library version mismatch.");
+            SUBDBG("dlsym(): %s\n", error_msg);
+        }
         goto fn_fail;
     }
-
-    // Obtain the list of available (GPU) agents.
-    gpu_agents = get_GPU_agent_info();
 
     if( (ROCPROFILER_STATUS_SUCCESS == rocprofiler_is_initialized_FPTR(&status)) && (0 == status) ){
         ROCPROFILER_CALL(rocprofiler_force_configure_FPTR(&rocprofiler_configure), "force configuration");
@@ -1314,8 +1357,10 @@ rocprofiler_configure(uint32_t                 version,
     const char *error_msg = papi_rocpsdk::obtain_function_pointers();
 
     if( NULL != error_msg ){
-        papi_rocpsdk::set_error_string("Could not obtain all functions from librocprofiler-sdk.so. Possible library version mismatch.");
-        SUBDBG("dlsym(): %s\n", error_msg);
+        if( papi_rocpsdk::get_error_string().empty() ){
+            papi_rocpsdk::set_error_string("Could not obtain all functions from librocprofiler-sdk.so. Possible library version mismatch.");
+            SUBDBG("dlsym(): %s\n", error_msg);
+        }
         return NULL;
     }
 

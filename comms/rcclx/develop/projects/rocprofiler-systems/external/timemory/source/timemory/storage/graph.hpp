@@ -251,6 +251,27 @@ public:
         using iterator_base::parent;
     };
 
+    friend bool operator==(const sibling_iterator& lhs,
+                           const pre_order_iterator& rhs)
+    {
+        return lhs.node == rhs.node;
+    }
+    friend bool operator!=(const sibling_iterator& lhs,
+                           const pre_order_iterator& rhs)
+    {
+        return lhs.node != rhs.node;
+    }
+    friend bool operator==(const pre_order_iterator& lhs,
+                           const sibling_iterator& rhs)
+    {
+        return lhs.node == rhs.node;
+    }
+    friend bool operator!=(const pre_order_iterator& lhs,
+                           const sibling_iterator& rhs)
+    {
+        return lhs.node != rhs.node;
+    }
+
     /// Return iterator to the beginning of the graph.
     inline pre_order_iterator begin() const;
 

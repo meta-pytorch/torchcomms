@@ -78,7 +78,7 @@ The library supports many PMUs. The current version can handle:
 		ARMV7 Cortex A8
 		ARMV7 Cortex A9
 		ARMV7 Cortex A15
-		ARMV8 Cortex A57, A53, A55, A72, A76
+		ARMV8 Cortex A57, A53, A55, A72, A76, X4
 		Applied Micro X-Gene
 		Qualcomm Krait
 		Fujitsu A64FX

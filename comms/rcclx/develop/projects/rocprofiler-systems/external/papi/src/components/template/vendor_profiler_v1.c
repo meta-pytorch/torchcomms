@@ -281,7 +281,7 @@ vendorp1_evt_enum(unsigned int *event_code, int modifier)
                 papi_errno = evt_id_create(&info, event_code);
                 break;
             }
-            papi_errno = PAPI_END;
+            papi_errno = PAPI_ENOEVNT;
             break;
         default:
             papi_errno = PAPI_EINVAL;

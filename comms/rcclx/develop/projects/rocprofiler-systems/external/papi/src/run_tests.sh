@@ -61,6 +61,11 @@ fi
 
 # List of active components
 ACTIVE_COMPONENTS_PATTERN=$(utils/papi_component_avail | awk '/Active components:/{flag=1; next} flag' | grep "Name:" | sed 's/Name: //' | awk '{print $1}' | paste -sd'|' -)
+case "$ACTIVE_COMPONENTS_PATTERN" in
+    *"rocp_sdk"*)
+        rocp_sdk_exclude_tests="ctests/multiattach ctests/multiattach2 ctests/zero_attach"
+        ;;
+esac
 
 # Find the test files, filtering for only the active components
 COMPTESTS=$(find components/*/tests -perm -u+x -type f ! \( -name "*.[c|h]" -o -name "*.cu" -o -name "*.so" \) | grep -E "components/($ACTIVE_COMPONENTS_PATTERN)/")
@@ -70,7 +75,7 @@ INACTIVE_COMPTESTS=$(find components/*/tests -perm -u+x -type f ! \( -name "*.[c
 
 #EXCLUDE=`grep --regexp=^# --invert-match run_tests_exclude.txt`
 EXCLUDE_TXT=`grep -v -e '^#\|^$' run_tests_exclude.txt`
-EXCLUDE="$EXCLUDE_TXT $INACTIVE_COMPTESTS";
+EXCLUDE="$EXCLUDE_TXT $INACTIVE_COMPTESTS $rocp_sdk_exclude_tests";
 
 ALLTESTS="$VTESTS $CTESTS $FTESTS $COMPTESTS";
 

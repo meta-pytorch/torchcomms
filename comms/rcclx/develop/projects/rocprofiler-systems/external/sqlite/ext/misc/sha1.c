@@ -230,16 +230,13 @@ static void hash_finish(
 *****************************************************************************/
 
 /*
-** Two SQL functions:  sha1(X) and sha1b(X).
+** Implementation of the sha1(X) function.
 **
-** sha1(X) returns a lower-case hexadecimal rendering of the SHA1 hash
-** of the argument X.  If X is a BLOB, it is hashed as is.  For all other
+** Return a lower-case hexadecimal rendering of the SHA1 hash of the
+** argument X.  If X is a BLOB, it is hashed as is.  For all other
 ** types of input, X is converted into a UTF-8 string and the string
-** is hashed without the trailing 0x00 terminator.  The hash of a NULL
+** is hash without the trailing 0x00 terminator.  The hash of a NULL
 ** value is NULL.
-**
-** sha1b(X) is the same except that it returns a 20-byte BLOB containing
-** the binary hash instead of a hexadecimal string.
 */
 static void sha1Func(
   sqlite3_context *context,
@@ -260,13 +257,11 @@ static void sha1Func(
     hash_step(&cx, sqlite3_value_text(argv[0]), nByte);
   }
   if( sqlite3_user_data(context)!=0 ){
-    /* sha1b() - binary result */
     hash_finish(&cx, zOut, 1);
     sqlite3_result_blob(context, zOut, 20, SQLITE_TRANSIENT);
   }else{
-    /* sha1() - hexadecimal text result */
     hash_finish(&cx, zOut, 0);
-    sqlite3_result_text(context, zOut, 40, SQLITE_TRANSIENT);
+    sqlite3_result_blob(context, zOut, 40, SQLITE_TRANSIENT);
   }
 }
 

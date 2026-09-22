@@ -90,7 +90,7 @@ static pme_nhm_entry_t corei7_pe[]={
 			},
 			{ .pme_uname  = "DIV",
 				.pme_udesc  = "Counts the number of divide or square root operations. The divide can be integer, X87 or Streaming SIMD Extensions (SSE). The square root operation can be either X87 or SSE.",
-				.pme_ucode  = 0x01 | (1<<16) | (1<<15) | (1<<10),    /* cmask=1 ï¿½invert=1 ï¿½edge=1 */
+				.pme_ucode  = 0x01 | (1<<16) | (1<<15) | (1<<10),    /* cmask=1  invert=1  edge=1 */
 				.pme_uflags = 0,
 			},
 			{ .pme_uname  = "MUL",

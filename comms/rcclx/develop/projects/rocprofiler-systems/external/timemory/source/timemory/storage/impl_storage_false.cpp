@@ -281,7 +281,7 @@ storage<Type, false>::get_shared_manager()
         // replace spaces with underscores
         auto _pos = std::string::npos;
         while((_pos = _label.find_first_of(" -")) != std::string::npos)
-            _label = _label.replace(_pos, 1, "_");
+            _label[_pos] = '_';
         // convert to upper-case
         for(auto& itr : _label)
             itr = toupper(itr);

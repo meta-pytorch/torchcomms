@@ -17,6 +17,14 @@ Typically, the utility `papi_components_avail` (available in
 `papi/src/utils/papi_components_avail`) will display the components available
 to the user, and whether they are disabled, and when they are disabled why.
 
+## Configuring Refresh Latency
+
+By default the net refresh latency is set to 1000000 microseconds. To update this value set
+`PAPI_NET_REFRESH_LATENCY`, i.e:
+
+    export PAPI_NET_REFRESH_LATENCY=your_value (in microseconds)
+
+
 ***
 ## FAQ
 

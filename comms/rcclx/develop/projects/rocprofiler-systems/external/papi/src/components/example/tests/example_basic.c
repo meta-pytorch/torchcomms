@@ -139,10 +139,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_ZERO", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_ZERO", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_ZERO not found\n",retval );
+		      "example:::EXAMPLE_ZERO not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -162,7 +162,7 @@ int main (int argc, char **argv)
 	   test_fail(  __FILE__, __LINE__, "PAPI_stop failed\n", retval);
 	}
 
-	if (!quiet) printf("Testing EXAMPLE_ZERO: %lld\n",values[0]);
+	if (!quiet) printf("Testing example:::EXAMPLE_ZERO: %lld\n",values[0]);
 
 	if (values[0]!=0) {
 	   test_fail(  __FILE__, __LINE__, "Result should be 0!\n", 0);
@@ -191,10 +191,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_CONSTANT", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_CONSTANT", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_CONSTANT not found\n",retval );
+		      "example:::EXAMPLE_CONSTANT not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -214,7 +214,7 @@ int main (int argc, char **argv)
 	   test_fail(  __FILE__, __LINE__, "PAPI_stop failed\n", retval);
 	}
 
-	if (!quiet) printf("Testing EXAMPLE_CONSTANT: %lld\n",values[0]);
+	if (!quiet) printf("Testing example:::EXAMPLE_CONSTANT: %lld\n",values[0]);
 
 	if (values[0]!=42) {
 	   test_fail(  __FILE__, __LINE__, "Result should be 42!\n", 0);
@@ -244,10 +244,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_AUTOINC", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_AUTOINC", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_AUTOINC not found\n",retval );
+		      "example:::EXAMPLE_AUTOINC not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -256,7 +256,7 @@ int main (int argc, char **argv)
 		      "PAPI_add_events failed\n", retval );
 	}
 
-	if (!quiet) printf("Testing EXAMPLE_AUTOINC: ");
+	if (!quiet) printf("Testing example:::EXAMPLE_AUTOINC: ");
 
 	for(i=0;i<10;i++) {
 
@@ -338,7 +338,7 @@ int main (int argc, char **argv)
 	}
 
 
-	if (!quiet) printf("Testing EXAMPLE_AUTOINC after PAPI_reset(): %lld\n",
+	if (!quiet) printf("Testing example:::EXAMPLE_AUTOINC after PAPI_reset(): %lld\n",
 				 values[0]);
 
 	if (values[0]!=0) {
@@ -370,10 +370,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_CONSTANT", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_CONSTANT", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_CONSTANT not found\n",retval );
+		      "example:::EXAMPLE_CONSTANT not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -382,10 +382,10 @@ int main (int argc, char **argv)
 		      "PAPI_add_events failed\n", retval );
 	}
 
-   	retval = PAPI_event_name_to_code("EXAMPLE_GLOBAL_AUTOINC", &code);
+   	retval = PAPI_event_name_to_code("example:::EXAMPLE_GLOBAL_AUTOINC", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_GLOBAL_AUTOINC not found\n",retval );
+		      "example:::EXAMPLE_GLOBAL_AUTOINC not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -394,10 +394,10 @@ int main (int argc, char **argv)
 		      "PAPI_add_events failed\n", retval );
 	}
 
-   	retval = PAPI_event_name_to_code("EXAMPLE_ZERO", &code);
+   	retval = PAPI_event_name_to_code("example:::EXAMPLE_ZERO", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_ZERO not found\n",retval );
+		      "example:::EXAMPLE_ZERO not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -457,10 +457,10 @@ int main (int argc, char **argv)
 		      "PAPI_create_eventset() failed\n", retval );
 	}
 
-	retval = PAPI_event_name_to_code("EXAMPLE_CONSTANT", &code);
+	retval = PAPI_event_name_to_code("example:::EXAMPLE_CONSTANT", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_CONSTANT not found\n",retval );
+		      "example:::EXAMPLE_CONSTANT not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -469,10 +469,10 @@ int main (int argc, char **argv)
 		      "PAPI_add_events failed\n", retval );
 	}
 
-   	retval = PAPI_event_name_to_code("EXAMPLE_GLOBAL_AUTOINC", &code);
+   	retval = PAPI_event_name_to_code("example:::EXAMPLE_GLOBAL_AUTOINC", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_GLOBAL_AUTOINC not found\n",retval );
+		      "example:::EXAMPLE_GLOBAL_AUTOINC not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);
@@ -481,10 +481,10 @@ int main (int argc, char **argv)
 		      "PAPI_add_events failed\n", retval );
 	}
 
-   	retval = PAPI_event_name_to_code("EXAMPLE_ZERO", &code);
+   	retval = PAPI_event_name_to_code("example:::EXAMPLE_ZERO", &code);
 	if ( retval != PAPI_OK ) {
 	   test_fail( __FILE__, __LINE__,
-		      "EXAMPLE_ZERO not found\n",retval );
+		      "example:::EXAMPLE_ZERO not found\n",retval );
 	}
 
 	retval = PAPI_add_event( EventSet, code);

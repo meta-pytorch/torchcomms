@@ -22,7 +22,7 @@
 #include "papi_test.h"
 
 #define NUM_EVENTS 6
-const char* names[NUM_EVENTS] = {"READ_CALLS", "READ_BYTES","READ_USEC","WRITE_CALLS","WRITE_BYTES","WRITE_USEC"};
+const char* names[NUM_EVENTS] = {"appio:::READ_CALLS", "appio:::READ_BYTES", "appio:::READ_USEC", "appio:::WRITE_CALLS", "appio:::WRITE_BYTES", "appio:::WRITE_USEC"};
 
 #define NUM_INFILES 4
 static const char* files[NUM_INFILES] = {"/etc/passwd", "/etc/group", "/etc/protocols", "/etc/nsswitch.conf"};

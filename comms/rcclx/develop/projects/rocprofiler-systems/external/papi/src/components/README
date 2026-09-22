@@ -64,8 +64,6 @@ mx                            Myricom MX (Myrinet Express) statistics.
 net                           Linux network driver statistics
 nvml                          Requires its own configure; monitors NVIDIA hardware (power, temp, fan speed, etc).
 pcp                           Performance Co-Pilot interface.
-perfctr                       OLD, only used for Linux before 2.6.31.
-perfctr_ppc                   OLD, only used for Linux before 2.6.31.
 perf_event                    Linux perf_event CPU counters
 perf_event_uncore             Linux perf-event CPU uncore and Northbridge
 perfmon2                      OLD, only used for Linux before 2.6.31.

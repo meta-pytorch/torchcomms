@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include "dynProcess.h"
 #include "dynThread.h"
 #include "pcEventHandler.h"
@@ -46,7 +47,7 @@
 #include "common/src/pathName.h"
 
 #include "PCErrors.h"
-#include <boost/tuple/tuple.hpp>
+#include <dyncompat/tuple/tuple.hpp>
 
 #include "symtabAPI/h/SymtabReader.h"
 #include "patchAPI/h/PatchMgr.h"

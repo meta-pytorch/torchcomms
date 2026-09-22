@@ -61,6 +61,8 @@
         "========Rock_Linux_Failures_on_gfx94X===========================================",
         "Unit_hipMemcpyHtoAAsync_BasicTstsWithDiffStreams",
         "Unit_hipHostRegister_DirectReferenceMultGpu - int",
+        "Unit_hipHostRegister_DirectReferenceMultGpu - float",
+        "Unit_hipHostRegister_DirectReferenceMultGpu - double",
         "Unit_hipMemcpy3DPeerAsync_BasicFunctional",
         "Unit_hipStreamQuery_WithPendingWork",
         "Unit_hipExtStreamCreateWithCUMask_NegTst",
@@ -136,6 +138,10 @@
         "Unit_Device___hfma2_Accuracy_Positive",
         "=== Test does not reflect a valid use case - SWDEV-569454",
         "Unit_hipStreamPerThread_MultiThread",
+        "=== SWDEV-SWDEV-515087 - disabled until distributed shared memory is supported ===",
+        "Unit_hipOccupancyMaxPotentialClusterSize_Verify_Launch",
+        "==SWDEV-526803 Test disabled till rocr adds impl for fabric handle ==",
+        "Unit_hipMemExportFabricHandleToStdout_Positive_Basic",
     #endif
     #if defined gfx90a || defined gfx942 || defined gfx950 || defined amdgcnspirv
         "Unit_Warp_Shfl_Up_Positive_Basic - int",

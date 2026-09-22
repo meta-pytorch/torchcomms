@@ -129,6 +129,7 @@
 
 
 // This include *really must* come first in the file.
+#include <algorithm>
 #include "common/src/vgannotations.h"
 
 #include <assert.h>
@@ -138,11 +139,11 @@
 #include <iostream>
 #include <mutex> // once_flag, call_once
 
-#include "boost/assign/list_of.hpp"
-#include "boost/assign/std/vector.hpp"
-#include "boost/assign/std/set.hpp"
-#include <boost/thread/lock_guard.hpp>
-#include <boost/thread/mutex.hpp>
+#include "dyncompat/assign/list_of.hpp"
+#include "dyncompat/assign/std/vector.hpp"
+#include "dyncompat/assign/std/set.hpp"
+#include <dyncompat/thread/lock_guard.hpp>
+#include <dyncompat/thread/mutex.hpp>
 #include "common/src/arch-x86.h"
 #include "registers/x86_regs.h"
 #include "registers/x86_64_regs.h"
@@ -154,7 +155,7 @@
 // #define VEX_PEDANTIC
 
 using namespace std;
-using namespace boost::assign;
+using namespace dyncompat::assign;
 using namespace Dyninst;
 
 namespace NS_x86 {

@@ -35,6 +35,8 @@ typedef ucontext_t hwd_ucontext_t;
 #define OVERFLOW_ADDRESS(ctx) ctx.ucontext->uc_mcontext.arm_pc
 #elif defined(__aarch64__)
 #define OVERFLOW_ADDRESS(ctx) ctx.ucontext->uc_mcontext.pc
+#elif defined(__loongarch64)
+#define OVERFLOW_ADDRESS(ctx) ctx.ucontext->uc_mcontext.__pc
 #elif defined(__mips__)
 #define OVERFLOW_ADDRESS(ctx) ctx.ucontext->uc_mcontext.pc
 #elif defined(__hppa__)

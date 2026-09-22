@@ -26,13 +26,11 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "papi_cupti_common.h" //TODO: Restructure this include after Event and Metric API is merged into master
 #include "papi_memory.h"
 #include "cupti_dispatch.h"
 #include "cupti_config.h"
 #include "lcuda_debug.h"
-
-#define PAPI_CUDA_MPX_COUNTERS 512
-#define PAPI_CUDA_MAX_COUNTERS  30
 
 papi_vector_t _cuda_vector;
 
@@ -42,6 +40,7 @@ static int cuda_init_thread(hwd_context_t *ctx);
 static int cuda_init_control_state(hwd_control_state_t *ctl);
 static int cuda_shutdown_thread(hwd_context_t *ctx);
 static int cuda_shutdown_component(void);
+static int cuda_init_comp_presets(void);
 
 /* set and update component state */
 static int cuda_update_control_state(hwd_control_state_t *ctl,
@@ -80,7 +79,7 @@ typedef struct {
     unsigned int overflow_signal;
     unsigned int attached;
     int component_id;
-    uint64_t *events_id;
+    uint32_t *events_id;
     cuptid_info_t info;
     /* struct holding read count, gpu_ctl, etc. */
     cuptip_control_t cuptid_ctx;
@@ -165,8 +164,7 @@ static int cuda_shutdown_component(void)
 
 static int cuda_init_private(void)
 {
-    int papi_errno = PAPI_OK, len, count = 0;
-    const char *disabled_reason;
+    int papi_errno = PAPI_OK;
 
     _papi_hwi_lock(COMPONENT_LOCK);
     SUBDBG("ENTER\n");
@@ -174,39 +172,88 @@ static int cuda_init_private(void)
     if (_cuda_vector.cmp_info.initialized) {
         SUBDBG("Skipping cuda_init_private, as the Cuda event table has already been initialized.\n");
         goto fn_exit;
+    } 
+
+    int strLen = snprintf(_cuda_vector.cmp_info.disabled_reason, PAPI_MIN_STR_LEN, "%s", "");
+    if (strLen < 0 || strLen >= PAPI_MIN_STR_LEN) {
+        SUBDBG("Failed to fully write initial disabled_reason.\n");
+    }
+
+    strLen = snprintf(_cuda_vector.cmp_info.partially_disabled_reason, PAPI_MIN_STR_LEN, "%s", "");
+    if (strLen < 0 || strLen >= PAPI_MIN_STR_LEN) {
+         SUBDBG("Failed to fully write initial partially_disabled_reason.\n");
     }
 
     papi_errno = cuptid_init();
     if (papi_errno != PAPI_OK) {
-        /* get and assign the string literal for the disabled reason */
-        cuptid_disabled_reason_get(&disabled_reason);
-        len = snprintf(_cuda_vector.cmp_info.disabled_reason, PAPI_MAX_STR_LEN, "%s", disabled_reason);
-        if (len < 0 || len > PAPI_MAX_STR_LEN) {
-            SUBDBG("The disabled reason has been truncated.\n");
+        // Get last error message
+        const char *err_string;
+        cuptid_err_get_last(&err_string);
+        // Cuda component is partially disabled
+        if (papi_errno == PAPI_PARTIAL) {
+            _cuda_vector.cmp_info.partially_disabled = 1;
+            strLen = snprintf(_cuda_vector.cmp_info.partially_disabled_reason, PAPI_HUGE_STR_LEN, "%s", err_string);
+            if (strLen < 0 || strLen >= PAPI_HUGE_STR_LEN) {
+                SUBDBG("Failed to fully write the partially disabled reason.\n");
+            }
+            // Reset variable that holds error code
+            papi_errno = PAPI_OK; 
         }
-        goto fn_fail;
+        // Cuda component is disabled
+        else {
+            strLen = snprintf(_cuda_vector.cmp_info.disabled_reason, PAPI_HUGE_STR_LEN, "%s", err_string);
+            if (strLen < 0 || strLen >= PAPI_HUGE_STR_LEN) {
+                SUBDBG("Failed to fully write the disabled reason.\n");
+            }
+            goto fn_fail;
+        }
     }
 
-    strcpy(_cuda_vector.cmp_info.disabled_reason, "");
-
-    /* get the number of native events count */
+    // Get the metric count found on a machine
+    int count = 0;
     papi_errno = cuda_get_evt_count(&count);
+    if (papi_errno != PAPI_OK) {
+        goto fn_fail;
+    }
     _cuda_vector.cmp_info.num_native_events = count;
 
-  fn_exit:
     _cuda_vector.cmp_info.initialized = 1;
-    _cuda_vector.cmp_info.disabled = papi_errno;
-    SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
-    _papi_hwi_unlock(COMPONENT_LOCK);
-    return papi_errno;
-  fn_fail:
-    goto fn_exit;
+
+    fn_exit:
+      _cuda_vector.cmp_info.disabled = papi_errno;
+      SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
+      _papi_hwi_unlock(COMPONENT_LOCK);
+      return papi_errno;
+    fn_fail:
+      goto fn_exit;
 }
 
 static int check_n_initialize(void)
 {
     if (!_cuda_vector.cmp_info.initialized) {
-        return cuda_init_private();
+        int papi_errno = cuda_init_private();
+        if( PAPI_OK != papi_errno ) {
+            return papi_errno;
+        }
+
+        // Setup the presets.
+        papi_errno = cuda_init_comp_presets();
+        if (papi_errno != PAPI_OK) {
+            // No implementation for cuda component presets if:
+            // 1. PAPI_CUDA_API = LEGACY
+            // 2. The device chipname is not defined in papi_events.csv
+            //
+            // Even though presets are not implemented in the above two cases
+            // the cuda component should still be active; therefore, we change
+            // the return value to be PAPI_OK
+            if (papi_errno == PAPI_ENOIMPL) {
+                papi_errno = PAPI_OK;
+            }
+
+            return papi_errno;
+        }
+
+        return papi_errno;
     }
     return _cuda_vector.cmp_info.disabled;
 }
@@ -218,8 +265,8 @@ static int cuda_ntv_enum_events(unsigned int *event_code, int modifier)
     if (papi_errno != PAPI_OK) {
         goto fn_exit;
     }
-   
-    uint64_t code = *(uint64_t *) event_code;
+
+    uint32_t code = *(uint32_t *) event_code;
     papi_errno = cuptid_evt_enum(&code, modifier);
     *event_code = (unsigned int) code;
     
@@ -236,8 +283,8 @@ static int cuda_ntv_name_to_code(const char *name, unsigned int *event_code)
     if (papi_errno != PAPI_OK) {
         goto fn_exit;
     }
-   
-    uint64_t code;
+
+    uint32_t code;
     papi_errno = cuptid_evt_name_to_code(name, &code);
     *event_code = (unsigned int) code;
 
@@ -255,7 +302,7 @@ static int cuda_ntv_code_to_name(unsigned int event_code, char *name, int len)
         return papi_errno;
     }
 
-    papi_errno = cuptid_evt_code_to_name((uint64_t) event_code, name, len);
+    papi_errno = cuptid_evt_code_to_name((uint32_t) event_code, name, len);
 
     fn_exit:
         SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
@@ -272,7 +319,7 @@ static int cuda_ntv_code_to_descr(unsigned int event_code, char *descr, int len)
         goto fn_fail;
     }
 
-    papi_errno = cuptid_evt_code_to_descr((uint64_t) event_code, descr, len);
+    papi_errno = cuptid_evt_code_to_descr((uint32_t) event_code, descr, len);
 
 fn_exit:
     SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
@@ -289,7 +336,7 @@ static int cuda_ntv_code_to_info(unsigned int event_code, PAPI_event_info_t *inf
         goto fn_fail;
     }
 
-    papi_errno = cuptid_evt_code_to_info((uint64_t) event_code, info);
+    papi_errno = cuptid_evt_code_to_info((uint32_t) event_code, info);
 
 fn_exit:
     SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
@@ -315,6 +362,118 @@ static int cuda_shutdown_thread(hwd_context_t *ctx)
     cuda_ctx->state = 0; 
 
     return PAPI_OK;
+}
+
+static int cuda_init_comp_presets(void)
+{
+    SUBDBG("ENTER: Init CUDA component presets.\n");
+    int cidx = _cuda_vector.cmp_info.CmpIdx;
+    char *cname = _cuda_vector.cmp_info.name;
+
+    /* Setup presets. */
+    char arch_name[PAPI_MAX_STR_LEN];
+    int devIdx = -1;
+    int numDevices = 0;
+
+    char *PAPI_CUDA_API = (getenv("PAPI_CUDA_API") != NULL) ? "LEGACY" : "PERFWORKS";
+    if (strcasecmp(PAPI_CUDA_API, "LEGACY") == 0) {
+        SUBDBG("EXIT: Presets for the cuda component are not supported with the CUPTI legacy APIs (i.e. Event and Metric).\n");
+        return PAPI_ENOIMPL;
+    }
+
+    int papi_errno = cuptid_device_get_count(&numDevices);
+    if ( papi_errno != PAPI_OK ) {
+        SUBDBG("EXIT: Failed to get NVIDIA device count.\n");
+        return papi_errno;
+    }
+
+    char **archNamesArray = (char **) malloc(numDevices * sizeof(char *));
+    if (archNamesArray == NULL) {
+        SUBDBG("EXIT: Failed to allocate memory for archNamesArray.\n");
+        return PAPI_ENOMEM;
+    }
+
+    int archIdx;
+    for (archIdx = 0; archIdx < numDevices; archIdx++) {
+        archNamesArray[archIdx] = NULL;
+    }
+
+    /* Load preset table for every device type available on the system.
+     * As long as one of the cards has presets defined, then they should
+     * be available. */
+    int numArchNamesStored = 0;
+    for( devIdx = 0; devIdx < numDevices; ++devIdx ) {
+        // Cuda component presets are currently only defined for devices compatible with the Perfworks Metrics API
+        // which is required for cc's >= 7.5.
+        // Due to the above, the below block of code serves as a soft check, meaning if a compute capability
+        // is less than 7.5 we do not attempt to load the presets table.
+        int deviceComputeCapability = 0;
+        papi_errno = get_gpu_compute_capability(devIdx, &deviceComputeCapability);
+        if (papi_errno != PAPI_OK) {
+            SUBDBG("EXIT: Failed to get compute capability for device: %d.\n", devIdx);
+            goto cleanup;
+        }
+
+        if (deviceComputeCapability <= 75) {
+            continue;
+        }
+        else {
+            papi_errno = cuptid_get_chip_name(devIdx, arch_name);
+            if ( papi_errno != PAPI_OK ) {
+                SUBDBG("EXIT: Failed to get chipname for device %d.\n", devIdx);
+                goto cleanup;
+            }
+
+            int archFound = 0;
+            for (archIdx = 0; archNamesArray[archIdx] != NULL; archIdx++) {
+                if (strcasecmp(arch_name, archNamesArray[archIdx]) == 0) {
+                    archFound++;
+                    break;
+                }
+            }
+
+            // If the architecture has already had its cuda component presets initialized
+            // we continue.
+            if (archFound) {
+                continue;
+            }
+
+            papi_errno = _papi_load_preset_table_component( cname, arch_name, cidx );
+            if ( papi_errno != PAPI_OK ) {
+                SUBDBG("EXIT: Failed to init CUDA component presets.\n");
+                goto cleanup;
+            }
+
+            archNamesArray[numArchNamesStored] = (char *) malloc(PAPI_MAX_STR_LEN * sizeof(char));
+            if (archNamesArray[numArchNamesStored] == NULL) {
+                SUBDBG("EXIT: Failed to allocate memory for index %d in archNamesArray.\n", numArchNamesStored);
+                papi_errno = PAPI_ENOMEM;
+                goto cleanup;
+            }
+
+            int strLen = snprintf(archNamesArray[numArchNamesStored++], PAPI_MAX_STR_LEN, "%s", arch_name);
+            if (strLen < 0 || strLen >= PAPI_MAX_STR_LEN) {
+                SUBDBG("EXIT: Failed to fully write arch name: %s.\n", arch_name);
+                papi_errno = PAPI_EBUF;
+                goto cleanup;
+            }
+        }
+    }
+
+    if (numArchNamesStored == 0) {
+        SUBDBG("EXIT: No devices on the system that support cuda component presets.\n");
+        papi_errno = PAPI_ENOIMPL;
+    }
+
+    cleanup: ;
+    int i;
+    for(i = 0; i < numArchNamesStored; i++) {
+        free(archNamesArray[i]);
+    }
+    free(archNamesArray);
+    archNamesArray = NULL;
+
+    return papi_errno;
 }
 
 static int cuda_init_control_state(hwd_control_state_t __attribute__((unused)) *ctl)
@@ -351,7 +510,7 @@ static int cuda_update_control_state(hwd_control_state_t *ctl, NativeInfo_t *ntv
 
     cuda_control_t *cuda_ctl = (cuda_control_t *) ctl;
 
-    /* allocating memoory for total number of devices */
+    // allocating memory for total number of devices
     if (cuda_ctl->info == NULL) {
         papi_errno = cuptid_thread_info_create(&(cuda_ctl->info));
         if (papi_errno != PAPI_OK) {
@@ -377,13 +536,6 @@ struct event_map_item {
     int frontend_idx;
 };
 
-static int compare(const void *a, const void *b)
-{
-    struct event_map_item *A = (struct event_map_item *) a;
-    struct event_map_item *B = (struct event_map_item *) b;
-    return  A->event_id - B->event_id;
-}
-
 int update_native_events(cuda_control_t *ctl, NativeInfo_t *ntv_info,
                          int ntv_count)
 {
@@ -391,14 +543,19 @@ int update_native_events(cuda_control_t *ctl, NativeInfo_t *ntv_info,
     struct event_map_item sorted_events[PAPI_CUDA_MAX_COUNTERS];
 
     if (ntv_count != ctl->num_events) {
-        ctl->events_id = papi_realloc(ctl->events_id,
-                                      ntv_count * sizeof(*ctl->events_id));
-        if (ctl->events_id == NULL) {
-            papi_errno = PAPI_ENOMEM;
-            goto fn_fail;
-        }
-
         ctl->num_events = ntv_count;
+        if (ntv_count == 0) {
+            free(ctl->events_id);
+            ctl->events_id = NULL;
+            goto fn_exit;
+        }
+        else {
+            ctl->events_id = realloc(ctl->events_id, ntv_count * sizeof(*ctl->events_id));
+            if (ctl->events_id == NULL) {
+                papi_errno = PAPI_ENOMEM;
+                goto fn_fail;
+            }
+        }
     }
 
     int i;
@@ -437,14 +594,12 @@ static int cuda_start(hwd_context_t *ctx, hwd_control_state_t *ctl)
     int papi_errno, i;
     cuda_context_t *cuda_ctx = (cuda_context_t *) ctx;
     cuda_control_t *cuda_ctl = (cuda_control_t *) ctl;
-   
-    /* will need to flesh this out more and decide if I want to keep this, may not need it 
-    if (cuda_ctx->state & CUDA_EVENTS_OPENED) {
+
+    if (cuda_ctx->state == CUDA_EVENTS_RUNNING) {
         SUBDBG("Error! Cannot PAPI_start more than one eventset at a time for every component.");
-        papi_errno = PAPI_ECNFLCT;
+        papi_errno = PAPI_EISRUN;
         goto fn_fail;
     }
-    */
 
     papi_errno = cuptid_ctx_create(cuda_ctl->info, &(cuda_ctl->cuptid_ctx), cuda_ctl->events_id, cuda_ctl->num_events);
     if (papi_errno != PAPI_OK)
@@ -462,7 +617,6 @@ static int cuda_start(hwd_context_t *ctx, hwd_control_state_t *ctl)
        SUBDBG("EXIT: %s\n", PAPI_strerror(papi_errno));
        return papi_errno;
    fn_fail:
-       /* same as above may need to flesh this out more. */
        cuda_ctx->state = CUDA_EVENTS_STOPPED;
        goto fn_exit;
 }
@@ -540,7 +694,7 @@ int cuda_stop(hwd_context_t *ctx, hwd_control_state_t *ctl)
     cuda_control_t *cuda_ctl = (cuda_control_t *) ctl;
 
     if (cuda_ctx->state == CUDA_EVENTS_STOPPED) {
-        SUBDBG("Error! Cannot PAPI_stop counters for an eventset that has not been PAPI_start'ed.");
+        SUBDBG("Error! Cannot PAPI_stop counters for an eventset that has not been PAPI_start'ed.\n");
         papi_errno = PAPI_EMISC;
         goto fn_fail;
     }
@@ -587,7 +741,7 @@ static int cuda_cleanup_eventset(hwd_control_state_t *ctl)
     }
 
     /* free int array of event id's and reset number of events */
-    papi_free(cuda_ctl->events_id);
+    free(cuda_ctl->events_id);
     cuda_ctl->events_id = NULL;
     cuda_ctl->num_events = 0;
 
@@ -603,7 +757,7 @@ static int cuda_cleanup_eventset(hwd_control_state_t *ctl)
 */
 static int cuda_get_evt_count(int *count)
 {
-    uint64_t event_code = 0;
+    uint32_t event_code = 0;
 
     if (cuptid_evt_enum(&event_code, PAPI_ENUM_FIRST) == PAPI_OK) {
         ++(*count);

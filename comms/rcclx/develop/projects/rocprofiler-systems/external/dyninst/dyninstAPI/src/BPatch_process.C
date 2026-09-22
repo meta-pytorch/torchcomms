@@ -30,6 +30,7 @@
 
 #define BPATCH_FILE
 
+#include <algorithm>
 #include <string>
 
 #include "inst.h"
@@ -57,7 +58,7 @@
 #include "parseAPI/h/CFG.h"
 #include "ast.h"
 #include "debug.h"
-#include <boost/tuple/tuple.hpp>
+#include <dyncompat/tuple/tuple.hpp>
 
 #include "PatchMgr.h"
 #include "PatchModifier.h"

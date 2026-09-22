@@ -31,17 +31,17 @@ int main (int argc, char **argv)
     int i, retval;
     int EventSet = PAPI_NULL;
     char *event_name[NUM_EVENTS] = {
-        "READ_BYTES",
-        "READ_CALLS",
-        "READ_USEC",
-        "READ_EOF",
-        "READ_SHORT",
-        "READ_ERR",
-        "WRITE_BYTES",
-        "WRITE_CALLS",
-        "WRITE_USEC",
-        "WRITE_ERR",
-        "WRITE_SHORT"
+        "appio:::READ_BYTES",
+        "appio:::READ_CALLS",
+        "appio:::READ_USEC",
+        "appio:::READ_EOF",
+        "appio:::READ_SHORT",
+        "appio:::READ_ERR",
+        "appio:::WRITE_BYTES",
+        "appio:::WRITE_CALLS",
+        "appio:::WRITE_USEC",
+        "appio:::WRITE_ERR",
+        "appio:::WRITE_SHORT"
     };
     int event_code[NUM_EVENTS] = { 0, 0, 0, 0, 0, 0, 0, 0, 0};
     long long event_value[NUM_EVENTS];

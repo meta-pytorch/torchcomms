@@ -45,13 +45,13 @@ endif()
 set(BUILD_SHARED_LIBS ON)
 set(BUILD_STATIC_LIBS OFF)
 set(CMAKE_CXX_STANDARD
-    17
+    20
     CACHE STRING "CXX language standard")
 set(CMAKE_CXX_STANDARD_REQUIRED
     ON
     CACHE BOOL "CXX language flags required")
 set(CMAKE_CUDA_STANDARD
-    17
+    20
     CACHE STRING "CUDA language standard")
 set(CMAKE_CUDA_STANDARD_REQUIRED
     ON

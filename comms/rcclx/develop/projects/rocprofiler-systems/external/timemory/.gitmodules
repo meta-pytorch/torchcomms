@@ -33,7 +33,7 @@
 	url = https://android.googlesource.com/platform/external/perfetto
 [submodule "external/libunwind"]
 	path = external/libunwind
-	url = https://github.com/jrmadsen/libunwind.git
+	url = https://github.com/libunwind/libunwind.git
 [submodule "external/yaml-cpp"]
 	path = external/yaml-cpp
 	url = https://github.com/jrmadsen/yaml-cpp.git

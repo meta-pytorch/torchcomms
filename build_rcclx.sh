@@ -299,7 +299,14 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/rcclx"}
-AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942,gfx950"}
+# install.sh passes this straight through as -DGPU_TARGETS=, and CMake needs a
+# real list (';'), which is what install.sh --help documents. A comma makes the
+# whole string one list element: arch checks like WARP_SPEED silently fail to
+# match, and DeviceLinker.cmake tries to create a target named
+# "rccl_device_gfx942,gfx950", which CMake rejects.
+AMDGPU_TARGETS=${AMDGPU_TARGETS:="gfx942;gfx950"}
+# Tolerate a comma-separated value from the environment.
+AMDGPU_TARGETS="${AMDGPU_TARGETS//,/;}"
 
 # Add b200 support if CUDA 12.8+ is available
 CLEAN_BUILD=${CLEAN_BUILD:=0}
@@ -446,11 +453,12 @@ esac
 
 
 function build_rccl {
+  # --disable-colltrace / --disable-msccl-kernel were dropped from install.sh:
+  # the June drop removed the CMake options they set (COLLTRACE,
+  # ENABLE_MSCCL_KERNEL) along with the device-side kernel trace and MSCCL.
   ./install.sh \
     --prefix "$BUILDDIR" \
     --amdgpu_targets "$AMDGPU_TARGETS" \
-    --disable-colltrace \
-    --disable-msccl-kernel \
     --disable-warp-speed
 }
 

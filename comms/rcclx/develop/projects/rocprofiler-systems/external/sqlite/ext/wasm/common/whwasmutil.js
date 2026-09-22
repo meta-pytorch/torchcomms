@@ -16,35 +16,27 @@
 
   More specifically:
 
-  https://fossil.wanderinghorse.net/r/jaccwabyt/dir/wasmutil
+  https://fossil.wanderinghorse.net/r/jaccwabyt/file/common/whwasmutil.js
 
   and SQLite:
 
   https://sqlite.org
 
   This file is kept in sync between both of those trees.
-
-  This build was generated using:
-
-  ./c-pp -o js/whwasmutil.js -@policy=error wasmutil/whwasmutil.c-pp.js
-
-  by libcmpp 2.x 2fc4afc31f6505c27b9c34988973a2bd9b157d559247cdd26868ae75632c3a5e @ 2025-11-16 23:03:27.352 UTC
 */
 /**
-   The primary goal of this function is to provide JS/WASM utility
-   code similar to some of that provided by Emscripten-generated
-   builds, the difference being that this one can be used in arbitrary
-   WASM environments built with toolchains other than Emscripten. To
-   that end, it populates the given object with various WASM-specific
-   APIs. These APIs work with both 32- and 64-bit WASM builds.
+   The primary goal of this function is to replace, where possible,
+   Emscripten-generated glue code with equivalent utility code which
+   can be used in arbitrary WASM environments built with toolchains
+   other than Emscripten. To that end, it populates the given object
+   with various WASM-specific APIs. These APIs work with both 32- and
+   64-bit WASM builds.
 
    Forewarning: this API explicitly targets only browser environments.
    If a given non-browser environment has the capabilities needed for
    a given feature (e.g. TextEncoder), great, but it does not go out
    of its way to account for them and does not provide compatibility
-   crutches for them. That said: no specific incompatibilities with,
-   e.g., node.js are known (whereas it is known that some folks
-   use this with node.js).
+   crutches for them.
 
    Intended usage:
 
@@ -225,9 +217,7 @@
      newly-created (or config-provided) target. The current approach
      seemed better at the time.
 */
-'use strict';
-globalThis.WhWasmUtilInstaller =
-function WhWasmUtilInstaller(target){
+globalThis.WhWasmUtilInstaller = function(target){
   'use strict';
   if(undefined===target.bigIntEnabled){
     target.bigIntEnabled = !!globalThis['BigInt64Array'];
@@ -236,14 +226,6 @@ function WhWasmUtilInstaller(target){
   /** Throws a new Error, the message of which is the concatenation of
       all args with a space between each. */
   const toss = (...args)=>{throw new Error(args.join(' '))};
-
-  if( !target.pointerSize && !target.pointerIR
-      && target.alloc && target.dealloc ){
-    /* Try to determine the pointer size by allocating. */
-    const ptr = target.alloc(1);
-    target.pointerSize = ('bigint'===typeof ptr ? 8 : 4);
-    target.dealloc(ptr);
-  }
 
   /**
      As of 2025-09-21, this library works with 64-bit WASM modules
@@ -677,14 +659,12 @@ function WhWasmUtilInstaller(target){
     const ft = target.functionTable();
     const oldLen = __asPtrType(ft.length);
     let ptr;
-    while( (ptr = cache.freeFuncIndexes.pop()) ){
-      if(ft.get(ptr)){
-        /* freeFuncIndexes's entry is stale. Table was modified via a
-           different API */
+    while(cache.freeFuncIndexes.length){
+      ptr = cache.freeFuncIndexes.pop();
+      if(ft.get(ptr)){ /* Table was modified via a different API */
         ptr = null;
         continue;
       }else{
-        /* This index is free. We'll re-use it. */
         break;
       }
     }
@@ -775,10 +755,10 @@ function WhWasmUtilInstaller(target){
      has no side effects and returns undefined.
   */
   target.uninstallFunction = function(ptr){
-    if(!ptr && __NullPtr!==ptr) return undefined;
-
+    if(!ptr && 0!==ptr) return undefined;
+    const fi = cache.freeFuncIndexes;
     const ft = target.functionTable();
-    cache.freeFuncIndexes.push(ptr);
+    fi.push(ptr);
     const rc = ft.get(ptr);
     ft.set(ptr, null);
     return rc;
@@ -1016,12 +996,12 @@ function WhWasmUtilInstaller(target){
      target.heap8u().
   */
   target.cstrlen = function(ptr){
-    if(!ptr || !target.isPtr/*64*/(ptr)) return null;
+    if(!ptr || !target.isPtr(ptr)) return null;
     ptr = Number(ptr) /*tag:64bit*/;
     const h = heapWrappers().HEAP8U;
     let pos = ptr;
     for( ; h[pos] !== 0; ++pos ){}
-    return pos - ptr;
+    return Number(pos - ptr);
   };
 
   /** Internal helper to use in operations which need to distinguish
@@ -2472,8 +2452,7 @@ function WhWasmUtilInstaller(target){
      - If `wasmUtilTarget.alloc` is not set and
        `instance.exports.malloc` is, it installs
        `wasmUtilTarget.alloc()` and `wasmUtilTarget.dealloc()`
-       wrappers for the exports' `malloc` and `free` functions
-       if exports.malloc exists.
+       wrappers for the exports `malloc` and `free` functions.
 
    It returns a function which, when called, initiates loading of the
    module and returns a Promise. When that Promise resolves, it calls
@@ -2496,9 +2475,7 @@ function WhWasmUtilInstaller(target){
    Error handling is up to the caller, who may attach a `catch()` call
    to the promise.
 */
-globalThis.WhWasmUtilInstaller
-.yawl = function yawl(config){
-  'use strict';
+globalThis.WhWasmUtilInstaller.yawl = function(config){
   const wfetch = ()=>fetch(config.uri, {credentials: 'same-origin'});
   const wui = this;
   const finalThen = function(arg){
@@ -2523,7 +2500,7 @@ globalThis.WhWasmUtilInstaller
         tgt.alloc = function(n){
           return exports.malloc(n) || toss("Allocation of",n,"bytes failed.");
         };
-        tgt.dealloc = function(m){m && exports.free(m)};
+        tgt.dealloc = function(m){exports.free(m)};
       }
       wui(tgt);
     }
@@ -2542,6 +2519,4 @@ globalThis.WhWasmUtilInstaller
         .then(finalThen)
   ;
   return loadWasm;
-}.bind(
-globalThis.WhWasmUtilInstaller
-)/*yawl()*/;
+}.bind(globalThis.WhWasmUtilInstaller)/*yawl()*/;

@@ -815,9 +815,7 @@ public class Tester1 implements Runnable {
       };
 
     // Register and use the function...
-    int rc = sqlite3_create_function(db, "myfunc", -1,
-                                     SQLITE_UTF8 | SQLITE_INNOCUOUS,
-                                     func);
+    int rc = sqlite3_create_function(db, "myfunc", -1, SQLITE_UTF8, func);
     affirm(0 == rc);
     affirm(0 == xFuncAccum.value);
     final sqlite3_stmt stmt = prepare(db, "SELECT myfunc(1,2,3)");

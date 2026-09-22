@@ -29,9 +29,16 @@ typedef struct hwi_presets {
    unsigned int count;
    unsigned int event_type;
    char *postfix;
-   unsigned int code[PAPI_MAX_INFO_TERMS];
-   char *name[PAPI_MAX_INFO_TERMS];
+   unsigned int code[PAPI_MAX_INFO_TERMS];          // Active code for each native event.
+   char *name[PAPI_MAX_INFO_TERMS];                 // Active name for each native event.
+   char *base_name[PAPI_MAX_INFO_TERMS];            // Unqualified native event name.
+   unsigned int default_code[PAPI_MAX_INFO_TERMS];  // Codes for names with mandatory quals included.
+   char *default_name[PAPI_MAX_INFO_TERMS];         // Name of native events with mandatory quals included.
    char *note;
+   int component_index;
+   int num_quals;
+   char *quals[PAPI_MAX_COMP_QUALS];
+   char *quals_descrs[PAPI_MAX_COMP_QUALS];
 } hwi_presets_t;
 
 
@@ -49,7 +56,10 @@ int _papi_hwi_setup_all_presets( hwi_search_t * findem, int cidx);
 int _papi_hwi_cleanup_all_presets( void );
 int _xml_papi_hwi_setup_all_presets( char *arch);
 int _papi_load_preset_table( char *name, int type, int cidx );
+int _papi_load_preset_table_component( char *comp_str, char *name, int cidx );
 
 extern hwi_presets_t _papi_hwi_presets[PAPI_MAX_PRESET_EVENTS];
+extern hwi_presets_t *_papi_hwi_comp_presets[];
+extern int _papi_hwi_max_presets[];
 
 #endif /* _PAPI_PRESET */

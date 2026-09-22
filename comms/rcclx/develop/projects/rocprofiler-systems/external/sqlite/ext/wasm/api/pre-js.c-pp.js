@@ -14,33 +14,12 @@
    itself. i.e. try to keep file-local symbol names obnoxiously
    collision-resistant.
 */
-/**
-   This file was preprocessed using:
-
-//#@policy error
-   @c-pp::ARGV@
-//#@policy off
-*/
-//#if unsupported-build
-/**
-   UNSUPPORTED BUILD:
-
-   This SQLite JS build configuration is entirely unsupported! It has
-   not been tested beyond the ability to compile it. It may not
-   load. It may not work properly. Only builds targeting browser
-   environments are supported and tested.
-*/
-//#endif
 (function(Module){
   const sIMS =
         globalThis.sqlite3InitModuleState/*from extern-post-js.c-pp.js*/
         || Object.assign(Object.create(null),{
-          /* In WASMFS builds this file gets loaded once per thread,
-             but sqlite3InitModuleState is not getting set for the
-             worker threads? That those workers seem to function fine
-             despite that is curious. */
-          debugModule: function(){
-            console.warn("globalThis.sqlite3InitModuleState is missing",arguments);
+          debugModule: ()=>{
+            console.warn("globalThis.sqlite3InitModuleState is missing");
           }
         });
   delete globalThis.sqlite3InitModuleState;
@@ -93,7 +72,8 @@
 //#endif target:es6-module
   }.bind(sIMS);
 
-//#if Module.instantiateWasm and not wasmfs
+//#if Module.instantiateWasm
+//#if not wasmfs
   /**
      Override Module.instantiateWasm().
 
@@ -129,6 +109,7 @@
           .then(finalThen)
     return loadWasm();
   }.bind(sIMS);
-//#endif Module.instantiateWasm and not wasmfs
+//#endif not wasmfs
+//#endif Module.instantiateWasm
 })(Module);
 /* END FILE: api/pre-js.js. */

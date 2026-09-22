@@ -36,6 +36,7 @@ pfm_arm_get_perf_encoding(void *this, pfmlib_event_desc_t *e)
 	pfmlib_pmu_t *pmu = this;
 	pfm_arm_reg_t reg;
 	struct perf_event_attr *attr = e->os_data;
+	int type;
 	int ret;
 
 	if (!pmu->get_event_encoding[PFM_OS_NONE])
@@ -49,11 +50,20 @@ pfm_arm_get_perf_encoding(void *this, pfmlib_event_desc_t *e)
 		return ret;
 
 	if (e->count > 1) {
-		DPRINT("%s: unsupported count=%d\n", e->count);
+		DPRINT("unsupported count=%d\n", e->count);
 		return PFM_ERR_NOTSUPP;
 	}
-
-	attr->type = PERF_TYPE_RAW;
+	/*
+	 * To eliminate the issue of PERF_TYPE_RAW not working
+	 * for hybrid because the attr needs to encode the actual
+	 * PMU type, then we simply extract the actual PMU type
+	 * from sysfs.
+	 */
+	if (pfm_perf_find_pmu_type(pmu, &type) != PFM_SUCCESS) {
+		DPRINT("cannot determine PMU type for %s\n", pmu->name);
+		return PFM_ERR_NOTSUPP;
+	}
+	attr->type = type;
 	reg.val = e->codes[0];
 	/*
 	 * suppress the bits which are under the control of perf_events.

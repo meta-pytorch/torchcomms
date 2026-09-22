@@ -47,187 +47,115 @@
 static int
 pfm_arm_detect_n1(void *this)
 {
-	int ret;
+	/* Neoverse N1 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd0c };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd0c)) { /* Neoverse N1 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_v1(void *this)
 {
-	int ret;
+	/* Neoverse V1 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd40 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd40)) { /* Neoverse V1 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a57(void *this)
 {
-	int ret;
+	/* Cortex A57 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd07 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd07)) { /* Cortex A57 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a72(void *this)
 {
-	int ret;
+	/* Cortex A72 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd08 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd08)) { /* Cortex A57 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a53(void *this)
 {
-	int ret;
+	/* Cortex A53 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd03 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd03)) { /* Cortex A53 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a55(void *this)
 {
-	int ret;
+	/* Cortex A55 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd05 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd05)) { /* Cortex A55 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_cortex_a76(void *this)
 {
-	int ret;
+	/* Cortex A76 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 8, .part = 0xd0b };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd0b)) { /* Cortex A76 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_xgene(void *this)
 {
-	int ret;
+	/* Applied Micro X-Gene */
+	arm_cpuid_t attr = { .impl = 0x50, .arch = 8, .part = 0x0 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x50) && /* Applied Micro */
-		(pfm_arm_cfg.part == 0x000)) { /* Applied Micro X-Gene */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_thunderx2(void *this)
 {
+	/* Broadcom Thunder X2*/
+	arm_cpuid_t attr = { .impl = 0x42, .arch = 8, .part = 0x516 };
 	int ret;
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
+	ret = pfm_arm_detect(&attr, NULL);
+	if (ret == PFM_SUCCESS)
+		return ret;
 
-	if ((pfm_arm_cfg.implementer == 0x42) && /* Broadcom */
-		(pfm_arm_cfg.part == 0x516)) { /* Thunder2x */
-			return PFM_SUCCESS;
-	}
-	if ((pfm_arm_cfg.implementer == 0x43) && /* Cavium */
-		(pfm_arm_cfg.part == 0xaf)) { /* Thunder2x */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	/* Cavium Thunder X2 */
+	attr.impl = 0x43;
+	attr.part = 0xaf;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_a64fx(void *this)
 {
-	int ret;
+	/* Fujitsu a64fx */
+	arm_cpuid_t attr = { .impl = 0x46, .arch = 8, .part = 0x001 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x46) && /* Fujitsu */
-		(pfm_arm_cfg.part == 0x001)) { /* a64fx */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_hisilicon_kunpeng(void *this)
 {
-	int ret;
+	/* Hisilicon Kunpeng */
+	arm_cpuid_t attr = { .impl = 0x48, .arch = 8, .part = 0xd01 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x48) && /* Hisilicon */
-	    (pfm_arm_cfg.part == 0xd01)) { /* Kunpeng */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 /* ARM Cortex A57 support */
 pfmlib_pmu_t arm_cortex_a57_support={
 	.desc			= "ARM Cortex A57",
 	.name			= "arm_ac57",
+	.perf_name              = "armv8_cortex_a57,armv8_pmuv3_0,armv8_pmuv3",
 	.pmu			= PFM_PMU_ARM_CORTEX_A57,
 	.pme_count		= LIBPFM_ARRAY_SIZE(arm_cortex_a57_pe),
 	.type			= PFM_PMU_TYPE_CORE,
@@ -254,6 +182,7 @@ pfmlib_pmu_t arm_cortex_a57_support={
 pfmlib_pmu_t arm_cortex_a72_support={
 	.desc			= "ARM Cortex A72",
 	.name			= "arm_ac72",
+	.perf_name		= "armv8_cortex_a72,armv8_pmuv3_0",
 	.pmu			= PFM_PMU_ARM_CORTEX_A72,
 	.pme_count		= LIBPFM_ARRAY_SIZE(arm_cortex_a57_pe), /* shared with a57 */
 	.type			= PFM_PMU_TYPE_CORE,
@@ -280,6 +209,7 @@ pfmlib_pmu_t arm_cortex_a72_support={
 pfmlib_pmu_t arm_cortex_a53_support={
 	.desc			= "ARM Cortex A53",
 	.name			= "arm_ac53",
+	.perf_name		= "armv8_cortex_a53",
 	.pmu			= PFM_PMU_ARM_CORTEX_A53,
 	.pme_count		= LIBPFM_ARRAY_SIZE(arm_cortex_a53_pe),
 	.type			= PFM_PMU_TYPE_CORE,
@@ -386,6 +316,7 @@ pfmlib_pmu_t arm_xgene_support={
 pfmlib_pmu_t arm_thunderx2_support={
 	.desc			= "Cavium ThunderX2",
 	.name			= "arm_thunderx2",
+	.perf_name		= "armv8_cavium_thunder",
 	.pmu			= PFM_PMU_ARM_THUNDERX2,
 	.pme_count		= LIBPFM_ARRAY_SIZE(arm_thunderx2_pe),
 	.type			= PFM_PMU_TYPE_CORE,

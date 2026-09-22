@@ -1,4 +1,4 @@
-.TH "PAPI_list_events" 3 "Mon Feb 24 2025 21:11:21" "Version 7.2.0.0b2" "PAPI" \" -*- nroff -*-
+.TH "PAPI_list_events" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -17,7 +17,7 @@ PAPI_list_events() returns an array of events and a count of the total number of
 .RS 4
 #include <\fBpapi\&.h\fP> 
 .br
-int \fBPAPI_list_events(int *EventSet, int *Events, int *number )\fP;
+int PAPI_list_events(int EventSet, int *Events, int *number);
 .RE
 .PP
 \fBParameters\fP

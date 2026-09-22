@@ -23,7 +23,7 @@ jobs:
             PYTHON_VERSION: '3.6'
             BUILD_TYPE: 'MinSizeRel'
             PACKAGES: 'clang-9 build-essential libopenmpi-dev openmpi-bin openmpi-common libfabric-dev ccache graphviz'
-            BUILD_ARGS: '--quick --build-libs shared --mpi --gotcha --tools mallocp mpip ompt --cxx-standard=17'
+            BUILD_ARGS: '--quick --build-libs shared --mpi --gotcha --tools mallocp mpip ompt --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
           - CC: clang-10
@@ -31,7 +31,7 @@ jobs:
             PYTHON_VERSION: '3.7'
             BUILD_TYPE: 'Release'
             PACKAGES: 'clang-10 build-essential ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared static --python --gotcha --stats --unwind --tools mallocp --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared static --python --gotcha --stats --unwind --tools mallocp --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
           - CC: clang-11
@@ -39,7 +39,7 @@ jobs:
             PYTHON_VERSION: '3.7'
             BUILD_TYPE: 'Release'
             PACKAGES: 'clang-11 build-essential ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared static --stats --tools kokkos-config timem --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared static --stats --tools kokkos-config timem --cxx-standard=20'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
           - CC: gcc-7
             CXX: g++-7
@@ -47,7 +47,7 @@ jobs:
             PYTHON_VERSION: '3.6'
             BUILD_TYPE: 'Debug'
             PACKAGES: 'gcc-7 g++-7 gfortran-7 build-essential libmpich-dev mpich libtbb-dev libpapi-dev papi-tools lcov ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --mpi --papi --gotcha --unwind --tools mpip --stats --cxx-standard=17 --coverage'
+            BUILD_ARGS: '--minimal --build-libs shared --mpi --papi --gotcha --unwind --tools mpip --stats --cxx-standard=20 --coverage'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DCMAKE_C_FLAGS=-Og -DCMAKE_CXX_FLAGS=-Og'
           - CC: gcc-8
@@ -56,7 +56,7 @@ jobs:
             PYTHON_VERSION: '3.7'
             BUILD_TYPE: 'Release'
             PACKAGES: 'gcc-8 g++-8 gfortran-8 build-essential libmpich-dev mpich ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --mpi --gotcha --stats --tools compiler --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared --mpi --gotcha --stats --tools compiler --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON'
           - CC: gcc-9
@@ -65,7 +65,7 @@ jobs:
             PYTHON_VERSION: '3.7'
             BUILD_TYPE: 'MinSizeRel'
             PACKAGES: 'gcc-9 g++-9 gfortran-9 build-essential ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --gotcha --stats --python --unwind --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared --gotcha --stats --python --unwind --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
           - CC: gcc-10
@@ -74,7 +74,7 @@ jobs:
             PYTHON_VERSION: '3.7'
             BUILD_TYPE: 'Release'
             PACKAGES: 'gcc-10 g++-10 gfortran-10 build-essential libtbb-dev ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --python --arch --extra-optimizations --caliper --unwind --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared --python --arch --extra-optimizations --caliper --unwind --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
 
@@ -208,7 +208,7 @@ jobs:
             PYTHON_VERSION: '3.10'
             BUILD_TYPE: 'Release'
             PACKAGES: 'clang build-essential ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
           - CC: gcc
@@ -217,7 +217,7 @@ jobs:
             PYTHON_VERSION: '3.10'
             BUILD_TYPE: 'Release'
             PACKAGES: 'gcc g++ gfortran build-essential ccache graphviz'
-            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=17'
+            BUILD_ARGS: '--minimal --build-libs shared --python --gotcha --unwind --stats --tools avail timem --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_CCACHE_BUILD=ON -DTIMEMORY_UNITY_BUILD=OFF -DTIMEMORY_BUILD_PYTHON_UNITY=OFF'
 
@@ -347,7 +347,7 @@ jobs:
       matrix:
         include:
           - BUILD_TYPE: 'Release'
-            BUILD_ARGS: '--build-libs shared --tools avail timem --cxx-standard=17'
+            BUILD_ARGS: '--build-libs shared --tools avail timem --cxx-standard=20'
             CTEST_ARGS: '-V --output-on-failure'
             CONFIG_ARGS: '-DTIMEMORY_BUILD_{CALIPER,COMPILER_INSTRUMENTATION}=OFF -DTIMEMORY_BUILD_PYTHON_HATCHET=OFF'
             PYTHON_VERSION: '3.8'

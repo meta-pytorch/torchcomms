@@ -6,11 +6,16 @@
 
 #define NUM_EVENTS (12)
 
-extern void launch_kernel(int device_id);
-int eventset = PAPI_NULL;
-volatile int gv=0;
+extern int launch_kernel(int device_id);
+extern void add_desired_component_events(int eventSet, int maxEventsToAdd, const char eventsToAdd[][PAPI_MAX_STR_LEN], char metricNamesAdded[][PAPI_MAX_STR_LEN], int *numEventsSuccessfullyAdded);
+extern void enumerate_and_add_component_events(const char *componentName, int eventSet, int maxEventsToAdd, char metricNamesAdded[][PAPI_MAX_STR_LEN], int *numEventsSuccessfullyAdded);
 
-const char *events[NUM_EVENTS] = {
+int eventset = PAPI_NULL;
+int numNativeEventsAdded = 0;
+
+char nativeEventNamesAdded[NUM_EVENTS][PAPI_MAX_STR_LEN] = { 0 };
+
+const char desiredEvents[NUM_EVENTS][PAPI_MAX_STR_LEN] = { 
     "rocp_sdk:::SQ_CYCLES:device=0:DIMENSION_INSTANCE=0:DIMENSION_SHADER_ENGINE=3",
     "rocp_sdk:::SQ_INSTS:device=0:DIMENSION_INSTANCE=0:DIMENSION_SHADER_ENGINE=0",
     "rocp_sdk:::SQ_INSTS:device=0:DIMENSION_INSTANCE=0:DIMENSION_SHADER_ENGINE=1",
@@ -25,6 +30,7 @@ const char *events[NUM_EVENTS] = {
     "rocp_sdk:::SQ_BUSY_CYCLES:device=1:DIMENSION_INSTANCE=0:DIMENSION_SHADER_ENGINE=2"
 };
 
+volatile int gv=0;
 
 void *thread_main(void *arg){
     long long counters[NUM_EVENTS] = { 0 };
@@ -34,8 +40,8 @@ void *thread_main(void *arg){
         printf("Sample: %2d\n", gv);
         fflush(stdout);
         PAPI_read(eventset, counters);
-        for (int i = 0; i < NUM_EVENTS; ++i) {
-            printf("%s: %.2lfM\n", events[i], (double)counters[i]/1e6);
+        for (int i = 0; i < numNativeEventsAdded; ++i) {
+            printf("%s: %.2lfM\n", nativeEventNamesAdded[i], (double)counters[i]/1e6);
             fflush(stdout);
         }
         printf("\n");
@@ -61,11 +67,20 @@ int main(int argc, char *argv[])
         test_fail(__FILE__, __LINE__, "PAPI_create_eventset", papi_errno);
     }
 
-    for (int i = 0; i < NUM_EVENTS; ++i) {
-        papi_errno = PAPI_add_named_event(eventset, events[i]);
-        if (papi_errno != PAPI_OK) {
-            test_fail(__FILE__, __LINE__, "PAPI_add_named_event", papi_errno);
-        }
+    add_desired_component_events(eventset, NUM_EVENTS, desiredEvents, nativeEventNamesAdded, &numNativeEventsAdded);
+
+    // If we are unable to add any desired events then we enumerate through the available
+    // rocp_sdk native events attempting to add up to NUM_EVENTS
+    if (numNativeEventsAdded == 0) {
+        const char *componentName = "rocp_sdk";
+        enumerate_and_add_component_events(componentName, eventset, NUM_EVENTS, nativeEventNamesAdded, &numNativeEventsAdded);
+    }
+
+    // If we are unable to add any rocp_sdk native events whether that is the desired events
+    // or events we enumerate through then skip the test
+    if (numNativeEventsAdded == 0) {
+        fprintf(stderr, "Unable to add any rocp_sdk native events.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
     }
 
     long long counters[NUM_EVENTS] = { 0 };
@@ -79,7 +94,10 @@ int main(int argc, char *argv[])
 
     printf("---------------------  launch_kernel(0)\n");
     gv = 1;
-    launch_kernel(0);
+    papi_errno = launch_kernel(0);
+    if (papi_errno != 0) {
+        test_fail(__FILE__, __LINE__, "launch_kernel(0)", papi_errno);
+    }
 
     usleep(20000);
 
@@ -89,8 +107,8 @@ int main(int argc, char *argv[])
     }
     printf("---------------------  PAPI_read()\n");
 
-    for (int i = 0; i < NUM_EVENTS; ++i) {
-        printf("%s: %.2lfM\n", events[i], (double)counters[i]/1e6);
+    for (int i = 0; i < numNativeEventsAdded; ++i) {
+        printf("%s: %.2lfM\n", nativeEventNamesAdded[i], (double)counters[i]/1e6);
     }
 
     papi_errno = PAPI_stop(eventset, counters);
@@ -100,8 +118,8 @@ int main(int argc, char *argv[])
 
     printf("---------------------  PAPI_stop()\n");
 
-    for (int i = 0; i < NUM_EVENTS; ++i) {
-        printf("%s: %.2lfM\n", events[i], (double)counters[i]/1e6);
+    for (int i = 0; i < numNativeEventsAdded; ++i) {
+        printf("%s: %.2lfM\n", nativeEventNamesAdded[i], (double)counters[i]/1e6);
     }
     
     papi_errno = PAPI_cleanup_eventset(eventset);

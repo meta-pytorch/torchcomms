@@ -2,18 +2,18 @@
 
 export PAPI_CUDA_TEST_QUIET=1    # Comment this line to see standard output from tests
 
-evt_names=("cuda:::dram__bytes_read.sum:device=0" \
-           "cuda:::sm__cycles_active.sum:device=0" \
-           "cuda:::smsp__warps_launched.sum:device=0")
+evt_names=("cuda:::dram__bytes_read:stat=sum:device=0" \
+           "cuda:::sm__cycles_active:stat=sum:device=0" \
+           "cuda:::smsp__warps_launched:stat=sum:device=0")
 
-multi_gpu_evt_names=("cuda:::dram__bytes_read.sum" \
-                     "cuda:::sm__cycles_active.sum" \
-                     "cuda:::smsp__warps_launched.sum")
+multi_gpu_evt_names=("cuda:::dram__bytes_read:stat=sum" \
+                     "cuda:::sm__cycles_active:stat=sum" \
+                     "cuda:::smsp__warps_launched:stat=sum")
 
-multi_pass_evt_name="cuda:::gpu__compute_memory_access_throughput_internal_activity.max.pct_of_peak_sustained_elapsed:device=0"
+multi_pass_evt_name="cuda:::gpu__compute_memory_access_throughput_internal_activity.pct_of_peak_sustained_elapsed:stat=max:device=0"
 
-concurrent_evt_names=("cuda:::sm__cycles_active.sum:device=" \
-                      "cuda:::sm__cycles_elapsed.max:device=")
+concurrent_evt_names=("cuda:::sm__cycles_active:stat=sum:device=" \
+                      "cuda:::sm__cycles_elapsed:stat=max:device=")
 
 make test_multipass_event_fail
 echo -e "Running: \e[36m./test_multipass_event_fail\e[0m" "${evt_names[@]}" $multi_pass_evt_name
@@ -26,8 +26,8 @@ echo -e "Running: \e[36m./test_multi_read_and_reset\e[0m" "${evt_names[@]}"
 echo -e "-------------------------------------\n"
 
 make test_2thr_1gpu_not_allowed
-echo -e "Running: \e[36m./test_2thr_1gpu_not_allowed\e[0m" "${evt_names[@]}"
-./test_2thr_1gpu_not_allowed "${evt_names[@]}"
+echo -e "Running: \e[36m./test_2thr_1gpu_not_allowed\e[0m" "${evt_names[@]:0:2}"
+./test_2thr_1gpu_not_allowed "${evt_names[@]:0:2}"
 echo -e "-------------------------------------\n"
 
 make HelloWorld

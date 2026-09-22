@@ -183,7 +183,7 @@ void async_example() {
 // {:n} - don't split the output to lines.
 
 #if !defined SPDLOG_USE_STD_FORMAT || defined(_MSC_VER)
-    #include "spdlog/fmt/bin_to_hex.h"
+#include "spdlog/fmt/bin_to_hex.h"
 void binary_example() {
     std::vector<char> buf;
     for (int i = 0; i < 80; i++) {
@@ -207,7 +207,7 @@ void binary_example() {
 
 // Log a vector of numbers
 #ifndef SPDLOG_USE_STD_FORMAT
-    #include "spdlog/fmt/ranges.h"
+#include "spdlog/fmt/ranges.h"
 void vector_example() {
     std::vector<int> vec = {1, 2, 3};
     spdlog::info("Vector example: {}", vec);
@@ -301,7 +301,7 @@ void err_handler_example() {
 
 // syslog example (linux/osx/freebsd)
 #ifndef _WIN32
-    #include "spdlog/sinks/syslog_sink.h"
+#include "spdlog/sinks/syslog_sink.h"
 void syslog_example() {
     std::string ident = "spdlog-example";
     auto syslog_logger = spdlog::syslog_logger_mt("syslog", ident, LOG_PID);
@@ -311,7 +311,7 @@ void syslog_example() {
 
 // Android example.
 #if defined(__ANDROID__)
-    #include "spdlog/sinks/android_sink.h"
+#include "spdlog/sinks/android_sink.h"
 void android_example() {
     std::string tag = "spdlog-android";
     auto android_logger = spdlog::android_logger_mt("android", tag);
@@ -386,7 +386,7 @@ void replace_default_logger_example() {
 // thread-local storage.
 
 #ifndef SPDLOG_NO_TLS
-    #include "spdlog/mdc.h"
+#include "spdlog/mdc.h"
 void mdc_example() {
     spdlog::mdc::put("key1", "value1");
     spdlog::mdc::put("key2", "value2");

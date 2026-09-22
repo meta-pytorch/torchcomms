@@ -10,11 +10,11 @@ if(IS_TOP_PROJECT)
     # Turn this on in order to build elfio examples
     option(ELFIO_BUILD_EXAMPLES "Build ELFIO examples" ON)
 
-    # Turns this on in order to build tests
+    # Turn this on in order to build tests
     option(ELFIO_BUILD_TESTS "Build ELFIO tests" OFF)
 
     # Generate output of compile commands during generation
-    set(CMAKE_EXPORT_COMPILE_COMMANDS, ON)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif()
 
 # Read version from header file
@@ -38,6 +38,8 @@ include(GNUInstallDirs)
 # Create a header only CMake target for elfio
 add_library(elfio INTERFACE)
 add_library(elfio::elfio ALIAS elfio)
+add_library(ario INTERFACE)
+add_library(ario::ario ALIAS ario)
 
 target_include_directories(
     elfio
@@ -45,9 +47,15 @@ target_include_directories(
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
+target_include_directories(
+    ario
+    INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+
 # If this is the top level project, add in logic to install elfio
 if(IS_TOP_PROJECT)
-    # Enable C++14 for examples and tests
+    # Enable C++17 for examples and tests
     if(ELFIO_BUILD_EXAMPLES OR ELFIO_BUILD_TESTS)
         set(CMAKE_CXX_STANDARD 17)
     endif()
@@ -140,7 +148,7 @@ if(IS_TOP_PROJECT)
     set(CPACK_PACKAGE_FILE_NAME "${_project_lower}-${_sys}")
     set(CPACK_SOURCE_PACKAGE_FILE_NAME "${_project_lower}-${PROJECT_VERSION}")
 
-    set(CPACK_SOURCE_IGNORE_FILES "/.git/;/.github/;/.vscode/;/build;/.clang-format;/.gitignore;/.travis.yml;/doc/images/;/doc/site;/doc/elfio.docx;/examples/sudo_gdb.sh;/tests")
+    set(CPACK_SOURCE_IGNORE_FILES "/.git.*;/.vs.*;/build;/.clang-format;/doc/site;/doc/elfio.docx;/doc/images/callouts/;/doc/images/colorsvg/;/doc/images/res2/;/doc/images/.*\.svg;/doc/images/.*\.gif;/doc/images/[^/]*\.png$;/doc/images/.*\.tif;/examples/sudo_gdb.sh;/tests")
 
     install(FILES ${CPACK_RESOURCE_FILE_README} ${CPACK_RESOURCE_FILE_LICENSE}
         DESTINATION share/docs/${PROJECT_NAME})

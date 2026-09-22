@@ -9,6 +9,9 @@ on:
   # allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   component_tests:
     strategy:
@@ -20,6 +23,6 @@ jobs:
     runs-on: [self-hosted, cpu_intel]
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: appio component tests
-        run: .github/workflows/ci_individual_component.sh ${{matrix.component}} ${{matrix.debug}} ${{matrix.shlib}}
+        run: .github/workflows_scripts/ci_individual_component.sh ${{matrix.component}} ${{matrix.debug}} ${{matrix.shlib}}

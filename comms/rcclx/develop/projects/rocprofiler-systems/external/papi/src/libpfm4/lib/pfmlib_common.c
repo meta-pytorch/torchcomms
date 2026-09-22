@@ -673,6 +673,7 @@ static pfmlib_pmu_t *pfmlib_pmus[]=
 	&arm_cortex_a55_support,
 	&arm_cortex_a72_support,
 	&arm_cortex_a76_support,
+	&arm_cortex_x4_support,
 	&arm_xgene_support,
 	&arm_thunderx2_support,
 	&arm_thunderx2_dmc0_support,
@@ -751,6 +752,7 @@ static pfmlib_pmu_t *pfmlib_pmus[]=
 	&arm_cortex_a55_support,
 	&arm_cortex_a72_support,
 	&arm_cortex_a76_support,
+	&arm_cortex_x4_support,
 	&arm_xgene_support,
 	&arm_thunderx2_support,
 	&arm_thunderx2_dmc0_support,
@@ -988,7 +990,8 @@ pfmlib_getl(char **buffer, size_t *len, FILE *fp)
 		if (c == '\n')
 			break;
 	}
-	b[i] = '\0';
+	if (c != EOF)
+		b[i] = '\0';
 	return c != EOF ? 0 : -1;
 }
 
@@ -1214,9 +1217,13 @@ pfmlib_init_env(void)
 	if (str)
 		pfm_cfg.blacklist_pmus = str;
 
+#ifdef CONFIG_PFMLIB_OS_LINUX
 	str = getenv("LIBPFM_PROC_CPUINFO");
 	if (str)
 		pfm_cfg.proc_cpuinfo = str;
+	else
+		pfm_cfg.proc_cpuinfo = "/proc/cpuinfo";
+#endif
 }
 
 static int

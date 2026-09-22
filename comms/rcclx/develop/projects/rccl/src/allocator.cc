@@ -1,8 +1,9 @@
 /*************************************************************************
- * Copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2015-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
- * See LICENSE.txt for license information
- ************************************************************************/
+ * See LICENSE.txt for more license information
+ *************************************************************************/
 
 #include "comm.h"
 #include "transport.h"
@@ -12,6 +13,7 @@
 #else
 #include "nvtx_stub.h"
 #endif
+#include "utils.h"
 
 NCCL_API(ncclResult_t, ncclMemAlloc, void **ptr, size_t size);
 ncclResult_t  ncclMemAlloc_impl(void **ptr, size_t size) {
@@ -39,22 +41,36 @@ ncclResult_t  ncclMemAlloc_impl(void **ptr, size_t size) {
   if (ncclCuMemEnable()) {
     size_t handleSize = size;
     int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+#if CUDART_VERSION >= 12030
     // Query device to see if FABRIC handle support is available
     flag = 0;
     (void) CUPFN(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
     if (flag) requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
+#endif
+#if defined(HIP_VMM_UNCACHED_MEMORY)
+    memprop.type = hipMemAllocationTypeUncached;
+#else
     memprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+#endif
     memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
     memprop.requestedHandleTypes = (CUmemAllocationHandleType) requestedHandleTypes;
     memprop.location.id = currentDev;
-    // Query device to see if RDMA support is available
-    flag = 0;
+#if HIP_VERSION > 70000000
+    // ROCM-2550: Use cuDeviceGetAttribute to check if RDMA support is available
+    // TODO: Remove once ROCM-2550 is fixed
+    // Always enable gpuDirectRDMACapable: the non-RDMA VMM code path in
+    // HIP crashes (SIGSEGV in hipMemMap) after many allocations.
+    memprop.allocFlags.gpuDirectRDMACapable = 1;
+    // // Query device to see if RDMA support is available
+    // flag = 0;
     // CUCHECK(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED, currentDev));
-    if (flag) memprop.allocFlags.gpuDirectRDMACapable = 1;
+    // if (flag) memprop.allocFlags.gpuDirectRDMACapable = 1;
+#endif
     CUCHECK(cuMemGetAllocationGranularity(&memGran, &memprop, CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
     CUDACHECK(cudaGetDeviceCount(&dcnt));
     ALIGN_SIZE(handleSize, memGran);
 
+#if CUDART_VERSION >= 12030
     if (requestedHandleTypes & CU_MEM_HANDLE_TYPE_FABRIC) {
       /* First try cuMemCreate() with FABRIC handle support and then remove if it fails */
       CUresult err = CUPFN(cuMemCreate(&handle, handleSize, &memprop, 0));
@@ -67,7 +83,9 @@ ncclResult_t  ncclMemAlloc_impl(void **ptr, size_t size) {
         // Catch and report any error from above
         CUCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
       }
-    } else {
+    } else
+#endif
+    {
       /* Allocate the physical memory on the device */
       CUCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
     }
@@ -78,7 +96,7 @@ ncclResult_t  ncclMemAlloc_impl(void **ptr, size_t size) {
     /* Now allow RW access to the newly mapped memory */
     for (int i = 0; i < dcnt; ++i) {
       int p2p = 0;
-      if (i == cudaDev || ((cudaDeviceCanAccessPeer(&p2p, i, cudaDev) == cudaSuccess) && p2p)) {
+      if (i == cudaDev || (CUDASUCCESS(cudaDeviceCanAccessPeer(&p2p, i, cudaDev)) && p2p)) {
         accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
         accessDesc.location.id = i;
         accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
@@ -119,7 +137,7 @@ ncclResult_t  ncclMemFree_impl(void *ptr) {
   CUCHECKGOTO(cuPointerGetAttribute((void*)&ptrDev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, (CUdeviceptr)ptr), ret, fail);
   CUDACHECKGOTO(cudaSetDevice((int)ptrDev), ret, fail);
   if (ncclCuMemEnable()) {
-    NCCLCHECKGOTO(ncclCuMemFree(ptr), ret, fail);
+    NCCLCHECKGOTO(ncclCuMemFree(ptr, nullptr), ret, fail); // User facing API, memManager does not need to track user memory. Same as ncclMemAlloc
     goto exit;
   }
 
@@ -294,7 +312,7 @@ ncclResult_t ncclShadowPoolDestruct(struct ncclShadowPool* pool) {
               pool->pages = page;
             }
           } else {
-            cudaFreeAsync(obj->devObj, stream);
+            CUDACHECKIGNORE(cudaFreeAsync(obj->devObj, stream));
           }
           struct ncclShadowObject* next = obj->next;
           free(obj);
@@ -305,28 +323,21 @@ ncclResult_t ncclShadowPoolDestruct(struct ncclShadowPool* pool) {
     free(pool->table);
 
     while (pool->pages != nullptr) {
-      cudaFreeAsync(pool->pages->devObjs, stream);
+      CUDACHECKIGNORE(cudaFreeAsync(pool->pages->devObjs, stream));
       struct ncclShadowPage* next = pool->pages->next;
       free(pool->pages);
       pool->pages = next;
     }
 
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
-    cudaMemPoolDestroy(pool->memPool);
+    CUDACHECKIGNORE(cudaStreamSynchronize(stream));
+    CUDACHECKIGNORE(cudaStreamDestroy(stream));
+    CUDACHECKIGNORE(cudaMemPoolDestroy(pool->memPool));
   }
   return ncclSuccess;
 }
 
-static int hashBucket(int hbits, void* devObj) {
-  uintptr_t h = reinterpret_cast<uintptr_t>(devObj);
-  h ^= h>>32;
-  h *= 0x9e3779b97f4a7c13;
-  return (uint64_t)h >> (64-hbits);
-}
-
 static void hashInsert(struct ncclShadowPool* pool, struct ncclShadowObject* obj) {
-  int b = hashBucket(pool->hbits, obj->devObj);
+  uint64_t b = ncclHashPointer(pool->hbits, obj->devObj);
   obj->next = pool->table[b];
   pool->table[b] = obj;
 }
@@ -347,7 +358,7 @@ ncclResult_t ncclShadowPoolAlloc(
     props.allocType = cudaMemAllocationTypePinned;
     props.handleTypes = cudaMemHandleTypeNone;
     props.location.type = cudaMemLocationTypeDevice;
-    cudaGetDevice(&props.location.id);
+    CUDACHECKIGNORE(cudaGetDevice(&props.location.id));
     CUDACHECK(cudaMemPoolCreate(&pool->memPool, &props));
 
     pool->hbits = hbits = 4;
@@ -424,7 +435,7 @@ ncclResult_t ncclShadowPoolAlloc(
 ncclResult_t ncclShadowPoolFree(struct ncclShadowPool* pool, void* devObj, cudaStream_t stream) {
   if (devObj == nullptr) return ncclSuccess;
 
-  int b = hashBucket(pool->hbits, devObj);
+  uint64_t b = ncclHashPointer(pool->hbits, devObj);
   struct ncclShadowObject** pobj = &pool->table[b];
   while (true) {
     if (*pobj == nullptr) {
@@ -457,7 +468,7 @@ ncclResult_t ncclShadowPoolToHost(struct ncclShadowPool* pool, void* devObj, voi
     return ncclSuccess;
   }
 
-  int b = hashBucket(pool->hbits, devObj);
+  uint64_t b = ncclHashPointer(pool->hbits, devObj);
   struct ncclShadowObject* obj = pool->table[b];
   while (true) {
     if (obj == nullptr) {

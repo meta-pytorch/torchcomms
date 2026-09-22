@@ -26,6 +26,7 @@
 #define NAMEID_BROADCOM_THUNDERX2 0x516
 #define NAMEID_CAVIUM_THUNDERX2   0x0af
 #define NAMEID_FUJITSU_A64FX      0x001
+#define NAMEID_FUJITSU_MONAKA     0x003
 #define NAMEID_HISILICON_KUNPENG  0xd01
 #define NAMEID_APM_XGENE          0x000
 #define NAMEID_QUALCOMM_KRAIT     0x040
@@ -333,6 +334,9 @@ name_id_fujitsu_cpu_get_name( int name_id, char *name )
     switch(name_id) {
         case NAMEID_FUJITSU_A64FX:
             strcpy(name, "Fujitsu A64FX");
+            break;
+        case NAMEID_FUJITSU_MONAKA:
+            strcpy(name, "Fujitsu FUJITSU-MONAKA");
             break;
         default:
             papi_errno = PAPI_ENOSUPP;

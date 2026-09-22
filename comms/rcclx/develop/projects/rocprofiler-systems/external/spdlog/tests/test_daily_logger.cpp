@@ -98,7 +98,7 @@ TEST_CASE("rotating_file_sink::calc_filename3", "[rotating_file_sink]") {
 // regex supported only from gcc 4.9 and above
 #if defined(_MSC_VER) || !(__GNUC__ <= 4 && __GNUC_MINOR__ < 9)
 
-    #include <regex>
+#include <regex>
 
 TEST_CASE("daily_file_sink::daily_filename_calculator", "[daily_file_sink]") {
     // daily_YYYY-MM-DD_hh-mm.txt

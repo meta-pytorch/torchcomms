@@ -9,29 +9,15 @@
 RCCL usage tips
 *****************************************
 
-This topic describes some of the more common RCCL extensions, such as NPKit, and provides tips on how to
-configure and customize the application.
+This topic describes common RCCL configuration options and usage tips.
 
-NPKit
-=====
+Profiling
+=========
 
-RCCL integrates `NPKit <https://github.com/microsoft/npkit>`_, a profiler framework that
-enables the collection of fine-grained trace events in RCCL components, especially in giant collective GPU kernels.
-See the `NPKit sample workflow for RCCL <https://github.com/microsoft/NPKit/tree/main/rccl_samples>`_ for
-a fully-automated usage example. It also provides useful templates for the following manual instructions.
+For fine-grained profiling of collective operations, use the RCCL **profiler plugin** API and related tooling rather than legacy in-tree profilers.
 
-To manually build RCCL with NPKit enabled, pass ``-DNPKIT_FLAGS="-DENABLE_NPKIT -DENABLE_NPKIT_...(other NPKit compile-time switches)"`` to the ``cmake`` command.
-All NPKit compile-time switches are declared in the RCCL code base as macros with the prefix ``ENABLE_NPKIT_``.
-These switches control the information that is collected.
-
-.. note::
-
-   NPKit only supports the collection of non-overlapped events on the GPU.
-   The ``-DNPKIT_FLAGS`` settings must follow this rule.
-
-To manually run RCCL with NPKit enabled, set the environment variable ``NPKIT_DUMP_DIR``
-to the NPKit event dump directory. NPKit only supports one GPU per process.
-To manually analyze the NPKit dump results, use `npkit_trace_generator.py <https://github.com/microsoft/NPKit/blob/main/rccl_samples/npkit_trace_generator.py>`_.
+MSCCL and MSCCL++ integration has been removed from RCCL. The legacy API symbols ``mscclLoadAlgo``,
+``mscclRunAlgo``, and ``mscclUnloadAlgo`` remain as no-ops for link compatibility.
 
 Enabling peer-to-peer transport
 ===============================
@@ -60,7 +46,7 @@ ignore the job's supplied CPU affinity and use the GPU affinity only.
 For general usage, this environment variable is not set so it doesn't interfere with the user or launcher
 supplied preferences.
 
-Improving performance on the MI300X
+Improving performance on the MI300X 
 ===================================
 
 This section outlines ways to improve RCCL performance on MI300X systems,
@@ -115,7 +101,7 @@ the number of compute partitions. NPS4 (viewing pairs of HBM stacks as a
 disparate element), for example, is only enabled when in CPX mode (viewing each
 XCD as a disparate element).
 
-- Compute partition modes
+- Compute partition modes 
 
   - In SPX mode, workgroups launched to the device are distributed
     round-robin to the XCDs in the device, meaning that the programmer cannot
@@ -123,8 +109,8 @@ XCD as a disparate element).
 
   - In CPX mode, workgroups are launched to a single XCD, meaning the
     programmer has explicit control over work placement onto the XCDs.
-
-- Memory partition modes
+  
+- Memory partition modes 
 
   - In NPS1 mode (compatible with CPX and SPX), the entire memory is accessible
     to all XCDs.
@@ -166,7 +152,6 @@ the same OAM) on the MI300X.
 .. code-block:: shell
 
    export HIP_FORCE_DEV_KERNARG=1
-
    export ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
    mpirun -np 8 --bind-to numa rccl-tests/build/all_reduce_perf -b 32 -e 1G -f 2 -g 1 -G 2 -w 20 -n 50
@@ -197,7 +182,7 @@ by RCCL-Tests with the RCCL and CPX optimizations.
    To use RCCL with CPX mode in PyTorch, check the RCCL version used by PyTorch.
 
    For a virtualenv with a .whl-based PyTorch setup (such as nightly/rocm6.2),
-   this would be in
+   this would be in 
    ``<path-to-your-venv>/lib/<python-version>/site-packages/torch/lib/librccl.so``
    This is the version of RCCL that is packaged as part of ROCm version 6.2.
 
@@ -214,8 +199,8 @@ benchmark:
    export ROCR_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
    python -u -m torch.distributed.run --nproc_per_node=8 --rdzv_endpoint localhost:6000  --rdzv_backend c10d all_reduce_bench.py
 
-For better performance, the ``HIP_FORCE_DEV_KERNARG``,
-and ``TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK`` environment variables are
+For better performance, the ``HIP_FORCE_DEV_KERNARG`` and
+``TORCH_NCCL_USE_TENSOR_REGISTER_ALLOCATOR_HOOK`` environment variables are
 set during the benchmark in the following manner:
 
 .. code-block:: shell
@@ -227,6 +212,7 @@ set during the benchmark in the following manner:
 
 The default allreduce PyTorch benchmark peak bus bandwidth performance is
 ~170 GB/s on a single OAM with ROCm 6.2.4, while the optimized run for CPX on a
+single OAM peaks at ~315 GB/s.
 
 Context tracking on GPUs
 ----------------------------------------

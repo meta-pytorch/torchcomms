@@ -1,24 +1,11 @@
-/* Copyright (c) 2015 - 2022 Advanced Micro Devices, Inc.
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE. */
+/*
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 #include <hip/hip_runtime.h>
+#include <set>
 #include "hip_internal.hpp"
 #include "hip_vm.hpp"
 namespace hip {
@@ -98,7 +85,8 @@ hipError_t hipMemCreate(hipMemGenericAllocationHandle_t* handle, size_t size,
   }
 
   if (prop->requestedHandleTypes != hipMemHandleTypeNone &&
-      prop->requestedHandleTypes != hipMemHandleTypePosixFileDescriptor) {
+      prop->requestedHandleTypes != hipMemHandleTypePosixFileDescriptor &&
+      prop->requestedHandleType  != hipMemHandleTypeFabric) {
     HIP_RETURN(hipErrorNotSupported);
   }
 
@@ -109,11 +97,12 @@ hipError_t hipMemCreate(hipMemGenericAllocationHandle_t* handle, size_t size,
   }
 
   bool useHostDevice = (prop->location.type == hipMemLocationTypeHost);
-  amd::Context* curDevContext = hip::getCurrentDevice()->asContext();
+  hip::Device* dev = hip::getCurrentDevice();
+  amd::Context* curDevContext = dev->asContext();
   amd::Context* amdContext = useHostDevice ? hip::host_context : curDevContext;
 
   if (amdContext == nullptr) {
-    return hipErrorOutOfMemory;
+    HIP_RETURN(hipErrorOutOfMemory);
   }
 
   const auto& dev_info = amdContext->devices()[0]->info();
@@ -131,7 +120,7 @@ hipError_t hipMemCreate(hipMemGenericAllocationHandle_t* handle, size_t size,
   // Handle out of memory cases,
   if (ptr == nullptr) {
     size_t free = 0, total = 0;
-    hipError_t hip_error = hipMemGetInfo(&free, &total);
+    hipError_t hip_error = ihipMemGetInfo(&free, &total);
     if (hip_error == hipSuccess) {
       LogPrintfError(
           "Allocation failed : Device memory : required :%zu | free :%zu"
@@ -143,7 +132,7 @@ hipError_t hipMemCreate(hipMemGenericAllocationHandle_t* handle, size_t size,
 
   // Add this to amd::Memory object, so this ptr is accesible for other hipmemory operations.
   size_t offset = 0;  // this is ignored
-  amd::Memory* phys_mem_obj = getMemoryObject(ptr, offset);
+  amd::Memory* phys_mem_obj = getMemoryObject(dev, ptr, offset);
   // saves the current device id so that it can be accessed later
   phys_mem_obj->getUserData().deviceId = prop->location.id;
   phys_mem_obj->getUserData().locationType = prop->location.type;
@@ -179,8 +168,10 @@ hipError_t hipMemExportToShareableHandle(void* shareableHandle,
     HIP_RETURN(hipErrorInvalidValue);
   }
 
+  amd::Memory::HandleType htype = static_cast<amd::Memory::HandleType>(handleType);
+
   if (!ga->asAmdMemory().getContext().devices()[0]->ExportShareableVMMHandle(
-          ga->asAmdMemory(), flags, shareableHandle)) {
+          ga->asAmdMemory(), flags, shareableHandle, htype)) {
     LogPrintfError("Exporting Handle failed with flags: %d", flags);
     HIP_RETURN(hipErrorInvalidValue);
   }
@@ -260,7 +251,8 @@ hipError_t hipMemImportFromShareableHandle(hipMemGenericAllocationHandle_t* hand
   }
 
   amd::Device* device = hip::getCurrentDevice()->devices()[0];
-  amd::Memory* phys_mem_obj = device->ImportShareableVMMHandle(osHandle);
+  amd::Memory::HandleType htype = static_cast<amd::Memory::HandleType>(shHandleType);
+  amd::Memory* phys_mem_obj = device->ImportShareableVMMHandle(osHandle, htype);
 
   if (phys_mem_obj == nullptr) {
     LogError("failed to new a va range curr_mem_obj object!");
@@ -292,17 +284,37 @@ hipError_t hipMemMap(void* ptr, size_t size, size_t offset, hipMemGenericAllocat
     HIP_RETURN(hipErrorInvalidValue);
   }
 
-  // Re-interpret the ga handle and set the mapped flag
+  // Re-interpret the ga handle.
   hip::GenericAllocation* ga = reinterpret_cast<hip::GenericAllocation*>(handle);
+
+  // Pick the owning device. The backend self-classifies the remaining failure
+  // causes (missing/invalid VA reservation, out-of-bounds range) via cl_int
+  // return codes, so the HIP layer keeps only the checks the backend cannot
+  // perform: the device-id index guard and size-vs-granularity alignment.
+
+  // Owner device id must index g_devices[] safely before any backend call.
+  size_t owner_dev_id = ga->GetProperties().location.id;
+  if (owner_dev_id >= g_devices.size()) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+  amd::Device* dev = g_devices[owner_dev_id]->devices()[0];
+
+  // The backend does not validate size-vs-granularity alignment; a misaligned
+  // size would otherwise fail in the HW map and surface as OOM instead of the
+  // correct invalid-value.
+  size_t granularity = dev->info().virtualMemAllocGranularityMinimum_;
+  if (granularity != 0 && (size % granularity) != 0) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+
   ga->retain();
 
-  auto& queue = *g_devices[ga->GetProperties().location.id]->NullStream();
-  // Map the physical address to virtual address
-  amd::Command* cmd = new amd::VirtualMapCommand(queue, amd::Command::EventWaitList{}, ptr, size,
-                                                 &ga->asAmdMemory());
-  cmd->enqueue();
-  cmd->awaitCompletion();
-  cmd->release();
+  // Direct synchronous path, do not wait on streams or other work
+  cl_int cl_err = dev->virtualMap(ptr, size, &ga->asAmdMemory());
+  if (cl_err != CL_SUCCESS) {
+    ga->release();
+    HIP_RETURN(ConvertCLErrorIntoHIPError(cl_err));
+  }
 
   HIP_RETURN(hipSuccess);
 }
@@ -340,17 +352,24 @@ hipError_t hipMemRetainAllocationHandle(hipMemGenericAllocationHandle_t* handle,
   }
 
   amd::Memory* mem = amd::MemObjMap::FindMemObj(addr);
-
   if (mem == nullptr) {
     HIP_RETURN(hipErrorInvalidValue);
   }
 
-  *handle = reinterpret_cast<hipMemGenericAllocationHandle_t>(
-      mem->getUserData().phys_mem_obj->getUserData().data);
-
-  if (*handle == nullptr) {
+  // hipMalloc and other non-VMM allocations do not have phys_mem_obj
+  amd::Memory* phys_mem_obj = mem->getUserData().phys_mem_obj;
+  if (phys_mem_obj == nullptr) {
     HIP_RETURN(hipErrorInvalidValue);
   }
+
+  auto ga = reinterpret_cast<hip::GenericAllocation*>(
+      phys_mem_obj->getUserData().data);
+  if (ga == nullptr) {
+    HIP_RETURN(hipErrorInvalidValue);
+  }
+
+  ga->retain();
+  *handle = reinterpret_cast<hipMemGenericAllocationHandle_t>(ga);
 
   HIP_RETURN(hipSuccess);
 }
@@ -442,28 +461,93 @@ hipError_t hipMemUnmap(void* ptr, size_t size) {
     HIP_RETURN(status);
   }
 
-  // Unmap all sub-buffers in the range
+  // Direct synchronous path; synchronize all devices with access to memory.
+  //
+  // Pass 1 (validate, no mutation): walk every sub-buffer in [ptr, ptr+size)
+  // and verify it has the bookkeeping the unmap loop will rely on. Bailing
+  // here avoids leaving the range in an inconsistent half-unmapped state
+  // (some sub-buffers already torn down, others still mapped). Simultaneously
+  // collect the union of owner devices and access devices so we only walk
+  // the chain once.
+  std::set<int> sync_device_ids;
+  {
+    amd::Memory* it = vaddr_sub_obj;
+    address end_addr = reinterpret_cast<address>(vaddr_sub_obj->getSvmPtr()) + size;
+    while (it && NextSubBufferPtr(it) <= end_addr) {
+      amd::Memory* phys_mem_obj = it->getUserData().phys_mem_obj;
+      if (phys_mem_obj == nullptr) {
+        LogPrintfError("hipMemUnmap: sub_obj at %p missing phys_mem_obj", it->getSvmPtr());
+        HIP_RETURN(hipErrorInvalidValue);
+      }
+      auto* ga = reinterpret_cast<hip::GenericAllocation*>(phys_mem_obj->getUserData().data);
+      if (ga == nullptr) {
+        LogPrintfError("hipMemUnmap: sub_obj at %p has null ga", it->getSvmPtr());
+        HIP_RETURN(hipErrorInvalidValue);
+      }
+      size_t owner_id = ga->GetProperties().location.id;
+      if (owner_id >= g_devices.size()) {
+        LogPrintfError("hipMemUnmap: sub_obj at %p has out-of-range owner id %zu",
+                       it->getSvmPtr(), owner_id);
+        HIP_RETURN(hipErrorInvalidValue);
+      }
+      sync_device_ids.insert(static_cast<int>(owner_id));
+
+      // Probe each device's access at THIS sub-buffer's VA. The previous
+      // implementation only probed `ptr`, which missed any device whose
+      // access window covers a strictly-interior sub-range.
+      void* sub_va = it->getSvmPtr();
+      for (size_t dev_idx = 0; dev_idx < g_devices.size(); ++dev_idx) {
+        amd::Device::VmmAccess access_flags = amd::Device::VmmAccess::kNone;
+        if (g_devices[dev_idx]->devices()[0]->GetMemAccess(sub_va, &access_flags) &&
+            access_flags != amd::Device::VmmAccess::kNone) {
+          sync_device_ids.insert(static_cast<int>(dev_idx));
+        }
+      }
+
+      it = amd::MemObjMap::FindMemObj(NextSubBufferPtr(it));
+    }
+  }
+
+  // Pass 2: SyncAllStreams once per device in the union BEFORE the sub-buffer
+  // loop, so the unmap doesn't race in-flight access-device work.
+  for (int dev_id : sync_device_ids) {
+    g_devices[dev_id]->SyncAllStreams();
+  }
+
+  // Pass 3: Sub-buffer unmap loop. Pass 1 validated every entry, so the only
+  // remaining failure mode here is a HW virtualUnmap failure.
+  cl_int first_cl_err = CL_SUCCESS;
   address end_address = reinterpret_cast<address>(vaddr_sub_obj->getSvmPtr()) + size;
   while (vaddr_sub_obj && NextSubBufferPtr(vaddr_sub_obj) <= end_address) {
     amd::Memory* phys_mem_obj = vaddr_sub_obj->getUserData().phys_mem_obj;
-    if (phys_mem_obj == nullptr) {
-      HIP_RETURN(hipErrorInvalidValue);
-    }
-
-    amd::Command* cmd = new amd::VirtualMapCommand(
-        *hip::getCurrentDevice()->NullStream(), amd::Command::EventWaitList{},
-        vaddr_sub_obj->getSvmPtr(), vaddr_sub_obj->getSize(), nullptr);
-    cmd->enqueue();
-    cmd->awaitCompletion();
-    cmd->release();
-    // restore the original pa of the generic allocation
     hip::GenericAllocation* ga =
         reinterpret_cast<hip::GenericAllocation*>(phys_mem_obj->getUserData().data);
+    void* sub_va = vaddr_sub_obj->getSvmPtr();
+    size_t sub_size = vaddr_sub_obj->getSize();
+    address next_ptr = NextSubBufferPtr(vaddr_sub_obj);
+
+    // Each sub-buffer is unmapped by the device that owns its physical backing.
+    amd::Device* sub_dev = g_devices[ga->GetProperties().location.id]->devices()[0];
+    cl_int cl_err = sub_dev->virtualUnmap(sub_va, sub_size);
+    if (cl_err != CL_SUCCESS) {
+      LogPrintfError("hipMemUnmap: virtualUnmap failed for va: %p", sub_va);
+      if (first_cl_err == CL_SUCCESS) {
+        first_cl_err = cl_err;
+      }
+      vaddr_sub_obj = amd::MemObjMap::FindMemObj(next_ptr);
+      continue;
+    }
+
+    // Release the ga ref only on successful HW unmap.
     ga->release();
 
-    address next_ptr = NextSubBufferPtr(vaddr_sub_obj);
-    vaddr_sub_obj->release();
+    // sub_obj already released inside UnmapMemObjBookkeeping (called from
+    // virtualUnmap on success).
     vaddr_sub_obj = amd::MemObjMap::FindMemObj(next_ptr);
+  }
+
+  if (first_cl_err != CL_SUCCESS) {
+    HIP_RETURN(ConvertCLErrorIntoHIPError(first_cl_err));
   }
 
   HIP_RETURN(hipSuccess);

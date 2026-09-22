@@ -123,38 +123,17 @@ typedef float64x2_t DP_VEC_TYPE;
 #define ADD_VEC_SH(_I_,_J_)     vaddh_f16( _I_ , _J_ );
 #define MUL_VEC_SH(_I_,_J_)     vmulh_f16( _I_ , _J_ );
 #define SQRT_VEC_SH(_I_)        vsqrth_f16( _I_ );
-#define FMA_VEC_SH(_out_,_I_,_J_,_K_) {\
-    HP_VEC_TYPE arg1 = SET_VEC_PH(_I_);\
-    HP_VEC_TYPE arg2 = SET_VEC_PH(_J_);\
-    HP_VEC_TYPE arg3 = SET_VEC_PH(_K_);\
-    HP_VEC_TYPE argTmp;\
-    argTmp = FMA_VEC_PH( arg1 , arg2 , arg3 );\
-    _out_ = ((half*)&(argTmp))[0];\
-}
+#define FMA_VEC_SH(_out_,_I_,_J_,_K_) _out_ = _I_ * _J_ + _K_;
 
 #define SET_VEC_SS(_I_)         _I_ ;
 #define ADD_VEC_SS(_I_,_J_)     _I_ + _J_ ;
 #define MUL_VEC_SS(_I_,_J_)     _I_ * _J_ ;
-#define FMA_VEC_SS(_out_,_I_,_J_,_K_) {\
-    SP_VEC_TYPE arg1 = SET_VEC_PS(_I_);\
-    SP_VEC_TYPE arg2 = SET_VEC_PS(_J_);\
-    SP_VEC_TYPE arg3 = SET_VEC_PS(_K_);\
-    SP_VEC_TYPE argTmp;\
-    argTmp = FMA_VEC_PS( arg1 , arg2 , arg3 );\
-    _out_ = ((SP_SCALAR_TYPE*)&(argTmp))[0];\
-}
+#define FMA_VEC_SS(_out_,_I_,_J_,_K_) _out_ = _I_ * _J_ + _K_;
 
 #define SET_VEC_SD(_I_)         _I_ ;
 #define ADD_VEC_SD(_I_,_J_)     _I_ + _J_ ;
 #define MUL_VEC_SD(_I_,_J_)     _I_ * _J_ ;
-#define FMA_VEC_SD(_out_,_I_,_J_,_K_) {\
-    DP_VEC_TYPE arg1 = SET_VEC_PD(_I_);\
-    DP_VEC_TYPE arg2 = SET_VEC_PD(_J_);\
-    DP_VEC_TYPE arg3 = SET_VEC_PD(_K_);\
-    DP_VEC_TYPE argTmp;\
-    argTmp = FMA_VEC_PD( arg1 , arg2 , arg3 );\
-    _out_ = ((DP_SCALAR_TYPE*)&(argTmp))[0];\
-}
+#define FMA_VEC_SD(_out_,_I_,_J_,_K_) _out_ = _I_ * _J_ + _K_;
 
 #elif defined(POWER)
 void  test_hp_power_VEC( int instr_per_loop, uint64 iterations, int EventSet, FILE *fp );
@@ -187,25 +166,11 @@ typedef __vector double DP_VEC_TYPE;
 #define SET_VEC_SS(_I_)         _I_ ;
 #define ADD_VEC_SS(_I_,_J_)     _I_ + _J_ ;
 #define MUL_VEC_SS(_I_,_J_)     _I_ * _J_ ;
-#define FMA_VEC_SS(_out_,_I_,_J_,_K_) {\
-    SP_VEC_TYPE arg1 = SET_VEC_PS(_I_);\
-    SP_VEC_TYPE arg2 = SET_VEC_PS(_J_);\
-    SP_VEC_TYPE arg3 = SET_VEC_PS(_K_);\
-    SP_VEC_TYPE argTmp;\
-    argTmp = FMA_VEC_PS( arg1 , arg2 , arg3 );\
-    _out_ = ((SP_SCALAR_TYPE*)&(argTmp))[0];\
-}
+#define FMA_VEC_SS(_out_,_I_,_J_,_K_) _out_ = _I_ * _J_ + _K_;
 
 #define SET_VEC_SD(_I_)         _I_ ;
 #define ADD_VEC_SD(_I_,_J_)     _I_ + _J_ ;
 #define MUL_VEC_SD(_I_,_J_)     _I_ * _J_ ;
-#define FMA_VEC_SD(_out_,_I_,_J_,_K_) {\
-    DP_VEC_TYPE arg1 = SET_VEC_PD(_I_);\
-    DP_VEC_TYPE arg2 = SET_VEC_PD(_J_);\
-    DP_VEC_TYPE arg3 = SET_VEC_PD(_K_);\
-    DP_VEC_TYPE argTmp;\
-    argTmp = FMA_VEC_PD( arg1 , arg2 , arg3 );\
-    _out_ = ((DP_SCALAR_TYPE*)&(argTmp))[0];\
-}
+#define FMA_VEC_SD(_out_,_I_,_J_,_K_) _out_ = _I_ * _J_ + _K_;
 
 #endif

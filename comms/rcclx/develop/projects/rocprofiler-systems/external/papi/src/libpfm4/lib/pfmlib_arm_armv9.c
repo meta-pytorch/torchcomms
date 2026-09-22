@@ -38,85 +38,60 @@
 #include "events/arm_neoverse_v2_events.h"	/* Arm Neoverse V2 table */
 #include "events/arm_neoverse_v3_events.h"	/* Arm Neoverse V3 table */
 #include "events/arm_fujitsu_monaka_events.h"	/* Fujitsu FUJITSU-MONAKA PMU tables */
+#include "events/arm_cortex_x4_events.h"	/* Arm Cortex X4 table */
 
 static int
 pfm_arm_detect_n2(void *this)
 {
-	int ret;
+	/* ARM Neoverse N2 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 9, .part = 0xd49 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd49)) { /* Neoverse N2 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_n3(void *this)
 {
-	int ret;
+	/* ARM Neoverse N3 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 9, .part = 0xd8e };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd8e)) { /* Neoverse N3 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_v2(void *this)
 {
-	int ret;
+	/* ARM Neoverse V2 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 9, .part = 0xd4f };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd4f)) { /* Neoverse V2 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_v3(void *this)
 {
-	int ret;
+	/* ARM Neoverse V3 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 9, .part = 0xd84 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x41) && /* ARM */
-		(pfm_arm_cfg.part == 0xd84)) { /* Neoverse V3 */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int
 pfm_arm_detect_monaka(void *this)
 {
-	int ret;
+	/* Fujitsu Monaka */
+	arm_cpuid_t attr = { .impl = 0x46, .arch = 9, .part = 0x3 };
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
+	return pfm_arm_detect(&attr, NULL);
+}
 
-	if ((pfm_arm_cfg.implementer == 0x46) && /* Fujitsu */
-		(pfm_arm_cfg.part == 0x003)) { /* monaka */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+static int
+pfm_arm_detect_cortex_x4(void *this)
+{
+	/* ARM Cortex X4 */
+	arm_cpuid_t attr = { .impl = 0x41, .arch = 9, .part = 0xd82 };
+
+	return pfm_arm_detect(&attr, NULL);
 }
 
 pfmlib_pmu_t arm_n2_support={
@@ -232,6 +207,32 @@ pfmlib_pmu_t arm_fujitsu_monaka_support={
 	.pmu_detect		= pfm_arm_detect_monaka,
 	.max_encoding	= 1,
 	.num_cntrs		= 8,
+
+	.get_event_encoding[PFM_OS_NONE] = pfm_arm_get_encoding,
+	 PFMLIB_ENCODE_PERF(pfm_arm_get_perf_encoding),
+	.get_event_first	= pfm_arm_get_event_first,
+	.get_event_next		= pfm_arm_get_event_next,
+	.event_is_valid		= pfm_arm_event_is_valid,
+	.validate_table		= pfm_arm_validate_table,
+	.get_event_info		= pfm_arm_get_event_info,
+	.get_event_attr_info	= pfm_arm_get_event_attr_info,
+	 PFMLIB_VALID_PERF_PATTRS(pfm_arm_perf_validate_pattrs),
+	.get_event_nattrs	= pfm_arm_get_event_nattrs,
+};
+
+pfmlib_pmu_t arm_cortex_x4_support={
+	.desc			= "ARM Cortex X4",
+	.name			= "arm_x4",
+	.perf_name              = "armv8_pmuv3_0,armv8_pmuv3",
+	.pmu			= PFM_PMU_ARM_CORTEX_X4,
+	.pme_count		= LIBPFM_ARRAY_SIZE(arm_cortex_x4_pe),
+	.type			= PFM_PMU_TYPE_CORE,
+	.supported_plm  = ARMV9_PLM,
+	.pe				= arm_cortex_x4_pe,
+
+	.pmu_detect		= pfm_arm_detect_cortex_x4,
+	.max_encoding		= 1,
+	.num_cntrs		= 6, /* or 31 */
 
 	.get_event_encoding[PFM_OS_NONE] = pfm_arm_get_encoding,
 	 PFMLIB_ENCODE_PERF(pfm_arm_get_perf_encoding),

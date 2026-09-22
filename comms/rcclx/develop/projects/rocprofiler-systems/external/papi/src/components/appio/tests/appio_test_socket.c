@@ -15,7 +15,7 @@
 
 main(int argc, char *argv[]) {
   int EventSet = PAPI_NULL;
-  const char* names[NUM_EVENTS] = {"READ_CALLS", "READ_BYTES", "READ_USEC", "READ_WOULD_BLOCK", "SOCK_READ_CALLS", "SOCK_READ_BYTES", "SOCK_READ_USEC", "SOCK_READ_WOULD_BLOCK", "WRITE_BYTES", "WRITE_CALLS", "WRITE_WOULD_BLOCK", "WRITE_USEC", "SOCK_WRITE_BYTES", "SOCK_WRITE_CALLS", "SOCK_WRITE_USEC"};
+  const char* names[NUM_EVENTS] = {"appio:::READ_CALLS", "appio:::READ_BYTES", "appio:::READ_USEC", "appio:::READ_WOULD_BLOCK", "appio:::SOCK_READ_CALLS", "appio:::SOCK_READ_BYTES", "appio:::SOCK_READ_USEC", "appio:::SOCK_READ_WOULD_BLOCK", "appio:::WRITE_BYTES", "appio:::WRITE_CALLS", "appio:::WRITE_WOULD_BLOCK", "appio:::WRITE_USEC", "appio:::SOCK_WRITE_BYTES", "appio:::SOCK_WRITE_CALLS", "appio:::SOCK_WRITE_USEC"};
   long long values[NUM_EVENTS];
 
   /* Set TESTS_QUIET variable */

@@ -36,17 +36,9 @@
 static int
 pfm_arm_detect_hisilicon_kunpeng(void *this)
 {
-	int ret;
-
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
-
-	if ((pfm_arm_cfg.implementer == 0x48) && /* Hisilicon */
-	    (pfm_arm_cfg.part == 0xd01)) { /* Kunpeng */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	/* Hisilicon Kunpeng */
+	arm_cpuid_t attr = { .impl = 0x48, .arch = 8, .part = 0xd01 };
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static void

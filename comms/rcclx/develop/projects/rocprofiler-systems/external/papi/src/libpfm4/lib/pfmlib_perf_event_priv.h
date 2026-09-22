@@ -54,4 +54,8 @@
 
 #define PERF_PLM_ALL (PFM_PLM0|PFM_PLM3|PFM_PLMH)
 
+extern int pfm_perf_find_pmu_type(void *this, int *type);
+
+#define SYSFS_PMU_DEVICES_DIR	"/sys/bus/event_source/devices"
+
 #endif

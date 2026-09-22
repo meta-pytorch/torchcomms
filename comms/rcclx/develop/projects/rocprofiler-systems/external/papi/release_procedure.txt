@@ -25,26 +25,33 @@ __ 0a. Notify developers that a release is imminent and the repository should be
        module to use valgrind.
 
        BEFORE YOU BEGIN: Step 2d will require access to the papi website directory,
-       so all these steps should be done on a machine that has it. Most recently we
-       updated using methane.icl.utk.edu, where '/nfs/www/icl/projectsdev/papi/docs'
-       was accessible. The sysadmin must give you write permission. This directory 
-       should be available on all machines. You must also be on a machine that will 
-       let you rebuild the manual pages. This requires doxygen version 1.8.5 (See step 2a). 
-       You can check the version with 'doxygen -v' or 'doxygen --version'. 
+       which as of June 25th, 2025 you must ssh to icl.utk.edu such that you can access 
+       the necessary path websites/icl.utk.edu/projectsdev/papi/docs. Note that the
+       sysadmin must give you write permission.
+       You must also be on a machine that will let you rebuild the manual pages.
+       For PAPI release 7.2.0 (June 26th, 2025) Doxygen version 1.11 was used and the man pages
+       generated correctly. Note that previously doxygen version 1.8.5 was believed to be
+       needed; however, moving forward this does not appear to be the case. 
+       You can check your doxygen version with 'doxygen -v' or 'doxygen --version'. 
 
        The website directory may be 'automount'. That means you cannot see it with
        'ls' and it will not be searched by 'find'. You must change to the directory 
-       for it to automount. For example, 'pushd /nfs/www/icl/projectsdev/papi/docs' 
+       for it to automount. For example, 'pushd websites/icl.utk.edu/projectsdev/papi/docs' 
        to get it mounted (if this fails, you don't have access, discuss with your sysadmin). 
        'popd' to return to your previous directory, THEN you can
-       'ls /nfs/www/icl/projectsdev/papi/docs' and see the files.
+       'ls websites/icl.utk.edu/projectsdev/papi/docs' and see the files.
+
+       Lastly, if this is not an incremental release make sure that the commit messages reflect that.
+       As an example, PAPI release 7.2.0 instead of PAPI release 7.2.0.0. The internal files papi.spec
+       src/papi.h, src/configure.in, src/Makefile.in, and doc/Doxyfile-common will have the
+       incremental number shown even if it is not an incremental release.
 
        --- Modified with 6.0.0 to use a Pull Request, to allow review of changes
            before committing.
 
 __ 0b. Fork the repository. It is located at: https://github.com/icl-utk-edu/papi.
        GitHub only allows you to create a single fork. If you have not already created
-       a fork of the PAPI repository at this point then do so.i
+       a fork of the PAPI repository at this point then do so.
 
        For creating a fork on GitHub, click the Fork dropdown in the top right corner
        of the PAPI repository and then select "+ Create a new fork". Fill out the boxes
@@ -75,7 +82,7 @@ __ 2.  Check/Change the version number in:
        The version number may already have been updated after the last release, 
        if so you can skip these edits, but do commit any other files changed.
 
--- 2a. Ensure you have doxygen 1.8.5. Execute 'doxygen -v' or 'doxygen --version' 
+-- 2a. Ensure you have doxygen 1.11.0. Execute 'doxygen -v' or 'doxygen --version' 
        on the command line to see what doxygen version you are currently using.
 
        If it isn't found, find the doxygen directories and add it to $PATH.
@@ -112,8 +119,8 @@ __ 2.  Check/Change the version number in:
                       papi, starting a new shell.)
        > cd doc && make clean html
 
--- 2d. Update the web dir (currently /nfs/www/icl/projectsdev/papi/docs as of 10/28/24).
-       For the example below, 'webdir' = '/nfs/www/icl/projectsdev'.
+-- 2d. Update the web dir (currently icl.utk.edu:websites/icl.utk.edu/projectsdev/papi/docs as of 06/25/2025).
+       For the example below, 'webdir' = 'websites/icl.utk.edu/projectsdev'.
        You may wish to do a diff between this directory and the papi directory to
        ensure you are replacing the correct files.
        > diff webdir/papi/docs/* papi/doc/html/*
@@ -125,8 +132,8 @@ __ 2.  Check/Change the version number in:
 
 __ 3.  If 'configure.in' is changed, we must generate a new 'configure' file.
        Run autoconf (2.69), it reads configure.in and creates a new configure.
-       As of 10/28/24, you will need to module load autoconf version 2.69 from
-       autoconf-archive.
+       As of 06/25/2025, you will need to module load autoconf version 2.69 from
+       autoconf-archive which is available on the ICL login cluster (Methane).
        > module load autoconf-archive/2023.02.20/gcc-11.4.1-izt5hd
        > autconf --version
        > diff -u configure <(autoconf configure.in) (see first NOTE below on why to do this)
@@ -140,7 +147,7 @@ __ 3.  If 'configure.in' is changed, we must generate a new 'configure' file.
        NOTE: Using an autoconf version > 2.69 will work, but will produce an
        inordinate number of extraneous differences between versions.
        You can check the version # with 'autoconf -V' or 'autoconf --version'.
-       Release 6.0.0.1 was done on saturn.icl.utk.edu with autoconf 2.69.
+       Release 7.2.0 was done on login.icl.utk.edu (Methane at ICL) with autoconf 2.69.
 
 __ 4.  Create a ChangeLog for the current release.
        We use a python script titled gitlog2changelog.py to generate this for us.
@@ -231,11 +238,10 @@ __ 17.  zip the tarball.
 
 __ 18.  Copy the tarball to the website. 
         Example:
-        > cp papi-X.Y.Z.tar /nfs/www/icl/projects/papi/downloads/.
+        > cp papi-X.Y.Z.tar icl.utk.edu:websites/icl.utk.edu/projects/papi/downloads/.
 
-        current directory:  /nfs/www/icl/projects/papi/downloads
-        previously: gonzo:/mnt/papi/downloads
-        previously: /silk/homes/icl/projects/papi/downloads
+        current directory: icl.utk.edu:websites/icl.utk.edu/projects/papi/downloads/
+        previously: /nfs/www/icl/projects/papi/downloads
 
 __ 19.  Check permissions on the tarball. 664 is good. (-rw-rw-r--).
 
@@ -268,7 +274,6 @@ __ 22.  Email the papi developer and discussion lists with an announcement (see 
         ---- worked!) This is to ensure more development commits (that may not 
         ---- be fully tested) will not be in the release version of the repository.
 
-        *WE WILL UPDATE THIS SECTION ONCE WE DO THESE STEPS DURING A RELEASE* 
 __ 23.  Using steps 0b and 0c make ANOTHER fork of the repository, clone it,
         and change to that directory. Example, papi-6-0-1.
 
@@ -281,7 +286,9 @@ __ 24.  Repeat Step 2 (ONLY Step 2, not 2a, etc) to bump the version number in
         src/Makefile.in, 
         doc/Doxyfile-common (PROJECT_NUMBER)
  
-__ 25.  Repeat Step 3, to create a new configure, preserving runstatedir lines.
+__ 25.  Repeat Step 3, to create a new configure. Upon the new configure being generated
+        verify that existing `runstatedir` lines were not removed. If NEW `runstatedir`
+        lines were generated then remove them from the configure.
 
 __ 25a. If these 'release_procedure.txt' instructions need to be updated, fix them now.
 
@@ -292,29 +299,6 @@ __ 26.  Add changed files, Commit and Push.
         'git push'.
 
 __ 27.  Repeat step 9, to create a pull request for review.
-
-As of PAPI 7.2.0b1, we began to add PAPI releases to the releases section on 
-GitHub, see the following link: https://github.com/icl-utk-edu/papi/releases.
-Steps 28 through 35 will outline how to create a release on GitHub.
-
-__ 28.  Go to the following link: https://github.com/icl-utk-edu/papi/releases.
-
-__ 29.  Select "Draft a new release" in the top right corner.
-
-__ 30.  From the "Choose a tag" dropdown, select the appropriate tag for this release.
-        Applying a tag was done at step 12.
-
-__ 31.  Select a Target, this should be the branch that was made in step 13 (e.g. stable-6.0).
-
-__ 32.  Add a release title, this should be PAPI followed by the release number (e.g. PAPI 7.2.0b1).
-
-__ 33.  Copy and paste the supporting text obtained at Steps 20 and 21. Along with the 
-        supporing text make sure to attach the release tarball.
-        Note: The text should be obtained from Heike and Anthony.
-
-__ 34.  Select the checkbox "Set as the latest release".
-
-__ 35.  Select the green "Publish Release" button.  
 
 ================================================================================
 
@@ -341,7 +325,7 @@ __ 2. Apply the patch.
 __ 3. If the patch applied cleanly, build and test on affected platforms;
       otherwise clean up the patch and try again.
 
-__ 4. Copy the diff file to methane:/nfs/www/icl/projects/papi/downloads/patches/
+__ 4. Copy the diff file to icl.utk.edu:websites/icl.utk.edu/projects/papi/downloads/patches/
 
 __ 5. Check permissions on the diff. 644 is good.
 
@@ -398,11 +382,11 @@ __ 7.  tar and zip the directory.
        > tar -czf papi-6.0.0.1.tar.gz papi-6.0.0.1
 
 __ 8.  Copy the tarball to the webserver.
-       > scp papi-6.0.0.1.tar.gz methane:/nfs/www/icl/projects/papi/downloads
+       > scp papi-6.0.0.1.tar.gz icl.utk.edu:websites/icl.utk.edu/projects/papi/downloads/
 
-__ 9.  ssh to methane and adjust permissions on the tarball. 664 is good. (-rw-rw-r--).
-       > ssh methane
-       > cd /nfs/www/icl/projects/papi/downloads
+__ 9.  ssh to icl.utk.edu and adjust permissions on the tarball. 664 is good. (-rw-rw-r--).
+       > ssh icl.utk.edu
+       > cd websites/icl.utk.edu/projects/papi/downloads/
        > chmod g+w papi-6.0.0.1.tar.gz
 
 __ 10. Check that the proper link where folks can download the tarball

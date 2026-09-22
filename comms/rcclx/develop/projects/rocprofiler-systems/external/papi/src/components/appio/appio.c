@@ -176,7 +176,7 @@ static const struct appio_counters {
  ********************************************************************/
 
 int __close(int fd);
-int close(int fd) {
+__attribute__ ((visibility ("default"))) int close(int fd) {
   int retval;
   SUBDBG("appio: intercepted close(%d)\n", fd);
   retval = __close(fd);
@@ -185,7 +185,7 @@ int close(int fd) {
 }
 
 int __open(const char *pathname, int flags, mode_t mode);
-int open(const char *pathname, int flags, mode_t mode) {
+ __attribute__ ((visibility ("default"))) int open(const char *pathname, int flags, mode_t mode) {
   int retval;
   SUBDBG("appio: intercepted open(%s,%d,%d)\n", pathname, flags, mode);
   retval = __open(pathname,flags,mode);
@@ -200,7 +200,7 @@ int open(const char *pathname, int flags, mode_t mode) {
 struct timeval zerotv; /* this has to be zero, so define it here */
 
 int __select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout);
-int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {
+__attribute__ ((visibility ("default"))) int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struct timeval *timeout) {
   int retval;
   SUBDBG("appio: intercepted select(%d,%p,%p,%p,%p)\n", nfds,readfds,writefds,exceptfds,timeout);
   long long start_ts = PAPI_get_real_usec();
@@ -211,7 +211,7 @@ int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, struc
 }
 
 off_t __lseek(int fd, off_t offset, int whence);
-off_t lseek(int fd, off_t offset, int whence) {
+__attribute__ ((visibility ("default"))) off_t lseek(int fd, off_t offset, int whence) {
   off_t retval;
   SUBDBG("appio: intercepted lseek(%d,%ld,%d)\n", fd, offset, whence);
   long long start_ts = PAPI_get_real_usec();
@@ -226,7 +226,7 @@ off_t lseek(int fd, off_t offset, int whence) {
 
 extern int errno;
 ssize_t __read(int fd, void *buf, size_t count);
-ssize_t read(int fd, void *buf, size_t count) {
+__attribute__ ((visibility ("default"))) ssize_t read(int fd, void *buf, size_t count) {
   int retval;
   SUBDBG("appio: intercepted read(%d,%p,%lu)\n", fd, buf, (unsigned long)count);
 
@@ -276,7 +276,7 @@ ssize_t read(int fd, void *buf, size_t count) {
 }
 
 size_t _IO_fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
-size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
+__attribute__ ((visibility ("default"))) size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
   size_t retval;
   SUBDBG("appio: intercepted fread(%p,%lu,%lu,%p)\n", ptr, (unsigned long) size, (unsigned long) nmemb, (void*) stream);
   long long start_ts = PAPI_get_real_usec();
@@ -299,7 +299,7 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
 }
 
 ssize_t __write(int fd, const void *buf, size_t count);
-ssize_t write(int fd, const void *buf, size_t count) {
+__attribute__ ((visibility ("default"))) ssize_t write(int fd, const void *buf, size_t count) {
   int retval;
   SUBDBG("appio: intercepted write(%d,%p,%lu)\n", fd, buf, (unsigned long)count);
   struct stat st;
@@ -350,7 +350,7 @@ ssize_t write(int fd, const void *buf, size_t count) {
 // The PIC test implies it's built for shared linkage
 #ifdef PIC
 static ssize_t (*__recv)(int sockfd, void *buf, size_t len, int flags) = NULL;
-ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
+__attribute__ ((visibility ("default"))) ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
   int retval;
   SUBDBG("appio: intercepted recv(%d,%p,%lu,%d)\n", sockfd, buf, (unsigned long)len, flags);
   if (!__recv) __recv  = dlsym(RTLD_NEXT, "recv");
@@ -388,7 +388,7 @@ ssize_t recv(int sockfd, void *buf, size_t len, int flags) {
 #endif /* PIC */
 
 size_t _IO_fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
-size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
+__attribute__ ((visibility ("default"))) size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
   size_t retval;
   SUBDBG("appio: intercepted fwrite(%p,%lu,%lu,%p)\n", ptr, (unsigned long) size, (unsigned long) nmemb, (void*) stream);
   long long start_ts = PAPI_get_real_usec();
@@ -746,6 +746,7 @@ papi_vector_t _appio_vector = {
         .name                  = "appio",
         .short_name            = "appio",
         .version               = "1.1.2.4",
+        .description           = "Linux I/O system calls",
         .CmpIdx                = 0,              /* set by init_component */
         .num_mpx_cntrs         = APPIO_MAX_COUNTERS,
         .num_cntrs             = APPIO_MAX_COUNTERS,

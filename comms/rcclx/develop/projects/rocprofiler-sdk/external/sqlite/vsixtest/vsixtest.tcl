@@ -33,7 +33,7 @@
 # name of the VSIX file to test.
 #
 package require Tcl 8.4
-
+
 proc fail { {error ""} {usage false} } {
   if {[string length $error] > 0} then {
     puts stdout $error
@@ -46,7 +46,7 @@ proc fail { {error ""} {usage false} } {
 
   exit 1
 }
-
+
 proc isWindows {} {
   #
   # NOTE: Returns non-zero only when running on Windows.
@@ -54,7 +54,7 @@ proc isWindows {} {
   return [expr {[info exists ::tcl_platform(platform)] && \
       $::tcl_platform(platform) eq "windows"}]
 }
-
+
 proc isAdministrator {} {
   #
   # NOTE: Returns non-zero only when running as "elevated administrator".
@@ -84,7 +84,7 @@ proc isAdministrator {} {
 
   return false
 }
-
+
 proc getEnvironmentVariable { name } {
   #
   # NOTE: Returns the value of the specified environment variable or an empty
@@ -93,7 +93,7 @@ proc getEnvironmentVariable { name } {
   #
   return [expr {[info exists ::env($name)] ? $::env($name) : ""}]
 }
-
+
 proc getTemporaryPath {} {
   #
   # NOTE: Returns the normalized path to the first temporary directory found
@@ -117,7 +117,7 @@ proc getTemporaryPath {} {
 
   return ""
 }
-
+
 proc appendArgs { args } {
   #
   # NOTE: Returns all passed arguments joined together as a single string
@@ -125,7 +125,7 @@ proc appendArgs { args } {
   #
   eval append result $args
 }
-
+
 proc readFile { fileName } {
   #
   # NOTE: Reads and returns the entire contents of the specified file, which
@@ -137,7 +137,7 @@ proc readFile { fileName } {
   close $file_id
   return $result
 }
-
+
 proc writeFile { fileName data } {
   #
   # NOTE: Writes the entire contents of the specified file, which may contain
@@ -149,7 +149,7 @@ proc writeFile { fileName data } {
   close $file_id
   return ""
 }
-
+
 proc putsAndEval { command } {
   #
   # NOTE: Outputs a command to the standard output channel and then evaluates
@@ -161,7 +161,7 @@ proc putsAndEval { command } {
 
   return [uplevel 1 $command]
 }
-
+
 proc isBadDirectory { directory } {
   #
   # NOTE: Returns non-zero if the directory is empty, does not exist, -OR- is
@@ -174,7 +174,7 @@ proc isBadDirectory { directory } {
   return [expr {[string length $directory] == 0 || \
       ![file exists $directory] || ![file isdirectory $directory]}]
 }
-
+
 proc isBadFile { fileName } {
   #
   # NOTE: Returns non-zero if the file name is empty, does not exist, -OR- is
@@ -187,7 +187,7 @@ proc isBadFile { fileName } {
   return [expr {[string length $fileName] == 0 || \
       ![file exists $fileName] || ![file isfile $fileName]}]
 }
-
+
 #
 # NOTE: This is the entry point for this script.
 #

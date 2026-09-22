@@ -67,7 +67,8 @@ class ScratchBufferCache {
     // concurrently on other streams. Measured either way it is in the noise, so
     // this is hygiene rather than a fix for anything.
     struct ncclCudaGraph graph;
-    if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+    if (ncclCudaGetCapturingGraph(&graph, stream, /*graphUsageMode=*/0) !=
+        ncclSuccess) {
       return nullptr;
     }
     if (ncclCudaGraphValid(graph)) {
@@ -437,7 +438,8 @@ bool a2aLpAcquireArena(
     cudaStream_t stream,
     rcclx::relay::LpArenaLease* lease) {
   struct ncclCudaGraph graph;
-  if (ncclCudaGetCapturingGraph(&graph, stream) != ncclSuccess) {
+  if (ncclCudaGetCapturingGraph(&graph, stream, comm->config.graphUsageMode) !=
+      ncclSuccess) {
     rcclx::relay::lpRecordDecline(rcclx::relay::LpDecline::GraphCapture);
     return false;
   }

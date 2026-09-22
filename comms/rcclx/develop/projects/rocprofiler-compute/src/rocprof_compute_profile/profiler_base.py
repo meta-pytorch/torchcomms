@@ -1,42 +1,17 @@
-##############################################################################
-# MIT License
-#
-# Copyright (c) 2021 - 2025 Advanced Micro Devices, Inc. All Rights Reserved.
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-# THE SOFTWARE.
-
-##############################################################################
+# Copyright (c) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier:  MIT
 
 import argparse
-import csv
+import re
 import shlex
 import shutil
 import sys
-import tempfile
 import time
 from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Optional, Union
 
-import pandas as pd
-import yaml
-
+from pc_sampling.pc_sampling_profile import PCSamplingProfile
 from rocprof_compute_soc.soc_base import OmniSoC_Base
 from utils.logger import (
     console_debug,
@@ -45,15 +20,96 @@ from utils.logger import (
     console_warning,
     demarcate,
 )
-from utils.utils import (
-    capture_subprocess_output,
+from utils.native_tool_finder import NativeToolFinder
+from utils.utils_common import (
     format_time,
-    gen_sysinfo,
-    get_rank,
-    pc_sampling_prof,
+    get_job_rank_and_size,
+    is_only_pc_sampling,
     print_status,
-    run_prof,
 )
+from utils.utils_exceptions import (
+    ExecutableNotFoundError,
+    NoScriptInCommandError,
+    PythonScriptNotFoundError,
+)
+from utils.utils_profile import gen_sysinfo, run_prof
+from vendored import yaml
+
+
+def _find_python_script_index(argv: list[str]) -> tuple[Optional[int], Optional[str]]:
+    """Locate the script argument in a Python command, skipping interpreter flags.
+
+    Returns (script_index, skip_flag).  skip_flag is the flag string ("-c"/"-m")
+    when injection should be skipped, or None when a script position was found
+    (or no arguments remain).
+    """
+    skip_next = False
+    for i, token in enumerate(argv[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in ("-c", "-m"):
+            return None, token
+        if token in ("-W", "-X"):
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        return i, None
+    return None, None
+
+
+def _prepare_torch_trace_injection(
+    remaining: list[str],
+    resolved_exec_path: Path,
+    is_python: bool,
+    script_index: Optional[int],
+    skip_flag: Optional[str],
+) -> None:
+    """Rewrite the workload command to inject ROCTX markers for --torch-trace.
+
+    Mutates *remaining* in-place.  Three cases:
+      1. Explicit Python interpreter  — insert inject_roctx.py before the script.
+      2. Direct .py script execution  — prepend sys.executable + inject_roctx.py.
+      3. Non-Python binary            — warn and leave the command untouched.
+    """
+    inject_script = Path(__file__).parent.parent / "utils" / "inject_roctx.py"
+    if not inject_script.exists():
+        console_error(
+            f"Cannot find inject_roctx.py at {inject_script}. "
+            "Please verify your installation."
+        )
+
+    if is_python:
+        if skip_flag:
+            console_warning(
+                f"Cannot inject ROCTX markers into 'python {skip_flag}' "
+                "invocations. Launching workload as-is; "
+                "--torch-trace may have no effect."
+            )
+        elif not Path(remaining[script_index]).is_file():
+            raise PythonScriptNotFoundError(remaining[script_index])
+        else:
+            remaining.insert(script_index, str(inject_script))
+    elif resolved_exec_path.suffix in (".py", ".pyw", ".pyc", ".pyo"):
+        remaining.insert(0, str(inject_script))
+        remaining.insert(0, sys.executable)
+    else:
+        console_warning(
+            "Command does not look like a Python entry point, "
+            "skipping ROCTX auto-injection and launching workload as-is. "
+            "Ensure the binary already initializes PyTorch/ROCTX markers, "
+            "otherwise --torch-trace will have no effect."
+        )
+
+    if (resolved_exec_path.parent / "_internal").is_dir():
+        console_warning(
+            "Workload appears to be a self-contained binary. "
+            "Such bundles typically ship private ROCm/HSA libraries, which "
+            "prevents --torch-trace from collecting data. "
+            "Rebuild without packaging libhsa/libhip or "
+            "adjust LD_LIBRARY_PATH to /opt/rocm before profiling."
+        )
 
 
 class RocProfCompute_Base:
@@ -93,12 +149,6 @@ class RocProfCompute_Base:
                 "Please use only one of them."
             )
 
-        # verify not accessing parent directories
-        if ".." in str(args.path):
-            console_error(
-                "Access denied. Cannot access parent directories in path (i.e. ../)"
-            )
-
         if args.no_native_tool and args.iteration_multiplexing is not None:
             console_error(
                 "--no-native-tool cannot be used with --iteration-multiplexing. "
@@ -110,6 +160,42 @@ class RocProfCompute_Base:
                 "--attach-pid cannot be used with --iteration-multiplexing. "
                 "Please remove one of these options."
             )
+
+        if getattr(args, "torch_trace", False):
+            if args.attach_pid:
+                console_error(
+                    "--torch-trace cannot be used with --attach-pid. "
+                    "Torch trace requires injecting ROCTX markers into the "
+                    "workload at launch; already-running processes cannot be "
+                    "instrumented. Please remove one of these options."
+                )
+
+            if args.attach_duration_msec:
+                console_error(
+                    "--torch-trace cannot be used with --attach-duration-msec. "
+                    "--attach-duration-msec only applies to --attach-pid, which "
+                    "is incompatible with --torch-trace. Please remove one of "
+                    "these options."
+                )
+
+            if args.spatial_multiplexing is not None:
+                console_error(
+                    "--torch-trace does not yet support multi-node profiling "
+                    "via --spatial-multiplexing. Please remove one of these "
+                    "options."
+                )
+
+        # Each --dispatch token must be a positive integer or a range
+        # ('start:end' or 'start-end') with start <= end (1-based indexing).
+        if args.dispatch:
+            for token in args.dispatch:
+                m = re.fullmatch(r"([1-9]\d*)(?:[-:]([1-9]\d*))?", token)
+                if not m or (m.group(2) and int(m.group(2)) < int(m.group(1))):
+                    console_error(
+                        f"Invalid --dispatch value '{token}'. Expected a "
+                        "positive integer or 'start:end'/'start-end' "
+                        "range with start <= end (e.g. 1, 3:5, 3-5)."
+                    )
 
         # verify correct formatting for application binary
         args.remaining = args.remaining[1:]
@@ -130,55 +216,28 @@ class RocProfCompute_Base:
             # Ensure that command points to an executable
             exec_candidate = shutil.which(args.remaining[0])
             if not exec_candidate:
-                console_error(
-                    f"Your command {args.remaining[0]} doesn't point to a executable. "
-                    "Please verify."
-                )
+                raise ExecutableNotFoundError(args.remaining[0])
             resolved_exec_path = Path(exec_candidate).resolve()
 
-            # Appending a wrapper for injecting roctx-markers
+            # Detect bare Python interpreter (no script, no -c/-m) regardless
+            # of --torch-trace — this always hangs the profiler.
+            is_python = re.match(r"^python[0-9.]*$", resolved_exec_path.name)
+            script_index: Optional[int] = None
+            skip_flag: Optional[str] = None
+            if is_python:
+                script_index, skip_flag = _find_python_script_index(args.remaining)
+                if script_index is None and skip_flag is None:
+                    raise NoScriptInCommandError(args.remaining)
+
             if getattr(args, "torch_trace", False):
-                # Find the inject_roctx.py script in src/utils
-                inject_script = (
-                    Path(__file__).parent.parent / "utils" / "inject_roctx.py"
+                _prepare_torch_trace_injection(
+                    args.remaining,
+                    resolved_exec_path,
+                    bool(is_python),
+                    script_index,
+                    skip_flag,
                 )
-                if not inject_script.exists():
-                    console_error(
-                        f"Cannot find inject_roctx.py at {inject_script}. "
-                        "Please verify your installation."
-                    )
-
-                # Case 1: Explicit python command (python, python3, etc.)
-                if args.remaining[0].startswith("python"):
-                    # Insert inject_roctx.py after the python interpreter
-                    args.remaining.insert(1, str(inject_script))
-                # Case 2: Direct Python script execution (./main.py, /path/to/script.py)
-                elif args.remaining[0].endswith((".py", ".pyw", ".pyc", ".pyo")):
-                    # Use current Python interpreter
-                    args.remaining.insert(0, str(inject_script))
-                    args.remaining.insert(0, sys.executable)
-                else:
-                    console_warning(
-                        "Command does not look like a Python entry point, "
-                        "skipping ROCTX auto-injection and launching workload as-is."
-                    )
-                    console_warning(
-                        "Ensure the binary already initializes PyTorch/ROCTX markers, "
-                        "otherwise --torch-trace will have no effect."
-                    )
-
-                if (
-                    resolved_exec_path
-                    and (resolved_exec_path.parent / "_internal").is_dir()
-                ):
-                    console_warning(
-                        "Workload appears to be a self-contained binary. "
-                        "Such bundles typically ship private ROCm/HSA libraries, which "
-                        "prevents --torch-trace from collecting data."
-                        "Rebuild without packaging libhsa/libhip or "
-                        "adjust LD_LIBRARY_PATH to /opt/rocm) before profiling."
-                    )
-            args.remaining = " ".join(args.remaining)
+            args.remaining = shlex.join(args.remaining)
         elif not args.attach_pid:
             console_error(
                 "Profiling command required. Pass application executable after -- "
@@ -186,277 +245,6 @@ class RocProfCompute_Base:
                 "\ti.e. rocprof-compute profile -n vcopy -- "
                 "./vcopy -n 1048576 -b 256"
             )
-
-    def detect_missing_counters(self, df: pd.DataFrame) -> None:
-        """Detect missing counter values in joined dataframe"""
-        args = self.get_args()
-        group_labels = ["Kernel_Name"]
-        if args.join_type == "grid":
-            group_labels.append("Grid_Size")
-
-        num_files = len(list(Path(args.path).glob("perfmon/*.txt")))
-        kernels_with_missing_counters = []
-        for _, groups in df.groupby(group_labels):
-            if groups["Dispatch_ID"].nunique() < num_files:
-                kernel_name = groups.iloc[0]["Kernel_Name"]
-                kernels_with_missing_counters.append(kernel_name)
-
-        if kernels_with_missing_counters:
-            kernels_with_missing_counters = list(set(kernels_with_missing_counters))
-            console_warning(
-                "join_prof",
-                (
-                    f"Insufficient number of kernel calls for kernels: "
-                    f"{', '.join(kernels_with_missing_counters)} "
-                    f"to collect all counters using iteration multiplexing. "
-                    f"Please use kernel filtering and exclude the above kernels "
-                    f"or turn off iteration multiplexing."
-                ),
-            )
-            with open(f"{args.path}/profiling_config.yaml", "a") as f:
-                yaml.dump(
-                    {"kernels_with_missing_counters": kernels_with_missing_counters}, f
-                )
-
-    @demarcate
-    def join_prof(self, out: Optional[str] = None) -> Optional[pd.DataFrame]:
-        """Manually join separated rocprof runs"""
-        args = self.get_args()
-        output_file = out or f"{args.path}/pmc_perf.csv"
-
-        # handle rocpd format
-        if args.format_rocprof_output == "rocpd":
-            # Vertically concat (by rows) results_*.csv into pmc_perf.csv
-            result_files = list(Path(args.path).glob("results_*.csv"))
-
-            with open(output_file, "w", newline="") as outfile:
-                writer = None
-                for file in result_files:
-                    with open(file, newline="") as infile:
-                        reader = csv.reader(infile)
-                        header = next(reader)
-                        # Write header only once
-                        if writer is None:
-                            writer = csv.writer(outfile)
-                            writer.writerow(header)
-                        for row in reader:
-                            writer.writerow(row)
-
-            console_debug(f"Created file: {output_file}")
-
-            if args.iteration_multiplexing is not None:
-                df = pd.read_csv(output_file)
-                self.detect_missing_counters(df)
-
-            # Delete results_*.csv files
-            for file in result_files:
-                Path(file).unlink()
-                console_debug(f"Deleted file: {file}")
-            return None
-
-        # Collect files to process - normalize to Path objects
-        files: list[Path] = []
-
-        # Set default output directory if not specified
-        if isinstance(args.path, str):
-            csv_patterns = ["pmc_perf_*.csv", "SQ_*.csv", "SQC_*.csv"]
-            files = [
-                file
-                for pattern in csv_patterns
-                for file in Path(args.path).glob(pattern)
-            ]
-
-            if args.hip_trace:
-                # remove hip api trace outputs from this list
-                files = [f for f in files if not f.name.endswith("_hip_api_trace.csv")]
-
-            if args.kokkos_trace:
-                # remove marker api trace outputs from this list
-                files = [
-                    f for f in files if not f.name.endswith("_marker_api_trace.csv")
-                ]
-        elif isinstance(args.path, list):
-            files = [Path(path) for path in args.path]
-        else:
-            console_error(f"Invalid workload directory. Cannot resolve {args.path}")
-
-        # Process files and create joined dataframe
-        df = None
-        for i, file in enumerate(files):
-            current_df = pd.read_csv(file)
-
-            if current_df.empty:
-                console_warning("join_prof", f"Empty dataframe from {file}")
-                continue
-
-            if args.join_type == "kernel":
-                key = current_df.groupby("Kernel_Name").cumcount()
-                current_df["key"] = current_df.Kernel_Name + " - " + key.astype(str)
-            elif args.join_type == "grid":
-                key = current_df.groupby(["Kernel_Name", "Grid_Size"]).cumcount()
-                current_df["key"] = (
-                    current_df["Kernel_Name"].astype(str)
-                    + " - "
-                    + current_df["Grid_Size"].astype(str)
-                    + " - "
-                    + key.astype(str)
-                )
-            else:
-                console_error(
-                    "join_prof",
-                    f"{args.join_type} is an unrecognized option for --join-type",
-                )
-
-            if df is None:
-                df = current_df
-            else:
-                # join by unique index of kernel
-                df = pd.merge(
-                    df, current_df, how="inner", on="key", suffixes=("", f"_{i}")
-                )
-
-        if df is None or df.empty:
-            console_warning("join_prof", "No data available after processing all files")
-            return None
-
-        # TODO: check for any mismatch in joins
-        duplicate_cols = {
-            "GPU_ID": [col for col in df.columns if col.startswith("GPU_ID")],
-            "Grid_Size": [col for col in df.columns if col.startswith("Grid_Size")],
-            "Workgroup_Size": [
-                col for col in df.columns if col.startswith("Workgroup_Size")
-            ],
-            "LDS_Per_Workgroup": [
-                col for col in df.columns if col.startswith("LDS_Per_Workgroup")
-            ],
-            "Scratch_Per_Workitem": [
-                col for col in df.columns if col.startswith("Scratch_Per_Workitem")
-            ],
-            "SGPR": [col for col in df.columns if col.startswith("SGPR")],
-        }
-
-        # Check for vgpr counter in ROCm < 5.3
-        if "vgpr" in df.columns:
-            duplicate_cols["vgpr"] = [
-                col for col in df.columns if col.startswith("vgpr")
-            ]
-        # Check for vgpr counter in ROCm >= 5.3
-        else:
-            duplicate_cols["Arch_VGPR"] = [
-                col for col in df.columns if col.startswith("Arch_VGPR")
-            ]
-            duplicate_cols["Accum_VGPR"] = [
-                col for col in df.columns if col.startswith("Accum_VGPR")
-            ]
-
-        for key, cols in duplicate_cols.items():
-            current_df = df[cols]
-            if not test_df_column_equality(current_df):
-                console_warning(
-                    "join_prof",
-                    f"Detected differing {key} values while joining pmc_perf.csv",
-                )
-            else:
-                console_debug("join_prof", f"Successfully joined {key} in pmc_perf.csv")
-
-        # now, we can:
-        #   A) throw away any of the "boring" duplicates
-        columns_to_remove = [
-            # rocprofv2 headers
-            "GPU_ID_",
-            "Grid_Size_",
-            "Workgroup_Size_",
-            "LDS_Per_Workgroup_",
-            "Scratch_Per_Workitem_",
-            "vgpr_",
-            "Arch_VGPR_",
-            "Accum_VGPR_",
-            "SGPR_",
-            "Dispatch_ID_",
-            "Queue_ID",
-            "Queue_Index",
-            "PID",
-            "TID",
-            "SIG",
-            "OBJ",
-            "Correlation_ID_",
-            "Wave_Size_",
-            # rocscope specific merged counters, keep original
-            "dispatch_",
-            # extras
-            "sig",
-            "queue-id",
-            "queue-index",
-            "pid",
-            "tid",
-            "fbar",
-        ]
-
-        df = df[
-            [
-                col
-                for col in df.columns
-                if not any(col.startswith(prefix) for prefix in columns_to_remove)
-            ]
-        ]
-
-        #   B) any timestamps that are _not_ the duration,
-        #      which is the one we care about
-        timestamp_patterns = ["DispatchNs", "CompleteNs", "HostDuration"]
-
-        df = df[
-            [
-                col
-                for col in df.columns
-                if not any(pattern in col for pattern in timestamp_patterns)
-            ]
-        ]
-
-        #   C) sanity check the name and key
-        name_cols = [col for col in df.columns if "Kernel_Name" in col]
-        if not name_cols:
-            return df
-
-        for col in name_cols[1:]:
-            assert (df[name_cols[0]] == df[col]).all()
-
-        df = df.drop(columns=name_cols[1:])
-
-        # now take the median of the durations
-        start_cols = [col for col in df.columns if "Start_Timestamp" in col]
-        end_cols = [col for col in df.columns if "End_Timestamp" in col]
-
-        # compute mean mean timestamps
-        if start_cols and end_cols:
-            mean_start = df[start_cols].mean(axis=1)
-            mean_end = df[end_cols].mean(axis=1)
-
-            # Replace with consolidated timestamps
-            df = df.drop(columns=start_cols + end_cols)
-            df["Start_Timestamp"] = mean_start
-            df["End_Timestamp"] = mean_end
-
-        # finally, join the drop key
-        if "key" in df.columns:
-            df = df.drop(columns=["key"])
-
-        console_debug("join_prof", "Checking for missing counter values...")
-
-        if args.iteration_multiplexing is not None:
-            self.detect_missing_counters(df)
-
-        # save to file and delete old file(s)
-        # skip if we're being called outside of rocprof-compute
-        if isinstance(args.path, str):
-            df.to_csv(output_file, index=False)
-            if not args.verbose:
-                for file in files:
-                    # Do not remove accumulate counter files
-                    if "SQ_" not in file.name or "SQC_" not in file.name:
-                        file.unlink()
-            return None
-        else:
-            return df
 
     # ----------------------------------------------------
     # Required methods to be implemented by child classes
@@ -473,7 +261,11 @@ class RocProfCompute_Base:
         self._filter_blocks = self._soc.profiling_setup()
 
         # Write profiling configuration as yaml file
-        with open(f"{self.__args.path}/profiling_config.yaml", "w") as f:
+        with open(
+            f"{self.__args.output_directory}/profiling_config.yaml",
+            "w",
+            encoding="utf-8",
+        ) as f:
             args_dict = vars(self.__args)
             # Override filter_blocks when writing profiling config yaml
             args_dict["filter_blocks"] = self._filter_blocks
@@ -488,8 +280,7 @@ class RocProfCompute_Base:
             )
 
         gen_sysinfo(
-            workload_name=args.name,
-            workload_dir=args.path,
+            workload_dir=args.output_directory,
             app_cmd=args.remaining,
             skip_roof=args.no_roof,
             mspec=self._soc._mspec,
@@ -535,8 +326,7 @@ class RocProfCompute_Base:
             run_prof(
                 fnames=str_fnames,
                 profiler_options=options,
-                workload_dir=args.path,
-                mspec=self._soc._mspec,
+                workload_dir=args.output_directory,
                 loglevel=args.loglevel,
                 format_rocprof_output=args.format_rocprof_output,
                 torch_trace_enabled=getattr(args, "torch_trace", False),
@@ -566,7 +356,10 @@ class RocProfCompute_Base:
         # log basic info
         console_log(f"{str(prog).title()} version: {version}")
         console_log(f"Profiler choice: {self.__profiler}")
-        console_log(f"Path: {Path(self.__args.path).absolute().resolve()}")
+        console_log(
+            f"Output directory: "
+            f"{Path(self.__args.output_directory).absolute().resolve()}"
+        )
         console_log(f"Target: {self._soc._mspec.gpu_model}")
         console_log(f"Command: {args.remaining}")
         console_log(f"Kernel Selection: {args.kernel}")
@@ -576,99 +369,48 @@ class RocProfCompute_Base:
         else:
             console_log("Filtered sections: All")
 
+        pc_sampling = PCSamplingProfile(
+            args=args,
+            profiler=self.__profiler,
+            workload_dir=args.output_directory,
+        )
+
+        # Run profiling on each input file
+        input_files = sorted(
+            Path(args.output_directory).glob("perfmon/pmc_perf_*.yaml")
+        )
+        total_runs = len(input_files)
+
+        if total_runs == 0 and is_only_pc_sampling(args.filter_blocks):
+            console_log(
+                "profiling",
+                "No performance counters to collect -- PC sampling only mode",
+            )
+
         msg = "Collecting Performance Counters"
         status_msg = f"{msg} (Roofline Only)" if self.__args.roof_only else msg
         print_status(status_msg)
 
-        native_tool_path = None
-        # Native counter collection tool is only compatible with
-        # rocprofiler-sdk public API for ROCm version >= 7.x.x
-        # Do not use native tool in attach
-        # mode until we figure out how multiple tools can attach
-        # TODO: Figure out how multiple tools can attach
-        if (
-            self.__profiler == "rocprofiler-sdk"
-            and not args.no_native_tool
-            and int(self._soc._mspec.rocm_version.split(".")[0]) >= 7
-            and not args.attach_pid
-        ):
-            # Use native counter collection tool
-            # Use lib* glob pattern to handle CMAKE_INSTALL_LIBDIR variations
-            # (lib, lib64, lib32, etc. depending on distribution)
-            native_tool_base_path = Path(sys.argv[0]).resolve().parents[2]
-            native_tool_glob_pattern = (
-                "lib*/rocprofiler-compute/librocprofiler-compute-tool.so"
-            )
-            try:
-                native_tool_path = str(
-                    next(native_tool_base_path.glob(native_tool_glob_pattern))
-                )
-            except Exception as e:
-                console_debug(
-                    f"Could not find pre-built native tool: {e}. "
-                    "Building native tool now."
-                )
-                native_tool_path = None
-            if not (native_tool_path and Path(native_tool_path).is_file()):
-                # Build native counter collection tool if not exists
-                native_tool_path = str(
-                    Path(
-                        tempfile.mkdtemp(prefix="rocprofiler-compute-tool-", dir="/tmp")
-                    )
-                    / "librocprofiler-compute-tool.so"
-                )
-                native_tool_cpp_path = Path(__file__).resolve().parents[1] / "lib"
-                link_libraries = ("rocprofiler-sdk",)
-                build_command = (
-                    # Create shared object
-                    "hipcc -shared -fPIC "
-                    # Link with dependant libraries
-                    + " ".join(f"-l{lib}" for lib in link_libraries)
-                    + " "
-                    # Compliler flags
-                    "-std=c++17 -W -Wall -Wextra -Wshadow -O2 "
-                    # rocprofiler sdk library path
-                    f"-L {str(Path(args.rocprofiler_sdk_tool_path).parent.parent)} "
-                    # native tool source files (tool.cpp and helper.cpp)
-                    f"{native_tool_cpp_path}/"
-                    "rocprofiler_compute_tool.cpp "
-                    f"{native_tool_cpp_path}/"
-                    "helper.cpp "
-                    # temporary shared object for native tool
-                    f"-o {native_tool_path}"
-                )
-                console_debug(f"Building native tool using command: {build_command}")
-                success, output = capture_subprocess_output(shlex.split(build_command))
-                console_debug(f"Build output: {output}")
-                if not success:
-                    console_error(
-                        "Failed to use native counter collection tool.\n"
-                        "Could not find pre-built .so file at: "
-                        f"{native_tool_base_path / native_tool_glob_pattern}\n"
-                        "Could not find source .cpp files in folder: "
-                        f"{native_tool_cpp_path}\n"
-                        "Please ensure the native tool library is installed "
-                        "or source files are present."
-                    )
-
+        native_tool_path = self.__get_native_tool_path(args)
         if self.__profiler == "rocprofiler-sdk":
             options = self.get_profiler_options(native_tool_path=native_tool_path)
         else:
             options = self.get_profiler_options()
 
-        # Run profiling on each input file
-        input_files = sorted(Path(args.path).glob("perfmon/*.txt"))
-        total_runs = len(input_files)
-
         # Compute total workload runs including PC sampling for warning check
         total_workload_runs = total_runs
-        if any(
-            block == "21" or block.startswith("21.") for block in args.filter_blocks
-        ):
+        if pc_sampling.is_requested():
             total_workload_runs += 1
 
         # Warn about multi-rank profiling when multiple workload runs are needed
-        if total_workload_runs > 1 and get_rank() is not None:
+        # Skip warning when iteration multiplexing is enabled (single application run)
+        _, total_ranks = get_job_rank_and_size()
+        if (
+            total_workload_runs > 1
+            and total_ranks is not None
+            and total_ranks >= 2
+            and args.iteration_multiplexing is None
+        ):
             console_warning(
                 "Multi-rank application detected. Application replay mode "
                 "(running the workload multiple times) may fail to collect "
@@ -676,63 +418,18 @@ class RocProfCompute_Base:
                 "Consider using single-pass modes:\n"
                 "  --iteration-multiplexing  : Collect all counters in a "
                 "single application run\n"
-                "  --block <N>               : Profile specific block(s), "
-                "excluding block 21\n"
-                "  --set <name>              : Profile a predefined counter set\n"
-                "See documentation for more information."
-            )
-
-        # Warn if PC sampling is requested (block "21") with multi-rank
-        if get_rank() is not None and any(
-            block == "21" or block.startswith("21.") for block in args.filter_blocks
-        ):
-            console_warning(
-                "Multi-rank application detected with PC sampling enabled. "
-                "PC sampling may fail to collect data for workloads with "
-                "MPI communication. "
-                "Consider using single-pass modes without PC sampling:\n"
-                "  --iteration-multiplexing  : Collect all counters in a "
-                "single application run\n"
-                "  --block <N>               : Profile specific block(s), "
-                "excluding block 21\n"
                 "  --set <name>              : Profile a predefined counter set\n"
                 "See documentation for more information."
             )
 
         total_profiling_time = 0.0
 
-        for fname in input_files:
-            # Kernel filtering (in-place replacement)
-            if not args.kernel == None:
-                success, output = capture_subprocess_output([
-                    "sed",
-                    "-i",
-                    "-r",
-                    f"s%^(kernel:).*%kernel: {','.join(self.__args.kernel)}%g",
-                    str(fname),
-                ])
-                # log output from profile filtering
-                if not success:
-                    console_error(output)
-                else:
-                    console_debug(output)
-
-            # Dispatch filtering (inplace replacement)
-            if args.dispatch is not None:
-                success, output = capture_subprocess_output([
-                    "sed",
-                    "-i",
-                    "-r",
-                    f"s%^(range:).*%range: {' '.join(self.__args.dispatch)}%g",
-                    str(fname),
-                ])
-                # log output from profile filtering
-                if not success:
-                    console_error(output)
-                else:
-                    console_debug(output)
-
         if args.iteration_multiplexing is not None:
+            if native_tool_path is None:
+                console_error(
+                    "Native tool is not supported which is required for "
+                    "iteration multiplexing."
+                )
             console_log(
                 "profiling", f"Iteration multiplexing: {args.iteration_multiplexing}"
             )
@@ -783,37 +480,48 @@ class RocProfCompute_Base:
                 duration = self.profile(fname, options, total_runs)
                 total_profiling_time += duration
 
-        # Delete temporary native tool if created
-        if native_tool_path and native_tool_path.startswith("/tmp"):
-            shutil.rmtree(Path(native_tool_path).parent, ignore_errors=True)
-
-        # PC sampling data is only collected when block "21" is specified
-        if not "21" in args.filter_blocks:
+        if not pc_sampling.is_requested():
             console_warning(
-                "PC sampling data collection skipped as block 21 is not specified."
+                "PC sampling data collection skipped as --pc-sampling is not specified."
             )
             return
 
-        total_runs = len(list(Path(args.path).glob("perfmon/*.txt")))
-
-        console_log(f"[Run {total_runs + 1}/{total_runs + 1}][PC sampling profile run]")
-
-        start_time = time.time()
         # No native tool for pc sampling
-        options = self.get_profiler_options()
-        pc_sampling_prof(
-            profiler_options=options,
-            method=args.pc_sampling_method,
-            interval=args.pc_sampling_interval,
-            workload_dir=args.path,
-        )
-        end_time = time.time()
+        pc_sampling.run(self.get_profiler_options(), total_runs)
 
-        duration = end_time - start_time
-        console_debug(
-            "profiling",
-            f"The time of pc sampling profiling is {int(duration / 60)} m "
-            f"{duration % 60} sec",
+    def __get_native_tool_path(self, args: argparse.Namespace) -> str | None:
+        try:
+            if (
+                self.__is_native_tool_requested(args)  # noqa: E501
+                and self.__is_native_tool_supported(args)
+            ):
+                compute_root_path = Path(__file__).resolve().parents[1]
+                native_tool_finder = NativeToolFinder(compute_root_path)
+                return str(native_tool_finder.get_collector_library_path())
+            return None
+        except Exception:
+            console_error(
+                "Failed to use native counter collection tool.\n"
+                "Please ensure the native tool library is installed "
+                "or source files are present."
+            )
+
+    def __is_native_tool_requested(self, args: argparse.Namespace) -> bool:
+        return self.__profiler == "rocprofiler-sdk" and not args.no_native_tool
+
+    def __is_native_tool_supported(self, args: argparse.Namespace) -> bool:
+        # Native counter collection tool is only compatible with
+        # rocprofiler-sdk public API for ROCm version >= 7.x.x
+
+        # PC sampling only profile does not need native tool
+
+        # Do not use native tool in attach
+        # mode until we figure out how multiple tools can attach
+        # TODO: Figure out how multiple tools can attach
+        return (
+            int(self._soc._mspec.rocm_version.split(".")[0]) >= 7
+            and not args.attach_pid
+            and not is_only_pc_sampling(args.filter_blocks)
         )
 
     @abstractmethod
@@ -823,7 +531,3 @@ class RocProfCompute_Base:
             "profiling", f"performing post-processing using {self.__profiler} profiler"
         )
         self._soc.post_profiling()
-
-
-def test_df_column_equality(df: pd.DataFrame) -> bool:
-    return df.eq(df.iloc[:, 0], axis=0).all(1).all()

@@ -3,9 +3,11 @@
  * single extent.  This class is used to keep track of what parts of a binary file have been parsed, and is also used to
  * manage string table free lists, among other things. */
 
+#include <algorithm>
 #include "util/StringUtility.h"
 #include "ExtentMap.h"
-#include <boost/foreach.hpp>
+#include <cstring>
+#include <dyncompat/foreach.hpp>
 
 #define DUMP_FIELD_WIDTH        64
 
@@ -19,7 +21,7 @@ AddressInterval toAddressInterval(const Extent &x) {
 
 ExtentMap toExtentMap(const AddressIntervalSet &x) {
     ExtentMap retval;
-    BOOST_FOREACH (const AddressInterval &interval, x.intervals())
+    DYN_FOREACH (const AddressInterval &interval, x.intervals())
         retval.insert(toExtent(interval));
     return retval;
 }
@@ -44,7 +46,7 @@ std::ostream& operator<<(std::ostream &out, const AddressInterval &x) {
 
 std::ostream& operator<<(std::ostream &out, const AddressIntervalSet &x) {
     out <<"{";
-    BOOST_FOREACH (const AddressInterval &interval, x.intervals())
+    DYN_FOREACH (const AddressInterval &interval, x.intervals())
         out <<" " <<interval;
     out <<" }";
     return out;

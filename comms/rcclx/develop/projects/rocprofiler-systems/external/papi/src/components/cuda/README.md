@@ -1,83 +1,91 @@
-# CUDA Component
+# Cuda Component
 
-The CUDA component exposes counters and controls for NVIDIA GPUs.
+The `cuda` component exposes counters and controls for NVIDIA GPUs.
 
-* [Enabling the CUDA Component](#enabling-the-cuda-component)
-* [Environment Variables](#environment-variables)
+* [Enabling the Cuda Component](#enabling-the-cuda-component)
+* [Hardware and Software Support](#hardware-and-software-support)
+* [Partially Disabled Cuda Component](#partially-disabled-cuda-component)
 * [Known Limitations](#known-limitations)
 * [FAQ](#faq)
 ***
-## Enabling the CUDA Component
+
+## Enabling the `cuda` Component
 
 To enable reading or writing of CUDA counters the user needs to link against a
-PAPI library that was configured with the CUDA component enabled. As an
-example the following command:
+PAPI library that was configured with the `cuda` component. As an example:
+```
+./configure --with-components="cuda"
+```
 
-    ./configure --with-components="cuda"
-    
-is sufficient to enable the component.
+For the component to be active, PAPI requires one environment variable to be set: `PAPI_CUDA_ROOT`. This environment variable **must** be set to the root of the Cuda Toolkit that is desired to be used for both compiling and runtime. As an example:
 
-Typically, the utility `papi_components_avail` (available in
-`papi/src/utils/papi_components_avail`) will display the components available
-to the user, and whether they are disabled, and when they are disabled why.
+```
+PAPI_CUDA_ROOT=/packages/cuda/#.#.#
+```
 
-## Environment Variables
+Within `PAPI_CUDA_ROOT`, we expect the following standard directories for building:
 
-For CUDA, PAPI requires one environment variable: `PAPI_CUDA_ROOT`. This is
-required for both compiling and runtime. 
-
-Typically in Linux one would export this (examples are shown below) variable but
-some systems have software to manage environment variables (such as `module` or
-`spack`), so consult with your sysadmin if you have such management software. Eg:
-
-    export PAPI_CUDA_ROOT=/path/to/installed/cuda
-
-Within PAPI_CUDA_ROOT, we expect the following standard directories for building:
-
-    PAPI_CUDA_ROOT/include
-    PAPI_CUDA_ROOT/extras/CUPTI/include
+```
+PAPI_CUDA_ROOT/include
+PAPI_CUDA_ROOT/extras/CUPTI/include
+```
 
 and for runtime:
 
-    PAPI_CUDA_ROOT/lib64
-    PAPI_CUDA_ROOT/extras/CUPTI/lib64
+```
+PAPI_CUDA_ROOT/lib64
+PAPI_CUDA_ROOT/extras/CUPTI/lib64
+```
 
-As of this writing (07/2021) Nvidia has overhauled performance reporting;
-divided now into "Legacy CUpti" and "CUpti_11", the new approach. Legacy
-Cupti works on devices up to Compute Capability 7.0; while only CUpti_11
-works on devices with Compute Capability >=7.0. Both work on CC==7.0.
+To verify the `cuda` component was configured with your PAPI build and is active,
+run `papi_component_avail` (available in `utils/papi_component_avail`). This 
+utility will display the components configured in your PAPI build and whether they are active or disabled. If a component is disabled a message on why the component
+has been disabled will be directly below it.
 
-This component automatically distinguishes between the two; but it cannot
-handle a "mix", one device that can only work with Legacy and another that
-can only work with CUpti_11.
+For the `cuda` component to be operational, the following dynamic libraries must be found at runtime for both the Event/Metric APIs and the PerfWorks Metrics API:
 
-For the CUDA component to be operational, both versions require
-the following dynamic libraries be found at runtime:
+```
+libcuda.so
+libcudart.so
+libcupti.so
+```
 
-    libcuda.so
-    libcudart.so
-    libcupti.so
-
-CUpti\_11 also requires:
-
-    libnvperf_host.so
+For the PerfWorks Metrics API, the dynamic library `libnvperf_host.so` must also be found.
 
 If those libraries cannot be found or some of those are stub libraries in the
 standard `PAPI_CUDA_ROOT` subdirectories, you must add the correct paths,
 e.g. `/usr/lib64` or `/usr/lib` to `LD_LIBRARY_PATH`, separated by colons `:`.
 This can be set using export; e.g. 
 
-    export LD_LIBRARY_PATH=$PAPI_CUDA_ROOT/lib64:$LD_LIBRARY_PATH
+```
+export LD_LIBRARY_PATH=$PAPI_CUDA_ROOT/lib64:$LD_LIBRARY_PATH
+```
+## Hardware and Software Support
+
+To see the `cuda` component's current supported hardware and software please visit the GitHub wiki page [Hardware and Software Support - Cuda Component](https://github.com/icl-utk-edu/papi/wiki/Hardware-and-Software-Support-%E2%80%90-Cuda-Component).
+
+## Partially Disabled Cuda Component
+As shown on the GitHub wiki page [Hardware and Software Support - Cuda Component](https://github.com/icl-utk-edu/papi/wiki/Hardware-and-Software-Support-%E2%80%90-Cuda-Component) the `cuda` component supports a total of three primary APIs
+to expose counters and controls for NVIDIA GPUs.
+
+The Event/Metric APIs (Legacy) only overlaps with the PerfWorks Metrics API at CC 7.0 (V100). Meaning in the case of machines with NVIDIA GPUs with mixed compute capabilities e.g. P100 - CC 6.0 and A100 - CC 8.0 a choice must be made for which CCs the counters and controls will be exposed for.
+
+To allow for this choice to be made the `cuda` component supports being ***Partially Disabled***. Which means:
+
+* If exposing counters and controls for CCs <= 7.0 (e.g. P100 and V100), then support for exposing counters and controls for CCs > 7.0 will be disabled
+* If exposing counters and controls for CCs >= 7.0 (e.g. V100 and A100), then support for exposing counters and controls for CCs < 7.0 will be disabled
+
+By default on mixed compute capability machines, counters and controls for CCs >= 7.0 will be exposed. However, at runtime the choice of which CCs the counter and controls will be exposed for can be changed via the environment variable `PAPI_CUDA_API`. Simply
+set `PAPI_CUDA_API` equal to `LEGACY`, e.g:
+
+```
+export PAPI_CUDA_API=LEGACY
+```
+
+Important note, in the case of machines that only have GPUs with CCs = 7.0 there will be no partially disabled Cuda component. Counter and controls will be exposed via the PerfWorks Metrics API; however, if you would like to expose counters and controls via the Legacy APIs please see the aforementioned environment variable.
 
 ## Known Limitations
-* In CUpti\_11, the number of possible events is vastly expanded; e.g. from
-  some hundreds of events per device to over 110,000 events per device. this can
-  make the utility `papi/src/utils/papi_native_avail` run for several minutes;
-  as much as 2 minutes per GPU. If the output is redirected to a file, this 
-  may appear to "hang up". Give it time.
-
-* Currently the CUDA component profiling only works with GPUs with compute capability > 7.0 using the NVIDIA Perfworks libraries.
-
+* Exposing counters on machines that have NVIDIA GPUs with CCS >= 7.0 is done via the Pefworks API. This API vastly expands the number of possible counters from roughly a few hundred to over 140,000 per GPU. Due to this, the PAPI utility `utils/papi_native_avail` may take a few minutes to run (as much as 2 minutes per GPU). If the output from `utils/papi_native_avail` is redirected to a file, it may appear as if it has "hung"; however, give it time and it will complete.
 ***
 
 ## FAQ
@@ -99,9 +107,11 @@ subdirectories mentioned above, or `PAPI_CUDA_ROOT` does not exist at runtime, t
 usually `/usr/lib64`, `/lib64`, `/usr/lib` and `/lib`. 
 
 The system will also search the directories listed in `LD_LIBRARY_PATH`,
-separated by colons `:`. This can be set using export; e.g. 
+separated by colons `:`. This can be set using export; e.g.
 
-    export LD_LIBRARY_PATH=/WhereLib1CanBeFound:/WhereLib2CanBeFound:$LD_LIBRARY_PATH
+```
+export LD_LIBRARY_PATH=/WhereLib1CanBeFound:WhereLib2CanBeFound:$LD_LIBRARY_PATH
+```
 
 * If CUDA libraries are installed on your system, such that the OS can find `nvcc`, the header files, and the shared libraries, then `PAPI_CUDA_ROOT` and `LD_LIBRARY_PATH` may not be necessary.
 
@@ -121,10 +131,10 @@ However, it is possible to load each of these libraries from custom paths by set
 - `PAPI_CUDA_PERFWORKS` to point to `libnvperf_host.so`
 
 ## Compute capability 7.0 with CUDA toolkit version 11.0
-NVIDIA GPUs with compute capability 7.0 support profiling on both PerfWorks API and the older Events & Metrics API.
+NVIDIA GPUs with compute capability 7.0 support profiling on both PerfWorks API and the older Event/Metric APIs.
 
 If CUDA toolkit version > 11.0 is used, then PAPI uses the newer API, but using toolkit version 11.0, PAPI uses the events API by default.
 
-If the environment variable `PAPI_CUDA_110_CC_70_PERFWORKS_API` is set to any non-empty value, then compute capability 7.0 using toolkit version 11.0 will use the Perfworks API. Eg:
+If the environment variable `PAPI_CUDA_110_CC_70_PERFWORKS_API` is set to any non-empty value, then compute capability 7.0 using toolkit version 11.0 will use the PerfWorks Metrics API. Eg:
 
     `export PAPI_CUDA_110_CC_70_PERFWORKS_API=1`

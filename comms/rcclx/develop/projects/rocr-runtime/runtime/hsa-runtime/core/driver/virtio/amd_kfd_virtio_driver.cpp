@@ -194,6 +194,11 @@ hsa_status_t KfdVirtioDriver::GetDeviceHandle(uint32_t node_id, void** device_ha
   return HSA_STATUS_SUCCESS;
 }
 
+hsa_status_t KfdVirtioDriver::GetDeviceFd(uint32_t node_id, int *fd) const {
+  return HSA_STATUS_ERROR;
+}
+
+
 hsa_status_t KfdVirtioDriver::GetClockCounters(uint32_t node_id,
                                                HsaClockCounters* clock_counter) const {
   assert(clock_counter != nullptr);
@@ -462,38 +467,72 @@ hsa_status_t KfdVirtioDriver::AllocQueueGWS(HSA_QUEUEID queue_id, uint32_t num_G
   return HSA_STATUS_ERROR;
 }
 
-hsa_status_t KfdVirtioDriver::ExportDMABuf(void* mem, size_t size, int* dmabuf_fd, size_t* offset) {
-  int dmabuf_fd_res = -1;
-  size_t offset_res = 0;
-  HSAKMT_STATUS status =
-      vhsaKmtExportDMABufHandle(mem, size, &dmabuf_fd_res, &offset_res);
-  if (status != HSAKMT_STATUS_SUCCESS) {
-    if (status == HSAKMT_STATUS_INVALID_PARAMETER) {
-      return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+hsa_status_t KfdVirtioDriver::ExportMemoryHandle(const core::Agent& agent, const core::DriverMemoryHandle& handle,
+                                                 core::ShareType type, uint32_t flags, void* export_handle,
+                                                 uint64_t* export_offset) {
+  (void)agent;
+  (void)flags;
+  (void)export_offset;
+  if (export_handle == nullptr) return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+
+  switch (type) {
+  case core::ShareType::DMABUF_FD: {
+    int dmabuf_fd_res = -1;
+    size_t offset_res = 0;
+    HSAKMT_STATUS status =
+        vhsaKmtExportDMABufHandle(const_cast<void*>(reinterpret_cast<const void*>(&handle)), handle.size,
+                                  &dmabuf_fd_res, &offset_res);
+    if (status != HSAKMT_STATUS_SUCCESS) {
+      if (status == HSAKMT_STATUS_INVALID_PARAMETER) {
+        return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+      }
+      return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
     }
-    return HSA_STATUS_ERROR_OUT_OF_RESOURCES;
+
+    *static_cast<int*>(export_handle) = dmabuf_fd_res;
+    return HSA_STATUS_SUCCESS;
   }
-
-  *dmabuf_fd = dmabuf_fd_res;
-  *offset = offset_res;
-
-  return HSA_STATUS_SUCCESS;
-}
-
-hsa_status_t KfdVirtioDriver::ImportDMABuf(int dmabuf_fd, core::Agent& agent,
-                                           core::ShareableHandle& handle) {
-  auto &gpu_agent = static_cast<GpuAgent &>(agent);
-  amdgpu_bo_import_result res;
-  auto ret = vamdgpu_bo_import(
-      gpu_agent.libDrmDev(), amdgpu_bo_handle_type_dma_buf_fd, dmabuf_fd, &res);
-  if (ret)
+  case core::ShareType::FABRIC_HANDLE:
     return HSA_STATUS_ERROR;
-
-  handle.handle = reinterpret_cast<uint64_t>(res.buf_handle);
-  return HSA_STATUS_SUCCESS;
+  default:
+    return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  }
 }
 
-hsa_status_t KfdVirtioDriver::Map(core::ShareableHandle handle, void* mem, size_t offset,
+hsa_status_t KfdVirtioDriver::ImportMemoryHandle(const core::Agent& agent, core::DriverMemoryHandle* handle,
+                                                 core::ShareType type, void* import_handle,
+                                                 void* mem) {
+  (void)mem;
+  if (handle == nullptr || import_handle == nullptr)
+    return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+
+  switch (type) {
+  case core::ShareType::DMABUF_FD: {
+    const int dmabuf_fd = *static_cast<int*>(import_handle);
+    const auto& gpu_agent = static_cast<const GpuAgent&>(agent);
+    amdgpu_bo_import_result res;
+    auto ret = vamdgpu_bo_import(
+        gpu_agent.libDrmDev(), amdgpu_bo_handle_type_dma_buf_fd, dmabuf_fd, &res);
+    if (ret)
+      return HSA_STATUS_ERROR;
+
+    *handle = core::DriverMemoryHandle{reinterpret_cast<uint64_t>(res.buf_handle)};
+    handle->size = res.alloc_size;
+    return HSA_STATUS_SUCCESS;
+  }
+  case core::ShareType::FABRIC_HANDLE:
+    return HSA_STATUS_ERROR;
+  default:
+    return HSA_STATUS_ERROR_INVALID_ARGUMENT;
+  }
+}
+
+hsa_status_t KfdVirtioDriver::DestroyImportedMemoryHandle(core::DriverMemoryHandle* handle) {
+  // Calls DestroyMemoryHandle, as an amdgpu_bo_handle object is created during import.
+  return DestroyMemoryHandle(handle);
+}
+
+hsa_status_t KfdVirtioDriver::Map(const core::DriverMemoryHandle& handle, void* mem, size_t offset,
                                   size_t size, hsa_access_permission_t perms) {
   const auto ldrm_bo = reinterpret_cast<amdgpu_bo_handle>(handle.handle);
   if (!ldrm_bo)
@@ -506,7 +545,7 @@ hsa_status_t KfdVirtioDriver::Map(core::ShareableHandle handle, void* mem, size_
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t KfdVirtioDriver::Unmap(core::ShareableHandle handle, void* mem, size_t offset,
+hsa_status_t KfdVirtioDriver::Unmap(const core::DriverMemoryHandle& handle, void* mem, size_t offset,
                                     size_t size) {
   const auto ldrm_bo = reinterpret_cast<amdgpu_bo_handle>(handle.handle);
   if (!ldrm_bo)
@@ -519,8 +558,14 @@ hsa_status_t KfdVirtioDriver::Unmap(core::ShareableHandle handle, void* mem, siz
   return HSA_STATUS_SUCCESS;
 }
 
-hsa_status_t KfdVirtioDriver::ReleaseShareableHandle(core::ShareableHandle& handle) {
-  const auto ldrm_bo = reinterpret_cast<amdgpu_bo_handle>(handle.handle);
+hsa_status_t KfdVirtioDriver::CreateShareableHandle(void* va, void* mem, size_t size,
+                                                    const core::Agent& agent,
+                                                    core::DriverMemoryHandle* handle, uint64_t* offset) {
+  return HSA_STATUS_ERROR;
+}
+
+hsa_status_t KfdVirtioDriver::DestroyMemoryHandle(core::DriverMemoryHandle* handle) {
+  const auto ldrm_bo = reinterpret_cast<amdgpu_bo_handle>(handle->handle);
   if (!ldrm_bo)
     return HSA_STATUS_ERROR;
 
@@ -548,7 +593,6 @@ hsa_status_t KfdVirtioDriver::SPMSetDestBuffer(uint32_t node_id, uint32_t size, 
   return HSA_STATUS_ERROR;
 }
 
-
 hsa_status_t KfdVirtioDriver::OpenSMI(uint32_t node_id, int* fd) const { return HSA_STATUS_ERROR; }
 
 hsa_status_t KfdVirtioDriver::GetWallclockFrequency(uint32_t node_id, uint64_t* frequency) const {
@@ -569,6 +613,23 @@ hsa_status_t KfdVirtioDriver::GetWallclockFrequency(uint32_t node_id, uint64_t* 
 
 hsa_status_t KfdVirtioDriver::IsModelEnabled(bool* enable) const {
   *enable = false;
+  return HSA_STATUS_SUCCESS;
+}
+
+hsa_status_t KfdVirtioDriver::GetQueueSaveAreaInfo(HSA_QUEUEID queue_id, void** address, size_t* size) const {
+  assert(address);
+  assert(size);
+
+  HsaQueueInfo queue_info = {};
+
+  HSAKMT_STATUS status = HSAKMT_CALL(hsaKmtGetQueueInfo(queue_id, &queue_info));
+  if (status != HSAKMT_STATUS_SUCCESS) {
+    return HSA_STATUS_ERROR;
+  }
+
+  *address = queue_info.SaveAreaHeader;
+  *size = queue_info.SaveAreaSizeInBytes;
+
   return HSA_STATUS_SUCCESS;
 }
 

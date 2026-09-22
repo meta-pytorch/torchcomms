@@ -2,8 +2,13 @@ NAME=intel_gpu
 include ../../Makefile_comp_tests.target
 CFLAGS += -DDEBUG  -I../../../testlib
 
-INTEL_L0_HEADERS ?=/usr/include
-INTEL_L0_LIB64 ?=/usr/lib
+# If root is not specified, use default location.
+PAPI_INTEL_GPU_ROOT ?= /usr
+
+## the following set are used to define oneAPI Level Zero Metric API based implementation
+INTEL_L0_HEADERS = $(PAPI_INTEL_GPU_ROOT)/include
+INTEL_L0_LIB64   = $(PAPI_INTEL_GPU_ROOT)/lib
+
 CPPLDFLAGS+=-ldl
 GPULIB=-L$(INTEL_L0_LIB64) -lze_loader
 

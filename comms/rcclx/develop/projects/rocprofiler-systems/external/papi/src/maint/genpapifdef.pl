@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 ##
 ## Copyright (C) by Innovative Computing Laboratory
@@ -225,7 +225,7 @@ sub write_defs_fort {
     printf STDOUT "C General purpose defines\n";
     printf STDOUT "C\n\n";
 
-    foreach my $key (keys %defs) {
+    foreach my $key (sort keys %defs) {
         # skip unneeded definition
         if ($key =~ /PAPI_MH_/ || $key =~ /PAPI_PRESET_/ || $key =~ /PAPI_DEF_ITIMER/) { next; }
         printf STDOUT "#define %-18s %s\n", $key, ($papi_defs{$key} == 0x80000000) ? "((-2147483647) - 1)" : $papi_defs{$key};
@@ -248,7 +248,7 @@ sub write_defs_f77 {
     printf STDOUT "! General purpose defines\n";
     printf STDOUT "!\n\n";
 
-    foreach my $key (keys %defs) {
+    foreach my $key (sort keys %defs) {
         # skip unneeded definition
         if ($key =~ /PAPI_MH_/ || $key =~ /PAPI_PRESET_/ || $key =~ /PAPI_DEF_ITIMER/) { next; }
         printf STDOUT "INTEGER %-18s\nPARAMETER(%s=%s)\n", $key, $key, ($papi_defs{$key} == 0x80000000) ? "((-2147483647) - 1)" : $papi_defs{$key};
@@ -271,7 +271,7 @@ sub write_defs_f90 {
     printf STDOUT "! General purpose defines\n";
     printf STDOUT "!\n\n";
 
-    foreach my $key (keys %defs) {
+    foreach my $key (sort keys %defs) {
         # skip unneeded definition
         if ($key =~ /PAPI_MH_/ || $key =~ /PAPI_PRESET_/ || $key =~ /PAPI_DEF_ITIMER/) { next; }
         printf STDOUT "INTEGER, PARAMETER :: %-18s = %s\n", $key, ($papi_defs{$key} == 0x80000000) ? "((-2147483647) - 1)" : $papi_defs{$key};
@@ -286,7 +286,7 @@ sub write_presets_fort {
     printf STDOUT "C PAPI preset event values\n";
     printf STDOUT "C\n\n";
 
-    foreach my $key (keys %presets) {
+    foreach my $key (sort keys %presets) {
         if ($papi_presets{$key} == -2147483648) {
             printf STDOUT "#define %-18s ((-2147483647) - 1)\n", $key;
         } else {
@@ -303,7 +303,7 @@ sub write_presets_f77 {
     printf STDOUT "! PAPI preset event values\n";
     printf STDOUT "!\n\n";
 
-    foreach my $key (keys %presets) {
+    foreach my $key (sort keys %presets) {
         if ($papi_presets{$key} == -2147483648) {
             printf STDOUT "INTEGER %-18s\nPARAMETER(%s=(-2147483647) - 1)\n", $key, $key;
         } else {
@@ -320,7 +320,7 @@ sub write_presets_f90 {
     printf STDOUT "! PAPI preset event values\n";
     printf STDOUT "!\n\n";
 
-    foreach my $key (keys %presets) {
+    foreach my $key (sort keys %presets) {
         if ($papi_presets{$key} == -2147483648) {
             printf STDOUT "INTEGER, PARAMETER :: %-18s = ((-2147483647) - 1)\n", $key;
         } else {

@@ -273,7 +273,7 @@ add_arg_bool_option("pybind-install", "PYBIND11_INSTALL", default=False)
 add_arg_bool_option("build-testing", "TIMEMORY_BUILD_TESTING")
 parser.add_argument(
     "--cxx-standard",
-    default=17,
+    default=20,
     type=int,
     choices=[17, 20, 23],
     help="Set C++ language standard",

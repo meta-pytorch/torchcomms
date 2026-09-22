@@ -120,11 +120,7 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
       ["sqlite3_column_double","f64", "sqlite3_stmt*", "int"],
       ["sqlite3_column_int","int", "sqlite3_stmt*", "int"],
       ["sqlite3_column_name","string", "sqlite3_stmt*", "int"],
-//#define proxy-text-apis=1
-//#if not proxy-text-apis
-/* Search this file for tag:proxy-text-apis to see what this is about. */
       ["sqlite3_column_text","string", "sqlite3_stmt*", "int"],
-//#endif
       ["sqlite3_column_type","int", "sqlite3_stmt*", "int"],
       ["sqlite3_column_value","sqlite3_value*", "sqlite3_stmt*", "int"],
       ["sqlite3_commit_hook", "void*", [
@@ -200,7 +196,6 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
       ["sqlite3_libversion_number", "int"],
       ["sqlite3_limit", "int", ["sqlite3*", "int", "int"]],
       ["sqlite3_malloc", "*","int"],
-      ["sqlite3_next_stmt", "sqlite3_stmt*", ["sqlite3*","sqlite3_stmt*"]],
       ["sqlite3_open", "int", "string", "*"],
       ["sqlite3_open_v2", "int", "string", "*", "int", "string"],
       /* sqlite3_prepare_v2() and sqlite3_prepare_v3() are handled
@@ -322,9 +317,7 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
       ["sqlite3_value_numeric_type", "int", "sqlite3_value*"],
       ["sqlite3_value_pointer", "*", "sqlite3_value*", "string:static"],
       ["sqlite3_value_subtype", "int", "sqlite3_value*"],
-//#if not proxy-text-apis
       ["sqlite3_value_text", "string", "sqlite3_value*"],
-//#endif
       ["sqlite3_value_type", "int", "sqlite3_value*"],
       ["sqlite3_vfs_find", "*", "string"],
       ["sqlite3_vfs_register", "int", "sqlite3_vfs*", "int"],
@@ -976,8 +969,10 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
            "entry SQLITE_WASM_DEALLOC (=="+capi.SQLITE_WASM_DEALLOC+").");
     }
     const __rcMap = Object.create(null);
-    for(const e of Object.entries(wasm.ctype['resultCodes'])){
-      __rcMap[e[1]] = e[0];
+    for(const t of ['resultCodes']){
+      for(const e of Object.entries(wasm.ctype[t])){
+        __rcMap[e[1]] = e[0];
+      }
     }
     /**
        For the given integer, returns the SQLITE_xxx result code as a
@@ -989,6 +984,8 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
     const notThese = Object.assign(Object.create(null),{
       // For each struct to NOT register, map its name to true:
       WasmTestStruct: true,
+      /* We unregister the kvvfs VFS from Worker threads below. */
+      sqlite3_kvvfs_methods: !util.isUIThread(),
       /* sqlite3_index_info and friends require int64: */
       sqlite3_index_info: !wasm.bigIntEnabled,
       sqlite3_index_constraint: !wasm.bigIntEnabled,
@@ -1657,45 +1654,6 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
 
   }/*sqlite3_bind_text/blob()*/
 
-//#if proxy-text-apis
-  if(!capi.sqlite3_column_text){
-    /*[tag:proxy-text-apis]
-      As discussed at:
-
-      https://sqlite.org/forum/forumpost/d77281aec2df9ada
-
-      Summary: there are opinions that sqlite3_column_text() and
-      sqlite3_value_text() should handle strings such that embedded
-      NULs are retained. This block does that. This block does _not_
-      apply that special-case behavior to any number of _other_
-      APIs which return C-strings. That discrepancy makes this
-      block highly arguable, but one can also argue that these two
-      specific functions can get away with such acrobatics without
-      it being called voodoo in a pejorative sense.
-    */
-    const argStmt  = wasm.xWrap.argAdapter('sqlite3_stmt*'),
-          argInt   = wasm.xWrap.argAdapter('int'),
-          argValue = wasm.xWrap.argAdapter('sqlite3_value*'),
-          newStr   =
-          (cstr,n)=>wasm.typedArrayToString(wasm.heap8u(),
-                                           Number(cstr), Number(cstr)+n)
-    capi.sqlite3_column_text = function(stmt, colIndex){
-      const a0 = argStmt(stmt), a1 = argInt(colIndex);
-      const cstr = wasm.exports.sqlite3_column_text(a0, a1);
-      return cstr
-        ? newStr(cstr,wasm.exports.sqlite3_column_bytes(a0, a1))
-        : null;
-    };
-    capi.sqlite3_value_text = function(val){
-      const a0 = argValue(val);
-      const cstr = wasm.exports.sqlite3_value_text(a0);
-      return cstr
-        ? newStr(cstr,wasm.exports.sqlite3_value_bytes(a0))
-        : null;
-    };
-  }/*text-return-related bindings*/
-//#endif proxy-text-apis
-
   {/* sqlite3_config() */
     /**
        Wraps a small subset of the C API's sqlite3_config() options.
@@ -1781,6 +1739,105 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
       __autoExtFptr.clear();
     };
   }/* auto-extension */
+
+  const pKvvfs = capi.sqlite3_vfs_find("kvvfs");
+  if( pKvvfs ){/* kvvfs-specific glue */
+    if(util.isUIThread()){
+      const kvvfsMethods = new capi.sqlite3_kvvfs_methods(
+        wasm.exports.sqlite3__wasm_kvvfs_methods()
+      );
+      delete capi.sqlite3_kvvfs_methods;
+
+      const kvvfsMakeKey = wasm.exports.sqlite3__wasm_kvvfsMakeKeyOnPstack,
+            pstack = wasm.pstack;
+
+      const kvvfsStorage = (zClass)=>
+            ((115/*=='s'*/===wasm.peek(zClass))
+             ? sessionStorage : localStorage);
+
+      /**
+         Implementations for members of the object referred to by
+         sqlite3__wasm_kvvfs_methods(). We swap out the native
+         implementations with these, which use localStorage or
+         sessionStorage for their backing store.
+      */
+      const kvvfsImpls = {
+        xRead: (zClass, zKey, zBuf, nBuf)=>{
+          const stack = pstack.pointer,
+                astack = wasm.scopedAllocPush();
+          try {
+            const zXKey = kvvfsMakeKey(zClass,zKey);
+            if(!zXKey) return -3/*OOM*/;
+            const jKey = wasm.cstrToJs(zXKey);
+            const jV = kvvfsStorage(zClass).getItem(jKey);
+            if(!jV) return -1;
+            const nV = jV.length /* We are relying 100% on v being
+                                    ASCII so that jV.length is equal
+                                    to the C-string's byte length. */;
+            if(nBuf<=0) return nV;
+            else if(1===nBuf){
+              wasm.poke(zBuf, 0);
+              return nV;
+            }
+            const zV = wasm.scopedAllocCString(jV);
+            if(nBuf > nV + 1) nBuf = nV + 1;
+            wasm.heap8u().copyWithin(
+              Number(zBuf), Number(zV), wasm.ptr.addn(zV, nBuf,- 1)
+            );
+            wasm.poke(wasm.ptr.add(zBuf, nBuf, -1), 0);
+            return nBuf - 1;
+          }catch(e){
+            sqlite3.config.error("kvstorageRead()",e);
+            return -2;
+          }finally{
+            pstack.restore(stack);
+            wasm.scopedAllocPop(astack);
+          }
+        },
+        xWrite: (zClass, zKey, zData)=>{
+          const stack = pstack.pointer;
+          try {
+            const zXKey = kvvfsMakeKey(zClass,zKey);
+            if(!zXKey) return 1/*OOM*/;
+            const jKey = wasm.cstrToJs(zXKey);
+            kvvfsStorage(zClass).setItem(jKey, wasm.cstrToJs(zData));
+            return 0;
+          }catch(e){
+            sqlite3.config.error("kvstorageWrite()",e);
+            return capi.SQLITE_IOERR;
+          }finally{
+            pstack.restore(stack);
+          }
+        },
+        xDelete: (zClass, zKey)=>{
+          const stack = pstack.pointer;
+          try {
+            const zXKey = kvvfsMakeKey(zClass,zKey);
+            if(!zXKey) return 1/*OOM*/;
+            kvvfsStorage(zClass).removeItem(wasm.cstrToJs(zXKey));
+            return 0;
+          }catch(e){
+            sqlite3.config.error("kvstorageDelete()",e);
+            return capi.SQLITE_IOERR;
+          }finally{
+            pstack.restore(stack);
+          }
+        }
+      }/*kvvfsImpls*/;
+      for(const k of Object.keys(kvvfsImpls)){
+        kvvfsMethods[kvvfsMethods.memberKey(k)] =
+          wasm.installFunction(
+            kvvfsMethods.memberSignature(k),
+            kvvfsImpls[k]
+          );
+      }
+    }else{
+      /* Worker thread: unregister kvvfs to avoid it being used
+         for anything other than local/sessionStorage. It "can"
+         be used that way but it's not really intended to be. */
+      capi.sqlite3_vfs_unregister(pKvvfs);
+    }
+  }/*pKvvfs*/
 
   /* Warn if client-level code makes use of FuncPtrAdapter. */
   wasm.xWrap.FuncPtrAdapter.warnOnUse = true;
@@ -1887,7 +1944,7 @@ globalThis.sqlite3ApiBootstrap.initializers.push(function(sqlite3){
       }
       tgt[memKey] = fProxy;
     }else{
-      const pFunc = wasm.installFunction(fProxy, sigN);
+      const pFunc = wasm.installFunction(fProxy, tgt.memberSignature(name));
       tgt[memKey] = pFunc;
       if(!tgt.ondispose || !tgt.ondispose.__removeFuncList){
         tgt.addOnDispose('ondispose.__removeFuncList handler',

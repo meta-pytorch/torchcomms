@@ -1,4 +1,4 @@
-.TH "PAPI_component_info_t" 3 "Mon Feb 24 2025 21:11:21" "Version 7.2.0.0b2" "PAPI" \" -*- nroff -*-
+.TH "PAPI_component_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -32,6 +32,12 @@ PAPI_component_info_t
 .br
 .ti -1c
 .RI "int \fBdisabled\fP"
+.br
+.ti -1c
+.RI "char \fBpartially_disabled_reason\fP [1024]"
+.br
+.ti -1c
+.RI "int \fBpartially_disabled\fP"
 .br
 .ti -1c
 .RI "int \fBinitialized\fP"
@@ -176,6 +182,10 @@ Number of hardware counters the component or PAPI can multiplex supports
 Number of native events the component supports 
 .SS "int PAPI_component_info_t::num_preset_events"
 Number of preset events the component supports 
+.SS "int PAPI_component_info_t::partially_disabled"
+1 if component is partially disabled, 0 otherwise 
+.SS "char PAPI_component_info_t::partially_disabled_reason[1024]"
+Reason for partial initialization 
 .SS "char* PAPI_component_info_t::pmu_names[80]"
 list of pmu names supported by this component 
 .SS "unsigned int PAPI_component_info_t::posix1b_timers"

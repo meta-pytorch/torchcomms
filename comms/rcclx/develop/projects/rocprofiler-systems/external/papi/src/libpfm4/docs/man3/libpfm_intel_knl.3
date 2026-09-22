@@ -1,15 +1,15 @@
 .TH LIBPFM 3  "July, 2016" "" "Linux Programmer's Manual"
 .SH NAME
-libpfm_intel_knl - support for Intel Kinghts Landing core PMU
+libpfm_intel_knl - support for Intel Knights Landing core PMU
 .SH SYNOPSIS
 .nf
 .B #include <perfmon/pfmlib.h>
 .sp
 .B PMU name: knl
-.B PMU desc: Intel Kinghts Landing
+.B PMU desc: Intel Knights Landing
 .sp
 .SH DESCRIPTION
-The library supports the Intel Kinghts Landing core PMU. It should be noted that
+The library supports the Intel Knights Landing core PMU. It should be noted that
 this PMU model only covers each core's PMU and not the socket level PMU.
 
 On Knights Landing, the number of generic counters is 4. There is 4-way HyperThreading support.
@@ -17,7 +17,7 @@ The \fBpfm_get_pmu_info()\fR function returns the maximum number of generic coun
 in \fBnum_cntrs\fr.
 
 .SH MODIFIERS
-The following modifiers are supported on Intel Kinghts Landing processors:
+The following modifiers are supported on Intel Knights Landing processors:
 .TP
 .B u
 Measure at user level which includes privilege levels 1, 2, 3. This corresponds to \fBPFM_PLM3\fR.

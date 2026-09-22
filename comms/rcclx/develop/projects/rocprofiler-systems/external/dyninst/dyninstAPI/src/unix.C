@@ -30,6 +30,7 @@
 
 // $Id: unix.C,v 1.243 2008/06/30 17:33:31 legendre Exp $
 
+#include <algorithm>
 #include "os.h"
 #include "debug.h"
 #include "mapped_object.h"
@@ -667,7 +668,7 @@ mapped_object *BinaryEdit::openResolvedLibraryName(std::string filename,
 #include "dyninstAPI/src/mapped_object.h"
 #include "dyninstAPI/src/binaryEdit.h"
 #include "dyninstAPI/src/debug.h"
-#include "boost/tuple/tuple.hpp"
+#include "dyncompat/tuple/tuple.hpp"
 #include <elf.h>
 
 #if defined(os_linux)
@@ -735,7 +736,7 @@ func_instance *block_instance::callee() {
    // Do this the hard way - an inter-module jump
    // get the target address of this function
    Address target_addr; bool success;
-   boost::tie(success, target_addr) = llb()->callTarget();
+   std::tie(success, target_addr) = llb()->callTarget();
    if(!success) {
       // this is either not a call instruction or an indirect call instr
       // that we can't get the target address

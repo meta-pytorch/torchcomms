@@ -147,6 +147,7 @@ EXPORTS
   hsa_amd_memory_fill
   hsa_amd_memory_async_copy
   hsa_amd_memory_async_copy_on_engine
+  hsa_amd_memory_async_batch_copy
   hsa_amd_memory_copy_engine_status
   hsa_amd_memory_get_preferred_copy_engine
   hsa_amd_memory_async_copy_rect
@@ -183,6 +184,8 @@ EXPORTS
   hsa_amd_ipc_memory_create
   hsa_amd_ipc_memory_attach
   hsa_amd_ipc_memory_detach
+  hsa_amd_external_semaphore_handle_open
+  hsa_amd_external_semaphore_handle_close
   hsa_amd_ipc_signal_create
   hsa_amd_ipc_signal_attach
   hsa_amd_register_system_event_handler
@@ -230,3 +233,4 @@ EXPORTS
   hsa_ext_image_create_v2
   hsa_ext_image_data_get_info_v2
   hsa_ext_image_destroy_v2
+  hsa_amd_agent_preload

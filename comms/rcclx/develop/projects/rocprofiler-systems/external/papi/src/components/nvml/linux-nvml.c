@@ -33,6 +33,8 @@ template.
 #include <stdlib.h>
 #include <inttypes.h>
 #include <string.h>
+#include <dirent.h>
+#include <limits.h>
 /* Headers required by PAPI */
 #include "papi.h"
 #include "papi_internal.h"
@@ -69,6 +71,8 @@ nvmlReturn_t DECLDIR nvmlDeviceGetFanSpeed(nvmlDevice_t, unsigned int *);
 nvmlReturn_t DECLDIR nvmlDeviceGetMemoryInfo(nvmlDevice_t, nvmlMemory_t *);
 nvmlReturn_t DECLDIR nvmlDeviceGetPerformanceState(nvmlDevice_t, nvmlPstates_t *);
 nvmlReturn_t DECLDIR nvmlDeviceGetPowerUsage(nvmlDevice_t, unsigned int *);
+nvmlReturn_t DECLDIR nvmlDeviceGetTotalEnergyConsumption(nvmlDevice_t, unsigned long long *);
+nvmlReturn_t DECLDIR nvmlDeviceGetFieldValues(nvmlDevice_t,int, nvmlFieldValue_t *);
 nvmlReturn_t DECLDIR nvmlDeviceGetTemperature(nvmlDevice_t, nvmlTemperatureSensors_t, unsigned int *);
 nvmlReturn_t DECLDIR nvmlDeviceGetTotalEccErrors(nvmlDevice_t, nvmlEccBitType_t, nvmlEccCounterType_t, unsigned long long *);
 nvmlReturn_t DECLDIR nvmlDeviceGetUtilizationRates(nvmlDevice_t, nvmlUtilization_t *);
@@ -91,6 +95,8 @@ static nvmlReturn_t (*nvmlDeviceGetFanSpeedPtr)(nvmlDevice_t, unsigned int *);
 static nvmlReturn_t (*nvmlDeviceGetMemoryInfoPtr)(nvmlDevice_t, nvmlMemory_t *);
 static nvmlReturn_t (*nvmlDeviceGetPerformanceStatePtr)(nvmlDevice_t, nvmlPstates_t *);
 static nvmlReturn_t (*nvmlDeviceGetPowerUsagePtr)(nvmlDevice_t, unsigned int *);
+static nvmlReturn_t (*nvmlDeviceGetTotalEnergyConsumptionPtr)(nvmlDevice_t, unsigned long long *);
+static nvmlReturn_t (*nvmlDeviceGetFieldValuesPtr)(nvmlDevice_t,int, nvmlFieldValue_t *);
 static nvmlReturn_t (*nvmlDeviceGetTemperaturePtr)(nvmlDevice_t, nvmlTemperatureSensors_t, unsigned int *);
 static nvmlReturn_t (*nvmlDeviceGetTotalEccErrorsPtr)(nvmlDevice_t, nvmlEccBitType_t, nvmlEccCounterType_t, unsigned long long *);
 static nvmlReturn_t (*nvmlDeviceGetUtilizationRatesPtr)(nvmlDevice_t, nvmlUtilization_t *);
@@ -315,6 +321,35 @@ getPState(nvmlDevice_t dev)
 }
 
 unsigned long long
+getTotalEnergyConsumption(nvmlDevice_t dev)
+{
+    unsigned long long energy = 0;
+    nvmlReturn_t bad;
+    bad = (*nvmlDeviceGetTotalEnergyConsumptionPtr)(dev, &energy);
+
+    if (NVML_SUCCESS != bad) {
+        SUBDBG("something went wrong %s\n", (*nvmlErrorStringPtr)(bad));
+        return (unsigned long long) - 1;
+    }
+    if (energy > ULLONG_MAX) {
+        energy = ULLONG_MAX;
+    }
+    return energy;
+}
+
+unsigned long long
+getDeviceFieldValue(nvmlDevice_t dev, int value_count, nvmlFieldValue_t* field_value)
+{
+    nvmlReturn_t bad;
+    bad = (*nvmlDeviceGetFieldValuesPtr)(dev, value_count,field_value);
+    if (NVML_SUCCESS != bad) {
+        SUBDBG("something went wrong %s\n", (*nvmlErrorStringPtr)(bad));
+        return (unsigned long long) - 1;
+    }
+    return field_value->value.ullVal;
+}
+
+unsigned long long
 getPowerUsage(nvmlDevice_t dev)
 {
     unsigned int power;
@@ -453,6 +488,8 @@ nvml_hardware_read(long long *value, int which_one)
     nvml_native_event_entry_t *entry;
     nvmlDevice_t handle;
     int cudaIdx = -1;
+    int value_count = 1;
+    nvmlFieldValue_t field_value[value_count];
 
     entry = &nvml_native_table[which_one];
     *value = (long long) - 1;
@@ -494,6 +531,23 @@ nvml_hardware_read(long long *value, int which_one)
     case FEATURE_POWER:
         *value = getPowerUsage(handle);
         break;
+    case FEATURE_TOTAL_ENERGY_CONSUMPTION:
+        *value = getTotalEnergyConsumption(handle);
+        break;
+    #if defined(NVML_FI_DEV_POWER_INSTANT) && defined(NVML_POWER_SCOPE_GPU)
+    case FEATURE_GPU_INST:
+        field_value->fieldId = NVML_FI_DEV_POWER_INSTANT;
+        field_value->scopeId = NVML_POWER_SCOPE_GPU;
+        *value = getDeviceFieldValue(handle, value_count, field_value);
+        break;
+    #endif
+    #if defined(NVML_FI_DEV_POWER_AVERAGE) && defined(NVML_POWER_SCOPE_MEMORY)
+    case FEATURE_GPU_MEMORY_AVG:
+        field_value->fieldId = NVML_FI_DEV_POWER_AVERAGE;
+        field_value->scopeId = NVML_POWER_SCOPE_MEMORY;
+        *value = getDeviceFieldValue(handle, value_count, field_value);
+	break;
+    #endif
     case FEATURE_TEMP:
         *value = getTemperature(handle);
         break;
@@ -692,6 +746,36 @@ detectDevices()
             SUBDBG("nvmlDeviceGetPowerUsage does not appear to be supported on this card. (nvml return code %d)\n", ret);
         }
 
+        /*Check if energy consumption data are available  */
+        if (getTotalEnergyConsumption(devices[i]) != (unsigned long long) - 1) {
+            features[i] |= FEATURE_TOTAL_ENERGY_CONSUMPTION;
+            num_events++;
+        }
+
+
+        int value_count=1;
+        nvmlFieldValue_t field_value[value_count];
+
+        #if defined(NVML_FI_DEV_POWER_INSTANT) && defined(NVML_POWER_SCOPE_GPU)
+        // GPU instant power
+        field_value->fieldId = NVML_FI_DEV_POWER_INSTANT;
+        field_value->scopeId = NVML_POWER_SCOPE_GPU;
+        /* Check if the device field for gpu instant power data are available */
+        if (getDeviceFieldValue(devices[i],value_count, field_value) != (unsigned long long) - 1) {
+            features[i] |= FEATURE_GPU_INST;
+            num_events++;
+        }
+        #endif
+        #if defined(NVML_FI_DEV_POWER_AVERAGE) && defined(NVML_POWER_SCOPE_MEMORY)
+        // GPU Memory average power
+        field_value->fieldId = NVML_FI_DEV_POWER_AVERAGE;
+        field_value->scopeId = NVML_POWER_SCOPE_MEMORY;
+        /* Check if the device field for gpu memory data are available */
+        if (getDeviceFieldValue(devices[i],value_count, field_value) != (unsigned long long) - 1) {
+            features[i] |= FEATURE_GPU_MEMORY_AVG;
+            num_events++;
+        }
+        #endif
         /* Check if temperature data are available */
         if (getTemperature(devices[i]) != (unsigned long long) - 1) {
             features[i] |= FEATURE_TEMP;
@@ -985,6 +1069,35 @@ createNativeEvents()
             devTableIdx++;
         }
 
+        if (HAS_FEATURE(features[i], FEATURE_TOTAL_ENERGY_CONSUMPTION)) {
+            sprintf(entry->name, "%s:total_energy_consumption", sanitized_name);
+            strncpy(entry->description, "Total energy consumption of the GPU in millijoules since the driver was last reloaded.", PAPI_MAX_STR_LEN);
+            entry->type = FEATURE_TOTAL_ENERGY_CONSUMPTION;
+            entry++;
+            nvml_dev_id_table[devTableIdx] = i;
+            devTableIdx++;
+        }
+
+        if (HAS_FEATURE(features[i], FEATURE_GPU_INST)) {
+            sprintf(entry->name, "%s:gpu_inst_power", sanitized_name);
+            strncpy(entry->units, "mW", PAPI_MIN_STR_LEN);
+            strncpy(entry->description, "Instantaneous power usage for GPU.", PAPI_MAX_STR_LEN);
+            entry->type = FEATURE_GPU_INST;
+            entry++;
+            nvml_dev_id_table[devTableIdx] = i;
+            devTableIdx++;
+        }
+
+        if (HAS_FEATURE(features[i], FEATURE_GPU_MEMORY_AVG)) {
+            sprintf(entry->name, "%s:gpu_memory_avg_power", sanitized_name);
+            strncpy(entry->units, "mW", PAPI_MIN_STR_LEN);
+            strncpy(entry->description, "Average power usage for GPU Memory.", PAPI_MAX_STR_LEN);
+            entry->type = FEATURE_GPU_MEMORY_AVG;
+            entry++;
+            nvml_dev_id_table[devTableIdx] = i;
+            devTableIdx++;
+        }
+
         if (HAS_FEATURE(features[i], FEATURE_TEMP)) {
             sprintf(entry->name, "%s:temperature", sanitized_name);
             strncpy(entry->description, "Current temperature readings for the device, in degrees C.", PAPI_MAX_STR_LEN);
@@ -1240,6 +1353,117 @@ nvml_init_private_exit:
     return err;
 }
 
+/**@class nvml_search_and_load_shared_objects
+ * @brief Search and load Cuda shared objects.
+ *
+ * @param *parentPath
+ *   The main path we will use to search for the shared objects. 
+ * @param *soMainName
+ *   The name of the shared object e.g. libnvidia. This is used
+ *   to select the standardSubPaths to use.
+ * @param *soNamesToSearchFor[]
+ *   Varying names of the shared object we want to search for.
+ * @param soNamesToSearchCount
+ *   Total number of names in soNamesToSearchFor.
+ */
+static void *nvml_search_and_load_shared_objects(const char *parentPath, const char *soMainName, const char *soNamesToSearchFor[], int soNamesToSearchCount)
+{
+    const char *standardSubPaths[3];
+    // Case for when we want to search explicit subpaths for a shared object 
+    if (soMainName != NULL) {
+        if (strcmp(soMainName, "libnvidia-ml") == 0) {
+            standardSubPaths[0] = "%s/lib64/";
+            standardSubPaths[1] = "%s/";
+            standardSubPaths[2] = NULL;
+        }
+    }
+    // Case for when a user provides an exact path e.g. PAPI_NVML_MAIN
+    // and we do not want to search subpaths
+    else{
+        standardSubPaths[0] = "%s/";
+        standardSubPaths[1] = NULL;
+    }
+
+    char pathToSharedLibrary[PAPI_HUGE_STR_LEN], directoryPathToSearch[PAPI_HUGE_STR_LEN];
+    void *so = NULL;
+    char *soNameFound;
+    int i, strLen;
+    for (i = 0; standardSubPaths[i] != NULL; i++) {
+        // Create path to search for dl names
+        int strLen = snprintf(directoryPathToSearch, PAPI_HUGE_STR_LEN, standardSubPaths[i], parentPath);
+        if (strLen < 0 || strLen >= PAPI_HUGE_STR_LEN) {
+            SUBDBG("Failed to fully write path to search for dlnames.\n");
+            return NULL;
+        }
+
+        DIR *dir = opendir(directoryPathToSearch);
+        if (dir == NULL) {
+            SUBDBG("Directory path could not be opened.\n");
+            continue;
+        }
+
+        int j;
+        for (j = 0; j < soNamesToSearchCount; j++) {
+            struct dirent *dirEntry;
+            while( ( dirEntry = readdir(dir) ) != NULL ) {
+                int result;
+                char *p = strstr(soNamesToSearchFor[j], "so");
+                // Check for an exact match of a shared object name (.so and .so.1 case)
+                if (p) {
+                    result = strcmp(dirEntry->d_name, soNamesToSearchFor[j]);
+                }
+                // Check for any match of a shared object name (we could not find .so and .so.1)
+                else {
+                    result = strncmp(dirEntry->d_name, soNamesToSearchFor[j], strlen(soNamesToSearchFor[j]));
+                }
+
+                if (result == 0) {
+                    soNameFound = dirEntry->d_name;
+                    goto found;
+                }
+            }
+            // Reset the position of the directory stream
+            rewinddir(dir);
+        }
+    }
+
+  exit:
+    return so;
+  found:
+    // Construct path to shared library
+    strLen = snprintf(pathToSharedLibrary, PAPI_HUGE_STR_LEN, "%s%s", directoryPathToSearch, soNameFound);
+    if (strLen < 0 || strLen >= PAPI_HUGE_STR_LEN) {
+        SUBDBG("Failed to fully write constructed path to shared library.\n");
+        return NULL;
+    }
+    so = dlopen(pathToSharedLibrary, RTLD_NOW | RTLD_GLOBAL);
+
+    goto exit;
+}
+
+/**@class nvml_search_and_load_from_system_paths
+ * @brief A simple wrapper to try and search and load
+ *        Cuda shared objects from system paths.
+ *
+ * @param *soNamesToSearchFor[]
+ *   Varying names of the shared object we want to search for.
+ * @param soNamesToSearchCount
+ *   Total number of names in soNamesToSearchFor.
+ */
+static void *nvml_search_and_load_from_system_paths(const char *soNamesToSearchFor[], int soNamesToSearchCount)
+{
+    void *so = NULL;
+    int i;
+    for (i = 0; i < soNamesToSearchCount; i++) {
+        so = dlopen(soNamesToSearchFor[i], RTLD_NOW | RTLD_GLOBAL);
+        if (so) {
+            return so; 
+        }   
+    }   
+
+    return so;
+}
+
 /*
  * Link the necessary CUDA libraries to use the NVML component.  If any of them can not be found, then
  * the NVML component will just be disabled.  This is done at runtime so that a version of PAPI built
@@ -1260,27 +1484,29 @@ linkCudaLibraries()
     // getenv returns NULL if environment variable is not found.
     char *cuda_root = getenv("PAPI_CUDA_ROOT");
 
-    // We need the NVML main library, normally libnvidia-ml.so. 
+    // We need the NVML main library, normally libnvidia-ml.so or libnvidia-ml.so.1.
     dl3 = NULL;                                                 // Ensure reset to NULL.
 
+    int soNamesToSearchCount = 3; 
+    const char *soNamesToSearchFor[] = {"libnvidia-ml.so", "libnvidia-ml.so.1", "libnvidia"};
     // Step 1: Process override if given.   
     if (strlen(nvml_main) > 0) {                                        // If override given, it MUST work.
-        dl3 = dlopen(nvml_main, RTLD_NOW | RTLD_GLOBAL);                // Try to open that path.
+        dl3 = nvml_search_and_load_shared_objects(nvml_main, NULL, soNamesToSearchFor, soNamesToSearchCount); // Try to open that path
         if (dl3 == NULL) {
             snprintf(_nvml_vector.cmp_info.disabled_reason, PAPI_MAX_STR_LEN, "PAPI_NVML_MAIN override '%s' given in Rules.nvml not found.", nvml_main);
             return(PAPI_ENOSUPP);   // Override given but not found.
         }
     }
 
-    // Step 2: Try system paths, will work with Spack, LD_LIBRARY_PATH, default paths.
-    if (dl3 == NULL) {                                              // If no override,
-        dl3 = dlopen("libnvidia-ml.so", RTLD_NOW | RTLD_GLOBAL);    // Try system paths.
-    }
-
-    // Step 3: Try the explicit install default. 
+    char *soMainName = "libnvidia-ml";
+    // Step 2: Try the explicit install default. 
     if (dl3 == NULL && cuda_root != NULL) {                                         // If ROOT given, it doesn't HAVE to work.
-        snprintf(path_lib, 1024, "%s/lib64/libnvidia-ml.so", cuda_root);            // PAPI Root check.
-        dl3 = dlopen(path_lib, RTLD_NOW | RTLD_GLOBAL);                             // Try to open that path.
+        dl3 = nvml_search_and_load_shared_objects(cuda_root, soMainName, soNamesToSearchFor, soNamesToSearchCount); // Try to open that path.
+    } 
+
+    // Step 3: Try system paths, will work with Spack, LD_LIBRARY_PATH, default paths.
+    if (dl3 == NULL) {                                              // If no override,
+        dl3 = nvml_search_and_load_from_system_paths(soNamesToSearchFor, soNamesToSearchCount); // Try system paths.
     }
 
     // Check for failure.
@@ -1325,6 +1551,16 @@ linkCudaLibraries()
     if (dlerror() != NULL) {
         strncpy(_nvml_vector.cmp_info.disabled_reason, "NVML function nvmlDeviceGetPowerUsage not found.", PAPI_MAX_STR_LEN);
         return (PAPI_ENOSUPP);
+    }
+    nvmlDeviceGetTotalEnergyConsumptionPtr = dlsym(dl3, "nvmlDeviceGetTotalEnergyConsumption");
+    if (dlerror() != NULL) {
+    	strncpy(_nvml_vector.cmp_info.disabled_reason, "NVML function nvmlDeviceGetTotalEnergyConsumption not found.", PAPI_MAX_STR_LEN);
+    	return (PAPI_ENOSUPP);
+    }
+    nvmlDeviceGetFieldValuesPtr = dlsym(dl3, "nvmlDeviceGetFieldValues");
+    if (dlerror() != NULL) {
+    	strncpy(_nvml_vector.cmp_info.disabled_reason, "NVML function nvmlDeviceGetFieldValues not found.", PAPI_MAX_STR_LEN);
+    	return (PAPI_ENOSUPP);
     }
     nvmlDeviceGetTemperaturePtr = dlsym(dl3, "nvmlDeviceGetTemperature");
     if (dlerror() != NULL) {
@@ -1779,7 +2015,7 @@ papi_vector_t _nvml_vector = {
         .context = sizeof(nvml_context_t),
         .control_state = sizeof(nvml_control_state_t),
         .reg_value = sizeof(nvml_register_t),
-        // .reg_alloc = sizeof ( nvml_reg_alloc_t ),
+        .reg_alloc = 1, /* unused */
     },
 
     /* function pointers */

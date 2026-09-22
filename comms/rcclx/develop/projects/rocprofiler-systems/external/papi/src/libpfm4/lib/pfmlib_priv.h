@@ -136,7 +136,7 @@ typedef struct pfmlib_node {
 typedef struct pfmlib_pmu {
 	const char 	*desc;			/* PMU description */
 	const char 	*name;			/* pmu short name */
-	const char	*perf_name;		/* perf_event pmu name (optional) */
+	const char	*perf_name;		/* (Linux optional): comma separated list of possible perf_events PMU names */
 	pfmlib_node_t   node;			/* active list node */
 	struct pfmlib_pmu *next_active;		/* active PMU link list */
 	struct pfmlib_pmu *prev_active;		/* active PMU link list */
@@ -850,6 +850,7 @@ extern pfmlib_pmu_t arm_cortex_a53_support;
 extern pfmlib_pmu_t arm_cortex_a55_support;
 extern pfmlib_pmu_t arm_cortex_a72_support;
 extern pfmlib_pmu_t arm_cortex_a76_support;
+extern pfmlib_pmu_t arm_cortex_x4_support;
 extern pfmlib_pmu_t arm_xgene_support;
 extern pfmlib_pmu_t arm_n1_support;
 extern pfmlib_pmu_t arm_n2_support;

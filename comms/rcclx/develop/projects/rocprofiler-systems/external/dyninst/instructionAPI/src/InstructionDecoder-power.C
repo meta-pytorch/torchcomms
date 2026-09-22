@@ -29,7 +29,8 @@
  */
 
 #include "InstructionDecoder-power.h"
-#include <boost/assign/list_of.hpp>
+#include <algorithm>
+#include <dyncompat/assign/list_of.hpp>
 #include "../../common/src/singleton_object_pool.h"
 #include <mutex>
 #include "unaligned_memory_access.h"
@@ -891,7 +892,7 @@ namespace Dyninst
     void InstructionDecoder_power::doDelayedDecode(const Instruction* insn_to_complete)
     {
 
-        insn_in_progress = boost::shared_ptr<Instruction>(new Instruction(*insn_to_complete));
+        insn_in_progress = dyncompat::shared_ptr<Instruction>(new Instruction(*insn_to_complete));
         decodeOperands(insn_in_progress.get());
         Instruction* iptr = const_cast<Instruction*>(insn_to_complete);
         *iptr = *(insn_in_progress.get());
@@ -913,7 +914,7 @@ namespace Dyninst
 
 #define fn(x) (&InstructionDecoder_power::x)
 
-using namespace boost::assign;
+using namespace dyncompat::assign;
     
 #include "power_opcode_tables.C"
 

@@ -15,9 +15,16 @@
 #include "cupti_utils.h"
 #include "lcuda_debug.h"
 
+// Set to match the maximum number of devices allowed for the event identifier
+// encoding format. See README_internal.md for more details.
+#define PAPI_CUDA_MAX_DEVICES 128
+
 typedef struct cuptic_info *cuptic_info_t;
 
-extern const char *linked_cudart_path;
+struct cuptic_info {
+    CUcontext ctx;
+};
+
 extern void *dl_cupti;
 
 extern unsigned int _cuda_lock;
@@ -26,7 +33,6 @@ extern unsigned int _cuda_lock;
 extern CUresult ( *cuCtxGetCurrentPtr ) (CUcontext *);
 extern CUresult ( *cuCtxSetCurrentPtr ) (CUcontext);
 extern CUresult ( *cuCtxDestroyPtr ) (CUcontext);
-extern CUresult ( *cuCtxCreatePtr ) (CUcontext *pctx, unsigned int flags, CUdevice dev);
 extern CUresult ( *cuCtxGetDevicePtr ) (CUdevice *);
 extern CUresult ( *cuDeviceGetPtr ) (CUdevice *, int);
 extern CUresult ( *cuDeviceGetCountPtr ) (int *);
@@ -55,18 +61,18 @@ extern CUptiResult ( *cuptiGetVersionPtr ) (uint32_t* );
 
 /* utility functions to check runtime api, disabled reason, etc. */
 int cuptic_init(void);
-int cuptic_is_runtime_perfworks_api(void);
-int cuptic_is_runtime_events_api(void);
+int cuptic_determine_runtime_api(void);
 int cuptic_device_get_count(int *num_gpus);
-void cuptic_disabled_reason_set(const char *msg);
-void cuptic_disabled_reason_get(const char **pmsg);
-void *cuptic_load_dynamic_syms(const char *parent_path, const char *dlname, const char *search_subpaths[]);
+void *search_and_load_shared_objects(const char *parentPath, const char *soMainName, const char *soNamesToSearchFor[], int soNamesToSearchCount);
+void *search_and_load_from_system_paths(const char *soNamesToSearchFor[], int soNamesToSearchCount);
+int cuptic_err_get_last(const char **error_str);
+int cuptic_err_set_last(const char *error_str);
 int cuptic_shutdown(void);
 
 /* context management interfaces */
 int cuptic_ctxarr_create(cuptic_info_t *pinfo);
 int cuptic_ctxarr_update_current(cuptic_info_t info, int evt_dev_id);
-int cuptic_ctxarr_get_ctx(cuptic_info_t info, int gpu_idx, CUcontext *ctx);
+int cuptic_ctxarr_get_ctx(cuptic_info_t info, int dev_id, CUcontext *ctx);
 int cuptic_ctxarr_destroy(cuptic_info_t *pinfo);
 
 /* functions to track the occupancy of gpu counters in event sets */
@@ -76,6 +82,15 @@ int cuptic_device_release(cuptiu_event_table_t *evt_table);
 /* device qualifier interfaces */
 int cuptiu_dev_set(cuptiu_bitmap_t *bitmap, int i);
 int cuptiu_dev_check(cuptiu_bitmap_t bitmap, int i);
+
+/* functions to handle a partially disabled Cuda component */
+void cuptic_partial(int *isCmpPartial, int **cudaEnabledDeviceIds, size_t *totalNumEnabledDevices);
+
+/* function to get a devices compute capability */
+int get_gpu_compute_capability(int dev_num, int *cc);
+
+/* misc. */
+int get_chip_name(int dev_num, char* chipName);
 
 #define DLSYM_AND_CHECK( dllib, name ) dlsym( dllib, name );  \
     if (dlerror() != NULL) {  \
@@ -120,7 +135,7 @@ int cuptiu_dev_check(cuptiu_bitmap_t bitmap, int i);
 #define nvpwCheckErrors( call, handleerror ) \
     do {  \
         NVPA_Status _status = (call);  \
-        LOGCUPTICALL("\t" #call "\n");  \
+        LOGPERFWORKSCALL("\t" #call "\n");  \
         if (_status != NVPA_STATUS_SUCCESS) {  \
             ERRDBG("NVPA Error %d: Error in call to " #call "\n", _status);  \
             EXIT_OR_NOT; \

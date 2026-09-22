@@ -28,6 +28,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <algorithm>
 #include "addressSpace.h"
 #include "codeRange.h"
 #include "dynProcess.h"
@@ -51,7 +52,7 @@
 #include "Relocation/CodeTracker.h"
 
 #include "parseAPI/h/CodeObject.h"
-#include <boost/tuple/tuple.hpp>
+#include <dyncompat/tuple/tuple.hpp>
 
 #include "PatchMgr.h"
 #include "Patching.h"
@@ -60,7 +61,7 @@
 #include "Relocation/DynObject.h"
 #include "Relocation/DynInstrumenter.h"
 
-#include <boost/bind/bind.hpp>
+#include <dyncompat/bind/bind.hpp>
 
 #include "dynThread.h"
 #include "pcEventHandler.h"
@@ -2167,12 +2168,12 @@ AddressSpace::getStubs(const std::list<block_instance *> &owBlocks,
             SingleContext epred_((*fit)->ifunc(),true,true);
             //Intraproc epred(&epred_);
             std::list<ParseAPI::Edge*> srcList;
-	    std::for_each(boost::make_filter_iterator(epred_, sourceEdges.begin(), sourceEdges.end()),
-			  boost::make_filter_iterator(epred_, sourceEdges.end(), sourceEdges.end()),
-			  boost::bind(updateSrcListAndVisited,
-				      boost::placeholders::_1,
-				      boost::ref(srcList),
-				      boost::ref(visited)));
+	    std::for_each(dyncompat::make_filter_iterator(epred_, sourceEdges.begin(), sourceEdges.end()),
+			  dyncompat::make_filter_iterator(epred_, sourceEdges.end(), sourceEdges.end()),
+			  dyncompat::bind(updateSrcListAndVisited,
+				      dyncompat::placeholders::_1,
+				      dyncompat::ref(srcList),
+				      dyncompat::ref(visited)));
 
 
             // find all stub blocks for this edge
@@ -2190,12 +2191,12 @@ AddressSpace::getStubs(const std::list<block_instance *> &owBlocks,
                 } 
                 else {
                    const Block::edgelist &srcSrcs = isrc->sources();
-		   std::for_each(boost::make_filter_iterator(epred_, srcSrcs.begin(), srcSrcs.end()),
-				 boost::make_filter_iterator(epred_, srcSrcs.end(), srcSrcs.end()),
-				 boost::bind(updateSrcListAndVisited,
-						 boost::placeholders::_1,
-					     boost::ref(srcList),
-					     boost::ref(visited)));
+		   std::for_each(dyncompat::make_filter_iterator(epred_, srcSrcs.begin(), srcSrcs.end()),
+				 dyncompat::make_filter_iterator(epred_, srcSrcs.end(), srcSrcs.end()),
+				 dyncompat::bind(updateSrcListAndVisited,
+						 dyncompat::placeholders::_1,
+					     dyncompat::ref(srcList),
+					     dyncompat::ref(visited)));
 		   
 
                 }

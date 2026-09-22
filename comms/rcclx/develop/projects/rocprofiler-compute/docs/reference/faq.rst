@@ -22,17 +22,6 @@ Workaround:
    $ pip3 uninstall astunparse
    $ pip3 astunparse
 
-tabulate doesn't print properly
-===============================
-
-To get around this issue, set the following environment variables to update your
-locale settings.
-
-.. code-block:: shell
-
-   $ export LC_ALL=C.UTF-8
-   $ export LANG=C.UTF-8
-
 Why does VALU utilization exceed the theoretical peak?
 ======================================================
 
@@ -106,3 +95,16 @@ How can I SSH tunnel in MobaXterm?
      * ``<SSH server>``: *name of the server to connect to*
      * ``<SSH login>``: *username to login to the server*
      * ``<SSH port>``: ``22``
+
+Why are kernels on separate HIP streams not executing concurrently during profiling?
+====================================================================================
+
+ROCm Compute Profiler collects GPU performance counters with kernel
+dispatch association which requires serializing kernel dispatches.
+Kernel dispatches are serialized across HIP streams on the same GPU during
+profiling so that only one kernel executes at a time on a given GPU.
+Streams on different GPUs are not serialized. As a result, kernels
+launched on separate HIP streams on the same GPU will run one after
+another during profiling. Kernel duration and throughput metrics reflect
+this serialized execution rather than the concurrent behavior that may
+occur during normal execution.

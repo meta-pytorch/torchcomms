@@ -140,6 +140,8 @@ static int evt_id_to_info(uint64_t event_id, event_info_t *info);
 static int evt_name_to_device(const char *name, int *device);
 static int evt_name_to_instance(const char *name, int *instance);
 static int evt_name_to_basename(const char *name, char *base, int len);
+static int rocm_verify_no_repeated_qualifiers(const char *eventName);
+static int rocm_verify_qualifiers(int flag, char *qualifierName, int equalitySignPosition, int *qualifierValue);
 
 static void *rocp_dlp = NULL;
 static ntv_event_table_t ntv_table;
@@ -222,7 +224,7 @@ rocp_evt_enum(uint64_t *event_code, int modifier)
                 papi_errno = evt_id_create(&info, event_code);
                 break;
             }
-            papi_errno = PAPI_END;
+            papi_errno = PAPI_ENOEVNT;
             break;
         case PAPI_NTV_ENUM_UMASKS:
             papi_errno = evt_id_to_info(*event_code, &info);
@@ -245,7 +247,7 @@ rocp_evt_enum(uint64_t *event_code, int modifier)
                     break;
                 }
             }
-            papi_errno = PAPI_END;
+            papi_errno = PAPI_ENOEVNT;
             break;
         default:
             papi_errno = PAPI_EINVAL;
@@ -278,6 +280,11 @@ rocp_evt_name_to_code(const char *name, uint64_t *event_code)
     int papi_errno = PAPI_OK;
     int htable_errno;
     SUBDBG("ENTER: name: %s, event_code: %p\n", name, event_code);
+
+    papi_errno = rocm_verify_no_repeated_qualifiers(name);
+    if (papi_errno != PAPI_OK) {
+        goto fn_exit;
+    }
 
     int device;
     papi_errno = evt_name_to_device(name, &device);
@@ -805,14 +812,123 @@ evt_id_to_info(uint64_t event_id, event_info_t *info)
     return PAPI_OK;
 }
 
+/** @class rocm_verify_no_repeated_qualifiers
+  * @brief Verify that a user has not added multiple device or instance qualifiers
+  *        to an event name.
+  *
+  * @param *eventName
+  *   User provided event name we need to verify.
+*/
+int
+rocm_verify_no_repeated_qualifiers(const char *eventName)
+{
+    int numDeviceQualifiers = 0, numStatsQualifiers = 0;
+    char tmpEventName[PAPI_2MAX_STR_LEN];
+    int strLen = snprintf(tmpEventName, PAPI_2MAX_STR_LEN, "%s", eventName);
+    if (strLen < 0 || strLen >= PAPI_2MAX_STR_LEN) {
+        SUBDBG("Failed to fully write eventName into tmpEventName.\n");
+        return PAPI_EBUF;
+    }
+    char *token = strtok(tmpEventName, ":");
+    while(token != NULL) {
+        if (strncmp(token, "device", 6) == 0) {
+            numDeviceQualifiers++;
+        }
+        else if (strncmp(token, "instance", 8) == 0){
+            numStatsQualifiers++;
+        }
+
+        token = strtok(NULL, ":");
+    }
+
+    if (numDeviceQualifiers > 1 || numStatsQualifiers > 1) {
+        SUBDBG("Provided Cuda event has multiple device or stats qualifiers appended.\n");
+        return PAPI_ENOEVNT;
+    }
+
+    return PAPI_OK;
+}
+
+
+/** @class rocm_verify_qualifiers
+  * @brief Verify that the device and/or instance qualifier provided by the user
+  *        is valid. E.g. :device=# or :instance=#.
+  *
+  * @param flag
+  *   Device or instance flag define. Allows us to determine the case to enter for
+  *   the switch statement.
+  * @param *qualifierName
+  *   Name of the qualifier we need to verify. E.g. :device or :instance.
+  * @param equalitySignPosition
+  *   Position of where the equal sign is located in the qualifier string name.
+  * @param *qualifierValue
+  *   Upon verifying the provided qualifier is valid. Store either a device index
+  *   or a instance value.
+*/
+int
+rocm_verify_qualifiers(int flag, char *qualifierName, int equalitySignPosition, int *qualifierValue)
+{
+    int pos = equalitySignPosition;
+    // Verify that an equal sign was provided where it was suppose to be
+    if (qualifierName[pos] != '=') {
+        SUBDBG("Improper qualifier name. No equal sign found.\n");
+        return PAPI_ENOEVNT;
+    }
+
+    // Verify that the next character after the equal sign is indeed a digit
+    pos++;
+    int isDigit = (unsigned) qualifierName[pos] - '0' < 10;
+    if (!isDigit) {
+        SUBDBG("Improper qualifier name: %s. Digit does not follow equal sign.\n", qualifierName);
+        return PAPI_ENOEVNT;
+    }
+
+    // Get the qualifier value and make sure only qualifiers have been appended
+    char *endPtr;
+    switch(flag)
+    {
+        case INSTAN_FLAG:
+        {
+            *qualifierValue = (int) strtol(qualifierName + strlen(":instance="), &endPtr, 10);
+            if (*endPtr != '\0') {
+                if (strncmp(endPtr, ":device", 7) != 0) {
+                    return PAPI_ENOEVNT;
+                }
+            }
+
+            return PAPI_OK;
+        }
+        case DEVICE_FLAG:
+        {
+            *qualifierValue = (int) strtol(qualifierName + strlen(":device="), &endPtr, 10);
+            if (*endPtr != '\0') {
+                if (strncmp(endPtr, ":instance", 9) != 0) {
+                    return PAPI_ENOEVNT;
+                }
+            }
+
+            return PAPI_OK;
+        }
+        default:
+            SUBDBG("Flag provided is not accounted for in switch statement.\n");
+            return PAPI_EINVAL;
+    }
+}
+
 int
 evt_name_to_device(const char *name, int *device)
 {
-    char *p = strstr(name, ":device=");
+    char *p = strstr(name, ":device");
     if (!p) {
         return PAPI_ENOEVNT;
     }
-    *device = (int) strtol(p + strlen(":device="), NULL, 10);
+
+    int equalitySignPos = 7;
+    int papi_errno = rocm_verify_qualifiers(DEVICE_FLAG, p, equalitySignPos, device);
+    if (papi_errno != PAPI_OK) {
+        return papi_errno;
+    }
+
     return PAPI_OK;
 }
 
@@ -832,12 +948,17 @@ evt_name_to_instance(const char *name, int *instance)
         return PAPI_ENOEVNT;
     }
 
-    char *p = strstr(name, ":instance=");
+    char *p = strstr(name, ":instance");
     if (event->instances > 1) {
         if (!p) {
             return PAPI_ENOEVNT;
         }
-        *instance = (int) strtol(p + strlen(":instance="), NULL, 10);
+
+        int equalitySignPos = 9;
+        papi_errno = rocm_verify_qualifiers(INSTAN_FLAG, p, equalitySignPos, instance);
+        if (papi_errno != PAPI_OK) {
+            return papi_errno;
+        }
     } else {
         if (p) {
             return PAPI_ENOEVNT;

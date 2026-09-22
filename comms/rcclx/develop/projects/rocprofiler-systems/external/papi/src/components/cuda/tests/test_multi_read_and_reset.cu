@@ -25,15 +25,75 @@ int approx_equal(long long v1, long long v2)
     return 0;
 }
 
+// Globals for successfully added and multiple pass events
+int numEventsSuccessfullyAdded = 0, numMultipassEvents = 0;
+
+/** @class add_events_from_command_line
+  * @brief Try and add each event provided on the command line by the user.
+  *
+  * @param EventSet
+  *   A PAPI eventset.
+  * @param totalEventCount
+  *   Number of events from the command line.
+  * @param **eventNamesFromCommandLine
+  *   Events provided on the command line.
+  * @param *numEventsSuccessfullyAdded
+  *   Total number of successfully added events.
+  * @param **eventsSuccessfullyAdded
+  *   Events that we are able to add to the EventSet.
+  * @param *numMultipassEvents
+  *   Counter to see if a multiple pass event was provided on the command line.
+*/
+static void add_events_from_command_line(int EventSet, int totalEventCount, char **eventNamesFromCommandLine, int *numEventsSuccessfullyAdded, char **eventsSuccessfullyAdded, int *numMultipassEvents)
+{
+    int i;
+    for (i = 0; i < totalEventCount; i++) {
+        int strLen;
+        int papi_errno = PAPI_add_named_event(EventSet, eventNamesFromCommandLine[i]);
+        if (papi_errno != PAPI_OK) {
+            if (papi_errno != PAPI_EMULPASS) {
+                fprintf(stderr, "Unable to add event %s to the EventSet with error code %d.\n", eventNamesFromCommandLine[i], papi_errno);
+                test_skip(__FILE__, __LINE__, "", 0);
+            }
+
+            // Handle multiple pass events
+            (*numMultipassEvents)++;
+            continue;
+        }
+
+        // Handle successfully added events
+        strLen = snprintf(eventsSuccessfullyAdded[(*numEventsSuccessfullyAdded)], PAPI_MAX_STR_LEN, "%s", eventNamesFromCommandLine[i]);
+        if (strLen < 0 || strLen >= PAPI_MAX_STR_LEN) {
+            fprintf(stderr, "Failed to fully write successfully added event.\n");
+            test_skip(__FILE__, __LINE__, "", 0);
+        }
+        (*numEventsSuccessfullyAdded)++;
+    }
+
+    return;
+}
+
 void multi_reset(int event_count, char **evt_names, long long *values)
 {
     CUcontext ctx;
     int papi_errno, i;
-    papi_errno = cuCtxCreate(&ctx, 0, 0);
-    if (papi_errno != CUDA_SUCCESS) {
-        fprintf(stderr, "cuda error: failed to create cuda context.\n");
+
+    CUresult cuError;
+    int flags = 0;
+    CUdevice device = 0;
+#if defined(CUDA_TOOLKIT_GE_13)
+    cuError = cuCtxCreate(&ctx, (CUctxCreateParams*)0, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version >= 13: %d\n", cuError);
         exit(1);
     }
+#else
+    cuError = cuCtxCreate(&ctx, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version < 13: %d\n", cuError);
+        exit(1);
+    }
+#endif
 
 #ifdef PAPI
     int EventSet = PAPI_NULL;
@@ -43,12 +103,28 @@ void multi_reset(int event_count, char **evt_names, long long *values)
         test_fail(__FILE__, __LINE__, "Failed to create eventset.", papi_errno);
     }
 
-    for (i=0; i < event_count; i++) {
-        papi_errno = PAPI_add_named_event(EventSet, evt_names[i]);
-        if (papi_errno != PAPI_OK) {
-            fprintf(stderr, "Failed to add event %s\n", evt_names[i]);
+    // Handle the events from the command line
+    numEventsSuccessfullyAdded = 0;
+    numMultipassEvents = 0;
+    char **eventsSuccessfullyAdded;
+    eventsSuccessfullyAdded = (char **) malloc(event_count * sizeof(char *));
+    if (eventsSuccessfullyAdded == NULL) {
+        fprintf(stderr, "Failed to allocate memory for successfully added events.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
+    }
+    for (i = 0; i < event_count; i++) {
+        eventsSuccessfullyAdded[i] = (char *) malloc(PAPI_MAX_STR_LEN * sizeof(char));
+        if (eventsSuccessfullyAdded[i] == NULL) {
+            fprintf(stderr, "Failed to allocate memory for command line argument.\n");
             test_skip(__FILE__, __LINE__, "", 0);
         }
+    }
+    add_events_from_command_line(EventSet, event_count, evt_names, &numEventsSuccessfullyAdded, eventsSuccessfullyAdded, &numMultipassEvents);
+
+    // Only multiple pass events were provided on the command line
+    if (numEventsSuccessfullyAdded == 0) {
+        fprintf(stderr, "Events provided on the command line could not be added to an EventSet as they require multiple passes.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
     }
 
     papi_errno = PAPI_start(EventSet);
@@ -65,8 +141,8 @@ void multi_reset(int event_count, char **evt_names, long long *values)
             test_fail(__FILE__, __LINE__, "PAPI_read error.", papi_errno);
         }
         PRINT(quiet, "Measured values iter %d\n", i);
-        for (j=0; j < event_count; j++) {
-            PRINT(quiet, "%s\t\t%lld\n", evt_names[j], values[j]);
+        for (j=0; j < numEventsSuccessfullyAdded; j++) {
+            PRINT(quiet, "%s\t\t%lld\n", eventsSuccessfullyAdded[j], values[j]);
         }
         papi_errno = PAPI_reset(EventSet);
         if (papi_errno != PAPI_OK) {
@@ -95,17 +171,35 @@ void multi_reset(int event_count, char **evt_names, long long *values)
         fprintf(stderr, "cude error: failed to destroy context.\n");
         exit(1);
     }
+
+    // Free allocated memory
+    for (i = 0; i < event_count; i++) {
+        free(eventsSuccessfullyAdded[i]);
+    }
+    free(eventsSuccessfullyAdded);
 }
 
 void multi_read(int event_count, char **evt_names, long long *values)
 {
     CUcontext ctx;
     int papi_errno, i;
-    papi_errno = cuCtxCreate(&ctx, 0, 0);
-    if (papi_errno != CUDA_SUCCESS) {
-        fprintf(stderr, "cuda error: failed to create cuda context.\n");
+
+    CUresult cuError;
+    int flags = 0;
+    CUdevice device = 0;
+#if defined(CUDA_TOOLKIT_GE_13)
+    cuError = cuCtxCreate(&ctx, (CUctxCreateParams*)0, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version >= 13: %d\n", cuError);
         exit(1);
     }
+#else
+    cuError = cuCtxCreate(&ctx, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version < 13: %d\n", cuError);
+        exit(1);
+    }
+#endif
 
 #ifdef PAPI
     int EventSet = PAPI_NULL, j;
@@ -114,12 +208,28 @@ void multi_read(int event_count, char **evt_names, long long *values)
         test_fail(__FILE__, __LINE__, "Failed to create eventset.", papi_errno);
     }
 
-    for (i=0; i < event_count; i++) {
-        papi_errno = PAPI_add_named_event(EventSet, evt_names[i]);
-        if (papi_errno != PAPI_OK) {
-            fprintf(stderr, "Failed to add event %s\n", evt_names[i]);
+    // Handle the events from the command line
+    numEventsSuccessfullyAdded = 0;
+    numMultipassEvents = 0;
+    char **eventsSuccessfullyAdded;
+    eventsSuccessfullyAdded = (char **) malloc(event_count * sizeof(char *));
+    if (eventsSuccessfullyAdded == NULL) {
+        fprintf(stderr, "Failed to allocate memory for successfully added events.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
+    }
+    for (i = 0; i < event_count; i++) {
+        eventsSuccessfullyAdded[i] = (char *) malloc(PAPI_MAX_STR_LEN * sizeof(char));
+        if (eventsSuccessfullyAdded[i] == NULL) {
+            fprintf(stderr, "Failed to allocate memory for command line argument.\n");
             test_skip(__FILE__, __LINE__, "", 0);
         }
+    }
+    add_events_from_command_line(EventSet, event_count, evt_names, &numEventsSuccessfullyAdded, eventsSuccessfullyAdded, &numMultipassEvents);
+
+    // Only multiple pass events were provided on the command line
+    if (numEventsSuccessfullyAdded == 0) {
+        fprintf(stderr, "Events provided on the command line could not be added to an EventSet as they require multiple passes.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
     }
 
     papi_errno = PAPI_start(EventSet);
@@ -135,8 +245,8 @@ void multi_read(int event_count, char **evt_names, long long *values)
             test_fail(__FILE__, __LINE__, "PAPI_start error.", papi_errno);
         }
         PRINT(quiet, "Measured values iter %d\n", i);
-        for (j=0; j < event_count; j++) {
-            PRINT(quiet, "%s\t\t%lld\n", evt_names[j], values[j]);
+        for (j=0; j < numEventsSuccessfullyAdded; j++) {
+            PRINT(quiet, "%s\t\t%lld\n", eventsSuccessfullyAdded[j], values[j]);
         }
     }
     papi_errno = PAPI_stop(EventSet, values);
@@ -158,29 +268,66 @@ void multi_read(int event_count, char **evt_names, long long *values)
         fprintf(stderr, "cude error: failed to destroy context.\n");
         exit(1);
     }
+
+    // Free allocated memory
+    for (i = 0; i < event_count; i++) {
+        free(eventsSuccessfullyAdded[i]);
+    }
+    free(eventsSuccessfullyAdded);
 }
 
-void single_read(int event_count, char **evt_names, long long *values)
+void single_read(int event_count, char **evt_names, long long *values, char ***addedEvents)
 {
     int papi_errno, i;
     CUcontext ctx;
-    papi_errno = cuCtxCreate(&ctx, 0, 0);
-    if (papi_errno != CUDA_SUCCESS) {
-        fprintf(stderr, "cuda error: failed to create cuda context.\n");
+
+    CUresult cuError;
+    int flags = 0;
+    CUdevice device = 0;
+#if defined(CUDA_TOOLKIT_GE_13)
+    cuError = cuCtxCreate(&ctx, (CUctxCreateParams*)0, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version >= 13: %d\n", cuError);
         exit(1);
     }
+#else
+    cuError = cuCtxCreate(&ctx, flags, device);
+    if (cuError != CUDA_SUCCESS) {
+        fprintf(stderr, "Failed to create Cuda context for a Cuda Toolkit version < 13: %d\n", cuError);
+        exit(1);
+    }
+#endif
+
 #ifdef PAPI
     int EventSet = PAPI_NULL, j;
     papi_errno = PAPI_create_eventset(&EventSet);
     if (papi_errno != PAPI_OK) {
         test_fail(__FILE__, __LINE__, "Failed to create eventset.", papi_errno);
     }
-    for (i=0; i < event_count; i++) {
-        papi_errno = PAPI_add_named_event(EventSet, evt_names[i]);
-        if (papi_errno != PAPI_OK) {
-            fprintf(stderr, "Failed to add event %s\n", evt_names[i]);
+
+    // Handle the events from the command line
+    numEventsSuccessfullyAdded = 0;
+    numMultipassEvents = 0;
+    char **eventsSuccessfullyAdded;
+    eventsSuccessfullyAdded = (char **) malloc(event_count * sizeof(char *));
+    if (eventsSuccessfullyAdded == NULL) {
+        fprintf(stderr, "Failed to allocate memory for successfully added events.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
+    }
+    for (i = 0; i < event_count; i++) {
+        eventsSuccessfullyAdded[i] = (char *) malloc(PAPI_MAX_STR_LEN * sizeof(char));
+        if (eventsSuccessfullyAdded[i] == NULL) {
+            fprintf(stderr, "Failed to allocate memory for command line argument.\n");
             test_skip(__FILE__, __LINE__, "", 0);
         }
+
+    }
+    add_events_from_command_line(EventSet, event_count, evt_names, &numEventsSuccessfullyAdded, eventsSuccessfullyAdded, &numMultipassEvents);
+
+    // Only multiple pass events were provided on the command line
+    if (numEventsSuccessfullyAdded == 0) {
+        fprintf(stderr, "Events provided on the command line could not be added to an EventSet as they require multiple passes.\n");
+        test_skip(__FILE__, __LINE__, "", 0);
     }
 
     papi_errno = PAPI_start(EventSet);
@@ -197,8 +344,8 @@ void single_read(int event_count, char **evt_names, long long *values)
         test_fail(__FILE__, __LINE__, "PAPI_stop error.", papi_errno);
     }
     PRINT(quiet, "Measured values from single read\n");
-    for (j=0; j < event_count; j++) {
-        PRINT(quiet, "%s\t\t%lld\n", evt_names[j], values[j]);
+    for (j=0; j < numEventsSuccessfullyAdded; j++) {
+        PRINT(quiet, "%s\t\t%lld\n", eventsSuccessfullyAdded[j], values[j]);
     }
     papi_errno = PAPI_cleanup_eventset(EventSet);
     if (papi_errno != PAPI_OK) {
@@ -214,6 +361,8 @@ void single_read(int event_count, char **evt_names, long long *values)
         fprintf(stderr, "cuda error: failed to destroy cuda context.\n");
         exit(1);
     }
+
+    *addedEvents = eventsSuccessfullyAdded;
 }
 
 int main(int argc, char **argv)
@@ -251,16 +400,30 @@ int main(int argc, char **argv)
     PRINT(quiet, "\nRunning multi_read.\n");
     multi_read(event_count, argv + 1, values_multi_read);
     PRINT(quiet, "\nRunning single_read.\n");
-    single_read(event_count, argv + 1, values_single_read);
+    char **eventsSuccessfullyAdded = { 0 };
+    single_read(event_count, argv + 1, values_single_read, &eventsSuccessfullyAdded);
 
     int i;
     PRINT(quiet, "Final measured values\nEvent_name\t\t\t\t\t\tMulti_read\tsingle_read\n");
-    for (i=0; i < event_count; i++) {
-        PRINT(quiet, "%s\t\t\t%lld\t\t%lld\n", argv[i+1], values_multi_read[i], values_single_read[i]);
+    for (i=0; i < numEventsSuccessfullyAdded; i++) {
+        PRINT(quiet, "%s\t\t\t%lld\t\t%lld\n", eventsSuccessfullyAdded[i], values_multi_read[i], values_single_read[i]);
         if ( !approx_equal(values_multi_read[i], values_single_read[i]) )
             test_warn(__FILE__, __LINE__, "Measured values from multi read and single read don't match.", PAPI_OK);
     }
+
+    // Free allocated memory
+    for (i = 0; i < event_count; i++) {
+        free(eventsSuccessfullyAdded[i]);
+    }
+    free(eventsSuccessfullyAdded);
+
     PAPI_shutdown();
+
+    // Output a note that a multiple pass event was provided on the command line
+    if (numMultipassEvents > 0) {
+        PRINT(quiet, "\033[0;33mNOTE: From the events provided on the command line, an event or events requiring multiple passes was detected and not added to the EventSet. Check your events with utils/papi_native_avail.\n\033[0m");
+    }
+
     test_pass(__FILE__);
 #else
     fprintf(stderr, "Please compile with -DPAPI to test this feature.\n");

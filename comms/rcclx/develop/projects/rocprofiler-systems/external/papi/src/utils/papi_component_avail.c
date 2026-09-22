@@ -118,11 +118,15 @@ main( int argc, char **argv )
 
 	  printf( "Name:   %-23s %s\n", cmpinfo->name ,cmpinfo->description);
 
-      if (cmpinfo->disabled == PAPI_EDELAY_INIT) {
-          force_cmp_init(cid);
-      }
+	  if (cmpinfo->disabled == PAPI_EDELAY_INIT) {
+	      force_cmp_init(cid);
+	  }
 	  if (cmpinfo->disabled) {
 	    printf("   \\-> Disabled: %s\n",cmpinfo->disabled_reason);
+	  }
+
+	  if (cmpinfo->partially_disabled) {
+	      printf("   \\-> Partially disabled: %s\n", cmpinfo->partially_disabled_reason);
 	  }
 
 	  if ( flags.details ) {

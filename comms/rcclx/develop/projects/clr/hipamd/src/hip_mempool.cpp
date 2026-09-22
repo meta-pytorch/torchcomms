@@ -1,22 +1,8 @@
-/* Copyright (c) 2022 Advanced Micro Devices, Inc.
-
- Permission is hereby granted, free of charge, to any person obtaining a copy
- of this software and associated documentation files (the "Software"), to deal
- in the Software without restriction, including without limitation the rights
- to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- copies of the Software, and to permit persons to whom the Software is
- furnished to do so, subject to the following conditions:
-
- The above copyright notice and this permission notice shall be included in
- all copies or substantial portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- THE SOFTWARE. */
+/*
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "hip_mempool_impl.hpp"
 
@@ -130,7 +116,9 @@ class FreeAsyncCommand : public amd::Command {
 
   virtual void submit(device::VirtualDevice& device) final {
     size_t offset = 0;
-    auto memory = getMemoryObject(ptr_, offset);
+    // Worker-thread submit body: do NOT hoist hip::getCurrentDevice(); use the convenience
+    // wrapper that re-fetches TLS each call.
+    auto memory = getMemoryObjectForCurrentDevice(ptr_, offset);
     if (memory != nullptr) {
       auto id = memory->getUserData().deviceId;
       if (!g_devices[id]->FreeMemory(memory, static_cast<hip::Stream*>(queue()), event_)) {
@@ -181,7 +169,7 @@ hipError_t hipFreeAsync(void* dev_ptr, hipStream_t stream) {
 
   if (!graph_in_use) {
     size_t offset = 0;
-    auto memory = getMemoryObject(dev_ptr, offset);
+    auto memory = getMemoryObject(hip::getCurrentDevice(), dev_ptr, offset);
     if (memory != nullptr) {
       auto id = memory->getUserData().deviceId;
       if (!g_devices[id]->FreeMemory(memory, hip_stream, event)) {
@@ -423,7 +411,7 @@ hipError_t hipMemPoolImportFromShareableHandle(hipMemPool_t* mem_pool, void* sha
     HIP_RETURN(hipErrorInvalidValue);
   }
 
-  auto device = g_devices[0];
+  auto device = hip::getCurrentDevice();
   auto pool = new hip::MemoryPool(device, nullptr, true);
   // Note: The interface casts the integer value of file handle under Linux into void*,
   // but compiler may not allow to cast it back. Hence, make a cast with a union...
@@ -449,7 +437,7 @@ hipError_t hipMemPoolExportPointer(hipMemPoolPtrExportData* export_data, void* p
   }
 
   size_t offset = 0;
-  auto memory = getMemoryObject(ptr, offset);
+  auto memory = getMemoryObject(hip::getCurrentDevice(), ptr, offset);
   if (memory != nullptr) {
     auto id = memory->getUserData().deviceId;
     // Note: export_data must point to 64 bytes of shared memory
@@ -479,7 +467,7 @@ hipError_t hipMemPoolImportPointer(void** ptr, hipMemPool_t mem_pool,
     HIP_RETURN(hipErrorOutOfMemory);
   }
   size_t offset = 0;
-  auto memory = getMemoryObject(*ptr, offset);
+  auto memory = getMemoryObject(hip::getCurrentDevice(), *ptr, offset);
   mpool->AddBusyMemory(memory);
   mpool->retain();
   HIP_RETURN(hipSuccess);

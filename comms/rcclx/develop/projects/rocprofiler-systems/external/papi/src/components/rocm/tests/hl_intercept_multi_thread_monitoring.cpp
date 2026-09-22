@@ -4,8 +4,10 @@
  *         gcongiu@icl.utk.edu
  *
  */
-#include "common.h"
 #include <pthread.h>
+#include <string.h>
+
+#include "common.h"
 
 int quiet;
 

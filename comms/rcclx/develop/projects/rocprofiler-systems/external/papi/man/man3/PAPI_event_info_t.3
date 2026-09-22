@@ -1,4 +1,4 @@
-.TH "PAPI_event_info_t" 3 "Mon Feb 24 2025 21:11:21" "Version 7.2.0.0b2" "PAPI" \" -*- nroff -*-
+.TH "PAPI_event_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -66,6 +66,15 @@ PAPI_event_info_t
 .ti -1c
 .RI "char \fBnote\fP [1024]"
 .br
+.ti -1c
+.RI "int \fBnum_quals\fP"
+.br
+.ti -1c
+.RI "char \fBquals\fP [8][1024]"
+.br
+.ti -1c
+.RI "char \fBquals_descrs\fP [8][1024]"
+.br
 .in -1c
 .SH "Field Documentation"
 .PP 
@@ -117,8 +126,14 @@ native: descriptive strings for each register value(?)
 
 .SS "char PAPI_event_info_t::note[1024]"
 an optional developer note supplied with a preset event to delineate platform specific anomalies or restrictions 
+.SS "int PAPI_event_info_t::num_quals"
+number of qualifiers 
 .SS "char PAPI_event_info_t::postfix[256]"
 string containing postfix operations; only defined for preset events of derived type DERIVED_POSTFIX 
+.SS "char PAPI_event_info_t::quals[8][1024]"
+qualifiers 
+.SS "char PAPI_event_info_t::quals_descrs[8][1024]"
+qualifier descriptions 
 .SS "char PAPI_event_info_t::short_descr[64]"
 a short description suitable for use as a label 
 .SS "char PAPI_event_info_t::symbol[1024]"

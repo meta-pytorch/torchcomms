@@ -214,12 +214,16 @@ settings::get_global_output_prefix(bool _make_dir, std::string _subdir)
         get_with_env_fallback<str_t>(TIMEMORY_SETTINGS_KEY("TIME_FORMAT"), "%F_%H.%M");
     auto _time_output =
         get_with_env_fallback<bool>(TIMEMORY_SETTINGS_KEY("TIME_OUTPUT"), false);
+    auto _use_current_time = get_with_env_fallback<bool>(
+        TIMEMORY_SETTINGS_KEY("OUTPUT_USE_CURRENT_TIME"), false);
 
     if(_time_output)
     {
-        // get the statically stored launch time
-        auto* _launch_time    = get_launch_time(TIMEMORY_API{});
-        auto  _local_datetime = get_local_datetime(_time_format.c_str(), _launch_time);
+        auto _current_time   = std::time_t{ std::time(nullptr) };
+        auto _local_datetime = get_local_datetime(
+            _time_format.c_str(),
+            _use_current_time ? &_current_time : get_launch_time(TIMEMORY_API{}));
+
         if(_out_path.find(_local_datetime) == std::string::npos)
         {
             if(_out_path.length() > 0 && _out_path[_out_path.length() - 1] != '/')

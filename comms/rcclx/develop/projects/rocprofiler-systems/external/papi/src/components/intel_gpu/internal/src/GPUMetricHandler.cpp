@@ -58,7 +58,7 @@
 #endif
 
 #define MAX_REPORTS		 32768
-#define MAX_KERNERLS	 1024
+#define MAX_KERNELS	 	 1024
 
 #define CHECK_N_RETURN_STATUS(status, retVal)	{if (status) return retVal; }
 #define CHECK_N_RETURN(status)				   {if (status) return;}
@@ -262,7 +262,7 @@ metricQueryBeginCB(
 
 	// assign each kernel an id for reference.
 	uint32_t kernId = queryState->kernelId.fetch_add(1, std::memory_order_acq_rel);
-	if (kernId >=  MAX_KERNERLS) {
+	if (kernId >=  MAX_KERNELS) {
 		*instanceData = nullptr;
 		return;
 	}
@@ -1189,7 +1189,7 @@ int GPUMetricHandler::EnableTimeBasedStream(uint32_t timePeriod, uint32_t numRep
 	}
 	m_lock.lock();
 	if (m_status  == COLLECTION_ENABLED) {
-		DebugPrint( "EnableTimeBaedStream: already enabled\n");
+		DebugPrint( "EnableTimeBasedStream: already enabled\n");
 		m_lock.unlock();
 		return ret;
 	}
@@ -1258,7 +1258,7 @@ int GPUMetricHandler::EnableEventBasedQuery()
 	}
 	m_lock.lock(); 
 	if (m_status  == COLLECTION_ENABLED) {
-		DebugPrint( "EnableEventBaedQuery: already enabled\n");
+		DebugPrint( "EnableEventBasedQuery: already enabled\n");
 		m_lock.unlock();
 		return ret;
 	}
@@ -1276,7 +1276,7 @@ int GPUMetricHandler::EnableEventBasedQuery()
 	}
 	metricQueryPoolDesc.stype = ZET_STRUCTURE_TYPE_METRIC_QUERY_POOL_DESC;
 	metricQueryPoolDesc.type = ZET_METRIC_QUERY_POOL_TYPE_PERFORMANCE;
-	metricQueryPoolDesc.count = MAX_KERNERLS;
+	metricQueryPoolDesc.count = MAX_KERNELS;
 	status = zetMetricQueryPoolCreateFunc(m_context, m_device, mGroup,
 			&metricQueryPoolDesc, &m_queryPool);
 	if (status == ZE_RESULT_SUCCESS) {
@@ -1284,7 +1284,7 @@ int GPUMetricHandler::EnableEventBasedQuery()
 		ze_event_pool_desc_t  eventPoolDesc;
 		eventPoolDesc.stype = ZE_STRUCTURE_TYPE_EVENT_POOL_DESC;
 		eventPoolDesc.flags= ZE_EVENT_POOL_FLAG_HOST_VISIBLE;
-		eventPoolDesc.count =  MAX_KERNERLS;
+		eventPoolDesc.count =  MAX_KERNELS;
 
 		// create event to wait
 		status = zeEventPoolCreateFunc(m_context, &eventPoolDesc, 1, &m_device, &m_eventPool);

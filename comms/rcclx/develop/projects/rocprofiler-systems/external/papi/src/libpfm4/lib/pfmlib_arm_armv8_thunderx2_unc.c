@@ -36,21 +36,19 @@
 static int
 pfm_arm_detect_thunderx2(void *this)
 {
+	/* Broadcom Thunder X2*/
+	arm_cpuid_t attr = { .impl = 0x42, .arch = 8, .part = 0x516 };
 	int ret;
 
-	ret = pfm_arm_detect(this);
-	if (ret != PFM_SUCCESS)
-		return PFM_ERR_NOTSUPP;
+	ret = pfm_arm_detect(&attr, NULL);
+	if (ret == PFM_SUCCESS)
+		return ret;
 
-	if ((pfm_arm_cfg.implementer == 0x42) && /* Broadcom */
-		(pfm_arm_cfg.part == 0x516)) { /* Thunder2x */
-			return PFM_SUCCESS;
-	}
-	if ((pfm_arm_cfg.implementer == 0x43) && /* Cavium */
-		(pfm_arm_cfg.part == 0xaf)) { /* Thunder2x */
-			return PFM_SUCCESS;
-	}
-	return PFM_ERR_NOTSUPP;
+	/* Cavium Thunder X2 */
+	attr.impl = 0x43;
+	attr.part = 0xaf;
+
+	return pfm_arm_detect(&attr, NULL);
 }
 
 static int

@@ -27,6 +27,7 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
+#include <algorithm>
 #include "dyntypes.h"
 #include "Annotatable.h"
 
@@ -92,7 +93,7 @@ unsigned Aggregate::getSize() const
 
 Region * Aggregate::getRegion() const
 {
-    boost::unique_lock<dyn_mutex> l(lock_);
+    dyncompat::unique_lock<dyn_mutex> l(lock_);
 	if (!firstSymbol)
 	{
            create_printf("%s[%d]:  ERROR:  Aggregate w/out symbols\n", FILE__, __LINE__);
@@ -108,7 +109,7 @@ bool Aggregate::addSymbol(Symbol *sym) {
         module_ = sym->getModule();
     }
 
-    boost::unique_lock<dyn_mutex> l(lock_);
+    dyncompat::unique_lock<dyn_mutex> l(lock_);
 
     // No need to re-add symbols.
     for (unsigned i = 0; i < symbols_.size(); ++i)
@@ -153,7 +154,7 @@ Symbol * Aggregate::getFirstSymbol() const
 bool Aggregate::addMangledNameInternal(std::string name, bool /*isPrimary*/, bool /*demangle*/)
 {
     // Check to see if we're duplicating
-    boost::unique_lock<dyn_mutex> l(lock_);
+    dyncompat::unique_lock<dyn_mutex> l(lock_);
     for (auto i = mangled_names_begin();
          i != mangled_names_end();
          ++i)
@@ -172,7 +173,7 @@ SYMTAB_EXPORT bool Aggregate::addMangledName(string name, bool isPrimary, bool i
     Symbol *staticSym = NULL;
     Symbol *dynamicSym = NULL;
     {
-      boost::unique_lock<dyn_mutex> l(lock_);
+      dyncompat::unique_lock<dyn_mutex> l(lock_);
       for (unsigned i = 0; i < symbols_.size(); ++i) {
         if (symbols_[i]->isInDynSymtab()) {
            dynamicSym = symbols_[i];
@@ -207,7 +208,7 @@ SYMTAB_EXPORT bool Aggregate::addPrettyName(string name, bool isPrimary, bool is
 {
     // Check to see if we're duplicating
    {
-       boost::unique_lock<dyn_mutex> l(lock_);
+       dyncompat::unique_lock<dyn_mutex> l(lock_);
        for (auto i = pretty_names_begin();
             i != pretty_names_end();
             i++) {
@@ -222,7 +223,7 @@ SYMTAB_EXPORT bool Aggregate::addTypedName(string name, bool isPrimary, bool isD
 {
     // Check to see if we're duplicating
    {
-       boost::unique_lock<dyn_mutex> l(lock_);
+       dyncompat::unique_lock<dyn_mutex> l(lock_);
        for (auto i = typed_names_begin();
             i != typed_names_end();
 	    i++) {
@@ -303,26 +304,26 @@ bool Aggregate::operator==(const Aggregate &a)
 
 Aggregate::name_iter Aggregate::mangled_names_begin() const
 {
-  return boost::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getMangledName));
+  return dyncompat::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getMangledName));
 }
 
 Aggregate::name_iter Aggregate::mangled_names_end() const
 {
-  return boost::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getMangledName));
+  return dyncompat::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getMangledName));
 }
 Aggregate::name_iter Aggregate::pretty_names_begin() const
 {
-  return boost::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getPrettyName));
+  return dyncompat::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getPrettyName));
 }
 Aggregate::name_iter Aggregate::pretty_names_end() const
 {
-  return boost::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getPrettyName));
+  return dyncompat::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getPrettyName));
 }
 Aggregate::name_iter Aggregate::typed_names_begin() const
 {
-  return boost::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getTypedName));
+  return dyncompat::make_transform_iterator(symbols_.cbegin(), std::mem_fn(&Symbol::getTypedName));
 }
 Aggregate::name_iter Aggregate::typed_names_end() const
 {
-  return boost::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getTypedName));
+  return dyncompat::make_transform_iterator(symbols_.cend(), std::mem_fn(&Symbol::getTypedName));
 }

@@ -61,7 +61,7 @@ double test_dp_mac_VEC_24( uint64 iterations, int EventSet, FILE *fp ){
     uint64 c = 0;
     while (c < iterations){
         size_t i = 0;
-        while (i < 1000){
+        while (i < ITER){
             /* The performance critical part */
 
             r0 = MUL_VEC_PD(r0,rC);
@@ -154,7 +154,7 @@ double test_dp_mac_VEC_48( uint64 iterations, int EventSet, FILE *fp ){
     uint64 c = 0;
     while (c < iterations){
         size_t i = 0;
-        while (i < 1000){
+        while (i < ITER){
             /* The performance critical part */
 
             r0 = MUL_VEC_PD(r0,rC);
@@ -273,7 +273,7 @@ double test_dp_mac_VEC_96( uint64 iterations, int EventSet, FILE *fp ){
     uint64 c = 0;
     while (c < iterations){
         size_t i = 0;
-        while (i < 1000){
+        while (i < ITER){
             /* The performance critical part */
 
             r0 = MUL_VEC_PD(r0,rC);
@@ -419,15 +419,15 @@ void test_dp_VEC( int instr_per_loop, uint64 iterations, int EventSet, FILE *fp 
 
     if ( instr_per_loop == 24 ) {
         sum += test_dp_mac_VEC_24( iterations, EventSet, fp );
-        scalar_sum += test_dp_scalar_VEC_24( iterations );
+        scalar_sum += test_dp_scalar_VEC_24( iterations, EventSet, NULL );
     }
     else if ( instr_per_loop == 48 ) {
         sum += test_dp_mac_VEC_48( iterations, EventSet, fp );
-        scalar_sum += test_dp_scalar_VEC_48( iterations );
+        scalar_sum += test_dp_scalar_VEC_48( iterations, EventSet, NULL );
     }
     else if ( instr_per_loop == 96 ) {
         sum += test_dp_mac_VEC_96( iterations, EventSet, fp );
-        scalar_sum += test_dp_scalar_VEC_96( iterations );
+        scalar_sum += test_dp_scalar_VEC_96( iterations, EventSet, NULL );
     }
 
     if( sum/2.0 != scalar_sum ) {

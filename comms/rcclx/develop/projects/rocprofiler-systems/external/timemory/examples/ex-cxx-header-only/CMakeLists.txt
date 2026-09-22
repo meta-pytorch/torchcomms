@@ -4,7 +4,7 @@ project(timemory-Component-Example LANGUAGES C CXX)
 
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_UNITY_BUILD OFF)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 #

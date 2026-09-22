@@ -1,21 +1,9 @@
 /*
-Copyright (c) 2022 Advanced Micro Devices, Inc. All rights reserved.
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANNTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER INN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR INN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
+ * Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 #include <hip_test_common.hh>
 #include <hip_test_kernels.hh>
 
@@ -55,7 +43,7 @@ static void hostNodeCallback(void* data) {
  * ------------------------
  *    - HIP_VERSION >= 5.3
  */
-TEST_CASE("Unit_hipLaunchHostFunc_Negative_Parameters") {
+HIP_TEST_CASE(Unit_hipLaunchHostFunc_Negative_Parameters) {
   StreamGuard stream_guard(Streams::created);
   hipStream_t stream = stream_guard.stream();
   hipGraph_t graph{nullptr};
@@ -85,7 +73,7 @@ TEST_CASE("Unit_hipLaunchHostFunc_Negative_Parameters") {
  * ------------------------
  *    - HIP_VERSION >= 5.3
  */
-TEST_CASE("Unit_hipLaunchHostFunc_Positive_Functional") {
+HIP_TEST_CASE(Unit_hipLaunchHostFunc_Positive_Functional) {
   LinearAllocGuard<float> A_h(LinearAllocs::malloc, sizeof(float));
   LinearAllocGuard<float> B_h(LinearAllocs::malloc, sizeof(float));
   LinearAllocGuard<float> A_d(LinearAllocs::hipMalloc, sizeof(float));
@@ -138,7 +126,7 @@ static void thread_func_pos(hipStream_t* stream, hipHostFn_t fn, float** data){
  * ------------------------
  *    - HIP_VERSION >= 5.3
  */
-TEST_CASE("Unit_hipLaunchHostFunc_Positive_Thread") {
+HIP_TEST_CASE(Unit_hipLaunchHostFunc_Positive_Thread) {
   LinearAllocGuard<float> A_h(LinearAllocs::malloc, sizeof(float));
   LinearAllocGuard<float> B_h(LinearAllocs::malloc, sizeof(float));
   LinearAllocGuard<float> A_d(LinearAllocs::hipMalloc, sizeof(float));
@@ -195,7 +183,7 @@ static void set_vector(void* args) {
 }
 }  // namespace
 
-TEST_CASE("Unit_hipLaunchHostFunc_H2D_Kernel_D2H_Capture") {
+HIP_TEST_CASE(Unit_hipLaunchHostFunc_H2D_Kernel_D2H_Capture) {
   constexpr int numOfBlocks = 1024;
   constexpr int threadsPerBlock = 1024;
   constexpr size_t arraySize = 1U << 20;  // 1,048,576
@@ -255,6 +243,142 @@ TEST_CASE("Unit_hipLaunchHostFunc_H2D_Kernel_D2H_Capture") {
   HIP_CHECK(hipStreamDestroy(captureStream));
 }
 
+
+namespace {
+__global__ void spin_then_set(int* flag, long long spin_cycles) {
+  long long start = clock64();
+  while ((clock64() - start) < spin_cycles) { /* spin */ }
+  *flag = 1;
+}
+__global__ void noop() {}
+}  // namespace
+
+/**
+ * Test Description
+ * ------------------------
+ *    - Regression test: leading-PacketBatch cross-dep barrier must be dispatched
+ *      before an uncaptured first node in a consumer segment.
+ *
+ *      Graph (direct API):
+ *
+ *        K_dummy  [root, stream 0]  ─────────────────────────┐
+ *        K_prod   [root, stream 1]  spin then set *d_flag=1  │
+ *        DtoH     [captured, seg1]  d_flag→h_flag            │
+ *                                        │ cross-stream dep  │ join
+ *                                        ▼                   ▼
+ *                         host_node  [UNCAPTURED, JOIN] reads h_flag → h_cb_saw
+ *                         DtoH       [captured]         d_flag → h_out
+ *
+ *      K_dummy forces 2 level-0 segments → 2 HW queues.  K_prod runs on HW
+ *      queue 1; the consumer segment on HW queue 0.  host_node is always
+ *      non-capturable (hipGraphAddHostNode).  BuildSyncPlan parks the cross-dep
+ *      BARRIER_AND in the leading empty batch[0] of the consumer segment.
+ *
+ *      With the fix:    batch[0] dispatched before host_node markers → callback
+ *                       runs after K_prod's DtoH completes → h_cb_saw==1 ✓
+ *      Without the fix: batch[0] skipped → callback fires while K_prod spins
+ *                       → h_cb_saw==0  FAIL ✗
+ *
+ * Test source
+ * ------------------------
+ *    - catch/unit/graph/hipLaunchHostFuncWithGraph.cc
+ * Test requirements
+ * ------------------------
+ *    - HIP_VERSION >= 5.3
+ */
+HIP_TEST_CASE(Unit_hipLaunchHostFunc_CrossStreamDep_UncapturedFirstNode) {
+  // ~500ms spin ensures K_prod is still running when HW queue 0 hits the
+  // host_node markers (microseconds) if the barrier is missing.
+  constexpr long long kSpin = 1000000000LL;
+  constexpr int kExpected = 1;
+
+  int* h_flag{};   // written by K_prod's captured DtoH on HW queue 1
+  int* h_cb_saw{}; // value h_flag had when the host callback fired
+  int* h_out{};    // captured DtoH of d_flag after the barrier (sanity check)
+  HIP_CHECK(hipHostMalloc(&h_flag,   sizeof(int), hipHostMallocDefault));
+  HIP_CHECK(hipHostMalloc(&h_cb_saw, sizeof(int), hipHostMallocDefault));
+  HIP_CHECK(hipHostMalloc(&h_out,    sizeof(int), hipHostMallocDefault));
+
+  int *d_flag{};
+  HIP_CHECK(hipMalloc(&d_flag, sizeof(int)));
+
+  hipGraph_t graph{};
+  HIP_CHECK(hipGraphCreate(&graph, 0));
+
+  // K_dummy: forces a second level-0 segment so the scheduler allocates 2 HW queues.
+  hipGraphNode_t dummy_node{};
+  {
+    hipKernelNodeParams p{};
+    p.func = reinterpret_cast<void*>(noop);
+    p.gridDim = dim3(1); p.blockDim = dim3(1);
+    HIP_CHECK(hipGraphAddKernelNode(&dummy_node, graph, nullptr, 0, &p));
+  }
+
+  // K_prod: spins then writes *d_flag=1 — runs on stream_id=1 (HW queue 1).
+  hipGraphNode_t prod_node{};
+  {
+    long long spin = kSpin;
+    void* args[] = {&d_flag, &spin};
+    hipKernelNodeParams p{};
+    p.func = reinterpret_cast<void*>(spin_then_set);
+    p.gridDim = dim3(1); p.blockDim = dim3(1); p.kernelParams = args;
+    HIP_CHECK(hipGraphAddKernelNode(&prod_node, graph, nullptr, 0, &p));
+  }
+
+  // Captured DtoH: d_flag→h_flag on the same segment as K_prod (stream_id=1).
+  // hipHostMalloc gives registered SVM → blit path → captured.
+  hipGraphNode_t dtoh_flag_node{};
+  HIP_CHECK(hipGraphAddMemcpyNode1D(&dtoh_flag_node, graph, &prod_node, 1,
+                                    h_flag, d_flag, sizeof(int), hipMemcpyDeviceToHost));
+
+  // host_node: JOIN on dummy_node and dtoh_flag_node → starts a new segment
+  // with itself as first_node (first_node_is_uncaptured = true).
+  // The cross-dep BARRIER_AND lives in batch[0]; the fix dispatches it before
+  // this node's GPU markers so the callback cannot fire before K_prod finishes.
+  struct CbArgs { int* h_flag; int* h_cb_saw; };
+  CbArgs cb_args{h_flag, h_cb_saw};
+  hipGraphNode_t host_node{};
+  hipHostNodeParams host_params{};
+  host_params.fn = [](void* ud) {
+    auto* a = static_cast<CbArgs*>(ud);
+    *a->h_cb_saw = *a->h_flag; // 1 with fix, 0 without
+  };
+  host_params.userData = &cb_args;
+  {
+    hipGraphNode_t deps[] = {dummy_node, dtoh_flag_node};
+    HIP_CHECK(hipGraphAddHostNode(&host_node, graph, deps, 2, &host_params));
+  }
+
+  // Captured DtoH after host_node: always gets the barrier via captured batch
+  // dispatch — used to confirm K_prod ran regardless of the fix.
+  hipGraphNode_t check_node{};
+  HIP_CHECK(hipGraphAddMemcpyNode1D(&check_node, graph, &host_node, 1,
+                                    h_out, d_flag, sizeof(int), hipMemcpyDeviceToHost));
+
+  hipGraphExec_t graphExec{};
+  HIP_CHECK(hipGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+  hipStream_t launch_stream{};
+  HIP_CHECK(hipStreamCreate(&launch_stream));
+
+  for (int iter = 0; iter < 10; ++iter) {
+    *h_flag = 0; *h_cb_saw = 0; *h_out = 0;
+    HIP_CHECK(hipMemset(d_flag, 0, sizeof(int)));
+    HIP_CHECK(hipGraphLaunch(graphExec, launch_stream));
+    HIP_CHECK(hipStreamSynchronize(launch_stream));
+
+    INFO("iter=" << iter << " h_cb_saw=" << *h_cb_saw << " h_out=" << *h_out);
+    REQUIRE(*h_cb_saw == kExpected); // 0 → barrier was missing, callback fired too early
+    REQUIRE(*h_out == kExpected);    // sanity: K_prod always completes before graph sync
+  }
+
+  HIP_CHECK(hipGraphExecDestroy(graphExec));
+  HIP_CHECK(hipGraphDestroy(graph));
+  HIP_CHECK(hipStreamDestroy(launch_stream));
+  HIP_CHECK(hipFree(d_flag));
+  HIP_CHECK(hipHostFree(h_out));
+  HIP_CHECK(hipHostFree(h_cb_saw));
+  HIP_CHECK(hipHostFree(h_flag));
+}
 
 /**
  * End doxygen group GraphTest.

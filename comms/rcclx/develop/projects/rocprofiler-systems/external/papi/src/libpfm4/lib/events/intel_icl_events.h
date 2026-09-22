@@ -3159,7 +3159,7 @@ static const intel_x86_entry_t intel_icl_pe[]={
   },
   { .name   = "MEM_LOAD_MISC_RETIRED",
     .desc   = "Miscellaneous loads retired",
-    .code   = 0xc4,
+    .code   = 0xd4,
     .modmsk = INTEL_V5_ATTRS,
     .cntmsk = 0xfull,
     .ngrp   = 1,
