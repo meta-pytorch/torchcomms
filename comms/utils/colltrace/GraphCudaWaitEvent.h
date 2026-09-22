@@ -99,7 +99,8 @@ class GraphCudaWaitEvent : public ICollWaitEvent {
   system_clock_time_point enqueueTime_;
   logger::CommsSpdlogLogger* logger_{nullptr};
 
-  // owned by CollTrace, shared across ALL graphs. set via attachRingBuffer().
+  // Non-owning view used while building the graph. CollTrace owns the initial
+  // reference, and each graph state retains the allocation through teardown.
   ::hrdw_ring_buffer::HRDWRingBuffer<GraphCollTraceEvent>* ringBuffer_{nullptr};
 };
 
