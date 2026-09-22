@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/utils/colltrace/CollTraceEvent.h"
+#include "comms/utils/colltrace/CollTraceStats.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms::colltrace {
@@ -14,15 +15,17 @@ namespace meta::comms::colltrace {
 // then triggers the remaining callbacks in order:
 //    beforeCollKernelScheduled -> afterCollKernelScheduled ->
 //    afterCollKernelStart -> [collEventProgressing] -> afterCollKernelEnd
-// afterCollRecorded, beforeCollKernelScheduled, and afterCollKernelScheduled
-// run in the calling thread. The remaining callbacks run in the colltrace
-// thread.
+// Eager afterCollRecorded, beforeCollKernelScheduled, and
+// afterCollKernelScheduled callbacks run in the calling thread. Graph replay
+// scheduling callbacks and the remaining lifecycle callbacks run in the
+// CollTrace thread.
 class ICollTracePlugin {
  public:
   virtual ~ICollTracePlugin() = default;
 
-  // For now the failures returned will be ignored. In the future, we may
-  // consider to recreate the plugin if the failure is unrecoverable.
+  // CollTrace isolates each callback: returned errors and thrown exceptions
+  // are counted and logged, and do not prevent subsequent plugins from
+  // running. Plugin failures must never affect collective progress.
 
   // Get the name of the current plugin
   virtual std::string_view getName() const noexcept = 0;
@@ -33,7 +36,7 @@ class ICollTracePlugin {
   // and any capture identity is available. Graph collectives trigger this
   // during capture, before any replay occurs.
   virtual CommsMaybeVoid afterCollRecorded(
-      CollTraceEvent& /* curEvent */) noexcept {
+      const CollTraceEvent& /* curEvent */) {
     return folly::unit;
   }
 
@@ -41,27 +44,26 @@ class ICollTracePlugin {
   // event based tracking, this function will be called after the cuda event is
   // inserted into the stream.
   virtual CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept = 0;
+      const CollTraceEvent& curEvent) = 0;
   // Callback that will be called after a collective is scheduled. For cuda
   // event based tracking, this function will be called before the cuda event is
   // inserted into the stream.
   virtual CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept = 0;
+      const CollTraceEvent& curEvent) = 0;
 
   // ----- Callbacks below will be triggered in the colltrace thread -----
 
   virtual CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& curEvent) noexcept = 0;
+      const CollTraceEvent& curEvent) = 0;
 
   // Every maxCheckCancelInterval, this function will be called for each plugin
   // to give the plugin a chance to perform some checks like async error and
   // timeout. This will happen both when waiting for the collective to start and
   // when waiting for the collective to end.
   virtual CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& curEvent) noexcept = 0;
+      const CollTraceEvent& curEvent) = 0;
 
-  virtual CommsMaybeVoid afterCollKernelEnd(
-      CollTraceEvent& curEvent) noexcept = 0;
+  virtual CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) = 0;
 
   /*
    * Called instead of afterCollKernelEnd when tracking cannot reach normal
@@ -85,6 +87,20 @@ class ICollTracePlugin {
   virtual int64_t maxEventRetention() const noexcept {
     return 0;
   }
+
+  /*
+   * Add this plugin's cumulative counters and current capability state to a
+   * point-in-time CollTrace snapshot. Implementations may sample concurrent
+   * atomics independently.
+   *
+   * Despite sitting below the "colltrace thread" banner above, this runs on
+   * whatever thread called CollTrace::getStats() -- including a Python thread,
+   * since the Cython binding calls it under `with nogil` -- concurrently with
+   * the poll thread. Implementations must synchronize accordingly and must not
+   * assume poll-thread ownership of the state they read. (`maxEventRetention`
+   * above is likewise off-thread: it is called from the constructor.)
+   */
+  virtual void collectStats(CollTraceStats& /* stats */) const {}
 };
 
 } // namespace meta::comms::colltrace

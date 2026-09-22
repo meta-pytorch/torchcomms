@@ -7,6 +7,7 @@
 #include "comms/utils/colltrace/CollMetadata.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
+#include "comms/utils/colltrace/CollTraceStats.h"
 #include "comms/utils/colltrace/CollWaitEvent.h"
 
 namespace meta::comms::colltrace {
@@ -24,6 +25,10 @@ class ICollTrace {
       std::unique_ptr<ICollWaitEvent> waitEvent) noexcept = 0;
 
   virtual ICollTracePlugin* getPluginByName(std::string name) noexcept = 0;
+
+  virtual CollTraceStats getStats() const noexcept {
+    return {};
+  }
 
   virtual CommsMaybeVoid triggerEventState(
       CollTraceEvent& collEvent,

@@ -30,7 +30,7 @@ struct WatchdogPluginConfig {
   // Async error config
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
-  std::function<void(CollTraceEvent&)> funcTriggerOnError;
+  std::function<void(const CollTraceEvent&)> funcTriggerOnError;
   /*
    * funcMarkError runs synchronously before a deferred trigger. The default
    * marker is emitted synchronously so Analyzer can snapshot the failure state
@@ -63,7 +63,7 @@ struct WatchdogPluginConfig {
   // Timeout config
   bool checkTimeout{false};
   std::chrono::milliseconds timeout{std::chrono::minutes{10}};
-  std::function<void(CollTraceEvent&)> funcTriggerOnTimeout;
+  std::function<void(const CollTraceEvent&)> funcTriggerOnTimeout;
 };
 
 class WatchdogPlugin : public ICollTracePlugin {
@@ -73,18 +73,16 @@ class WatchdogPlugin : public ICollTracePlugin {
   std::string_view getName() const noexcept override;
 
   CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelStart(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid collEventProgressing(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollTerminated(
       CollTraceEvent& curEvent,
@@ -106,7 +104,7 @@ class WatchdogPlugin : public ICollTracePlugin {
     ICollWaitEvent::system_clock_time_point startTs{};
     bool timeoutTriggered{false};
   };
-  std::unordered_map<CollTraceEvent*, EventTimer> eventTimers_;
+  std::unordered_map<const CollTraceEvent*, EventTimer> eventTimers_;
   bool asyncErrorTriggered_{false};
   bool asyncErrorMarked_{false};
 
