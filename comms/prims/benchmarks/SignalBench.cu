@@ -11,9 +11,10 @@ __global__ void signalAddBenchKernel(
     int nSteps,
     bool useBlockGroups) {
   auto group = useBlockGroups ? make_block_group() : make_warp_group();
+  const AbortDevice abortDevice;
   for (int step = 1; step <= nSteps; ++step) {
     remote[group.group_id].signal(group, SignalOp::SIGNAL_ADD, 1);
-    local[group.group_id].wait_until(group, CmpOp::CMP_EQ, step);
+    local[group.group_id].wait_until(group, CmpOp::CMP_EQ, step, abortDevice);
   }
 }
 
@@ -23,9 +24,10 @@ __global__ void signalSetBenchKernel(
     int nSteps,
     bool useBlockGroups) {
   auto group = useBlockGroups ? make_block_group() : make_warp_group();
+  const AbortDevice abortDevice;
   for (int step = 1; step <= nSteps; ++step) {
     remote[group.group_id].signal(group, SignalOp::SIGNAL_SET, step);
-    local[group.group_id].wait_until(group, CmpOp::CMP_EQ, step);
+    local[group.group_id].wait_until(group, CmpOp::CMP_EQ, step, abortDevice);
   }
 }
 
