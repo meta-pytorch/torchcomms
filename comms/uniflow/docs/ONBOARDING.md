@@ -84,14 +84,15 @@ Design documentation lives in [`../.claude/docs/`](../.claude/docs/). Start with
 
 | Document | Contents |
 |---|---|
-| [`overview.md`](../.claude/docs/overview.md) | **Start here.** Goals, non-goals, integrations, key differentiators vs OSS |
+| [`overview.md`](../.claude/docs/overview.md) | **Start here.** Goals, non-goals, architecture, key components, integrations |
 | [`segment.md`](../.claude/docs/segment.md) | Memory model — `Segment`, `TSpan`, `RegisteredSegment`, `RemoteRegisteredSegment` |
 | [`transport.md`](../.claude/docs/transport.md) | `Transport` / `TransportFactory` interfaces, backend types, connection lifecycle |
+| [`connection.md`](../.claude/docs/connection.md) | `Connection` API, control plane, `MultiTransport` routing and transport selection |
 | [`agent.md`](../.claude/docs/agent.md) | `UniflowAgent` design, configuration, connection establishment, threading model |
-| [`executor.md`](../.claude/docs/executor.md) | `Func`, `Executor`, `EventBase`, `ScopedEventBaseThread` |
+| [`executor.md`](../.claude/docs/executor.md) | `EventBase`, `EpollEventBase`, queue policies, `ScopedEventBaseThread` |
 | [`core.md`](../.claude/docs/core.md) | Core primitives, and what does *not* belong in core |
 | [`rdma-transport.md`](../.claude/docs/rdma-transport.md) | Zero-copy `put`/`get` path — multi-QP distribution, selective signaling, SQ flow control, task lifecycle |
-| [`rdma-copy-send-recv.md`](../.claude/docs/rdma-copy-send-recv.md) | Copy-based `send`/`recv` — slab pool, CTS ring, notify ring, pipelining |
+| [`rdma-copy-send-recv.md`](../.claude/docs/rdma-copy-send-recv.md) | Copy-based `send`/`recv` — slab pool, control plane, pipelining |
 | [`fault-model.md`](../.claude/docs/fault-model.md) | Error contract, timeout semantics, and the launch-side blocking hazard |
 | [`telemetry.md`](../.claude/docs/telemetry.md) | Telemetry and latency-measurement design |
 
@@ -114,8 +115,8 @@ comms/uniflow/
 ├── Result.h               Error handling (Status, Result<T>, ErrCode)
 ├── UniflowPy.cpp          pybind11 bindings → the `_core` Python extension
 ├── controller/            Control plane (TCP-based rendezvous)
-├── executor/              Async primitives (Func, EventBase, ScopedEventBaseThread)
-├── core/                  Low-level utilities (MpscQueue, Func)
+├── executor/              Async primitives, header-only (EventBase, EpollEventBase, ScopedEventBaseThread)
+├── core/                  Low-level utilities (Func, MpscQueue, NumaUtils)
 ├── logging/               spdlog async logger behind UNIFLOW_LOG_* macros
 ├── transport/
 │   ├── Transport.h        Abstract transport + TransportFactory interfaces
@@ -123,11 +124,12 @@ comms/uniflow/
 │   ├── Topology.h/cpp     PCIe/NIC topology discovery (GPU↔NIC affinity)
 │   ├── rdma/              RDMA backend — RdmaTransport, RdmaSlabPool, CopyEngine
 │   ├── nvlink/            NVLink backend — NVLinkTransport, NVLinkTopology
-│   └── p2p/               Shared P2P helpers
+│   ├── p2p/               AMD XGMI backend — reports TransportType::NVLink, same intra-node tier
+│   └── tcp/               TCP backend — gated on UNIFLOW_ENABLE_TCP_TRANSPORT (AMD builds)
 ├── drivers/               Hardware abstraction (cuda, ibverbs, nvml, sysfs), all mockable
 ├── tests/                 unit/ · integration/ · py/
 ├── benchmarks/            Performance benchmark suite (see below)
-├── amd/                   AMD-specific pieces
+├── amd/                   AMD/ROCm build configuration and neutral-zone rules
 └── .claude/docs/          Design documentation
 ```
 
