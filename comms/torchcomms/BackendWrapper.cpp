@@ -290,6 +290,31 @@ BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
       comm_(comm),
       options_(c10::make_intrusive<Options>()) {}
 
+#ifdef C10D_BACKEND_HAS_RECONFIGURE
+bool BackendWrapper::supportsReconfigure() const {
+  return comm_->getBackendImpl()->supportsReconfigure();
+}
+
+c10d::ReconfigureHandle BackendWrapper::get_reconfigure_handle() const {
+  return comm_->getInitHandle();
+}
+
+c10::intrusive_ptr<c10d::Work> BackendWrapper::reconfigure(
+    const c10d::ReconfigureOptions& opts) {
+  ReconfigureOptions commOpts;
+  commOpts.uuid = opts.uuid;
+  commOpts.handles = opts.handles;
+  commOpts.timeout = opts.timeout;
+  commOpts.hints = opts.hints;
+  // TorchComm waits for initialization before returning and refreshing ranks.
+  auto work = comm_->reconfigure(commOpts);
+  TORCH_CHECK(work->isCompleted(), "TorchComm reconfiguration failed");
+  rank_ = comm_->getRank();
+  size_ = comm_->getSize();
+  return c10::make_intrusive<WorkWrapper>(std::move(work));
+}
+#endif
+
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
     std::vector<at::Tensor>& tensors,
     const c10d::BroadcastOptions& opts) {
