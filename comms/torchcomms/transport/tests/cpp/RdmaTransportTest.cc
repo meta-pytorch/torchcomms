@@ -66,12 +66,14 @@ class RdmaTransportTest : public ::testing::Test {
     // Set CUDA device
     EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
 
+    CtranIbConfig ibConfig;
+    if (maxNumNic.has_value()) {
+      ibConfig.maxNumNic = *maxNumNic;
+    }
+
     // Create RdmaTransport instance
     auto transport = std::make_unique<torch::comms::RdmaTransport>(
-        cudaDev,
-        evbThread_->getEventBase(),
-        std::nullopt /* maxNumCqe */,
-        maxNumNic);
+        cudaDev, evbThread_->getEventBase(), ibConfig);
 
     // Bind and get URL
     std::string myUrl = transport->bind();

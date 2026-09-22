@@ -33,9 +33,8 @@ class TorchCommRCCLBootstrap {
   TorchCommRCCLBootstrap& operator=(TorchCommRCCLBootstrap&&) = delete;
 
   ncclComm_t createNcclComm(const std::string& name);
-  static std::string getRCCLStoreKey();
+  static std::string getRCCLStoreKey(std::string_view name);
   static std::string getRCCLStoreKeyPrefix();
-  static int getRCCLStoreKeyCounter();
 
   int getRank() {
     return rank_;
@@ -49,14 +48,13 @@ class TorchCommRCCLBootstrap {
 
  private:
   ncclUniqueId exchangeUniqueId(std::string_view name);
-  ncclUniqueId exchangeUniqueIdStore();
+  ncclUniqueId exchangeUniqueIdStore(std::string_view name);
   ncclUniqueId exchangeUniqueIdTCPStore(std::string_view name);
   bool isTCPStoreEnabled();
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:
   const std::chrono::milliseconds timeout_;
-  static int counter_;
 
   c10::intrusive_ptr<c10d::Store> store_;
   bool created_internal_store_;

@@ -523,7 +523,7 @@ See `IbvVirtualQp.h` for the full API and `tests/IbverbxDistributedVirtualQpTest
 
 ### Connection Setup (BusinessCard)
 
-`IbvVirtualQpBusinessCard` carries physical QP numbers for connection setup exchange. It is a self-contained struct with `folly::dynamic` + JSON serialization. The ith QP connects to the ith remote QP. `notifyQp_` access is guarded by `std::optional` — `BusinessCard::notifyQpNum_` defaults to 0 when no notifyQp exists.
+`IbvVirtualQpBusinessCard` carries physical QP numbers for connection setup exchange. It is a self-contained struct with a compact fixed-width binary encoding — little-endian `uint32_t` QP count, `notifyQpNum`, then the QP numbers in order — so every card of a given QP count is the same length, which the bootstrap exchange relies on. `deserialize()` rejects a card whose byte length disagrees with its declared count. The ith QP connects to the ith remote QP. `notifyQp_` access is guarded by `std::optional` — `BusinessCard::notifyQpNum_` defaults to 0 when no notifyQp exists.
 
 ---
 

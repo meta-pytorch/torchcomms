@@ -1951,30 +1951,27 @@ TEST_F(CtranIbTest, envQpConfig) {
           ctranIb->isendCtrlMsg(msg.type, &msg, sizeof(msg), peer, ctrlReq));
       waitIbReq(ctrlReq, ctranIb);
 
-      CtranIb::CtranIbVcConfig_t config;
+      CtranIbConfig config;
       EXPECT_EQ(ctranIb->getVcConfig(peer, config), commSuccess);
       if (peer == 1) {
         // Peer 1 is in same zone (SAME_ZONE) — uses global defaults
         EXPECT_EQ(
-            std::get<0>(config), (size_t)NCCL_CTRAN_IB_QP_SCALING_THRESHOLD);
-        EXPECT_EQ(std::get<1>(config), (int)NCCL_CTRAN_IB_MAX_QPS);
+            config.qpScalingTh, (size_t)NCCL_CTRAN_IB_QP_SCALING_THRESHOLD);
+        EXPECT_EQ(config.numQps, (int)NCCL_CTRAN_IB_MAX_QPS);
         EXPECT_EQ(
-            std::get<2>(config),
-            (enum NCCL_CTRAN_IB_VC_MODE)NCCL_CTRAN_IB_VC_MODE);
-        EXPECT_EQ(std::get<3>(config), (int)NCCL_CTRAN_IB_QP_MAX_MSGS);
+            config.vcMode, (enum NCCL_CTRAN_IB_VC_MODE)NCCL_CTRAN_IB_VC_MODE);
+        EXPECT_EQ(config.qpMsgs, (int)NCCL_CTRAN_IB_QP_MAX_MSGS);
       } else {
         // Peers 2,3 use XZONE/XDC config overrides
         EXPECT_EQ(
-            std::get<0>(config), std::stoul(kPeerTestQpConfig[peer].at(0)));
-        EXPECT_EQ(
-            std::get<1>(config), std::stoi(kPeerTestQpConfig[peer].at(1)));
+            config.qpScalingTh, std::stoul(kPeerTestQpConfig[peer].at(0)));
+        EXPECT_EQ(config.numQps, std::stoi(kPeerTestQpConfig[peer].at(1)));
         if (kPeerTestQpConfig[peer].at(2) == "spray") {
-          EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::spray);
+          EXPECT_EQ(config.vcMode, NCCL_CTRAN_IB_VC_MODE::spray);
         } else {
-          EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::dqplb);
+          EXPECT_EQ(config.vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
         }
-        EXPECT_EQ(
-            std::get<3>(config), std::stoi(kPeerTestQpConfig[peer].at(3)));
+        EXPECT_EQ(config.qpMsgs, std::stoi(kPeerTestQpConfig[peer].at(3)));
       }
     }
   } else {
@@ -2370,19 +2367,19 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
   {
     ControlMsg msg(ControlMsgType::SYNC);
     CtranIbRequest ctrlReq;
-    CtranIb::CtranIbVcConfig_t config;
+    CtranIbConfig config;
     if (this->globalRank == recvRank) {
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           msg.type, &msg, sizeof(msg), sendRank, ctrlReq));
       waitIbReq(ctrlReq, ctranIb);
       COMMCHECK_TEST(ctranIb->getVcConfig(sendRank, config));
-      bufCount = std::get<0>(config) / sizeof(int);
+      bufCount = *config.qpScalingTh / sizeof(int);
     } else if (this->globalRank == sendRank) {
       COMMCHECK_TEST(
           ctranIb->irecvCtrlMsg(&msg, sizeof(msg), recvRank, ctrlReq));
       waitIbReq(ctrlReq, ctranIb);
       COMMCHECK_TEST(ctranIb->getVcConfig(recvRank, config));
-      bufCount = std::get<0>(config) / sizeof(int);
+      bufCount = *config.qpScalingTh / sizeof(int);
     }
   }
 
@@ -2779,30 +2776,30 @@ TEST_F(CtranIbTestWithProfiler, GpuMemPutNotifyMixedFastRegular) {
   // config
   ControlMsg msg;
   CtranIbRequest ctrlReq;
-  CtranIb::CtranIbVcConfig_t config;
+  CtranIbConfig config;
   if (this->globalRank == recvRank) {
     COMMCHECK_TEST(
         ctranIb->isendCtrlMsg(msg.type, &msg, sizeof(msg), sendRank, ctrlReq));
     waitIbReq(ctrlReq, ctranIb);
     COMMCHECK_TEST(ctranIb->getVcConfig(sendRank, config));
     qpScalingThreshold = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD =
-        std::get<0>(config);
-    NCCL_CTRAN_IB_QP_MAX_MSGS = std::get<3>(config);
+        *config.qpScalingTh;
+    NCCL_CTRAN_IB_QP_MAX_MSGS = *config.qpMsgs;
   } else if (this->globalRank == sendRank) {
     COMMCHECK_TEST(ctranIb->irecvCtrlMsg(&msg, sizeof(msg), recvRank, ctrlReq));
     waitIbReq(ctrlReq, ctranIb);
     COMMCHECK_TEST(ctranIb->getVcConfig(recvRank, config));
     qpScalingThreshold = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD =
-        std::get<0>(config);
-    NCCL_CTRAN_IB_QP_MAX_MSGS = std::get<3>(config);
+        *config.qpScalingTh;
+    NCCL_CTRAN_IB_QP_MAX_MSGS = *config.qpMsgs;
   }
 
   if (this->globalRank == sendRank) {
     // send control message to establish connection before checking QP config;
     // otherwise, the internal VC would not be set
-    CtranIb::CtranIbVcConfig_t config;
+    CtranIbConfig config;
     EXPECT_EQ(ctranIb->getVcConfig(this->recvRank, config), commSuccess);
-    EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::spray);
+    EXPECT_EQ(config.vcMode, NCCL_CTRAN_IB_VC_MODE::spray);
   }
 
   // First send iputFast: whose size is equal to

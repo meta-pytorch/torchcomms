@@ -13,9 +13,6 @@
 
 namespace torch::comms {
 
-// Initialize the static counter
-int TorchCommRCCLBootstrap::counter_ = 0;
-
 const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
@@ -87,24 +84,19 @@ TorchCommRCCLBootstrap::~TorchCommRCCLBootstrap() noexcept {
   }
 }
 
-std::string TorchCommRCCLBootstrap::getRCCLStoreKey() {
-  std::string key = fmt::format("{}{}", getRCCLStoreKeyPrefix(), counter_);
-  counter_++;
-  return key;
+std::string TorchCommRCCLBootstrap::getRCCLStoreKey(std::string_view name) {
+  return fmt::format("{}{}", getRCCLStoreKeyPrefix(), name);
 }
 
 std::string TorchCommRCCLBootstrap::getRCCLStoreKeyPrefix() {
   return "rccl_storekey_";
 };
 
-int TorchCommRCCLBootstrap::getRCCLStoreKeyCounter() {
-  return counter_;
-}
-
-ncclUniqueId TorchCommRCCLBootstrap::exchangeUniqueIdStore() {
+ncclUniqueId TorchCommRCCLBootstrap::exchangeUniqueIdStore(
+    std::string_view name) {
   ncclUniqueId uniqueId;
 
-  auto key = getRCCLStoreKey();
+  auto key = getRCCLStoreKey(name);
   if (rank_ == 0) {
     // Generate unique ID on rank 0
     ncclResult_t ncclErr = rccl_api_->getUniqueId(&uniqueId);
@@ -137,7 +129,7 @@ ncclUniqueId TorchCommRCCLBootstrap::exchangeUniqueIdTCPStore(
   store_ = createPrefixStore(std::string(name), timeout_);
   created_internal_store_ = true;
 
-  return exchangeUniqueIdStore();
+  return exchangeUniqueIdStore(name);
 }
 
 bool TorchCommRCCLBootstrap::isTCPStoreEnabled() {
@@ -146,7 +138,7 @@ bool TorchCommRCCLBootstrap::isTCPStoreEnabled() {
 
 ncclUniqueId TorchCommRCCLBootstrap::exchangeUniqueId(std::string_view name) {
   if (store_ != nullptr) {
-    return exchangeUniqueIdStore();
+    return exchangeUniqueIdStore(name);
   }
 
   bool is_tcp_store_enabled = isTCPStoreEnabled();

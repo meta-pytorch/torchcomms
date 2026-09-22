@@ -136,8 +136,8 @@ struct ExchangeInfo {
   // GID for address handle
   uint8_t gid[16];
   // Serialized IbvVirtualQpBusinessCard
-  char businessCardJson[1024];
-  size_t businessCardJsonLen;
+  char businessCard[1024];
+  size_t businessCardLen;
   // Memory region info for RDMA
   uint32_t rkey;
   uint64_t addr; // Remote buffer address (recv area)
@@ -393,12 +393,12 @@ static ExchangeInfo getLocalExchangeInfo(BenchmarkContext* ctx) {
   memcpy(info.gid, &(*gidResult), 16);
 
   auto businessCard = ctx->endpoint->qp.getVirtualQpBusinessCard();
-  std::string jsonStr = businessCard.serialize();
-  if (jsonStr.size() >= sizeof(info.businessCardJson)) {
-    throw std::runtime_error("Business card JSON too large");
+  std::string encoded = businessCard.serialize();
+  if (encoded.size() >= sizeof(info.businessCard)) {
+    throw std::runtime_error("Business card too large");
   }
-  memcpy(info.businessCardJson, jsonStr.c_str(), jsonStr.size());
-  info.businessCardJsonLen = jsonStr.size();
+  memcpy(info.businessCard, encoded.data(), encoded.size());
+  info.businessCardLen = encoded.size();
 
   info.rkey = ctx->mr->mr()->rkey;
   info.addr = reinterpret_cast<uint64_t>(ctx->recvBuf);
@@ -443,10 +443,10 @@ static ExchangeInfo exchangeAndConnect(BenchmarkContext* ctx, int peerRank) {
       MPI_COMM_WORLD,
       MPI_STATUS_IGNORE));
 
-  std::string remoteJsonStr(
-      remoteInfo.businessCardJson, remoteInfo.businessCardJsonLen);
+  std::string remoteEncoded(
+      remoteInfo.businessCard, remoteInfo.businessCardLen);
   auto remoteBusinessCardResult =
-      IbvVirtualQpBusinessCard::deserialize(remoteJsonStr);
+      IbvVirtualQpBusinessCard::deserialize(remoteEncoded);
   if (!remoteBusinessCardResult) {
     throw std::runtime_error("Failed to deserialize remote business card");
   }

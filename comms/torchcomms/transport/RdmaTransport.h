@@ -16,6 +16,7 @@
 #include <folly/io/async/EventBase.h>
 
 #include <comms/utils/commSpecs.h>
+#include "comms/ctran/backends/CtranIbConfig.h"
 
 extern "C" int RdmaRegTensor(void* addr, size_t len);
 extern "C" int RdmaDeregTensor(void* addr, size_t len);
@@ -326,13 +327,18 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * cudaDev - Transport needs to use NIC for I/O. It does so by identifying
    *           the NIC associated with specified cudaDevice.
    * evb - EventLoop to drive the RDMA operations.
-   * maxNumCqe - Optional per-transport CQ size cap. When set, overrides
-   *             the global NCCL_CTRAN_IB_MAX_NUM_CQE env var.
+   * ibConfig - Sparse caller-owned IB overrides. Unset fields use CTRAN's
+   *            standard configuration.
    */
   explicit RdmaTransport(
       int cudaDev,
       folly::EventBase* evb = nullptr,
-      std::optional<int> maxNumCqe = std::nullopt,
+      const CtranIbConfig& ibConfig = {});
+
+  explicit RdmaTransport(
+      int cudaDev,
+      folly::EventBase* evb,
+      std::optional<int> maxNumCqe,
       std::optional<int> maxNumNic = std::nullopt);
 
   ~RdmaTransport();
@@ -377,6 +383,15 @@ class __attribute__((visibility("default"))) RdmaTransport {
    */
   int getNumNics() const;
 
+  /* Return the bound IB device name; device must be in [0, getNumNics()). */
+  std::string getIbDevName(int device) const;
+
+  /* Return the 1-based IB port; device must be in [0, getNumNics()). */
+  int getIbDevPort(int device) const;
+
+  /* Return the effective peer VC settings. Throws without a connected VC. */
+  CtranIbConfig getVcConfig() const;
+
   /*
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer
    * rank via RDMA. The remote side can use the `checkNotify` API to wait for
@@ -413,7 +428,6 @@ class __attribute__((visibility("default"))) RdmaTransport {
   folly::SemiFuture<commResult_t> flush(
       RdmaMemory::View localBuffer,
       std::optional<std::chrono::milliseconds> timeout = std::nullopt);
-  // TODO: Add flush fault injection when ibverbx supports it.
 
   /*
    * Mock type for testing RDMA transport error scenarios
@@ -432,7 +446,7 @@ class __attribute__((visibility("default"))) RdmaTransport {
   };
 
   /*
-   * Inject software mock for testing. Any write while mock is enabled
+   * Inject software mock for testing. Any write or flush while mock is enabled
    * will behave according to the mock configuration:
    * - Timeout: works stay pending until timeout fires (requires a timeout
    *            to be specified in the write() call) or transport is destroyed
@@ -440,8 +454,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * - None: reset to disable mock
    *
    * The mock type is captured when operations are created, not when they
-   * complete. Changing the mock config after calling write does not affect
-   * already-created operations.
+   * complete. Changing the mock config after starting an operation does not
+   * affect already-created operations.
    *
    * The control is per RdmaTransport instance, and the state is shared with
    * all threads accessing the instance.

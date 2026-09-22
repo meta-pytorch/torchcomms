@@ -5,12 +5,30 @@ set -ex
 export ZE_FLAT_DEVICE_HIERARCHY=FLAT
 export CCL_TOPO_FABRIC_VERTEX_CONNECTION_CHECK=0
 
-#Source Intel Deep Learning Essentials
-source ${DLE_PATH}/setvars.sh
+#Install Intel OMIX
+apt-get update -y
+apt-get install -y gpg wget build-essential ninja-build cmake git
 
+# Add Intel GPG key
+wget -qO - https://repositories.intel.com/gpu/intel-graphics.key \
+  | gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg
+
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble/${OMIX_REPO}/${OMIX_VERSION} unified" | \
+  tee /etc/apt/sources.list.d/intel-gpu-noble.list
+
+apt-get update
+
+# Install OMIX (includes GPU driver + oneAPI DLE components) and source OneAPI components
+apt-get install -y intel-omix-dev
+source /opt/intel/oneapi/setvars.sh
+# Cleanup
+apt-get autoclean && apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+source /home/jenkins/miniforge3/etc/profile.d/conda.sh
 #Create Conda Env and install dependencies
-conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.10
-source /opt/conda/etc/profile.d/conda.sh
+conda remove -n xpu_torchcomms_ci-${RUNNER_NAME} --all -y || true
+conda create -yn xpu_torchcomms_ci-${RUNNER_NAME} python=3.12.0
 conda activate xpu_torchcomms_ci-${RUNNER_NAME}
 conda install conda-forge::glog=0.4.0 conda-forge::gflags=2.2.2 conda-forge::fmt=12.2.0 -y
 

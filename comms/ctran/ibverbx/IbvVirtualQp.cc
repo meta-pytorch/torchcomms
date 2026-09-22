@@ -2,7 +2,10 @@
 
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 
-#include <folly/json.h>
+#include <fmt/format.h>
+#include <limits>
+#include <optional>
+#include <string_view>
 #include <unordered_set>
 #include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
@@ -251,86 +254,87 @@ IbvVirtualQpBusinessCard::IbvVirtualQpBusinessCard(
     uint32_t notifyQpNum)
     : qpNums_(std::move(qpNums)), notifyQpNum_(notifyQpNum) {}
 
-folly::dynamic IbvVirtualQpBusinessCard::toDynamic() const {
-  folly::dynamic obj = folly::dynamic::object;
-  folly::dynamic qpNumsArray = folly::dynamic::array;
+namespace {
 
-  // Use fixed-width string formatting to ensure consistent size
-  // All uint32_t values will be formatted as 10-digit zero-padded strings
-  for (const auto& qpNum : qpNums_) {
-    std::string paddedQpNum = fmt::format("{:010d}", qpNum);
-    qpNumsArray.push_back(paddedQpNum);
+// Wire format, little-endian, no padding:
+//   [0..3]   uint32_t numQpNums
+//   [4..7]   uint32_t notifyQpNum
+//   [8..]    numQpNums * uint32_t qpNums, in order
+// Fixed-width fields keep every card the same size for a given QP count, which
+// the bootstrap exchange relies on. Byte order is pinned explicitly so the
+// encoding does not depend on the host's endianness.
+constexpr size_t kU32Size = 4;
+constexpr size_t kHeaderSize = 2 * kU32Size;
+
+void appendU32(std::string& out, uint32_t value) {
+  for (size_t byte = 0; byte < kU32Size; ++byte) {
+    out.push_back(static_cast<char>((value >> (8 * byte)) & 0xffu));
   }
-
-  obj["qpNums"] = std::move(qpNumsArray);
-  obj["notifyQpNum"] = fmt::format("{:010d}", notifyQpNum_);
-  return obj;
 }
 
-Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::fromDynamic(
-    const folly::dynamic& obj) {
-  std::vector<uint32_t> qpNums;
+uint32_t readU32(std::string_view in, size_t offset) {
+  uint32_t value = 0;
+  for (size_t byte = 0; byte < kU32Size; ++byte) {
+    value |= static_cast<uint32_t>(static_cast<uint8_t>(in[offset + byte]))
+        << (8 * byte);
+  }
+  return value;
+}
 
-  if (obj.count("qpNums") > 0 && obj["qpNums"].isArray()) {
-    const auto& qpNumsArray = obj["qpNums"];
-    qpNums.reserve(qpNumsArray.size());
+} // namespace
 
-    for (const auto& qpNum : qpNumsArray) {
-      CTRAN_LOG_IF(
-          FATAL,
-          !qpNum.isString(),
-          "Check failed: qpNum.isString(): qp num is not string!");
-      try {
-        uint32_t qpNumValue =
-            static_cast<uint32_t>(std::stoul(qpNum.asString()));
-        qpNums.push_back(qpNumValue);
-      } catch (const std::exception& e) {
-        return makeUnexpected(Error(
-            EINVAL,
-            fmt::format(
-                "Invalid QP number string format: {}. Exception: {}",
-                qpNum.asString(),
-                e.what())));
-      }
-    }
-  } else {
+std::string IbvVirtualQpBusinessCard::serialize() const {
+  CTRAN_LOG_IF(
+      FATAL,
+      qpNums_.size() > std::numeric_limits<uint32_t>::max(),
+      "Check failed: qpNums_.size() <= UINT32_MAX: business card holds {} QP numbers, which the wire count cannot encode",
+      qpNums_.size());
+
+  std::string out;
+  out.reserve(kHeaderSize + qpNums_.size() * kU32Size);
+  appendU32(out, static_cast<uint32_t>(qpNums_.size()));
+  appendU32(out, notifyQpNum_);
+  for (const uint32_t qpNum : qpNums_) {
+    appendU32(out, qpNum);
+  }
+  return out;
+}
+
+Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::deserialize(
+    const std::string& card) {
+  const std::string_view in{card};
+
+  if (in.size() < kHeaderSize) {
     return makeUnexpected(
-        Error(EINVAL, "Invalid qpNums array received from remote side"));
+        Error(EINVAL, "Truncated business card received from remote side"));
   }
 
-  uint32_t notifyQpNum = 0; // Default value for backwards compatibility
-  if (obj.count("notifyQpNum") > 0 && obj["notifyQpNum"].isString()) {
-    try {
-      notifyQpNum =
-          static_cast<uint32_t>(std::stoul(obj["notifyQpNum"].asString()));
-    } catch (const std::exception& e) {
-      return makeUnexpected(Error(
-          EINVAL,
-          fmt::format(
-              "Invalid notifyQpNum string format: {}. Exception: {}",
-              obj["notifyQpNum"].asString(),
-              e.what())));
-    }
+  const uint32_t numQpNums = readU32(in, 0);
+  const uint32_t notifyQpNum = readU32(in, kU32Size);
+
+  // Reject a length that disagrees with the declared count in either direction,
+  // so a truncated card and one with trailing bytes both fail rather than
+  // silently decoding to the wrong QP set.
+  const size_t expectedSize =
+      kHeaderSize + static_cast<size_t>(numQpNums) * kU32Size;
+  if (in.size() != expectedSize) {
+    return makeUnexpected(Error(
+        EINVAL,
+        fmt::format(
+            "Business card size {} does not match its declared {} QP numbers (expected {})",
+            in.size(),
+            numQpNums,
+            expectedSize)));
+  }
+
+  std::vector<uint32_t> qpNums;
+  qpNums.reserve(numQpNums);
+  for (uint32_t i = 0; i < numQpNums; ++i) {
+    qpNums.push_back(
+        readU32(in, kHeaderSize + static_cast<size_t>(i) * kU32Size));
   }
 
   return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQpNum);
 }
 
-std::string IbvVirtualQpBusinessCard::serialize() const {
-  return folly::toJson(toDynamic());
-}
-
-Expected<IbvVirtualQpBusinessCard> IbvVirtualQpBusinessCard::deserialize(
-    const std::string& jsonStr) {
-  try {
-    folly::dynamic obj = folly::parseJson(jsonStr);
-    return fromDynamic(obj);
-  } catch (const std::exception& e) {
-    return makeUnexpected(Error(
-        EINVAL,
-        fmt::format(
-            "Failed to parse JSON in IbvVirtualQpBusinessCard Deserialize. Exception: {}",
-            e.what())));
-  }
-}
 } // namespace ibverbx

@@ -202,25 +202,18 @@ struct RdmaTransport::Work {
 RdmaTransport::RdmaTransport(
     int cudaDev,
     folly::EventBase* evb,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic)
+    const CtranIbConfig& ibConfig)
     : cudaDev_(cudaDev), evb_(evb) {
   initEnvironment();
-  CtranIbConfig ibConfig;
-  ibConfig.enableLocalFlush = true;
-  if (maxNumCqe.has_value()) {
-    ibConfig.maxNumCqe = *maxNumCqe;
-  }
-  if (maxNumNic.has_value()) {
-    ibConfig.maxNumNic = *maxNumNic;
-  }
+  auto effectiveIbConfig = ibConfig;
+  effectiveIbConfig.enableLocalFlush = true;
   // Create IB Instance
   ib_ = std::make_unique<CtranIb>(
       kDummyRank,
       cudaDev,
       -1 /* commHash */,
       "RDMA-Transport",
-      ibConfig,
+      effectiveIbConfig,
       CtranIb::BootstrapMode::kExternal,
       std::nullopt /* qpServerAddr */,
       ::comms::fault_tolerance::createAbort(/*enabled=*/false),
@@ -233,6 +226,22 @@ RdmaTransport::RdmaTransport(
         folly::AsyncTimeout::make(*evb_, [this]() noexcept { progress(); });
   }
 }
+
+RdmaTransport::RdmaTransport(
+    int cudaDev,
+    folly::EventBase* evb,
+    std::optional<int> maxNumCqe,
+    std::optional<int> maxNumNic)
+    : RdmaTransport(cudaDev, evb, [&] {
+        CtranIbConfig ibConfig;
+        if (maxNumCqe.has_value()) {
+          ibConfig.maxNumCqe = *maxNumCqe;
+        }
+        if (maxNumNic.has_value()) {
+          ibConfig.maxNumNic = *maxNumNic;
+        }
+        return ibConfig;
+      }()) {}
 
 RdmaTransport::~RdmaTransport() {
   // Run cleanup on the EventBase thread to safely cancel the timeout
@@ -324,6 +333,20 @@ int RdmaTransport::getMaxCqe() const {
 
 int RdmaTransport::getNumNics() const {
   return ib_->getNumNics();
+}
+
+std::string RdmaTransport::getIbDevName(int device) const {
+  return ib_->getIbDevName(device);
+}
+
+int RdmaTransport::getIbDevPort(int device) const {
+  return ib_->getIbDevPort(device);
+}
+
+CtranIbConfig RdmaTransport::getVcConfig() const {
+  CtranIbConfig config;
+  FB_COMMCHECKTHROW(ib_->getVcConfig(kDummyRank, config));
+  return config;
 }
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(
@@ -478,6 +501,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::flush(
   if (broken_.load(std::memory_order_relaxed)) {
     return commInternalError;
   }
+  auto currentMockType = mockContext_.rlock()->type;
   CHECK_THROW(evb_, std::runtime_error);
 
   CHECK_EQ(cudaDev_, localBuffer->getDevice());
@@ -488,24 +512,27 @@ folly::SemiFuture<commResult_t> RdmaTransport::flush(
   auto work = std::make_unique<Work>();
   // Flush has the same completion and timeout behavior as write.
   work->type = Work::Type::Write;
+  work->mockContext.type = currentMockType;
   auto sf = work->promise.getSemiFuture();
 
-  CtranIbEpochRAII epochRAII(ib_.get());
-  const auto ibRes =
-      ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
-  if (ibRes != commSuccess && ibRes != commInProgress) {
-    XLOGF(
-        ERR,
-        "RdmaTransport::flush: iflush failed with {}",
-        static_cast<int>(ibRes));
-    broken_.store(true, std::memory_order_relaxed);
-    // iflush may have stored a pointer to work->ibReq in the local VC
-    // queues before failing; park the work instead of destroying it.
-    work->promise.setValue(ibRes);
-    retiredWorks_.wlock()->emplace_back(std::move(work));
-    return sf;
+  if (currentMockType == MockType::None) {
+    CtranIbEpochRAII epochRAII(ib_.get());
+    const auto ibRes =
+        ib_->iflush(localBuffer.data(), localBuffer->localKey(), &work->ibReq);
+    if (ibRes != commSuccess && ibRes != commInProgress) {
+      XLOGF(
+          ERR,
+          "RdmaTransport::flush: iflush failed with {}",
+          static_cast<int>(ibRes));
+      broken_.store(true, std::memory_order_relaxed);
+      // iflush may have stored a pointer to work->ibReq in the local VC
+      // queues before failing; park the work instead of destroying it.
+      work->promise.setValue(ibRes);
+      retiredWorks_.wlock()->emplace_back(std::move(work));
+      return sf;
+    }
   }
-  if (timeout.has_value()) {
+  if (timeout.has_value() && currentMockType != MockType::Failure) {
     work->timeout = timeout;
     work->creationTime = std::chrono::steady_clock::now();
   }

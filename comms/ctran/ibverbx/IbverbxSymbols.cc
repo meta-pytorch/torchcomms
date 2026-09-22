@@ -8,7 +8,6 @@
 #endif
 
 #include <dlfcn.h>
-#include <folly/synchronization/CallOnce.h>
 
 #include "comms/ctran/ibverbx/utils/ScopeGuard.h"
 
