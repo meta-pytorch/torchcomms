@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <numeric>
-#include <string>
 #include <utility>
 #include <vector>
 
@@ -94,7 +93,6 @@ TEST(CtranIbQpConfigRegressionTest, MaxQps1DevPerRank2) {
 TEST(CtranIbConfigTest, DefaultVcModeFollowsCvar) {
   ncclCvarInit();
   EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::dqplb);
-
   std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
   CtranIbVirtualConn vc(
       dummyDevices,
@@ -105,6 +103,37 @@ TEST(CtranIbConfigTest, DefaultVcModeFollowsCvar) {
       /*activeDevices=*/std::vector<int>{0},
       /*numVcs=*/1);
 
+  EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
+}
+
+TEST(CtranIbExternalQpConfigTest, CallerConfigWinsOverCvars) {
+  ncclCvarInit();
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 8);
+  EnvRAII envDevPerRank(NCCL_CTRAN_IB_DEVICES_PER_RANK, 1);
+  EnvRAII envScalingTh(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, uint64_t{1048576});
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{128});
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);
+  const CtranIbConfig ibConfig{
+      .numQps = 4,
+      .qpScalingTh = 262144,
+      .vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb,
+      .qpMsgs = 64,
+  };
+
+  std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
+  CtranIbVirtualConn vc(
+      dummyDevices,
+      /*peerRank=*/0,
+      /*comm=*/nullptr,
+      /*trafficClass=*/0,
+      /*cudaDev=*/0,
+      /*activeDevices=*/std::vector<int>{0},
+      /*numVcs=*/1,
+      ibConfig);
+
+  EXPECT_EQ(vc.getMaxNumQp(), 4);
+  EXPECT_EQ(vc.getQpScalingTh(), 262144);
+  EXPECT_EQ(vc.getMaxQpMsgs(), 64);
   EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
 }
 
@@ -202,11 +231,12 @@ TEST(CtranIbQpConfigTest, BaseCvarsApplyWithoutTopologyOverride) {
   EXPECT_EQ(vc.getVcMode(), NCCL_CTRAN_IB_VC_MODE::dqplb);
 }
 
-TEST(CtranIbQpConfigTest, NonVcOverridePreservesConnectionConfig) {
+TEST(CtranIbQpConfigTest, NonVcOverridePreservesBaseConfig) {
   ncclCvarInit();
-  EnvRAII envExConfig(
-      NCCL_CTRAN_EX_IB_QP_CONFIG,
-      std::vector<std::string>{"262144", "8", "dqplb", "64"});
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 8);
+  EnvRAII envScalingTh(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, uint64_t{262144});
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{64});
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::dqplb);
   const CtranIbConfig ibConfig{.maxNumCqe = 4096};
 
   std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});
@@ -228,9 +258,10 @@ TEST(CtranIbQpConfigTest, NonVcOverridePreservesConnectionConfig) {
 
 TEST(CtranIbQpConfigTest, OverridesOnlySpecifiedVcField) {
   ncclCvarInit();
-  EnvRAII envExConfig(
-      NCCL_CTRAN_EX_IB_QP_CONFIG,
-      std::vector<std::string>{"262144", "8", "dqplb", "64"});
+  EnvRAII envMaxQps(NCCL_CTRAN_IB_MAX_QPS, 8);
+  EnvRAII envScalingTh(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, uint64_t{262144});
+  EnvRAII envQpMaxMsgs(NCCL_CTRAN_IB_QP_MAX_MSGS, uint64_t{64});
+  EnvRAII envVcMode(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::dqplb);
   const CtranIbConfig ibConfig{.numQps = 4};
 
   std::vector<CtranIbDevice> dummyDevices(1, CtranIbDevice{});

@@ -103,7 +103,6 @@ commResult_t CtranIbVirtualConn::resolveVcConfig(
     }
   } else if (!comm) {
     connTyp = ConnectionType::CTRAN_EX;
-    applyQpConfigList(NCCL_CTRAN_EX_IB_QP_CONFIG, config);
   }
 
   if (ibConfig.numQps.has_value()) {
