@@ -152,6 +152,8 @@ class CollTrace : public ICollTrace {
 
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
+  bool waitFlush(uint64_t gen, std::chrono::nanoseconds timeout) noexcept
+      override;
 
  private:
   /*
