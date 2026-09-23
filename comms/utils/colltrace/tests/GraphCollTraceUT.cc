@@ -138,7 +138,7 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
   }
 
   meta::comms::CommsMaybeVoid afterCollRecorded(
-      CollTraceEvent& event) noexcept override {
+      const CollTraceEvent& event) override {
     std::lock_guard<std::mutex> lock(mu_);
     recordedEventIdentities_.push_back(
         EventIdentity{
@@ -150,17 +150,17 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
   }
 
   meta::comms::CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent&) noexcept override {
+      const CollTraceEvent&) override {
     return folly::unit;
   }
 
   meta::comms::CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent&) noexcept override {
+      const CollTraceEvent&) override {
     return folly::unit;
   }
 
   meta::comms::CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& event) noexcept override {
+      const CollTraceEvent& event) override {
     if (event.collRecord) {
       std::lock_guard<std::mutex> lock(mu_);
       startedCollIds_.insert(event.collRecord->getCollId());
@@ -176,7 +176,7 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
   }
 
   meta::comms::CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& event) noexcept override {
+      const CollTraceEvent& event) override {
     if (event.collRecord) {
       std::lock_guard<std::mutex> lock(mu_);
       progressedCollIds_.insert(event.collRecord->getCollId());
@@ -186,7 +186,7 @@ class ProgressTrackingPlugin : public ICollTracePlugin {
   }
 
   meta::comms::CommsMaybeVoid afterCollKernelEnd(
-      CollTraceEvent& event) noexcept override {
+      const CollTraceEvent& event) override {
     if (event.collRecord) {
       std::lock_guard<std::mutex> lock(mu_);
       completedCollIds_.insert(event.collRecord->getCollId());

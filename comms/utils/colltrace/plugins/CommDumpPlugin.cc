@@ -72,13 +72,13 @@ std::string_view CommDumpPlugin::getName() const noexcept {
 }
 
 CommsMaybeVoid CommDumpPlugin::beforeCollKernelScheduled(
-    CollTraceEvent&) noexcept {
+    const CollTraceEvent&) {
   // Dummy implementation - no-op
   return folly::unit;
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";
@@ -102,7 +102,7 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelScheduled(
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";
@@ -159,12 +159,12 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelStart(
   return pendingDrainResult;
 }
 
-CommsMaybeVoid CommDumpPlugin::collEventProgressing(CollTraceEvent&) noexcept {
+CommsMaybeVoid CommDumpPlugin::collEventProgressing(const CollTraceEvent&) {
   return folly::unit;
 }
 
 CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
-    CollTraceEvent& curEvent) noexcept {
+    const CollTraceEvent& curEvent) {
   if (curEvent.collRecord == nullptr) [[unlikely]] {
     COMMS_LOGGER_STREAM_FIRST_N(*logger_, ERR, 2)
         << "Got event with null collRecord in CommDumpPlugin";

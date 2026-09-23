@@ -4,6 +4,7 @@
 #include <future>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <utility>
 
 #include <folly/ScopeGuard.h>
@@ -24,6 +25,7 @@ using ::testing::Exactly;
 using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::StrictMock;
+using ::testing::Throw;
 
 namespace meta::comms::colltrace {
 
@@ -198,11 +200,56 @@ TEST_F(CollTraceTest, GetPluginByName) {
   EXPECT_EQ(nonExistentPlugin, nullptr);
 }
 
+TEST(CollTracePluginFailureTest, IsolatesFailuresAndContinuesOtherPlugins) {
+  auto stdExceptionPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  auto unknownExceptionPlugin =
+      std::make_unique<NiceMock<MockCollTracePlugin>>();
+  auto returnedErrorPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+  auto observerPlugin = std::make_unique<NiceMock<MockCollTracePlugin>>();
+
+  ON_CALL(*stdExceptionPlugin, getName())
+      .WillByDefault(Return("StdExceptionPlugin"));
+  ON_CALL(*unknownExceptionPlugin, getName())
+      .WillByDefault(Return("UnknownExceptionPlugin"));
+  ON_CALL(*returnedErrorPlugin, getName())
+      .WillByDefault(Return("ReturnedErrorPlugin"));
+  ON_CALL(*observerPlugin, getName()).WillByDefault(Return("ObserverPlugin"));
+
+  EXPECT_CALL(*stdExceptionPlugin, afterCollRecorded(_))
+      .WillOnce(Throw(std::runtime_error("expected test exception")));
+  EXPECT_CALL(*unknownExceptionPlugin, afterCollRecorded(_))
+      .WillOnce(Throw(17));
+  EXPECT_CALL(*returnedErrorPlugin, afterCollRecorded(_))
+      .WillOnce(Return(
+          folly::makeUnexpected(
+              CommsError("expected returned error", commInternalError))));
+  EXPECT_CALL(*observerPlugin, afterCollRecorded(_))
+      .WillOnce(Return(folly::unit));
+
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins;
+  plugins.push_back(std::move(stdExceptionPlugin));
+  plugins.push_back(std::move(unknownExceptionPlugin));
+  plugins.push_back(std::move(returnedErrorPlugin));
+  plugins.push_back(std::move(observerPlugin));
+  CollTrace trace(
+      CollTraceConfig{},
+      CommLogData{},
+      []() -> CommsMaybeVoid { return folly::unit; },
+      std::move(plugins));
+
+  const auto result = trace.recordCollective(
+      std::make_unique<NiceMock<MockCollMetadata>>(),
+      std::make_unique<CPUWaitEvent>());
+
+  EXPECT_TRUE(result.hasValue());
+  EXPECT_EQ(trace.getPluginErrorCount(), 3);
+}
+
 // Test recordCollective method
 TEST_F(CollTraceTest, RecordCollective) {
   bool registrationObserved = false;
   EXPECT_CALL(*mockPluginPtr, afterCollRecorded(_))
-      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+      .WillOnce(::testing::Invoke([&](const CollTraceEvent& event) {
         EXPECT_NE(event.collRecord, nullptr);
         EXPECT_FALSE(event.capturedCollId.has_value());
         registrationObserved = true;
@@ -517,12 +564,12 @@ TEST_F(CollTraceTest, EpochWaitTimestampsDoNotRepeatLifecycleCallbacks) {
           Return(CommsMaybe<ICollWaitEvent::system_clock_time_point>{kEpoch}));
 
   EXPECT_CALL(*mockPluginPtr, afterCollKernelStart(_))
-      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+      .WillOnce(::testing::Invoke([&](const CollTraceEvent& event) {
         EXPECT_NE(event.collRecord->getTimingInfo().getCollStartTs(), kEpoch);
         return folly::unit;
       }));
   EXPECT_CALL(*mockPluginPtr, afterCollKernelEnd(_))
-      .WillOnce(::testing::Invoke([&](CollTraceEvent& event) {
+      .WillOnce(::testing::Invoke([&](const CollTraceEvent& event) {
         EXPECT_NE(event.collRecord->getTimingInfo().getCollEndTs(), kEpoch);
         return folly::unit;
       }));
@@ -828,7 +875,7 @@ TEST_F(CollTraceTest, PerCollectiveProgressingForInFlightCollective) {
   std::atomic<int> coll1ProgressCount{0};
   auto coll1Id = handle1->getCollRecord().value()->getCollId();
   EXPECT_CALL(*mockPluginPtr, collEventProgressing(_))
-      .WillRepeatedly([&](CollTraceEvent& event) {
+      .WillRepeatedly([&](const CollTraceEvent& event) {
         if (event.collRecord->getCollId() == coll1Id) {
           coll1ProgressCount++;
         }
@@ -847,7 +894,7 @@ TEST_F(CollTraceTest, PerCollectiveProgressingForInFlightCollective) {
   // Complete coll1.
   std::atomic<bool> coll1Completed{false};
   EXPECT_CALL(*mockPluginPtr, afterCollKernelEnd(_))
-      .WillRepeatedly([&](CollTraceEvent& event) {
+      .WillRepeatedly([&](const CollTraceEvent& event) {
         if (event.collRecord->getCollId() == coll1Id) {
           coll1Completed.store(true);
         }
