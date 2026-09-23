@@ -6,6 +6,7 @@
 #include <cstddef>
 
 #include "comm.h"
+#include "comms/ctran/interfaces/ICtran.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "rccl.h"
 
