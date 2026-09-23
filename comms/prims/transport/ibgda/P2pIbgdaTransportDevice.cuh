@@ -3038,8 +3038,11 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * Poll all outstanding send completion tickets for this channel. `Drained`
-   * means registered source ranges posted before the call are reusable.
+   * Poll outstanding send completion tickets for this channel. On a healthy
+   * path, `Drained` means the registered source ranges are reusable. Once an
+   * abort is observed, local progress terminates for liveness without proving
+   * completion of earlier WQEs; their source remains owned until teardown or
+   * reconfiguration of the owning transport has completed.
    */
   template <typename = void>
   __device__ __forceinline__ IbgdaRegisteredSendProgressStatus
@@ -3133,11 +3136,11 @@ class P2pIbgdaTransportDevice {
   }
 
   template <typename = void>
-  __device__ __forceinline__ void progress_recv_release_once(
+  [[nodiscard]] __device__ __forceinline__ bool progress_recv_release_once(
       ThreadGroup& group,
       const AbortDevice& abortDevice,
       const detail::RecvChunkAcquisition& view) {
-    detail::
+    return detail::
         progress_recv_release_once<P2pIbgdaTransportDevice, protocol::Simple>(
             *this, group, abortDevice, view);
   }

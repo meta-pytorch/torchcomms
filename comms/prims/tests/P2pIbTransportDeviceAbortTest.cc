@@ -323,6 +323,43 @@ class VariableWaitObservationFixture {
   test::VariableWaitAbortObservation* device_{nullptr};
 };
 
+class ProgressPostRefusalObservationFixture {
+ public:
+  ProgressPostRefusalObservationFixture() {
+    CUDACHECK_TEST(cudaSetDevice(0));
+    CUDACHECK_TEST(cudaMalloc(&device_, sizeof(*device_)));
+    CUDACHECK_TEST(cudaMemset(device_, 0, sizeof(*device_)));
+  }
+
+  ~ProgressPostRefusalObservationFixture() {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaFree(device_);
+  }
+
+  ProgressPostRefusalObservationFixture(
+      const ProgressPostRefusalObservationFixture&) = delete;
+  ProgressPostRefusalObservationFixture& operator=(
+      const ProgressPostRefusalObservationFixture&) = delete;
+  ProgressPostRefusalObservationFixture(
+      ProgressPostRefusalObservationFixture&&) = delete;
+  ProgressPostRefusalObservationFixture& operator=(
+      ProgressPostRefusalObservationFixture&&) = delete;
+
+  test::ProgressPostRefusalObservation* device() {
+    return device_;
+  }
+
+  test::ProgressPostRefusalObservation read() const {
+    test::ProgressPostRefusalObservation observation;
+    CUDACHECK_TEST(cudaMemcpy(
+        &observation, device_, sizeof(observation), cudaMemcpyDeviceToHost));
+    return observation;
+  }
+
+ private:
+  test::ProgressPostRefusalObservation* device_{nullptr};
+};
+
 } // namespace
 
 TEST(
@@ -590,6 +627,30 @@ TEST(P2pIbTransportDeviceAbortTest, WrapperTrySignalReportsPreAbortedSkip) {
   EXPECT_EQ(fixture.readPosted(), 0U);
 }
 
+TEST(P2pIbTransportDeviceAbortTest, WrapperRecvReleaseReportsPreAbortedSkip) {
+  WaitFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+
+  test::launchIbWrapperRecvRelease(
+      fixture.signal(), fixture.waitResult(), abort.getDeviceHandle());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  EXPECT_FALSE(fixture.readWaitResult());
+}
+
+TEST(P2pIbTransportDeviceAbortTest, IbrcRecvReleaseReportsPreAbortedSkip) {
+  WaitFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  abort.setAbort();
+
+  test::launchIbrcRecvRelease(
+      fixture.signal(), fixture.waitResult(), abort.getDeviceHandle());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  EXPECT_FALSE(fixture.readWaitResult());
+}
+
 TEST(
     P2pIbTransportDeviceAbortTest,
     VariableSendStopsBeforePutAfterSlotFreeWaitAborts) {
@@ -625,6 +686,154 @@ TEST(
   EXPECT_EQ(observation.waitObservedAbortCount, 1U);
   EXPECT_EQ(observation.waitBoundExpiredCount, 0U);
   EXPECT_TRUE(abort.isAborted());
+}
+
+TEST(P2pIbTransportDeviceAbortTest, ProgressSendStopsWhenDataPostRefuses) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchProgressSendPostRefusal(
+      fixture.device(), abort.getDeviceHandle(), /*refuse=*/true);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.legacyPutCount, 0U);
+  EXPECT_EQ(observation.abortAwarePutCount, 1U);
+  EXPECT_EQ(observation.completionRecordCount, 0U);
+  EXPECT_EQ(observation.status, test::progressSendRecvAbortedStatus());
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    RegisteredProgressSendStopsWhenDataPostRefuses) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchRegisteredProgressSendPostRefusal(
+      fixture.device(), abort.getDeviceHandle(), /*refuse=*/true);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.legacyPutCount, 0U);
+  EXPECT_EQ(observation.abortAwarePutCount, 1U);
+  EXPECT_EQ(observation.completionRecordCount, 0U);
+  EXPECT_EQ(observation.status, test::registeredSendAbortedStatus());
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    RegisteredProgressSendRefusalDoesNotRequireOperationAbort) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchRegisteredProgressSendPostRefusal(
+      fixture.device(),
+      abort.getDeviceHandle(),
+      /*refuse=*/true,
+      /*latchAbortOnRefusal=*/false);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.legacyPutCount, 0U);
+  EXPECT_EQ(observation.abortAwarePutCount, 1U);
+  EXPECT_EQ(observation.completionRecordCount, 0U);
+  EXPECT_EQ(observation.status, test::registeredSendAbortedStatus());
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_FALSE(abort.isAborted());
+}
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    ProgressRecvReturnsAbortedWhenCreditPostRefuses) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchProgressRecvCreditRefusal(
+      fixture.device(), abort.getDeviceHandle(), /*refuse=*/true);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.legacySignalCount, 0U);
+  EXPECT_EQ(observation.abortAwareSignalCount, 1U);
+  EXPECT_EQ(observation.status, test::progressSendRecvAbortedStatus());
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    ProgressRecvReleaseStopsLaterCreditsAfterRefusal) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchProgressRecvReleaseSequence(
+      fixture.device(), abort.getDeviceHandle(), /*refuse=*/true);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.status, 0U);
+  EXPECT_EQ(observation.legacySignalCount, 0U);
+  EXPECT_EQ(observation.abortAwareSignalCount, 1U);
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_TRUE(abort.isAborted());
+}
+
+TEST(
+    P2pIbTransportDeviceAbortTest,
+    ProgressRecvReleaseRefusalDoesNotRequireOperationAbort) {
+  ProgressPostRefusalObservationFixture fixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchProgressRecvReleaseSequence(
+      fixture.device(),
+      abort.getDeviceHandle(),
+      /*refuse=*/true,
+      /*latchAbortOnRefusal=*/false);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto observation = fixture.read();
+  EXPECT_EQ(observation.completed, 1U);
+  EXPECT_EQ(observation.status, 0U);
+  EXPECT_EQ(observation.legacySignalCount, 0U);
+  EXPECT_EQ(observation.abortAwareSignalCount, 1U);
+  EXPECT_EQ(observation.finalStage, test::progressDoneStage());
+  EXPECT_FALSE(abort.isAborted());
+}
+
+TEST(P2pIbTransportDeviceAbortTest, ProgressPostsHealthyControls) {
+  ProgressPostRefusalObservationFixture sendFixture;
+  ProgressPostRefusalObservationFixture recvFixture;
+  ProgressPostRefusalObservationFixture releaseFixture;
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+
+  test::launchProgressSendPostRefusal(
+      sendFixture.device(), abort.getDeviceHandle(), /*refuse=*/false);
+  test::launchProgressRecvCreditRefusal(
+      recvFixture.device(), abort.getDeviceHandle(), /*refuse=*/false);
+  test::launchProgressRecvReleaseSequence(
+      releaseFixture.device(), abort.getDeviceHandle(), /*refuse=*/false);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  const auto send = sendFixture.read();
+  const auto recv = recvFixture.read();
+  const auto release = releaseFixture.read();
+  EXPECT_EQ(send.status, test::progressSendRecvDoneStatus());
+  EXPECT_EQ(send.abortAwarePutCount, 1U);
+  EXPECT_EQ(send.completionRecordCount, 1U);
+  EXPECT_EQ(recv.status, test::progressSendRecvDoneStatus());
+  EXPECT_EQ(recv.abortAwareSignalCount, 1U);
+  EXPECT_EQ(release.status, 1U);
+  EXPECT_EQ(release.abortAwareSignalCount, 2U);
+  EXPECT_FALSE(abort.isAborted());
 }
 
 TEST(P2pIbTransportDeviceAbortTest, WrapperWaitSignalSucceedsWhenSatisfied) {
