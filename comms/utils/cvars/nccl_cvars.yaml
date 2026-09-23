@@ -3298,7 +3298,7 @@ cvars:
 
  - name        : MCCL_MAX_NBLOCKS
    type        : int
-   default     : 16
+   default     : 8
    description : |-
      Maximum number of logical CUDA blocks used by MCCL collectives that
      support message-size-based block tuning. All ranks must use the same
