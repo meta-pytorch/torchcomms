@@ -2635,6 +2635,122 @@ TEST_F(
 }
 #endif
 
+#ifndef __HIP_PLATFORM_AMD__
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyStopsAfterCreditPostRefusal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::RecvCredit,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 2U);
+  EXPECT_EQ(result.sendTail, 0U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvReady, 1U);
+  EXPECT_EQ(result.recvCopied, 1U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
+
+TEST_F(MultipeerIbgdaTransportTestFixture, WarpProxyStopsAfterDataPostRefusal) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::SendData,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 3U);
+  EXPECT_EQ(result.sendTail, 1U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvReady, 0U);
+  EXPECT_EQ(result.recvCopied, 0U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::NETWORK_ERROR);
+}
+
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyStopsWhilePublishingRecvReadiness) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  ASSERT_TRUE(abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED));
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::RecvReadiness,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 1U);
+  EXPECT_EQ(result.sendTail, 0U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvReady, 0U);
+  EXPECT_EQ(result.recvCopied, 0U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(result.stepStopped, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::ABORTED);
+}
+
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyStopsWhileWaitingForRecvCredit) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  ASSERT_TRUE(abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED));
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::SendRecvCredit,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 1U);
+  EXPECT_EQ(result.sendTail, 1U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvReady, 0U);
+  EXPECT_EQ(result.recvCopied, 0U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(result.stepStopped, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::ABORTED);
+}
+
+TEST_F(
+    MultipeerIbgdaTransportTestFixture,
+    WarpProxyStopsWhileWaitingForSlotFree) {
+  comms::fault_tolerance::Abort abort(/*enabled=*/true);
+  ASSERT_TRUE(abort.setAbort(comms::fault_tolerance::AbortReason::ABORTED));
+  test::WarpProxyRefusalResult result{};
+
+  CUDACHECK_TEST(
+      test::runWarpProxyStepRefusal(
+          test::WarpProxyRefusalStep::SendSlotFree,
+          abort.getDeviceHandle(),
+          &result));
+
+  EXPECT_EQ(result.reservedIndex, 1U);
+  EXPECT_EQ(result.sendTail, 1U);
+  EXPECT_EQ(result.sendPosted, 0U);
+  EXPECT_EQ(result.recvReady, 0U);
+  EXPECT_EQ(result.recvCopied, 0U);
+  EXPECT_EQ(result.recvCredited, 0U);
+  EXPECT_EQ(result.kernelExited, 1U);
+  EXPECT_EQ(result.stepStopped, 1U);
+  EXPECT_EQ(abort.reason(), comms::fault_tolerance::AbortReason::ABORTED);
+}
+#endif
+
 TEST_P(
     MultipeerIbTransportTestFixture,
     TwoCallSendThenRecvPaddingCreditNoDeadlock) {
