@@ -335,12 +335,6 @@ class __attribute__((visibility("default"))) RdmaTransport {
       folly::EventBase* evb = nullptr,
       const CtranIbConfig& ibConfig = {});
 
-  explicit RdmaTransport(
-      int cudaDev,
-      folly::EventBase* evb,
-      std::optional<int> maxNumCqe,
-      std::optional<int> maxNumNic = std::nullopt);
-
   ~RdmaTransport();
 
   // Non-copyable and non-movable
