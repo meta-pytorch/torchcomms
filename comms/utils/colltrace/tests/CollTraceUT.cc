@@ -2,8 +2,10 @@
 
 #include <atomic>
 #include <future>
+#include <map>
 #include <optional>
 #include <set>
+#include <thread>
 #include <utility>
 
 #include <folly/ScopeGuard.h>
@@ -14,6 +16,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
+#include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
 #include "comms/utils/colltrace/tests/MockTypes.h"
 
 using namespace meta::comms;
@@ -949,4 +952,52 @@ TEST(PendingActionOrdering, MixedTimestampsAndTypes) {
   EXPECT_EQ(order[3], PendingActionType::kEnd);
   EXPECT_EQ(times[2], t2);
   EXPECT_EQ(times[3], t2);
+}
+
+// One eager collective must reach the lifecycle feed as exactly one start and
+// one end. A second pair carrying the same collective id is indistinguishable
+// downstream from a second execution, and a consumer that retires its binding
+// on the first end reports the rest as collectives it never saw.
+TEST(CollTraceLifecycleFeedTest, EagerCollectiveFeedsOneStartAndOneEnd) {
+  auto feed = std::make_unique<LifecycleEventFeedPlugin>(
+      LifecycleEventFeedConfig{.commId = 1});
+  auto* feedPtr = feed.get();
+  std::vector<std::unique_ptr<ICollTracePlugin>> plugins;
+  plugins.push_back(std::move(feed));
+  auto collTrace = std::make_unique<CollTrace>(
+      CollTraceConfig{.maxCheckCancelInterval = std::chrono::milliseconds(1)},
+      CommLogData{},
+      []() -> CommsMaybeVoid { return folly::unit; },
+      std::move(plugins));
+
+  auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+  ON_CALL(*waitEvent, beforeCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*waitEvent, afterCollKernelScheduled())
+      .WillByDefault(Return(folly::unit));
+  ON_CALL(*waitEvent, waitCollStart(_)).WillByDefault(Return(true));
+  ON_CALL(*waitEvent, waitCollEnd(_)).WillByDefault(Return(true));
+  auto handle = collTrace->recordCollective(
+      std::make_unique<NiceMock<MockCollMetadata>>(), std::move(waitEvent));
+  ASSERT_TRUE(handle.hasValue());
+  EXPECT_VALUE(handle.value()->trigger(
+      CollTraceHandleTriggerState::BeforeEnqueueKernel));
+  EXPECT_VALUE(
+      handle.value()->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel));
+
+  // Two flushes rather than one: the first carries the collective to its end,
+  // and the second gives a duplicate a sweep to appear in, which is how one
+  // would show up here at all.
+  collTrace->waitFlush(collTrace->requestFlush());
+  auto records = feedPtr->drainUnreadLifecycleEvents();
+  collTrace->waitFlush(collTrace->requestFlush());
+  const auto second = feedPtr->drainUnreadLifecycleEvents();
+  records.insert(records.end(), second.begin(), second.end());
+
+  std::map<LifecycleEventType, int> counts;
+  for (const auto& record : records) {
+    counts[record.eventType]++;
+  }
+  EXPECT_EQ(counts[LifecycleEventType::kStart], 1);
+  EXPECT_EQ(counts[LifecycleEventType::kEnd], 1);
 }

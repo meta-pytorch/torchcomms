@@ -570,6 +570,108 @@ CollTrace::recordGraphCollectiveImpl(
   return handle;
 }
 
+namespace {
+
+// Deliberately not noexcept: get_ptr throws on a non-object and the string
+// build can throw, and the caller catches both.
+std::string dynamicString(const folly::dynamic& d, const char* key) {
+  const auto* value = d.get_ptr(key);
+  return value == nullptr || !value->isString() ? std::string{}
+                                                : value->asString();
+}
+
+} // namespace
+
+std::optional<CapturedCollDescription> CollTrace::describeCapturedCollective(
+    uint64_t capturedCollId) noexcept {
+  // Keyed the way cancelGraphCollective keys: the id a replay reports is the
+  // one this map is indexed by, since recordGraphCollectiveImpl gives the wait
+  // event and the record the same value.
+  //
+  // The map is indexed by uint32_t and this takes uint64_t, so an id above
+  // that range would narrow onto an unrelated entry and describe a collective
+  // the caller never asked about. Nothing captures ids that high today; the
+  // guard is so nothing can start to without the narrowing going unnoticed.
+  if (capturedCollId > std::numeric_limits<uint32_t>::max()) {
+    return std::nullopt;
+  }
+  // The lock covers the lookup and nothing else. It is taken per ring entry
+  // on the poll thread, and serializing a description or formatting a log
+  // line under it would stall graph polling for the length of that work.
+  std::shared_ptr<ICollMetadata> metadata;
+  bool captured = false;
+  std::size_t graphs = 0;
+  std::size_t collectives = 0;
+  uint32_t smallest = std::numeric_limits<uint32_t>::max();
+  uint32_t largest = 0;
+  {
+    std::lock_guard<std::mutex> lock(graphStateMutex_);
+    // Destructed graphs answer too: what a collective was is immutable, and a
+    // replay that already ran is still owed a description.
+    for (const auto& [_, state] : graphStateMap_) {
+      const auto found =
+          state->collectives.find(static_cast<uint32_t>(capturedCollId));
+      if (found != state->collectives.end()) {
+        captured = true;
+        const auto& entry = found->second;
+        if (entry.event != nullptr && entry.event->collRecord != nullptr) {
+          metadata = entry.event->collRecord->getCollMetadata();
+        }
+        break;
+      }
+    }
+    if (!captured) {
+      // What the miss says depends on what this trace does hold, so the
+      // counts are gathered here and reported below.
+      for (const auto& [_, state] : graphStateMap_) {
+        ++graphs;
+        for (const auto& [collId, __] : state->collectives) {
+          ++collectives;
+          smallest = std::min(smallest, collId);
+          largest = std::max(largest, collId);
+        }
+      }
+    }
+  }
+
+  if (captured) {
+    if (metadata == nullptr) {
+      return CapturedCollDescription{};
+    }
+    try {
+      const auto fields = metadata->toDynamic();
+      CapturedCollDescription description{
+          .opName = dynamicString(fields, "opName"),
+          .algoName = dynamicString(fields, "algoName"),
+          .dataType = dynamicString(fields, "dataType"),
+      };
+      const auto* count = fields.get_ptr("count");
+      if (count != nullptr && count->isInt()) {
+        description.count = static_cast<uint64_t>(count->asInt());
+      }
+      return description;
+    } catch (const std::exception&) {
+      // A collective that cannot be described still ran. An empty
+      // description binds it; nullopt claims it was never captured here.
+      return CapturedCollDescription{};
+    }
+  }
+
+  // Report the counts: a miss on an empty trace and a miss on a trace holding
+  // other ids are the same nullopt to the caller, and only this can tell them
+  // apart.
+  COMMS_LOGGER_STREAM_FIRST_N(*logger_, WARN, 1) << fmt::format(
+      "{}: no captured collective {} in this trace; it holds {} graph(s) and "
+      "{} captured collective(s), ids {}..{}",
+      logPrefix_,
+      capturedCollId,
+      graphs,
+      collectives,
+      collectives == 0 ? 0 : smallest,
+      largest);
+  return std::nullopt;
+}
+
 uint64_t CollTrace::requestFlush() noexcept {
   auto gen = flushState_.requested.fetch_add(1, std::memory_order_acq_rel) + 1;
   // Best-effort sentinel to wake the poll thread. If the queue is full,

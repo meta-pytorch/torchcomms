@@ -31,6 +31,7 @@
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/GraphCollTraceEvent.h"
 #include "comms/utils/colltrace/GraphCudaWaitEvent.h"
+#include "comms/utils/colltrace/plugins/LifecycleEventFeedPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/hrdw_ring_buffer/GpuClockCalibration.h"
 #include "comms/utils/hrdw_ring_buffer/HRDWRingBuffer.h"
@@ -108,7 +109,8 @@ class SimpleMetadata : public ICollMetadata {
     return "test";
   }
   folly::dynamic toDynamic() const noexcept override {
-    return folly::dynamic::object("type", "test");
+    return folly::dynamic::object("type", "test")("opName", "all_reduce")(
+        "algoName", "ring")("dataType", "float32")("count", 64);
   }
   void fromDynamic(const folly::dynamic&) noexcept override {}
 };
@@ -356,8 +358,16 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     auto progressPlugin = std::make_unique<ProgressTrackingPlugin>();
     progressPlugin_ = progressPlugin.get();
 
+    // The feed the consumers actually read, so a test can assert on what a
+    // replay reports rather than on colltrace's internal callbacks.
+    auto feedPlugin =
+        std::make_unique<meta::comms::colltrace::LifecycleEventFeedPlugin>(
+            meta::comms::colltrace::LifecycleEventFeedConfig{.commId = 1});
+    feedPlugin_ = feedPlugin.get();
+
     auto plugins = std::vector<std::unique_ptr<ICollTracePlugin>>{};
     plugins.push_back(std::move(progressPlugin));
+    plugins.push_back(std::move(feedPlugin));
     CommLogData logData{};
     colltrace_ = std::make_shared<CollTrace>(
         CollTraceConfig{
@@ -397,6 +407,8 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     cudaGraph_t graph{nullptr};
     cudaGraphExec_t instance{nullptr};
     std::vector<int64_t> collIds;
+    // The ids replays report, which are the graph's own and not the record's.
+    std::vector<uint32_t> graphCollIds;
 
     ~CapturedGraph() {
       if (instance) {
@@ -412,7 +424,8 @@ class GraphColltraceProgressingTest : public ::testing::Test {
     CapturedGraph(CapturedGraph&& o) noexcept
         : graph(std::exchange(o.graph, nullptr)),
           instance(std::exchange(o.instance, nullptr)),
-          collIds(std::move(o.collIds)) {}
+          collIds(std::move(o.collIds)),
+          graphCollIds(std::move(o.graphCollIds)) {}
     CapturedGraph& operator=(CapturedGraph&&) = delete;
     CapturedGraph(const CapturedGraph&) = delete;
     CapturedGraph& operator=(const CapturedGraph&) = delete;
@@ -435,6 +448,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
         cg.collIds.push_back(collRecord.value()->getCollId());
       }
       auto devHandle = handle->getColltraceDeviceHandle();
+      cg.graphCollIds.push_back(devHandle.collId);
       handle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
       // The collective kernel emits its own start/end in-kernel; mirror that
       // with ring writes bracketing the host-sleep "work".
@@ -474,6 +488,7 @@ class GraphColltraceProgressingTest : public ::testing::Test {
   std::optional<EnvRAII<bool>> cvarGuard_;
   std::shared_ptr<CollTrace> colltrace_;
   ProgressTrackingPlugin* progressPlugin_{nullptr};
+  meta::comms::colltrace::LifecycleEventFeedPlugin* feedPlugin_{nullptr};
 };
 
 // Each collective sleeps 50ms. With a 1ms poll interval, the poll thread
@@ -773,6 +788,120 @@ TEST_F(
     std::this_thread::yield();
   }
   EXPECT_TRUE(ring.expired());
+}
+
+TEST_F(GraphColltraceProgressingTest, DescribesACapturedCollectiveById) {
+  constexpr uint32_t kNumColls = 2;
+  // An eager collective first, so the lookup runs against a trace whose
+  // counter did not start at the graph.
+  colltrace_
+      ->recordCollective(
+          std::make_unique<SimpleMetadata>(),
+          std::make_unique<meta::comms::colltrace::CudaWaitEvent>(stream_))
+      .value();
+
+  auto cg = captureSerial(kNumColls, 0);
+  ASSERT_EQ(cg.collIds.size(), kNumColls);
+
+  // Taken from the device handle the capture wrote, which is the id replays
+  // report, rather than assumed from the record.
+  ASSERT_EQ(cg.graphCollIds.size(), kNumColls);
+  const auto graphCollId = cg.graphCollIds[0];
+
+  const auto described = colltrace_->describeCapturedCollective(graphCollId);
+  ASSERT_TRUE(described.has_value());
+  EXPECT_EQ(described->opName, "all_reduce");
+  EXPECT_EQ(described->algoName, "ring");
+  EXPECT_EQ(described->dataType, "float32");
+  ASSERT_TRUE(described->count.has_value());
+  EXPECT_EQ(*described->count, 64);
+
+  // Not captured here reads as nullopt, which is what separates it from a
+  // capture this comm cannot name.
+  EXPECT_FALSE(
+      colltrace_->describeCapturedCollective(graphCollId + 1000).has_value());
+}
+
+// What production does: take the id a replay reports and ask for it. The
+// capture-time test above passes even when these two disagree, so it cannot
+// stand in for this one.
+TEST_F(GraphColltraceProgressingTest, DescribesTheIdAReplayReports) {
+  auto cg = captureSerial(1, 0);
+  ASSERT_EQ(cg.collIds.size(), 1u);
+
+  ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  const auto identities = progressPlugin_->getStartedEventIdentities();
+  ASSERT_FALSE(identities.empty());
+  ASSERT_TRUE(identities[0].capturedCollId.has_value());
+  const auto reported = *identities[0].capturedCollId;
+
+  const auto described = colltrace_->describeCapturedCollective(reported);
+  ASSERT_TRUE(described.has_value())
+      << "replay reported capturedCollId=" << reported
+      << " but the lookup does not recognise it";
+  EXPECT_EQ(described->opName, "all_reduce");
+}
+
+// What a consumer of the feed is entitled to assume: a replayed collective
+// reports one start and one end per replay, each naming the replay it belongs
+// to. A pair with no replay id, or a second pair for a replay, is read
+// downstream as another execution of a collective the consumer never enqueued.
+TEST_F(GraphColltraceProgressingTest, ReplayFeedsOnePairPerReplayAndNoOther) {
+  constexpr uint64_t kNumReplays = 3;
+  auto cg = captureSerial(1, 0);
+  ASSERT_EQ(cg.collIds.size(), 1u);
+
+  for (uint64_t replay = 0; replay < kNumReplays; ++replay) {
+    ASSERT_EQ(cudaGraphLaunch(cg.instance, stream_), cudaSuccess);
+  }
+  ASSERT_EQ(cudaStreamSynchronize(stream_), cudaSuccess);
+  colltrace_->waitFlush(colltrace_->requestFlush());
+
+  ASSERT_NE(feedPlugin_, nullptr);
+  const auto records = feedPlugin_->drainUnreadLifecycleEvents();
+  // Keyed on (captured id, replay id), not on a count. Counting alone passes
+  // when three starts share one replay and three ends share another, which is
+  // precisely the shape this test exists to reject.
+  std::multiset<std::pair<uint64_t, uint64_t>> starts;
+  std::multiset<std::pair<uint64_t, uint64_t>> ends;
+  int replayless = 0;
+  for (const auto& record : records) {
+    if (record.eventType ==
+        meta::comms::colltrace::LifecycleEventType::kEnqueue) {
+      continue;
+    }
+    if (!record.replayId.has_value()) {
+      ++replayless;
+      continue;
+    }
+    const auto identity = std::pair<uint64_t, uint64_t>{
+        record.capturedCollId.value_or(record.collId), *record.replayId};
+    auto& into =
+        record.eventType == meta::comms::colltrace::LifecycleEventType::kStart
+        ? starts
+        : ends;
+    into.insert(identity);
+  }
+
+  EXPECT_EQ(replayless, 0)
+      << "a replayed collective reported a start or end with no replay id";
+  EXPECT_EQ(starts.size(), kNumReplays);
+  // Every start is matched by an end naming the same replay, and no replay
+  // reports twice. The replay numbering itself is colltrace's to choose, so the
+  // contract is checked through distinctness and pairing rather than by
+  // hardcoding the ids.
+  EXPECT_EQ(starts, ends);
+  const std::set<std::pair<uint64_t, uint64_t>> distinct(
+      starts.begin(), starts.end());
+  EXPECT_EQ(distinct.size(), kNumReplays)
+      << "two events named the same replay of the same collective";
+  for (const auto& [captured, replay] : distinct) {
+    EXPECT_EQ(captured, cg.collIds.front())
+        << "a replay named a collective this graph never captured";
+  }
 }
 
 TEST_F(GraphColltraceProgressingTest, PreservesIdentityAcrossReplays) {
