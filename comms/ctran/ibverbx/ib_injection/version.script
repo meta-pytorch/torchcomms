@@ -5,9 +5,9 @@
 # node fails identically to a missing symbol, which is why the nodes below mirror
 # IbverbxSymbols.def rather than being grouped for tidiness.
 #
-# Nothing else is exported. The next diff adds a control surface on its own node,
-# plus hot-path shims that are deliberately never exported at all -- those are
-# reached by address, through the ibv_context ops vtable.
+# The four hot-path shims (poll_cq, post_send, post_recv, and the mlx5 create_qp
+# body) are deliberately NOT exported: they are reached by address, through the
+# ibv_context ops vtable, never by name.
 
 IBVERBS_1.0 {
     global:
@@ -113,3 +113,14 @@ MLX5_1.25 {
     local:
         *;
 } MLX5_1.21;
+
+# Control surface, on its own node so it cannot be confused with a real verb.
+IB_INJECTION_1.0 {
+    global:
+        ibInjectionReset;
+        ibInjectionAddRule;
+        ibInjectionGetState;
+        ibInjectionLastError;
+    local:
+        *;
+};
