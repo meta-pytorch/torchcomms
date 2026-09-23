@@ -158,6 +158,25 @@ TEST(CollTraceSetupFailureTest, FlushReturnsAfterThreadSetupFailure) {
   EXPECT_EQ(trace.requestFlush(), firstGeneration + 1);
 }
 
+TEST_F(CollTraceTest, BoundedWaitFlushReturnsOnceTheFlushCompletes) {
+  EXPECT_TRUE(collTrace->waitFlush(
+      collTrace->requestFlush(), std::chrono::seconds{30}));
+}
+
+TEST_F(CollTraceTest, BoundedWaitFlushGivesUpOnAFlushThatNeverCompletes) {
+  // A generation the poll thread will never ack, which is what a thread wedged
+  // in a driver call looks like from here -- without needing to wedge one.
+  // Unbounded, this call would not return; the drain that makes it runs at a
+  // step boundary and during hang investigations.
+  const auto unreachable = collTrace->requestFlush() + 1000;
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_FALSE(
+      collTrace->waitFlush(unreachable, std::chrono::milliseconds{50}));
+  // Generous: that it returns at all is the point, not that it is prompt.
+  EXPECT_LT(
+      std::chrono::steady_clock::now() - started, std::chrono::seconds{5});
+}
+
 TEST(CollTraceGraphReplayStateTest, AmbiguityExpiresAfterFixedSlotWindow) {
   CollTrace trace(
       CollTraceConfig{},
