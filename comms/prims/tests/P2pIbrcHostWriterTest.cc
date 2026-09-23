@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -16,14 +17,17 @@ namespace {
 
 class P2pIbrcHostWriterTest : public ::testing::Test {
  protected:
-  P2pIbrcHostWriter makeWriter(uint32_t nic = 1) {
+  P2pIbrcHostWriter makeWriter(
+      uint32_t nic = 1,
+      std::shared_ptr<void> lease = nullptr) {
     return P2pIbrcHostWriter(
         descs_.data(),
         &pi_,
         &ci_,
         &status_,
         static_cast<uint32_t>(descs_.size()),
-        nic);
+        nic,
+        std::move(lease));
   }
 
   IbgdaLocalBuffer localBuffer(int keyCount = 2) {
@@ -260,6 +264,68 @@ TEST_F(P2pIbrcHostWriterTest, MovedWriterRemainsUsable) {
   auto moved = std::move(writer);
 
   EXPECT_NO_THROW(moved.fence());
+}
+
+/*
+ * The producer claim a writer carries is the transport's, and it has to behave
+ * like the one P2pIbrcHostLanes holds: alive for the holder's lifetime,
+ * released when it dies. Without that a bare writer records nothing, and a
+ * second writer -- or a lanes object -- silently becomes a second producer on
+ * rings whose backpressure check is only sound with one.
+ *
+ * Stands in for the transport the same way P2pIbrcHostLanesTest does: the
+ * token is the whole mechanism, so exercising it here needs no fabric.
+ */
+TEST_F(P2pIbrcHostWriterTest, ProducerLeaseIsHeldAndReleased) {
+  std::weak_ptr<void> issued;
+  {
+    auto lease = std::make_shared<char>();
+    issued = lease;
+    auto writer = makeWriter(1, std::move(lease));
+    EXPECT_FALSE(issued.expired())
+        << "claim not held while the writer is alive";
+  }
+  EXPECT_TRUE(issued.expired()) << "claim outlived the writer";
+}
+
+// Moving a writer must carry the claim with it, or the peer looks free while a
+// live writer is still driving its rings.
+TEST_F(P2pIbrcHostWriterTest, ProducerLeaseSurvivesMove) {
+  std::weak_ptr<void> issued;
+  {
+    auto lease = std::make_shared<char>();
+    issued = lease;
+    auto writer = makeWriter(1, std::move(lease));
+
+    auto moved = std::move(writer);
+    EXPECT_FALSE(issued.expired()) << "claim dropped by the move";
+  }
+  EXPECT_TRUE(issued.expired()) << "claim outlived the moved-to writer";
+}
+
+/*
+ * Two positions on one peer -- the ring whose down and up peers coincide at
+ * two ranks -- share the one writer rather than acquiring twice. Sharing keeps
+ * a single claim, which is what makes it legal; acquiring twice is what the
+ * transport refuses.
+ */
+TEST_F(P2pIbrcHostWriterTest, SharedWriterKeepsOneClaimForBothPositions) {
+  std::weak_ptr<void> issued;
+  {
+    auto lease = std::make_shared<char>();
+    issued = lease;
+    auto writer =
+        std::make_shared<P2pIbrcHostWriter>(makeWriter(1, std::move(lease)));
+
+    auto down = writer;
+    auto up = writer; // same peer at two ranks
+    EXPECT_EQ(down.get(), up.get()) << "both positions must share one producer";
+
+    writer.reset();
+    down.reset();
+    EXPECT_FALSE(issued.expired()) << "claim released while a holder remains";
+  }
+  EXPECT_TRUE(issued.expired()) << "claim outlived the last holder";
 }
 
 } // namespace

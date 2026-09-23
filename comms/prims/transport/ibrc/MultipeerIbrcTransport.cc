@@ -308,7 +308,7 @@ MultipeerIbrcTransport::MultipeerIbrcTransport(
   }
   peerResources_.resize(nRanks_ - 1);
   peerQueuesPublished_ = std::make_unique<std::atomic<bool>[]>(nRanks_ - 1);
-  hostLanesIssued_.resize(nRanks_ - 1);
+  hostProducerClaim_.resize(nRanks_ - 1);
 
   try {
     // Pin GPU work to config_.cudaDevice.
@@ -1634,30 +1634,20 @@ P2pIbrcHostLanes MultipeerIbrcTransport::getHostLanes(
             peerRank,
             capacity));
   }
-  /*
-   * Claim the peer's rings before building anything. Refusing here is the
-   * point: the alternative is two lanes objects driving [0, numLanes) at once,
-   * which corrupts in-flight descriptors rather than failing.
-   */
-  std::shared_ptr<void> owner;
-  {
-    const int peerIndex = rankToPeerIndex(peerRank);
-    const std::lock_guard<std::mutex> lock(hostLanesMutex_);
-    if (!hostLanesIssued_[peerIndex].expired()) {
-      throw std::runtime_error(
-          fmt::format(
-              "getHostLanes: peerRank={} rings are already held by another "
-              "lanes object; one logical producer per ring",
-              peerRank));
-    }
-    owner = std::make_shared<char>();
-    hostLanesIssued_[peerIndex] = owner;
-  }
+  // Refusing here is the point: the alternative is two producers driving
+  // [0, numLanes) at once, which corrupts in-flight descriptors rather than
+  // failing. Claimed before building anything, and released if this throws.
+  std::shared_ptr<void> owner = claimPeerProducer(peerRank, "getHostLanes");
 
   std::vector<P2pIbrcHostWriter> writers;
   writers.reserve(static_cast<std::size_t>(numLanes));
   for (int l = 0; l < numLanes; ++l) {
-    writers.push_back(getHostWriter(peerRank, static_cast<uint32_t>(l)));
+    // Every lane shares the one claim rather than the lanes object holding it
+    // alone: writer() hands out a movable writer, so a lane can outlive this
+    // object, and a leaseless one would leave the peer reading free while it
+    // is still driving its ring.
+    writers.push_back(
+        makeHostWriter(peerRank, static_cast<uint32_t>(l), owner));
   }
   return P2pIbrcHostLanes(std::move(writers), std::move(owner));
 }
@@ -1665,6 +1655,48 @@ P2pIbrcHostLanes MultipeerIbrcTransport::getHostLanes(
 P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
     int peerRank,
     uint32_t queueIndex) const {
+  /*
+   * The same claim getHostLanes() takes, and the writer carries it for its own
+   * lifetime -- so a second writer, or a lanes object, is refused in either
+   * order rather than silently becoming a second producer on these rings.
+   *
+   * Taken before makeHostWriter() validates, which is safe because the token
+   * is a temporary: if makeHostWriter() throws, it dies with the call and the
+   * claim is released. makeHostWriter() touches neither the mutex nor the
+   * claim vector, so taking it here cannot recurse.
+   */
+  return makeHostWriter(
+      peerRank, queueIndex, claimPeerProducer(peerRank, "getHostWriter"));
+}
+
+std::shared_ptr<void> MultipeerIbrcTransport::claimPeerProducer(
+    int peerRank,
+    const char* what) const {
+  // Validated before rankToPeerIndex(), which otherwise turns a bad rank into
+  // an out-of-bounds index into the claim vector rather than an error.
+  if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
+    throw std::runtime_error(
+        fmt::format("{}: invalid peerRank={}", what, peerRank));
+  }
+  const int peerIndex = rankToPeerIndex(peerRank);
+  const std::lock_guard<std::mutex> lock(hostProducerMutex_);
+  if (!hostProducerClaim_[peerIndex].expired()) {
+    throw std::runtime_error(
+        fmt::format(
+            "{}: peerRank={} rings are already held by another host producer; "
+            "one logical producer per peer",
+            what,
+            peerRank));
+  }
+  auto owner = std::make_shared<char>();
+  hostProducerClaim_[peerIndex] = owner;
+  return owner;
+}
+
+P2pIbrcHostWriter MultipeerIbrcTransport::makeHostWriter(
+    int peerRank,
+    uint32_t queueIndex,
+    std::shared_ptr<void> lease) const {
   if (peerRank == myRank_ || peerRank < 0 || peerRank >= nRanks_) {
     throw std::invalid_argument(
         fmt::format("getHostWriter: invalid peerRank={}", peerRank));
@@ -1691,7 +1723,8 @@ P2pIbrcHostWriter MultipeerIbrcTransport::getHostWriter(
       q.ciHost,
       statusHostByNic_.at(q.nic),
       q.device.depth,
-      q.nic);
+      q.nic,
+      std::move(lease));
   // Armed here rather than left to the caller: the device path already gets
   // abortDevice_ baked in, and a writer that missed the predicate would spin
   // out its ten-minute deadline instead of unwinding when the job aborts.

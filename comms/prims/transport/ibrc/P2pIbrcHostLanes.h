@@ -80,10 +80,16 @@ class P2pIbrcHostLanes {
   static constexpr std::size_t kLaneAlignment = 128;
 
   /*
-   * `owner` is the transport's claim on this peer's rings, released when this
-   * object dies. Held opaquely and never dereferenced -- the transport tracks
-   * it through a weak_ptr, so nothing here has to reach back into it. Default
-   * null for tests that build lanes over their own rings.
+   * `owner` is the transport's claim on this peer's rings. Held opaquely and
+   * never dereferenced -- the transport tracks it through a weak_ptr, so
+   * nothing here has to reach back into it. Default null for tests that build
+   * lanes over their own rings.
+   *
+   * Every writer in `writers` must hold that same claim, and is checked below
+   * rather than trusted: writer() lets a lane be moved out and outlive this
+   * object, so a lane missing the claim leaves the peer reading free while it
+   * is still driving a ring. Sharing it means the claim is released when the
+   * last writer dies, not when this object does.
    */
   explicit P2pIbrcHostLanes(
       std::vector<P2pIbrcHostWriter> writers,
@@ -91,6 +97,23 @@ class P2pIbrcHostLanes {
       : writers_(std::move(writers)), owner_(std::move(owner)) {
     if (writers_.empty()) {
       throw std::runtime_error("P2pIbrcHostLanes: needs at least one lane");
+    }
+    /*
+     * Refused at construction because the damage surfaces far from here: a
+     * lane built without the claim behaves correctly until one is moved out
+     * and this object dies, at which point the transport issues a second
+     * producer onto a live ring and descriptors corrupt on the wire.
+     */
+    if (owner_ != nullptr) {
+      for (std::size_t l = 0; l < writers_.size(); ++l) {
+        if (!writers_[l].shares_producer_lease(owner_)) {
+          throw std::runtime_error(
+              fmt::format(
+                  "P2pIbrcHostLanes: lane {} does not hold the peer's producer "
+                  "claim; every lane must share it",
+                  l));
+        }
+      }
     }
   }
 
