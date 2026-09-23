@@ -227,22 +227,6 @@ RdmaTransport::RdmaTransport(
   }
 }
 
-RdmaTransport::RdmaTransport(
-    int cudaDev,
-    folly::EventBase* evb,
-    std::optional<int> maxNumCqe,
-    std::optional<int> maxNumNic)
-    : RdmaTransport(cudaDev, evb, [&] {
-        CtranIbConfig ibConfig;
-        if (maxNumCqe.has_value()) {
-          ibConfig.maxNumCqe = *maxNumCqe;
-        }
-        if (maxNumNic.has_value()) {
-          ibConfig.maxNumNic = *maxNumNic;
-        }
-        return ibConfig;
-      }()) {}
-
 RdmaTransport::~RdmaTransport() {
   // Run cleanup on the EventBase thread to safely cancel the timeout
   // and prevent progress() from racing with destruction.
