@@ -104,6 +104,10 @@ class MultipeerIbrcTransport
   // returned writer is used; P2pIbrcHostWriter is a non-owning view of the
   // queue's mapped host memory. Do not concurrently drive the same ring from
   // device code.
+  // Throws if a live P2pIbrcHostLanes holds this peer: the two would be
+  // separate producers on rings only one may drive, which the backpressure
+  // check cannot survive -- it corrupts descriptors rather than failing, so it
+  // is refused here. Use lanes or bare writers for a peer, never both.
   P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
 
   /**
@@ -271,6 +275,13 @@ class MultipeerIbrcTransport
    * Guarded by its own mutex because getHostLanes() is const and the check and
    * the claim have to be one step. Taken once per communicator, not per call.
    */
+  /*
+   * getHostWriter() without the ring-claim check. getHostLanes() builds its own
+   * writers after taking the claim, so the public entry point would refuse the
+   * very object it is constructing.
+   */
+  P2pIbrcHostWriter makeHostWriter(int peerRank, uint32_t queueIndex) const;
+
   mutable std::mutex hostLanesMutex_;
   mutable std::vector<std::weak_ptr<void>> hostLanesIssued_;
   MappedAllocation statusControl_;

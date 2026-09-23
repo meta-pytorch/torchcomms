@@ -88,7 +88,7 @@ TEST(P2pIbrcHostLanesSplit, RemainderGoesToLastLane) {
 
 // Below the gate a transfer is latency-bound; striping it only adds
 // cross-lane straggler cost, so it collapses to one lane.
-TEST(P2pIbrcHostLanesSplit, BelowMinChannelBytesCollapsesToOneLane) {
+TEST(P2pIbrcHostLanesSplit, BelowMinLaneBytesCollapsesToOneLane) {
   const auto r = P2pIbrcHostLanes::split(kMin, 4);
   ASSERT_EQ(r.size(), 1u);
   EXPECT_EQ(r[0].bytes, kMin);
@@ -119,6 +119,8 @@ TEST(P2pIbrcHostLanesSplit, ExactlyAtThresholdSplits) {
 
 // An empty lane would never signal, so a receiver waiting on it would hang
 // rather than fail. Splits that cannot give every lane bytes must collapse.
+// kMin * 2 + 1 is the only input here that survives the gate into a real
+// multi-lane split, so it is what actually exercises the empty-lane check.
 TEST(P2pIbrcHostLanesSplit, NeverEmitsAnEmptyLane) {
   for (std::size_t n : {std::size_t{1}, kAlign - 1, kAlign, kMin * 2 + 1}) {
     for (int lanes : {1, 2, 3, 8, 16}) {
@@ -147,8 +149,10 @@ TEST(P2pIbrcHostLanesSplit, IsDeterministic) {
   }
 }
 
-// A caller may lower the gate; the coverage properties must still hold.
-TEST(P2pIbrcHostLanesSplit, HonorsCallerMinChannelBytes) {
+// A caller may lower the gate; the coverage properties must still hold. 4096
+// is below the default gate, so two lanes only come back if the argument is
+// honored -- dropping it collapses this to one.
+TEST(P2pIbrcHostLanesSplit, HonorsCallerMinLaneBytes) {
   const auto r = P2pIbrcHostLanes::split(4096, 2, /*minLaneBytes=*/1024);
   ASSERT_EQ(r.size(), 2u);
   expectCoversExactly(r, 4096);
