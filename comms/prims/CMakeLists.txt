@@ -51,6 +51,16 @@ target_compile_options(prims PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:-compress-all>
 )
 
+# These translation units contain entry kernels with a 64-register budget.
+# With relocatable device code, ptxas does not propagate that launch-bound
+# budget to noinline helpers, so cap device functions without constraining the
+# entry kernels themselves.
+set_source_files_properties(
+    collectives/ReduceScatterDirectIbV2.cu
+    collectives/SendRecvTile.cu
+    PROPERTIES COMPILE_OPTIONS "-Xptxas=-func-maxrregcount=64"
+)
+
 set_target_properties(prims PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON
