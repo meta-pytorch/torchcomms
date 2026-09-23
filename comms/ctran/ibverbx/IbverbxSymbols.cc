@@ -572,9 +572,22 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   });
 
   if (!ibv_path.empty()) {
+    // No fallback when a caller named a provider explicitly. Falling back would
+    // load a different library than the one asked for and still return success,
+    // which is indistinguishable from a run that never wanted one -- exactly
+    // the signature a typo'd path or an unmounted fbpkg produces for the
+    // ib_injection shim, where it yields a green, completely uninjected run.
     ibvhandle = dlopen(ibv_path.c_str(), RTLD_NOW);
-  }
-  if (!ibvhandle) {
+    if (!ibvhandle) {
+      const char* dlErr = dlerror();
+      CTRAN_LOG(
+          ERR,
+          "Failed to open requested libibverbs {} - {}",
+          ibv_path,
+          dlErr ? dlErr : "unknown");
+      return 1;
+    }
+  } else {
     ibvhandle = dlopen("libibverbs.so.1", RTLD_NOW);
     if (!ibvhandle) {
       CTRAN_LOG(ERR, "Failed to open libibverbs.so.1");
