@@ -16,6 +16,12 @@ namespace {
 // collectives/*.cu.
 using TileReducePolicy = TileReduce<float, SumOp, 16384, 512>;
 using TileReduceStagedPolicy = TileReduceStaged<float, SumOp, 24576, 384>;
+struct UnmarkedCopyOp {};
+
+static_assert(is_divergent_recv_safe_v<Memcpy>);
+static_assert(is_divergent_recv_safe_v<TileReducePolicy>);
+static_assert(is_divergent_recv_safe_v<TileReduceStagedPolicy>);
+static_assert(!is_divergent_recv_safe_v<UnmarkedCopyOp>);
 
 // Return type of a policy's send()/recv() when invoked with the fixed-size
 // argument list every CopyOp policy accepts. Evaluated in an unevaluated

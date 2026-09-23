@@ -823,6 +823,129 @@ class LocalTileHarness {
   DeviceBuffer channelBuf_;
 };
 
+static NvlChannelState readLocalTileChannel(LocalTileHarness& harness) {
+  NvlChannelState channel{};
+  CUDACHECK_TEST(cudaMemcpy(
+      &channel,
+      harness.channelBuffer().get(),
+      sizeof(channel),
+      cudaMemcpyDeviceToHost));
+  return channel;
+}
+
+static void runCooperativeAbortAcrossPeers(bool receive, bool timeOutInWait) {
+  constexpr int numBlocks = 1;
+  constexpr int threadCount = 128;
+  constexpr size_t perChannelSlot = 256;
+  constexpr size_t pipelineDepth = 2;
+  constexpr size_t perChannelBuffer = perChannelSlot * pipelineDepth;
+  constexpr size_t nbytes = perChannelBuffer + perChannelSlot;
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = perChannelBuffer,
+      .pipelineDepth = pipelineDepth,
+      .per_channel_buffer = perChannelBuffer,
+      .per_channel_slot = perChannelSlot,
+      .max_num_channels = numBlocks,
+  };
+  LocalTileHarness peerA(options, numBlocks);
+  LocalTileHarness peerB(options, numBlocks);
+
+  NvlChannelState peerAChannel{};
+  NvlChannelState peerBChannel{};
+  if (receive) {
+    // Peer A remains unsatisfied. Peer B is ready before the kernel starts.
+    peerBChannel.data_ready.signal_ = nbytes;
+  } else {
+    // Start A one window ahead so its first send chunk needs missing credit.
+    peerAChannel.send_cursor = perChannelBuffer;
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      peerA.channelBuffer().get(),
+      &peerAChannel,
+      sizeof(peerAChannel),
+      cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemcpy(
+      peerB.channelBuffer().get(),
+      &peerBChannel,
+      sizeof(peerBChannel),
+      cudaMemcpyHostToDevice));
+
+  DeviceBuffer data(nbytes);
+  DeviceBuffer abortObserved(sizeof(uint32_t));
+  CUDACHECK_TEST(cudaMemset(data.get(), 0, nbytes));
+  CUDACHECK_TEST(cudaMemset(abortObserved.get(), 0, sizeof(uint32_t)));
+
+  comms::fault_tolerance::Abort abort{/*enabled=*/true};
+  auto abortDevice = abort.getDeviceHandle();
+  if (timeOutInWait) {
+    // Peer A's signal is permanently unsatisfied. A device deadline is the
+    // only event that can release the real transport polling loop.
+    abortDevice.setOpTimeoutMs(/*timeoutMs=*/100);
+  } else {
+    ASSERT_TRUE(abort.setAbort(
+        comms::fault_tolerance::AbortReason::ABORTED,
+        "cooperative abort cross-peer regression"));
+  }
+  const auto started = std::chrono::steady_clock::now();
+  test::testCooperativeAbortAcrossPeers(
+      peerA.stagingDevice(),
+      peerB.stagingDevice(),
+      data.get(),
+      nbytes,
+      receive,
+      abortDevice,
+      static_cast<uint32_t*>(abortObserved.get()),
+      threadCount);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_LT(elapsed, std::chrono::seconds(10));
+  EXPECT_EQ(
+      abort.reason(),
+      timeOutInWait ? comms::fault_tolerance::AbortReason::TIMED_OUT
+                    : comms::fault_tolerance::AbortReason::ABORTED);
+
+  uint32_t hostAbortObserved = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &hostAbortObserved,
+      abortObserved.get(),
+      sizeof(hostAbortObserved),
+      cudaMemcpyDeviceToHost));
+  EXPECT_EQ(hostAbortObserved, 1U);
+
+  const NvlChannelState observedA = readLocalTileChannel(peerA);
+  EXPECT_EQ(observedA.send_cursor, peerAChannel.send_cursor);
+  EXPECT_EQ(observedA.recv_cursor, peerAChannel.recv_cursor);
+  EXPECT_EQ(observedA.slot_free.signal_, peerAChannel.slot_free.signal_);
+  EXPECT_EQ(observedA.data_ready.signal_, peerAChannel.data_ready.signal_);
+
+  const NvlChannelState observedB = readLocalTileChannel(peerB);
+  EXPECT_EQ(observedB.send_cursor, peerBChannel.send_cursor);
+  EXPECT_EQ(observedB.recv_cursor, peerBChannel.recv_cursor);
+  EXPECT_EQ(observedB.slot_free.signal_, peerBChannel.slot_free.signal_);
+  EXPECT_EQ(observedB.data_ready.signal_, peerBChannel.data_ready.signal_);
+}
+
+TEST_F(P2pNvlTransportTestFixture, CooperativeAbortSendDoesNotResurrectPeerB) {
+  runCooperativeAbortAcrossPeers(
+      /*receive=*/false, /*timeOutInWait=*/false);
+}
+
+TEST_F(P2pNvlTransportTestFixture, CooperativeAbortRecvDoesNotResurrectPeerB) {
+  runCooperativeAbortAcrossPeers(
+      /*receive=*/true, /*timeOutInWait=*/false);
+}
+
+TEST_F(P2pNvlTransportTestFixture, CooperativeAbortSendTimesOutDuringWait) {
+  runCooperativeAbortAcrossPeers(
+      /*receive=*/false, /*timeOutInWait=*/true);
+}
+
+TEST_F(P2pNvlTransportTestFixture, CooperativeAbortRecvTimesOutDuringWait) {
+  runCooperativeAbortAcrossPeers(
+      /*receive=*/true, /*timeOutInWait=*/true);
+}
+
 // Test various message sizes with default config
 TEST_F(P2pNvlTransportTestFixture, TileSendRecvMessageSizes) {
   // This target is configured for exactly 2 ranks. Anything else means the

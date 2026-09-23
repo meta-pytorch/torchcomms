@@ -11,6 +11,7 @@
 #include "comms/prims/core/CopyUtils.cuh"
 #include "comms/prims/core/DeviceCheck.cuh"
 #include "comms/prims/core/DeviceMacros.cuh"
+#include "comms/prims/core/GroupAbort.cuh"
 #include "comms/prims/core/MemcpyCopyOp.cuh"
 #include "comms/prims/core/SignalState.cuh"
 #include "comms/prims/core/ThreadGroup.cuh"
@@ -612,6 +613,34 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
       const AbortDevice& abortDevice = AbortDevice()) {
+    send_impl(group, src, nbytes, max_signal_bytes, abortDevice);
+  }
+
+  /**
+   * Blocking send coordinated by one GroupAbort shared across peer calls.
+   *
+   * Threads observe readiness independently and converge at the existing
+   * post-payload barrier. The group leader suppresses peer-visible publication
+   * once the shared abort becomes sticky, while every lane drains the same
+   * finite chunk count.
+   */
+  __device__ __forceinline__ void send(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      GroupAbort& groupAbort) {
+    send_impl(group, src, nbytes, max_signal_bytes, groupAbort);
+  }
+
+ private:
+  template <typename Abort>
+  __device__ __forceinline__ void send_impl(
+      ThreadGroup& group,
+      const void* __restrict__ src,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      Abort& abort) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
       return;
@@ -648,24 +677,21 @@ class P2pNvlTransportDevice {
       const uint64_t protocolStreamEnd =
           streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
-      if (protocolStreamEnd > layout.pipelineBytes) {
-        local_ch.slot_free.wait_until(
-            group,
-            CmpOp::CMP_GE,
-            protocolStreamEnd - layout.pipelineBytes,
-            abortDevice);
-      }
-      // Leave before the staging write and the DATA_READY signal below. The
-      // backpressure wait gave up, so the slot may still hold data the receiver
-      // has not consumed; worse, signalling DATA_READY would release a receiver
-      // that is correctly blocked and prevent it reaching its own deadline.
-      if (groupAborted(group, abortDevice)) {
+      const bool needsCredit = protocolStreamEnd > layout.pipelineBytes;
+      const uint64_t expected =
+          needsCredit ? protocolStreamEnd - layout.pipelineBytes : 0;
+      const WaitOutcome wait = wait_until_or_abort(
+          group, needsCredit ? &local_ch.slot_free : nullptr, expected, abort);
+      if (!wait.continueChunks) {
         break;
       }
 
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, copyBytes, nbytes);
-      if (validBytes > 0) {
+      // This is a lane-local race result, not a group-wide abort verdict. Some
+      // lanes may copy while others skip; the barrier below converges them and
+      // an observed abort suppresses publication of any partial payload.
+      if (wait.laneObservedReadyBeforeAbort && validBytes > 0) {
         memcpy_vectorized(
             layout.staging_ptr(stagBuf, position),
             srcPtr + dataOff,
@@ -674,19 +700,20 @@ class P2pNvlTransportDevice {
       }
 
       group.sync();
-      if (group.is_leader()) {
+      if (group.is_leader() && can_commit(abort)) {
         remote_ch.data_ready.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
       }
       dataOff += copyBytes;
     }
 
-    if (group.is_leader()) {
+    if (group.is_leader() && can_commit(abort)) {
       local_ch.send_cursor = static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
   }
 
+ public:
   template <typename CopyOp = Memcpy, typename... Args>
   __device__ __forceinline__ void recv(
       ThreadGroup& group,
@@ -694,6 +721,40 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       std::size_t max_signal_bytes = 0,
       [[maybe_unused]] const AbortDevice& abortDevice = AbortDevice(),
+      [[maybe_unused]] Args... args) {
+    recv_impl<CopyOp>(
+        group, dst, nbytes, max_signal_bytes, abortDevice, args...);
+  }
+
+  /**
+   * Blocking receive coordinated by one GroupAbort shared across peer calls.
+   * CopyOp must explicitly allow divergent invocation: lanes which observe
+   * abort before readiness skip it and converge at recv_impl's payload barrier.
+   */
+  template <typename CopyOp = Memcpy, typename... Args>
+  __device__ __forceinline__ void recv(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      GroupAbort& groupAbort,
+      [[maybe_unused]] Args... args) {
+    static_assert(
+        is_divergent_recv_safe_v<CopyOp>,
+        "GroupAbort recv requires a CopyOp with no rendezvous, group-wide "
+        "collective, or all-lane dependency");
+    recv_impl<CopyOp>(
+        group, dst, nbytes, max_signal_bytes, groupAbort, args...);
+  }
+
+ private:
+  template <typename CopyOp, typename Abort, typename... Args>
+  __device__ __forceinline__ void recv_impl(
+      ThreadGroup& group,
+      void* __restrict__ dst,
+      std::size_t nbytes,
+      std::size_t max_signal_bytes,
+      Abort& abort,
       [[maybe_unused]] Args... args) {
 #if PIPES_IS_DEVICE_COMPILE
     if (nbytes == 0) {
@@ -731,20 +792,18 @@ class P2pNvlTransportDevice {
       const uint64_t protocolStreamEnd =
           streamEnd + (isFinalChunk ? protocolTailPadding : 0);
 
-      local_ch.data_ready.wait_until(
-          group, CmpOp::CMP_GE, streamEnd, abortDevice);
-      // The wait above gave up rather than being satisfied, so this chunk was
-      // never written. Leave before the copy and, critically, before the
-      // SLOT_FREE credit below: signalling it would tell the sender we consumed
-      // a chunk it never sent, releasing a peer that is correctly blocked and
-      // stopping it from ever reaching its own deadline.
-      if (groupAborted(group, abortDevice)) {
+      const WaitOutcome wait =
+          wait_until_or_abort(group, &local_ch.data_ready, streamEnd, abort);
+      if (!wait.continueChunks) {
         break;
       }
 
       const std::size_t validBytes =
           valid_payload_bytes(dataOff, copyBytes, nbytes);
-      if (validBytes > 0) {
+      // This is a lane-local race result, not a group-wide abort verdict. Some
+      // lanes may copy while others skip; the barrier below converges them and
+      // an observed abort suppresses publication of any partial payload.
+      if (wait.laneObservedReadyBeforeAbort && validBytes > 0) {
         CopyOp::recv(
             dstPtr + dataOff,
             layout.staging_ptr(stagBuf, position),
@@ -755,22 +814,22 @@ class P2pNvlTransportDevice {
       }
 
       group.sync();
-      if (group.is_leader()) {
-        if (position.chunkOff + copyBytes == layout.perChannelSlot ||
-            isFinalChunk) {
-          remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
-        }
+      if (group.is_leader() && can_commit(abort) &&
+          (position.chunkOff + copyBytes == layout.perChannelSlot ||
+           isFinalChunk)) {
+        remote_ch.slot_free.signal(SignalOp::SIGNAL_SET, protocolStreamEnd);
       }
       dataOff += copyBytes;
     }
 
-    if (group.is_leader()) {
+    if (group.is_leader() && can_commit(abort)) {
       local_ch.recv_cursor = static_cast<int64_t>(baseByte + protocolBytes);
     }
     group.sync();
 #endif
   }
 
+ public:
   /**
    * init_send_progress - begin a resumable send on this group's channel.
    *
@@ -1550,6 +1609,83 @@ class P2pNvlTransportDevice {
   }
 
  private:
+  struct WaitOutcome {
+    bool laneObservedReadyBeforeAbort;
+    bool continueChunks;
+  };
+
+  /** Legacy blocking wait: converge immediately and stop this transfer. */
+  __device__ __forceinline__ static WaitOutcome wait_until_or_abort(
+      ThreadGroup& group,
+      SignalState* signal,
+      uint64_t expected,
+      const AbortDevice& abortDevice) {
+#if PIPES_IS_DEVICE_COMPILE
+    if (signal != nullptr) {
+      signal->wait_until(group, CmpOp::CMP_GE, expected, abortDevice);
+    }
+    if (groupAborted(group, abortDevice)) {
+      return {/*laneObservedReadyBeforeAbort=*/false, /*continueChunks=*/false};
+    }
+    return {/*laneObservedReadyBeforeAbort=*/true, /*continueChunks=*/true};
+#else
+    (void)group;
+    (void)signal;
+    (void)expected;
+    (void)abortDevice;
+    return {/*laneObservedReadyBeforeAbort=*/true, /*continueChunks=*/true};
+#endif
+  }
+
+  /**
+   * Wait until this lane observes readiness or the group observes an abort.
+   *
+   * Readiness remains lane-local. A ready lane may perform discardable payload
+   * work while another lane observes the sticky abort. The blocking transport
+   * always converges the complete group afterward before deciding whether to
+   * publish any signal or cursor update.
+   */
+  __device__ __forceinline__ static WaitOutcome wait_until_or_abort(
+      ThreadGroup& group,
+      SignalState* signal,
+      uint64_t expected,
+      GroupAbort& groupAbort) {
+#if PIPES_IS_DEVICE_COMPILE
+    if (signal != nullptr) {
+      return {
+          signal->wait_until_or_abort(
+              group, CmpOp::CMP_GE, expected, groupAbort),
+          /*continueChunks=*/true};
+    }
+
+    // A send that does not need credit still observes an existing/new abort
+    // before it enters discardable payload work.
+    bool ready = !groupAbort.observed();
+    if (ready && groupAbort.checkLeader(group)) {
+      ready = false;
+    }
+    return {ready, /*continueChunks=*/true};
+#else
+    (void)group;
+    (void)signal;
+    (void)expected;
+    (void)groupAbort;
+    return {/*laneObservedReadyBeforeAbort=*/true, /*continueChunks=*/true};
+#endif
+  }
+
+  __host__ __device__ __forceinline__ static bool can_commit(
+      const AbortDevice&) {
+    // The legacy path leaves its chunk loop before any peer-visible signal.
+    // Preserve its existing epilogue behavior, including cursor advancement.
+    return true;
+  }
+
+  __device__ __forceinline__ static bool can_commit(
+      const GroupAbort& groupAbort) {
+    return !groupAbort.observed();
+  }
+
   struct NvlPipelinePosition {
     std::size_t slotOff;
     std::size_t chunkOff;
