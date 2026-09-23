@@ -12,6 +12,8 @@ PFN_cuDeviceGet_v2000 pfn_cuDeviceGet = nullptr;
 PFN_cuDeviceGetAttribute_v2000 pfn_cuDeviceGetAttribute = nullptr;
 PFN_cuCtxGetCurrent_v4000 pfn_cuCtxGetCurrent = nullptr;
 PFN_cuGetErrorString_v6000 pfn_cuGetErrorString = nullptr;
+PFN_cuStreamWriteValue64_v11070 pfn_cuStreamWriteValue64 = nullptr;
+PFN_cuStreamWaitValue64_v11070 pfn_cuStreamWaitValue64 = nullptr;
 PFN_cuMemCreate_v10020 pfn_cuMemCreate = nullptr;
 PFN_cuMemRelease_v10020 pfn_cuMemRelease = nullptr;
 PFN_cuMemAddressReserve_v10020 pfn_cuMemAddressReserve = nullptr;
@@ -104,6 +106,8 @@ void do_init() {
   LOAD(cuDeviceGetAttribute, 2000);
   LOAD(cuCtxGetCurrent, 4000);
   LOAD(cuGetErrorString, 6000);
+  LOAD(cuStreamWriteValue64, 11070);
+  LOAD(cuStreamWaitValue64, 11070);
   LOAD(cuMemCreate, 10020);
   LOAD(cuMemRelease, 10020);
   LOAD(cuMemAddressReserve, 10020);
