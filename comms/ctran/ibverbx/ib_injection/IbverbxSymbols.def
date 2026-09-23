@@ -1,0 +1,145 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+// The verbs the shim must EXPORT, and how each is resolved.
+//
+// buildIbvSymbols resolves every one of these on the handle it dlopen'd. The shim
+// IS that handle, and it opens the real provider RTLD_LOCAL, so a verb the shim
+// does not export is simply absent -- LOAD_IBVERBS_SYM then fails ibvInit(). So
+// this table has to stay a superset of what buildIbvSymbols asks for.
+//
+// Three groups, because the lookup style differs and a mismatch fails exactly
+// like a missing symbol:
+//
+//   VERSIONED   ibv_*      resolved with dlvsym at an exact version node.
+//   MLX5_VER    mlx5dv_*   resolved with dlvsym at an MLX5_* node.
+//   MLX5_UNVER  mlx5dv_*   resolved with plain dlsym. fbcode's vendored libmlx5
+//                          tags these at non-upstream versions, so ibverbx
+//                          deliberately does an unversioned lookup for them.
+//
+// The mlx5 verbs are served by THIS library too: ibverbx points both its
+// ibvhandle and mlx5dvhandle dlopen calls at the same file, and nothing calls an
+// mlx5dv_* function directly -- every call site goes through
+// ibvSymbols.mlx5dv_internal_*. So one shim covers both verb sets, and there is
+// exactly one Engine.
+//
+// Every verb here is a pure forwarder generated from this table: the shim in this
+// diff observes nothing and changes nothing.
+//
+// The `required` column mirrors how ibverbx loads the verb, because the shim
+// exports all of them unconditionally and so cannot reproduce "symbol absent" by
+// staying absent:
+//
+//   kRequired  LOAD_IBVERBS_SYM -- ibverbx fails ibvInit() without it. The shim
+//              aborts instead, naming the verb the real provider lacks: it is
+//              loaded only on purpose, so a missing load-bearing verb voids the
+//              run rather than degrading it.
+//   kOptional  LOAD_IBVERBS_SYM_WARN_ONLY / _VERSION -- ibverbx leaves the
+//              pointer null and callers degrade. The shim cannot hand back a null
+//              pointer, so it forwards a failure instead: EOPNOTSUPP and a
+//              type-appropriate error value, never a success-like one.
+//
+// Every mlx5 verb is optional: ibverbx's mlx5 loads are all warn-only, so those
+// two tables carry no column.
+//
+// Columns: name, symbol version, required, return type, parameter list, argument
+// list.
+
+// clang-format off
+#define IB_INJECTION_FORWARDED_VERBS_VERSIONED                                  \
+  X(ibv_open_device, "IBVERBS_1.1", kRequired, ibv_context*,                    \
+    (ibv_device* device), (device))                                             \
+  X(ibv_close_device, "IBVERBS_1.1", kRequired, int,                            \
+    (ibv_context* context), (context))                                          \
+  X(ibv_alloc_pd, "IBVERBS_1.1", kRequired, ibv_pd*,                            \
+    (ibv_context* context), (context))                                          \
+  X(ibv_reg_mr, "IBVERBS_1.1", kRequired, ibv_mr*,                              \
+    (ibv_pd* pd, void* addr, size_t length, int access),                        \
+    (pd, addr, length, access))                                                 \
+  X(ibv_create_cq, "IBVERBS_1.1", kRequired, ibv_cq*,                           \
+    (ibv_context* context, int cqe, void* cq_context,                           \
+     ibv_comp_channel* channel, int comp_vector),                               \
+    (context, cqe, cq_context, channel, comp_vector))                           \
+  X(ibv_destroy_cq, "IBVERBS_1.1", kRequired, int, (ibv_cq* cq), (cq))          \
+  X(ibv_create_qp, "IBVERBS_1.1", kRequired, ibv_qp*,                           \
+    (ibv_pd* pd, ibv_qp_init_attr* qp_init_attr), (pd, qp_init_attr))           \
+  X(ibv_modify_qp, "IBVERBS_1.1", kRequired, int,                               \
+    (ibv_qp* qp, ibv_qp_attr* attr, int mask), (qp, attr, mask))                \
+  X(ibv_destroy_qp, "IBVERBS_1.1", kRequired, int, (ibv_qp* qp), (qp))          \
+  X(ibv_get_device_list, "IBVERBS_1.1", kRequired, ibv_device**,                 \
+    (int* num_devices), (num_devices))                                          \
+  X(ibv_free_device_list, "IBVERBS_1.1", kRequired, void,                       \
+    (ibv_device** list), (list))                                                \
+  X(ibv_get_device_name, "IBVERBS_1.1", kRequired, const char*,                 \
+    (ibv_device* device), (device))                                             \
+  X(ibv_get_async_event, "IBVERBS_1.1", kRequired, int,                         \
+    (ibv_context* context, ibv_async_event* event), (context, event))            \
+  X(ibv_ack_async_event, "IBVERBS_1.1", kRequired, void,                        \
+    (ibv_async_event* event), (event))                                          \
+  X(ibv_query_device, "IBVERBS_1.1", kRequired, int,                            \
+    (ibv_context* context, ibv_device_attr* attr), (context, attr))              \
+  X(ibv_query_port, "IBVERBS_1.1", kRequired, int,                              \
+    (ibv_context* context, uint8_t port, ibv_port_attr* attr),                   \
+    (context, port, attr))                                                      \
+  X(ibv_query_gid, "IBVERBS_1.1", kRequired, int,                               \
+    (ibv_context* context, uint8_t port, int index, ibv_gid* gid),               \
+    (context, port, index, gid))                                                \
+  X(ibv_query_qp, "IBVERBS_1.1", kRequired, int,                                \
+    (ibv_qp* qp, ibv_qp_attr* attr, int mask, ibv_qp_init_attr* init),           \
+    (qp, attr, mask, init))                                                     \
+  X(ibv_alloc_parent_domain, "IBVERBS_1.1", kOptional, ibv_pd*,                 \
+    (ibv_context* context, ibv_parent_domain_init_attr* attr),                   \
+    (context, attr))                                                            \
+  X(ibv_dealloc_pd, "IBVERBS_1.1", kRequired, int, (ibv_pd* pd), (pd))          \
+  X(ibv_reg_mr_iova2, "IBVERBS_1.8", kOptional, ibv_mr*,                        \
+    (ibv_pd* pd, void* addr, size_t length, uint64_t iova, unsigned int access), \
+    (pd, addr, length, iova, access))                                            \
+  X(ibv_reg_dmabuf_mr, "IBVERBS_1.12", kOptional, ibv_mr*,                      \
+    (ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova, int fd,           \
+     int access),                                                                \
+    (pd, offset, length, iova, fd, access))                                      \
+  X(ibv_dereg_mr, "IBVERBS_1.1", kRequired, int, (ibv_mr* mr), (mr))            \
+  X(ibv_fork_init, "IBVERBS_1.1", kRequired, int, (void), ())                   \
+  X(ibv_event_type_str, "IBVERBS_1.1", kRequired, const char*,                  \
+    (ibv_event_type event), (event))                                            \
+  X(ibv_create_comp_channel, "IBVERBS_1.0", kOptional, ibv_comp_channel*,       \
+    (ibv_context* context), (context))                                          \
+  X(ibv_destroy_comp_channel, "IBVERBS_1.0", kOptional, int,                    \
+    (ibv_comp_channel* channel), (channel))                                     \
+  X(ibv_get_cq_event, "IBVERBS_1.0", kOptional, int,                            \
+    (ibv_comp_channel* channel, ibv_cq** cq, void** cq_context),                 \
+    (channel, cq, cq_context))                                                   \
+  X(ibv_ack_cq_events, "IBVERBS_1.0", kOptional, void,                          \
+    (ibv_cq* cq, unsigned int nevents), (cq, nevents))                          \
+  X(ibv_query_ece, "IBVERBS_1.10", kOptional, int,                              \
+    (ibv_qp* qp, ibv_ece* ece), (qp, ece))                                      \
+  X(ibv_set_ece, "IBVERBS_1.10", kOptional, int,                                \
+    (ibv_qp* qp, ibv_ece* ece), (qp, ece))                                      \
+  X(ibv_is_fork_initialized, "IBVERBS_1.13", kOptional, ibv_fork_status,        \
+    (void), ())
+
+// mlx5dv_* resolved with dlvsym at an MLX5_* node.
+#define IB_INJECTION_FORWARDED_VERBS_MLX5_VER                                   \
+  X(mlx5dv_init_obj, "MLX5_1.2", int,                                           \
+    (mlx5dv_obj* obj, uint64_t obj_type), (obj, obj_type))                      \
+  X(mlx5dv_get_data_direct_sysfs_path, "MLX5_1.25", int,                        \
+    (ibv_context* context, char* buf, size_t buf_len),                          \
+    (context, buf, buf_len))                                                    \
+  X(mlx5dv_reg_dmabuf_mr, "MLX5_1.25", ibv_mr*,                                 \
+    (ibv_pd* pd, uint64_t offset, size_t length, uint64_t iova, int fd,          \
+     int access, int mlx5_access),                                              \
+    (pd, offset, length, iova, fd, access, mlx5_access))                        \
+  X(mlx5dv_dci_stream_id_reset, "MLX5_1.21", int,                               \
+    (ibv_qp* qp, uint16_t stream_id), (qp, stream_id))                          \
+  X(mlx5dv_is_supported, "MLX5_1.8", bool, (ibv_device* device), (device))
+
+// mlx5dv_* resolved with plain dlsym -- no version node. ibverbx does this
+// deliberately for these: fbcode's vendored libmlx5 tags them at non-upstream
+// versions, so a dlvsym on any MLX5_* node fails.
+#define IB_INJECTION_FORWARDED_VERBS_MLX5_UNVER                                 \
+  X(mlx5dv_query_device, int,                                                   \
+    (ibv_context* ctx_in, mlx5dv_context* attrs_out), (ctx_in, attrs_out))      \
+  X(mlx5dv_create_qp, ibv_qp*,                                                  \
+    (ibv_context* context, ibv_qp_init_attr_ex* qp_attr,                        \
+     mlx5dv_qp_init_attr* mlx5_qp_attr),                                        \
+    (context, qp_attr, mlx5_qp_attr))
+// clang-format on
