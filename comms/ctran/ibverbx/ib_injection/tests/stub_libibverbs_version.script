@@ -13,6 +13,23 @@
 IBVERBS_1.1 {
     global:
         ibv_query_device;
+        # The object lifecycle the deregister-on-success test drives. Same node
+        # as ibv_query_device because that is what the shim's realSym asks for.
+        ibv_open_device;
+        ibv_close_device;
+        ibv_create_cq;
+        ibv_destroy_cq;
+    local:
+        *;
+};
+
+# Not libibverbs symbols: the knobs that make the stub's destroy verbs fail. On
+# their own node so they cannot be mistaken for part of the provider surface, and
+# with a single definition each so plain dlsym finds them.
+IB_INJECTION_STUB_1.0 {
+    global:
+        stubSetDestroyCqRet;
+        stubSetCloseDeviceRet;
     local:
         *;
 };

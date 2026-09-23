@@ -19,25 +19,47 @@
 // what makes the delegation test an independent check rather than the table
 // agreeing with itself.
 //
-// Each verb returns a distinct sentinel and echoes an argument back through an
-// out-param, so the test can tell "the forwarder reached me" from "the
-// forwarder reached me with the arguments the caller passed".
+// Each pass-through verb returns a distinct sentinel and echoes an argument
+// back through an out-param, so the test can tell "the forwarder reached me"
+// from "the forwarder reached me with the arguments the caller passed".
 //
-// Three verbs, one per lookup style the shim implements:
+// Three of those, one per lookup style the shim implements:
 //   ibv_query_device     dlvsym on the ibv handle       (realSym)
 //   mlx5dv_init_obj      dlvsym on the mlx5 handle      (realMlx5Sym w/
 //   version) mlx5dv_query_device  plain dlsym on the mlx5 handle (realMlx5Sym
 //   w/ nullptr)
+//
+// Then the object lifecycle verbs, which are here for a different reason: the
+// shim registers what they hand out and deregisters only once the provider's
+// destroy returns 0. Proving that ordering needs a provider whose destroy can
+// be made to FAIL on demand, which no real one will do -- hence
+// stubSetDestroyCqRet and stubSetCloseDeviceRet.
 
 #include <cstdint>
 
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/ib_injection/tests/IbInjectionStubLibibverbs.h"
 
+using ibverbx::ibv_comp_channel;
 using ibverbx::ibv_context;
+using ibverbx::ibv_cq;
+using ibverbx::ibv_device;
 using ibverbx::ibv_device_attr;
 using ibverbx::mlx5dv_context;
 using ibverbx::mlx5dv_obj;
+
+namespace {
+
+// One of each is enough: the delegation test holds a single context and CQ at a
+// time, and reusing the address across opens also exercises the registries'
+// idempotence.
+ibv_context stubContext;
+ibv_cq stubCq;
+
+int destroyCqRet = 0;
+int closeDeviceRet = 0;
+
+} // namespace
 
 extern "C" {
 
@@ -67,6 +89,48 @@ int mlx5dv_query_device(ibv_context* context, mlx5dv_context* attrs) {
   }
   attrs->comp_mask = (context == nullptr) ? 0u : kStubCompMask;
   return kStubQueryMlx5DeviceRet;
+}
+
+// Zeroed on every open so the shim's overwrite of ops.{poll_cq, post_send,
+// post_recv} starts from a clean vtable rather than the previous run's shims.
+ibv_context* ibv_open_device(ibv_device* /*device*/) {
+  stubContext = ibv_context{};
+  return &stubContext;
+}
+
+int ibv_close_device(ibv_context* /*context*/) {
+  return closeDeviceRet;
+}
+
+ibv_cq* ibv_create_cq(
+    ibv_context* context,
+    int cqe,
+    void* cq_context,
+    ibv_comp_channel* channel,
+    int /*comp_vector*/) {
+  stubCq = ibv_cq{};
+  // registerCq attributes the CQ by reading cq->context, and forgetContext
+  // matches on the same field, so this is the one that has to be right.
+  stubCq.context = context;
+  stubCq.cq_context = cq_context;
+  stubCq.channel = channel;
+  stubCq.cqe = cqe;
+  return &stubCq;
+}
+
+int ibv_destroy_cq(ibv_cq* /*cq*/) {
+  return destroyCqRet;
+}
+
+// Set by the test, read by the two verbs above. Exported so the test can reach
+// them with dlsym on this same instance -- a second copy would arm knobs the
+// shim's forwarders never read.
+void stubSetDestroyCqRet(int ret) {
+  destroyCqRet = ret;
+}
+
+void stubSetCloseDeviceRet(int ret) {
+  closeDeviceRet = ret;
 }
 
 } // extern "C"
