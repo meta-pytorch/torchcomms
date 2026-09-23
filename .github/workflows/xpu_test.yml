@@ -10,8 +10,6 @@ on:
 permissions:
   id-token: write
   contents: read
-  # REQUIRED: Allow reading actions runner statuses from the API
-  actions: read
 
 concurrency:
   group: xpu_ci_test-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_number || github.ref }}
@@ -22,10 +20,7 @@ jobs:
     # Don't run on forked repos or empty test matrix
     if: github.repository_owner == 'meta-pytorch'
     timeout-minutes: 120
-    # Shared label carried by both the IDC (PVC) and client (BMG) pools, so the
-    # job lands on whichever pool has a free runner. Note that a list of labels
-    # here would mean "runner has ALL of these", not "any of these".
-    runs-on: linux.xpu.dist
+    runs-on: linux.xpu.dist #Common runner label
     env:
       DOCKER_IMAGE: ubuntu:24.04
     steps:
@@ -82,12 +77,7 @@ jobs:
           render_gid=$(cat /etc/group | grep render | cut -d: -f3)
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
       
-      # The job can land on either the IDC (PVC) or client (BMG) pool, so select
-      # the OMIX channel from the GPU actually present on this runner. This
-      # mirrors the device detection in the runner setup script that assigns the
-      # pool labels. The runner labels themselves are not usable here: they are
-      # only exposed via the API, and these runners are registered at the org
-      # level, so the repo-scoped runners endpoint does not list them.
+        # Choose the OMIX Repo based on the GPU device
       - name: Select OMIX Repo
         shell: bash
         run: |
@@ -149,6 +139,7 @@ jobs:
             -e BRANCH \
             -e SHA1 \
             -e RUNNER_NAME \
+            -e CONDA_PKGS_DIRS=/var/lib/jenkins/workspace/.conda_pkgs_cache \
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
