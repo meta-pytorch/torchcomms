@@ -185,29 +185,36 @@ seam are identical.
 ### C++ CI test
 
 The only surface that can call the control API, so the only one that gets
-assertions. A test arms rules through the C entry points; the `injection::*` C++
-bridge that wraps them lands with the harness in the next diff.
+assertions. Point the target at the shim and drive it through the bridge
+(`IbInjectionControl.h`):
+
+```python
+env = {
+    "IBVERBX_IBVERBS_SO": "$(exe_target //comms/ctran/ibverbx/ib_injection:libibverbs.so)",
+}
+deps = ["//comms/ctran/ibverbx/ib_injection:ib-injection-control"]
+```
 
 ```cpp
-// Fail the third QP creation: mid-VC-setup, two QPs already live.
-IbInjectionRule r{};
-r.verb              = IB_INJECTION_VERB_CREATE_QP;
-r.action            = IB_INJECTION_ACTION_API_ERROR;
-r.errnoValue        = ENOMEM;
-r.selector.deviceId = IB_INJECTION_ANY_DEVICE;
-r.selector.hwQpNum  = IB_INJECTION_ANY_QP;
-r.selector.opcode   = IB_INJECTION_ANY_OPCODE;
-r.repeat            = {.firstMatch = 3, .everyNth = 1, .count = 1};
+injection::reset();  // after ctran init, so only your traffic is measured
 
-uint32_t ruleId = 0;
-ibInjectionAddRule(&r, &ruleId);
-// ... drive ctran, then read back counters with ibInjectionGetState().
+// Fail the third QP creation: mid-VC-setup, two QPs already live.
+injection::addSetupError(
+    IB_INJECTION_VERB_CREATE_QP, ENOMEM, /*firstMatch=*/3);
+
+// ... drive ctran ...
+const auto s = injection::getState();
+EXPECT_EQ(s.rules[0].firings, 1u);  // a rule that never fired proves nothing
 ```
 
 Setup-verb rules need no handshake at all, because they fire before any QP exists.
 A data-path rule that must name one specific QP has to be armed after connections
 are up, since `qp_num` is assigned by the provider — read it back from ctran's
-public accessors (`getDataQpNums()`) and put it in `selector.hwQpNum`.
+public accessors (`getDataQpNums()`) and pass it to `addPostError`.
+
+`injection::*` is the C++ bridge; each call is a thin wrapper over the exported C
+entry points (`ibInjectionAddRule`, `ibInjectionGetState`, …), which is what
+crosses the `dlopen` boundary.
 
 ### collperf and e2e farm jobs
 
@@ -304,6 +311,7 @@ software event the shim can move?
 | `IbverbxSymbols.def` | table of verbs to forward, and how each is resolved |
 | `InjectionEngine.{h,cc}` | rule matching, repeat scheduling, held-CQE queues, counters |
 | `version.script` | export list; a missing entry aborts `ibvInit()` |
+| `IbInjectionControl.{h,cc}` | C++ bridge: dlsym the control surface, named rule helpers |
 
 `IbverbxSymbols.def` and `version.script` must stay a superset of what
 `buildIbvSymbols` resolves: it uses `dlvsym` (or plain `dlsym` for two mlx5
