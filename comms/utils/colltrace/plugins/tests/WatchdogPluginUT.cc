@@ -65,7 +65,7 @@ class WatchdogPluginTest : public ::testing::Test {
     return true; // Simulate error condition
   }
 
-  static void mockTriggerOnError(CollTraceEvent& event) {
+  static void mockTriggerOnError(const CollTraceEvent& event) {
     triggerCallCount.fetch_add(1);
     lastTriggeredCollId.store(event.collRecord->getCollId());
   }
@@ -226,7 +226,7 @@ TEST_F(WatchdogPluginTest, LambdaFunctionsInConfig) {
   WatchdogPluginConfig config{
       .funcIfError = [&errorCondition]() { return errorCondition; },
       .funcTriggerOnError =
-          [&triggerCalled, &triggeredCollId](CollTraceEvent& event) {
+          [&triggerCalled, &triggeredCollId](const CollTraceEvent& event) {
             triggerCalled = true;
             triggeredCollId = event.collRecord->getCollId();
           },
@@ -620,13 +620,13 @@ TEST_F(WatchdogPluginTest, NewExecutionResetsTimeoutLatch) {
 // Test timeout with custom timeout callback
 TEST_F(WatchdogPluginTest, TimeoutWithCustomCallback) {
   bool timeoutTriggered = false;
-  CollTraceEvent* timeoutEvent = nullptr;
+  const CollTraceEvent* timeoutEvent = nullptr;
 
   WatchdogPluginConfig config{
       .checkTimeout = true,
       .timeout = std::chrono::milliseconds{-1},
       .funcTriggerOnTimeout =
-          [&timeoutTriggered, &timeoutEvent](CollTraceEvent& event) {
+          [&timeoutTriggered, &timeoutEvent](const CollTraceEvent& event) {
             timeoutTriggered = true;
             timeoutEvent = &event;
           },
@@ -656,11 +656,13 @@ TEST_F(WatchdogPluginTest, AsyncErrorAndTimeoutTogether) {
       .checkAsyncError = true,
       .funcIfError = [&errorCondition]() { return errorCondition; },
       .funcTriggerOnError =
-          [&errorTriggerCount](CollTraceEvent&) { errorTriggerCount++; },
+          [&errorTriggerCount](const CollTraceEvent&) { errorTriggerCount++; },
       .checkTimeout = true,
       .timeout = std::chrono::milliseconds{-1},
       .funcTriggerOnTimeout =
-          [&timeoutTriggerCount](CollTraceEvent&) { timeoutTriggerCount++; },
+          [&timeoutTriggerCount](const CollTraceEvent&) {
+            timeoutTriggerCount++;
+          },
   };
   plugin = std::make_unique<WatchdogPlugin>(config);
 

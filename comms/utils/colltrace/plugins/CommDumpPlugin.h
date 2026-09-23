@@ -121,18 +121,16 @@ class CommDumpPlugin : public ICollTracePlugin {
   std::string_view getName() const noexcept override;
 
   CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelStart(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid collEventProgressing(const CollTraceEvent& curEvent) override;
 
-  CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
 
   CommsMaybeVoid afterCollTerminated(
       CollTraceEvent& curEvent,

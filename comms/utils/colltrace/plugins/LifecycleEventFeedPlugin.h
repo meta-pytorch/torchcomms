@@ -50,16 +50,14 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
 
   std::string_view getName() const noexcept override;
 
-  CommsMaybeVoid afterCollRecorded(CollTraceEvent& curEvent) noexcept override;
+  CommsMaybeVoid afterCollRecorded(const CollTraceEvent& curEvent) override;
   CommsMaybeVoid beforeCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
   CommsMaybeVoid afterCollKernelScheduled(
-      CollTraceEvent& curEvent) noexcept override;
-  CommsMaybeVoid afterCollKernelStart(
-      CollTraceEvent& curEvent) noexcept override;
-  CommsMaybeVoid collEventProgressing(
-      CollTraceEvent& curEvent) noexcept override;
-  CommsMaybeVoid afterCollKernelEnd(CollTraceEvent& curEvent) noexcept override;
+      const CollTraceEvent& curEvent) override;
+  CommsMaybeVoid afterCollKernelStart(const CollTraceEvent& curEvent) override;
+  CommsMaybeVoid collEventProgressing(const CollTraceEvent& curEvent) override;
+  CommsMaybeVoid afterCollKernelEnd(const CollTraceEvent& curEvent) override;
 
   std::vector<LifecycleEventRecord> drainUnreadLifecycleEvents() noexcept;
   uint64_t getLatestLifecycleCollectiveId() const noexcept;
@@ -69,8 +67,8 @@ class LifecycleEventFeedPlugin : public ICollTracePlugin {
 
  private:
   CommsMaybeVoid recordEvent(
-      CollTraceEvent& curEvent,
-      LifecycleEventType eventType) noexcept;
+      const CollTraceEvent& curEvent,
+      LifecycleEventType eventType);
 
   uint64_t commId_{0};
   logger::CommsSpdlogLogger* logger_{nullptr};
