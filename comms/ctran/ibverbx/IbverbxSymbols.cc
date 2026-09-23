@@ -582,14 +582,27 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
     }
   }
 
-  // Load mlx5dv symbols if available, do not abort if failed
-  mlx5dvhandle = dlopen("libmlx5.so", RTLD_NOW);
+  // Load mlx5dv symbols if available, do not abort if failed.
+  //
+  // ibv_path is honored here too, so pointing IBVERBX_IBVERBS_SO at the
+  // ib_injection shim covers mlx5dv_* as well as ibv_*. Nothing calls an
+  // mlx5dv_* function directly -- every call site goes through
+  // ibvSymbols.mlx5dv_internal_* -- so the handle a symbol came from is
+  // invisible once loaded, and one library can serve both. dlopen on an
+  // already-loaded file returns the same handle with a bumped refcount, so this
+  // does not load a second copy.
+  if (!ibv_path.empty() && dlsym(ibvhandle, "mlx5dv_query_device") != nullptr) {
+    mlx5dvhandle = dlopen(ibv_path.c_str(), RTLD_NOW);
+  }
   if (!mlx5dvhandle) {
-    mlx5dvhandle = dlopen("libmlx5.so.1", RTLD_NOW);
+    mlx5dvhandle = dlopen("libmlx5.so", RTLD_NOW);
     if (!mlx5dvhandle) {
-      CTRAN_LOG(
-          WARN,
-          "Failed to open libmlx5.so[.1]. Advance features like CX-8 Direct-NIC will be disabled.");
+      mlx5dvhandle = dlopen("libmlx5.so.1", RTLD_NOW);
+      if (!mlx5dvhandle) {
+        CTRAN_LOG(
+            WARN,
+            "Failed to open libmlx5.so[.1]. Advance features like CX-8 Direct-NIC will be disabled.");
+      }
     }
   }
 
