@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include <type_traits>
+
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
@@ -46,6 +48,82 @@ __device__ __forceinline__ const T* getBufAtByteOffset(
     size_t offset) {
   return reinterpret_cast<const T*>(
       reinterpret_cast<const char*>(buf) + offset);
+}
+
+template <typename T, commRedOp_t RedOp>
+inline constexpr bool kUseBfloat16AvgPreMul =
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+    std::is_same_v<T, __nv_bfloat16> && RedOp == commAvg;
+#else
+    false;
+#endif
+
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+__device__ __forceinline__ __nv_bfloat16
+getBfloat16AvgPreMul(const KernArgs& args) {
+  if (args.avgPreMul == 0.0f) {
+    trap();
+  }
+  return __float2bfloat16(args.avgPreMul);
+}
+#endif
+
+template <typename T, commRedOp_t RedOp, bool FinalizeAvg>
+__device__ __forceinline__ void reduceRing(
+    const KernArgs& args,
+    const AlgoContext& algoCtx,
+    size_t nsrcs,
+    const T** srcs,
+    size_t ndsts,
+    T** dsts,
+    size_t count) {
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+  if constexpr (kUseBfloat16AvgPreMul<T, RedOp>) {
+    localReducePreMulSumSrc0<T>(
+        nsrcs,
+        srcs,
+        ndsts,
+        dsts,
+        count,
+        blockIdx.x,
+        gridDim.x,
+        getBfloat16AvgPreMul(args));
+    return;
+  }
+#endif
+  if constexpr (RedOp == commAvg && !FinalizeAvg) {
+    localReduce<T, commSum>(
+        nsrcs, srcs, ndsts, dsts, count, blockIdx.x, gridDim.x, algoCtx.nRanks);
+  } else {
+    localReduce<T, RedOp>(
+        nsrcs, srcs, ndsts, dsts, count, blockIdx.x, gridDim.x, algoCtx.nRanks);
+  }
+}
+
+template <typename T, commRedOp_t RedOp>
+__device__ __forceinline__ void copyRing(
+    const KernArgs& args,
+    const AlgoContext& algoCtx,
+    const T* src,
+    T* dst,
+    size_t count) {
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+  if constexpr (kUseBfloat16AvgPreMul<T, RedOp>) {
+    const T* srcs[1] = {src};
+    T* dsts[1] = {dst};
+    localReducePreMulSumSrc0<T>(
+        1,
+        srcs,
+        1,
+        dsts,
+        count,
+        blockIdx.x,
+        gridDim.x,
+        getBfloat16AvgPreMul(args));
+    return;
+  }
+#endif
+  ctranKernCopyRaw<T>(src, dst, count, blockIdx.x, gridDim.x);
 }
 
 template <typename T, commRedOp_t RedOp, bool Unpack>
@@ -139,17 +217,14 @@ __device__ __forceinline__ void _progressRecv(
     const T* srcs[2] = {send_data, tmpRecvBuf};
     if (isRecvFwd_ && !updateData) { // steps [0, n-1)
       // update only next step's sendBuf
-      if constexpr (RedOp == commAvg) {
-        localReduce<T, commSum>(
-            2, srcs, tmpSendBuf, roundArgs.numel, algoCtx.nRanks);
-      } else {
-        localReduce<T, RedOp>(
-            2, srcs, tmpSendBuf, roundArgs.numel, algoCtx.nRanks);
-      }
+      T* dsts[1] = {tmpSendBuf};
+      reduceRing<T, RedOp, /*FinalizeAvg=*/false>(
+          args, algoCtx, 2, srcs, 1, dsts, roundArgs.numel);
     } else if (isRecvFwd_ && updateData) { // step n-1
       // update both next step's sendBuf and data
       T* dsts[2] = {recv_data, tmpSendBuf};
-      localReduce<T, RedOp>(2, srcs, 2, dsts, roundArgs.numel, algoCtx.nRanks);
+      reduceRing<T, RedOp, /*FinalizeAvg=*/true>(
+          args, algoCtx, 2, srcs, 2, dsts, roundArgs.numel);
     }
   } else {
     if (isRecvFwd_ && updateData) { // steps [n, 2n-2)
@@ -218,8 +293,7 @@ __device__ __forceinline__ void _progressSend(
       tmpSendBuf,
       roundArgs.numel);
 
-  ctranKernCopyRaw<T>(
-      send_data, tmpSendBuf, roundArgs.numel, blockIdx.x, gridDim.x);
+  copyRing<T, RedOp>(args, algoCtx, send_data, tmpSendBuf, roundArgs.numel);
 
   // Notify host side its completion
   complete(args.sendCopySync, blockIdx.x, round);
