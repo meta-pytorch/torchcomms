@@ -22,7 +22,10 @@ jobs:
     # Don't run on forked repos or empty test matrix
     if: github.repository_owner == 'meta-pytorch'
     timeout-minutes: 120
-    runs-on: ["linux.idc.xpu.dist", "linux.client.xpu.dist"]
+    # Shared label carried by both the IDC (PVC) and client (BMG) pools, so the
+    # job lands on whichever pool has a free runner. Note that a list of labels
+    # here would mean "runner has ALL of these", not "any of these".
+    runs-on: linux.xpu.dist
     env:
       DOCKER_IMAGE: ubuntu:24.04
     steps:
@@ -79,24 +82,28 @@ jobs:
           render_gid=$(cat /etc/group | grep render | cut -d: -f3)
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
       
-      # Cleaned API Label Query (Pure If / Else matching your custom runner environments)
-      - name: Select OMIX Repo via GitHub API
+      # The job can land on either the IDC (PVC) or client (BMG) pool, so select
+      # the OMIX channel from the GPU actually present on this runner. This
+      # mirrors the device detection in the runner setup script that assigns the
+      # pool labels. The runner labels themselves are not usable here: they are
+      # only exposed via the API, and these runners are registered at the org
+      # level, so the repo-scoped runners endpoint does not list them.
+      - name: Select OMIX Repo
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUNNER_NAME: ${{ runner.name }}
         run: |
-          # Fetch runner labels from the GitHub API using the current runner's name
-          RUNNER_LABELS=$(gh api "repos/${{ github.repository }}/actions/runners" \
-            --jq ".runners[] | select(.name == \"$RUNNER_NAME\") | .labels[].name")
-          
-          # Match exactly the labels for either the IDC or Client groups
-          if echo "$RUNNER_LABELS" | grep -q "^linux.idc.xpu.dist$"; then
-            echo "OMIX_REPO=intel-omix-pvc" >> $GITHUB_ENV
-            echo "Selected Data Center PVC OMIX channel"
+          device_list=$(timeout 30 clinfo -l || true)
+          msg="Please file an issue on meta-pytorch/torchcomms reporting the faulty runner. Include a link to the runner logs so the runner can be identified"
+          if echo "$device_list" | grep -q 'Intel(R) Data Center GPU Max'; then
+            echo "OMIX_REPO=intel-omix-pvc" >> "${GITHUB_ENV}"
+            echo "Detected Data Center GPU Max, selected PVC OMIX channel"
+          elif echo "$device_list" | grep -q 'Intel(R) Arc(TM) Pro B60 Graphics'; then
+            echo "OMIX_REPO=intel-omix" >> "${GITHUB_ENV}"
+            echo "Detected Arc Pro B60, selected client BMG OMIX channel"
           else
-            echo "OMIX_REPO=intel-omix" >> $GITHUB_ENV
-            echo "Selected Client BMG OMIX channel"
+            echo "Error: could not determine the XPU device on this runner"
+            echo "clinfo -l reported: ${device_list}"
+            echo "$msg"
+            exit 1
           fi
 
       - name: Get docker image
