@@ -189,6 +189,7 @@ static ncclResult_t canConnect(int* ret, struct ncclComm* comm, struct ncclTopoG
 }
 
 NCCL_PARAM(NetSharedBuffers, "NET_SHARED_BUFFERS", -2);
+NCCL_PARAM(LazyNetSharedBuffers, "LAZY_NET_SHARED_BUFFERS", 0);
 NCCL_PARAM(NetSharedComms, "NET_SHARED_COMMS", 1);
 
 #if defined(HIP_CONTIGUOUS_MEMORY)
@@ -860,7 +861,9 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
 
   if (size) *size = state->size;
 
-  if (cuda && state->cudaBuff == NULL) {
+  // proxySharedInit reserves metadata without requesting a backing buffer.
+  const bool needBacking = !ncclParamLazyNetSharedBuffers() || gpuPtr || cpuPtr || ipcDesc;
+  if (needBacking && cuda && state->cudaBuff == NULL) {
     if (sameProcess == 0 || ncclCuMemEnable()) {
       NCCLCHECK(ncclP2pAllocateShareableBuffer(state->size, 0, &state->ipcDesc, (void**)&state->cudaBuff, /*peerRank=*/-1, proxyState->memManager));
     } else {
@@ -878,7 +881,7 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
 #endif
     }
   }
-  if (!cuda && state->hostBuff == NULL) {
+  if (needBacking && !cuda && state->hostBuff == NULL) {
     NCCLCHECK(ncclCudaHostCalloc(&state->hostBuff, state->size));
   }
   if (cpuPtr) *cpuPtr = cuda ? state->cudaBuff : state->hostBuff;
