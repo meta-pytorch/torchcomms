@@ -9,6 +9,10 @@ namespace comms::prims {
 inline constexpr uint32_t kIbgdaWarpProxyMaxPipelineDepth = 16;
 inline constexpr uint32_t kIbgdaWarpProxyQueueCapacity = 16;
 
+namespace test {
+struct IbgdaWarpProxyTestAccess;
+}
+
 inline constexpr bool isIbgdaWarpProxyPipelineDepthSupported(int depth) {
   return depth > 0 &&
       depth <= static_cast<int>(kIbgdaWarpProxyMaxPipelineDepth);
@@ -60,6 +64,8 @@ template <
     uint32_t MaxPipelineDepth = kIbgdaWarpProxyMaxPipelineDepth>
 class IbgdaWarpProxy {
  private:
+  friend struct test::IbgdaWarpProxyTestAccess;
+
   static constexpr uint32_t kPipelineSlotCapacity = MaxPipelineDepth;
   static constexpr uint32_t kQueueCapacity = kIbgdaWarpProxyQueueCapacity;
   // Barrier 0 is reserved for full-block synchronization in this kernel.
@@ -74,6 +80,11 @@ class IbgdaWarpProxy {
 
   static constexpr uint32_t kServiceThreads = comms::device::kWarpSize;
   static constexpr uint64_t kInvalidSequence = ~uint64_t{0};
+
+  enum class ServiceStepResult : uint8_t {
+    Continue,
+    Stop,
+  };
 
   struct SendCommand {
     P2pIbgdaTransportDevice* transport;
@@ -672,7 +683,8 @@ class IbgdaWarpProxy {
     }
   }
 
-  __device__ __forceinline__ static void post_recv_credits(
+  [[nodiscard]] __device__ __forceinline__ static ServiceStepResult
+  post_recv_credits(
       SharedState& storage,
       const ThreadGroup& fullBlock,
       const AbortDevice& abortDevice) {
@@ -692,15 +704,15 @@ class IbgdaWarpProxy {
               command.protocolBytes,
               IbDirection::Recv,
               abortDevice)) {
-        return;
+        return ServiceStepResult::Stop;
       }
       credited.store(++head, cuda::memory_order_release);
     }
+    return ServiceStepResult::Continue;
   }
 
-  __device__ __forceinline__ static void publish_recv_readiness(
-      SharedState& storage,
-      const AbortDevice& abortDevice) {
+  [[nodiscard]] __device__ __forceinline__ static ServiceStepResult
+  publish_recv_readiness(SharedState& storage, const AbortDevice& abortDevice) {
     BlockAtomicU64 tail(storage.recv.tail);
     BlockAtomicU64 ready(storage.recv.ready);
     uint64_t currentReady = ready.load(cuda::memory_order_relaxed);
@@ -721,22 +733,26 @@ class IbgdaWarpProxy {
               command.protocolBytes,
               current,
               expected)) {
-        // CHECK rather than BREAK: the `break` below is unconditional, so this
-        // call is only here for the log-and-trap side effect on abort.
-        (void)FT_ABORT_CHECK(
-            abortDevice,
-            "IbgdaWarpProxy waiting for DATA_READY channel=%u "
-            "expected=%llu current=%llu",
-            command.channel,
-            expected,
-            current);
+        // Propagate an observed abort to the service loop; otherwise leave the
+        // readiness cursor unchanged so a later iteration retries the poll.
+        if (FT_ABORT_CHECK(
+                abortDevice,
+                "IbgdaWarpProxy waiting for DATA_READY channel=%u "
+                "expected=%llu current=%llu",
+                command.channel,
+                expected,
+                current)) {
+          return ServiceStepResult::Stop;
+        }
         break;
       }
       ready.store(++currentReady, cuda::memory_order_release);
     }
+    return ServiceStepResult::Continue;
   }
 
-  __device__ __forceinline__ static void post_send_once(
+  [[nodiscard]] __device__ __forceinline__ static ServiceStepResult
+  post_send_once(
       SharedState& storage,
       const ThreadGroup& fullBlock,
       const AbortDevice& abortDevice) {
@@ -745,7 +761,7 @@ class IbgdaWarpProxy {
     const uint64_t head = posted.load(cuda::memory_order_relaxed);
     const uint64_t currentTail = tail.load(cuda::memory_order_acquire);
     if (head == currentTail) {
-      return;
+      return ServiceStepResult::Continue;
     }
 
     const SendCommand command = storage.send.commands[head % kQueueCapacity];
@@ -757,16 +773,17 @@ class IbgdaWarpProxy {
     BlockAtomicU64 credited(storage.recv.credited);
     const uint64_t creditedTail = credited.load(cuda::memory_order_acquire);
     if (creditedTail < command.requiredRecvCredit) {
-      // Not a loop: `post_send_once` returns to its caller's polling loop, so
-      // this only needs the log-and-trap side effect on abort.
-      (void)FT_ABORT_CHECK(
-          abortDevice,
-          "IbgdaWarpProxy waiting for receive credit channel=%u "
-          "credited=%llu required=%llu",
-          command.channel,
-          static_cast<unsigned long long>(creditedTail),
-          static_cast<unsigned long long>(command.requiredRecvCredit));
-      return;
+      // Propagate an observed abort to the service loop; otherwise return to
+      // the caller's polling loop and retry the credit check later.
+      return FT_ABORT_CHECK(
+                 abortDevice,
+                 "IbgdaWarpProxy waiting for receive credit channel=%u "
+                 "credited=%llu required=%llu",
+                 command.channel,
+                 static_cast<unsigned long long>(creditedTail),
+                 static_cast<unsigned long long>(command.requiredRecvCredit))
+          ? ServiceStepResult::Stop
+          : ServiceStepResult::Continue;
     }
     if (command.slotFreeExpected != 0) {
       const IbChannelProtoSlot& localSlot =
@@ -775,34 +792,34 @@ class IbgdaWarpProxy {
       const uint64_t current =
           command.transport->read_signal(localSlot.slotFree);
       if (current < command.slotFreeExpected) {
-        // As above: the return is unconditional; this is the log-and-trap.
-        (void)FT_ABORT_CHECK(
-            abortDevice,
-            "IbgdaWarpProxy waiting for SLOT_FREE channel=%u "
-            "expected=%llu current=%llu",
-            command.channel,
-            static_cast<unsigned long long>(command.slotFreeExpected),
-            static_cast<unsigned long long>(current));
-        return;
+        // As above, stop on abort and otherwise retry from the service loop.
+        return FT_ABORT_CHECK(
+                   abortDevice,
+                   "IbgdaWarpProxy waiting for SLOT_FREE channel=%u "
+                   "expected=%llu current=%llu",
+                   command.channel,
+                   static_cast<unsigned long long>(command.slotFreeExpected),
+                   static_cast<unsigned long long>(current))
+            ? ServiceStepResult::Stop
+            : ServiceStepResult::Continue;
       }
     }
 
     const IbRemoteChannel remote = makeIbRemoteChannel(
         command.transport->channel_layout(), static_cast<int>(command.channel));
     ThreadGroup solo = make_solo_group(command.channel, fullBlock);
-    const IbLocalCompletionTicket ticket = command.transport->put(
-        solo,
-        command.source,
-        remote.recvStaging.subBuffer(command.remoteOffset),
-        command.bytes,
-        remote.dataReady,
-        command.protocolBytes,
-        /*counterBuf=*/{},
-        /*counterVal=*/0,
-        /*signalPerLane=*/true,
-        abortDevice);
+    const IbLocalCompletionTicket ticket =
+        command.transport
+            ->template put_staged<Ops::WireProto::kUsesDataReadySignal>(
+                solo,
+                command.source,
+                remote.recvStaging.subBuffer(command.remoteOffset),
+                command.bytes,
+                remote.dataReady,
+                command.protocolBytes,
+                abortDevice);
     if (!ticket.posted) {
-      return;
+      return ServiceStepResult::Stop;
     }
     detail::record_send_completion(
         *command.transport,
@@ -811,6 +828,7 @@ class IbgdaWarpProxy {
         command.generation,
         ticket);
     posted.store(head + 1, cuda::memory_order_release);
+    return ServiceStepResult::Continue;
   }
 
   __device__ __forceinline__ static void run_service(
@@ -838,45 +856,19 @@ class IbgdaWarpProxy {
         // so the check is warp-uniform at no extra barrier. Leader-only keeps
         // it to one poll per iteration instead of one per lane.
         //
-        // The check runs BEFORE the iteration's peer-visible work, and again
-        // between each abortable step, rather than once at the bottom. Both are
-        // needed, and for different reasons:
-        //
-        //   - `post_recv_credits()` emits `signal(slotFree)` and
-        //     `post_send_once()` issues a `put` with a fused `DATA_READY`.
-        //     Their SQ-capacity waits are abort-aware, but this check also
-        //     prevents entering either posting path after an earlier step
-        //     latched the abort.
-        //   - Hoisting alone does not close it: `publish_recv_readiness()` is
-        //     itself abortable, so an abort first observed *inside* it would
-        //     still be followed by `post_send_once()` in the same iteration.
-        //
-        // That is FT principle 4 -- never signal a peer for work you abandoned.
-        // A false credit releases a peer that is correctly blocked and stops it
-        // ever reaching its own deadline, so one rank's abort silently
-        // suppresses fault detection on the rest.
-        //
-        // The between-step checks are plain `isAborted()` reads rather than new
-        // return values: once an abortable step gives up it has already latched
-        // the reason in shared state, so a subsequent read sees it. Cheap, and
-        // it keeps the change to control flow instead of threading a status
-        // through `publish_recv_readiness()`.
-        bool aborted = FT_ABORT_CHECK(
-            abortDevice, "IbgdaWarpProxy::run_service abandoning drain");
-        // Each step runs only if nothing has aborted yet, and re-reads the flag
-        // afterwards because the step itself may have given up inside.
-        const auto step = [&](auto&& emit) {
-          if (aborted) {
-            return;
-          }
-          emit();
-          aborted = abortDevice.isAborted();
-        };
-        step([&] { post_recv_credits(storage, fullBlock, abortDevice); });
-        step([&] { publish_recv_readiness(storage, abortDevice); });
-        step([&] { post_send_once(storage, fullBlock, abortDevice); });
+        ServiceStepResult result =
+            FT_ABORT_CHECK(
+                abortDevice, "IbgdaWarpProxy::run_service abandoning drain")
+            ? ServiceStepResult::Stop
+            : post_recv_credits(storage, fullBlock, abortDevice);
+        if (result == ServiceStepResult::Continue) {
+          result = publish_recv_readiness(storage, abortDevice);
+        }
+        if (result == ServiceStepResult::Continue) {
+          result = post_send_once(storage, fullBlock, abortDevice);
+        }
 
-        if (aborted) {
+        if (result == ServiceStepResult::Stop) {
           stop = 1U;
         } else if (producerDone.load(cuda::memory_order_acquire) != 0) {
           BlockAtomicU64 sendTail(storage.send.tail);
