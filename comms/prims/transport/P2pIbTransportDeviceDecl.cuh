@@ -455,6 +455,7 @@ template <uint32_t WorkerThreads, typename Proto = protocol::Simple>
 class BlockingIbOps {
  public:
   static constexpr uint32_t kWorkerThreads = WorkerThreads;
+  static constexpr bool kWarpProxy = false;
   using WireProto = Proto;
 
   __device__ BlockingIbOps(ThreadGroup workers, const AbortDevice& abortDevice)
@@ -463,12 +464,6 @@ class BlockingIbOps {
   __device__ __forceinline__ ThreadGroup& group() {
     return workers_;
   }
-
-  __device__ __forceinline__ void sync() {
-    workers_.sync();
-  }
-
-  __device__ __forceinline__ void drain() {}
 
   template <typename CopyOp = Memcpy, typename Transport, typename... Args>
   __device__ __forceinline__ void send(

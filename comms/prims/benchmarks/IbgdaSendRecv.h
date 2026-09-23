@@ -15,8 +15,6 @@ class P2pIbgdaTransportDevice;
 
 namespace comms::prims::benchmark {
 
-inline constexpr uint32_t kDefaultIbgdaWarpProxyQueueDepth = 16;
-
 /**
  * Launch bidirectional tile sendrecv kernel for IBGDA transport.
  *
@@ -88,6 +86,7 @@ void launch_ibgda_send(
 
 /**
  * Launch NVIDIA-only unidirectional send with one IB service warp per block.
+ * Nonzero maxSignalBytes is not supported and throws std::invalid_argument.
  */
 void launch_ibgda_warp_proxy_send(
     P2pIbgdaTransportDevice* transport,
@@ -96,8 +95,7 @@ void launch_ibgda_warp_proxy_send(
     int numBlocks,
     cudaStream_t stream,
     std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice(),
-    uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
+    AbortDevice abortDevice = AbortDevice());
 
 /**
  * Launch unidirectional tile recv kernel. All blocks receive.
@@ -113,6 +111,7 @@ void launch_ibgda_recv(
 
 /**
  * Launch NVIDIA-only unidirectional receive with one IB service warp per block.
+ * Nonzero maxSignalBytes is not supported and throws std::invalid_argument.
  */
 void launch_ibgda_warp_proxy_recv(
     P2pIbgdaTransportDevice* transport,
@@ -121,8 +120,7 @@ void launch_ibgda_warp_proxy_recv(
     int numBlocks,
     cudaStream_t stream,
     std::size_t maxSignalBytes = 0,
-    AbortDevice abortDevice = AbortDevice(),
-    uint32_t queueDepth = kDefaultIbgdaWarpProxyQueueDepth);
+    AbortDevice abortDevice = AbortDevice());
 
 /**
  * Low-latency (LL) protocol counterparts of launch_ibgda_send_recv/send/recv.

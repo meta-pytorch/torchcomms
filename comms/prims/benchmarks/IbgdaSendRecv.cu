@@ -5,6 +5,7 @@
 #include "comms/prims/benchmarks/IbgdaSendRecv.cuh"
 
 #include <algorithm>
+#include <stdexcept>
 
 #include "comms/prims/core/AbortCheck.cuh"
 #include "comms/prims/core/CopyUtils.cuh"
@@ -19,11 +20,19 @@ namespace comms::prims::benchmark {
 
 namespace {
 
+void validate_warp_proxy_max_signal_bytes(std::size_t maxSignalBytes) {
+  if (maxSignalBytes != 0) {
+    throw std::invalid_argument("IBGDA warp proxy requires maxSignalBytes=0");
+  }
+}
+
 #ifndef __HIP_PLATFORM_AMD__
 constexpr uint32_t kWarpProxyWorkerThreads = 512;
 constexpr uint32_t kWarpProxyBlockThreads =
     kWarpProxyWorkerThreads + comms::device::kWarpSize;
-using BenchmarkWarpProxy = IbgdaWarpProxy<kWarpProxyWorkerThreads>;
+using BenchmarkWarpProxy = IbgdaWarpProxy<
+    kWarpProxyWorkerThreads,
+    /*MaxStreams=*/1>;
 #endif
 
 __device__ __forceinline__
@@ -287,31 +296,23 @@ __global__ void __launch_bounds__(kWarpProxyBlockThreads, 1)
         P2pIbgdaTransportDevice* transport,
         char* buffer,
         std::size_t totalBytes,
-        std::size_t maxSignalBytes,
-        uint32_t queueDepth,
         AbortDevice abortDevice) {
   abortDevice.start();
   auto block = make_block_group();
   __shared__ BenchmarkWarpProxy::SharedState sharedState;
-  BenchmarkWarpProxy::run(
-      sharedState,
-      block,
-      BenchmarkWarpProxy::Config{.queueDepth = queueDepth},
-      abortDevice,
-      [&](auto& ops) {
-        auto& workers = ops.group();
-        const std::size_t sectionBytes = section_bytes(transport, totalBytes);
-        for (std::size_t offset = 0; offset < totalBytes;
-             offset += sectionBytes) {
-          const std::size_t bytes = min(sectionBytes, totalBytes - offset);
-          TiledBuffer<char> tiles(buffer + offset, bytes, workers);
-          if constexpr (IsSend) {
-            ops.send(*transport, tiles.data(), tiles.bytes(), maxSignalBytes);
-          } else {
-            ops.recv(*transport, tiles.data(), tiles.bytes(), maxSignalBytes);
-          }
-        }
-      });
+  BenchmarkWarpProxy::run(sharedState, block, abortDevice, [&](auto& ops) {
+    auto& workers = ops.group();
+    const std::size_t sectionBytes = section_bytes(transport, totalBytes);
+    for (std::size_t offset = 0; offset < totalBytes; offset += sectionBytes) {
+      const std::size_t bytes = min(sectionBytes, totalBytes - offset);
+      TiledBuffer<char> tiles(buffer + offset, bytes, workers);
+      if constexpr (IsSend) {
+        ops.send(*transport, tiles.data(), tiles.bytes());
+      } else {
+        ops.recv(*transport, tiles.data(), tiles.bytes());
+      }
+    }
+  });
 }
 
 #endif
@@ -339,22 +340,20 @@ void launch_ibgda_warp_proxy_send(
     int numBlocks,
     cudaStream_t stream,
     std::size_t maxSignalBytes,
-    AbortDevice abortDevice,
-    uint32_t queueDepth) {
+    AbortDevice abortDevice) {
+  validate_warp_proxy_max_signal_bytes(maxSignalBytes);
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)src;
   (void)nbytes;
   (void)numBlocks;
   (void)stream;
-  (void)maxSignalBytes;
   (void)abortDevice;
-  (void)queueDepth;
   printf("[PIPES] warp-proxy send benchmark is NVIDIA-only\n");
 #else
   ibgda_warp_proxy_kernel<true>
       <<<numBlocks, kWarpProxyBlockThreads, 0, stream>>>(
-          transport, src, nbytes, maxSignalBytes, queueDepth, abortDevice);
+          transport, src, nbytes, abortDevice);
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(
@@ -515,22 +514,20 @@ void launch_ibgda_warp_proxy_recv(
     int numBlocks,
     cudaStream_t stream,
     std::size_t maxSignalBytes,
-    AbortDevice abortDevice,
-    uint32_t queueDepth) {
+    AbortDevice abortDevice) {
+  validate_warp_proxy_max_signal_bytes(maxSignalBytes);
 #ifdef __HIP_PLATFORM_AMD__
   (void)transport;
   (void)dst;
   (void)nbytes;
   (void)numBlocks;
   (void)stream;
-  (void)maxSignalBytes;
   (void)abortDevice;
-  (void)queueDepth;
   printf("[PIPES] warp-proxy recv benchmark is NVIDIA-only\n");
 #else
   ibgda_warp_proxy_kernel<false>
       <<<numBlocks, kWarpProxyBlockThreads, 0, stream>>>(
-          transport, dst, nbytes, maxSignalBytes, queueDepth, abortDevice);
+          transport, dst, nbytes, abortDevice);
   const cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     printf(

@@ -3503,8 +3503,8 @@ cvars:
    type        : bool
    default     : false
    description : |-
-     Enable the dedicated IBGDA warp-proxy send, receive, and forward path for
-     fused Ring AllReduce. Disabled by default while the path is evaluated.
+     Enable the dedicated IBGDA warp-proxy stream path for eligible fused Ring
+     Simple AllReduce launches. Disabled by default while the path is evaluated.
  - name        : MCCL_IBGDA_ENABLE_COMPANION_QP
    type        : bool
    default     : false
