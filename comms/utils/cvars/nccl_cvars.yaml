@@ -2033,7 +2033,7 @@ cvars:
 
  - name        : MCCL_ALLREDUCE_ZERO_COPY_MODE
    type        : enum
-   default     : "off"
+   default     : "force"
    choices     : off, force
    description : |-
      Select zero-copy for MCCL-native AllReduce.
