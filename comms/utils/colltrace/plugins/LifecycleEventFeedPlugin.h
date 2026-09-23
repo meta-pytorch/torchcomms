@@ -11,6 +11,7 @@
 
 #include <folly/concurrency/UnboundedQueue.h>
 
+#include "comms/observatory/colltrace/LifecycleFeedTypes.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
 namespace meta::comms::logger {
@@ -18,23 +19,6 @@ class CommsSpdlogLogger;
 }
 
 namespace meta::comms::colltrace {
-
-enum class LifecycleEventType : uint8_t {
-  kEnqueue,
-  kStart,
-  kEnd,
-};
-
-struct LifecycleEventRecord {
-  std::optional<uint64_t> replayId;
-  uint64_t commId{0};
-  uint64_t collId{0};
-  std::optional<uint64_t> capturedCollId;
-  LifecycleEventType eventType{LifecycleEventType::kEnqueue};
-  ICollWaitEvent::system_clock_time_point timestamp{};
-
-  bool operator==(const LifecycleEventRecord&) const = default;
-};
 
 struct LifecycleEventFeedConfig {
   uint64_t commId{0};
