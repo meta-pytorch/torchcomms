@@ -1,0 +1,32 @@
+# Version nodes for the delegation test's stub libibverbs.
+#
+# The nodes have to match what the shim asks dlvsym for, verb by verb, because a
+# wrong node fails exactly like a missing symbol -- which is the whole failure
+# mode this test exists to catch on the real provider.
+#
+# mlx5dv_query_device is listed on a node too, but the shim resolves it with
+# plain dlsym. A name with a single definition becomes the default version, and
+# that is what dlsym finds, so one node serves both lookup styles. Exercising
+# that here is deliberate: it is the same property the real vendored libmlx5
+# relies on.
+
+IBVERBS_1.1 {
+    global:
+        ibv_query_device;
+    local:
+        *;
+};
+
+MLX5_1.2 {
+    global:
+        mlx5dv_init_obj;
+    local:
+        *;
+};
+
+MLX5_1.8 {
+    global:
+        mlx5dv_query_device;
+    local:
+        *;
+};
