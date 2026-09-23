@@ -147,6 +147,9 @@ class CollTrace : public ICollTrace {
 
   CommsMaybeVoid cancelEvent(CollTraceEvent& collEvent) noexcept override;
 
+  std::optional<CapturedCollDescription> describeCapturedCollective(
+      uint64_t capturedCollId) noexcept override;
+
   uint64_t requestFlush() noexcept override;
   void waitFlush(uint64_t gen) noexcept override;
 

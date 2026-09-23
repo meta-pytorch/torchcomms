@@ -2,8 +2,12 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 
+#include "comms/observatory/colltrace/LifecycleFeedTypes.h"
 #include "comms/utils/colltrace/CollMetadata.h"
 #include "comms/utils/colltrace/CollTraceHandle.h"
 #include "comms/utils/colltrace/CollTracePlugin.h"
@@ -15,6 +19,13 @@ namespace meta::comms::colltrace {
 class ICollTrace {
  public:
   virtual ~ICollTrace() = default;
+
+  // Describe a collective captured into a graph, by the id its replays
+  // report. Empty when the id was not captured here, or its graph is gone.
+  virtual std::optional<CapturedCollDescription> describeCapturedCollective(
+      uint64_t /* capturedCollId */) noexcept {
+    return std::nullopt;
+  }
 
   // Record a collective event. If the waitEvent is a GraphCudaWaitEvent,
   // the collective is recorded for graph-mode polling. Otherwise it's
