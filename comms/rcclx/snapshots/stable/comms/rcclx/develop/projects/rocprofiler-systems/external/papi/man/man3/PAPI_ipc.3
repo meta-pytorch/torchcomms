@@ -1,0 +1,62 @@
+.TH "PAPI_ipc" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_ipc \- Simplified call to get instructions per cycle, real and processor time\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface: \fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_ipc( float *rtime, float *ptime, long long *ins, float *ipc );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fI*rtime\fP realtime since the latest call 
+.br
+\fI*ptime\fP process time since the latest call 
+.br
+\fI*ins\fP instructions since the latest call 
+.br
+\fI*ipc\fP incremental instructions per cycle since the latest call
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP The counters were already started by something other than PAPI_ipc()\&. 
+.br
+\fIPAPI_ENOEVNT\fP The events PAPI_TOT_INS and PAPI_TOT_CYC are not supported\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+The first call to PAPI_ipc() will initialize the PAPI interface, set up the counters to monitor PAPI_TOT_INS and PAPI_TOT_CYC events and start the counters\&.
+.PP
+Subsequent calls will read the counters and return real time, process time, instructions and the IPC rate since the latest call to PAPI_ipc()\&.
+.PP
+PAPI_ipc() should return a ratio greater than 1\&.0, indicating instruction level parallelism within the chip\&. The larger this ratio the more effeciently the program is running\&. Note that PAPI_ipc() is thread-safe and can therefore be called by multiple threads\&.
+.PP
+\fBSee also\fP
+.RS 4
+PAPI_flips_rate() 
+.PP
+PAPI_flops_rate() 
+.PP
+PAPI_epc() 
+.PP
+PAPI_rate_stop() 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

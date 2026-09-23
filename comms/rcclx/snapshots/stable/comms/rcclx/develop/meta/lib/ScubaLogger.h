@@ -111,6 +111,9 @@ class ScubaLogger {
 
   ScubaLogger(const ScubaLogger&) = delete;
   ScubaLogger& operator=(const ScubaLogger&) = delete;
+  ~ScubaLogger() = default;
+  ScubaLogger(ScubaLogger&&) = delete;
+  ScubaLogger& operator=(ScubaLogger&&) = delete;
 
  private:
   ScubaLogger() noexcept;

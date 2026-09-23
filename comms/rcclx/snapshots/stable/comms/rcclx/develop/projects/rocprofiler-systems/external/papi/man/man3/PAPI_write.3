@@ -1,0 +1,41 @@
+.TH "PAPI_write" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_write \- Write counter values into counters\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP an integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP 
+.br
+\fI*values\fP an array to hold the counter values of the counting events
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_ECMP\fP PAPI_write() is not implemented for this architecture\&. 
+.br
+\fIPAPI_ESYS\fP The EventSet is currently counting events and the component could not change the values of the running counters\&.
+.RE
+.PP
+PAPI_write() writes the counter values provided in the array values into the event set EventSet\&. The virtual counters managed by the PAPI library will be set to the values provided\&. If the event set is running, an attempt will be made to write the values to the running counters\&. This operation is not permitted by all components and may result in a run-time error\&.
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_read\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

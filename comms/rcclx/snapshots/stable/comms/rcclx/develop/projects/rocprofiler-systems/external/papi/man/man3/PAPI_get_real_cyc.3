@@ -1,0 +1,38 @@
+.TH "PAPI_get_real_cyc" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_real_cyc \- get real time counter value in clock cycles Returns the total real time passed since some arbitrary starting point\&. The time is returned in clock cycles\&. This call is equivalent to wall clock time\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+s = PAPI_get_real_cyc();
+your_slow_code();
+e = PAPI_get_real_cyc();
+printf("Wallclock cycles: %lld\\en",e\-s);
+
+.fi
+.PP
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+PAPIF PAPI \fBPAPI_get_virt_usec\fP \fBPAPI_get_virt_cyc\fP \fBPAPI_library_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

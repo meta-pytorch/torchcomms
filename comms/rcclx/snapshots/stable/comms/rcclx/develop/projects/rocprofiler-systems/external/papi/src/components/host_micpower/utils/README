@@ -1,0 +1,22 @@
+This tool can be used to gather Power (and Voltage) measurements on 
+Intel Xeon Phi (aka Intel MIC) chips using the MicAccessAPI.
+
+Be sure to configure the PAPI host_micpower component:
+$ cd "<papi>/src/components/host_micpower"
+$ ./configure
+as well as PAPI with --with-components:
+$ cd "<papi>/src"
+$ ./configure --with-components=host_micpower 
+
+It works by using PAPI to poll the MIC power stats every 100ms.
+It will dump each statistic to different files, which then
+can be plotted.
+
+The measurements (in uW and uV) are dumped every 100ms.  
+You can adjust the frequency by changing the source code.
+
+You can then take those files and put them into your favorite plotting 
+program.  You might want to edit the source to remove the extra
+commentary from the data, the plotting program I use ignores things
+surrounded by (* brackets.
+

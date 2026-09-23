@@ -1,0 +1,77 @@
+.TH "PAPI_accum" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_accum \- Accumulate and reset counters in an EventSet\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int \fBPAPI_accum( int  EventSet, long_long * values )\fP;
+.RE
+.PP
+These calls assume an initialized PAPI library and a properly added event set\&. \fBPAPI_accum\fP adds the counters of the indicated event set into the array values\&. The counters are zeroed and continue counting after the operation\&. Note the differences between \fBPAPI_read\fP and \fBPAPI_accum\fP, specifically that \fBPAPI_accum\fP resets the values array to zero\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP an integer handle for a PAPI Event Set as created by \fBPAPI_create_eventset\fP 
+.br
+\fI*values\fP an array to hold the counter values of the counting events
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ESYS\fP A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_ENOEVST\fP The event set specified does not exist\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+do_100events( );
+if ( PAPI_read( EventSet, values) != PAPI_OK )
+handle_error( 1 );
+// values[0] now equals 100
+do_100events( );
+if (PAPI_accum( EventSet, values ) != PAPI_OK )
+handle_error( 1 );
+// values[0] now equals 200
+values[0] = \-100;
+do_100events( );
+if (PAPI_accum( EventSet, values ) != PAPI_OK )
+handle_error( 1 );
+// values[0] now equals 0
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPIF_accum\fP 
+.PP
+\fBPAPI_start\fP 
+.PP
+\fBPAPI_set_opt\fP 
+.PP
+\fBPAPI_reset\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

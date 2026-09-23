@@ -1,0 +1,44 @@
+.TH "regions_t" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+regions_t
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "unsigned int \fBregion_id\fP"
+.br
+.ti -1c
+.RI "int \fBparent_region_id\fP"
+.br
+.ti -1c
+.RI "char * \fBregion\fP"
+.br
+.ti -1c
+.RI "struct regions * \fBnext\fP"
+.br
+.ti -1c
+.RI "struct regions * \fBprev\fP"
+.br
+.ti -1c
+.RI "\fBvalue_t\fP \fBvalues\fP []"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "int regions_t::parent_region_id"
+Region ID of parent region 
+.SS "char* regions_t::region"
+Region name 
+.SS "unsigned int regions_t::region_id"
+Unique region ID 
+.SS "\fBvalue_t\fP regions_t::values[]"
+Array of event values based on current eventset 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

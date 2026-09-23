@@ -1,0 +1,330 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<html xmlns:o>
+	<head>
+		<title></title>
+		<meta name="GENERATOR" content="Microsoft Visual Studio .NET 7.1">
+		<meta name="vs_targetSchema" content="http://schemas.microsoft.com/intellisense/ie5">
+	</head>
+	<body>
+		<H1>Data and Instruction Range Restrictions in PAPI</H1>
+		<H2>Introduction</H2>
+		<P>Performance instrumentation of data structures, as opposed to code segments, is 
+			a feature not widely supported across a range of platforms. One platform on 
+			which this feature is supported is the Itanium2. In fact, event counting on 
+			Itanium2 can be qualified by a number of conditioners, including instruction 
+			address, opcode matching, and data address. We have implemented a generalized 
+			PAPI interface for data structure and instruction range performance 
+			instrumentation, also referred to as data and instruction range specification, 
+			and applied that interface to the specific instance of the Itanium2 platform to 
+			demonstrate its viability. This feature is being introduced for the first time in the PAPI 3.5 release.
+		</P>
+		<H2>The PAPI Interface</H2>
+		<P>Since PAPI is a platform-independent library, care must be taken when extending 
+			its feature set so as not to disrupt the existing interface or to clutter the 
+			API with calls to functionality that is not available on a large subset of the 
+			supported platforms. To that end, we elected to extend an existing PAPI call, <SPAN style="FONT-FAMILY: 'Courier New'">
+				PAPI_set_opt()</SPAN>, with the capability of specifying starting and 
+			ending addresses of data structures or instructions to be instrumented. The <SPAN style="FONT-FAMILY: 'Courier New'">
+				PAPI_set_opt()</SPAN> call previously supported functionality to set a 
+			variety of optional capability in the PAPI interface, including debug levels, 
+			multiplexing of eventsets,<SPAN style="mso-spacerun: yes">&nbsp; </SPAN>and the 
+			scope of counting domains. This call was extended with two new cases to support 
+			instruction and data address range specification: <SPAN style="FONT-FAMILY: 'Courier New'">
+				PAPI_INSTR_ADDRESS </SPAN>and<SPAN style="FONT-FAMILY: 'Courier New'"> PAPI_DATA_ADDRESS</SPAN>. 
+			To access these options, a user initializes a simple option specific data 
+			structure and calls <SPAN style="FONT-FAMILY: 'Courier New'">PAPI_set_opt()</SPAN>
+			as illustrated in the code fragment below:</P>
+		<P class="MsoNormal" style="mso-layout-grid-align: none"><SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">&nbsp;&nbsp; 
+					...<BR>
+					&nbsp;&nbsp; </SPAN></SPAN><SPAN style="FONT-FAMILY: 'Courier New'">option.addr.eventset 
+				= EventSet;
+				<o:p></o:p></SPAN><BR>
+			<SPAN style="FONT-FAMILY: 'Courier New'">&nbsp;&nbsp; option.addr.start = 
+				(caddr_t)array;
+				<o:p></o:p></SPAN><BR>
+			<SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">&nbsp;&nbsp; </SPAN>
+				option.addr.end = (caddr_t)(array + size_array);
+				<o:p></o:p></SPAN><BR>
+			<SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">&nbsp;&nbsp; </SPAN>
+				retval = PAPI_set_opt(PAPI_DATA_ADDRESS, &amp;option);<BR>
+				&nbsp;&nbsp; ...</SPAN></P>
+		<P class="MsoNormal" style="mso-layout-grid-align: none"><SPAN style="FONT-SIZE: 10pt; FONT-FAMILY: 'Courier New'">
+				<o:p></o:p></SPAN></P>
+		<P style="mso-layout-grid-align: none">The user creates a PAPI eventset and 
+			determines the starting and ending addresses of the data to be monitored. The 
+			call to <SPAN style="FONT-FAMILY: 'Courier New'">PAPI_set_opt</SPAN> then 
+			prepares the interface to count events that occur on accesses to data in that 
+			range. The specific events to be monitored can be added to the eventset either 
+			before or after the data range is specified. In a similar fashion, an 
+			instruction range can be set using the <SPAN style="FONT-FAMILY: 'Courier New'">PAPI_INSTR_ADDRESS
+			</SPAN>option. If this option is supported on the platform in use, the data is 
+			transferred to the platform-specific implementation and handled appropriately. 
+			If not supported, the call returns an error message.</P>
+		<P style="mso-layout-grid-align: none">It may not always be possible to exactly 
+			specify the address range of interest. If this is the case, it is important 
+			that the user have some way to know what approximations have been made, so that 
+			appropriate corrective action&nbsp;can be taken. For instance, to isolate a 
+			specific data structure completely, it may be necessary to pad memory before 
+			and after the structure with dummy structures that are never accessed. To 
+			facilitate this, <FONT face="Courier New">PAPI_set_opt()</FONT> returns the 
+			offsets from the requested starting and ending addresses as they were actually 
+			programmed into the hardware. If the addresses were mapped exactly, these 
+			values are zero. An example of this is shown below:</P>
+		<P class="MsoNormal" style="mso-layout-grid-align: none"><SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">&nbsp;&nbsp; 
+					...<BR>
+				</SPAN></SPAN><SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">
+					&nbsp;&nbsp; </SPAN>retval = PAPI_set_opt(PAPI_DATA_ADDRESS, &amp;option);<BR>
+				<SPAN style="FONT-FAMILY: 'Courier New'">&nbsp;&nbsp; actual.start = (caddr_t)array 
+					- option.addr.start_off;
+					<o:p></o:p></SPAN><BR>
+				<SPAN style="FONT-FAMILY: 'Courier New'"><SPAN style="mso-spacerun: yes">&nbsp;&nbsp; 
+						actual.end = (caddr_t)(array + size_array) + </SPAN>option.addr.end_off;
+					<o:p></o:p></SPAN><BR>
+				&nbsp;&nbsp; ...</SPAN></P>
+		<H2 class="MsoNormal" style="mso-layout-grid-align: none"><SPAN style="FONT-FAMILY: 'Courier New'"><FONT face="Times New Roman">Itanium 
+					Idiosyncrasies</FONT></SPAN></H2>
+		<P style="mso-layout-grid-align: none">There are roughly&nbsp;475 native events 
+			available on Itanium 2.160 of them are memory related and can be counted with 
+			data address specification in place. 283 can be counted using instruction 
+			address specification. All events in an eventset with data or instruction range 
+			specification in place must be one of these supported events. Further 
+			restrictions also apply to the use of data and instruction range specification, 
+			as described below. Data addresses can only be specified in coarse mode. 
+			Although four independent pairs of data address registers exist in the hardware 
+			and would suggest that four disjoint address regions can be monitored 
+			simultaneously, the Intel documentation strongly suggests that this is not a 
+			good idea. Further,
+                    the underlying software takes advantage of these register pairs to tune the range
+                    of addresses that is actually monitored. See the discussion under <strong>Data Address
+                        Ranges</strong> for further detail.</P>
+		<H3 style="mso-layout-grid-align: none">Instruction Address Ranges</H3>
+		<P style="mso-layout-grid-align: none">Instruction ranges can be specified in one 
+			of two ways: coarse and fine. In fine mode, addresses can be specified exactly, 
+			but both the start and end addresses must exist on the same 4K byte page. In 
+			other words, the address range must be less than 4K bytes, and the addresses 
+			can only differ in the bottom 12 bits. If fine mode cannot be used, the 
+			underlying perfmon library automatically switches to coarse address 
+			specification. Four pairs of registers are available to specify coarse 
+			instruction address ranges. The restrictions to coarse address specification 
+			are discussed below.</P>
+		<H3 style="mso-layout-grid-align: none">Data Address Ranges</H3>
+		<P style="mso-layout-grid-align: none">Data addresses can only be specified in 
+			coarse mode. As with instruction ranges, four pairs of registers are available 
+			to specify&nbsp; the data address ranges. Use of coarse mode addressing for 
+			either instruction or data address specification can cause some anomalous 
+			results. The Intel documentation points out that starting and ending addresses 
+			cannot be specified exactly, since the hardware representation relies on 
+			powers-of-two bitmasks. The perfmon library tries to optimize the alignment of 
+			these power-of-two regions to cover the addresses requested as effectively as 
+			possible with the four sets of registers available. Perfmon first finds the 
+			largest power-of-two address region completely contained within the reqested 
+			addresses. Then it finds successively smaller power-of-two regions to cover the 
+			errors on the high and low end of the requested address range. The effective 
+			result is that the actual range specified is always equal to or larger than, 
+			and completely contains the requested range, and can occupy from one to four 
+			pairs of address registers. In some cases this can result in significant 
+			overcounts of the events of interest, especially if two active data structures 
+			are located in close proximity to each other. This may require that the 
+			developer insert some padding structures before and/or after a particular 
+			structure of interest to guarantee accurate counts.</P>
+		<H2 style="mso-layout-grid-align: none">Supporting Software</H2>
+		<P class="MsoNormal" style="mso-layout-grid-align: none">To make this new PAPI 
+			feature more accessible and easier to use, a test case was developed to both 
+			provide a coding example and to exercise and test the fuctionality of the data 
+			ranging features of the Itanium 2. In addition, the papi_native_event utility 
+			was modified to make it easier to identify events that support these features.</P>
+		<H3 style="mso-layout-grid-align: none">The <FONT face="Courier New">data_range.c</FONT>&nbsp;Test 
+			Case</H3>
+		<P style="mso-layout-grid-align: none">A test case, called <FONT face="Courier New">data_range</FONT>&nbsp;was 
+			developed that measures memory load and store events on three different types 
+			of data structures. Three static arrays of 16,384 <EM>ints</EM> were declared 
+			in the program, and three dynamic arrays of 16,384 <EM>ints </EM>were malloc'd. 
+			The data range was specified sequentially to be the starting and ending 
+			addresses of each of:</P>
+		<UL>
+			<LI>
+				<DIV style="mso-layout-grid-align: none">the pointers to the malloc'd arrays;</DIV>
+			<LI>
+				<DIV style="mso-layout-grid-align: none">the malloc'd arrays themselves;</DIV>
+			<LI>
+				<DIV style="mso-layout-grid-align: none">the statically declared arrays.</DIV>
+			</LI>
+		</UL>
+		<P style="mso-layout-grid-align: none">The work done in each case consisted of 
+			loading an initialization value into each element of each array, and then 
+			summing the values of each element. This should produce 16,384 loads and 16,384 
+			stores on each element.</P>
+		<P style="mso-layout-grid-align: none">For the pointers, the size was 8 bytes and 
+			the starting and ending addresses could be specified exactly. Output is shown 
+			below:</P>
+		<P style="mso-layout-grid-align: none"><FONT face="Courier New">Measure loads and 
+				stores on the pointers to the allocated arrays
+				<BR>
+				Expected loads: 32768; Expected stores: 0
+				<BR>
+				These loads result from accessing the pointers to compute array addresses.
+				<BR>
+				They will likely disappear with higher levels of optimization.
+				<BR>
+				Requested Start Address: 0x6000000000011640; Start Offset: 0x 0; Actual Start 
+				Address: 0x6000000000011640
+				<BR>
+				Requested End Address: 0x6000000000011648; End Offset: 0x 0; Actual End 
+				Address: 0x6000000000011648
+				<BR>
+				loads_retired: 32768
+				<BR>
+				stores_retired: 0
+				<BR>
+				Requested Start Address: 0x6000000000011628; Start Offset: 0x 0; Actual Start 
+				Address: 0x6000000000011628
+				<BR>
+				Requested End Address: 0x6000000000011630; End Offset: 0x 0; Actual End 
+				Address: 0x6000000000011630
+				<BR>
+				loads_retired: 32768
+				<BR>
+				stores_retired: 0
+				<BR>
+				Requested Start Address: 0x6000000000011638; Start Offset: 0x 0; Actual Start 
+				Address: 0x6000000000011638
+				<BR>
+				Requested End Address: 0x6000000000011640; End Offset: 0x 0; Actual End 
+				Address: 0x6000000000011640
+				<BR>
+				loads_retired: 32768
+				<BR>
+				stores_retired: 0 </FONT>
+		</P>
+		<P style="mso-layout-grid-align: none">For the allocated arrays, small offsets were 
+			introduced in each case, and the resulting error in the loads and stores is 
+			exactly what would be predicted by the activity in the adjacent memory 
+			locations:</P>
+		<P style="mso-layout-grid-align: none"><FONT face="Courier New">Measure loads and 
+				stores on the allocated arrays themselves
+				<BR>
+				Expected loads: 16384; Expected stores: 16384
+				<BR>
+				Requested Start Address: 0x6000000004044010; Start Offset: 0x 10; Actual Start 
+				Address: 0x6000000004044000
+				<BR>
+				Requested End Address: 0x6000000004054010; End Offset: 0x 0; Actual End 
+				Address: 0x6000000004054010
+				<BR>
+				loads_retired: 16384
+				<BR>
+				stores_retired: 16384
+				<BR>
+				Requested Start Address: 0x6000000004054020; Start Offset: 0x 20; Actual Start 
+				Address: 0x6000000004054000
+				<BR>
+				Requested End Address: 0x6000000004064020; End Offset: 0x 0; Actual End 
+				Address: 0x6000000004064020
+				<BR>
+				loads_retired: 16388
+				<BR>
+				stores_retired: 16388
+				<BR>
+				Requested Start Address: 0x6000000004064030; Start Offset: 0x 30; Actual Start 
+				Address: 0x6000000004064000
+				<BR>
+				Requested End Address: 0x6000000004074030; End Offset: 0x 10; Actual End 
+				Address: 0x6000000004074040
+				<BR>
+				loads_retired: 16392
+				<BR>
+				stores_retired: 16392 </FONT>
+		</P>
+		<P style="mso-layout-grid-align: none">For the static arrays, the locations of the 
+			arrays resulted in significant offsets, and hence significant errors. The most 
+			interesting case is the second one, in which the starting offset can be seen to 
+			force the inclusion of all three pointers to the malloc'd arrays. Because of 
+			this the loads retired count is too high by 98310, almost exactly 3 * 32768 = 
+			98204:</P>
+		<P style="mso-layout-grid-align: none"><FONT face="Courier New">Measure loads and 
+				stores on the static arrays
+				<BR>
+			</FONT><FONT face="Courier New">These values will differ from the expected values 
+				by the size of the offsets.
+				<BR>
+				Expected loads: 16384; Expected stores: 16384
+				<BR>
+			</FONT><FONT face="Courier New">Requested Start Address: 0x60000000000218cc; Start 
+				Offset: 0x 18cc; Actual Start Address: 0x6000000000020000
+				<BR>
+				Requested End Address: 0x60000000000318cc; End Offset: 0x 734; Actual End 
+				Address: 0x6000000000032000
+				<BR>
+				loads_retired: 18432
+				<BR>
+				stores_retired: 18432
+				<BR>
+				Requested Start Address: 0x60000000000118cc; Start Offset: 0x 18cc; Actual 
+				Start Address: 0x6000000000010000
+				<BR>
+				Requested End Address: 0x60000000000218cc; End Offset: 0x 734; Actual End 
+				Address: 0x6000000000022000
+				<BR>
+				loads_retired: 115155
+				<BR>
+				stores_retired: 16845
+				<BR>
+				Requested Start Address: 0x60000000000318cc; Start Offset: 0x 18cc; Actual 
+				Start Address: 0x6000000000030000
+				<BR>
+				Requested End Address: 0x60000000000418cc; End Offset: 0x 734; Actual End 
+				Address: 0x6000000000042000
+				<BR>
+				loads_retired: 17971
+				<BR>
+				stores_retired: 17971 </FONT>
+		</P>
+		<H2 style="mso-layout-grid-align: none">The <FONT face="Courier New">papi_native_avail</FONT>
+			Utility</H2>
+		<P style="mso-layout-grid-align: none">To effectively use the instruction and 
+			address range specification feature for Itanium 2, one must know which of the 
+			roughly 475 available native events support these features. In addition, there 
+			are other qualifiers to Itanium 2 native events that are valuable to inspect. 
+			For these reasons, the <FONT face="Courier New">papi_native_avail</FONT> utility 
+			was enhanced to make it possible to filter the list of native events by these 
+			qualifiers. A help feature was added to this utility to make it easier to 
+			remember the Itanium specific options:</P>
+		<P style="mso-layout-grid-align: none"><FONT face="Courier New">&gt; papi_native_avail 
+				--help
+				<BR>
+				This is the PAPI native avail program.
+				<BR>
+				It provides availability and detail information
+				<BR>
+				for PAPI native events. Usage:
+				<BR>
+				&nbsp;&nbsp;&nbsp; papi_native_avail [options]
+				<BR>
+				Options:
+				<BR>
+				<BR>
+				&nbsp; -h, --help&nbsp; print this help message
+				<BR>
+				&nbsp; --darr&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; display Itanium events that support 
+				Data Address Range Restriction
+				<BR>
+				&nbsp; --dear&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; display Itanium Data Event Address 
+				Register events only
+				<BR>
+				&nbsp; --iarr&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; display Itanium events that support 
+				Instruction Address Range Restriction
+				<BR>
+				&nbsp; --iear&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; display Itanium Instruction Event 
+				Address Register events only
+				<BR>
+				&nbsp; --opcm&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; display Itanium events that support 
+				OpCode Matching
+				<BR>
+				&nbsp; NOTE:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; The last five options are 
+				mutually exclusive.</FONT></P>
+		<P style="mso-layout-grid-align: none">If any of these options are specified on the 
+			command line, only those events that support that option are displayed. Even 
+			so, the list can be extensive, with roughly 160 events supporting data address 
+			ranging, and even more supporting instruction address ranging.</P>
+	</body>
+</html>

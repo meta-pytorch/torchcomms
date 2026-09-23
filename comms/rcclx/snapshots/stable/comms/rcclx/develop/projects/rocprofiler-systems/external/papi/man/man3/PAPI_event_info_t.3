@@ -1,0 +1,154 @@
+.TH "PAPI_event_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_event_info_t
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "unsigned int \fBevent_code\fP"
+.br
+.ti -1c
+.RI "char \fBsymbol\fP [1024]"
+.br
+.ti -1c
+.RI "char \fBshort_descr\fP [64]"
+.br
+.ti -1c
+.RI "char \fBlong_descr\fP [1024]"
+.br
+.ti -1c
+.RI "int \fBcomponent_index\fP"
+.br
+.ti -1c
+.RI "char \fBunits\fP [64]"
+.br
+.ti -1c
+.RI "int \fBlocation\fP"
+.br
+.ti -1c
+.RI "int \fBdata_type\fP"
+.br
+.ti -1c
+.RI "int \fBvalue_type\fP"
+.br
+.ti -1c
+.RI "int \fBtimescope\fP"
+.br
+.ti -1c
+.RI "int \fBupdate_type\fP"
+.br
+.ti -1c
+.RI "int \fBupdate_freq\fP"
+.br
+.ti -1c
+.RI "unsigned int \fBcount\fP"
+.br
+.ti -1c
+.RI "unsigned int \fBevent_type\fP"
+.br
+.ti -1c
+.RI "char \fBderived\fP [64]"
+.br
+.ti -1c
+.RI "char \fBpostfix\fP [256]"
+.br
+.ti -1c
+.RI "unsigned int \fBcode\fP [12]"
+.br
+.ti -1c
+.RI "char \fBname\fP [12][256]"
+.br
+.ti -1c
+.RI "char \fBnote\fP [1024]"
+.br
+.ti -1c
+.RI "int \fBnum_quals\fP"
+.br
+.ti -1c
+.RI "char \fBquals\fP [8][1024]"
+.br
+.ti -1c
+.RI "char \fBquals_descrs\fP [8][1024]"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "unsigned int PAPI_event_info_t::code[12]"
+array of values that further describe the event:
+.IP "\(bu" 2
+presets: native event_code values
+.IP "\(bu" 2
+native:, register values(?) 
+.PP
+
+.SS "int PAPI_event_info_t::component_index"
+component this event belongs to 
+.SS "unsigned int PAPI_event_info_t::count"
+number of terms (usually 1) in the code and name fields
+.IP "\(bu" 2
+presets: these are native events
+.IP "\(bu" 2
+native: these are unused 
+.PP
+
+.SS "int PAPI_event_info_t::data_type"
+data type returned by PAPI 
+.SS "char PAPI_event_info_t::derived[64]"
+name of the derived type
+.IP "\(bu" 2
+presets: usually NOT_DERIVED
+.IP "\(bu" 2
+native: empty string 
+.PP
+
+.SS "unsigned int PAPI_event_info_t::event_code"
+preset (0x8xxxxxxx) or native (0x4xxxxxxx) event code 
+.SS "unsigned int PAPI_event_info_t::event_type"
+event type or category for preset events only 
+.SS "int PAPI_event_info_t::location"
+location event applies to 
+.SS "char PAPI_event_info_t::long_descr[1024]"
+a longer description: typically a sentence for presets, possibly a paragraph from vendor docs for native events 
+.SS "char PAPI_event_info_t::name[12][256]"
+< names of code terms:
+.IP "\(bu" 2
+presets: native event names,
+.IP "  \(bu" 4
+native: descriptive strings for each register value(?) 
+.PP
+
+.PP
+
+.SS "char PAPI_event_info_t::note[1024]"
+an optional developer note supplied with a preset event to delineate platform specific anomalies or restrictions 
+.SS "int PAPI_event_info_t::num_quals"
+number of qualifiers 
+.SS "char PAPI_event_info_t::postfix[256]"
+string containing postfix operations; only defined for preset events of derived type DERIVED_POSTFIX 
+.SS "char PAPI_event_info_t::quals[8][1024]"
+qualifiers 
+.SS "char PAPI_event_info_t::quals_descrs[8][1024]"
+qualifier descriptions 
+.SS "char PAPI_event_info_t::short_descr[64]"
+a short description suitable for use as a label 
+.SS "char PAPI_event_info_t::symbol[1024]"
+name of the event 
+.SS "int PAPI_event_info_t::timescope"
+from start, etc\&. 
+.SS "char PAPI_event_info_t::units[64]"
+units event is measured in 
+.SS "int PAPI_event_info_t::update_freq"
+how frequently event is updated 
+.SS "int PAPI_event_info_t::update_type"
+how event is updated 
+.SS "int PAPI_event_info_t::value_type"
+sum or absolute 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

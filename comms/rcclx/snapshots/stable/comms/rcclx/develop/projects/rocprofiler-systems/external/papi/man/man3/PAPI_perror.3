@@ -1,0 +1,67 @@
+.TH "PAPI_perror" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_perror \- Produces a string on standard error, describing the last library error\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ void PAPI_perror( const char *s );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIs\fP -- Optional message to print before the string describing the last error message\&.
+.RE
+.PP
+The routine PAPI_perror() produces a message on the standard error output, describing the last error encountered during a call to PAPI\&. If s is not NULL, s is printed, followed by a colon and a space\&. Then the error message and a new-line are printed\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int ret;
+int EventSet = PAPI_NULL;
+int native = 0x0;
+
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK)
+{
+   fprintf(stderr, \\"PAPI error %d: %s\\\\n\\", ret, PAPI_strerror(retval));
+   exit(1);
+}
+// Add Total Instructions Executed to our EventSet
+ret = PAPI_add_event(EventSet, PAPI_TOT_INS);
+if (ret != PAPI_OK)
+{
+   PAPI_perror( "PAPI_add_event" );
+   exit(1);
+}
+// Start counting
+ret = PAPI_start(EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_strerror\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

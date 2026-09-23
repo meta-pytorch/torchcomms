@@ -1,0 +1,6 @@
+
+COMPSRCS += components/infiniband/linux-infiniband.c 
+COMPOBJS += linux-infiniband.o
+
+linux-infiniband.o: components/infiniband/linux-infiniband.c components/infiniband/pscanf.h $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/infiniband/linux-infiniband.c -o linux-infiniband.o 

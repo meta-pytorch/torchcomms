@@ -1,0 +1,11 @@
+memccpy
+memchr
+memcmp
+memcpy
+memfrob
+memmem
+memmove
+mempcpy
+memrchr
+memset
+rawmemchr

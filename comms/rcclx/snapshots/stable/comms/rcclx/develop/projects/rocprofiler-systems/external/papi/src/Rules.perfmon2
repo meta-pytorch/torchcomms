@@ -1,0 +1,72 @@
+DESCR = "Linux with perfmon2 kernel support and library"
+
+ifneq (/usr,$(PFM_PREFIX))
+PWD = $(shell pwd)
+ifeq (,$(PFM_LIB_PATH))
+ifeq (,$(PFM_ROOT))
+        PFM_ROOT := $(PWD)/libpfm-3.y
+endif
+        PFM_LIB_PATH := $(PFM_ROOT)/lib
+	CC_SHR += -Wl,-rpath-link -Wl,$(PFM_LIB_PATH)
+endif
+ifeq (,$(PFM_INC_PATH))
+ifeq (,$(PFM_ROOT))
+        PFM_ROOT := $(PWD)/libpfm-3.y
+endif
+        PFM_INC_PATH := $(PFM_ROOT)/include
+endif
+ifneq (/usr/include,$(PFM_INC_PATH))
+CFLAGS	+= -I$(PFM_INC_PATH)
+endif
+endif
+
+MISCHDRS += linux-lock.h mb.h papi_libpfm_events.h
+MISCSRCS += papi_libpfm3_events.c 
+SHLIBDEPS = -Bdynamic -L$(PFM_LIB_PATH) -lpfm
+PFM_OBJS=$(shell $(AR) t $(PFM_LIB_PATH)/libpfm.a 2>/dev/null)
+MISCOBJS = $(PFM_OBJS) $(MISCSRCS:.c=.o)
+
+ifeq (,$(PFM_OBJS))
+$(PFM_LIB_PATH)/libpfm.a:
+ifneq (,${PFM_ROOT})
+	$(MAKE) -C $(PFM_ROOT) ARCH="$(ARCH)" CC="$(CC) $(BITFLAGS)" CONFIG_PFMLIB_OLD_PFMV2="$(PFM_OLD_PFMV2)" lib
+else
+	@echo '$@ not installed!'; exit 1
+endif
+	$(MAKE)
+endif
+
+include Makefile.inc
+
+config.h:
+	@echo 'Please clobber your build and run ./configure."
+
+$(PFM_OBJS): $(PFM_LIB_PATH)/libpfm.a
+	$(AR) xv $<
+
+papi_libpfm3_events.o: papi_libpfm3_events.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c papi_libpfm3_events.c -o $@
+
+native_clean:
+	-rm -f $(MISCOBJS)
+ifneq (,${PFM_ROOT})
+	$(MAKE) -C $(PFM_ROOT) ARCH="$(ARCH)" clean
+endif
+
+native_install:
+ifneq (,${PFM_ROOT})
+	-$(MAKE) -C $(PFM_ROOT) ARCH="$(ARCH)" CONFIG_PFMLIB_OLD_PFMV2="$(PFM_OLD_PFMV2)" DESTDIR=$(DESTDIR) PREFIX=$(PREFIX) install_prefix=$(PREFIX) LIBDIR=$(LIBDIR) INCDIR=$(INCDIR) MANDIR=$(MANDIR) install
+endif
+	-install -d $(DESTDIR)$(LIBDIR)
+ifneq (,$(findstring shared,$(LIBS)))
+	cp -p $(SHLIB) $(DESTDIR)$(LIBDIR)/libpapi.so.$(PAPIVER).$(PAPIREV).$(PAPIAGE).$(PAPIINC)
+	ln -sf libpapi.so.$(PAPIVER).$(PAPIREV).$(PAPIAGE).$(PAPIINC) $(DESTDIR)$(LIBDIR)/libpapi.so.$(PAPISOVER)
+	ln -sf libpapi.so.$(PAPIVER).$(PAPIREV).$(PAPIAGE).$(PAPIINC) $(DESTDIR)$(LIBDIR)/libpapi.so
+endif
+	-install -d $(DESTDIR)$(DATADIR)
+	cp -f ./papi_events.csv $(DESTDIR)$(DATADIR)
+
+native_clobber:
+ifneq (,${PFM_ROOT})
+	 $(MAKE) -C $(PFM_ROOT) ARCH="$(ARCH)" distclean
+endif

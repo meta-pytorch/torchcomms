@@ -1,0 +1,56 @@
+.TH "PAPI_disable_component_by_name" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_disable_component_by_name \- disables the named component  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIENOCMP\fP component does not exist 
+.br
+\fIENOINIT\fP unable to disable the component, the library has already been initialized 
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIcomponent_name\fP name of the component to disable\&. 
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int result;
+result = PAPI_disable_component_by_name("example");
+if (result==PAPI_OK)
+    printf("component \\"example\\" has been disabled\\n");
+//\&.\&.\&.
+PAPI_library_init(PAPI_VER_CURRENT);
+
+.fi
+.PP
+ PAPI_disable_component_by_name() allows the user to disable a component before PAPI_library_init() time\&. This is useful if the user knows they do not with to use events from that component and want to reduce the PAPI library overhead\&.
+.RE
+.PP
+PAPI_disable_component_by_name() must be called before PAPI_library_init()\&.
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_library_init\fP 
+.PP
+\fBPAPI_disable_component\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

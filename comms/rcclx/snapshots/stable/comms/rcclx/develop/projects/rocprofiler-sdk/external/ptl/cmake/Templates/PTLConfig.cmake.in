@@ -1,0 +1,80 @@
+# -------------------------------------------------------------------------------------- #
+# package initialization
+#
+@PACKAGE_INIT@
+
+cmake_minimum_required(VERSION 3.8)
+
+# -------------------------------------------------------------------------------------- #
+# basic paths
+#
+set_and_check(PTL_INCLUDE_DIR "@PACKAGE_INCLUDE_INSTALL_DIR@")
+set_and_check(PTL_LIB_DIR "@PACKAGE_LIB_INSTALL_DIR@")
+
+# -------------------------------------------------------------------------------------- #
+# available components
+#
+set(PTL_shared_FOUND @BUILD_SHARED_LIBS@)
+set(PTL_static_FOUND @BUILD_STATIC_LIBS@)
+set(PTL_TBB_FOUND @PTL_USE_TBB@)
+
+# Early check so later setup doesn't need to check REQUIRED status
+check_required_components(PTL)
+
+# -------------------------------------------------------------------------------------- #
+# refind needed dependencies/targets
+#
+include(CMakeFindDependencyMacro)
+
+if(NOT Threads_FOUND)
+    set(CMAKE_THREAD_PREFER_PTHREAD @CMAKE_THREAD_PREFER_PTHREAD@)
+    set(THREADS_PREFER_PTHREAD_FLAG @THREADS_PREFER_PTHREAD_FLAG@)
+    find_dependency(Threads REQUIRED)
+endif()
+
+if(NOT TBB_FOUND AND PTL_TBB_FOUND)
+    list(INSERT CMAKE_MODULE_PATH 0 "@PACKAGE_CMAKE_MODULE_INSTALL_DIR@")
+    find_dependency(TBB @TBB_VERSION@ REQUIRED)
+    list(REMOVE_AT CMAKE_MODULE_PATH 0)
+endif()
+
+# -------------------------------------------------------------------------------------- #
+# Include our targets file(s)
+#
+include("${CMAKE_CURRENT_LIST_DIR}/PTLTargets.cmake")
+
+# Set the default component based on what's available
+if(PTL_shared_FOUND)
+    set(_ptl_preferred_link "shared")
+else()
+    set(_ptl_preferred_link "static")
+endif()
+
+# Override if user has specified "static" alone as a component. Earlier check handles case
+# that components are REQUIRED. Only change preferred link only changed if available to
+# cover OPTIONAL case
+if(("static" IN_LIST PTL_FIND_COMPONENTS) AND NOT ("shared" IN_LIST PTL_FIND_COMPONENTS))
+    if(PTL_static_FOUND)
+        set(_ptl_preferred_link "static")
+    endif()
+endif()
+
+# -------------------------------------------------------------------------------------- #
+# Set old style variables for include/linking
+#
+set(PTL_INCLUDE_DIRS ${PTL_INCLUDE_DIR})
+set(PTL_LIBRARIES PTL::ptl-${_ptl_preferred_link})
+
+# -------------------------------------------------------------------------------------- #
+# Create "transparent" link target that interfaces to shared/static on basis of
+# availability or requested linking option
+#
+if(NOT TARGET PTL::ptl)
+    add_library(PTL::ptl INTERFACE IMPORTED)
+    target_link_libraries(PTL::ptl INTERFACE ${PTL_LIBRARIES})
+    # Needed to distinguish DLL/Lib, but symbol never used in code. Should also be a
+    # public symbol of ptl-static
+    if(WIN32)
+        target_compile_definitions(PTL::ptl INTERFACE _PTL_ARCHIVE)
+    endif()
+endif()

@@ -1,0 +1,46 @@
+ARG DISTRO=opensuse/leap
+ARG VERSION=15.3
+FROM ${DISTRO}:${VERSION}
+
+ENV HOME=/root
+ENV SHELL=/bin/bash
+ENV BASH_ENV=/etc/bash.bashrc
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /tmp
+SHELL [ "/bin/bash", "-c" ]
+
+ENV PATH=/usr/local/bin:${PATH}
+
+ARG EXTRA_PACKAGES=""
+
+RUN set +e; \
+    zypper --non-interactive -i --gpg-auto-import-keys refresh; \
+    zypper --non-interactive -i patch; \
+    zypper --non-interactive -i patch; \
+    zypper --non-interactive -i --gpg-auto-import-keys refresh; \
+    exit 0
+
+RUN zypper --non-interactive update -y && \
+    zypper --non-interactive dist-upgrade -y && \
+    zypper --non-interactive install -y -t pattern devel_basis && \
+    zypper --non-interactive install -y python3-pip gcc-c++ git dpkg-devel rpm-build curl wget && \
+    python3 -m pip install 'cmake==3.21' && \
+    zypper --non-interactive clean --all
+
+# The Rock Tarball
+ARG GPU_TYPE=""
+ARG GPU_TARBALL=""
+RUN if [ -n "$GPU_TYPE" ] && [ -n "$GPU_TARBALL" ]; then \
+        VERSION=$(echo "$GPU_TARBALL" | sed -nE 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p'); \
+        if [ -z "$VERSION" ]; then \
+            echo "Error: Could not extract version from GPU_TARBALL ('$GPU_TARBALL')." >&2; \
+            exit 1; \
+        fi; \
+        python3 -m pip install -U awscli; \
+        aws s3 cp "s3://therock-nightly-tarball/${GPU_TARBALL}" rocm-${VERSION}-${GPU_TYPE}.tar.gz --no-sign-request; \
+        mv rocm-${VERSION}-${GPU_TYPE}.tar.gz /opt/rocm-${VERSION}-${GPU_TYPE}.tar.gz; \
+    fi
+
+WORKDIR /home
+SHELL [ "/bin/bash", "--login", "-c" ]

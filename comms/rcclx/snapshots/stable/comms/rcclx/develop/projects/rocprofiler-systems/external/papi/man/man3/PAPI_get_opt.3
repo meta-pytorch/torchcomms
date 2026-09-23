@@ -1,0 +1,98 @@
+.TH "PAPI_get_opt" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_opt \- Get PAPI library or event set options\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_get_opt(  int option, PAPI_option_t * ptr );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIoption\fP Defines the option to get\&. Possible values are briefly described in the table below\&.
+.br
+\fIptr\fP Pointer to a structure determined by the selected option\&. See \fBPAPI_option_t\fP for a description of possible structures\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP The specified option or parameter is invalid\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_ECMP\fP The option is not implemented for the current component\&. 
+.br
+\fIPAPI_ENOINIT\fP specified option requires PAPI to be initialized first\&.
+.RE
+.PP
+PAPI_get_opt() queries the options of the PAPI library or a specific event set created by \fBPAPI_create_eventset\fP\&. Some options may require that the eventset be bound to a component before they can execute successfully\&. This can be done either by adding an event or by explicitly calling \fBPAPI_assign_eventset_component\fP\&.
+.PP
+Ptr is a pointer to the \fBPAPI_option_t\fP structure, which is actually a union of different structures for different options\&. Not all options require or return information in these structures\&. Each returns different values in the structure\&. Some options require a component index to be provided\&. These options are handled explicitly by the PAPI_get_cmp_opt() call\&.
+.PP
+\fBNote\fP
+.RS 4
+Some options, such as PAPI_DOMAIN and PAPI_MULTIPLEX are also available as separate entry points in both C and Fortran\&.
+.RE
+.PP
+The reader is encouraged to peruse the ctests code in the PAPI distribution for examples of usage of \fBPAPI_set_opt\fP\&.
+.PP
+\fBPossible values for the PAPI_get_opt option parameter\fP
+.RS 4
+ 
+OPTION          DEFINITION
+PAPI_DEFDOM     Get default counting domain for newly created event sets. Requires a component index.
+PAPI_DEFGRN     Get default counting granularity. Requires a component index.
+PAPI_DEBUG      Get the PAPI debug state and the debug handler. The debug state is specified in ptr->debug.level. The debug handler is specified in ptr->debug.handler. 
+                For further information regarding debug states and the behavior of the handler, see PAPI_set_debug.
+PAPI_MULTIPLEX  Get current multiplexing state for specified EventSet.
+PAPI_DEF_ITIMER Get the type of itimer used in software multiplexing, overflowing and profiling.
+PAPI_DEF_MPX_NS Get the sampling time slice in nanoseconds for multiplexing and overflow.
+PAPI_DEF_ITIMER_NS  See PAPI_DEF_MPX_NS.
+PAPI_ATTACH     Get thread or process id to which event set is attached. Returns TRUE if currently attached.
+PAPI_CPU_ATTACH Get ptr->cpu.cpu_num and Attach state for EventSet specified in ptr->cpu.eventset.
+PAPI_DETACH     Get thread or process id to which event set is attached. Returns TRUE if currently attached.
+PAPI_DOMAIN     Get domain for EventSet specified in ptr->domain.eventset. Will error if eventset is not bound to a component.
+PAPI_GRANUL     Get granularity for EventSet specified in ptr->granularity.eventset. Will error if eventset is not bound to a component.
+PAPI_INHERIT        Get current inheritance state for specified EventSet.
+PAPI_PRELOAD        Get LD_PRELOAD environment equivalent.
+PAPI_CLOCKRATE  Get clockrate in MHz.
+PAPI_MAX_CPUS   Get number of CPUs.
+PAPI_EXEINFO        Get Executable addresses for text/data/bss.
+PAPI_HWINFO     Get information about the hardware.
+PAPI_LIB_VERSION    Get the full PAPI version of the library. This does not require PAPI to be initialized first.
+PAPI_MAX_HWCTRS Get number of counters. Requires a component index.
+PAPI_MAX_MPX_CTRS   Get maximum number of multiplexing counters. Requires a component index.
+PAPI_SHLIBINFO  Get shared library information used by the program.
+PAPI_COMPONENTINFO  Get the PAPI features the specified component supports. Requires a component index.
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_multiplex\fP 
+.PP
+\fBPAPI_get_cmp_opt\fP 
+.PP
+\fBPAPI_set_opt\fP 
+.PP
+\fBPAPI_option_t\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

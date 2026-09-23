@@ -1,0 +1,54 @@
+.TH "PAPI_address_map_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_address_map_t \- get the executable's address space info  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fR#include <papi\&.h>\fP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "char \fBname\fP [1024]"
+.br
+.ti -1c
+.RI "vptr_t \fBtext_start\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBtext_end\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBdata_start\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBdata_end\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBbss_start\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBbss_end\fP"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "vptr_t PAPI_address_map_t::bss_end"
+End address of program bss segment 
+.SS "vptr_t PAPI_address_map_t::bss_start"
+Start address of program bss segment 
+.SS "vptr_t PAPI_address_map_t::data_end"
+End address of program data segment 
+.SS "vptr_t PAPI_address_map_t::data_start"
+Start address of program data segment 
+.SS "vptr_t PAPI_address_map_t::text_end"
+End address of program text segment 
+.SS "vptr_t PAPI_address_map_t::text_start"
+Start address of program text segment 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

@@ -1,0 +1,1389 @@
+2024-08-30  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/Rules.rocp_sdk,
+	  src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/sdk_class.h,
+	  src/components/rocp_sdk/sdk_class.hpp,
+	  src/components/rocp_sdk/tests/Makefile,
+	  src/components/rocp_sdk/tests/advanced.c,
+	  src/components/rocp_sdk/tests/kernel.cpp,
+	  src/components/rocp_sdk/tests/simple.c, src/configure,
+	  src/configure.in: Beta support for AMD ROCprofiler-SDK events.
+
+Mon Jul 22 16:59:06 2024 +0900  jdeokkim <jdeokkim@protonmail.com>
+
+	* src/libpfm4/docs/man3/pfm_get_os_event_encoding.3,
+	  .../docs/man3/pfm_get_perf_event_encoding.3,
+	  src/libpfm4/docs/man3/pfm_initialize.3,
+	  src/libpfm4/lib/events/arm_neoverse_n1_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_n2_events.h,
+	  src/libpfm4/lib/events/arm_neoverse_v1_events.h,
+	  src/libpfm4/lib/events/intel_spr_events.h,
+	  src/libpfm4/lib/pfmlib_arm.c: Update libpfm4 Current with commit
+	  3abda5bc6c1af7f1b620dc594a806b3b5a4134cb  Optimize pfm_detect() for
+	  ARM processors  Avoid calling pfmlib_getcpuinfo_attr() 3 times for
+	  each ARM PMU to detect. For a given processor, the function will
+	  always return the same information. Use the pfm_arm_cfg structure
+	  as a cache on subsequent calls.  Note: this overall logic does not
+	  handle ARM hybrids right now.   commit
+	  b8b7d69e774c38618aa440f49d69814d109629f5  add L2D_CACHE and make
+	  L2D_CACHE_ACCESS alias for ARM Neoverse N1,N2,V2  To match kernel
+	  and documentation. Patch provides an alias to avoid breaking
+	  existing scripts.   commit 0d216ee4082aef2d8cabfa9816cdb6d6560d1d3f
+	  update Intel SapphireRapids core PMU to 1.24  Updates the Intel
+	  SapphireRapids core PMU event table to latest Intel released
+	  version:  Date   : 07/18/2024 Version: 1.24"  From
+	  gitub.com/Intel/perfmon   commit
+	  874ed7cff57271c5d4e530650eadce76e3dcaa14  Fix typos in
+	  docs/man3/pfm_get_perf_event_encoding.3  commit
+	  ffbfc5970897de87471e7cba64737dc13e2369cf  Fix typos in
+	  docs/man3/pfm_get_os_event_encoding.3  Note: The PAPI team does not
+	  have access to a machine with ARM and ARM Neoverse to test building
+	  PAPI with updated libpfm4 changes. Built PAPI successfully on a
+	  machine with an Intel Sapphire Rapids (Intel(R) Xeon(R) Gold 6430)
+	  CPU and output from papi_native_avail shows updated names and
+	  descriptions.
+
+2024-08-02  Treece Burgess <trebu@login04.frontier.olcf.ornl.gov>
+
+	* src/components/rocm/roc_dispatch.c,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/roc_profiler.c,
+	  src/components/rocm/roc_profiler.h, src/components/rocm/rocm.c:
+	  Revert changes to ROCm component to only count the basename for
+	  papi_component_avail. This will be the default choice for
+	  components with qualifiers.
+
+2024-08-01  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/README.md: Updating format of export
+	  LD_LIBRARY_PATH= in Cuda component README.
+
+2024-07-29  Heike Jagode <jagode@icl.utk.edu>
+
+	* README.md: Updated license.
+
+2024-07-25  William Cohen <wcohen@redhat.com>
+
+	* src/components/cuda/tests/Makefile: cuda: When making the cuda
+	  tests do not assume nvcc on $PATH is one being used  A check in the
+	  Makefile for the cuda tests assumed the nvcc found on $PATH and the
+	  one referred to by $(NVCC) were the same.  It is possible to have
+	  multiple versions of cuda installed on the system and the one being
+	  used for $(NVCC) may not be the same as the one found on the
+	  default path.  Should always be use $(NVCC) in the Makefile to
+	  ensure getting the same version of nvcc.
+	* src/components/cuda/linux-cuda.c: cuda: Eliminate -Werror=format-
+	  security error in cuda_init_private()  Using a "%s" format in the
+	  sprintf to avoid the following error when compiling the cuda
+	  component with -Werror=format-security :  components/cuda/linux-
+	  cuda.c: In function ‘cuda_init_private’: components/cuda/linux-
+	  cuda.c:158:9: error: format not a string literal and no format
+	  arguments [-Werror=format-security] 158 |
+	  sprintf(_cuda_vector.cmp_info.disabled_reason, disabled_reason); |
+	  ^~~~~~~ cc1: some warnings being treated as errors
+
+2024-07-24  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add presets for Zen5  These changes include
+	  all available preset events for the Zen4 architecture, and they
+	  were validated using the Counter Analysis Toolkit.  These changes
+	  have been tested on the AMD Zen5 architecture.
+
+2024-07-16  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h: Adding papi_cupti_common.c
+	  and papi_cupti_common.h
+	* src/components/cuda/Rules.cuda, src/components/cuda/cupti_common.c,
+	  src/components/cuda/cupti_common.h,
+	  src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_events.c,
+	  src/components/cuda/cupti_profiler.c: Renaming cupti_common.* to
+	  papi_cupti_common.* to avoid file name collision with NVIDIA. Fixes
+	  build issues in Cuda >= 12.4.
+
+2024-07-23  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/cuda/tests/Makefile: Fixed issue with building CUDA
+	  tests when linked with shared PAPI library  If CUDA tests are
+	  linked with the PAPI shared library (via the configure option
+	  --with-shlib-tools), the tests don't build because nvcc doesn't
+	  accept the -Wl,-rpath linker option.  To fix this issue, instead of
+	  linking with nvcc, we can link with the PAPI-chosen C compiler via
+	  the CC macro (or CXX macro for tests with C++ code).  Additionally,
+	  this PR cleans up other issues with tests (e.g., cudaOpenMP.cu and
+	  cudaOpenMP_noCuCtx.cu) by removing redundant explicit compilations,
+	  as the Makefile already includes a compilation rule.
+
+2024-07-09  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/rocm/roc_dispatch.c,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/roc_profiler.c,
+	  src/components/rocm/roc_profiler.h, src/components/rocm/rocm.c:
+	  rocm: fix event count to include qualifiers  The event count
+	  previously only counted basenames.  This has been changed to
+	  include all qualified event names.  These changes have been tested
+	  on the Frontier supercomputer (AMD MI250X GPU architecture) with
+	  ROCm version 5.3.0.
+
+Wed Jul 3 23:50:15 2024 -0700  Swarup Sahoo <swarup-chandra.sahoo@amd.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_amd64_fam1ah_zen5.3,
+	  .../docs/man3/libpfm_amd64_fam1ah_zen5_l3.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/amd64_events_fam1ah_zen5.h,
+	  .../lib/events/amd64_events_fam1ah_zen5_l3.h,
+	  src/libpfm4/lib/pfmlib_amd64.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam19h_l3.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam1ah.c,
+	  src/libpfm4/lib/pfmlib_amd64_fam1ah_l3.c,
+	  src/libpfm4/lib/pfmlib_amd64_priv.h,
+	  src/libpfm4/lib/pfmlib_common.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 18f2a3e0541cc438094bbf65ebbed2b6742bf0d4  Add AMD Zen5 L3
+	  PMU support  This patch implements support for AMD Zen5 processor
+	  L3 cache PMU. The implementation is based on "Performance Monitor
+	  Counters for AMD Family A0h Model 00h- 0Fh Processors, rev 0.02",
+	  available at -
+	  https://www.amd.com/content/dam/amd/en/documents/epyc-technical-
+	  docs/programmer-references/58550-0.01.pdf   commit
+	  e50b6a47c9f9f1386805bbce3d2a634782f8c30e  Add AMD Zen5 core PMU
+	  support  This patch implements support for AMD Zen5 core PMU
+	  support.  The implementation is based on "Performance Monitor
+	  Counters for AMD Family A0h Model 00h- 0Fh Processors, rev 0.02",
+	  available at -
+	  https://www.amd.com/content/dam/amd/en/documents/epyc-technical-
+	  docs/programmer-references/58550-0.01.pdf   Note: The PAPI team
+	  does not have access to AMD Zen5 architecture to test additions as
+	  of now.
+
+2024-06-07  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/papi_internal.c: papi_internal: don't segfault if event missing
+	  from derived event definition  this shouldn't be possible with a
+	  correctly configured papi_event.csv but it is still good to be
+	  robust here so that we don't segfault and also print useful debug
+	  messages
+
+2024-06-03  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c:
+	  perf_event/libpfm4_events: add initial heterogenous CPU support
+	  Alderlake and Raptorlake should now be able to properly enumerate
+	  events for both Power and Efficiency cores on heterogeneous
+	  systems.  We're still testing if PAPI properly handles measurements
+	  where applications end up running on both types of cores.  The
+	  detection of E-cores is currently a bit of a hack, we're going to
+	  discuss with upstream libpfm4 to see if we can get a cleaner
+	  interface for this.
+	* src/components/perf_event/pe_libpfm4_events.c:
+	  perf_event/libpfm4_events: add some code comments to
+	  _pe_libpfm4_init()  this should not change the behavior of the
+	  code, just adding some comments and whitespace to clear up what the
+	  code is actually doing to prepare for improved heterogeneous CPU
+	  support
+
+2024-06-16  William Cohen <wcohen@redhat.com>
+
+	* src/Rules.perfctr, src/Rules.perfctr-pfm,
+	  src/components/perfctr/Rules.perfctr,
+	  src/components/perfctr/perfctr-x86.c,
+	  src/components/perfctr/perfctr-x86.h,
+	  src/components/perfctr/perfctr.c,
+	  src/components/perfctr_ppc/Rules.perfctr_ppc,
+	  src/components/perfctr_ppc/linux-ppc64.h,
+	  src/components/perfctr_ppc/perfctr-ppc64.c,
+	  src/components/perfctr_ppc/perfctr-ppc64.h,
+	  src/components/perfctr_ppc/power5+_events.h,
+	  src/components/perfctr_ppc/power5+_events_map.c,
+	  src/components/perfctr_ppc/power5_events.h,
+	  src/components/perfctr_ppc/power5_events_map.c,
+	  src/components/perfctr_ppc/power6_events.h,
+	  src/components/perfctr_ppc/power6_events_map.c,
+	  src/components/perfctr_ppc/power7_events.h,
+	  src/components/perfctr_ppc/ppc64_events.c,
+	  src/components/perfctr_ppc/ppc64_events.h,
+	  src/components/perfctr_ppc/ppc970_events.h,
+	  src/components/perfctr_ppc/ppc970_events_map.c, src/configure,
+	  src/configure.in, src/libpfm-3.y/COPYRIGHT,
+	  src/libpfm-3.y/ChangeLog, src/libpfm-3.y/Makefile,
+	  src/libpfm-3.y/README, src/libpfm-3.y/TODO,
+	  src/libpfm-3.y/config.mk, src/libpfm-3.y/docs/Makefile,
+	  src/libpfm-3.y/docs/man3/libpfm.3,
+	  src/libpfm-3.y/docs/man3/libpfm_amd64.3,
+	  src/libpfm-3.y/docs/man3/libpfm_atom.3,
+	  src/libpfm-3.y/docs/man3/libpfm_core.3,
+	  src/libpfm-3.y/docs/man3/libpfm_itanium.3,
+	  src/libpfm-3.y/docs/man3/libpfm_itanium2.3,
+	  src/libpfm-3.y/docs/man3/libpfm_montecito.3,
+	  src/libpfm-3.y/docs/man3/libpfm_nehalem.3,
+	  src/libpfm-3.y/docs/man3/libpfm_p6.3,
+	  src/libpfm-3.y/docs/man3/libpfm_powerpc.3,
+	  src/libpfm-3.y/docs/man3/libpfm_westmere.3,
+	  src/libpfm-3.y/docs/man3/pfm_dispatch_events.3,
+	  src/libpfm-3.y/docs/man3/pfm_find_event.3,
+	  src/libpfm-3.y/docs/man3/pfm_find_event_bycode.3,
+	  .../docs/man3/pfm_find_event_bycode_next.3,
+	  src/libpfm-3.y/docs/man3/pfm_find_event_mask.3,
+	  src/libpfm-3.y/docs/man3/pfm_find_full_event.3,
+	  src/libpfm-3.y/docs/man3/pfm_force_pmu.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_cycle_event.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_event_code.3,
+	  .../docs/man3/pfm_get_event_code_counter.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_event_counters.3,
+	  .../docs/man3/pfm_get_event_description.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_event_mask_code.3,
+	  .../docs/man3/pfm_get_event_mask_description.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_event_mask_name.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_event_name.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_full_event_name.3,
+	  .../docs/man3/pfm_get_hw_counter_width.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_impl_counters.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_impl_pmcs.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_impl_pmds.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_inst_retired.3,
+	  .../docs/man3/pfm_get_max_event_name_len.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_num_counters.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_num_events.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_num_pmcs.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_num_pmds.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_pmu_name.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_pmu_name_bytype.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_pmu_type.3,
+	  src/libpfm-3.y/docs/man3/pfm_get_version.3,
+	  src/libpfm-3.y/docs/man3/pfm_initialize.3,
+	  src/libpfm-3.y/docs/man3/pfm_list_supported_pmus.3,
+	  src/libpfm-3.y/docs/man3/pfm_pmu_is_supported.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_and.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_clr.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_copy.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_eq.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_isset.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_or.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_set.3,
+	  src/libpfm-3.y/docs/man3/pfm_regmask_weight.3,
+	  src/libpfm-3.y/docs/man3/pfm_set_options.3,
+	  src/libpfm-3.y/docs/man3/pfm_strerror.3,
+	  src/libpfm-3.y/examples_ia64_v2.0/Makefile,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita2_btb.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita2_dear.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita2_irr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita2_opcode.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita2_rr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita_btb.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita_dear.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita_irr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita_opcode.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/ita_rr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/mont_dear.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/mont_etb.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/mont_irr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/mont_opcode.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/mont_rr.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/multiplex.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/notify_self.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/notify_self2.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/notify_self3.c,
+	  .../examples_ia64_v2.0/notify_self_fork.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/self.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/showreset.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/syst.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/task.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/task_attach.c,
+	  .../examples_ia64_v2.0/task_attach_timeout.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/task_smpl.c,
+	  src/libpfm-3.y/examples_ia64_v2.0/whichpmu.c,
+	  src/libpfm-3.y/examples_v2.x/Makefile,
+	  src/libpfm-3.y/examples_v2.x/check_events.c,
+	  src/libpfm-3.y/examples_v2.x/detect_pmcs.c,
+	  src/libpfm-3.y/examples_v2.x/detect_pmcs.h,
+	  src/libpfm-3.y/examples_v2.x/ia64/Makefile,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita2_btb.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita2_dear.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita2_irr.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita2_opcode.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita2_rr.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita_btb.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita_dear.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita_irr.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita_opcode.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/ita_rr.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/mont_dear.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/mont_etb.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/mont_irr.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/mont_opcode.c,
+	  src/libpfm-3.y/examples_v2.x/ia64/mont_rr.c,
+	  src/libpfm-3.y/examples_v2.x/multiplex.c,
+	  src/libpfm-3.y/examples_v2.x/multiplex2.c,
+	  src/libpfm-3.y/examples_v2.x/notify_self.c,
+	  src/libpfm-3.y/examples_v2.x/notify_self2.c,
+	  src/libpfm-3.y/examples_v2.x/notify_self3.c,
+	  src/libpfm-3.y/examples_v2.x/notify_self_fork.c,
+	  src/libpfm-3.y/examples_v2.x/pfmsetup.c,
+	  src/libpfm-3.y/examples_v2.x/rtop.c,
+	  src/libpfm-3.y/examples_v2.x/self.c,
+	  src/libpfm-3.y/examples_v2.x/self_pipe.c,
+	  src/libpfm-3.y/examples_v2.x/self_smpl.c,
+	  src/libpfm-3.y/examples_v2.x/self_smpl_multi.c,
+	  src/libpfm-3.y/examples_v2.x/self_view.c,
+	  src/libpfm-3.y/examples_v2.x/set_notify.c,
+	  src/libpfm-3.y/examples_v2.x/showevtinfo.c,
+	  src/libpfm-3.y/examples_v2.x/showreginfo.c,
+	  src/libpfm-3.y/examples_v2.x/syst.c,
+	  src/libpfm-3.y/examples_v2.x/syst_multi_np.c,
+	  src/libpfm-3.y/examples_v2.x/syst_np.c,
+	  src/libpfm-3.y/examples_v2.x/task.c,
+	  src/libpfm-3.y/examples_v2.x/task_attach.c,
+	  src/libpfm-3.y/examples_v2.x/task_attach_timeout.c,
+	  .../examples_v2.x/task_attach_timeout_np.c,
+	  src/libpfm-3.y/examples_v2.x/task_smpl.c,
+	  src/libpfm-3.y/examples_v2.x/task_smpl_user.c,
+	  src/libpfm-3.y/examples_v2.x/whichpmu.c,
+	  src/libpfm-3.y/examples_v2.x/x86/Makefile,
+	  src/libpfm-3.y/examples_v2.x/x86/smpl_amd64_ibs.c,
+	  src/libpfm-3.y/examples_v2.x/x86/smpl_core_pebs.c,
+	  src/libpfm-3.y/examples_v2.x/x86/smpl_nhm_lbr.c,
+	  src/libpfm-3.y/examples_v2.x/x86/smpl_p4_pebs.c,
+	  src/libpfm-3.y/examples_v2.x/x86/smpl_pebs.c,
+	  src/libpfm-3.y/examples_v3.x/Makefile,
+	  src/libpfm-3.y/examples_v3.x/check_events.c,
+	  src/libpfm-3.y/examples_v3.x/detect_pmcs.c,
+	  src/libpfm-3.y/examples_v3.x/detect_pmcs.h,
+	  src/libpfm-3.y/examples_v3.x/ia64/Makefile,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita2_btb.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita2_dear.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita2_irr.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita2_opcode.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita2_rr.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita_btb.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita_dear.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita_irr.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita_opcode.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/ita_rr.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/mont_dear.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/mont_etb.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/mont_irr.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/mont_opcode.c,
+	  src/libpfm-3.y/examples_v3.x/ia64/mont_rr.c,
+	  src/libpfm-3.y/examples_v3.x/multiplex.c,
+	  src/libpfm-3.y/examples_v3.x/multiplex2.c,
+	  src/libpfm-3.y/examples_v3.x/notify_self.c,
+	  src/libpfm-3.y/examples_v3.x/notify_self2.c,
+	  src/libpfm-3.y/examples_v3.x/notify_self3.c,
+	  src/libpfm-3.y/examples_v3.x/notify_self_fork.c,
+	  src/libpfm-3.y/examples_v3.x/pfmsetup.c,
+	  src/libpfm-3.y/examples_v3.x/rtop.c,
+	  src/libpfm-3.y/examples_v3.x/self.c,
+	  src/libpfm-3.y/examples_v3.x/self_pipe.c,
+	  src/libpfm-3.y/examples_v3.x/self_smpl_multi.c,
+	  src/libpfm-3.y/examples_v3.x/set_notify.c,
+	  src/libpfm-3.y/examples_v3.x/showevtinfo.c,
+	  src/libpfm-3.y/examples_v3.x/showreginfo.c,
+	  src/libpfm-3.y/examples_v3.x/syst.c,
+	  src/libpfm-3.y/examples_v3.x/task.c,
+	  src/libpfm-3.y/examples_v3.x/task_attach.c,
+	  src/libpfm-3.y/examples_v3.x/task_attach_timeout.c,
+	  src/libpfm-3.y/examples_v3.x/task_smpl.c,
+	  src/libpfm-3.y/examples_v3.x/task_smpl_user.c,
+	  src/libpfm-3.y/examples_v3.x/whichpmu.c,
+	  src/libpfm-3.y/examples_v3.x/x86/Makefile,
+	  src/libpfm-3.y/examples_v3.x/x86/smpl_amd64_ibs.c,
+	  src/libpfm-3.y/examples_v3.x/x86/smpl_core_pebs.c,
+	  .../examples_v3.x/x86/smpl_core_pebs_sys.c,
+	  src/libpfm-3.y/examples_v3.x/x86/smpl_p4_pebs.c,
+	  src/libpfm-3.y/include/Makefile,
+	  src/libpfm-3.y/include/perfmon/perfmon.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_compat.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_crayx2.h,
+	  .../include/perfmon/perfmon_default_smpl.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_dfl_smpl.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_i386.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_ia64.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_mips64.h,
+	  .../include/perfmon/perfmon_pebs_core_smpl.h,
+	  .../include/perfmon/perfmon_pebs_p4_smpl.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_pebs_smpl.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_powerpc.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_sparc.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_v2.h,
+	  src/libpfm-3.y/include/perfmon/perfmon_x86_64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_amd64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_cell.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_comp.h,
+	  .../include/perfmon/pfmlib_comp_crayx2.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_comp_i386.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_comp_ia64.h,
+	  .../include/perfmon/pfmlib_comp_mips64.h,
+	  .../include/perfmon/pfmlib_comp_powerpc.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_comp_sparc.h,
+	  .../include/perfmon/pfmlib_comp_x86_64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_core.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_coreduo.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_crayx2.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_gen_ia32.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_gen_ia64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_gen_mips64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_i386_p6.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_intel_atom.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_intel_nhm.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_itanium.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_itanium2.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_montecito.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_crayx2.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_i386.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_ia64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_mips64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_powerpc.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_sparc.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_os_x86_64.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_pentium4.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_powerpc.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_sicortex.h,
+	  src/libpfm-3.y/include/perfmon/pfmlib_sparc.h,
+	  src/libpfm-3.y/lib/Makefile, src/libpfm-3.y/lib/amd64_events.h,
+	  src/libpfm-3.y/lib/amd64_events_fam10h.h,
+	  src/libpfm-3.y/lib/amd64_events_fam15h.h,
+	  src/libpfm-3.y/lib/amd64_events_k7.h,
+	  src/libpfm-3.y/lib/amd64_events_k8.h,
+	  src/libpfm-3.y/lib/cell_events.h, src/libpfm-3.y/lib/core_events.h,
+	  src/libpfm-3.y/lib/coreduo_events.h,
+	  src/libpfm-3.y/lib/crayx2_events.h,
+	  src/libpfm-3.y/lib/gen_ia32_events.h,
+	  src/libpfm-3.y/lib/gen_mips64_events.h,
+	  src/libpfm-3.y/lib/i386_p6_events.h,
+	  src/libpfm-3.y/lib/intel_atom_events.h,
+	  src/libpfm-3.y/lib/intel_corei7_events.h,
+	  src/libpfm-3.y/lib/intel_corei7_unc_events.h,
+	  src/libpfm-3.y/lib/intel_wsm_events.h,
+	  src/libpfm-3.y/lib/intel_wsm_unc_events.h,
+	  src/libpfm-3.y/lib/itanium2_events.h,
+	  src/libpfm-3.y/lib/itanium_events.h,
+	  src/libpfm-3.y/lib/montecito_events.h,
+	  src/libpfm-3.y/lib/niagara1_events.h,
+	  src/libpfm-3.y/lib/niagara2_events.h,
+	  src/libpfm-3.y/lib/pentium4_events.h,
+	  src/libpfm-3.y/lib/pfmlib_amd64.c,
+	  src/libpfm-3.y/lib/pfmlib_amd64_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_cell.c,
+	  src/libpfm-3.y/lib/pfmlib_cell_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_common.c,
+	  src/libpfm-3.y/lib/pfmlib_core.c,
+	  src/libpfm-3.y/lib/pfmlib_core_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_coreduo.c,
+	  src/libpfm-3.y/lib/pfmlib_coreduo_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_crayx2.c,
+	  src/libpfm-3.y/lib/pfmlib_crayx2_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_gen_ia32.c,
+	  src/libpfm-3.y/lib/pfmlib_gen_ia32_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_gen_ia64.c,
+	  src/libpfm-3.y/lib/pfmlib_gen_mips64.c,
+	  src/libpfm-3.y/lib/pfmlib_gen_mips64_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_gen_powerpc.c,
+	  src/libpfm-3.y/lib/pfmlib_i386_p6.c,
+	  src/libpfm-3.y/lib/pfmlib_i386_p6_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_intel_atom.c,
+	  src/libpfm-3.y/lib/pfmlib_intel_atom_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_intel_nhm.c,
+	  src/libpfm-3.y/lib/pfmlib_intel_nhm_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_itanium.c,
+	  src/libpfm-3.y/lib/pfmlib_itanium2.c,
+	  src/libpfm-3.y/lib/pfmlib_itanium2_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_itanium_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_montecito.c,
+	  src/libpfm-3.y/lib/pfmlib_montecito_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_os_linux.c,
+	  src/libpfm-3.y/lib/pfmlib_os_linux_v2.c,
+	  src/libpfm-3.y/lib/pfmlib_os_linux_v3.c,
+	  src/libpfm-3.y/lib/pfmlib_os_macos.c,
+	  src/libpfm-3.y/lib/pfmlib_pentium4.c,
+	  src/libpfm-3.y/lib/pfmlib_pentium4_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power4_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power5+_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power5_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power6_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power7_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_power_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_powerpc_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_ppc970_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_ppc970mp_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_priv.c, src/libpfm-3.y/lib/pfmlib_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_priv_comp.h,
+	  src/libpfm-3.y/lib/pfmlib_priv_comp_ia64.h,
+	  src/libpfm-3.y/lib/pfmlib_priv_ia64.h,
+	  src/libpfm-3.y/lib/pfmlib_sicortex.c,
+	  src/libpfm-3.y/lib/pfmlib_sicortex_priv.h,
+	  src/libpfm-3.y/lib/pfmlib_sparc.c,
+	  src/libpfm-3.y/lib/pfmlib_sparc_priv.h,
+	  src/libpfm-3.y/lib/power4_events.h,
+	  src/libpfm-3.y/lib/power5+_events.h,
+	  src/libpfm-3.y/lib/power5_events.h,
+	  src/libpfm-3.y/lib/power6_events.h,
+	  src/libpfm-3.y/lib/power7_events.h,
+	  src/libpfm-3.y/lib/powerpc_events.h,
+	  src/libpfm-3.y/lib/powerpc_reg.h,
+	  src/libpfm-3.y/lib/ppc970_events.h,
+	  src/libpfm-3.y/lib/ppc970mp_events.h,
+	  src/libpfm-3.y/lib/ultra12_events.h,
+	  src/libpfm-3.y/lib/ultra3_events.h,
+	  src/libpfm-3.y/lib/ultra3i_events.h,
+	  src/libpfm-3.y/lib/ultra3plus_events.h,
+	  src/libpfm-3.y/lib/ultra4plus_events.h,
+	  src/libpfm-3.y/libpfms/Makefile,
+	  src/libpfm-3.y/libpfms/include/libpfms.h,
+	  src/libpfm-3.y/libpfms/lib/Makefile,
+	  src/libpfm-3.y/libpfms/lib/libpfms.c,
+	  src/libpfm-3.y/libpfms/syst_smp.c, src/libpfm-3.y/python/Makefile,
+	  src/libpfm-3.y/python/README, src/libpfm-3.y/python/self.py,
+	  src/libpfm-3.y/python/setup.py,
+	  src/libpfm-3.y/python/src/__init__.py,
+	  src/libpfm-3.y/python/src/perfmon_int.i,
+	  src/libpfm-3.y/python/src/pmu.py,
+	  src/libpfm-3.y/python/src/session.py, src/libpfm-3.y/python/sys.py,
+	  src/libpfm-3.y/rules.mk, src/perfctr-2.6.x/CHANGES,
+	  src/perfctr-2.6.x/COPYING, src/perfctr-2.6.x/INSTALL,
+	  src/perfctr-2.6.x/Makefile, src/perfctr-2.6.x/OTHER,
+	  src/perfctr-2.6.x/README, src/perfctr-2.6.x/TODO,
+	  src/perfctr-2.6.x/etc/Makefile,
+	  src/perfctr-2.6.x/etc/costs/Athlon-1.2,
+	  src/perfctr-2.6.x/etc/costs/Athlon-1.46,
+	  src/perfctr-2.6.x/etc/costs/Athlon-1.66,
+	  src/perfctr-2.6.x/etc/costs/Athlon-1000,
+	  src/perfctr-2.6.x/etc/costs/Athlon-500,
+	  src/perfctr-2.6.x/etc/costs/Athlon-700,
+	  src/perfctr-2.6.x/etc/costs/Athlon-850,
+	  src/perfctr-2.6.x/etc/costs/Athlon64-2.0,
+	  src/perfctr-2.6.x/etc/costs/Core-i7-920-2.66,
+	  src/perfctr-2.6.x/etc/costs/Core2-2.4,
+	  src/perfctr-2.6.x/etc/costs/Core2-E8400-3.0,
+	  src/perfctr-2.6.x/etc/costs/Duron-750,
+	  src/perfctr-2.6.x/etc/costs/K6-III-400,
+	  src/perfctr-2.6.x/etc/costs/MPC7400-400,
+	  src/perfctr-2.6.x/etc/costs/MPC7447A-1.25,
+	  src/perfctr-2.6.x/etc/costs/MPC7455-1.0,
+	  src/perfctr-2.6.x/etc/costs/Opteron-1.4,
+	  src/perfctr-2.6.x/etc/costs/Opteron-2.4,
+	  src/perfctr-2.6.x/etc/costs/Opteron-2352-2.1,
+	  src/perfctr-2.6.x/etc/costs/Opteron-8354-2.2,
+	  src/perfctr-2.6.x/etc/costs/Opteron-8384-2.7,
+	  src/perfctr-2.6.x/etc/costs/PPC750-300,
+	  src/perfctr-2.6.x/etc/costs/Pentium-133,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-1.5,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-1.6,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-1.7,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-2.0,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-2.26,
+	  src/perfctr-2.6.x/etc/costs/Pentium4-3.0,
+	  src/perfctr-2.6.x/etc/costs/Pentium4Xeon-2.2,
+	  src/perfctr-2.6.x/etc/costs/Pentium4Xeon-2.4,
+	  src/perfctr-2.6.x/etc/costs/Pentium4Xeon-2.8,
+	  src/perfctr-2.6.x/etc/costs/Pentium4Xeon-3.0,
+	  src/perfctr-2.6.x/etc/costs/PentiumII-266a,
+	  src/perfctr-2.6.x/etc/costs/PentiumII-266b,
+	  src/perfctr-2.6.x/etc/costs/PentiumII-300,
+	  src/perfctr-2.6.x/etc/costs/PentiumII-350,
+	  src/perfctr-2.6.x/etc/costs/PentiumIII-1.0,
+	  src/perfctr-2.6.x/etc/costs/PentiumIII-1.4,
+	  src/perfctr-2.6.x/etc/costs/PentiumIII-450,
+	  src/perfctr-2.6.x/etc/costs/PentiumIII-800,
+	  src/perfctr-2.6.x/etc/costs/PentiumIII-933,
+	  src/perfctr-2.6.x/etc/costs/PentiumIIIXeon-700,
+	  src/perfctr-2.6.x/etc/costs/PentiumM-2.0,
+	  src/perfctr-2.6.x/etc/costs/PentiumMMX-166,
+	  src/perfctr-2.6.x/etc/costs/PentiumMMX-233,
+	  src/perfctr-2.6.x/etc/costs/PentiumPro-200,
+	  src/perfctr-2.6.x/etc/install.sh, src/perfctr-2.6.x/etc/p4.c,
+	  src/perfctr-2.6.x/etc/perfctr.rc,
+	  src/perfctr-2.6.x/etc/perfctr.rules,
+	  src/perfctr-2.6.x/examples/Makefile,
+	  src/perfctr-2.6.x/examples/README,
+	  src/perfctr-2.6.x/examples/global/Makefile,
+	  src/perfctr-2.6.x/examples/global/arch.h,
+	  src/perfctr-2.6.x/examples/global/arm.c,
+	  src/perfctr-2.6.x/examples/global/global.c,
+	  src/perfctr-2.6.x/examples/global/ppc.c,
+	  src/perfctr-2.6.x/examples/global/x86.c,
+	  src/perfctr-2.6.x/examples/perfex/Makefile,
+	  src/perfctr-2.6.x/examples/perfex/arch.h,
+	  src/perfctr-2.6.x/examples/perfex/arm.c,
+	  src/perfctr-2.6.x/examples/perfex/arm.h,
+	  src/perfctr-2.6.x/examples/perfex/perfex.c,
+	  src/perfctr-2.6.x/examples/perfex/ppc.c,
+	  src/perfctr-2.6.x/examples/perfex/ppc.h,
+	  src/perfctr-2.6.x/examples/perfex/x86.c,
+	  src/perfctr-2.6.x/examples/perfex/x86.h,
+	  src/perfctr-2.6.x/examples/self/Makefile,
+	  src/perfctr-2.6.x/examples/self/arch.h,
+	  src/perfctr-2.6.x/examples/self/arm.c,
+	  src/perfctr-2.6.x/examples/self/ppc.c,
+	  src/perfctr-2.6.x/examples/self/self.c,
+	  src/perfctr-2.6.x/examples/self/x86.c,
+	  src/perfctr-2.6.x/examples/signal/Makefile,
+	  src/perfctr-2.6.x/examples/signal/arch.h,
+	  src/perfctr-2.6.x/examples/signal/ppc.c,
+	  src/perfctr-2.6.x/examples/signal/signal.c,
+	  src/perfctr-2.6.x/examples/signal/x86.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/Kconfig,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/Makefile,
+	  .../linux/drivers/perfctr/RELEASE-NOTES,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/arm.c,
+	  .../linux/drivers/perfctr/arm_setup.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/compat.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/cpumask.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/global.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/global.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/init.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/marshal.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/marshal.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/ppc.c,
+	  .../linux/drivers/perfctr/ppc_compat.h,
+	  .../linux/drivers/perfctr/ppc_setup.c,
+	  .../linux/drivers/perfctr/ppc_tests.c,
+	  .../linux/drivers/perfctr/ppc_tests.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/version.h,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/virtual.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/virtual.h,
+	  .../linux/drivers/perfctr/virtual_stub.c,
+	  src/perfctr-2.6.x/linux/drivers/perfctr/x86.c,
+	  .../linux/drivers/perfctr/x86_compat.h,
+	  .../linux/drivers/perfctr/x86_setup.c,
+	  .../linux/drivers/perfctr/x86_tests.c,
+	  .../linux/drivers/perfctr/x86_tests.h,
+	  src/perfctr-2.6.x/linux/include/asm-arm/perfctr.h,
+	  src/perfctr-2.6.x/linux/include/asm-i386/perfctr.h,
+	  .../linux/include/asm-powerpc/perfctr.h,
+	  src/perfctr-2.6.x/linux/include/asm-ppc/perfctr.h,
+	  src/perfctr-2.6.x/linux/include/asm-x86/perfctr.h,
+	  .../linux/include/asm-x86_64/perfctr.h,
+	  src/perfctr-2.6.x/linux/include/linux/perfctr.h,
+	  src/perfctr-2.6.x/patches/aliases, src/perfctr-2.6.x/patches/patch-
+	  kernel-2.6.10, src/perfctr-2.6.x/patches/patch-kernel-2.6.11,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.12,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.13,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.14,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.15,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.16, .../patches/patch-
+	  kernel-2.6.16.46-0.12-suse, src/perfctr-2.6.x/patches/patch-
+	  kernel-2.6.17, src/perfctr-2.6.x/patches/patch-kernel-2.6.18,
+	  .../patches/patch-kernel-2.6.18-128.el5-redhat, .../patches/patch-
+	  kernel-2.6.18-164.el5-redhat, .../patches/patch-
+	  kernel-2.6.18-194.el5-redhat, .../patches/patch-
+	  kernel-2.6.18-53.el5-redhat, .../patches/patch-
+	  kernel-2.6.18-8.1.1.el5-redhat, .../patches/patch-
+	  kernel-2.6.18-92.el5-redhat, src/perfctr-2.6.x/patches/patch-
+	  kernel-2.6.19, src/perfctr-2.6.x/patches/patch-kernel-2.6.20,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.21,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.22,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.23,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.24,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.25,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.26,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.27,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.28,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.29,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.30,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.31,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.32,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.5, .../patches/patch-
+	  kernel-2.6.5-7.276-suse, src/perfctr-2.6.x/patches/patch-
+	  kernel-2.6.6, src/perfctr-2.6.x/patches/patch-kernel-2.6.7,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.8.1,
+	  src/perfctr-2.6.x/patches/patch-kernel-2.6.9, .../patches/patch-
+	  kernel-2.6.9-55.EL-redhat, .../patches/patch-kernel-2.6.9-67.EL-
+	  redhat, .../patches/patch-kernel-2.6.9-78.EL-redhat,
+	  .../patches/patch-kernel-2.6.9-89.EL-redhat,
+	  src/perfctr-2.6.x/perfctr.spec, src/perfctr-2.6.x/update-kernel,
+	  src/perfctr-2.6.x/usr.lib/Makefile,
+	  src/perfctr-2.6.x/usr.lib/arch.h, src/perfctr-2.6.x/usr.lib/arm.c,
+	  src/perfctr-2.6.x/usr.lib/arm.h,
+	  src/perfctr-2.6.x/usr.lib/event_set.h,
+	  src/perfctr-2.6.x/usr.lib/event_set_amd.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_arm.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_centaur.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_p4.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_p5.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_p6.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_ppc.c,
+	  src/perfctr-2.6.x/usr.lib/event_set_x86.c,
+	  src/perfctr-2.6.x/usr.lib/gen-event-codes.c,
+	  src/perfctr-2.6.x/usr.lib/global.c,
+	  src/perfctr-2.6.x/usr.lib/libperfctr.h,
+	  src/perfctr-2.6.x/usr.lib/misc.c, src/perfctr-2.6.x/usr.lib/ppc.c,
+	  src/perfctr-2.6.x/usr.lib/ppc.h,
+	  src/perfctr-2.6.x/usr.lib/virtual.c,
+	  src/perfctr-2.6.x/usr.lib/x86.c, src/perfctr-2.6.x/usr.lib/x86.h,
+	  src/perfctr-2.7.x/CHANGES, src/perfctr-2.7.x/COPYING,
+	  src/perfctr-2.7.x/INSTALL, src/perfctr-2.7.x/Makefile,
+	  src/perfctr-2.7.x/OTHER, src/perfctr-2.7.x/README,
+	  src/perfctr-2.7.x/TODO, src/perfctr-2.7.x/etc/costs/Athlon-1.1,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.133,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.2,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.3,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.33,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.46,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.53,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.64,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.66,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.75,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1.8,
+	  src/perfctr-2.7.x/etc/costs/Athlon-1000,
+	  src/perfctr-2.7.x/etc/costs/Athlon-2.0,
+	  src/perfctr-2.7.x/etc/costs/Athlon-500,
+	  src/perfctr-2.7.x/etc/costs/Athlon-700,
+	  src/perfctr-2.7.x/etc/costs/Athlon-800,
+	  src/perfctr-2.7.x/etc/costs/Athlon-850,
+	  src/perfctr-2.7.x/etc/costs/Athlon64-2.0,
+	  src/perfctr-2.7.x/etc/costs/Athlon64-2.2,
+	  src/perfctr-2.7.x/etc/costs/Athlon64FX-2.2,
+	  src/perfctr-2.7.x/etc/costs/AthlonXP-1800,
+	  src/perfctr-2.7.x/etc/costs/AthlonXPM-2500,
+	  src/perfctr-2.7.x/etc/costs/C3-1.2,
+	  src/perfctr-2.7.x/etc/costs/Celeron-466,
+	  src/perfctr-2.7.x/etc/costs/Celeron-500,
+	  src/perfctr-2.7.x/etc/costs/CyrixMII-233,
+	  src/perfctr-2.7.x/etc/costs/Duron-1.0,
+	  src/perfctr-2.7.x/etc/costs/Duron-600,
+	  src/perfctr-2.7.x/etc/costs/Duron-700,
+	  src/perfctr-2.7.x/etc/costs/Duron-750,
+	  src/perfctr-2.7.x/etc/costs/K6-III-400,
+	  src/perfctr-2.7.x/etc/costs/MPC7400-400,
+	  src/perfctr-2.7.x/etc/costs/MPC7447A-1.35,
+	  src/perfctr-2.7.x/etc/costs/Opteron-1.4,
+	  src/perfctr-2.7.x/etc/costs/Opteron-1.6,
+	  src/perfctr-2.7.x/etc/costs/Opteron-2.0,
+	  src/perfctr-2.7.x/etc/costs/PPC750-300,
+	  src/perfctr-2.7.x/etc/costs/Pentium-133,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-1.5,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-1.6,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-1.7,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-1.8,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-2.2,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-2.26,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-2.66,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-2.8,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-3.0,
+	  src/perfctr-2.7.x/etc/costs/Pentium4-3.4,
+	  src/perfctr-2.7.x/etc/costs/Pentium4M-1.8,
+	  src/perfctr-2.7.x/etc/costs/Pentium4Xeon-2.2,
+	  src/perfctr-2.7.x/etc/costs/Pentium4Xeon-2.4,
+	  src/perfctr-2.7.x/etc/costs/Pentium4Xeon-2.8,
+	  src/perfctr-2.7.x/etc/costs/Pentium4Xeon-3.4,
+	  src/perfctr-2.7.x/etc/costs/PentiumII-266a,
+	  src/perfctr-2.7.x/etc/costs/PentiumII-266b,
+	  src/perfctr-2.7.x/etc/costs/PentiumII-300,
+	  src/perfctr-2.7.x/etc/costs/PentiumII-350,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-1.0,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-1.4,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-450,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-500,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-700,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-733,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-800,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-866,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-900,
+	  src/perfctr-2.7.x/etc/costs/PentiumIII-933,
+	  src/perfctr-2.7.x/etc/costs/PentiumM-1.3,
+	  src/perfctr-2.7.x/etc/costs/PentiumM-1.4,
+	  src/perfctr-2.7.x/etc/costs/PentiumM-1.5,
+	  src/perfctr-2.7.x/etc/costs/PentiumM-1.6,
+	  src/perfctr-2.7.x/etc/costs/PentiumM-1.7,
+	  src/perfctr-2.7.x/etc/costs/PentiumMMX-150,
+	  src/perfctr-2.7.x/etc/costs/PentiumMMX-166,
+	  src/perfctr-2.7.x/etc/costs/PentiumMMX-233,
+	  src/perfctr-2.7.x/etc/costs/PentiumPro-200,
+	  src/perfctr-2.7.x/etc/costs/Sempron-3100+,
+	  src/perfctr-2.7.x/etc/install.sh, src/perfctr-2.7.x/etc/p4.c,
+	  src/perfctr-2.7.x/examples/Makefile,
+	  src/perfctr-2.7.x/examples/README,
+	  src/perfctr-2.7.x/examples/global/Makefile,
+	  src/perfctr-2.7.x/examples/global/arch.h,
+	  src/perfctr-2.7.x/examples/global/global.c,
+	  src/perfctr-2.7.x/examples/global/ppc.c,
+	  src/perfctr-2.7.x/examples/global/x86.c,
+	  src/perfctr-2.7.x/examples/perfex/Makefile,
+	  src/perfctr-2.7.x/examples/perfex/arch.h,
+	  src/perfctr-2.7.x/examples/perfex/perfex.c,
+	  src/perfctr-2.7.x/examples/perfex/ppc.c,
+	  src/perfctr-2.7.x/examples/perfex/ppc.h,
+	  src/perfctr-2.7.x/examples/perfex/ppc64.c,
+	  src/perfctr-2.7.x/examples/perfex/ppc64.h,
+	  src/perfctr-2.7.x/examples/perfex/x86.c,
+	  src/perfctr-2.7.x/examples/perfex/x86.h,
+	  src/perfctr-2.7.x/examples/self/Makefile,
+	  src/perfctr-2.7.x/examples/self/arch.h,
+	  src/perfctr-2.7.x/examples/self/ppc.c,
+	  src/perfctr-2.7.x/examples/self/ppc64.c,
+	  src/perfctr-2.7.x/examples/self/self.c,
+	  src/perfctr-2.7.x/examples/self/x86.c,
+	  src/perfctr-2.7.x/examples/signal/Makefile,
+	  src/perfctr-2.7.x/examples/signal/arch.h,
+	  src/perfctr-2.7.x/examples/signal/ppc.c,
+	  src/perfctr-2.7.x/examples/signal/ppc64.c,
+	  src/perfctr-2.7.x/examples/signal/signal.c,
+	  src/perfctr-2.7.x/examples/signal/x86.c,
+	  .../linux/Documentation/perfctr/low-level-api.txt,
+	  .../Documentation/perfctr/low-level-ppc32.txt,
+	  .../linux/Documentation/perfctr/low-level-x86.txt,
+	  .../linux/Documentation/perfctr/overview.txt,
+	  .../linux/Documentation/perfctr/virtual.txt,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/Kconfig,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/Makefile,
+	  .../linux/drivers/perfctr/RELEASE-NOTES,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/cpumask.h,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/init.c,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/ppc.c,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/ppc64.c,
+	  .../linux/drivers/perfctr/ppc64_tests.c,
+	  .../linux/drivers/perfctr/ppc64_tests.h,
+	  .../linux/drivers/perfctr/ppc_tests.c,
+	  .../linux/drivers/perfctr/ppc_tests.h,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/version.h,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/virtual.c,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/virtual.h,
+	  src/perfctr-2.7.x/linux/drivers/perfctr/x86.c,
+	  .../linux/drivers/perfctr/x86_tests.c,
+	  .../linux/drivers/perfctr/x86_tests.h,
+	  src/perfctr-2.7.x/linux/include/asm-i386/perfctr.h,
+	  src/perfctr-2.7.x/linux/include/asm-ppc/perfctr.h,
+	  .../linux/include/asm-ppc64/perfctr.h,
+	  .../linux/include/asm-x86_64/perfctr.h,
+	  src/perfctr-2.7.x/linux/include/linux/perfctr.h,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.11,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.12-rc1,
+	  .../patches/patch-kernel-2.6.12-rc1-mm1, .../patches/patch-
+	  kernel-2.6.12-rc1-mm3, .../patches/patch-kernel-2.6.12-rc1-mm4,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.12-rc2,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.12-rc5,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.14,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.14-mm1,
+	  .../patches/patch-kernel-2.6.14-rc5-mm1,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.16, .../patches/patch-
+	  kernel-2.6.16.21-SLES10, src/perfctr-2.7.x/patches/patch-
+	  kernel-2.6.17, src/perfctr-2.7.x/patches/patch-kernel-2.6.18,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.18-rc4,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.19,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.20,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.21,
+	  src/perfctr-2.7.x/patches/patch-kernel-2.6.22,
+	  src/perfctr-2.7.x/perfctr.spec, src/perfctr-2.7.x/update-kernel,
+	  src/perfctr-2.7.x/usr.lib/Makefile,
+	  src/perfctr-2.7.x/usr.lib/arch.h,
+	  src/perfctr-2.7.x/usr.lib/event_set.h,
+	  src/perfctr-2.7.x/usr.lib/event_set_amd.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_centaur.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_p4.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_p5.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_p6.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_ppc.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_ppc64.c,
+	  src/perfctr-2.7.x/usr.lib/event_set_x86.c,
+	  src/perfctr-2.7.x/usr.lib/gen-event-codes.c,
+	  src/perfctr-2.7.x/usr.lib/global.c,
+	  src/perfctr-2.7.x/usr.lib/libperfctr.h,
+	  src/perfctr-2.7.x/usr.lib/misc.c, src/perfctr-2.7.x/usr.lib/ppc.c,
+	  src/perfctr-2.7.x/usr.lib/ppc.h, src/perfctr-2.7.x/usr.lib/ppc64.c,
+	  src/perfctr-2.7.x/usr.lib/ppc64.h,
+	  src/perfctr-2.7.x/usr.lib/virtual.c,
+	  src/perfctr-2.7.x/usr.lib/x86.c, src/perfctr-2.7.x/usr.lib/x86.h,
+	  src/perfctr-2.7.x/usr.lib/x86_cpuid.S,
+	  src/perfctr-2.7.x/usr.lib/x86_cpuinfo.c,
+	  src/perfctr-2.7.x/usr.lib/x86_cpuinfo.h: perfctr: Remove the
+	  obsolete bundled perfctr and libpfm-3.y code  perfctr was an
+	  earlier project that provided access to a processor's performance
+	  monitoring hardware on Linux.  Over time Linux has developed its
+	  own infrastructure to access the performance monitoring hardware
+	  via the perf_event_open syscall. The perfctr kernel patches and
+	  user-space code has not been updated to work with current kernels.
+	  PAPI has included bundled perfctr and libpfm-3.y code to make use
+	  of the perfctr interface, but it is no longer useful.  In the
+	  interest of making the PAPI code more compact the obsolete bundled
+	  perfctr and libpfm-3.y code have been removed.
+
+2024-06-27  Treece Burgess <tburgess@leconte.cluster>
+
+	* src/papi.c: Updating documentation for PAPI_read and PAPI_accum
+	  based off feedback.
+	* src/papi.c: Update doxygen documentation to make note of the
+	  differences between PAPI_read and PAPI_accum. Specifically the
+	  second parameter in PAPI_accum must be initialized.
+
+2024-02-29  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/sysdetect/arm_cpu_utils.c: sysdetect: add support
+	  for ARM Neoverse V2  Add cache information for ARM Neoverse V2, per
+	  the Reference Manual:
+	  https://developer.arm.com/documentation/102375/0002?lang=en  These
+	  changes have been tested on the ARM Neoverse V2 architecture.
+
+Wed Jun 19 23:32:25 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_gnr.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_gnr_events.h,
+	  src/libpfm4/lib/events/intel_spr_events.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_gnr.c, src/libpfm4/lib/pfmlib_priv.h,
+	  src/libpfm4/lib/pfmlib_s390x_cpumf.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 92c52017d7395c4040ec22949ee8c7f17bc5b4f7  add missing
+	  pfmlib_intel_gnr.c file  To complete the Intel GraniteRapids
+	  support. Was missing from commit 23d0b7c47c2e ("add Intel
+	  GraniteRapids core PMU support") Sorry about that.  commit
+	  44a55dd97c929087b4ca93540f6bbb2d2efffd15  s390: Fix calloc compiler
+	  error for gcc14  The definition of calloc is as follows: void
+	  *calloc(size_t nmemb, size_t size); number of members is in the
+	  first parameter and the size is in the second parameter.  Fix error
+	  message on the gcc 14 20240102: error: 'calloc' sizes specified
+	  with 'sizeof' in the earlier argument and not in the later argument
+	  ... by adhering to the calloc() calling convention.  Output before:
+	  # make Entering directory '/root/perfmon2-libpfm4/lib' cc  -g -Wall
+	  -Werror -Wextra -Wno-unused-parameter -I. \
+	  -I/root/perfmon2-libpfm4/lib/../include -DCONFIG_PFMLIB_DEBUG \
+	  -DCONFIG_PFMLIB_OS_LINUX -DCONFIG_PFMLIB_NOTRACEPOINT \
+	  -DHAS_OPENAT -D_REENTRANT -I. -fvisibility=hidden \
+	  -DCONFIG_PFMLIB_ARCH_S390X -I. -c pfmlib_s390x_cpumf.c
+	  pfmlib_s390x_cpumf.c: In function ‘pfm_cpumcf_init’:
+	  pfmlib_s390x_cpumf.c:221:26: error: ‘calloc’ sizes specified with \
+	  ‘sizeof’ in the earlier argument and not in the later argument \
+	  [-Werror=calloc-transposed-args] 221 | cpumcf_pe =
+	  calloc(sizeof(*cpumcf_pe), cfvn_set_count): |
+	  ^ pfmlib_s390x_cpumf.c:221:26: note: earlier argument should
+	  specify number of elements, later size of each element  Acked-by:
+	  Sumanth Korikkar <sumanthk@linux.ibm.com>  commit
+	  23d0b7c47c2ec06334b3eb378bfc3568b08e0042  add Intel GraniteRapids
+	  core PMU support  Based on JSON event files published on
+	  github.com/Intel/perfmon version 1.02, dated 05/10/2024   commit
+	  489a940be48980956b27dda89de1eb91b01f185d  fix Intel SPR
+	  inst_retired umask flags  Were missing PEBS and fixed event code
+	  umask (ANY) was not encoded properly.  inst_retired.any -> fixed
+	  counter 0 encoding 0x100 inst_retired.any_p -> generic counter
+	  encoding 0x00c0   commit ace21560113100f4ab5032e99753459ed9da7049
+	  fix validate_x86.c Intel SPR/EMR inst_retired tests  They were not
+	  using the proper event codes for the different versions of
+	  inst_retired.   Note: Built PAPI with Intel Xeon Gold 6430 (SPR)
+	  with GCC 14. No errors occured during build. Unable to test Granite
+	  Rapids support due to the PAPI team not having access to a machine
+	  with Granite Rapids. Unable to test instr_retired fixes due to no
+	  access to Emerald Rapids and events not available on Sapphire
+	  Rapids machine we have access to.
+
+2024-06-25  Daniel Barry <dbarry@vols.utk.edu>
+
+	* README.md: readme: updated FAQ page  Edit to the README to point to
+	  the new live FAQ webpage.
+
+2024-06-21  Daniel Barry <dbarry@vols.utk.edu>
+
+	* PAPI_FAQ.html: FAQ: update outdated links  Replace outdated links
+	  with newer equivalents.
+	* INSTALL.txt: install: remove outdated instructions  Remove outdated
+	  and incorrect instructions from the INSTALL.txt file.
+
+2024-06-20  Daniel Barry <dbarry@vols.utk.edu>
+
+	* PAPI_FAQ.html: FAQ: Update to address MacOS question  A common
+	  question raised in issues and on the mailing list is whether or not
+	  PAPI supports MacOS.
+
+Fri Jun 14 22:14:05 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_adl_grt_events.h: Update libpfm4
+	  Current with commit 4bdeb7e067363013257460bdb6c3dbae778b5634  Fix
+	  encoding of inst_retired.* on Alderlake E-core  Was returning event
+	  code 0x0 for both .any and .any_p umasks. any_p refers to the
+	  generic counter encoding which uses event code 0xc0.   Note: Unable
+	  to test due to the PAPI team not having access to a machine with
+	  Alderlake as of now.
+
+2024-05-13  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/papi.c: Restructuring conditional check to check for allowed
+	  modifiers.
+
+Wed Apr 24 18:01:23 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_icx_unc_cha_events.h: Update libpfm4
+	  Current with commit 7c486cf96f9eab7019023d40f9c568486f696c44
+	  remove Intel IcelakeX UNC_CHA_PIPE_REJECT event  Encodings of
+	  umasks is invalid and fails to pass tests with perf as it sets bits
+	  the kernel does not know about.   Note: Tested on ICL system
+	  Hexane, with Linux 6.1.81-1.el9.elrepo.x86_64 and Intel(R) Xeon(R)
+	  Silver 4309Y CPU @ 2.80GHz as CPU architecture.
+
+2024-04-22  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/utils/papi_avail.c: Adding extra check within conditional
+	  statement to avoid entering with the options of --cache or --cnd.
+
+Mon Apr 15 17:27:33 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/perf_examples/task.c: Update libpfm4 Current with
+	  commit 1c0cdb91bc79eb1bc827e022f0a3738f124796a2  fix uninitialized
+	  variable in perf_examples/task.c  Commit 9410619f922f ("update
+	  task.c example to handle hybrid")  Introduced a bug by not
+	  initializing group_fd which could generate a compiler warning and a
+	  bug. Fix this by initializing group_fd to -1.  Reported-by: William
+	  Cohen <wcohen@redhat.com>
+
+Thu Apr 11 08:36:50 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_spr_events.h: Update libpfm4 Current
+	  with commit 72866cbc2666820d87ebc0af3b1a16d1d5db6965  fix duplicate
+	  event code for Intel SPR TOPDOWN.BAD_SPEC_SLOTS  Was using same
+	  encoding as TOPDOWN.SLOTS. Fix by adding the proper event code
+	  (0xa4) and code override flag.  Reported-by: <laksono@gmail.com>
+
+2024-04-25  William Cohen <wcohen@redhat.com>
+
+	* src/sde_lib/Makefile: SDE_LIB: Build libsde.so.1.0 with the CFLAGS
+	  and LDFLAGS passed in  A recent annocheck of the papi RPMS showed
+	  that libsde.so.1.0 was not built with the expected flags passed
+	  into the RPM build.  Minor changes were made to
+	  src/sde_lib/Makefile to use the CFLAGS and LDFLAGS passed in.
+
+2024-04-17  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/utils/papi_avail.c: Adding PAPI_PRESET_BIT_MEM for correct else
+	  if conditional check.
+
+2024-03-28  Anthony <adanalis@icl.utk.edu>
+
+	* src/sde_lib/sde_lib_misc.c, src/sde_lib/sde_lib_ti.c: SDE_LIB:
+	  Allow PAPI_reset() to reset a CountingSet.
+
+2024-04-02  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/sde.c: SDE: Adding ntv_code_to_info
+	  functionality.
+
+2024-03-26  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/tests/Counting_Set/CountingSet_Lib.c: SDE tests:
+	  Add more randomness to the test.  By varying the pressure on
+	  different buckets we increase the chance of catching hash table
+	  bugs.
+
+2024-03-22  Anthony <adanalis@icl.utk.edu>
+
+	* src/sde_lib/sde_lib_datastructures.c: sde_lib: Improved bucket
+	  utilization of hash table.  The previous check would put elements
+	  in the overflow list, even in cases where there was room in the
+	  bucket that the hash function points to. The updated code gives
+	  priority to the bucket. This was a potential performance issue, not
+	  a correctness bug.
+
+Fri Jan 12 21:55:04 2024 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_spr_unc_cha.3,
+	  src/libpfm4/docs/man3/libpfm_intel_spr_unc_imc.3,
+	  src/libpfm4/docs/man3/libpfm_intel_spr_unc_upi.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_spr_unc_cha_events.h,
+	  src/libpfm4/lib/events/intel_spr_unc_imc_events.h,
+	  src/libpfm4/lib/events/intel_spr_unc_upi_events.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_intel_spr_unc_cha.c,
+	  src/libpfm4/lib/pfmlib_intel_spr_unc_imc.c,
+	  src/libpfm4/lib/pfmlib_intel_spr_unc_upi.c,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/tests/validate_x86.c:
+	  Update libpfm4 Current with commit
+	  33513ef78f0d81edb277e0d0fd16411abb161297  Add Intel SapphireRapids
+	  uncore PMU support for CHA  Adds the Coherence and Home Agent (CHA)
+	  for Intel SapphireRapids. Based on Intel JSON events v1.17
+	  published from github.com/intel/perfmon/SPR   commit
+	  e943f891e9f1d63c4b55bac051ca7b2b3979b25f  Add Intel SapphireRapids
+	  uncore PMU support for UPI  Adds the Ultra Path Interconnect PMU
+	  (UPI) for Intel SapphireRapids. Based on Intel JSON events v1.17
+	  published from github.com/intel/perfmon/SPR   commit
+	  10b8044a90ba512be2b10e9425330e989cc22d01  Add Intel SapphireRapids
+	  uncore PMU support for IMC  Adds the memory controller PMU (IMC)
+	  for SapphireRapids. Based on Intel JSON events v1.17 published from
+	  github.com/intel/perfmon/SPR
+
+2024-03-12  Masahiko, Yamada <yamada.masahiko@fujitsu.com>
+
+	* src/components/sysdetect/linux_cpu_utils.c, src/linux-memory.c:
+	  Update:Use fgets in place of fscanf functions to avoid possible
+	  buffer overflows  There was a bug in the buffer overflow fix below.
+	  Use fgets in place of fscanf functions to avoid possible buffer
+	  overflows https://github.com/icl-utk-
+	  edu/papi/commit/ec2aa022fee2a1d0decf1d5b2e7e28a4ca2cf794  The
+	  buffer overflow fix rewrites fscanf() to fgets(), but there is a
+	  difference in the specifications between fscanf() and fgets(): in
+	  fscanf(), "\n" is not read, but in fgets(), "\n" is also read, so
+	  it seems necessary to remove the unnecessary "\n" to do the same.
+	  For this reason, generic_get_memory_info() could not obtain cache
+	  information strings from allocation_policy, type, and write_policy
+	  under the /sys/devices/system/cpu/cpu0/cache/index[012] directory
+	  as expected.  The buffer overflow update fix allows us to do the
+	  same thing as fscanf() by rewriting fscanf() to fgets()+sscanf().
+
+Thu Feb 29 23:07:21 2024 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/config.mk, src/libpfm4/lib/pfmlib_perf_event_pmu.c:
+	  Update libpfm4 Current with commit
+	  f517f1ec8038de00ce8f5fefeeef704e24aa08ae  add
+	  CONFIG_PFMLIB_NOTRACEPOINT to speedup libpfm4 initialization  When
+	  pfmlib_initialize() is run as root and if the debugs is mounted,
+	  then the library parses all the tracepoints to add them to the perf
+	  PMU. Depending on the number of tracepoints, this can take a
+	  significant amount of time even though this may not be needed if no
+	  tracepoints is passed. In order to speedup pfm_initialize(), the
+	  patch adds a compile-time option to disable support for tracepoint
+	  in the perf PMU.  To deactivate tracepoint support: make
+	  CONFIG_PFMLIB_NOTRACEPOINT=y  The default build is unchanged with
+	  tracepoints enabled. This patch adds an opt-out option.
+
+Tue Feb 13 21:58:11 2024 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_adl_glc.3,
+	  src/libpfm4/docs/man3/libpfm_intel_adl_grt.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_pcu.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_adl_glc_events.h,
+	  src/libpfm4/lib/events/intel_adl_grt_events.h,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_adl.c,
+	  src/libpfm4/lib/pfmlib_intel_x86.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_priv.h,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/perf_examples/task.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 816bb547f8997b84f7ef70bb99420f40dc8a984d  add Intel
+	  Raptorlake PMU support  Enables support for Raptorlake, Raptorlake
+	  P, Raptorlake S.   commit 8fa4467ffa7014ed8f1525783b5919b80117beca
+	  Add Intel AlderLake Gracemont (E-Core) core PMU support  Adds core
+	  PMU support for Alderlake E-core (gracemont). Based on Intel JSON
+	  events v1.24 published from github.com/intel/perfmon/ADL   commit
+	  e84a9563f4c93dc6e530dfa55d61b150fbf51510  Add Intel AlderLake
+	  Goldencove (P-Core) core PMU support  Adds core PMU support for
+	  Alderlake P-core (goldencove). Based on Intel JSON events v1.24
+	  published from github.com/intel/perfmon/ADL   commit
+	  9410619f922facca7dab2406c58fe41a8dd61529  update task.c example to
+	  handle hybrid  Cannot group event if they do not belong to the same
+	  hardware PMU.   commit 2441b263f6f28c0fe80f8cee62cd2e64d75cd433
+	  add INTEL_X86_CODE_DUP event flag for Intel PMUs  To handle the
+	  case where two events shared the same code and none is because of
+	  deprecation. In order to pass validation both events with the same
+	  code must have that flag set.   commit
+	  9669e0d696a98b8b5655186dda8b457113cb0ba2  Add support for
+	  deprecated events for Intel X86 PMUs  Adds INTEL_X86_DEPRECATED
+	  flag to Intel X86 events. Deprecated in this context means there is
+	  a newer event monitoring the same condition. This is used to mark
+	  events as deprecated and avoid detecting duplicate event codes.
+	  commit b7307408ddb1548271983d1fd7c4f17287d2dc0e  fix Intel IcelakeX
+	  uncore PCU PMU man page typo  Was referring to eRP clockticks
+	  instead of PCU clockticks.
+
+2024-02-19  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: add support for Ice Lake ICL  Add
+	  various preset definitions for architectures containing the ICL
+	  PMU.  These changes have been tested on the Intel Ice Lake
+	  architecture.
+
+2024-02-16  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/counter_analysis_toolkit/Makefile: Updating CAT Makefile to use
+	  PAPI_DIR, to be more inline with the PAPI WIKI documentation.
+
+2024-02-08  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/high-level/scripts/papi_hl_output_writer.py: Changing --source
+	  flag to --source_dir and update to error output messages. Removed
+	  Python doc string and will address docs in another PR.
+
+2024-02-06  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/high-level/scripts/papi_hl_output_writer.py: Fixing small typo
+	  in parse_source_file docstring.
+	* src/high-level/scripts/papi_hl_output_writer.py: Updating error
+	  handling, with updated output messages.
+	* src/high-level/scripts/papi_hl_output_writer.py: Adding support for
+	  optional individual file flag to papi_hl_output_writer.py script.
+
+2024-02-01  Anthony <adanalis@icl.utk.edu>
+
+	* .../sde/tests/Minimal/Minimal_Test++.cpp,
+	  .../sde/tests/Simple2/Simple2_Driver++.cpp,
+	  src/components/sde/tests/Simple2/Simple2_Lib++.cpp,
+	  src/components/sde/tests/Simple2/simple2.hpp: SDE: Updated the C++
+	  version of test Simple2.
+
+2024-01-30  Anthony <adanalis@icl.utk.edu>
+
+	* .../sde/tests/Minimal/Minimal_Test++.cpp: SDE: Updated the C++
+	  version of the minimal test.  The updated version of the example
+	  uses classes and looks like proper C++ much more than the previous
+	  version. However, the functionality has remained the same.
+
+Fri Feb 2 15:32:27 2024 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_spr_events.h,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_irp.c,
+	  src/libpfm4/tests/validate_x86.c: Update libpfm4 Current with
+	  commit 0d4ed0e7b09338e1bb1ab9153beab030c52570fe  fix missing PEBS
+	  flag on Intel SPR MEM_LOAD_L3_MISS_RETIRED  commit 769b239ee314
+	  ("add PEBS support to Intel SPR MEM_LOAD_L3_MISS_RETIRED") added
+	  the PEBS flag to the event but to none of the umasks causing a
+	  validation issue. Add missing PEBS flags to the umasks   commit
+	  769b239ee31465f030f63d8dd16c6be006bfcb55  add PEBS support to Intel
+	  SPR MEM_LOAD_L3_MISS_RETIRED  Was missing PEBS flag.
+
+2024-01-29  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/papi_fwrappers.c: Updating first argument for PAPIF_flops_rate,
+	  PAPIF_flips_rate, and PAPIF_epc to use a int * instead of just int.
+
+2024-01-22  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/components/net/README.md, src/components/rocm/README.md:
+	  Updating net README to remove unwanted links and rocm README to add
+	  correct link for GPU isolation.
+
+2024-01-19  Treece Burgess <tburgess@guyot.cluster>
+
+	* src/components/appio/README.md, src/components/bgpm/README.md,
+	  src/components/coretemp/README.md,
+	  src/components/coretemp_freebsd/README.md,
+	  src/components/cuda/README.md, src/components/emon/README.md,
+	  src/components/example/README.md,
+	  src/components/host_micpower/README.md,
+	  src/components/infiniband/README.md, src/components/io/README.md,
+	  src/components/libmsr/README.md,
+	  src/components/lmsensors/README.md,
+	  src/components/lustre/README.md, src/components/micpower/README.md,
+	  src/components/mx/README.md, src/components/net/README.md,
+	  src/components/nvml/README.md, src/components/pcp/README.md,
+	  src/components/perf_event/README.md,
+	  src/components/perf_event_uncore/README.md,
+	  src/components/powercap/README.md,
+	  src/components/powercap_ppc/README.md,
+	  src/components/rapl/README.md, src/components/rocm/README.md,
+	  src/components/rocm_smi/README.md, src/components/sde/README.md,
+	  src/components/sensors_ppc/README.md,
+	  src/components/stealtime/README.md,
+	  src/components/sysdetect/README.md,
+	  src/components/vmware/README.md: Updates to individual component
+	  README's to fix markdown links.
+
+2024-01-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/main.c: cat: improve progress
+	  indicator in d-cache tests  Make the progress indicator finer-
+	  grained to visualize when each successive buffer size is proved.
+	  These changes have been tested on the Intel Sapphire Rapids
+	  architecture.
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/timing_kernels.c,
+	  src/counter_analysis_toolkit/timing_kernels.h: cat: optimize data
+	  cache benchmarks  Traverse the pointer chain fewer times for larger
+	  buffers and do a warm-up traversal closer to PAPI_start() to
+	  prevent cache pollution and compulsory misses.  These changes have
+	  been tested on the Intel Sapphire Rapids architecture.
+
+2024-01-09  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/linux-context.h, src/linux-timer.c, src/mb.h: add initial riscv
+	  support  This adds basic support for the RISC-V architecture  After
+	  this PAPI will compile and the tools will run, however no events
+	  will work because of missing libpfm4 support.  Tested on a BeagleV-
+	  Ahead board
+
+Fri Dec 8 22:25:25 2023 -0800  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_cha.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_iio.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_imc.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_irp.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_m2m.3,
+	  .../docs/man3/libpfm_intel_icx_unc_m2pcie.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_m3upi.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_pcu.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_ubox.3,
+	  src/libpfm4/docs/man3/libpfm_intel_icx_unc_upi.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/events/intel_icx_unc_cha_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_iio_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_imc_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_irp_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_m2m_events.h,
+	  .../lib/events/intel_icx_unc_m2pcie_events.h,
+	  .../lib/events/intel_icx_unc_m3upi_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_pcu_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_ubox_events.h,
+	  src/libpfm4/lib/events/intel_icx_unc_upi_events.h,
+	  src/libpfm4/lib/pfmlib_amd64_rapl.c,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_cha.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_iio.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_imc.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_irp.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_m2m.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_m2pcie.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_m3upi.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_pcu.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_ubox.c,
+	  src/libpfm4/lib/pfmlib_intel_icx_unc_upi.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc.c,
+	  src/libpfm4/lib/pfmlib_intel_snbep_unc_priv.h,
+	  src/libpfm4/lib/pfmlib_intel_x86_priv.h,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/tests/validate_x86.c:
+	  libpfm4: update to commit 90f61a0  Original commits:  commit
+	  90f61a008cdee50d085b5041414df55e16e045fe  Add Intel IcelakeX uncore
+	  PMU support for M2PCIE  Adds the Mesh to IIO PMU (M2PCIE) for Intel
+	  IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  22afed4c1020b579205ac8e8f9d6e8599307b9ee  Add Intel IcelakeX uncore
+	  PMU support for UBOX  Adds the UBOX PMU (UBOX) for Intel IcelakeX.
+	  Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  cdbe2eed7bdcf5d45086d6730033defc1939a722  Add Intel IcelakeX uncore
+	  PMU support for M3UPI  Adds the Mesh to UPI PMU (M3UPI) for Intel
+	  IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  17dddc2f4cde87f37f041f40586654190da5a8c2  Add Intel IcelakeX uncore
+	  PMU support for UPI  Adds the Ultra Path Interconnect PMU support
+	  (UPI) for Intel IcelakeX. Based on Intel JSON events v1.21
+	  published from github.com/intel/perfmon/ICX   commit
+	  32fcf6fe2eaf2f2bf105f7543dcc0b07c097baaf  Add Intel IcelakeX uncore
+	  PMU support for PCU  Adds the Power Control unit PMU support (PCU)
+	  for Intel IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  20ff7523ffaae04f6762d51e32fe35e04fa70cad  Add Intel IcelakeX uncore
+	  PMU support for M2M  Adds the Mesh to Memory PMU support (M2M) for
+	  Intel IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  d5ed0e03686c051f5311fc1993824245eb10e1d2  Add Intel IcelakeX uncore
+	  PMU support for IRP  Adds the PCIe IIO Ring Port PMU support (IRP)
+	  for Intel IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  30afdce909bcc7313af7599cfbf6484ae4b1fc3e  Add Intel IcelakeX uncore
+	  PMU support for IIO  Adds the PCIe I/O controller PMU support (IIO)
+	  for Intel IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  6237022aa77bc9c845b1c48d741e54bdc22ac077  Add Intel IcelakeX uncore
+	  PMU support for IMC  Adds the memory controller PMU support (IMC)
+	  for Intel IcelakeX. Based on Intel JSON events v1.21 published from
+	  github.com/intel/perfmon/ICX   commit
+	  05f04adec932cd2cd28e83f718e4e0ae6ba2eab4  Add Intel IcelakeX uncore
+	  PMU support for CHA  Adds Intel IcelakeX CHA (Coherency and Home
+	  Agent) uncore PMU support. Based on Intel published uncore JSON
+	  events v1.21 from github.com/intel/perfmon/ICX.   commit
+	  94e82e27c02ef01f288a1b40904d72b2954d3f31  check umasks[] bounds in
+	  intel_x86_uflag()  Otherwise may run into SEGFAULT for some events.
+	  commit d058479bd048d2742df298097da86bc86dd1a5ce  Enable RAPL
+	  support on AMD Zen4  Just like other AMD EPYC processors, only
+	  ENERGY_PKG is supported.

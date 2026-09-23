@@ -1,0 +1,77 @@
+ALL = strtest zero zeronamed first second tenth description fdmemtest accum cost \
+	case1 case2 clockres eventname fmatrixlowpapi fmultiplex1 \
+	johnmay2 fmultiplex2 avail openmp\
+	serial_hl
+
+.PHONY : all default ftests ftest clean install
+
+all default ftests ftest: $(ALL)
+
+serial_hl: serial_hl.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) serial_hl.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) $(LDFLAGS) -o serial_hl
+
+clockres: clockres.F $(TESTLIB) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) clockres.F $(TESTLIB) $(PAPILIB) $(LDFLAGS) -o clockres
+
+avail: avail.F $(TESTLIB)  $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) avail.F  $(TESTLIB) $(PAPILIB) $(LDFLAGS) -o avail
+
+eventname: eventname.F $(TESTLIB)  $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) eventname.F $(TESTLIB) $(PAPILIB) $(LDFLAGS) -o eventname
+
+case1: case1.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) case1.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) $(LDFLAGS) -o case1
+
+case2: case2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) case2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) $(LDFLAGS) -o case2
+
+fdmemtest: fdmemtest.F $(TESTLIB)  $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) fdmemtest.F $(TESTLIB) $(PAPILIB) $(LDFLAGS) -o fdmemtest
+
+fmatrixlowpapi: fmatrixlowpapi.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) fmatrixlowpapi.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) $(LDFLAGS) -o fmatrixlowpapi
+
+strtest: strtest.F $(TESTLIB)  $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) strtest.F $(TESTLIB) $(PAPILIB) $(LDFLAGS) -o strtest
+
+description: description.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) description.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) $(LDFLAGS) -o description
+
+accum: accum.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) accum.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o accum $(LDFLAGS)
+
+openmp: openmp.F $(TESTLIB) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) openmp.F $(TESTLIB) $(PAPILIB) -o openmp $(LDFLAGS) $(OMPCFLGS)
+
+zero: zero.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) zero.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o zero $(LDFLAGS)
+
+zeronamed: zeronamed.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) zeronamed.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o zeronamed $(LDFLAGS)
+
+first: first.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) first.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o first $(LDFLAGS)
+
+second: second.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) second.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o second $(LDFLAGS)
+
+tenth: tenth.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) tenth.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o tenth $(LDFLAGS)
+
+cost: cost.F $(TESTLIB) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) cost.F $(TESTLIB) $(PAPILIB) -o cost $(LDFLAGS)
+
+johnmay2: johnmay2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) johnmay2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o johnmay2 $(LDFLAGS)
+
+fmultiplex1: fmultiplex1.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) fmultiplex1.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o fmultiplex1 $(LDFLAGS)
+
+fmultiplex2: fmultiplex2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB)
+	$(F77) $(INCLUDE) $(FFLAGS) $(FTOPTFLAGS) fmultiplex2.F $(TESTLIB) $(DOLOOPS) $(PAPILIB) -o fmultiplex2 $(LDFLAGS)
+
+clean:
+	rm -f *.o *genmod.f90 *genmod.mod *.stderr *.stdout core *~ $(ALL)
+
+distclean clobber: clean
+	rm -f Makefile.target

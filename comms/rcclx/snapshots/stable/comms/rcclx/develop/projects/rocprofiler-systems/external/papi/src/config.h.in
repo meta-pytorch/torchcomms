@@ -1,0 +1,201 @@
+/* config.h.in.  Generated from configure.in by autoheader.  */
+
+/* cpu type */
+#undef CPU
+
+/* POSIX 1b clock */
+#undef HAVE_CLOCK_GETTIME
+
+/* POSIX 1b realtime clock */
+#undef HAVE_CLOCK_GETTIME_REALTIME
+
+/* POSIX 1b realtime HR clock */
+#undef HAVE_CLOCK_GETTIME_REALTIME_HR
+
+/* POSIX 1b per-thread clock */
+#undef HAVE_CLOCK_GETTIME_THREAD
+
+/* Native access to a hardware cycle counter */
+#undef HAVE_CYCLE
+
+/* Define to 1 if you have the <c_asm.h> header file. */
+#undef HAVE_C_ASM_H
+
+/* This platform has the ffsll() function */
+#undef HAVE_FFSLL
+
+/* Define to 1 if you have the `gethrtime' function. */
+#undef HAVE_GETHRTIME
+
+/* Full gettid function */
+#undef HAVE_GETTID
+
+/* Normal gettimeofday timer */
+#undef HAVE_GETTIMEOFDAY
+
+/* Define if hrtime_t is defined in <sys/time.h> */
+#undef HAVE_HRTIME_T
+
+/* Define to 1 if you have the <intrinsics.h> header file. */
+#undef HAVE_INTRINSICS_H
+
+/* Define to 1 if you have the <inttypes.h> header file. */
+#undef HAVE_INTTYPES_H
+
+/* Define to 1 if you have the `cpc' library (-lcpc). */
+#undef HAVE_LIBCPC
+
+/* perfctr header file */
+#undef HAVE_LIBPERFCTR_H
+
+/* Define to 1 if you have the `mach_absolute_time' function. */
+#undef HAVE_MACH_ABSOLUTE_TIME
+
+/* Define to 1 if you have the <mach/mach_time.h> header file. */
+#undef HAVE_MACH_MACH_TIME_H
+
+/* Define to 1 if you have the <memory.h> header file. */
+#undef HAVE_MEMORY_H
+
+/* Altix memory mapped global cycle counter */
+#undef HAVE_MMTIMER
+
+/* Define to 1 if you have the <perfmon/pfmlib.h> header file. */
+#undef HAVE_PERFMON_PFMLIB_H
+
+/* Montecito headers */
+#undef HAVE_PERFMON_PFMLIB_MONTECITO_H
+
+/* Working per thread getrusage */
+#undef HAVE_PER_THREAD_GETRUSAGE
+
+/* Working per thread timer */
+#undef HAVE_PER_THREAD_TIMES
+
+/* new pfmlib_output_param_t */
+#undef HAVE_PFMLIB_OUTPUT_PFP_PMD_COUNT
+
+/* event description function */
+#undef HAVE_PFM_GET_EVENT_DESCRIPTION
+
+/* new pfm_msg_t */
+#undef HAVE_PFM_MSG_TYPE
+
+/* old reg_evt_idx */
+#undef HAVE_PFM_REG_EVT_IDX
+
+/* Define to 1 if you have the `read_real_time' function. */
+#undef HAVE_READ_REAL_TIME
+
+/* Define to 1 if you have the `sched_getcpu' function. */
+#undef HAVE_SCHED_GETCPU
+
+/* Define to 1 if you have the <sched.h> header file. */
+#undef HAVE_SCHED_H
+
+/* Define to 1 if you have the <stdint.h> header file. */
+#undef HAVE_STDINT_H
+
+/* Define to 1 if you have the <stdlib.h> header file. */
+#undef HAVE_STDLIB_H
+
+/* Define to 1 if you have the <strings.h> header file. */
+#undef HAVE_STRINGS_H
+
+/* Define to 1 if you have the <string.h> header file. */
+#undef HAVE_STRING_H
+
+/* gettid syscall function */
+#undef HAVE_SYSCALL_GETTID
+
+/* Define to 1 if you have the <sys/stat.h> header file. */
+#undef HAVE_SYS_STAT_H
+
+/* Define to 1 if you have the <sys/time.h> header file. */
+#undef HAVE_SYS_TIME_H
+
+/* Define to 1 if you have the <sys/types.h> header file. */
+#undef HAVE_SYS_TYPES_H
+
+/* Keyword for per-thread variables */
+#undef HAVE_THREAD_LOCAL_STORAGE
+
+/* Define to 1 if you have the `time_base_to_time' function. */
+#undef HAVE_TIME_BASE_TO_TIME
+
+/* Define to 1 if you have the <unistd.h> header file. */
+#undef HAVE_UNISTD_H
+
+/* Define for _rtc() intrinsic. */
+#undef HAVE__RTC
+
+/* Define if _rtc() is not found. */
+#undef NO_RTC_INTRINSIC
+
+/* Define to the address where bug reports for this package should be sent. */
+#undef PACKAGE_BUGREPORT
+
+/* Define to the full name of this package. */
+#undef PACKAGE_NAME
+
+/* Define to the full name and version of this package. */
+#undef PACKAGE_STRING
+
+/* Define to the one symbol short name of this package. */
+#undef PACKAGE_TARNAME
+
+/* Define to the home page for this package. */
+#undef PACKAGE_URL
+
+/* Define to the version of this package. */
+#undef PACKAGE_VERSION
+
+/* Define to 1 if you have the ANSI C header files. */
+#undef STDC_HEADERS
+
+/* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
+#undef TIME_WITH_SYS_TIME
+
+/* Use the perfctr virtual TSC for per-thread times */
+#undef USE_PERFCTR_PTTIMER
+
+/* Use /proc for per-thread times */
+#undef USE_PROC_PTTIMER
+
+/* Enable extensions on AIX 3, Interix.  */
+#ifndef _ALL_SOURCE
+# undef _ALL_SOURCE
+#endif
+/* Enable GNU extensions on systems that have them.  */
+#ifndef _GNU_SOURCE
+# undef _GNU_SOURCE
+#endif
+/* Enable threading extensions on Solaris.  */
+#ifndef _POSIX_PTHREAD_SEMANTICS
+# undef _POSIX_PTHREAD_SEMANTICS
+#endif
+/* Enable extensions on HP NonStop.  */
+#ifndef _TANDEM_SOURCE
+# undef _TANDEM_SOURCE
+#endif
+/* Enable general extensions on Solaris.  */
+#ifndef __EXTENSIONS__
+# undef __EXTENSIONS__
+#endif
+
+
+/* Define to 1 if on MINIX. */
+#undef _MINIX
+
+/* Define to 2 if the system does not provide POSIX.1 features except with
+   this defined. */
+#undef _POSIX_1_SOURCE
+
+/* Define to 1 if you need to in order for `stat' and other things to work. */
+#undef _POSIX_SOURCE
+
+/* Define to `__inline__' or `__inline' if that's what the C compiler
+   calls it, or to nothing if 'inline' is not supported under any name.  */
+#ifndef __cplusplus
+#undef inline
+#endif

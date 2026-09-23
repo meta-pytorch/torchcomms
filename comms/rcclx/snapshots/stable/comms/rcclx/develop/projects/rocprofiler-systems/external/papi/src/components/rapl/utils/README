@@ -1,0 +1,19 @@
+This tool can be used to gather Energy measurements on a SandyBridge
+chip using RAPL.
+
+Be sure to configure PAPI with --with-components="rapl" and have
+read permissions on the /dev/cpu/*/msr files.
+
+It works by using PAPI to poll the RAPL stats every 100ms.
+It will dump each statistic to different files, which then
+can be plotted.
+
+The measurements (in nJ) are dumped every 100ms.  
+You can adjust the frequency by changing the source code.
+
+You can then take those files and put them into your favorite plotting 
+program.  You might want to edit the source to remove the extra
+commentary from the data, the plotting program I use ignores things
+surrounded by (* brackets.
+
+

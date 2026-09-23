@@ -1,0 +1,47 @@
+.TH "PAPI_register_thread" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_register_thread \- Notify PAPI that a thread has 'appeared'\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int \fBPAPI_register_thread\fP (void);
+.RE
+.PP
+PAPI_register_thread() should be called when the user wants to force PAPI to initialize a thread that PAPI has not seen before\&.
+.PP
+Usually this is not necessary as PAPI implicitly detects the thread when an eventset is created or other thread local PAPI functions are called\&. However, it can be useful for debugging and performance enhancements in the run-time systems of performance tools\&.
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOMEM\fP Space could not be allocated to store the new thread information\&. 
+.br
+\fIPAPI_ESYS\fP A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_ECMP\fP Hardware counters for this thread could not be initialized\&.
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_unregister_thread\fP 
+.PP
+\fBPAPI_thread_id\fP 
+.PP
+\fBPAPI_thread_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

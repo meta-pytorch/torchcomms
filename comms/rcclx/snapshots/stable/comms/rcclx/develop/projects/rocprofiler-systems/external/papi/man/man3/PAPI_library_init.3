@@ -1,0 +1,62 @@
+.TH "PAPI_library_init" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_library_init \- initialize the PAPI library\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIversion\fP upon initialization, PAPI checks the argument against the internal value of PAPI_VER_CURRENT when the library was compiled\&. This guards against portability problems when updating the PAPI shared libraries on your system\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP \fBpapi\&.h\fP is different from the version used to compile the PAPI library\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&. 
+.br
+\fIPAPI_ECMP\fP This component does not support the underlying hardware\&. 
+.br
+\fIPAPI_ESYS\fP A system or C library call failed inside PAPI, see the errno variable\&.
+.RE
+.PP
+PAPI_library_init() initializes the PAPI library\&. PAPI_is_initialized() check for initialization\&. It must be called before any low level PAPI functions can be used\&. If your application is making use of threads \fBPAPI_thread_init\fP must also be called prior to making any calls to the library other than PAPI_library_init() \&. 
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int retval;
+retval = PAPI_library_init(PAPI_VER_CURRENT);
+if (retval != PAPI_VER_CURRENT && retval > 0) {
+    fprintf(stderr,"PAPI library version mismatch!\\en");
+    exit(1); }
+if (retval < 0)
+    handle_error(retval);
+retval = PAPI_is_initialized();
+if (retval != PAPI_LOW_LEVEL_INITED)
+    handle_error(retval)    
+
+.fi
+.PP
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_thread_init\fP PAPI 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

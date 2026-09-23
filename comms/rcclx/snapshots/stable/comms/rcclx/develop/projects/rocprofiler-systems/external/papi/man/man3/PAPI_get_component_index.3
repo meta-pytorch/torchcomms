@@ -1,0 +1,49 @@
+.TH "PAPI_get_component_index" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_component_index \- returns the component index for the named component  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIENOCMP\fP component does not exist
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIname\fP name of component to find index for 
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int cidx;
+cidx = PAPI_get_component_index("cuda");
+if (cidx==PAPI_OK) {
+           printf("The CUDA component is cidx %d\\n",cidx);
+        }
+
+.fi
+.PP
+ PAPI_get_component_index() returns the component index of the named component\&. This is useful for finding out if a specified component exists\&. 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_event_component\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

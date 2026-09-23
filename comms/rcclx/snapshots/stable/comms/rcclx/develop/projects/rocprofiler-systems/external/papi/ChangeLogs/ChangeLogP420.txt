@@ -1,0 +1,1140 @@
+2011-10-25
+
+	* doc/: Makefile, doxygen_procedure.txt: Update doxygen_procedure
+	  to note that we need a recent version of doxygen.
+
+	* man/: man1/avail.c.1, man1/clockres.c.1, man1/command_flags_t.1,
+	  man1/command_line.c.1, man1/component.c.1, man1/cost.c.1,
+	  man1/decode.c.1, man1/error_codes.c.1, man1/event_chooser.c.1,
+	  man1/mem_info.c.1, man1/native_avail.c.1, man1/options_t.1,
+	  man1/papi_avail.1, man1/papi_clockres.1,
+	  man1/papi_command_line.1, man1/papi_component_avail.1,
+	  man1/papi_cost.1, man1/papi_decode.1, man1/papi_error_codes.1,
+	  man1/papi_event_chooser.1, man1/papi_mem_info.1,
+	  man1/papi_multiplex_cost.1, man1/papi_native_avail.1, man3/CDI.3,
+	  man3/HighLevelInfo.3, man3/PAPIF.3, man3/PAPIF_accum.3,
+	  man3/PAPIF_accum_counters.3, man3/PAPIF_add_event.3,
+	  man3/PAPIF_add_events.3, man3/PAPIF_assign_eventset_component.3,
+	  man3/PAPIF_cleanup_eventset.3, man3/PAPIF_create_eventset.3,
+	  man3/PAPIF_destroy_eventset.3, man3/PAPIF_enum_event.3,
+	  man3/PAPIF_event_code_to_name.3, man3/PAPIF_event_name_to_code.3,
+	  man3/PAPIF_flips.3, man3/PAPIF_flops.3,
+	  man3/PAPIF_get_clockrate.3, man3/PAPIF_get_dmem_info.3,
+	  man3/PAPIF_get_domain.3, man3/PAPIF_get_event_info.3,
+	  man3/PAPIF_get_exe_info.3, man3/PAPIF_get_granularity.3,
+	  man3/PAPIF_get_hardware_info.3, man3/PAPIF_get_multiplex.3,
+	  man3/PAPIF_get_preload.3, man3/PAPIF_get_real_cyc.3,
+	  man3/PAPIF_get_real_nsec.3, man3/PAPIF_get_real_usec.3,
+	  man3/PAPIF_get_virt_cyc.3, man3/PAPIF_get_virt_usec.3,
+	  man3/PAPIF_ipc.3, man3/PAPIF_is_initialized.3,
+	  man3/PAPIF_library_init.3, man3/PAPIF_lock.3,
+	  man3/PAPIF_multiplex_init.3, man3/PAPIF_num_cmp_hwctrs.3,
+	  man3/PAPIF_num_counters.3, man3/PAPIF_num_events.3,
+	  man3/PAPIF_num_hwctrs.3, man3/PAPIF_perror.3,
+	  man3/PAPIF_query_event.3, man3/PAPIF_read.3,
+	  man3/PAPIF_read_ts.3, man3/PAPIF_register_thread.3,
+	  man3/PAPIF_remove_event.3, man3/PAPIF_remove_events.3,
+	  man3/PAPIF_reset.3, man3/PAPIF_set_cmp_domain.3,
+	  man3/PAPIF_set_cmp_granularity.3, man3/PAPIF_set_debug.3,
+	  man3/PAPIF_set_domain.3, man3/PAPIF_set_event_domain.3,
+	  man3/PAPIF_set_granularity.3, man3/PAPIF_set_inherit.3,
+	  man3/PAPIF_set_multiplex.3, man3/PAPIF_shutdown.3,
+	  man3/PAPIF_start.3, man3/PAPIF_start_counters.3,
+	  man3/PAPIF_state.3, man3/PAPIF_stop.3,
+	  man3/PAPIF_stop_counters.3, man3/PAPIF_thread_id.3,
+	  man3/PAPIF_thread_init.3, man3/PAPIF_unlock.3,
+	  man3/PAPIF_unregister_thread.3, man3/PAPIF_write.3,
+	  man3/PAPI_accum.3, man3/PAPI_accum_counters.3,
+	  man3/PAPI_add_event.3, man3/PAPI_add_events.3,
+	  man3/PAPI_addr_range_option_t.3, man3/PAPI_address_map_t.3,
+	  man3/PAPI_all_thr_spec_t.3,
+	  man3/PAPI_assign_eventset_component.3, man3/PAPI_attach.3,
+	  man3/PAPI_attach_option_t.3, man3/PAPI_cleanup_eventset.3,
+	  man3/PAPI_component_info_t.3, man3/PAPI_cpu_option_t.3,
+	  man3/PAPI_create_eventset.3, man3/PAPI_debug_option_t.3,
+	  man3/PAPI_descr_error.3, man3/PAPI_destroy_eventset.3,
+	  man3/PAPI_detach.3, man3/PAPI_dmem_info_t.3,
+	  man3/PAPI_domain_option_t.3, man3/PAPI_enum_event.3,
+	  man3/PAPI_event_code_to_name.3, man3/PAPI_event_info_t.3,
+	  man3/PAPI_event_name_to_code.3, man3/PAPI_exe_info_t.3,
+	  man3/PAPI_flips.3, man3/PAPI_flops.3, man3/PAPI_get_cmp_opt.3,
+	  man3/PAPI_get_component_info.3, man3/PAPI_get_dmem_info.3,
+	  man3/PAPI_get_event_info.3, man3/PAPI_get_executable_info.3,
+	  man3/PAPI_get_hardware_info.3, man3/PAPI_get_multiplex.3,
+	  man3/PAPI_get_opt.3, man3/PAPI_get_overflow_event_index.3,
+	  man3/PAPI_get_real_cyc.3, man3/PAPI_get_real_nsec.3,
+	  man3/PAPI_get_real_usec.3, man3/PAPI_get_shared_lib_info.3,
+	  man3/PAPI_get_thr_specific.3, man3/PAPI_get_virt_cyc.3,
+	  man3/PAPI_get_virt_nsec.3, man3/PAPI_get_virt_usec.3,
+	  man3/PAPI_granularity_option_t.3, man3/PAPI_hw_info_t.3,
+	  man3/PAPI_inherit_option_t.3, man3/PAPI_ipc.3,
+	  man3/PAPI_is_initialized.3, man3/PAPI_itimer_option_t.3,
+	  man3/PAPI_library_init.3, man3/PAPI_list_events.3,
+	  man3/PAPI_list_threads.3, man3/PAPI_lock.3,
+	  man3/PAPI_mh_cache_info_t.3, man3/PAPI_mh_info_t.3,
+	  man3/PAPI_mh_level_t.3, man3/PAPI_mh_tlb_info_t.3,
+	  man3/PAPI_mpx_info_t.3, man3/PAPI_multiplex_init.3,
+	  man3/PAPI_multiplex_option_t.3, man3/PAPI_num_cmp_hwctrs.3,
+	  man3/PAPI_num_components.3, man3/PAPI_num_counters.3,
+	  man3/PAPI_num_events.3, man3/PAPI_num_hwctrs.3,
+	  man3/PAPI_option_t.3, man3/PAPI_overflow.3, man3/PAPI_perror.3,
+	  man3/PAPI_preload_info_t.3, man3/PAPI_profil.3,
+	  man3/PAPI_query_event.3, man3/PAPI_read.3,
+	  man3/PAPI_read_counters.3, man3/PAPI_read_ts.3,
+	  man3/PAPI_register_thread.3, man3/PAPI_remove_event.3,
+	  man3/PAPI_remove_events.3, man3/PAPI_reset.3,
+	  man3/PAPI_set_cmp_domain.3, man3/PAPI_set_cmp_granularity.3,
+	  man3/PAPI_set_debug.3, man3/PAPI_set_domain.3,
+	  man3/PAPI_set_granularity.3, man3/PAPI_set_multiplex.3,
+	  man3/PAPI_set_opt.3, man3/PAPI_set_thr_specific.3,
+	  man3/PAPI_shlib_info_t.3, man3/PAPI_shutdown.3,
+	  man3/PAPI_sprofil.3, man3/PAPI_sprofil_t.3, man3/PAPI_start.3,
+	  man3/PAPI_start_counters.3, man3/PAPI_state.3, man3/PAPI_stop.3,
+	  man3/PAPI_stop_counters.3, man3/PAPI_strerror.3,
+	  man3/PAPI_thread_id.3, man3/PAPI_thread_init.3,
+	  man3/PAPI_unlock.3, man3/PAPI_unregister_thread.3,
+	  man3/PAPI_write.3, man3/high_api.3, man3/low_api.3,
+	  man3/papi_data_structures.3, man3/papi_vector_t.3,
+	  man3/ret_codes.3: Update doxygen generated man-pages for the
+	  pending release.
+
+	  In the future, we need to use a newer version of doxygen to
+	  generate the pages (1.7 +) because locally installed verions
+	  appear to have a  bug.
+
+	* src/ctests/nmi_watchdog.c: The nmi_watchdog test should report a
+	  Warning if nmi_watchdog is enabled   not an error.  (Since we do
+	  work around it, even if performance is   likely impacted).
+
+	* src/ctests/: Makefile, nmi_watchdog.c: I think the nmi_watchdog
+	  stuff is going to cause us problems down the road.
+
+	  Thus add a test that will tell users about the issue.
+
+	* src/perf_events.c: The nmi_watchdog workaround is needed for
+	  multiplexing too.
+
+	  The kernel devs don't seem eager to fix this.  Until they do,
+	  we'll have to fall back to software multiplexing on recent
+	  kernels that have nmi_watchdog enabled (most vendor kernels).
+
+	* src/multiplex.c: Yesterday's coverity fix to make sure the
+	  cleanup and destroy rerturn values were checked ended up
+	  over-writing "retval" in a way that broke the sdsc4-mpx test.
+	  Fix things so that doesn't happen.
+
+	* src/: papi.c, perf_events.c, ctests/overflow_allcounters.c: Some
+	  changes for perf_event MIPS support
+
+	  + Add __mips__ cases to the format_group, schedulability, and
+	  broken   multiplexing bug workarounds, as even new Linux mips
+	  kernels have	 these bugs + fix overflow_allcounters to work
+	  properly if the MHz value   is zero.	+ Add some debugging to
+	  PAPI_overflow() so that errors are more obvious   than just
+	  returning PAPI_EINVAL, which made the previous item	a pain to
+	  track down.
+
+	* man/: footer.htm, header.htm, manServer_papi.pl, papiman.bat,
+	  html/papi.html, html/papi_accum.html,
+	  html/papi_accum_counters.html, html/papi_add_event.html,
+	  html/papi_add_events.html,
+	  html/papi_assign_eventset_component.html, html/papi_attach.html,
+	  html/papi_avail.html, html/papi_cleanup_eventset.html,
+	  html/papi_clockres.html, html/papi_command_line.html,
+	  html/papi_cost.html, html/papi_create_eventset.html,
+	  html/papi_decode.html, html/papi_destroy_eventset.html,
+	  html/papi_detach.html, html/papi_encode_events.html,
+	  html/papi_enum_event.html, html/papi_event_chooser.html,
+	  html/papi_event_code_to_name.html,
+	  html/papi_event_name_to_code.html, html/papi_flips.html,
+	  html/papi_flops.html, html/papi_get_component_info.html,
+	  html/papi_get_dmem_info.html, html/papi_get_event_info.html,
+	  html/papi_get_executable_info.html,
+	  html/papi_get_hardware_info.html, html/papi_get_multiplex.html,
+	  html/papi_get_opt.html, html/papi_get_overflow_event_index.html,
+	  html/papi_get_real_cyc.html, html/papi_get_real_usec.html,
+	  html/papi_get_shared_lib_info.html,
+	  html/papi_get_substrate_info.html,
+	  html/papi_get_thr_specific.html, html/papi_get_virt_cyc.html,
+	  html/papi_get_virt_usec.html, html/papi_help.html,
+	  html/papi_ipc.html, html/papi_is_initialized.html,
+	  html/papi_library_init.html, html/papi_list_events.html,
+	  html/papi_list_threads.html, html/papi_lock.html,
+	  html/papi_mem_info.html, html/papi_multiplex_init.html,
+	  html/papi_native.html, html/papi_native_avail.html,
+	  html/papi_num_cmp_hwctrs.html, html/papi_num_components.html,
+	  html/papi_num_counters.html, html/papi_num_events.html,
+	  html/papi_num_hwctrs.html, html/papi_overflow.html,
+	  html/papi_perror.html, html/papi_presets.html,
+	  html/papi_profil.html, html/papi_query_event.html,
+	  html/papi_read.html, html/papi_read_counters.html,
+	  html/papi_register_thread.html, html/papi_remove_event.html,
+	  html/papi_remove_events.html, html/papi_reset.html,
+	  html/papi_set_cmp_domain.html,
+	  html/papi_set_cmp_granularity.html, html/papi_set_debug.html,
+	  html/papi_set_domain.html, html/papi_set_event_info.html,
+	  html/papi_set_granularity.html, html/papi_set_multiplex.html,
+	  html/papi_set_opt.html, html/papi_set_thr_specific.html,
+	  html/papi_shutdown.html, html/papi_sprofil.html,
+	  html/papi_start.html, html/papi_start_counters.html,
+	  html/papi_state.html, html/papi_stop.html,
+	  html/papi_stop_counters.html, html/papi_strerror.html,
+	  html/papi_thread_id.html, html/papi_thread_init.html,
+	  html/papi_unlock.html, html/papi_unregister_thread.html,
+	  html/papi_write.html, html/papif.html,
+	  html/papif_get_clockrate.html, html/papif_get_domain.html,
+	  html/papif_get_exe_info.html, html/papif_get_granularity.html,
+	  html/papif_get_preload.html, html/papif_set_event_domain.html,
+	  images/cssigoff.gif, images/cssigon.gif, images/headertop.jpg,
+	  images/line.gif, images/logobottom.jpg, images/logoleft.jpg,
+	  images/menubg.jpg, images/menubg95.jpg, images/rd.jpg,
+	  images/spinbg.jpg, images/spinlogo.gif, images/stable.gif,
+	  images/stripes2.jpg, images/trans.gif, images/utsigoff.gif,
+	  images/utsigon.gif, images/white.jpg: Remove the old html
+	  documentation and assorted helper files.
+
+	* src/components/coretemp/linux-coretemp.c: Fix a possible
+	  directory stream leak in the coretemp component.
+
+	  reported by coverity checker.
+
+	* src/ctests/calibrate.c: Properly free the arrays in calibrate,
+	  introduced by yesterdays coverity fix.
+
+	  Patch by Will Cohen
+
+
+2011-10-24
+
+	* src/components/coretemp/linux-coretemp.c: Fix coretemp to not
+	  fail if /sys/class/hwmon doesn't exist.
+
+	* src/components/coretemp/linux-coretemp.c: Patch coretemp to only
+	  free the initialized data in shutdown_substrate (once per
+	  PAPI_init) rather than shutdown (once per thread).
+
+	  This was causing double free errors.
+
+	  Patch from Will Cohen
+
+	* src/utils/multiplex_cost.c: Fix various calls to PAPI_start() and
+	  PAPI_stop() in multiplex_cost that didn't check the return value.
+	  Took care to try to avoid changing timing measurements.  Noticed
+	  by coverity checker.
+
+	* src/utils/cost.c: In one case, cost was not checking the return
+	  of PAPI_start()/PAPI_stop().	This change makes it does so, while
+	  being careful not to interfere with the timing that is going on.
+
+	* src/ctests/: pthrtough.c, pthrtough2.c: pthrtough and pthrtough2
+	  were not checking the return value for pthread_attr_setscope().
+	  Reported by coverity checker.
+
+	* src/ctests/multiplex1_pthreads.c: multiplex1_pthreads was not
+	  checking the return from PAPI_library_init() as flagged by
+	  coverity checker.
+
+	* src/ctests/inherit.c: inherit.c wasn't checking the result of the
+	  waitpid() call, as reported by coverity checker.
+
+	* src/ctests/clockres_pthreads.c: Check the return of
+	  pthread_create().
+
+	  Reported by coverity checker.
+
+	* src/papi_libpfm4_events.c: Fix an actual bug (reported as
+	  deadcode by coverity) where _papi_hwd_ntv_code_to_descr was
+	  appending extraneous ", masks:" strings into an event
+	  description.
+
+	  None of our utils/ctests exercise this function, which is
+	  probably why the bug wasn't noticed.
+
+	* src/: multiplex.c, papi.c: Fix cases where PAPI_*() functions
+	  were called without checking the return for an error.
+
+	  Reported by coverity.
+
+	* doc/Doxyfile.utils: Update version to 4.2.0 for pending release.
+
+	* src/multiplex.c: Fix some code that could potentially dereference
+	  a null pointer.
+
+	  Found by the coverity checker.
+
+	* src/papi_vector.c: Remove a dead code case as reported by
+	  coverity.  Shouldn't break anything as I can't find anywhere that
+	  vector_print_table() is actually called.
+
+	* release_procedure.txt: Update release_procedure to reflect
+	  another file that needs a version number bump. (Doxyfile.utils)
+
+	* src/ctests/calibrate.c: Fix some weird code that was sharing a
+	  memory allocation for both double and floats.  This was really
+	  ugly and made the coverity checker sad.
+
+	  Patch provided by Will Cohen.
+
+	* src/testlib/test_utils.c: Fix a signed/unsigned comparison bug I
+	  introduced.
+
+	* src/components/coretemp/tests/coretemp_basic.c: Fix the test so
+	  it correctly iterates all of the components.
+
+	* src/components/coretemp/: linux-coretemp.c, tests/Makefile,
+	  tests/coretemp_basic.c: Fix a potential memory leak in coretemp
+	  (flagged by coverity).
+
+	  Also added a test case for coretemp so I can actually test if
+	  these changes are breaking anything.
+
+	* src/solaris-ultra.c: Remove const decleration from get_virt_* in
+	  solaris substrate.  Vince removed this from papi_vector.h back in
+	  June.
+
+	* src/testlib/test_utils.c: Improce the add_two_events() code in
+	  the test library.  Before it was possible to overrun a buffer if
+	  none of the potential predefined events were available.
+
+	  Noticed by the coverity checker.
+
+	* papi.spec, doc/Doxyfile, doc/Doxyfile-everything, src/configure,
+	  src/papi.h, src/Makefile.in, src/configure.in: Update version to
+	  4.2.0 for pending release.
+
+2011-10-21
+
+	* src/: Makefile.inc, configure, configure.in, papi.c, papi.h,
+	  papi_internal.c, papi_user_events.c, papi_user_events.h: Merge in
+	  the user events code , protected by a configure option.  (
+	  --with-user-events )
+
+	* src/testlib/test_utils.c: We now ensure that test_fail() always
+	  exits.  There was some code around that tracked the number of
+	  times test_fail() was called.  Remove that, as I think it was
+	  confusing the coverity checker and causing a huge number of false
+	  positives for NULL pointer dereferences.
+
+	* src/components/acpi/linux-acpi.c: Some minor cleanups to the acpi
+	  component.  It was choking a bit if ACPI didn't provide thermal
+	  information, and also fix a few coverity bugs involving not
+	  checking the result of a dup() call.
+
+	* src/testlib/test_utils.c: Another problem with negative numbers,
+	  this time one could potentially be passed to a malloc call.
+
+	  noticed by coverity
+
+	* src/ctests/overflow_pthreads.c: We were indexing an array with a
+	  returned value that could be negative on failure.  Add a check to
+	  avoid that.
+
+	  We're also indexing a per-thread array with an EventSet number,
+	  which sounds suspect, should probably investigate that further.
+
+	* src/perf_events.c: perf_events.c was setting variables to -1 and
+	  then potentially using them to index arrays or call close() on
+	  them.
+
+	  This adds checks to avoid that.
+
+	  Noticed by the coverity checker.
+
+	* src/components/lustre/linux-lustre.h: Include stdint.h and
+	  ctype.h; needed for uint64_t and isspace() respectivly.
+
+	* src/components/coretemp/linux-coretemp.c: Fix problem where we
+	  try to manipulate a NULL directory entry.
+
+	  This fixes a segfault on a Nehalem machine we have here that has
+	  a /sys/class/hwmon/hwmon0 directory without a "device"
+	  subdirectory.
+
+	* src/components/coretemp/linux-coretemp.c: We were opening a file
+	  but not checking for failure before reading from it.
+
+	  Flagged by the coverity checker.
+
+	* src/components/coretemp/linux-coretemp.c: Both gcc and coverity
+	  were complaining about using an uninitialized pointer.  This
+	  makes sure it's not dereferenced if not initialized.
+
+	* src/ctests/prof_utils.c: Stop doing unnecessary pointer math in a
+	  print statement.
+
+	  This was flagged as a problem by the coverity tool.
+
+	* src/components/coretemp/linux-coretemp.c: Fix some wrong buffer
+	  sizes in the coretemp component.
+
+	  Patch from Will Cohen
+
+	* src/ctests/sdsc.c: add some extra debug info for sdsc test
+	  failures.
+
+	* src/papi_hl.c: Add comment to PAPI_num_counters() documentation
+	  about use of PAPI_num_cmp_hwctrs() for component counters.
+
+2011-10-19
+
+	* src/papi.c: Correct documentation errors for PAPI_strerror.
+
+	* src/: configure, configure.in: Under a no-cpu-counters build,
+	  still build all of the utils.  We probably want to rethink some
+	  of the cost util details.
+
+2011-10-11
+
+	* src/run_tests.sh: Remove an unneeded call to "cat".  For some
+	  reason it was printing pointless warnings that needlessly
+	  cluttered the buildbot logs.
+
+	* src/ctests/: Makefile, multiplex1.c: -lpapi should never be a
+	  dependency.  -I.. is missing in makefile
+
+	  You should be able to cd ctests and do: make <test> or make
+	  multiplex.
+
+	  Also, added the read after start multiplex case for multiplex1.
+	  This triggers bugs in perf_events systems.
+
+2011-10-10
+
+	* src/: papi.c, papi_internal.c, threads.c: The multiplex1_pthreads
+	  test was reporting a memory leak.
+
+	  This is because the test was calling PAPI_unregister_thread()
+	  without destroying its EventSets.
+
+	  This added change adds code that at unregister_thread time will
+	  destroy any events belonging to that thread.
+
+	  This works on all the current ctests but I should check some of
+	  the various corner cases not currently tested.
+
+2011-10-07
+
+	* src/libpfm4/: config.mk, lib/pfmlib_amd64.c, lib/pfmlib_common.c,
+	  lib/pfmlib_intel_x86.c, lib/events/intel_nhm_events.h,
+	  lib/events/intel_wsm_events.h: Merge the "conflicts" from the
+	  libpfm4 merge
+
+	* src/: threads.c, threads.h: Fix the MEMORY LEAK errors involving
+	  the attach ctests (as seen on buildbot)
+
+	  These came about when proper multiattach support was added.  A
+	  "fake" thread structure is created for each attached process.
+	  These fake thread structures were not being cleaned up at
+	  shutdown,   hence the leak.
+
+	  This fix adds support so at thread shutdown, if we have any
+	  "fake" threads that we created, also shut them down too.
+
+	  This was tricky, especially dealing with the circular-linked list
+	    the thread info structs are in.  This fix seems to work without
+	    negatively affecting the pthread cases.
+
+	  ctests/multiplex1_pthreads still reports MEMORY LEAK but that
+	  seems   to be an eventset issue, not a thread issue, so will be
+	  investigated	 separately.
+
+2011-10-06
+
+	* src/: papi.h, papi_fwrappers.c: Add Fortran reference to  doxygen
+	  main page.
+
+2011-10-05
+
+	* src/: papi.c, papi_internal.c, perf_events.c: There has been some
+	  ongoing speculation about what would happen if you enabled
+	  Multiplexing and Overflow at the same time.
+
+	  It turns out (at least on perf_events) that if you have kernel
+	  multiplexing, the results are what you expect.  You get
+	  overflows, but less than in the non-multiplexing case because the
+	  overflow counter isn't being run all the time.
+
+	  The results for software multiplexing involved a segfault.  This
+	  is because in the software multiplexing case the primary EventSet
+	  is a fiction; a set of shadow EventSets are created behind the
+	  scene, and these are the ones used.  Therefore when you enable
+	  overflow, the overflow event is attempted to be enabled on the
+	  fictious main EventSet.  There are no native events mapped for
+	  it, so overflow tries to access native event array index "-1"
+	  which causes bad things to happen.
+
+	  This change avoids the issue by catching the "-1" case and
+	  failing accordingly.	We should probably decide if we want to
+	  catch the oflo/mpx combination earlier and outright ban it.
+
+	  I also went through a lot of the code involved adding comments,
+	  as it was really hard following what was going on.  This involved
+	  the infamously dense "_papi_hwi_remap_event_position()" function
+	  too.
+
+	* src/papi.h: Moved cpu and inherit bits to end of structure for
+	  compat across all 4.x lines.	Found by Will Cohen.
+
+	  As it turns out, I ended up reviewing the CPU_ATTACH changes; I
+	  had not done so before. This functionality actually belongs in
+	  PAPI_set_granularity. A CPU is a natural unit of granularity of
+	  counting, and that value was speced in papi.h a long time ago.
+	  Right thing to do here is leave the current attach stuff but make
+	  it work as part of set_granularity.
+
+	  Consider that a TODO for 4.3.
+
+2011-10-04
+
+	* doc/: Doxyfile, Doxyfile-everything: Enable macro expansion in
+	  the doxygen preprocessor step.
+
+	  Doxygen was not creating docs for the fortran functions and I
+	  believe it is because it was silently choking on our clever
+	  preprocessor abuse; this fixes? that.  However, its worth taking
+	  a critical eye to the generated pages again.
+
+	* src/: papi.c, papi_fwrappers.c, papi_hl.c: make "* #include" into
+	  "* \#include" so doxygen doesn't treat it as a command.
+
+	* src/papi_fwrappers.c: Added all doxygen stubs to the PAPIF group.
+
+2011-10-03
+
+	* src/ctests/ipc.c: My previous "fix" for the array bounds issue in
+	  ipc.c had multiple embarassing bugs.
+
+	  Thanks to Will Cohen for noticing.  Things should be better now.
+
+	* src/: Rules.perfctr-pfm, Rules.pfm_pe: Additionally remove the
+	  now extraneous papi_libpfm_preset definition from the other Rules
+	  files too.
+
+	* src/: Makefile.inc, Rules.pfm4_pe: The change to make the preset
+	  code generic accidentally ended up defining the build rules for
+	  the file in duplicate places.  This fixes that.
+
+2011-09-30
+
+	* src/: linux-common.c, utils/decode.c: Fix two unused variable
+	  warnings.
+
+	* src/ctests/second.c: We were allocating the "values" array but
+	  never freeing it.
+
+	* src/ctests/: sdsc2.c, sdsc4.c: The SDSC tests could walk off the
+	  end of an array.
+
+	* src/ctests/overflow_twoevents.c: We could potentially access
+	  outside an array boundary in overflow_twoevents.
+
+	* src/ctests/ipc.c: ipc was also abusing array boundaries.
+
+	* src/ctests/flops.c: The flops.c ctest was abusing the notion of C
+	  arrays, by writing INDEX*INDEX values to mresult[0][i], I suppose
+	  "knowing" that this would fill in the whole array.  Fix things to
+	  use an additional iterator.
+
+	* src/ctests/byte_profile.c: The coverity checker rightly points
+	  out that the last argument to strncat should be buffersize-1.
+
+	* src/ctests/: exeinfo.c, shlib.c: Coverity flagged that there were
+	  some tests that had no effect. In particular the are tests that
+	  the pointers are non-null. However, they are arrays rather than
+	  pointers. This patch make it clear that arrays are being used in
+	  the code.
+
+	  Patch from Will Cohen at redhat
+
+	* src/ctests/clockcore.c: This is a relatively minor patch that
+	  ensures that all the allocated memory is initialized to zero
+	  before it is used.  Coverity might not be smart enough to
+	  determine whether the test actually wrote into all the locations
+	  because of the case statement. This is make it easier for
+	  coverity to determine that the memory has been initialized.
+
+	  Path from Will Cohen at redhat.
+
+	* src/multiplex.c: Coverity scan showed that MPX_cleanup() function
+	  was blindly accessing a value through a pointer and then checking
+	  to see that the pointer was null.  This patch makes sure that the
+	  pointer is checked before it is used.
+
+	  Patch from Will Cohen at redhat.
+
+	* src/ctests/: pthrtough.c, pthrtough2.c: Coverity found that the
+	  sizeof argument for pthrtough2.c and pthrtough.c was using
+	  sizeof(pthread *) rather than sizeof(pthread). This patch fixes
+	  that problem.
+
+	  Patch from Will Cohen at redhat
+
+	* src/papi_internal.c: This change moves the setting for default
+	  domain to be enforced at eventset add time, rather than eventset
+	  creation time.
+
+	  This fixes some problems seen when multiplexing.
+
+	  The patch was provided by Phil Mucci.
+
+	* src/pmapi-ppc64.h: One more file that is no longer needed.
+
+	* src/: configure, configure.in, perfctr.c, pmapi-ppc64_events.c,
+	  ppc64_events.c: Clean up the now not-needed pmapi-ppc64_events.c
+	  file.
+
+	* src/: Makefile.inc, aix.c, aix.h, configure, configure.in,
+	  papi_libpfm_presets.c: Finalize the merge of the preset code.
+
+	* src/aix.c: Fix a missing include.
+
+	* src/: aix.c, configure, configure.in: Move more code to its
+	  proper place.
+
+	* src/: aix.c, configure, configure.in, pmapi-ppc64.c,
+	  pmapi-ppc64_events.c, ppc64_events.c: Move the
+	  ppc64_setup_native_table() routines out of the preset code.
+
+	  This is complicated, as there are two very similar routines
+	  setup_ppc64_native_table() used by AIX/pmapi and
+	  ppc64_setup_native_table() used by perfctr
+
+	  These could probably be merged too, but this is definitely not
+	  the time.
+
+	* src/: aix.c, papi_libpfm_presets.c, pmapi-ppc64_events.c: move
+	  pmapi_find_full_event to be _aix_ntv_name_to_code() as it
+	  probably always should have been.
+
+	* src/: papi_libpfm_presets.c, papi_setup_presets.h,
+	  pmapi-ppc64_events.c: Make papi_libpfm_presets more generic by
+	  calling    _papi_hwi_native_name_to_code() rather than a
+	  substrate-specific call.
+
+	* src/: aix.c, papi_libpfm_presets.c, pmapi-ppc64_events.c: I was
+	  mainly doing this to aid debugging, but now the
+	  papi_libpfm_presets.c file and pmapi-ppc64_events.c file are
+	  close enough to being identical I might try to merge them.
+
+2011-09-29
+
+	* src/: papi_libpfm_presets.c, pmapi-ppc64_events.c,
+	  ppc64_events.h: The files are almost the same now.
+
+	* src/: papi_libpfm_presets.c, pmapi-ppc64_events.c: More making
+	  these files the same, including some memory leak fixes that made
+	  it to the former but not the latter.
+
+	* src/: papi_libpfm_presets.c, pmapi-ppc64_events.c: Tracking down
+	  problems on AIX can be a bit of a pain because
+	  papi_libpfm_presets.c and pmapi-ppc64_events.c are almost (but
+	  not quite)   the same.  This change makes the files more similar,
+	  mostly by   cleaning up whitespace and normalizing comments and
+	  debugging statements	 between the two.
+
+	* src/pmapi-ppc64_events.c: Ugh, obvious typo in that last commit.
+
+	* src/pmapi-ppc64_events.c: In ppc64_setup_gps() the current code
+	  sometimes walks off the end of the group array and trashes
+	  unrelated memory.
+
+	  Until we work out the proper fix, this prints an error message
+	  and stops the loop before memory is corrupted.
+
+	* src/papi_data.h: No one seems to remember the last time this file
+	  was used, so let's remove it.
+
+2011-09-28
+
+	* src/Makefile.inc: Remove the "u" option to the "ar" command that
+	  links libpapi.a, as it was breaking the build on MIPS.
+
+	  This *shouldn't* break anything, but messing around with "ar"
+	  options can be potentially dangerous.  I'll double-check the
+	  non-Linux builds.
+
+	* src/libpfm4/lib/: Makefile, pfmlib_mips_priv.h,
+	  events/intel_nhm_events.h, events/intel_wsm_events.h: Fix up the
+	  "collisions" from the libpfm4 import
+
+2011-09-26
+
+	* src/Makefile.inc: We would like to use parallel make on packages
+	  to speed things up. However, when this was tried with papi the
+	  "make -j4" failed
+	  (https://bugzilla.redhat.com/show_bug.cgi?id=740909). I took a
+	  look through the code and found that some of dependencies were
+	  not quite right. Turns out that $(papiLIBS) is substituted during
+	  the configure, but it isn't available for the actual make.
+	  Attached is the patch that ensures that the $(LIBS) are built
+	  before utils and tests.
+
+	  Patch from Will Cohen <wcohen at redhat.com>
+
+	* src/run_tests.sh: Modify run_tests.sh so that you can set the
+	  VALGRIND command externally via environment variable without
+	  having to edit run_tests.sh itself.
+
+	  Also adds Date and cpuinfo information to the beginning of
+	  run_tests.sh results.  This can help when run run_tests.sh output
+	  is passed around when debugging a problem.
+
+	  Patch from Phil Mucci
+
+	* src/: configure, configure.in: If we have no Fortran compiler
+	  available, then our current build system tries to build the
+	  Fortran examples with an empty compiler string which just
+	  generates strange errors.
+
+	  This patch changes F77 to be "echo" which at least avoids the
+	  errors.  The proper fix is probably just not to build the Fortran
+	  samples if no compiler is available.
+
+	  Patch from Phil Mucci
+
+	* src/papi_libpfm4_events.c: The build on power6 was warning in a
+	  DEBUG statement because sizeof() returns an int rather than a
+	  long.  So use a cast to avoid this.
+
+	* src/perf_events.c: The move to use pid_t for pid values caused
+	  warnings on a --with-debug build due to the lack of a way to
+	  print a pid_t value without a cast.
+
+	  This fix adds the proper casts.
+
+2011-09-23
+
+	* src/papi_libpfm4_events.c: Rename the "perfmon_idx" structure
+	  field the more evocative "libpfm4_idx" value.
+
+	  Patch from Phil Mucci
+
+	* src/ctests/all_native_events.c: Fix problem where we were passing
+	  a pointer to an EventSet rather than the actual EventSet number
+	  to PAPI_cleanup_eventset().
+
+	  Also include some of the cleanups from Phil Mucci's MIPS tree.
+
+	* src/: perf_events.c, perf_events.h: Make the perf_event ctl
+	  structure have more explicit data types.
+
+	  Patch from Philip Mucci
+
+	* src/: cycle.h, linux-common.c, linux-context.h, linux-lock.h,
+	  linux-timer.c, mb.h, papi.h: Add bare minimal MIPS74k support,
+	  enough to compile.
+
+	  Patch from Philip Mucci
+
+	* src/papi_events.csv: Add MIPS 74k pre-defined events
+
+	  Patch by Philip Mucci
+
+2011-09-22
+
+	* src/ctests/all_native_events.c: Heike's cleanup_eventset work
+	  allows the calling of PAPI_cleanup_eventset with cuda, so
+	  uncomment the eventset cleanup code in all_native_events.
+
+	* src/papi.h: Update papi.h to properly detect if being built with
+	  a C99 compiler.
+
+	* src/papi_events.csv: Update PAPI_FP_INS event name on amd_fam14h
+	  as it was changed in the most recent libpfm4 merge
+
+	* src/libpfm4/: README, config.mk, docs/Makefile,
+	  docs/man3/pfm_get_event_info.3, examples/Makefile,
+	  examples/showevtinfo.c, include/Makefile,
+	  include/perfmon/perf_event.h, lib/Makefile, lib/pfmlib_common.c,
+	  lib/pfmlib_gen_mips64_priv.h, lib/pfmlib_mips.c,
+	  lib/pfmlib_mips_74k.c, lib/pfmlib_mips_perf_event.c,
+	  lib/pfmlib_mips_priv.h, lib/pfmlib_perf_event_pmu.c,
+	  lib/pfmlib_priv.h, lib/events/intel_atom_events.h,
+	  lib/events/intel_core_events.h, lib/events/intel_nhm_events.h,
+	  lib/events/intel_snb_events.h, lib/events/intel_wsm_events.h: Fix
+	  the "conflicts" from the libpfm4 git import
+
+	* src/libpfm4/: docs/man3/libpfm_mips_74k.3, tests/validate_arm.c,
+	  tests/validate_mips.c: Initial revision
+
+2011-09-21
+
+	* src/multiplex.c: Fix problem where we were freeing a
+	  singly-linked list in a for loop, possibly free()ing the
+	  allocation before dereferencing ->next
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/utils/cost.c: Fixed uninitialized data problem in papi_cost
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/papi_internal.c: Fix problem where we were copying around
+	  chunks of memory that were not initialized yet.
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/multiplex.c: Fix two cases where we were dereferencing a
+	  pointer without checking for NULL.
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/linux-memory.c: We were opening files but not properly
+	  closing them if we returned early with an error condition.
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/linux-common.c: The coverity tool noticed that we allocate
+	  and populate a cpu node info structure, but we never pass any
+	  info on this structure outside of the cpu detection routine, in
+	  effect leaking the allocation.
+
+	  For now just comment out this code as it is not used by anyone.
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/: papi.c, papi_libpfm3_events.c, perfctr-x86.c: The coverity
+	  checker was reporting we forgot to fclose() /proc/cpuinfo in
+	  papi.c
+
+	  The bigger question, is why were we unconditionally trying to
+	  open /proc/cpuinfo in generic code in papi.c anyway?
+
+	  Turns out it was to set the event masks properly for itanium and
+	  p4.
+
+	  The platform code sets CPU vendor and family for us though, so if
+	  we just make the event mask code use those values then we don't
+	  have to open cpuinfo.  This also means that non-Linux users with
+	  the misfortune of running on a P4 might actually work too.
+
+	* src/: papi_internal.c, papi_libpfm_presets.c: In various places
+	  we were using MAX_COUNTER_TERMS (defined by substrate) rather
+	  than PAPI_MAX_COUNTER_TERMS (a papi predefined event define).
+	  This could cause buffer overruns.
+
+	  This fixes things, though really we shouldn't have such similar
+	  names for different defines.
+
+	  Problem reported by coverity tool, via Will Cohen
+
+	* src/multiplex.c: Avoid case where we could have been
+	  dereferencing a NULL pointer in MPX_stop()
+
+	  Reported by coverity tool, via Will Cohen
+
+	* src/papi.c: Fix problem where thread and cpu could be
+	  dereferenced as NULL in PAPI_start()
+
+	  Reported by coverity tool, via Will Cohen
+
+	* src/papi_events.csv: Update the AMD Family 14h (Bobcat)
+	  pre-defined events.
+
+	  It turns out they are different enough from 10h that they need
+	  their own category.
+
+	  In going through the Fam14h BKDG it turns out that Bobcat has a
+	  really nice set of events available, especially for
+	  Floating-Point/SSE but also memory bandwidth.
+
+	  With this change, all of the ctests pass on a Bobcat machine.
+
+	* src/: configure, configure.in: Recent Ubuntu versions use the ld
+	  flag --as-needed by default.
+
+	  This breaks the PAPI configure step for the libdl check, as the
+	  --as-needed flag enforces the rule that libraries (in this case
+	  -ldl)   must come after the object files on the command line, not
+	  before.
+
+	  The fix for this is easy, the libdl check was wrongly sticking
+	  -ldl in LDFLAGS rather than in LIBS.	Putting it in LIBS   makes
+	  things work as expected.
+
+	  You can see here:
+	  http://www.gentoo.org/proj/en/qa/asneeded.xml
+
+	  For more info on this issue than you probably ever want to know.
+
+2011-09-19
+
+	* src/: ctests/Makefile, ftests/Makefile, utils/Makefile: When
+	  building testlib dependencies from ctests/ ftests/ and utils/
+	  call $(MAKE) and not make, this should fix aix.
+
+2011-09-14
+
+	* src/: aix.c, freebsd.c, linux-bgp.c, papi_vector.c,
+	  perf_events.c, perfctr-ppc64.c, perfctr-x86.c, perfmon-ia64.c,
+	  perfmon.c, solaris-niagara2.c, solaris-ultra.c,
+	  components/acpi/linux-acpi.c,
+	  components/coretemp/linux-coretemp.c,
+	  components/coretemp_freebsd/coretemp_freebsd.c,
+	  components/example/example.c,
+	  components/infiniband/linux-infiniband.c,
+	  components/lmsensors/linux-lmsensors.c,
+	  components/lustre/linux-lustre.c, components/mx/linux-mx.c,
+	  components/net/linux-net.c, win2k/substrate/win32.c,
+	  win2k/substrate/winpmc-p3.c: Change initialization of function
+	  pointer cleanup_eventset() from vec_int_dummy to vec_int_ok_dummy
+	  so that it returns PAPI_OK by default. Roll back initialization
+	  for every substrate. AGAIN, keep an eye on builtbot.
+
+	* src/libpfm4/lib/: pfmlib_mips.c, pfmlib_mips_74k.c,
+	  pfmlib_mips_perf_event.c, pfmlib_mips_priv.h,
+	  events/mips_74k_events.h: Merged with HEAD, still passing all
+	  tests
+
+2011-09-13
+
+	* src/papi_libpfm4_events.c: The libpfm4 code was doing a full call
+	  to	pfm_get_os_event_encoding() during every call to
+	  update_control_state().
+
+	  This is unnecessary, as we can call pfm_get_os_event_encoding()
+	  once	 at event creation time and cache the results.	There's no
+	  need	 to call it each update_control_state(), as that is called
+	   during PAPI_start() and thus relatively time critical.
+
+	* src/run_tests.sh: Missed a $
+
+	* src/: run_tests.sh, components/example/tests/HelloWorld.c: Update
+	  run_tests.sh to run component tests, and update the example test
+	  to act more like a ctest.
+
+	* src/components/example/example.c: Fix warnings generated by the
+	  example component.
+
+	* src/: Makefile.inc, components/Makefile_comp_tests,
+	  ctests/Makefile, ctests/do_loops.c, ctests/dummy.c,
+	  ctests/papi_test.h, ctests/test_utils.c, ctests/test_utils.h,
+	  ftests/Makefile, testlib/Makefile, testlib/do_loops.c,
+	  testlib/dummy.c, testlib/papi_test.h, testlib/test_utils.c,
+	  testlib/test_utils.h, utils/Makefile: ctests, ftests, utils, and
+	  the component tests were all using some files in ctests.
+
+	  These weren't being built when --with-no-cpu-counters was
+	  enabled, so the PAPI build was breaking when that was enabled as
+	  well as a component.
+
+	  Move the shared files to their own directory, testlib Then update
+	  all the users to look in the right place.
+
+	  After this commit you might need to do a "cvs -d update" to make
+	  sure you get the new subdirectory.
+
+	* src/: configure, configure.in: When compiling with
+	  --with-no-cpu-counters configure would report the platform as
+	  linux-perfctr-x86.  This changes it to report as
+	  linux-no-counters
+
+2011-09-12
+
+	* src/: aix.c, freebsd.c, linux-bgp.c, perf_events.c,
+	  perfctr-ppc64.c, perfctr-x86.c, perfmon-ia64.c, perfmon.c,
+	  solaris-niagara2.c, solaris-ultra.c,
+	  components/acpi/linux-acpi.c,
+	  components/coretemp/linux-coretemp.c,
+	  components/coretemp_freebsd/coretemp_freebsd.c,
+	  components/example/example.c,
+	  components/infiniband/linux-infiniband.c,
+	  components/lmsensors/linux-lmsensors.c,
+	  components/lustre/linux-lustre.c, components/mx/linux-mx.c,
+	  components/net/linux-net.c, win2k/substrate/win32.c,
+	  win2k/substrate/winpmc-p3.c: Initialize new function pointer
+	  cleanup_eventset() for every substrate. Keep an eye on builtbot.
+
+	* src/components/cuda/: linux-cuda.c, linux-cuda.h: Cannot override
+	  void* definitions from PAPI framework layer (e.g.
+	  hwd_control_state_t) with typedefs to conform to PAPI Component
+	  layer code if this technique has already been used in another
+	  substrate (e.g. perfctr-x86). Or short: #undef and typedef can't
+	  be done twice.
+
+	* src/perf_events.c: Fix bug caused by forgetting to drop the
+	  stream name when converting a fprintf() into a SUBDBG()
+
+	* src/papi_libpfm_presets.c: Patch from William Cohen fixing a
+	  potential problem found by a static analysis tool where we could
+	  possibly pass a NULL pointer to free_notes().
+
+	* src/papi_libpfm_presets.c: Some memory leak fixes made to libpfm3
+	  papi_pfm_events.c by Robert Richter were lost when the
+	  libpfm4/libpfm4 presets merge was done.
+
+	  This re-applies these fixes.
+
+2011-09-10
+
+	* src/run_tests.sh: Cleaned up old comment regarding CUDA pre-4.0
+	  when it was not possible to access a GPU from multiple CPU
+	  threads.
+
+	* src/: papi.c, papi_protos.h, papi_vector.c, papi_vector.h,
+	  components/README, components/cuda/linux-cuda.c,
+	  components/cuda/linux-cuda.h: Deleted function pointer
+	  destroy_eventset from the PAPI vector table, and added
+	  cleanup_eventset instead. PAPI_destroy_eventset() requires an
+	  empty EventSet. Hence, usually PAPI_cleanup_eventset() is called
+	  before PAPI_destroy_eventset(); which also sets the CompIdx to
+	  -1. This means, PAPI_destroy_eventset() won't have any knowledge
+	  about components. However, in order to disable CUDA eventGroups
+	  and to free perfmon hardware on the GPU, knowledge about the CUDA
+	  component index is required. Hence, I replaced
+	  CUDA_destroy_eventset() with CUDA_cleanup_eventset() in the CUDA
+	  component. NOTE: Please make sure you call
+	  PAPI_cleanup_eventset() before calling PAPI_shutdown().
+
+2011-09-09
+
+	* src/: papi_protos.h, papi_vector.c, papi_vector.h,
+	  components/cuda/linux-cuda.c, components/cuda/linux-cuda.h: CUDA
+	  component is now thread-safe. Starting in CUDA 4.0, multiple CPU
+	  threads can access the same CUDA context. This is a much easier
+	  programming model then pre-4.0 as threads - using the same CUDA
+	  context - can share memory, data, etc. Note, it's possible to
+	  create a different CUDA context for each thread, but then we are
+	  likely running into a limitation that only one context can be
+	  profiled at a time.
+
+2011-09-07
+
+	* src/ctests/: do_loops.c, test_utils.c: Apply fixes to problems
+	  noticed by a static analysis tool.
+
+	  Provided by William Cohen at RedHat
+
+	* src/papi_events.csv: Update SandyBridge preset events.
+
+	  These were provided by Michel Brown at Bull
+
+	* src/libpfm4/lib/: pfmlib_gen_mips64.c, pfmlib_mips.c,
+	  pfmlib_mips_74k.c, pfmlib_mips_perf_event.c, pfmlib_mips_priv.h,
+	  events/gen_mips64_events.h, events/mips_74k_events.h: MIPS 74K
+	  little endian perf event support, requires 3.0.3+ kernel
+
+2011-09-06
+
+	* src/perf_events.c: The warning I had print on nmi_watchdog being
+	  found was a bit much, make it a SUBDBG() call instead.
+
+	  I do wish there were a way to notify the user more visibly,
+	  because losing a counter (when you might only have 4 total to
+	  begin with) is a big deal, and most Linux vendors are starting to
+	  ship kernels with the nmi_watchdog enabled.
+
+	* src/: linux-common.c, linux-common.h, perf_events.c: On newer
+	  Linux kernels (2.6.34+) the nmi_watchdog counter can	 steal one
+	  of the counters, reducing by one the total available.
+
+	  There's a bug in Linux where if you try to use the full number of
+	    counters on such a system with a group leader, the
+	  sys_perf_open()   call will succeed only to fail at read time.
+	  (instead of the proper   error code at open time).
+
+	  This patch attempts to work around this issue by detecting if   a
+	  watchdog timer is being used, and in that case re-use the
+	  existing KERNEL_CHECKS_SCHEDUABILITY_UPON_OPEN bugfix code.
+
+	* src/papi_events.csv: We were missing a proper libpfm4 interlagos
+	  CPU name in the papi_events.csv file
+
+2011-09-02
+
+	* src/libpfm4/: include/perfmon/perf_event.h, lib/Makefile,
+	  lib/pfmlib_intel_nhm_unc.c, lib/pfmlib_intel_x86.c,
+	  lib/pfmlib_intel_x86_priv.h, lib/pfmlib_priv.h,
+	  lib/events/amd64_events_fam10h.h, lib/events/amd64_events_k7.h,
+	  lib/events/amd64_events_k8.h, lib/events/intel_atom_events.h,
+	  lib/events/intel_core_events.h,
+	  lib/events/intel_coreduo_events.h, lib/events/intel_nhm_events.h,
+	  lib/events/intel_nhm_unc_events.h, lib/events/intel_p6_events.h,
+	  lib/events/intel_snb_events.h, lib/events/intel_wsm_events.h,
+	  lib/events/intel_wsm_unc_events.h,
+	  lib/events/intel_x86_arch_events.h: Fix "conflicts" from the
+	  libpfm4 import
+
+	* src/papi_libpfm4_events.c: Explicitly set num_native_events to
+	  zero at init time.
+
+	  Somehow the value was surviving fork/exec and making the
+	  fork/exec test cases fail on a recent Debian system.
+
+	* src/perf_events.c: Set FD_CLOEXEC on the overflow signal handler
+	  fd.
+
+	  Otherwise if we exec() with overflow enabled, the exec'd process
+	  will quickly die due to lack of signal handler.
+
+	  This patch is needed due to a change in behavior in Linux 3.0.
+
+	  Mark Krentel first noticed this problem.
+
+	* src/: Rules.perfctr-pfm, Rules.pfm, Rules.pfm4_pe, Rules.pfm_pe:
+	  Remove the "unexport CFLAGS" lines from the Rules files.
+
+	* src/: multiplex.c, papi_internal.c, utils/component.c: Fix a few
+	  warnings reported by gcc-4.6
+
+	* src/: configure, configure.in: Override auto-detection of
+	  substrate if the user specifies what they want to build with.
+	  This allows building perfctr and perfmon2 PAPI on systems
+	  auto-detected as having perf_event support.
+
+	* src/: configure, configure.in: Add a "--with-libpfm3" argument to
+	  configure that lets us specify libpfm3 for testing purposes.
+
+	* src/solaris-niagara2.c: Fix solaris niagara2 build problems
+	  reported by tigrage on the PAPI forum.
+
+2011-08-30
+
+	* src/configure: Regen
+
+2011-08-29
+
+	* src/configure.in: Check for a requested interface to tweak build
+	  flags
+
+	* src/: configure, configure.in: Last bit for cross compiling...
+
+	* src/: configure, configure.in: Better double quotes
+
+	* src/: configure, configure.in: There can be only 1. (choice of
+	  perfctr, perfmon or perf events)
+
+	* src/: configure, configure.in: Further refinement of the
+	  combinations of --with-perfctr --with-perfmon and
+	  --with-perf-events
+
+	  True autotools cross not yet supported until we move to automake.
+
+	  I did trick it into doing a cross compile with...  # ARCH=mips
+	  CC=scgcc ./configure --with-arch=mips
+	  --host=mips64el-gentoo-linux-gnu- --with-ffsll --with-libpfm4 --w
+	  ith-perf-events --with-virtualtimer=times
+	  --with-walltimer=gettimeofday --with-tls=__thread --with-CPU=mips
+	  # cross compiling should work differently...
+
+	  Wow, do I hate specifying mips in 3 places...
+
+	* src/: config.h.in, configure, configure.in: Some fixes for cross
+	  compiling and not including x86_cache_info.c when not ensured an
+	  x86.
+
+	* src/Makefile.inc: Surround component tests and cleanup recipies
+	  with a conditional, the version of sh that our aix machine has
+	  does not handle	   for i in {Empty set};
+
+	  treating it as a syntax error.
+
+	  NOTE: This requires gnu make, my shell-foo couldn't make sh
+	  happy, so for now gnu conditionals!
+
+	* ChangeLogP414.txt, RELEASENOTES.txt: Update Release Notes and add
+	  ChangeLog for PAPI 4.1.4.
+
+	* src/configure: Rebuild from configure.in with version number bump
+	  to 4.1.4 in advance of pending internal vendor release for Cray.
+

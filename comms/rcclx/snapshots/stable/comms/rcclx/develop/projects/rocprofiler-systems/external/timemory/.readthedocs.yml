@@ -1,0 +1,12 @@
+
+formats: []
+
+conda:
+  file: docs/environment.yml
+
+python:
+  setup_py_install: False
+  version: 3.7
+
+build:
+  image: latest

@@ -1,0 +1,62 @@
+.TH "PAPI_flips_rate" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_flips_rate \- Simplified call to get Mflips/s (floating point instruction rate), real and processor time\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface: \fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_flips_rate( int event, float *rtime, float *ptime, long long *flpins, float *mflips );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIevent\fP one of the three presets PAPI_FP_INS, PAPI_VEC_SP or PAPI_VEC_DP 
+.br
+\fI*rtime\fP realtime since the latest call 
+.br
+\fI*ptime\fP process time since the latest call 
+.br
+\fI*flpins\fP floating point instructions since the latest call 
+.br
+\fI*mflips\fP incremental (Mega) floating point instructions per seconds since the latest call
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP The counters were already started by something other than PAPI_flips_rate()\&. 
+.br
+\fIPAPI_ENOEVNT\fP The floating point instructions event does not exist\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+The first call to PAPI_flips_rate() will initialize the PAPI interface, set up the counters to monitor the floating point instructions event and start the counters\&.
+.PP
+Subsequent calls will read the counters and return real time, process time, floating point instructions and the Mflip/s rate since the latest call to PAPI_flips_rate()\&.
+.PP
+PAPI_flips_rate() returns information related to floating point instructions using the floating point instructions event\&. This is intended to measure instruction rate through the floating point pipe with no massaging\&. Note that PAPI_flips_rate() is thread-safe and can therefore be called by multiple threads\&.
+.PP
+\fBSee also\fP
+.RS 4
+PAPI_flops_rate() 
+.PP
+PAPI_ipc() 
+.PP
+PAPI_epc() 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

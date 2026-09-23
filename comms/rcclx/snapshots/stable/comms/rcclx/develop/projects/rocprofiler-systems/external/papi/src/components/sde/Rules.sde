@@ -1,0 +1,11 @@
+COMPSRCS += components/sde/sde.c
+COMPOBJS += sde.o
+LDFLAGS += -ldl -pthread
+CC_SHR += -Icomponents/sde
+SDE_INC = -Icomponents/sde -g
+SDE_LD = -ldl -pthread
+
+F90FLAGS += -ffree-form -ffree-line-length-none -fPIC
+
+sde.o: components/sde/sde.c components/sde/sde_internal.h $(HEADERS)
+		$(CC) $(LIBCFLAGS) $(OPTFLAGS) $(LDFLAGS) $(SDE_INC) $(SDE_LD) -c $< -o $@

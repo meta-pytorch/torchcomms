@@ -1,0 +1,45 @@
+.TH "PAPI_hl_stop" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_hl_stop \- Stop a running high-level event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface: \fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_hl_stop();
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOEVNT\fP -- The EventSet is not started yet\&. 
+.br
+\fIPAPI_ENOMEM\fP -- Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBPAPI_hl_stop\fP stops a running high-level event set\&.
+.PP
+This call is optional and only necessary if the programmer wants to use the low-level API in addition to the high-level API\&. It should be noted that \fBPAPI_hl_stop\fP and low-level calls are not allowed inside of a marked region\&. Furthermore, \fBPAPI_hl_stop\fP is thread-local and therefore has to be called in the same thread as the corresponding marked region\&.
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_hl_region_begin\fP 
+.PP
+\fBPAPI_hl_read\fP 
+.PP
+\fBPAPI_hl_region_end\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

@@ -1,0 +1,52 @@
+.TH "PAPI_get_hardware_info" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_hardware_info \- get information about the system hardware  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+In C, this function returns a pointer to a structure containing information about the hardware on which the program runs\&. In Fortran, the values of the structure are returned explicitly\&.
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&.
+.RE
+.PP
+.PP
+\fBNote\fP
+.RS 4
+The C structure contains detailed information about cache and TLB sizes\&. This information is not available from Fortran\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+const PAPI_hw_info_t *hwinfo = NULL;
+if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT)    
+exit(1);
+if ((hwinfo = PAPI_get_hardware_info()) == NULL)
+exit(1);
+printf("%d CPUs at %f Mhz\&.\\en",hwinfo\->totalcpus,hwinfo\->mhz);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_hw_info_t\fP 
+.PP
+\fBPAPI_get_executable_info\fP, \fBPAPI_get_opt\fP, \fBPAPI_get_dmem_info\fP, \fBPAPI_library_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

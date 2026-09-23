@@ -1,0 +1,50 @@
+.TH "PAPI_get_eventset_component" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_eventset_component \- return index for component an eventset is assigned to  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOEVST\fP eventset does not exist 
+.br
+\fIPAPI_ENOCMP\fP component is invalid or does not exist 
+.br
+\fIpositive\fP value valid component index
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP EventSet for which we want to know the component index 
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int cidx,eventcode;
+cidx = PAPI_get_eventset_component(eventset);
+
+.fi
+.PP
+ PAPI_get_eventset_component() returns the component an event belongs to\&. 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_event_component\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

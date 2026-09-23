@@ -1,0 +1,80 @@
+********************************************************************************
+
+			Check the version of doxygen you're using, there is a bug
+			with older versions ( < 1.7.4 )
+
+********************************************************************************
+
+USAGE
+=======================
+To invoke doxygen, 
+   cd $(papi_dir)/doc
+   make (alternativly doxygen Doxyfile-{html,man1,man3}
+
+This command produces documentation for the PAPI user-exposed api and data-structures. 
+
+There are several different configuration files are present:
+Doxyfile-html - generates documentation for everything under src. This will
+take a long time to run, and generates north of 600 megs of files. Requires 
+the program dot, for dependency graphs. 
+Doxyfile-man1 - generates man-pages for the utilities. 
+Doxyfile-man3 - generates man-pages for the API, see papi.h
+
+
+Commenting the Code
+=======================
+To get doxygen's attention, in general, use a special comment block
+
+/** */
+thing_to_be_commented
+
+Doxygen responds to several special commands, denoted by @command 
+(if you're feeling texy, \command)
+
+As an artifact of how doxygen started life, we call our api functions 'classes' 
+to get doxygen to generate man-pages for the function.
+
+/** @class MY_FUNCTION
+    @brief gives a brief overview of what the function does, 
+		limited to 1 line or 1 sentence if you need the space.
+	@param arg1 describes a parameter to the function
+
+	@return describes the functions return value
+	
+	@retval allows you to enumerate return values 
+
+	Down here we have more detailed information about the function
+	Which can span many lines
+
+	And paragraphs (feeling texy now?)
+
+	@par Examples:
+	@code
+	This is the way to get examples to format nicely
+	code goes here....
+	@endcode
+
+	@bug 
+	Here you get a section of freeform text to describe bugs you encounter. 
+*/
+
+@internal keeps comment blocks marked as such out of the documentation 
+(unless the INTERNAL_DOCS flag is set in the config file)
+
+
+In several places /**< */ appears, this means that the comment
+pertains to the previous element.
+
+int foo;	/**< This comment is about foo */
+
+
+TODO
+=======================
+Doxygen provides options for [ab]using the preprocessor,
+Do we need to look into this? Probably not more than we already do -J
+
+Document the ctests?
+
+See 
+http://www.stack.nl/~dimitri/doxygen/docblocks.html
+for more detail on doxygen.

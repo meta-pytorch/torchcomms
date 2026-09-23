@@ -1,0 +1,72 @@
+.TH "PAPI_read_ts" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_read_ts \- Read hardware counters with a timestamp\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_read_ts(int EventSet, long long *values, long long *cycles );
+.RE
+.PP
+PAPI_read_ts() copies the counters of the indicated event set into the provided array\&. It also places a real-time cycle timestamp into the cycles array\&.
+.PP
+The counters continue counting after the read\&.
+.PP
+PAPI_read_ts() assumes an initialized PAPI library and a properly added event set\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP -- an integer handle for a PAPI Event Set as created by PAPI_create_eventset() 
+.br
+\fI*values\fP -- an array to hold the counter values of the counting events 
+.br
+\fI*cycles\fP -- an array to hold the timestamp values
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ESYS\fP A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_ENOEVST\fP The event set specified does not exist\&.
+.RE
+.PP
+\fBExamples\fP
+.RS 4
+
+.PP
+.nf
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_read\fP 
+.PP
+\fBPAPI_accum\fP 
+.PP
+\fBPAPI_start\fP 
+.PP
+\fBPAPI_stop\fP 
+.PP
+\fBPAPI_reset\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

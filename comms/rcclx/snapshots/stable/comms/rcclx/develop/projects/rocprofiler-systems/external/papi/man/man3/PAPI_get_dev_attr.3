@@ -1,0 +1,137 @@
+.TH "PAPI_get_dev_attr" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_dev_attr \- returns device attributes  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIENOSUPP\fP invalid/unsupported attribute 
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIhandle\fP opaque handle for device, obtained through \fBPAPI_enum_dev_type\fP 
+.br
+\fIid\fP integer identifier of queried device 
+.br
+\fIattr\fP device attribute to query 
+.br
+\fIval\fP value of the requested device attribute 
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+typedef enum {
+    PAPI_DEV_ATTR__CPU_CHAR_NAME,
+    PAPI_DEV_ATTR__CPU_UINT_L1I_CACHE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L1D_CACHE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L2U_CACHE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L3U_CACHE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L1I_CACHE_LINE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L1D_CACHE_LINE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L2U_CACHE_LINE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L3U_CACHE_LINE_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_L1I_CACHE_LINE_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_L1D_CACHE_LINE_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_L2U_CACHE_LINE_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_L3U_CACHE_LINE_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_L1I_CACHE_ASSOC,
+    PAPI_DEV_ATTR__CPU_UINT_L1D_CACHE_ASSOC,
+    PAPI_DEV_ATTR__CPU_UINT_L2U_CACHE_ASSOC,
+    PAPI_DEV_ATTR__CPU_UINT_L3U_CACHE_ASSOC,
+    PAPI_DEV_ATTR__CPU_UINT_SOCKET_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_NUMA_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_CORE_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_THREAD_COUNT,
+    PAPI_DEV_ATTR__CPU_UINT_FAMILY,
+    PAPI_DEV_ATTR__CPU_UINT_MODEL,
+    PAPI_DEV_ATTR__CPU_UINT_STEPPING,
+    PAPI_DEV_ATTR__CPU_UINT_NUMA_MEM_SIZE,
+    PAPI_DEV_ATTR__CPU_UINT_THR_NUMA_AFFINITY,
+    PAPI_DEV_ATTR__CPU_UINT_THR_PER_NUMA,
+    PAPI_DEV_ATTR__CUDA_ULONG_UID,
+    PAPI_DEV_ATTR__CUDA_CHAR_DEVICE_NAME,
+    PAPI_DEV_ATTR__CUDA_UINT_WARP_SIZE,
+    PAPI_DEV_ATTR__CUDA_UINT_SHM_PER_BLK,
+    PAPI_DEV_ATTR__CUDA_UINT_SHM_PER_SM,
+    PAPI_DEV_ATTR__CUDA_UINT_BLK_DIM_X,
+    PAPI_DEV_ATTR__CUDA_UINT_BLK_DIM_Y,
+    PAPI_DEV_ATTR__CUDA_UINT_BLK_DIM_Z,
+    PAPI_DEV_ATTR__CUDA_UINT_GRD_DIM_X,
+    PAPI_DEV_ATTR__CUDA_UINT_GRD_DIM_Y,
+    PAPI_DEV_ATTR__CUDA_UINT_GRD_DIM_Z,
+    PAPI_DEV_ATTR__CUDA_UINT_THR_PER_BLK,
+    PAPI_DEV_ATTR__CUDA_UINT_SM_COUNT,
+    PAPI_DEV_ATTR__CUDA_UINT_MULTI_KERNEL,
+    PAPI_DEV_ATTR__CUDA_UINT_MAP_HOST_MEM,
+    PAPI_DEV_ATTR__CUDA_UINT_MEMCPY_OVERLAP,
+    PAPI_DEV_ATTR__CUDA_UINT_UNIFIED_ADDR,
+    PAPI_DEV_ATTR__CUDA_UINT_MANAGED_MEM,
+    PAPI_DEV_ATTR__CUDA_UINT_COMP_CAP_MAJOR,
+    PAPI_DEV_ATTR__CUDA_UINT_COMP_CAP_MINOR,
+    PAPI_DEV_ATTR__CUDA_UINT_BLK_PER_SM,
+    PAPI_DEV_ATTR__ROCM_ULONG_UID,
+    PAPI_DEV_ATTR__ROCM_CHAR_DEVICE_NAME,
+    PAPI_DEV_ATTR__ROCM_UINT_WAVEFRONT_SIZE,
+    PAPI_DEV_ATTR__ROCM_UINT_WORKGROUP_SIZE,
+    PAPI_DEV_ATTR__ROCM_UINT_WAVE_PER_CU,
+    PAPI_DEV_ATTR__ROCM_UINT_SHM_PER_WG,
+    PAPI_DEV_ATTR__ROCM_UINT_WG_DIM_X,
+    PAPI_DEV_ATTR__ROCM_UINT_WG_DIM_Y,
+    PAPI_DEV_ATTR__ROCM_UINT_WG_DIM_Z,
+    PAPI_DEV_ATTR__ROCM_UINT_GRD_DIM_X,
+    PAPI_DEV_ATTR__ROCM_UINT_GRD_DIM_Y,
+    PAPI_DEV_ATTR__ROCM_UINT_GRD_DIM_Z,
+    PAPI_DEV_ATTR__ROCM_UINT_CU_COUNT,
+    PAPI_DEV_ATTR__ROCM_UINT_SIMD_PER_CU,
+    PAPI_DEV_ATTR__ROCM_UINT_COMP_CAP_MAJOR,
+    PAPI_DEV_ATTR__ROCM_UINT_COMP_CAP_MINOR,
+} PAPI_dev_attr_e;
+
+void *handle;
+int id;
+int count;
+int enum_modifier = PAPI_DEV_TYPE_ENUM__CPU | PAPI_DEV_TYPE_ENUM__CUDA;
+while (PAPI_OK == PAPI_enum_dev_type(enum_modifier, &handle)) {
+    PAPI_get_dev_type_attr(handle, PAPI_DEV_TYPE_ATTR__INT_PAPI_ID, &id);
+    PAPI_get_dev_type_attr(handle, PAPI_DEV_TYPE_ATTR__INT_COUNT, &count);
+    if (PAPI_DEV_TYPE_ID__CUDA == id) {
+        for (int i = 0; i < count; ++i) {
+            unsigned int warp_size;
+            unsigned int cc_major, cc_minor;
+            PAPI_get_dev_attr(handle, i, PAPI_DEV_ATTR__CUDA_UINT_WARP_SIZE, &warp_size);
+            PAPI_get_dev_attr(handle, i, PAPI_DEV_ATTR__CUDA_UINT_COMP_CAP_MAJOR, &cc_major);
+            PAPI_get_dev_attr(handle, i, PAPI_DEV_ATTR__CUDA_UINT_COMP_CAP_MINOR, &cc_minor);
+            \&.\&.\&.
+        }
+    }
+}
+
+.fi
+.PP
+ PAPI_get_dev_type_attr() allows the user to query all device type attributes\&. It takes a device type handle, returned by \fBPAPI_enum_dev_type\fP, the device sequential id and an attribute to be queried for the device and returns the attribute value\&.
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_enum_dev_type\fP 
+.PP
+\fBPAPI_get_dev_attr\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

@@ -1,0 +1,7 @@
+
+@EXE_INCLUDE@
+
+int main()
+{
+    @EXE_BODY@
+}

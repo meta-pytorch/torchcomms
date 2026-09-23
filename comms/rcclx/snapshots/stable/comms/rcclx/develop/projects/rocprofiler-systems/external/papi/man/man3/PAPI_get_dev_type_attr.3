@@ -1,0 +1,82 @@
+.TH "PAPI_get_dev_type_attr" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_dev_type_attr \- returns device type attributes  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIENOSUPP\fP invalid attribute 
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIhandle\fP opaque handle for device, obtained through \fBPAPI_enum_dev_type\fP 
+.br
+\fIattr\fP device type attribute to query 
+.br
+\fIval\fP value of the requested device type attribute 
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+typedef enum {
+    PAPI_DEV_TYPE_ATTR__INT_PAPI_ID,    // PAPI defined device type id
+    PAPI_DEV_TYPE_ATTR__INT_VENDOR_ID,  // Vendor defined id
+    PAPI_DEV_TYPE_ATTR__CHAR_NAME,      // Vendor name
+    PAPI_DEV_TYPE_ATTR__INT_COUNT,      // Devices of that type and vendor
+    PAPI_DEV_TYPE_ATTR__CHAR_STATUS,    // Status string for the device type
+} PAPI_dev_type_attr_e;
+
+typedef enum {
+    PAPI_DEV_TYPE_ID__CPU,   // Device id for CPUs
+    PAPI_DEV_TYPE_ID__CUDA,  // Device id for Nvidia GPUs
+    PAPI_DEV_TYPE_ID__ROCM,  // Device id for AMD GPUs
+} PAPI_dev_type_id_e;
+
+void *handle;
+int id;
+int enum_modifier = PAPI_DEV_TYPE_ENUM__ALL;
+while (PAPI_OK == PAPI_enum_dev_type(enum_modifier, &handle)) {
+    PAPI_get_dev_type_attr(handle, PAPI_DEV_TYPE_ATTR__INT_PAPI_ID, &id);
+    switch (id) {
+        case PAPI_DEV_TYPE_ID__CPU:
+            // query cpu attributes
+            break;
+        case PAPI_DEV_TYPE_ID__CUDA:
+            // query nvidia gpu attributes
+            break;
+        case PAPI_DEV_TYPE_ID__ROCM:
+            // query amd gpu attributes
+            break;
+        default: \&.\&.\&.
+    }
+}
+
+.fi
+.PP
+ PAPI_get_dev_type_attr() allows the user to query all device type attributes\&. It takes a device type handle, returned by \fBPAPI_enum_dev_type\fP, and an attribute to be queried for the device type and returns the attribute value\&.
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_enum_dev_type\fP 
+.PP
+\fBPAPI_get_dev_attr\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

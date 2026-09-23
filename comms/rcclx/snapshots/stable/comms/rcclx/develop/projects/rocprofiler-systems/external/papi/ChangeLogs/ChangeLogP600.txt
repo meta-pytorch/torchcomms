@@ -1,0 +1,1617 @@
+2020-02-27  Steven Kaufmann <steven.kaufmann@hpe.com>
+
+	* src/components/infiniband/tests/Makefile: Making MPI tester
+	  optional
+
+2020-02-22  Frank Winkler <frankbook@Franks-MacBook-Air.local>
+
+	* src/papi_fwrappers.c: Added fortran wrappers for PAPI_rate_stop and
+	  PAPI_hl_stop. Also fixed doxygen documentation for PAPI_flops_rate.
+
+2020-02-21  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/tests/square.cpp,
+	  src/components/rocm/tests/square.cu,
+	  src/components/rocm/tests/square.hipref.cpp,
+	  src/components/rocm_smi/linux-rocm-smi.c: Deleted test files from
+	  the repository, and commented-out debug lines from rocm_smi.
+	* src/components/rocm/linux-rocm.c,
+	  src/components/rocm/tests/Makefile,
+	  src/components/rocm/tests/rocm_all.cpp: Added patches provided by
+	  Evgeny Shcherbakov (AMD), and corrected bugs in rocm_all.cpp.
+	  Tested and now functions as expected.
+
+2020-02-20  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/tests/Makefile, src/configure, src/configure.in:
+	  Added -lrt to LIBS (if needed) so that it propagates into the pkg-
+	  config file papi.pc. Also, removed the explicit flag from the SDE
+	  tests Makefile.
+
+2020-02-19  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/sde_internal.h, src/configure, src/configure.in:
+	  Enabled overflow by default in SDE and added -lrt detection in the
+	  configure script.
+
+2020-02-19  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/tests/rocm_all.cpp: Reconciling this version of
+	  rocm_all.cpp with another pull request.
+
+2020-02-18  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: ---Correct cuda push/pop context
+	  consistency---  In _cuda_cleanup_eventset we attempt to push a
+	  current cuda context, set a new cuda context to do some cleanup,
+	  then restore the original context with a pop. (cuCtxPushCurrent,
+	  cuCtxPopCurrent). This was failing. We corrected it by doing a
+	  Save+Restore instead of a Push+Pop using cuCtxGetCurrent,
+	  cuCtxSetCurrent, different routines that do not require the cuda
+	  Context Stack, and have fewer restrictions on their use.
+
+2020-02-16  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Added check for whether or not
+	  the user provided a benchmark category.  When using the Counter
+	  Analysis Toolkit, if the user did not supply a benchmark category,
+	  then it will run the 'branch' benchmark by default and inform the
+	  user of such. The 'branch' benchmark executes the most quickly of
+	  all the categories, making it a suitable default.  These changes
+	  were tested on the Intel Haswell architecture.
+
+2020-02-13  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/run_tests.sh: Little change in test script based on commit
+	  14cebbc.  We have changed the high-level environment variable
+	  PAPI_NO_WARNING to PAPI_HL_VERBOSE. Also, verbose output is off by
+	  default, that's why this variable is not needed in the test script
+	  anymore.
+
+2020-02-13  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: Modifications for more thorough
+	  error-checking in routines before using pointers (ensuring they are
+	  non-NULL). Suggested by Steve Kaufmann.
+
+2020-02-11  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c: Removed a debug message.
+
+2020-02-10  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c: Corrects a problem
+	  producing a segfault. The function MakeRoomAllEvents() can
+	  realloc() a table, but this can make the use of a pointer into the
+	  former area produce a segfault.
+
+2020-01-31  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c,
+	  src/components/rocm_smi/tests/ROCM_SMI_Makefile,
+	  src/components/rocm_smi/tests/rocmcap_plot.cpp: A new utility added
+	  to tests, and debug lines (commented out) in component code until
+	  SMI library problem with power events is sorted out.
+	* src/components/io/linux-io.c: We have to fopen/fclose the system
+	  file for every read; otherwise Linux caches the file and reports
+	  the same values every time.
+
+2020-01-30  Anthony <adanalis@icl.utk.edu>
+
+	* src/high-level/papi_hl.c: Turned verbosity of HL API off by
+	  default.
+
+2020-01-30  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/io/linux-io.c: Rewrite to use ctx and ctl structures
+	  for thread safety.
+
+2020-01-29  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/Rules.rocm,
+	  src/components/rocm/tests/rocm_all.cpp: Corrected a typo in
+	  Rules.rocm, and cleaned up a test program rocm_all.cpp.
+	* src/components/io/linux-io.c: Provided some insurance that io
+	  component initialization occurs only once.
+
+2020-01-29  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/branch.c,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh: Removed unnecessary
+	  error reporting.  Some error messages from the CAT benchmarks were
+	  removed so as not to cause extraneous output.  These changes were
+	  tested on the Intel Broadwell architecture.
+
+2020-01-28  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Avoid computing the latencies
+	  twice.
+	* src/components/sde/sde.c: Updated the info that is reported by the
+	  component about itself.
+
+2020-01-28  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/flops.c: Fixed bug in FLOPS benchmark.
+	  The FLOPS benchmarks ensure that the compiler does not discard the
+	  results of the numerical kernels. A double-precision benchmark was
+	  ensuring that the single-precision result was not discarded,
+	  instead of the double-precision result. This has now been
+	  corrected.  This was tested on the Intel Broadwell architecture.
+
+2020-01-28  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh,
+	  src/counter_analysis_toolkit/icache.c,
+	  src/counter_analysis_toolkit/icache.h,
+	  src/counter_analysis_toolkit/main.c: Added code to show progress if
+	  the user asks for it (-verbose flag), and removed confusing error
+	  messages and dead code.
+
+2020-01-28  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Per the sscanf man page, it is
+	  unnecessary to call free() in this block since memory for the
+	  string would not be allocated.  This was tested on the AMD EPYC
+	  architecture.
+
+2020-01-27  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/main.c: Added checks for negative
+	  amounts of qualifers provided by the user.  Previously, there was a
+	  bug caused by a user providing a negative number of qualifiers.
+	  Now, if a user does provide a negative number of qualifiers, this
+	  number is set to zero.  This fix was tested on the AMD EPYC
+	  architecture.
+
+2020-01-27  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: Fixed problems with
+	  debug macro.
+
+2020-01-24  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/infiniband/tests/Makefile: Adds missing rule for
+	  compilation of MPI test
+
+2020-01-24  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: New libpfm4 contains
+	  "aliased" pmus for backward compatibility, amd64_fam17h ==
+	  amd64_fam17h_zen1; this causes us to put BOTH pmus into the PMUs
+	  supported string and double the events in native_avail. This update
+	  recognizes when aliases exist (the names must be hard-coded) and
+	  uses only one of the most recent name.
+
+2020-01-23  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/infiniband_umad/README.md,
+	  .../infiniband_umad/Rules.infiniband_umad, .../infiniband_umad
+	  /linux-infiniband_umad.c, .../infiniband_umad/linux-
+	  infiniband_umad.h, src/components/infiniband_umad/tests/Makefile,
+	  .../tests/infiniband_umad_list_events.c,
+	  .../tests/infiniband_umad_values_by_code.c: Retirement of
+	  infiniband_umad component.  With the latest advancements of the
+	  infiniband component, infiniband_umad has become redundant.
+
+2020-01-22  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/Makefile_comp_tests.target.in: Propagating MPICC to
+	  components tests
+	* src/components/infiniband/linux-infiniband.c,
+	  .../infiniband/tests/MPI_test_infiniband_events.c: snprintf return
+	  value, a classic now. And the 3-space indentation.
+
+2019-09-04  Rizwan-ICL <rizwan@icl.utk.edu>
+
+	* src/components/infiniband/linux-infiniband.c,
+	  .../infiniband/tests/MPI_test_infiniband_events.c,
+	  src/components/infiniband/tests/Makefile: Added descriptions for
+	  events of infiniband component using documentation provided by
+	  Mellanox; Added test code to test the various events in infiniband
+	  component and modified Makefile to compile the test code;
+
+2020-01-22  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/powercap_ppc/README,
+	  src/components/powercap_ppc/Rules.powercap_ppc,
+	  src/components/powercap_ppc/linux-powercap-ppc.c,
+	  src/components/powercap_ppc/linux-powercap-ppc.h,
+	  src/components/powercap_ppc/tests/Makefile,
+	  src/components/powercap_ppc/tests/powercap_basic.c,
+	  src/components/powercap_ppc/tests/powercap_limit.c: Merged in
+	  feature/powercap_ppc (pull request #34)  Feature/powercap ppc  *
+	  Powercapping for IBM PowerPC architecture, Power9 processors  *
+	  Adding 2 tests for powercap component on PPC architecture Power9
+	  Approved-by: adanalis Approved-by: Anthony Castaldo
+
+2020-01-22  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/scripts/papi_hl_output_writer.py: Fixed bug for
+	  python3.  - dict.iteritems() was removed in python3 --> Instead:
+	  use dict.items() The output script works for both python2 and
+	  python3.
+	* src/papi.c: Bug fix that was caused by commit db01193.
+	* src/examples/PAPI_flops.c: Improved some comments.
+
+2020-01-21  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/sensors_ppc/linux-sensors-ppc.c: Adds missing checks
+	  for snprintf. A return value larger than the buffer is not really
+	  an error, just a poor design, but whatever.
+
+2020-01-20  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/examples/PAPI_mix_hl_ll.c, src/examples/PAPI_mix_hl_rate.c,
+	  src/examples/PAPI_mix_ll_rate.c, src/papi.c, src/papi.h: Renamed
+	  papi_rate_stop to papi_stop_events.
+	* src/high-level/papi_hl.c: Fixed bug. Check for empty string in
+	  PAPI_EVENTS.
+	* src/high-level/papi_hl.c, src/papi.c, src/papi_internal.c,
+	  src/papi_internal.h: Fixed typo.
+	* src/high-level/papi_hl.c: Improved cleanup function.
+
+2020-01-18  Frank Winkler <frankbook@franks-air.localdomain>
+
+	* src/examples/Makefile, src/examples/PAPI_mix_hl_ll.c,
+	  src/examples/PAPI_mix_hl_rate.c, src/examples/PAPI_mix_ll_rate.c,
+	  src/papi.c: Added examples that show how to mix hl, ll, and rate
+	  functions.
+
+2020-01-17  Frank Winkler <frankbook@franks-air.localdomain>
+
+	* src/high-level/papi_hl.c, src/papi.c, src/papi.h,
+	  src/papi_internal.c, src/papi_internal.h: Added feature that allows
+	  mixing of rate functions and hl functions.
+
+2020-01-16  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/papi_events.csv: Added two machine types to papi_events.csv to
+	  be in line with libpfm4 update to support amd64_fam17h_zen1 and
+	  zen2.
+
+2020-01-16  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/tests/Makefile: Fixed dependency in Makefile.
+
+2020-01-16  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/papi.c, src/papi.h: Added PAPI_rate_stop() that stops any rate
+	  function.
+
+2020-01-16  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/sensors_ppc/README,
+	  src/components/sensors_ppc/Rules.sensors_ppc,
+	  src/components/sensors_ppc/linux-sensors-ppc.c,
+	  src/components/sensors_ppc/linux-sensors-ppc.h,
+	  src/components/sensors_ppc/tests/Makefile,
+	  .../sensors_ppc/tests/sensors_ppc_basic.c: Add new component for
+	  sensors reading on PowerPC 9 Enable with ./configure --with-
+	  components="sensors_ppc"
+
+2020-01-16  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/run_tests.sh: Fixed little bug in test script.  The output
+	  directory of the high-level API has been renamed from papi to
+	  papi_hl_output.
+
+2020-01-16  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c: Changed Rules file to look in multiple places
+	  for rocm_smi.h, it moved between rocm releases. Rewrote a routine
+	  to be more efficient and eliminate a string-size warning. Made some
+	  diagnostic outputs that were left active in previous commit
+	  dependent on #ifdef macros.
+
+2020-01-15  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Fixed memory leak in high-level API.
+	  Based on commit ef20e24 that fixed a bug by deleting a "free" call,
+	  the "free" call is now done in the last function of the high-level
+	  API which is called during the "atexit()" call.
+
+2020-01-14  Anthony <adanalis@icl.utk.edu>
+
+	* .../sde/tests/Advanced_C+FORTRAN/Gamum.c,
+	  .../sde/tests/Advanced_C+FORTRAN/Xandria.F90,
+	  .../sde/tests/Advanced_C+FORTRAN/sde_test_f08.F90,
+	  src/components/sde/tests/Gamum.c,
+	  src/components/sde/tests/Makefile,
+	  src/components/sde/tests/Minimal/Minimal_Test.c,
+	  src/components/sde/tests/Minimal_Test.c,
+	  src/components/sde/tests/Recorder.c,
+	  .../sde/tests/Recorder/Lib_With_Recorder.c,
+	  .../sde/tests/Recorder/Recorder_Driver.c,
+	  src/components/sde/tests/Simple/Simple_Driver.c,
+	  src/components/sde/tests/Simple/Simple_Lib.c,
+	  src/components/sde/tests/Simple2/Simple2_Driver.c,
+	  src/components/sde/tests/Simple2/Simple2_Lib.c,
+	  src/components/sde/tests/Xandria.F90,
+	  src/components/sde/tests/sde_test_f08.F90: Added new tests/examples
+	  under the SDE component and organized them based on complexity.
+	* src/components/sde/sde.c: Improved and corrected the checks that
+	  relate to counter groups and recorders.
+
+2020-01-13  Anthony <adanalis@icl.utk.edu>
+
+	* src/utils/Makefile, src/utils/papi_sde_interface.c: Added the weak
+	  symbols for SDE to papi_native_avail, so the utility works when
+	  PAPI is not configured with the SDE component.
+	* src/utils/papi_avail.c, src/utils/papi_native_avail.c: Improved the
+	  code that checks the command-line arguments.
+
+2020-01-06  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/sde.c, src/components/sde/sde_internal.h,
+	  src/utils/papi_native_avail.c: Moved the responsibility of listing
+	  SDEs of a library/executable to papi_native_avail instead of the
+	  SDE component.
+	* src/papi_internal.c: Updated the variables that are used in the
+	  debug messages in accordance to a previous commit that made these
+	  variables thread safe.
+
+2020-01-03  Frank Winkler <frankbook@v0020.dip.tu-dresden.de>
+
+	* src/high-level/scripts/papi_hl_output_writer.py: Changed name of
+	  some derived metrics.
+	* src/high-level/papi_hl.c, src/high-
+	  level/scripts/papi_hl_output_writer.py: Added new derived metrics.
+
+2020-01-03  Frank Winkler <frankbook@franks-air.localdomain>
+
+	* src/high-level/papi_hl.c: Little format changes.
+	* src/high-level/papi_hl.c: Fixed bug in high-level API caused by
+	  commit ff8ff65.  The creation of the measurement directory failed
+	  since Coverity freed memory of a string that was used later to
+	  create the measurement directory.
+
+2020-01-02  Frank Winkler <frankbook@Franks-MacBook-Air.local>
+
+	* src/high-level/papi_hl.c, src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops_validation_hl.c,
+	  src/validation_tests/fp_validation_hl.c: Revised default events for
+	  flops and flips.
+
+2019-12-20  Frank Winkler <frank.winkler@tu-dresden.de>
+
+	* src/papi.c: papi.c edited online with Bitbucket
+	* src/examples/high_level.c: high_level.c edited online with
+	  Bitbucket
+	* src/examples/PAPI_ipc.c: PAPI_ipc.c edited online with Bitbucket
+	* src/examples/PAPI_flops.c: PAPI_flops.c edited online with
+	  Bitbucket
+	* src/examples/PAPI_flips.c: PAPI_flips.c edited online with
+	  Bitbucket
+	* src/examples/PAPI_epc.c: PAPI_epc.c edited online with Bitbucket
+
+2019-12-19  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/sde/sde.c, src/components/sde/sde_internal.h: Fixed
+	  issues in the SDE component unveiled by Coverity.
+
+2019-12-19  Daniel Barry <dbarry@methane.icl.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Fixed typo in comment for
+	  argument parsing.
+
+2019-12-19  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/libpapi.exp: Fixed typo.
+	* src/ctests/bgp/Makefile, src/ctests/bgp/papi_1.c, src/libpapi.exp:
+	  Further clean-up.
+
+2019-12-19  Daniel Barry <dbarry@methane.icl.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/caches.h,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/main.c,
+	  src/counter_analysis_toolkit/timing_kernels.c,
+	  src/counter_analysis_toolkit/timing_kernels.h: Removed unnecessary
+	  variables and checks. Refactored code blocks. Added comments in the
+	  main driver file.
+
+2019-12-19  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/ctests/bgp/papi_1.c, src/libpapi.exp: Clean-up of old high-
+	  level functions.
+
+2019-12-18  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* man/man1/papi_component_avail.1: Fixed typo in
+	  papi_component_avail.1. See pull request #2.
+
+2019-12-16  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile: Renamed cit_collect to
+	  cat_collect.
+	* src/counter_analysis_toolkit/eventstock.c: Clarified comment.
+	* src/counter_analysis_toolkit/branch.c,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/eventstock.c,
+	  src/counter_analysis_toolkit/eventstock.h,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh,
+	  src/counter_analysis_toolkit/main.c: Removed unnecessary work when
+	  setting up the list of events, and minor cosmetic changes.
+
+2019-12-16  Daniel Barry <dbarry@methane.icl.utk.edu>
+
+	* src/counter_analysis_toolkit/flops.c: Cleaned up comments.
+
+2019-12-16  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rapl/tests/rapl_overflow.c: Corrected a working but
+	  convoluted line of code.
+
+2019-12-13  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/examples/PAPI_flips.c, src/examples/PAPI_flops.c, src/papi.c:
+	  Minor documentation corrections.
+	* src/papi.h: Fixed some thread definitions.
+	* src/high-level/papi_hl.c, src/papi.h: Revised documentation of
+	  high-level API.
+	* src/high-level/papi_hl.c, src/high-
+	  level/scripts/papi_hl_output_writer.py: Renamed the output
+	  directory of the high-level API from 'papi' to 'papi_hl_output'.
+	* src/papi.c: Revised documentation.
+	* src/examples/PAPI_epc.c, src/examples/PAPI_flips.c,
+	  src/examples/PAPI_flops.c, src/examples/PAPI_ipc.c, src/papi.c:
+	  Adjusted doxygen documentation.
+
+2019-12-12  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/examples/Makefile, src/examples/PAPI_flips.c,
+	  src/examples/PAPI_flops.c, src/examples/PAPI_ipc.c,
+	  src/examples/high_level.c, src/papi.c, src/papi.h,
+	  src/papi_fwrappers.c: Reimplemented rate functions and adjusted
+	  examples.
+
+2019-12-11  Daniel Barry <dbarry@methane.icl.utk.edu>
+
+	* src/counter_analysis_toolkit/branch.c,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh: Added
+	  PAPI_cleanup_eventset() call to each of the benchmarks. This
+	  removes events from the event set.  By including these calls, the
+	  benchmarks do not encounter the PAPI_ECOUNT error code, which
+	  occurs if there are too many events added to the same event set.
+	  These changes were tested on the Intel Skylake architecture.
+
+2019-12-10  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/README,
+	  src/components/rocm_smi/Rules.rocm_smi,
+	  src/components/rocm_smi/tests/rocm_smi_all.txt: Minor changes to
+	  text and a setting that was for development only.
+
+2019-12-10  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/papi.c: Made rate functions thread safe.
+
+2019-12-09  Anthony <adanalis@icl.utk.edu>
+
+	* src/utils/Makefile: Changed the order of the linker flags so that
+	  -ldl is at the end since libpapi.a needs libdl.so but not the other
+	  way around.
+
+2019-12-06  Heike Jagode <jagode@icl.utk.edu>
+
+	* README.md: README.md edited online with Bitbucket
+
+2019-12-06  Steve Kaufmann <sbk@cray.com>
+
+	* src/components/rocm/linux-rocm.c, src/papi_events.csv: The changes
+	  here are based on a patch provided by Steve Kaufmann; to correct a
+	  misnamed event in papi_events.csv, and prevent a segfault in rocm
+	  when a context pointer is null. Additional changes by Tony Castaldo
+	  check to see if the necessary rocprofiler environment variables
+	  have been set; and disable the component if they are not, with an
+	  informative reason to be reported by papi_component_avail. (The
+	  component will not work without them).
+
+2019-12-05  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/papi.c: Replaced HighLevelInfo with RateInfo.
+
+2019-12-03  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/extras.c: extra '#' in "%#p" print formats, using just '%p'.
+
+2019-12-03  William Cohen <wcohen@redhat.com>
+
+	* src/testlib/papi_test.h, src/testlib/test_utils.c: Use the noreturn
+	  attribute only when the compiler support GNU C extensions.
+	* src/testlib/papi_test.h, src/testlib/test_utils.c: Properly mark
+	  some test_utils.c functions with noreturn attributes  Clang makes
+	  use of the information whether a function returns in flow analysis
+	  to determine whether there are uses of null values and other
+	  possible problematic issues.  Marking the test_pass, test_hl_pass,
+	  test_fail, and test_skip functions properly with noreturn attribute
+	  allows Clang to more accurately analyze the code and eliminates 87
+	  false positive warnings in the PAPI testsuite code.
+
+2019-12-02  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/coretemp/linux-coretemp.c, src/components/infiniband
+	  /linux-infiniband.c, src/components/lmsensors/linux-lmsensors.c,
+	  src/components/lustre/linux-lustre.c, src/components/pcp/linux-
+	  pcp.c, src/components/pcp/tests/testPCP.c,
+	  src/components/perf_event/perf_event.c,
+	  .../perf_event_uncore/perf_event_uncore.c, src/components/rapl
+	  /linux-rapl.c, src/ctests/failed_events.c, src/ctests/kufrin.c,
+	  src/ctests/pthrtough.c, src/ctests/pthrtough2.c, src/extras.c, src
+	  /high-level/papi_hl.c, src/linux-common.c, src/linux-memory.c,
+	  src/testlib/clockcore.c, src/utils/cost_utils.c,
+	  src/utils/papi_command_line.c, src/utils/papi_multiplex_cost.c: The
+	  code in this commit all failed a Coverity scan (a code consistency
+	  tool) that correctly identified memory leaks, potential buffer
+	  overflows, and failures to close a file or directory that had been
+	  opened.
+
+2019-12-02  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/papi.c, src/papi.h, src/papi_fwrappers.c: Reimplemented rate
+	  calls such as PAPI_flips, PAPI_flops, etc.  - These calls are now
+	  part of the low-level API - PAPI_stop_rates() stop the counters
+
+2019-11-20  William Cohen <wcohen@redhat.com>
+
+	* src/components/sde/Rules.sde: Limit Fortran 90 compilers options to
+	  SDE component Fortran 90 code  The Rules.sde added Fortran 90
+	  options to FFLAGS that would end up being applied to other Fortran
+	  code being built in papi. Unfortunately, the other code is F77 code
+	  and the options would cause the build to fail.
+
+2019-11-21  Heike Jagode <jagode@icl.utk.edu>
+
+	* README.md: README.md edited online with Bitbucket
+
+2019-11-14  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Swapped lines 268 and 269 of
+	  main.c so that the appropriate memory allocation is freed, and the
+	  pointer is then set to NULL.
+
+2019-11-13  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/nvml/tests/Makefile,
+	  src/components/nvml/tests/nvmlcap_plot.cu,
+	  src/components/nvml/utils/Makefile,
+	  src/components/nvml/utils/README,
+	  src/components/nvml/utils/nvmlcap_plot.cu: For consistency with
+	  powercap and rapl components, moved nvmlcap_plot.cu to a new
+	  nvml/utils/ directory. New Makefile in nvml/utils/ and adjusted
+	  Makefile in nvml/tests/. Created a new README for nvmlcap_plot. No
+	  code changes; but tested configure and make of PAPI and
+	  nvmlcap_plot.
+
+2019-11-08  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rapl/linux-rapl.c: Fixed an inaccurate comment.
+	* src/components/rapl/README,
+	  src/components/rapl/tests/rapl_overflow.c: Added a paragraph of
+	  usage info to README; also reformatted existing comments to comply
+	  with 80 char line limit; without changing their content.
+	  rapl_overflow.c was confusing, it was not using the
+	  PACKAGE_ENERGY_CNT event to test for overflow, and the scaled value
+	  seemed to wrap in 85ms. This seemed to conflict with the results of
+	  rapl_wraparound; which computes a wraparound time in 85 minutes.
+	  rapl_overflow.c is now in line with an 80-90 minute wraparound
+	  vaue.
+
+2019-11-07  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rapl/linux-rapl.c: Changes to properly mask energy
+	  values to uint32, and accumulate them to return a 64-bit
+	  accumulator. Verified wraparound time at approx 85 minutes (for a
+	  32 bit read). That is the maximum allowed time between reads; the
+	  64-bit value returned should never wrap. (Some tabs converted to
+	  spaces in changed code.)
+
+2019-11-01  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Removed Doxygen documentation for
+	  internal functions and moved code block for multiplex
+	  initialization.  PAPI_multiplex_init is only called after a
+	  successful PAPI_thread_init.
+
+2019-10-31  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: Fixed a typo in the
+	  error message.
+	* src/ctests/Makefile.recipies, src/ctests/filter_helgrind.c,
+	  src/papi.c, src/papi_internal.c, src/threads.c, src/threads.h: The
+	  changes to papi.c, papi_internal.c, threads.h and threads.c correct
+	  a race condition that was the result of all threads using the same
+	  two static variables (papi_event_code and papi_event_code_changed)
+	  to temporarily record a state of operation. The solution was to
+	  make these variables unique per thread, using the ThreadInfo_t
+	  structure already provided in PAPI for such purposes. The file
+	  krentel_pthread_race.c is a stress test to produce race conditions.
+	  filter_helgrind.c reduces the volume of --tool-helgrind output to a
+	  more manageable summary. Both are added to Makefile.recipies.
+
+2019-10-31  William Cohen <wcohen@redhat.com>
+
+	* src/ctests/krentel_pthreads_race.c: This code is a modification of
+	  krentel_pthreads.c, to better test some race conditions. It is not
+	  included in the standard tests; it is a diagnostic that should be
+	  run with "valgrind --tool=helgrind".
+
+2019-10-31  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: Changed SUBDBG error
+	  reporting in new code to a single message instead of two, before
+	  the unlock code (so no race condition on variables in report).
+	  Cosmetics.
+
+
+2019-10-28  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: Added checks for improperly
+	  formatted lines in the user-provided event list.  If a line is
+	  missing a qualifier count, then it is discarded.  If a provided
+	  event name is either not available in the architecture or contains
+	  qualifiers, then the qualifier count is set to zero to prevent
+	  appending extraneous qualifiers, and the user is notified.  Also
+	  cleaned up string manipulation.  These changes were tested on the
+	  Intel Haswell architecture.
+
+2019-10-25  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/perf_event/pe_libpfm4_events.c: In two places, we
+	  exited the routine allocate_native_event() because we could not
+	  find a mask or attribute in an event name (because the event was
+	  supported but the given mask was not), and failed without unlocking
+	  the NAMELIB_LOCK, or cleaning up allocated memory.  +
+	  free (msk_ptr); +               free(pmu_name); +
+	  _papi_hwi_unlock( NAMELIB_LOCK );
+
+2019-10-24  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c,
+	  src/components/rocm_smi/tests/ROCM_SMI_Makefile,
+	  src/components/rocm_smi/tests/rocm_smi_all.cpp,
+	  src/components/rocm_smi/tests/rocm_smi_all.txt: New events added,
+	  some bugs corrected. ROCM_SMI_Makefile is modified to use env
+	  variable $PAPI_ROCM_ROOT to make it easier to compile with a local
+	  version of the rocm_smi library. rocm_smi_all.txt is the output of
+	  a run of rocm_smi_all.cpp, which has been modified to handle
+	  strings, and skip testing of events that bomb (unhandled exceptions
+	  in library code). NOTE this code may still contain debug printing
+	  to stderr, to be removed in the final version after all issues are
+	  corrected. -Tony
+
+2019-10-24  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/papi.h: Removed TLS definitions.
+	* src/high-level/papi_hl.c, src/papi.h: Replaced PAPI_TLS_KEYWORD
+	  with THREAD_LOCAL_STORAGE_KEYWORD due to ABI conflicts.
+
+2019-10-18  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c, src/components/rocm_smi/rocm_smi.h: This is a
+	  first installment of the rewrite of the rocm_smi component. It
+	  currently requires a private install of the updated library (with
+	  iterators), and a special Rules.file, PAPI_ROCM_ROOT, and
+	  PAPI_ROCM_SMI_MAIN. It works as far as executing
+	  utils/papi_native_avail; but none of the events have been tested
+	  yet by reading with PAPI code. -TC
+
+2019-10-15  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/components/nvml/linux-nvml.c: Merged in dgenet/papi/fix/nvml-
+	  rules (pull request #14)  Fixes error messages while detecting
+	  Rules.nvml  Patch from Vince Weaver   Approved-by: Heike Jagode
+	  <jagode@icl.utk.edu> Approved-by: Damien Genet <dgenet@icl.utk.edu>
+	  Approved-by: Anthony Castaldo <tonycastaldo@icl.utk.edu>
+
+2019-10-09  Heike Jagode <jagode@icl.utk.edu>
+
+	* README.md: Cleaning up README file.
+	* README.md: README.md edited online with Bitbucket
+	* README: README edited online with Bitbucket
+	* README.md: README.md edited online with Bitbucket
+
+2019-10-08  Steve Kaufmann <sbk@cray.com>
+
+	* src/components/cuda/linux-cuda.c: Corrected several cosmetic issues
+	  and typos, standardized naming, used PATH_MAX instead of literal,
+	  and PAPI_MAX_STR_LEN instead of PAPI_MIN_STR_LEN.
+
+2019-10-08  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/components/lmsensors/linux-lmsensors.c: Removed blank line.
+	* src/components/lmsensors/linux-lmsensors.c: Replaced spaces with
+	  underscores in event name.
+
+2019-10-06  Frank Winkler <frankbook@franks-air.localdomain>
+
+	* src/papi_fwrappers.c: Corrected Doxygen documentation.
+	* src/ctests/Makefile.recipies, src/ctests/mpi_hl.c,
+	  src/ctests/mpi_omp_hl.c, src/ctests/omp_hl.c,
+	  src/ctests/pthread_hl.c, src/ctests/serial_hl.c,
+	  src/ctests/serial_hl_advanced.c, src/ctests/serial_hl_ll_comb.c,
+	  src/ctests/serial_hl_ll_comb2.c, src/ftests/Makefile.recipies,
+	  src/ftests/serial_hl.F, src/ftests/serial_hl_advanced.F, src/high-
+	  level/papi_hl.c, src/papi.h, src/papi_fwrappers.c,
+	  src/testlib/ftests_util.F, src/testlib/papi_test.h,
+	  src/testlib/test_utils.c,
+	  src/validation_tests/flops_validation_hl.c: Removed advanced
+	  functions from the new high-level API.  The new high-level API
+	  consists of three functions: - PAPI_hl_region_begin - PAPI_hl_read
+	  - PAPI_hl_region_end  Validation test in C: -
+	  src/validation_tests/flops_validation_hl.c  Test examples in C: -
+	  src/ctests/serial_hl.c - src/ctests/omp_hl.c -
+	  src/ctests/pthread_hl.c - src/ctests/mpi_hl.c -
+	  src/ctests/mpi_omp_hl.c - src/ctests/serial_hl_ll_comb.c  Test
+	  example in Fortran: - src/ftests/serial_hl.F
+
+2019-10-03  Damien Genet <dgenet@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/branch.c,
+	  src/counter_analysis_toolkit/branch.h,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/eventstock.c,
+	  src/counter_analysis_toolkit/eventstock.h,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh,
+	  src/counter_analysis_toolkit/icache.c,
+	  src/counter_analysis_toolkit/icache.h,
+	  src/counter_analysis_toolkit/main.c,
+	  src/counter_analysis_toolkit/prepareArray.c,
+	  src/counter_analysis_toolkit/prepareArray.h,
+	  src/counter_analysis_toolkit/timing_kernels.c,
+	  src/counter_analysis_toolkit/timing_kernels.h: Adding Checks
+
+2019-10-04  Anthony Danalis <adanalis@tellico-master0.local>
+
+	* src/components/lmsensors/linux-lmsensors.c: Fixed inconsistency in
+	  component name.
+
+2019-09-30  Anthony Danalis <adanalis@eecs.utk.edu>
+
+	* src/components/sde/README, src/components/sde/Rules.sde,
+	  src/components/sde/interface/papi_sde_interface.c,
+	  src/components/sde/interface/papi_sde_interface.h,
+	  src/components/sde/sde.c, src/components/sde/sde_F.F90,
+	  src/components/sde/sde_internal.h,
+	  src/components/sde/tests/Gamum.c,
+	  src/components/sde/tests/Makefile,
+	  src/components/sde/tests/Minimal_Test.c,
+	  src/components/sde/tests/Recorder.c,
+	  src/components/sde/tests/Xandria.F90,
+	  src/components/sde/tests/sde_test_f08.F90: Software Defined Events
+	  (SDE) component.
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/README,
+	  src/counter_analysis_toolkit/branch.c,
+	  src/counter_analysis_toolkit/branch.h,
+	  src/counter_analysis_toolkit/caches.h,
+	  src/counter_analysis_toolkit/compar.c,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/event_list.txt,
+	  src/counter_analysis_toolkit/eventstock.c,
+	  src/counter_analysis_toolkit/eventstock.h,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/flops.h,
+	  src/counter_analysis_toolkit/flops_aux.c,
+	  src/counter_analysis_toolkit/flops_aux.h,
+	  src/counter_analysis_toolkit/gen_seq_dlopen.sh,
+	  src/counter_analysis_toolkit/icache.c,
+	  src/counter_analysis_toolkit/icache.h,
+	  src/counter_analysis_toolkit/main.c,
+	  src/counter_analysis_toolkit/prepareArray.c,
+	  src/counter_analysis_toolkit/prepareArray.h,
+	  src/counter_analysis_toolkit/replicate.sh,
+	  src/counter_analysis_toolkit/timing_kernels.c,
+	  src/counter_analysis_toolkit/timing_kernels.h: Counter Analysis
+	  Toolkit.
+
+2019-09-30  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/Rules.cuda, src/components/nvml/Rules.nvml,
+	  src/components/pcp/Rules.pcp: Corrected typos, replacing "optimal"
+	  with "optional."
+
+2019-09-18  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: We no longer check the error on
+	  setting CUPTI_EVENT_COLLECTION_MODE_CONTINUOUS, it only works on
+	  Tesla devices (and is preferred there) but fails on other models,
+	  they don't support the feature. We do not fail if they reject it.
+
+2019-09-17  Kevin Huck <khuck@cs.uoregon.edu>
+
+	* src/components/io/CHANGES, src/components/io/README,
+	  src/components/io/Rules.io, src/components/io/linux-io.c,
+	  src/components/io/linux-io.h, src/components/io/tests/Makefile,
+	  src/components/io/tests/io_basic.c,
+	  src/components/io/tests/io_multiple_components.c: Adding I/O
+	  component to read from /proc/self/io.
+
+2019-09-13  Steve Kaufmann <sbk@cray.com>
+
+	* src/components/rocm/linux-rocm.c, src/components/rocm_smi/linux-
+	  rocm-smi.c: Changes to make these components (ROCM, ROCM_SMI) have
+	  naming consistency with others; fixed numerous minor formatting
+	  issues and comments. Compiled and checked on ICL Caffeine.
+
+2019-09-13  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/linux-rocm.c, src/components/rocm_smi/linux-
+	  rocm-smi.c: Revert changes, used wrong author (Should be Steve
+	  Kaufmann).  This reverts commit
+	  9a60e91d539b8eb079dd81adc1d91c17620cfaed.
+
+2019-09-12  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/linux-rocm.c, src/components/rocm_smi/linux-
+	  rocm-smi.c: Changes suggested by Steve Kaufmann (Cray) to make
+	  these components have naming consistency with others; fixed
+	  numerous minor formatting issues. Reviewed, accepted, compiled,
+	  checked.
+
+2019-09-09  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/components/infiniband_umad/README.md,
+	  src/components/lmsensors/README.md: Little format changes for
+	  markdown documentation files.
+	* src/components/libmsr/Makefile.libmsr.in,
+	  src/components/libmsr/README, src/components/libmsr/README.md,
+	  src/components/libmsr/Rules.libmsr,
+	  src/components/libmsr/configure,
+	  src/components/libmsr/configure.in, src/components/libmsr/linux-
+	  libmsr.c, src/components/libmsr/utils/libmsr_write_test.c: Updated
+	  code and documentation for component libmsr to get compliance with
+	  the new component setup standard.
+	* src/components/infiniband_umad/README,
+	  src/components/infiniband_umad/README.md,
+	  .../infiniband_umad/Rules.infiniband_umad, .../infiniband_umad
+	  /linux-infiniband_umad.c: Updated code and documentation for
+	  component infiniband_umad to get compliance with the new component
+	  setup standard.
+
+2019-09-08  Frank Winkler <frankbook@Franks-MacBook-Air.local>
+
+	* src/components/lmsensors/README,
+	  src/components/lmsensors/README.md,
+	  src/components/lmsensors/Rules.lmsensors, src/components/lmsensors
+	  /linux-lmsensors.c: Updated code and documentation for component
+	  lmsensors to get compliance with the new component setup standard.
+
+2019-09-05  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/pcp/Rules.pcp: Corrected an issue with Rules,
+	  changing the name of macro that conflicted with other potential
+	  macros.
+
+2019-09-04  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/Rules.cuda, src/components/nvml/Rules.nvml:
+	  Corrected an incompatibility in multiple Rules files when multiple
+	  components are included. Rules files cannot all use the same
+	  "MACRODEF" variable for different purposes; each needs a unique ID,
+	  like CUDA_MACS, NVML_MACS, etc.
+	* src/components/rocm/README, src/components/rocm/Rules.rocm,
+	  src/components/rocm/linux-rocm.c, src/components/rocm_smi/README,
+	  src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c: Changes to make rocm_smi component compliant
+	  with new component setup standard; changes to rocm component to
+	  correct bugs in compatibility and comments.
+	* src/components/rocm/README, src/components/rocm/Rules.rocm,
+	  src/components/rocm/linux-rocm.c: Modified documentation, Rules and
+	  code for ROCM component to comply with new setup standards. It now
+	  requires PAPI_ROCM_ROOT as an environment variable.
+	* src/components/pcp/README, src/components/pcp/Rules.pcp,
+	  src/components/pcp/linux-pcp.c: Code and documentation to get
+	  component PCP into compliance with the new component setup
+	  standard; PAPI_PCP_ROOT is only environmental variable required.
+
+2019-09-03  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/Rules.cuda, src/components/nvml/README,
+	  src/components/nvml/Rules.nvml, src/components/nvml/linux-nvml.c:
+	  NVML component README, Rules and code updated to reflect new setup
+	  policy, relies on PAPI_CUDA_ROOT only. Adds a new override,
+	  PAPI_NVML_MAIN. Instructions improved in Rules.cuda, Rules.nvml.
+
+2019-08-29  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: Corrected comments.
+	* src/components/cuda/README, src/components/cuda/Rules.cuda,
+	  src/components/cuda/linux-cuda.c: The changes make the cuda
+	  component reliant on a single environment variable, PAPI_CUDA_ROOT,
+	  allowing overrides specified in Rules.cuda if the necessary
+	  libraries are not in their expected locations. Detailed
+	  instructions are in README, and for overrides in Rules.cuda.
+
+2019-08-28  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/linux-rocm.c: Bug fixes, for missing eventName
+	  in debug mode; also for failure to clear internal 'usage' flags
+	  when destroying an event set.
+
+2019-08-14  Carl Love <cel@us.ibm.com>
+
+	* src/papi_events.csv: Per Carl Love, "The POWER9 event
+	  PM_BR_TAKEN_CMPL includes conditional and unconditional branches.
+	  The equation for event PAPI_BR_NTK should not include the event
+	  PM_BR_UNCOND as PM_BR_TAKEN_CMPL already counts unconditional
+	  branches. The POWER9 event PM_LD_REF_L1 includes hits and misses to
+	  the L1. Thus we should not be adding PM_LS_MISS_L1_ALT when
+	  calculating PAPI_LD_INS on POWER9."  The definitions for these
+	  preset events were changed accordingly, and their patterns of
+	  behavior were measured during the execution of performance
+	  benchmarks on the IBM POWER9 processors on Summit. The patterns of
+	  behavior for the corresponding events on the Intel Skylake and
+	  Broadwell processors were measured during the execution of the same
+	  performance benchmarks. The respective events from each
+	  architecture behave similarly. In addition, the new definitions
+	  pass the PAPI validation tests.
+
+2019-08-12  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/pcp/Rules.pcp, src/components/rocm/Rules.rocm:
+	  Adding $(LDL) to LDFLAGS in Rules.x files when it was missing, on
+	  PCP and ROCM components.
+
+2019-08-09  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/pcp/README, src/components/pcp/Rules.pcp,
+	  src/components/pcp/linux-pcp.c: The PCP component changed to use
+	  the new standard for PAPI environment variables; there are now no
+	  necessary environment variables, and no need to change
+	  LD_LIBRARY_PATH. The rules file was streamlined.  The code was
+	  tested on Peak and Summit. We do allow overrides for non-standard
+	  installations of PCP, the variables PAPI_PCP_ROOT, PAPI_PCP_LIBS,
+	  PAPI_PCP_INC and PAPI_PCP_LIBNAME can be set by users to specify
+	  non-standard locations or library names. The README file in
+	  components/pcp/ contains detailed instructions on their use.
+
+2019-08-08  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/README, src/components/rocm/Rules.rocm,
+	  src/components/rocm/linux-rocm.c,
+	  src/components/rocm/tests/run_papi.sh,
+	  src/components/rocm_smi/README,
+	  src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c: Components ROCM and ROCM_SMI have been changed
+	  to adhere to our recent standardization of using environment
+	  variables. README files are updated with detailed information, and
+	  we have both simplified and extended the capabilities with new env
+	  vars. It is simplified because for a standard install of the rocm
+	  or rocm_smi software puts it in the default directories, PAPI will
+	  find the libraries and include files without any configure step.
+	  But it is more powerful because we allow overrides to the defaults,
+	  including overrides to the necessary library names. We also no
+	  longer require the LD_LIBRARY_PATH environment variable be
+	  modified, or exist at all. If it is there and we don't find a
+	  library in a path given by the user, we will still search it, and
+	  the default search directories. The Rules.rocm and Rules.rocm_smi
+	  are changed to use defaults, and their linker commands changed to
+	  allow the specification of a non-standard library name; e.g. a
+	  versioned library that does not end in ".so". These changes were
+	  tested and verified on the ICL machine Caffeine.
+
+2019-08-04  Frank Winkler <frankbook@Franks-MacBook-Air.local>
+
+	* src/components/infiniband_umad/Rules.infiniband_umad,
+	  src/components/lmsensors/Rules.lmsensors: Added "$(LDL)" to LDFLAGS
+	  of components lmsensors and infiniband_umad.  "libdl" was missing
+	  in a previous commit (0f0b74f).
+	* src/high-level/papi_hl.c: Fixed bug in high-level API.  Function
+	  PAPI_hl_print_output () caused a segmentation fault when no events
+	  were recorded.
+
+2019-08-01  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* .../infiniband_umad/Makefile.infiniband_umad.in,
+	  src/components/infiniband_umad/README,
+	  .../infiniband_umad/Rules.infiniband_umad,
+	  src/components/infiniband_umad/configure,
+	  src/components/infiniband_umad/configure.in, .../infiniband_umad
+	  /linux-infiniband_umad.c,
+	  src/components/infiniband_umad/tests/Makefile,
+	  src/components/lmsensors/Makefile.lmsensors.in,
+	  src/components/lmsensors/README,
+	  src/components/lmsensors/Rules.lmsensors,
+	  src/components/lmsensors/configure,
+	  src/components/lmsensors/configure.in, src/components/lmsensors
+	  /linux-lmsensors.c: Changed configuration mechanism for components
+	  lmsensors and infiband_umad.  We do not use configure scripts
+	  anymore. Each component is configured via environment variables.
+	  For compilation: PAPI_[component]_ROOT PAPI_[component]_INCLUDE
+	  PAPI_[component]_LIB  For runtime: PAPI_[component]_LIBNAME
+	  Detailed information can be found in the README file of each
+	  component.
+
+2019-07-25  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/cuda/README, src/components/cuda/Rules.cuda,
+	  src/components/cuda/linux-cuda.c,
+	  src/components/cuda/sampling/Makefile,
+	  src/components/cuda/tests/Makefile, src/components/nvml/README,
+	  src/components/nvml/Rules.nvml, src/components/nvml/linux-nvml.c,
+	  src/components/nvml/tests/Makefile: A continuation of a previous
+	  commit prematurely pushed. Same commentary:  The CUDA and NVML
+	  components have a revamped Environment Variable processing; we have
+	  simplified this for users, made it more flexible, and standardized
+	  on environment variables beginning with "PAPI_".  The NVML
+	  component used to require a separate configure step, this has been
+	  eliminated.  Simplification: The only required environment variable
+	  is now PAPI_CUDA_ROOT, set to the path corresponding to CUDA. Users
+	  no longer need to update LD_LIBRARY_PATH.  There are several other
+	  environment variables that can be set to override the defaults we
+	  would automatically use if only PAPI_CUDA_ROOT is given.  The
+	  general protocol we now use for naming environment variables is
+	  PAPI_[component]_[setting]. Examples are:  PAPI_CUDA_STUBS
+	  (default = ${PAPI_CUDA_ROOT}/lib64/stubs PAPI_CUPTI_LIBS   (default
+	  = ${PAPI_CUDA_ROOT}/extras/CUPTI/lib64) PAPI_NVML_LIBNAME (default
+	  = "libnvidia-ml.so")  Some possible overrides are processed at
+	  compile time, the Rules.[component] files now set defaults (For
+	  cuda and nvml based on PAPI_CUDA_ROOT) for the path to include
+	  files, or to library files.  Other possible overrides are handled
+	  at runtime; using environment variables the user can specify
+	  specific paths to attempt first for each library. If the necessary
+	  libraries are not found on those paths, the system will still
+	  attempt to use the LD_LIBRARY_PATH and the default directories
+	  (/lib64, /usr/lib64).  The "disabled_reason" field for components
+	  has been updated to provide more information when libraries are not
+	  found.  The README files have been rewritten to reflect this
+	  protocol, to detail the new possible overrides, and to show the
+	  order in which they are searched when more than one environment
+	  variable applies.
+
+2019-07-24  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/nvml/Makefile.nvml.in,
+	  src/components/nvml/configure, src/components/nvml/configure.in:
+	  The CUDA and NVML components have a revamped Environment Variable
+	  processing; we have simplified this for users, made it more
+	  flexible, and standardized on environment variables beginning with
+	  "PAPI_".  The NVML component used to require a separate configure
+	  step, this has been eliminated.  Simplification: The only required
+	  environment variable is now PAPI_CUDA_ROOT, set to the path
+	  corresponding to CUDA. Users no longer need to update
+	  LD_LIBRARY_PATH.  There are several other environment variables
+	  that can be set to override the defaults we would automatically use
+	  if only PAPI_CUDA_ROOT is given.  The general protocol we now use
+	  for naming environment variables is PAPI_[component]_[setting].
+	  Examples are:  PAPI_CUDA_STUBS   (default =
+	  ${PAPI_CUDA_ROOT}/lib64/stubs PAPI_CUPTI_LIBS   (default =
+	  ${PAPI_CUDA_ROOT}/extras/CUPTI/lib64) PAPI_NVML_LIBNAME (default =
+	  "libnvidia-ml.so")  Some possible overrides are processed at
+	  compile time, the Rules.[component] files now set defaults (For
+	  cuda and nvml based on PAPI_CUDA_ROOT) for the path to include
+	  files, or to library files.  Other possible overrides are handled
+	  at runtime; using environment variables the user can specify
+	  specific paths to attempt first for each library. If the necessary
+	  libraries are not found on those paths, the system will still
+	  attempt to use the LD_LIBRARY_PATH and the default directories
+	  (/lib64, /usr/lib64).  The "disabled_reason" field for components
+	  has been updated to provide more information when libraries are not
+	  found.  The README files have been rewritten to reflect this
+	  protocol, to detail the new possible overrides, and to show the
+	  order in which they are searched when more than one environment
+	  variable applies.
+
+2019-07-19  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Removed function "error_at_line"
+	  (declared in error.h), since it is not portable.  Fixed warning
+	  "implicit declaration of function error_at_line".
+
+2019-07-17  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/nvml/README: Changes explaining the issues with
+	  libnvidia-ml.so in detail; and the new facility for changing the
+	  default name using the environment variable PAPI_NVML_LIBNAME.
+	* src/components/nvml/Rules.nvml, src/components/nvml/linux-nvml.c,
+	  src/utils/papi_component_avail.c: linux-nvml.c is changed to allow
+	  the nvml library name to be set by an environment variable,
+	  PAPI_NVML_LIBNAME. If this is not present, the default 'libnvidia-
+	  ml.so' is used. Also, misspellings in error messages were
+	  corrected.  Rules.nvml: A previous method used a -D #define during
+	  the compile of linux-nvml.c to change the default name. This method
+	  was eliminated.  utils/papi_component_avail.c a typographic error
+	  in an error message was corrected.
+
+2019-07-15  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/utils/papi_component_avail.c: To avoid confusion, we no longer
+	  print an empty "PMUs supported:" line for components for which
+	  Performance Monitoring Units do not apply (or are not exposed
+	  through its device interfaces). We also corrected minor bugs in
+	  computing the display length to limit output lines to 130
+	  characters (when listing PMUs); this was most evident on the
+	  perf_event_uncore component.
+
+2019-07-12  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/README, src/components/rocm_smi/linux-rocm-
+	  smi.c, .../rocm_smi/tests/rocm_command_line.cpp,
+	  src/components/rocm_smi/tests/rocm_smi_all.cpp: linux-rocm-smi.c
+	  (for the rocm_smi component) was fixed to not expose globals other
+	  than the _rocm_smi_vector.  The src/components/rocm_smi/README file
+	  was updated to provide more information on the LD_LIBRARY_PATH
+	  required, and the utilities rocm_command_line.cpp and
+	  rocm_smi_all.cpp in the tests/ directory were updated to report
+	  more information.
+
+2019-06-27  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Added multiplexing support for high-level
+	  API.  Mutliplexing of cpu core components can be enabled via the
+	  environment variable PAPI_MULTIPLEX.
+
+2019-06-26  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/ctests/zero_omp.c, src/papi_vector.c: Changed the dummy
+	  function call in papi_vector.c and created a function to wrap the
+	  call to omp_get_thread_num() in ctests/zero_omp.c. These allow the
+	  function castings in the respective files to operate properly
+	  without warnings from GCC 8.3.0. These changes were tested on the
+	  Intel Haswell architecture.
+
+2019-06-25  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/nvml/PeakConfigure.sh, src/components/nvml/README,
+	  src/components/nvml/Rules.nvml, src/components/nvml/linux-nvml.c:
+	  linux-nvml.c is modified to accept an alternate name for the nvml
+	  library, which will default to the standard 'libnvidia-ml.so'. This
+	  is necessary on a system (Summit in particular) that doesn't have
+	  the standard link file to the current versioned lib. It will also
+	  provide flexibility for testing previous versions or new versions
+	  of the library. The library file name can be specified in
+	  Rules.nvml, as a compiler-line Define of NVML_LIBNAME.  Rules.nvml
+	  has comments added, one of which is an example of how to specify
+	  NVML_LIBNAME. Otherwise it is unchanged; and the library name used
+	  will default to 'libnvidia-ml.so'.  README has been updated to
+	  describe this new capability, and for ICL staff contains examples
+	  of what works on Summit.  PeakConfigure.sh had a typo that was
+	  corrected.
+
+2019-06-18  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/rapl/tests/rapl_basic.c: rapl: quiet a strncpy()
+	  warning in the rapl_basic test
+	* src/linux-common.c, src/linux-memory.c, src/papi_internal.c,
+	  src/papi_libpfm4_events.c: papi: fix some strncpy() related
+	  warnings reported by gcc 8.3
+
+2019-06-10  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/perf_event_uncore/tests/perf_event_uncore_cbox.c:
+	  Changed the sprintf() call to snprintf() and added an if-statement
+	  to check whether the number of characters intended to be written to
+	  the destination buffer exceed the size of the buffer. This prevents
+	  GCC 8.3.0 from warning that the destination buffer may not be large
+	  enough to store the contents of the source buffers. These changes
+	  were tested on the Intel Haswell architecture.
+
+2019-06-05  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/perf_event_uncore/tests/perf_event_uncore.c: Added a
+	  second buffer in the perf_event_uncore test. This prevents GCC 8
+	  from complaining about the source and destination buffers
+	  overlapping. Per the sprintf man-page (release 3.53 of the Linux
+	  man-pages project), "the standards explicitly note that the results
+	  are undefined if source and destination buffers overlap when
+	  calling sprintf()."  Since the second buffer is only present in a
+	  test program, this change will not create memory overhead to user
+	  programs which use PAPI. These changes were tested on the Intel
+	  Haswell architecture.
+
+2019-06-05  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c: Added a direct file
+	  system search for AMD GPU peripherals; vendor ID 0x1002. We search
+	  up to 64 /sys/class/drm/card?/device/vendor files; (card0, card1,
+	  ... card 63). Also corrected a typo in an event name. Tested and
+	  worked on ICL Caffeine system; correctly excluded card0 (display
+	  card) and found two AMD GPUs on card1, card2.
+
+2019-05-25  Yunqiang Su <wzssyqa@gmail.com>
+
+	* src/linux-lock.h: [mips] replace beqzl with beqzc for r6
+
+2019-05-20  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: I have added PAPI POWER9 event definitions for
+	  PAPI_L2_DCR, PAPI_L2_DCW, PAPI_BR_CN, PAPI_BR_NTK, PAPI_BR_UCN, and
+	  PAPI_BR_TKN. These events have been tested. Their patterns of
+	  behavior were measured during the execution of performance
+	  benchmarks on Summit's POWER9 processors. The patterns of behavior
+	  for the corresponding events on Intel Haswell processors were
+	  measured during the execution of the same performance benchmarks.
+	  The respective events from each architecture behave similarly.
+
+2019-05-17  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c: Added missing
+	  "rsmi_init(0)" call to component_init() function.
+	* src/components/rocm/README, src/components/rocm/Rules.rocm,
+	  src/components/rocm/linux-rocm.c: Modifications to support indexed
+	  variables; requires different names be used for PAPI users and the
+	  request to the RocProfiler (it interprets the index within the
+	  name). Updated notes in README, and additional potential -I include
+	  paths in Rules.rocm.
+
+2019-05-14  Anthony Castaldo <tonycastaldo@saturn.icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: Improved error reporting when
+	  libraries are not found, or the cuda initialization function fails.
+	  No changes to function.
+
+2019-05-07  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/components/appio/tests/iozone/Gnuplot.txt,
+	  src/components/appio/tests/iozone/gnu3d.dem,
+	  src/components/powercap/tests/powercap_limit.c,
+	  src/components/vmware/VMwareComponentDocument.txt: More clean up of
+	  carriage return character (^M) throughout the code base.  Thanks to
+	  Steve Kaufmann!
+
+2019-05-07  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c,
+	  src/components/rocm_smi/rocm_smi.h,
+	  src/components/rocm_smi/tests/Makefile,
+	  src/components/rocm_smi/tests/ROCM_SMI_Makefile: I fixed linux-
+	  rocm-smi.c to include an event per device called
+	  rocm_smi:::device=?:busy_percent; I overlooked this event in the
+	  first draft of the component.  I added a note to rocm_smi.h; we
+	  cannot use the distributed version of this file; we have a compile
+	  error on one of the include files <stdinit.h> that is not
+	  necessary; so we comment it out.  I created a Makefile for the
+	  rocm_smi/tests/ directory, it is just a placeholder until we
+	  develop some standardized tests of the rocm_smi component; but
+	  necessary to prevent an error during system 'make'.  I added
+	  rocm_command_line.out to the ROCM_SMI_Makefile. This is to make
+	  non-standardized tests; and can be used as  make -f
+	  ROCM_SMI_Makefile <targetname>
+
+2019-05-07  Heike Jagode <jagode@icl.utk.edu>
+
+	* src/Makefile.in, src/Makefile.inc, src/Rules.perfmon2,
+	  src/configure.in: Clean up of carriage return character (^M) from
+	  previous patch (commit 5434010).  Thanks to Steve Kaufmann from
+	  Cray!
+
+2019-05-06  Andreas Beckmann <a.beckmann@fz-juelich.de>
+
+	* src/Makefile.in, src/Makefile.inc, src/Rules.perfmon2,
+	  src/configure, src/configure.in: [PATCH] set SONAME to
+	  libpapi.so.$(PAPIVER).$(PAPIREV)  The version check in
+	  PAPI_library_init() requires matching PAPI_VER_CURRENT, therefore
+	  libpapi.so.5 from papi-5.6.x and papi-5.7.x are not
+	  interchangeable, but require applications to be recompiled.  Change
+	  the SONAME to contain the two version components that define
+	  PAPI_VER_CURRENT, thereafter upgrading the shared library to a new
+	  version does no longer break existing applications (which will pick
+	  up the new SONAME upon recompilation).  Introduce a new variable
+	  PAPISOVER and use it in all places where the SONAME is being used.
+	  drop unused symlinks with three version components:
+	  $(PAPIVER).$(PAPIREV).$(PAPIAGE)
+
+2019-05-03  Daniel Barry <dbarry@saturn.icl.utk.edu>
+
+	* src/ctests/profile_twoevents.c: Prevented another warning about
+	  buffer size potentially being to small.
+
+2019-04-25  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Fixed "format-overflow" warning detected
+	  by gcc/8.1.0.
+
+2019-04-24  Anthony Castaldo <TonyCastaldo@icl.utk.edu>
+
+	* src/components/rocm/Rules.rocm, src/components/rocm/linux-rocm.c,
+	  src/components/rocm_smi/README,
+	  src/components/rocm_smi/Rules.rocm_smi, src/components/rocm_smi
+	  /linux-rocm-smi.c, src/components/rocm_smi/rocm_smi.h,
+	  src/components/rocm_smi/tests/ROCM_SMI_Makefile,
+	  .../rocm_smi/tests/rocm_command_line.cpp,
+	  src/components/rocm_smi/tests/rocm_smi_all.cpp,
+	  .../rocm_smi/tests/rocm_smi_writeTests.cpp: Major addition: a
+	  component to access the rocm_smi library; this is the System
+	  Management Interface for AMD GPU devices. It allows monitoring of
+	  hardware elements; like power consumption, memory usage, PCIe
+	  throughput, fan speed, etc. It allows control for some hardware
+	  functions as well, via PAPI_write(), although these are untested
+	  (write requires root privileges to test). Included here are the
+	  component code, a tester for all readable events, and an incomplete
+	  tester for writing control values.  The tests are cpp; this is
+	  required for the AMD 'HIPP' compiler to process an AMD Kernel that
+	  can exercise the GPU itself. The rules and exports are bit
+	  complicated; for development the rocm_smi_lib was installed and
+	  built in my user directory; in production it would be in a system
+	  directory.
+
+2019-04-24  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* src/high-level/papi_hl.c: Fixed warnings detected by gcc/8.3.0 when
+	  using "-Wrestrict" or "-Wall".
+	* src/high-level/papi_hl.c: Replaced "get_current_dir_name()" with
+	  "getcwd(NULL,0)".  "get_current_dir_name()" is only GNU specific.
+	* src/run_tests.sh: Replaced bash statements with shell statements.
+	  Some systems do not have a bash.
+
+2019-04-22  Frank Winkler <frankbook@franks-air.localdomain>
+
+	* src/high-level/papi_hl.c: Corrected data type declaration according
+	  to the return value of C library function fgetc.
+
+2019-04-18  Daniel Barry <dbarry@saturn.icl.utk.edu>
+
+	* src/ctests/derived.c, src/ctests/multiattach.c,
+	  src/ctests/multiattach2.c, src/ctests/reset.c,
+	  src/ctests/reset_multiplex.c, src/ctests/zero_attach.c,
+	  src/ctests/zero_flip.c: Prevented warnings about buffer sizes of
+	  length PAPI_MAX_STR_LEN potentially being too small.
+
+2019-04-18  Frank Winkler <frankbook@m016.zih.tu-dresden.de>
+
+	* doc/Doxyfile-man3, doc/Makefile, src/Makefile.inc,
+	  src/components/appio/tests/appio_test_blocking.c,
+	  .../appio/tests/appio_test_fread_fwrite.c,
+	  src/components/appio/tests/appio_test_pthreads.c,
+	  src/components/appio/tests/appio_test_read_write.c,
+	  src/components/appio/tests/appio_test_recv.c,
+	  src/components/appio/tests/appio_test_seek.c,
+	  src/components/appio/tests/appio_test_select.c,
+	  src/components/appio/tests/appio_test_socket.c,
+	  src/components/appio/tests/init_fini.c,
+	  src/ctests/Makefile.recipies, src/ctests/api.c, src/ctests/flops.c,
+	  src/ctests/high-level.c, src/ctests/high-level2.c,
+	  src/ctests/hl_rates.c, src/ctests/ipc.c, src/ctests/matrix-hl.c,
+	  src/ctests/mpi_hl.c, src/ctests/mpi_omp_hl.c, src/ctests/omp_hl.c,
+	  src/ctests/pthread_hl.c, src/ctests/serial_hl.c,
+	  src/ctests/serial_hl_advanced.c, src/ctests/serial_hl_ll_comb.c,
+	  src/ctests/serial_hl_ll_comb2.c, src/ftests/Makefile.recipies,
+	  src/ftests/flops.F, src/ftests/fmatrixpapi.F,
+	  src/ftests/fmatrixpapi2.F, src/ftests/highlevel.F,
+	  src/ftests/serial_hl.F, src/ftests/serial_hl_advanced.F, src/high-
+	  level/papi_hl.c, src/high-level/scripts/papi_hl_output_writer.py,
+	  src/papi.c, src/papi.h, src/papi_debug.h, src/papi_fwrappers.c,
+	  src/papi_hl.c, src/papi_hl.h, src/run_tests.sh,
+	  src/run_tests_exclude.txt, src/validation_tests/Makefile.recipies,
+	  src/validation_tests/flops_validation_hl.c: Replaced old high-level
+	  API with a new high-level API.  The new high-level API provides the
+	  ability to record performance events within instrumented code
+	  sections, called regions, of serial, multi-processing (MPI, SHMEM)
+	  and thread (OpenMP, Pthreads) parallel applications. Events to be
+	  recorded are determined via an environment variable that lists both
+	  preset and native events separated by commas. This enables the
+	  programmer to perform different measurements without recompiling.
+	  In addition, the programmer does not need to take care of printing
+	  performance events since a JSON output is generated at the end of
+	  each measurement.  Main changes: - Removed old high-level API
+	  including all test files. - Added new high-level API including a
+	  python script that merges results from several MPI ranks. - Added
+	  Doxygen documentation for new high-level API. - Added high-level
+	  tests for c and fortran. - Added high-level flops validation test.
+	  - Replaced old high-level tests with new high-level tests in appio
+	  component.
+
+2019-04-02  Anthony Castaldo <tonycastaldo@caffeine.icl.utk.edu>
+
+	* src/components/rocm/linux-rocm.c,
+	  src/components/rocm/tests/rocm_all.cpp: NOTE: This component is
+	  still not functional! Added missing code to prevent hsa_shut_down()
+	  call from segfaulting. Changed skip table for testing code
+	  rocm_all.cpp.
+
+2019-04-01  Al Grant <algrant109@gmail.com>
+
+	* src/linux-memory.c: The logic in linux-memory.c
+	  generic_get_memory_info() isn't correct.  It looks at the
+	  cpu0/cache node and iterates through the caches. The intention is
+	  to collect information about caches at each level. There may be
+	  multiple caches at a given level (typically at L1 there will be I
+	  and D). PAPI's data structure allows for this. There is a 'level
+	  count' that is incremented so that multiple caches can be collected
+	  per level.  The bug is in the lines  if (level != last_level) {
+	  level_count = 0; last_level=level; } else { level_count++; }  This
+	  assumes that for a given level, you see all the caches at that
+	  level, then you go to the next level. But in fact sysfs may return
+	  the caches in random order.  An actual example: index2: level 2,
+	  unified cache index0: level 1, data cache index3: level 3, unified
+	  cache index1: level 1, instruction cache  Because index1 is at a
+	  different level from index3, level_count will be reset to 0. So in
+	  PAPI's structures, the L1I information will overwrite the L1D
+	  information. The knowledge about L1D will be lost.
+
+2019-03-28  Anthony Castaldo <TonyCastaldo@instinct.nic.uoregon.edu>
+
+	* src/components/rocm/README, src/components/rocm/linux-rocm.c,
+	  src/components/rocm/tests/Makefile,
+	  src/components/rocm/tests/ROCM_Makefile,
+	  src/components/rocm/tests/rocm_all.cpp,
+	  src/components/rocm/tests/rocm_command_line.c,
+	  src/components/rocm/tests/run_papi.sh,
+	  src/components/rocm/tests/square.cpp,
+	  src/components/rocm/tests/square.cu,
+	  src/components/rocm/tests/square.hipref.cpp: linux-rocm.c updated
+	  with PAPI standard component function names, beginning '_rocm', and
+	  events named '..:device=n:...' instead of 'device:n'. New files and
+	  utilities are added in the test/ directory. The ROCM_Makefile is
+	  used to compile cpp code using the AMD HIPCC compiler; e.g. 'make
+	  -f ROCM_Makefile rocm_all.out', in order to compile code that uses
+	  the AMD GPUs.
+
+2019-03-18  Anthony Castaldo <TonyCastaldo@instinct.nic.uoregon.edu>
+
+	* src/components/rocm/linux-rocm.c: This is the ROCM component
+	  (linux_rocm.c) with the minimal changes needed to compile with the
+	  PAPI standard GCC flags and settings. This version is functional;
+	  it shows up on papi_components_avail, and papi_native_avail shows
+	  rocm::: events. However, the compile still produces warnings for
+	  unused variables (they are used in debug mode but the code using
+	  them is suppressed in production mode). These are corrected in the
+	  next commit; and a '/tests' directory will be added.
+
+2019-03-18  Evgeny Shcherbakov <Evgeny.Shcherbakov@amd.com>
+
+	* src/components/rocm/README, src/components/rocm/Rules.rocm,
+	  src/components/rocm/linux-rocm.c: These are the original files
+	  produced by Evgeny Shcherbakov for the ROCM PAPI component; this
+	  component allows PAPI to access to AMD GPU events. Note that linux-
+	  rocm.c will not compile using the PAPI default settings for GCC; it
+	  has 3 lines of code that require a C99 flag (e.g. -std=gnu99). We
+	  do not wish to mix standards, so the next commit will revise these
+	  lines to standard C that will compile clean with our standard
+	  settings.
+
+2019-03-07  Heike Jagode <jagode@icl.utk.edu>
+
+	* doc/Doxyfile-common, papi.spec, src/Makefile.in, src/configure,
+	  src/configure.in, src/papi.h: Updated version to 5.7.1 after the
+	  release.
+
+2019-03-04  Heike Jagode <jagode@icl.utk.edu>
+
+	* RELEASENOTES.txt, release_procedure.txt: Minor updates to release
+	  procedure text.
+	* RELEASENOTES.txt: Updated release notes for 5.7.0 release.
+
+2019-02-22  Anthony Castaldo <tonycastaldo@harry.icl.utk.edu>
+
+	* doc/Doxyfile-common, man/man1/PAPI_derived_event_files.1,
+	  man/man1/papi_avail.1, man/man1/papi_clockres.1,
+	  man/man1/papi_command_line.1, man/man1/papi_component_avail.1,
+	  man/man1/papi_cost.1, man/man1/papi_decode.1,
+	  man/man1/papi_error_codes.1, man/man1/papi_event_chooser.1,
+	  man/man1/papi_hybrid_native_avail.1, man/man1/papi_mem_info.1,
+	  man/man1/papi_multiplex_cost.1, man/man1/papi_native_avail.1,
+	  man/man1/papi_version.1, man/man1/papi_xml_event_info.1,
+	  man/man3/PAPIF_accum.3, man/man3/PAPIF_accum_counters.3,
+	  man/man3/PAPIF_add_event.3, man/man3/PAPIF_add_events.3,
+	  man/man3/PAPIF_add_named_event.3,
+	  man/man3/PAPIF_assign_eventset_component.3,
+	  man/man3/PAPIF_cleanup_eventset.3,
+	  man/man3/PAPIF_create_eventset.3,
+	  man/man3/PAPIF_destroy_eventset.3, man/man3/PAPIF_enum_event.3,
+	  man/man3/PAPIF_epc.3, man/man3/PAPIF_event_code_to_name.3,
+	  man/man3/PAPIF_event_name_to_code.3, man/man3/PAPIF_flips.3,
+	  man/man3/PAPIF_flops.3, man/man3/PAPIF_get_clockrate.3,
+	  man/man3/PAPIF_get_dmem_info.3, man/man3/PAPIF_get_domain.3,
+	  man/man3/PAPIF_get_event_info.3, man/man3/PAPIF_get_exe_info.3,
+	  man/man3/PAPIF_get_granularity.3,
+	  man/man3/PAPIF_get_hardware_info.3, man/man3/PAPIF_get_multiplex.3,
+	  man/man3/PAPIF_get_preload.3, man/man3/PAPIF_get_real_cyc.3,
+	  man/man3/PAPIF_get_real_nsec.3, man/man3/PAPIF_get_real_usec.3,
+	  man/man3/PAPIF_get_virt_cyc.3, man/man3/PAPIF_get_virt_usec.3,
+	  man/man3/PAPIF_ipc.3, man/man3/PAPIF_is_initialized.3,
+	  man/man3/PAPIF_library_init.3, man/man3/PAPIF_lock.3,
+	  man/man3/PAPIF_multiplex_init.3, man/man3/PAPIF_num_cmp_hwctrs.3,
+	  man/man3/PAPIF_num_counters.3, man/man3/PAPIF_num_events.3,
+	  man/man3/PAPIF_num_hwctrs.3, man/man3/PAPIF_perror.3,
+	  man/man3/PAPIF_query_event.3, man/man3/PAPIF_query_named_event.3,
+	  man/man3/PAPIF_read.3, man/man3/PAPIF_read_ts.3,
+	  man/man3/PAPIF_register_thread.3, man/man3/PAPIF_remove_event.3,
+	  man/man3/PAPIF_remove_events.3,
+	  man/man3/PAPIF_remove_named_event.3, man/man3/PAPIF_reset.3,
+	  man/man3/PAPIF_set_cmp_domain.3,
+	  man/man3/PAPIF_set_cmp_granularity.3, man/man3/PAPIF_set_debug.3,
+	  man/man3/PAPIF_set_domain.3, man/man3/PAPIF_set_event_domain.3,
+	  man/man3/PAPIF_set_granularity.3, man/man3/PAPIF_set_inherit.3,
+	  man/man3/PAPIF_set_multiplex.3, man/man3/PAPIF_shutdown.3,
+	  man/man3/PAPIF_start.3, man/man3/PAPIF_start_counters.3,
+	  man/man3/PAPIF_state.3, man/man3/PAPIF_stop.3,
+	  man/man3/PAPIF_stop_counters.3, man/man3/PAPIF_thread_id.3,
+	  man/man3/PAPIF_thread_init.3, man/man3/PAPIF_unlock.3,
+	  man/man3/PAPIF_unregister_thread.3, man/man3/PAPIF_write.3,
+	  man/man3/PAPI_accum.3, man/man3/PAPI_accum_counters.3,
+	  man/man3/PAPI_add_event.3, man/man3/PAPI_add_events.3,
+	  man/man3/PAPI_add_named_event.3,
+	  man/man3/PAPI_addr_range_option_t.3, man/man3/PAPI_address_map_t.3,
+	  man/man3/PAPI_all_thr_spec_t.3,
+	  man/man3/PAPI_assign_eventset_component.3, man/man3/PAPI_attach.3,
+	  man/man3/PAPI_attach_option_t.3, man/man3/PAPI_cleanup_eventset.3,
+	  man/man3/PAPI_component_info_t.3, man/man3/PAPI_cpu_option_t.3,
+	  man/man3/PAPI_create_eventset.3, man/man3/PAPI_debug_option_t.3,
+	  man/man3/PAPI_destroy_eventset.3, man/man3/PAPI_detach.3,
+	  man/man3/PAPI_disable_component.3,
+	  man/man3/PAPI_disable_component_by_name.3,
+	  man/man3/PAPI_dmem_info_t.3, man/man3/PAPI_domain_option_t.3,
+	  man/man3/PAPI_enum_cmp_event.3, man/man3/PAPI_enum_event.3,
+	  man/man3/PAPI_epc.3, man/man3/PAPI_event_code_to_name.3,
+	  man/man3/PAPI_event_info_t.3, man/man3/PAPI_event_name_to_code.3,
+	  man/man3/PAPI_exe_info_t.3, man/man3/PAPI_flips.3,
+	  man/man3/PAPI_flops.3, man/man3/PAPI_get_cmp_opt.3,
+	  man/man3/PAPI_get_component_index.3,
+	  man/man3/PAPI_get_component_info.3, man/man3/PAPI_get_dmem_info.3,
+	  man/man3/PAPI_get_event_component.3,
+	  man/man3/PAPI_get_event_info.3,
+	  man/man3/PAPI_get_eventset_component.3,
+	  man/man3/PAPI_get_executable_info.3,
+	  man/man3/PAPI_get_hardware_info.3, man/man3/PAPI_get_multiplex.3,
+	  man/man3/PAPI_get_opt.3, man/man3/PAPI_get_overflow_event_index.3,
+	  man/man3/PAPI_get_real_cyc.3, man/man3/PAPI_get_real_nsec.3,
+	  man/man3/PAPI_get_real_usec.3, man/man3/PAPI_get_shared_lib_info.3,
+	  man/man3/PAPI_get_thr_specific.3, man/man3/PAPI_get_virt_cyc.3,
+	  man/man3/PAPI_get_virt_nsec.3, man/man3/PAPI_get_virt_usec.3,
+	  man/man3/PAPI_granularity_option_t.3, man/man3/PAPI_hw_info_t.3,
+	  man/man3/PAPI_inherit_option_t.3, man/man3/PAPI_ipc.3,
+	  man/man3/PAPI_is_initialized.3, man/man3/PAPI_itimer_option_t.3,
+	  man/man3/PAPI_library_init.3, man/man3/PAPI_list_events.3,
+	  man/man3/PAPI_list_threads.3, man/man3/PAPI_lock.3,
+	  man/man3/PAPI_mh_cache_info_t.3, man/man3/PAPI_mh_info_t.3,
+	  man/man3/PAPI_mh_level_t.3, man/man3/PAPI_mh_tlb_info_t.3,
+	  man/man3/PAPI_mpx_info_t.3, man/man3/PAPI_multiplex_init.3,
+	  man/man3/PAPI_multiplex_option_t.3, man/man3/PAPI_num_cmp_hwctrs.3,
+	  man/man3/PAPI_num_components.3, man/man3/PAPI_num_counters.3,
+	  man/man3/PAPI_num_events.3, man/man3/PAPI_num_hwctrs.3,
+	  man/man3/PAPI_option_t.3, man/man3/PAPI_overflow.3,
+	  man/man3/PAPI_perror.3, man/man3/PAPI_preload_info_t.3,
+	  man/man3/PAPI_profil.3, man/man3/PAPI_query_event.3,
+	  man/man3/PAPI_query_named_event.3, man/man3/PAPI_read.3,
+	  man/man3/PAPI_read_counters.3, man/man3/PAPI_read_ts.3,
+	  man/man3/PAPI_register_thread.3, man/man3/PAPI_remove_event.3,
+	  man/man3/PAPI_remove_events.3, man/man3/PAPI_remove_named_event.3,
+	  man/man3/PAPI_reset.3, man/man3/PAPI_set_cmp_domain.3,
+	  man/man3/PAPI_set_cmp_granularity.3, man/man3/PAPI_set_debug.3,
+	  man/man3/PAPI_set_domain.3, man/man3/PAPI_set_granularity.3,
+	  man/man3/PAPI_set_multiplex.3, man/man3/PAPI_set_opt.3,
+	  man/man3/PAPI_set_thr_specific.3, man/man3/PAPI_shlib_info_t.3,
+	  man/man3/PAPI_shutdown.3, man/man3/PAPI_sprofil.3,
+	  man/man3/PAPI_sprofil_t.3, man/man3/PAPI_start.3,
+	  man/man3/PAPI_start_counters.3, man/man3/PAPI_state.3,
+	  man/man3/PAPI_stop.3, man/man3/PAPI_stop_counters.3,
+	  man/man3/PAPI_strerror.3, man/man3/PAPI_thread_id.3,
+	  man/man3/PAPI_thread_init.3, man/man3/PAPI_unlock.3,
+	  man/man3/PAPI_unregister_thread.3, man/man3/PAPI_write.3,
+	  papi.spec, release_procedure.txt, src/Makefile.in,
+	  src/configure.in, src/papi.h: Fixing updates to manual; incorrectly
+	  done for release 5.7.0.0.
+
+2019-02-21  Anthony Castaldo <tonycastaldo@harry.icl.utk.edu>
+
+	* release_procedure.txt: Updated release procedure with additional
+	  instructions on final steps.
+
+2019-02-18  Anthony Castaldo <tonycastaldo@harry.icl.utk.edu>
+
+	* doc/Doxyfile-common, papi.spec, src/Makefile.in, src/configure.in,
+	  src/papi.h: Changed version to 5.7.1 after release.
+	* release_procedure.txt: Corrected directory entry typo.
+	* ChangeLogP570.txt, RELEASENOTES.txt: New ChangeLogP570.txt for new
+	  release, updated RELEASENOTES.txt
+

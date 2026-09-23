@@ -1,0 +1,31 @@
+.TH "PAPI_exe_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_exe_info_t \- get the executable's info  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fR#include <papi\&.h>\fP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "char \fBfullname\fP [1024]"
+.br
+.ti -1c
+.RI "\fBPAPI_address_map_t\fP \fBaddress_info\fP"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "\fBPAPI_address_map_t\fP PAPI_exe_info_t::address_info"
+executable's address space info 
+.SS "char PAPI_exe_info_t::fullname[1024]"
+path + name 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

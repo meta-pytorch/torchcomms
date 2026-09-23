@@ -1,0 +1,64 @@
+.TH "PAPI_is_initialized" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_is_initialized \- check for initialization  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_NOT_INITED\fP Library has not been initialized 
+.br
+\fIPAPI_LOW_LEVEL_INITED\fP Low level has called library init 
+.br
+\fIPAPI_HIGH_LEVEL_INITED\fP High level has called library init 
+.br
+\fIPAPI_THREAD_LEVEL_INITED\fP 
+.br
+ Threads have been inited
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIversion\fP upon initialization, PAPI checks the argument against the internal value of PAPI_VER_CURRENT when the library was compiled\&. This guards against portability problems when updating the PAPI shared libraries on your system\&. 
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int retval;
+retval = PAPI_library_init(PAPI_VER_CURRENT);
+if (retval != PAPI_VER_CURRENT && retval > 0) {
+fprintf(stderr,"PAPI library version mismatch!\\en");
+exit(1); }
+if (retval < 0)
+handle_error(retval);
+retval = PAPI_is_initialized();
+if (retval != PAPI_LOW_LEVEL_INITED)
+handle_error(retval);
+
+.fi
+.PP
+ PAPI_is_initialized() returns the status of the PAPI library\&. The PAPI library can be in one of four states, as described under RETURN VALUES\&. 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+PAPI 
+.PP
+\fBPAPI_thread_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

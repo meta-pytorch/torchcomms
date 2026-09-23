@@ -1,0 +1,63 @@
+.TH "PAPI_enum_dev_type" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_enum_dev_type \- returns handle of next device type  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIENOCMP\fP component does not exist 
+.br
+\fIEINVAL\fP end of device type list 
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIenum_modifier\fP device type modifier, used to filter out enumerated device types 
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+enum {
+    PAPI_DEV_TYPE_ENUM__FIRST,
+    PAPI_DEV_TYPE_ENUM__CPU,
+    PAPI_DEV_TYPE_ENUM__CUDA,
+    PAPI_DEV_TYPE_ENUM__ROCM,
+    PAPI_DEV_TYPE_ENUM__ALL
+};
+
+void *handle;
+const char *vendor_name;
+int enum_modifier = PAPI_DEV_TYPE_ENUM__CPU | PAPI_DEV_TYPE_ENUM__CUDA;
+while (PAPI_OK == PAPI_enum_dev_type(enum_modifier, &handle)) {
+    PAPI_get_dev_type_attr(handle, PAPI_DEV_TYPE_ATTR__CHAR_NAME, &vendor_name);
+    \&.\&.\&.
+}
+
+.fi
+.PP
+ PAPI_enum_dev_type() allows the user to access all device types in the system\&. It takes an enumerator modifier that allows users to enumerate only devices of a predefined type and it returns an opaque handler that users can pass to other functions in order to query device type attributes\&.
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_dev_type_attr\fP 
+.PP
+\fBPAPI_get_dev_attr\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

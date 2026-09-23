@@ -1,0 +1,106 @@
+.TH "papi_hl_output_writer.Sum_Counter" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_hl_output_writer.Sum_Counter \- \fBSum_Counter\fP class defintion\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+Inherits object\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fB__init__\fP (self)"
+.br
+.RI "\fBSum_Counter\fP class initializer\&. "
+.ti -1c
+.RI "\fBadd_event\fP (self, value)"
+.br
+.RI "Method definition for add_event\&. "
+.ti -1c
+.RI "\fBget_min\fP (self)"
+.br
+.RI "Method definition for get_min\&. "
+.ti -1c
+.RI "\fBget_median\fP (self)"
+.br
+.RI "Method definition for get_median\&. "
+.ti -1c
+.RI "\fBget_sum\fP (self)"
+.br
+.RI "Method definition for get_sum\&. "
+.ti -1c
+.RI "\fBget_max\fP (self)"
+.br
+.RI "Method definition for get_max\&. "
+.in -1c
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "\fBmin\fP"
+.br
+.ti -1c
+.RI "\fBall_values\fP"
+.br
+.ti -1c
+.RI "\fBmax\fP"
+.br
+.in -1c
+.SH "Detailed Description"
+.PP 
+Calculates the min, max, median or sum for the measurements of a recorded events\&. 
+.SH "Member Function Documentation"
+.PP 
+.SS "papi_hl_output_writer\&.Sum_Counter\&.add_event ( self,  value)"
+Add a recorded event and measurement to summary output\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIvalue\fP Measurement from a recorded event\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+.SS "papi_hl_output_writer\&.Sum_Counter\&.get_max ( self)"
+Calculate the maximum for a set of measurements for a recorded event\&.
+.PP
+\fBReturns\fP
+.RS 4
+The maximum for a set of measurement values for a recorded event\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+.SS "papi_hl_output_writer\&.Sum_Counter\&.get_median ( self)"
+Calculates the median for a set of measurements for a recorded event\&.
+.PP
+\fBReturns\fP
+.RS 4
+The median for a set of measurement values for a recorded event\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+.SS "papi_hl_output_writer\&.Sum_Counter\&.get_min ( self)"
+Calculates the minimum for a set of measurements for a recorded event\&.
+.PP
+\fBReturns\fP
+.RS 4
+The minimum for a set of measurement values for a recorded event\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+.SS "papi_hl_output_writer\&.Sum_Counter\&.get_sum ( self)"
+Calculates the sum for a set of measurements for a recorded event\&.
+.PP
+\fBReturns\fP
+.RS 4
+The sum of measurement values for a recorded event\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

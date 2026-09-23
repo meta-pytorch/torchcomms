@@ -1,0 +1,69 @@
+.TH "PAPIf_hl_stop" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPIf_hl_stop \- Stop a running high-level event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBFortran Prototype:\fP
+.RS 4
+#include 'fpapi\&.h' 
+.br
+\fBPAPIf_hl_stop( C_INT check )\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOEVNT\fP -- The EventSet is not started yet\&. 
+.br
+\fIPAPI_ENOMEM\fP -- Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBPAPIf_hl_stop\fP stops a running high-level event set\&.
+.PP
+This call is optional and only necessary if the programmer wants to use the low-level API in addition to the high-level API\&. It should be noted that \fBPAPIf_hl_stop\fP and low-level calls are not allowed inside of a marked region\&. Furthermore, \fBPAPIf_hl_stop\fP is thread-local and therefore has to be called in the same thread as the corresponding marked region\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.RE
+.PP
+.PP
+.nf
+integer retval
+
+call PAPIf_hl_region_begin("computation", retval)
+if ( retval \&.NE\&. PAPI_OK ) then
+    write (*,*) "PAPIf_hl_region_begin failed!"
+end if
+
+!do some computation here
+
+call PAPIf_hl_region_end("computation", retval)
+if ( retval \&.NE\&. PAPI_OK ) then
+    write (*,*) "PAPIf_hl_region_end failed!"
+end if
+
+call PAPIf_hl_stop(retval)
+if ( retval \&.NE\&. PAPI_OK ) then
+    write (*,*) "PAPIf_hl_stop failed!"
+end if
+.fi
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_hl_stop\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

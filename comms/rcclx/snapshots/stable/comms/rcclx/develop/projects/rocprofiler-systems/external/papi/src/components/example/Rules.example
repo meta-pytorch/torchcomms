@@ -1,0 +1,5 @@
+COMPSRCS += components/example/example.c
+COMPOBJS += example.o
+
+example.o: components/example/example.c components/example/example.h $(HEADERS) 
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/example/example.c -o example.o 

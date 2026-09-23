@@ -1,0 +1,96 @@
+.TH "PAPI_get_multiplex" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_multiplex \- Get the multiplexing status of specified event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_get_multiplex( int  EventSet );
+.RE
+.PP
+\fBFortran Interface:\fP
+.RS 4
+#include fpapi\&.h 
+.br
+ \fBPAPIF_get_multiplex( C_INT  EventSet,  C_INT  check )\fP
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP an integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid, or the EventSet is already multiplexed\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The EventSet is currently counting events\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBPAPI_get_multiplex\fP tests the state of the PAPI_MULTIPLEXING flag in the specified event set, returning \fITRUE\fP if a PAPI event set is multiplexed, or FALSE if not\&. 
+.br
+ 
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+int ret;
+ 
+// Create an empty EventSet
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Bind it to the CPU component
+ret = PAPI_assign_eventset_component(EventSet, 0);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Check  current multiplex status
+ret = PAPI_get_multiplex(EventSet);
+if (ret == TRUE) printf("This event set is ready for multiplexing\\n\&.")
+if (ret == FALSE) printf("This event set is not enabled for multiplexing\\n\&.")
+if (ret < 0) handle_error(ret);
+
+// Turn on multiplexing
+ret = PAPI_set_multiplex(EventSet);
+if ((ret == PAPI_EINVAL) && (PAPI_get_multiplex(EventSet) == TRUE))
+  printf("This event set already has multiplexing enabled\\n");
+else if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_multiplex_init\fP 
+.PP
+\fBPAPI_set_opt\fP 
+.PP
+\fBPAPI_create_eventset\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

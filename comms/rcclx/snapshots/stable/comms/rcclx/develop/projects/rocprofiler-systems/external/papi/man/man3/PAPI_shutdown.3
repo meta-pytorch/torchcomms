@@ -1,0 +1,32 @@
+.TH "PAPI_shutdown" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_shutdown \- Finish using PAPI and free all related resources\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Prototype:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ void PAPI_shutdown( void );
+.RE
+.PP
+PAPI_shutdown() is an exit function used by the PAPI Library to free resources and shut down when certain error conditions arise\&. It is not necessary for the user to call this function, but doing so allows the user to have the capability to free memory and resources used by the PAPI Library\&.
+.PP
+\fBSee also\fP
+.RS 4
+PAPI_init_library 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

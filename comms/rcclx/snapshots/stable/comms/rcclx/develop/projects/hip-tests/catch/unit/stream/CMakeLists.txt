@@ -1,0 +1,66 @@
+# Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+#
+# SPDX-License-Identifier: MIT
+
+set(COMMON_SHARED_SRC streamCommon.cc)
+
+set(TEST_SRC
+    hipStreamCreate.cc
+    hipStreamGetFlags.cc
+    hipStreamGetPriority.cc
+    hipMultiStream.cc
+    hipStreamAddCallback.cc
+    hipStreamCreateWithFlags.cc
+    hipStreamCreateWithPriority.cc
+    hipStreamDestroy.cc
+    hipStreamValue.cc
+    hipStreamSynchronize.cc
+    hipStreamQuery.cc
+    hipDeviceGetStreamPriorityRange.cc
+    hipStreamACb_StrmSyncTiming.cc
+    hipLaunchHostFunc.cc
+    hipStreamGetDevice.cc
+    hipStreamLegacy_Ext.cc
+    hipStreamLegacy_compiler_options.cc
+    hipStreamGetId.cc
+    hipStreamSetGetAttributes.cc
+    hipStreamAttachMemAsync.cc
+    # TODO renable it TheRock is not finding it
+    hipStreamCopyAttributes.cc
+  )
+
+if(HIP_PLATFORM MATCHES "amd")
+  set(TEST_SRC ${TEST_SRC} hipStreamGetCUMask.cc hipStreamWithCUMask.cc
+               hipStreamACb_MultiThread.cc hipStreamWaitEvent.cc
+	       hipStreamGetFlags_spt.cc
+               hipStreamGetPriority_spt.cc
+               hipStreamQuery_spt.cc
+               hipStreamSynchronize_spt.cc
+               hipStreamBatchMemOp.cc
+               # disabled on NVIDIA due to lack of hipStreamGetCaptureInfo_v2 in cuda 13.0+
+                hipStreamLegacy.cc
+
+             )
+else()
+  set(TEST_SRC
+      ${TEST_SRC}
+      hipStreamACb_MultiThread.cc)
+endif()
+
+if(HIP_PLATFORM MATCHES "amd")
+        set_source_files_properties(hipStreamLegacy_compiler_options.cc PROPERTIES COMPILE_OPTIONS "-fgpu-default-stream=per-thread")
+endif()
+if(HIP_PLATFORM MATCHES "nvidia")
+        set_source_files_properties(hipStreamLegacy_compiler_options.cc PROPERTIES COMPILE_OPTIONS "--default-stream=per-thread")
+endif()
+
+hip_add_exe_to_target(
+  NAME StreamTest
+  TEST_SRC ${TEST_SRC} TEST_TARGET_NAME build_tests
+  COMMON_SHARED_SRC ${COMMON_SHARED_SRC})
+
+add_executable(hipStreamLegacy_exe EXCLUDE_FROM_ALL hipStreamLegacy_exe.cc)
+set_source_files_properties(hipStreamLegacy_exe.cc PROPERTIES LANGUAGE ${GPGPU_LANGUAGE})
+
+add_dependencies(StreamTest hipStreamLegacy_exe)
+set_property(GLOBAL APPEND PROPERTY G_INSTALL_EXE_TARGETS hipStreamLegacy_exe)

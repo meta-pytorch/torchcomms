@@ -1,0 +1,116 @@
+.TH "PAPI_sprofil" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_sprofil \- Generate PC histogram data from multiple code regions where hardware counter overflow occurs\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_sprofil( PAPI_sprofil_t * prof, int profcnt, int EventSet, int EventCode, int threshold, int flags );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fI*prof\fP pointer to an array of \fBPAPI_sprofil_t\fP structures\&. Each copy of the structure contains the following: 
+.PD 0
+.IP "\(bu" 1
+buf -- pointer to a buffer of bufsiz bytes in which the histogram counts are stored in an array of unsigned short, unsigned int, or unsigned long long values, or 'buckets'\&. The size of the buckets is determined by values in the flags argument\&. 
+.IP "\(bu" 1
+bufsiz -- the size of the histogram buffer in bytes\&. It is computed from the length of the code region to be profiled, the size of the buckets, and the scale factor as discussed below\&. 
+.IP "\(bu" 1
+offset -- the start address of the region to be profiled\&. 
+.IP "\(bu" 1
+scale -- broadly and historically speaking, a contraction factor that indicates how much smaller the histogram buffer is than the region to be profiled\&. More precisely, scale is interpreted as an unsigned 16-bit fixed-point fraction with the decimal point implied on the left\&. Its value is the reciprocal of the number of addresses in a subdivision, per counter of histogram buffer\&.
+.PP
+.br
+\fIprofcnt\fP number of structures in the prof array for hardware profiling\&. 
+.br
+\fIEventSet\fP The PAPI EventSet to profile\&. This EventSet is marked as profiling-ready, but profiling doesn't actually start until a PAPI_start() call is issued\&. 
+.br
+\fIEventCode\fP Code of the Event in the EventSet to profile\&. This event must already be a member of the EventSet\&. 
+.br
+\fIthreshold\fP minimum number of events that must occur before the PC is sampled\&. If hardware overflow is supported for your component, this threshold will trigger an interrupt when reached\&. Otherwise, the counters will be sampled periodically and the PC will be recorded for the first sample that exceeds the threshold\&. If the value of threshold is 0, profiling will be disabled for this event\&. 
+.br
+\fIflags\fP bit pattern to control profiling behavior\&. Defined values are given in a table in the documentation for PAPI_pofil  
+
+ 
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIReturn\fP values for PAPI_sprofil() are identical to those for \fBPAPI_profil\fP\&. Please refer to that page for further details\&.  
+
+ 
+.RE
+.PP
+PAPI_sprofil() is a structure driven profiler that profiles one or more disjoint regions of code in a single call\&. It accepts a pointer to a preinitialized array of sprofil structures, and initiates profiling based on the values contained in the array\&. Each structure in the array defines the profiling parameters that are normally passed to PAPI_profil()\&. For more information on profiling, \fBPAPI_profil\fP  
+
+ 
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int retval;
+unsigned long length;
+PAPI_exe_info_t *prginfo;
+unsigned short *profbuf1, *profbuf2, profbucket;
+PAPI_sprofil_t sprof[3];
+
+prginfo = PAPI_get_executable_info();
+if (prginfo == NULL) handle_error( NULL );
+length = (unsigned long)(prginfo\->text_end \- prginfo\->text_start);
+// Allocate 2 buffers of equal length
+profbuf1 = (unsigned short *)malloc(length);
+profbuf2 = (unsigned short *)malloc(length);
+if ((profbuf1 == NULL) || (profbuf2 == NULL))
+  handle_error( NULL );
+memset(profbuf1,0x00,length);
+memset(profbuf2,0x00,length);
+// First buffer
+sprof[0]\&.pr_base = profbuf1;
+sprof[0]\&.pr_size = length;
+sprof[0]\&.pr_off = (vptr_t) DO_FLOPS;
+sprof[0]\&.pr_scale = 0x10000;
+// Second buffer
+sprof[1]\&.pr_base = profbuf2;
+sprof[1]\&.pr_size = length;
+sprof[1]\&.pr_off = (vptr_t) DO_READS;
+sprof[1]\&.pr_scale = 0x10000;
+// Overflow bucket
+sprof[2]\&.pr_base = profbucket;
+sprof[2]\&.pr_size = 1;
+sprof[2]\&.pr_off = 0;
+sprof[2]\&.pr_scale = 0x0002;
+retval = PAPI_sprofil(sprof, EventSet, PAPI_FP_INS, 1000000,
+PAPI_PROFIL_POSIX | PAPI_PROFIL_BUCKET_16)) != PAPI_OK)
+if ( retval != PAPI_OK ) handle_error( retval );
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_overflow\fP 
+.PP
+\fBPAPI_get_executable_info\fP 
+.PP
+\fBPAPI_profil\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

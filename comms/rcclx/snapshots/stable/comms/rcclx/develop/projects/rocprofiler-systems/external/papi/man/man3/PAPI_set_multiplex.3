@@ -1,0 +1,97 @@
+.TH "PAPI_set_multiplex" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_set_multiplex \- Convert a standard event set to a multiplexed event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_set_multiplex( int  EventSet );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP an integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP -- One or more of the arguments is invalid, or the EventSet is already multiplexed\&. 
+.br
+\fIPAPI_ENOCMP\fP -- The EventSet specified is not yet bound to a component\&. 
+.br
+\fIPAPI_ENOEVST\fP -- The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP -- The EventSet is currently counting events\&. 
+.br
+\fIPAPI_ENOMEM\fP -- Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBPAPI_set_multiplex\fP converts a standard PAPI event set created by a call to \fBPAPI_create_eventset\fP into an event set capable of handling multiplexed events\&. This must be done after calling \fBPAPI_multiplex_init\fP, and either \fBPAPI_add_event\fP or \fBPAPI_assign_eventset_component\fP, but prior to calling PAPI_start()\&.
+.PP
+Events can be added to an event set either before or after converting it into a multiplexed set, but the conversion must be done prior to using it as a multiplexed set\&.
+.PP
+\fBNote\fP
+.RS 4
+Multiplexing can't be enabled until PAPI knows which component is targeted\&. Due to the late binding nature of PAPI event sets, this only happens after adding an event to an event set or explicitly binding the component with a call to \fBPAPI_assign_eventset_component\fP\&.
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+int ret;
+ 
+// Create an empty EventSet
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Bind it to the CPU component
+ret = PAPI_assign_eventset_component(EventSet, 0);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Check  current multiplex status
+ret = PAPI_get_multiplex(EventSet);
+if (ret == TRUE) printf("This event set is ready for multiplexing\\n\&.")
+if (ret == FALSE) printf("This event set is not enabled for multiplexing\\n\&.")
+if (ret < 0) handle_error(ret);
+
+// Turn on multiplexing
+ret = PAPI_set_multiplex(EventSet);
+if ((ret == PAPI_EINVAL) && (PAPI_get_multiplex(EventSet) == TRUE))
+  printf("This event set already has multiplexing enabled\\n");
+else if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_multiplex_init\fP 
+.PP
+\fBPAPI_get_multiplex\fP 
+.PP
+\fBPAPI_set_opt\fP 
+.PP
+\fBPAPI_create_eventset\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

@@ -1,0 +1,27 @@
+.TH "PAPI_unregister_thread" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_unregister_thread \- Notify PAPI that a thread has 'disappeared'\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOMEM\fP Space could not be allocated to store the new thread information\&. 
+.br
+\fIPAPI_ESYS\fP A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_ECMP\fP Hardware counters for this thread could not be initialized\&.
+.RE
+.PP
+\fBPAPI_unregister_thread\fP should be called when the user wants to shutdown a particular thread and free the associated thread ID\&. THIS IS IMPORTANT IF YOUR THREAD LIBRARY REUSES THE SAME THREAD ID FOR A NEW KERNEL LWP\&. OpenMP does this\&. OpenMP parallel regions, if separated by a call to omp_set_num_threads() will often kill off the underlying kernel LWPs and then start new ones for the next region\&. However, omp_get_thread_id() does not reflect this, as the thread IDs for the new LWPs will be the same as the old LWPs\&. PAPI needs to know that the underlying LWP has changed so it can set up the counters for that new thread\&. This is accomplished by calling this function\&. 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

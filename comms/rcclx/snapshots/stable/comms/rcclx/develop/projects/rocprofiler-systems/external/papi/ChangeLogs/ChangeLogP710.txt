@@ -1,0 +1,1472 @@
+2023-12-19  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/flops.c: cat: fix compile-time error
+	  On some older versions of GCC (10.3.0), not having a statement
+	  after 'default' in a switch-case statement can yield the compiler
+	  warning: "label at end of compound statement"  These changes fix
+	  this error and have been tested on the AMD Zen3 architecture.
+
+2023-12-19  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* .../rocm/tests/hl_intercept_multi_thread_monitoring.cpp,
+	  .../rocm/tests/hl_intercept_single_kernel_monitoring.cpp,
+	  .../rocm/tests/hl_intercept_single_thread_monitoring.cpp,
+	  .../rocm/tests/hl_sample_single_kernel_monitoring.cpp,
+	  .../rocm/tests/hl_sample_single_thread_monitoring.cpp,
+	  src/components/rocm/tests/matmul.cpp: rocm: fix warnings in the
+	  rocm tests
+	* src/components/rocm/tests/Makefile: rocm: search for hipcc in
+	  PAPI_ROCM_ROOT instead of using fixed path  The path of hipcc in
+	  the ROCm installation directory has changed. In order to be
+	  location independent the rocm/tests Makefile should locate the
+	  hipcc compiler in the installation directory rather than relying on
+	  a fixed pathname.
+	* src/configure, src/configure.in: configure: search for rocm_smi
+	  headers in PAPI_ROCMSMI_ROOT  The configure script used to search
+	  for rocm_smi headers in PAPI_ROCM_ROOT instead of
+	  PAPI_ROCMSMI_ROOT. This was because the rocm headers are typically
+	  installed under the same root. However, with rocm-6.0.0 the
+	  rocm_smi.h causes a failure while building the sysdetect component
+	  in PAPI (component that is enabled by default). Thus, we now look
+	  explicitly for the rocm_smi header in PAPI_ROCMSMI_ROOT instead in
+	  order to isolate the sysdetect & rocm components from rocm_smi.
+	* src/components/cuda/cupti_common.c: cuda: add cudaGetErrorString to
+	  generate error messages  cudaGetErrorString is used to the proper
+	  disabled_message to the users whenever there is a cuda related
+	  problem during initialization.
+	* src/components/cuda/cupti_common.c: cuda: refactor
+	  get_gpu_compute_capability  With exception made for trivial
+	  functions (i.e. functions that cannot fail) every function should
+	  return an error code for proper error handling. The
+	  get_gpu_compute_capability does not account for error handling in
+	  the case a cuda call failure happens.
+	* src/components/cuda/cupti_common.c: cuda: refactor
+	  util_gpu_collection_kind  With exception made for trivial functions
+	  (i.e. functions that cannot fail) every function should return an
+	  error code for proper error handling. The util_gpu_collection_kind
+	  does not account for error handling in the case a cuda call failure
+	  happens.
+	* src/components/cuda/cupti_common.c,
+	  src/components/cuda/cupti_common.h,
+	  src/components/cuda/cupti_profiler.c: cuda: refactor
+	  cuptic_device_get_count  With exception made for trivial functions
+	  (i.e. functions that cannot fail) every function should return an
+	  error code for proper error handling. The cuptic_device_get_count
+	  does not account for error handling in the case a cuda call failure
+	  happens.
+
+2023-12-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: print all masks
+	  descriptors for events that contain them
+	* src/components/rocm/roc_profiler.c: rocm: add coma separator
+	  between event descriptor and masks
+
+2023-12-18  Florian Weimer <fweimer@redhat.com>
+
+	* src/configure, src/configure.in: configure: Fix return values in
+	  start thread routines  Thread start routines must return a void *
+	  value, and future compilers refuse to convert integers to pointers
+	  with just a warning (the virtualtimer probe).  Without this change,
+	  the probe always fails to compile with future compilers (such as
+	  GCC 14).  For the tls probe, return a null pointer for future-
+	  proofing, although current and upcoming C compilers do not treat
+	  this omission as an error.  Updates commit dd11311aadbd06ab6c76d
+	  ("configure: fix tls detection").
+
+2023-12-14  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: various cache presets for SPR CPUs
+	  Defines the presets for data cache and total cache activity in the
+	  Intel Sapphire Rapids architecture.  These changes have been tested
+	  on the Intel Sapphire Rapids architecture using the Counter
+	  Analysis Toolkit.
+
+2023-12-08  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: add total cache presets for Zen4 CPUs
+	  Add preset definitions for total L2 total cache hits and misses.
+	  These changes have been tested on the AMD Zen4 architecture using
+	  the Counter Analysis Toolkit.
+	* src/papi_events.csv: presets: correction to instr cache preset  Fix
+	  mistake introduced in commit
+	  ef1cc48846b58156995db58f53314bd4c9ec9bc0, in which the definition
+	  for PAPI_L2_ICM can realize negative values.  These changes have
+	  been tested on the AMD Zen4 architecture using the Counter Analysis
+	  Toolkit.
+
+2023-12-14  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/gen_seq_dlopen.sh: cat: reduce exec
+	  time of instr cache benchmark  Skip the most time-consuming kernels
+	  in the CAT instruction cache benchmark.  These changes have been
+	  tested on the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/timing_kernels.c: cat: remove unused
+	  variable  Remove declaration for an unused variable.  These changes
+	  have been tested on the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/dcache.c: cat: account for proper
+	  number of buffers  Adjust the logic to properly account for how
+	  many buffer sizes shall exceed the size of the last-level cache.
+	  These changes have been tested on the Intel Sapphire Rapids
+	  architecture.
+
+2023-12-13  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/hw_desc.h,
+	  src/counter_analysis_toolkit/main.c: cat: read values from config
+	  file as 'long long'  Since some of the buffer sizes are very large,
+	  then the values for the cache sizes provided in the config file
+	  should be interpreted as type 'long long.'  These changes have been
+	  tested on the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/dcache.c: cat: remove unnecessary
+	  typecast  Remove a typecast to 'long long,' which is unnecessary
+	  because the variable is already the type 'long long.'  These
+	  changes have been tested on the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h: cat: use macro for LLC
+	  factor  Create a macro to more easily define the factor by which
+	  the LLC is multiplied to attain the largest buffer size used in the
+	  pointer chase.  These changes have been tested on the Intel
+	  Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/dcache.c: cat: ensure proper integer
+	  arithmetic  Append 'LL' to constant values that are added or
+	  multiplied with 'long long' variables.  These changes have been
+	  tested on the Intel Sapphire Rapids architecture.
+
+2023-12-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c: cat: allocate the proper max
+	  buffer size  Allocate enough space for the largest buffer size used
+	  in the pointer chase. When values in the config file are provided,
+	  this needs to account for them.  These changes have been tested on
+	  the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/dcache.c: cat: fix erroneous malloc
+	  Fix an erroneous malloc() call by changing the size of each element
+	  to that of 'long long.'  These changes have been tested on the
+	  Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/main.c: cat: fix memory leak  Fix
+	  memory leak by freeing dynamically allocated in the case it was not
+	  previously freed.  These changes have been tested on the Intel
+	  Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/prepareArray.c: cat: clean-up comments
+	  Remove in-line comments and fix typos in comments for readability.
+
+2023-12-06  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: cat: place MPI_Barrier before
+	  MPI_Finalize  When MPI is used, no rank should reach MPI_Finalize
+	  until all ranks' work has completed.  These changes have been
+	  tested on the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/main.c: cat: only measure latencies
+	  once  When MPI is used, only one rank needs to run the latency
+	  tests.  These changes have been tested on the Intel Sapphire Rapids
+	  architecture.
+
+2023-12-08  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: add instr cache presets for Intel SPR
+	  Defines the instruction cache presets for the Intel Sapphire Rapids
+	  architecture.  These changes have been tested on the Intel Sapphire
+	  Rapids architecture using the Counter Analysis Toolkit.
+	* src/components/intel_gpu/README.md: intel_gpu: fix small typo  Fix
+	  small typo in the README for the Intel GPU component.
+
+2023-12-06  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/prepareArray.c: cat: fix memory leak
+	  Free the dynamically allocated memory at the end of the function
+	  that sets up the pointer chain.  These changes have been tested on
+	  the AMD Zen4 architecture.
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h,
+	  src/counter_analysis_toolkit/prepareArray.c,
+	  src/counter_analysis_toolkit/prepareArray.h,
+	  src/counter_analysis_toolkit/timing_kernels.c,
+	  src/counter_analysis_toolkit/timing_kernels.h: cat: store buffer
+	  sizes as 'long long'  Use 'long long' instead of 'int' for buffer
+	  sizes to prevent overflow from occurring for large buffer sizes.
+	  These changes have been tested on the AMD Zen4 architecture.
+
+2023-12-04  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/timing_kernels.c: cat: properly
+	  normalize counter values  Ensure that the number of pointer chain
+	  accesses is evenly divisible by the work macros to prevent
+	  incorrectly normalizing event counts.  These changes have been
+	  tested on the AMD Zen4 architecture.
+	* src/counter_analysis_toolkit/.cat_cfg,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/hw_desc.h,
+	  src/counter_analysis_toolkit/main.c: cat: fix logic for memory
+	  hierarchy parameters  Make distinction between the "L4" and "MM"
+	  levels of the memory hierarchy.  These changes have been tested on
+	  the AMD Zen4 architecture.
+	* src/counter_analysis_toolkit/main.c: cat: larger default PPB value
+	  Make the default pages-per-block (PPB) value larger to accommodate
+	  more recent architectures.  These changes have been tested on the
+	  AMD Zen4 architecture.
+	* src/counter_analysis_toolkit/.cat_cfg,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/hw_desc.h,
+	  src/counter_analysis_toolkit/main.c: cat: create parameter for max
+	  PPB in config file  Allow the user to change the pages-per-block
+	  (PPB) value via the congfiguration file.  These changes have been
+	  tested on the AMD Zen4 architecture.
+	* src/counter_analysis_toolkit/main.c: cat: probe fewer buffers per
+	  cache level  Make the default number of buffer sizes three (per
+	  cache level) to decrease the benchmark execution time while still
+	  sufficiently sampling each level in the memory hierarchy.  These
+	  changes have been tested on the AMD Zen4 architecture.
+
+2023-12-01  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c: cat: exclude cache sizes
+	  from tests  Do not use the exact cache sizes in the sweep of buffer
+	  sizes in the data-cache kernels because there tends to be transient
+	  behavior at these boundaries.  These changes have been tested on
+	  the AMD Zen4 architecture.
+
+2023-12-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* .github/workflows/ci.sh, .github/workflows/main.yml: ci: run tests
+	  with and without PAPI debug enabled  Tests should make sure real
+	  use cases work as expected. Some tests might not working correctly
+	  if -O0 is used as optimization level in the compiler. For example,
+	  the ROCm runtime submits a kernel of 4 waves if the tests are built
+	  using -O0, which makes the tests fail.  Update the github test
+	  configuration matrix to include testing without PAPI debug.
+
+2023-11-15  Aurelian MELINTE <ame01@gmx.net>
+
+	* src/components/sysdetect/arm_cpu_utils.c: PAPI: ARM Cortexx A76
+	  support (Raspberry Pi 5)
+
+2023-11-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/tests/Makefile: rocm: change opt level to user
+	  choice for tests
+
+2023-11-16  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_dispatch.c,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/roc_profiler.c,
+	  src/components/rocm/roc_profiler.h, src/components/rocm/rocm.c:
+	  rocm: add rocp_evt_code_to_info support  This function is needed to
+	  allow papi_native_avail to extract qualifier descriptions for the
+	  event identifier.
+
+2023-11-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c, src/components/rocm/rocm.c:
+	  rocm: add qualifier support  This commit contains the core changes
+	  of this feature set. It introduces the logic necessary to handle
+	  event identifiers in such a way that device and instance attributes
+	  are presented to the PAPI users as qualifiers. This means that
+	  papi_native_avail will return:  Native Events in Component: rocm ==
+	  ===================================================================
+	  ========== | rocm:::SQ_WAIT_INST_LDS
+	  | |            Number of wave-cycles spent waiting for LDS
+	  instruction issue. In | |            units of 4 cycles. (per-simd,
+	  nondeterministic)                   | |     :device=0
+	  | |             mandatory device qualifier [devices: 0,1]
+	  | -----------------------------------------------------------------
+	  --------------- | rocm:::TCP_TCP_TA_DATA_STALL_CYCLES
+	  | |            TCP stalls TA data interface. Now Windowed.
+	  | |     :device=0
+	  | |             mandatory device qualifier [devices: 0,1]
+	  | |     :instance=0
+	  | |             mandatory instance qualifier in range [0 - 15]
+	  | -----------------------------------------------------------------
+	  ---------------  The PAPI user will be able to use event names in
+	  the same form as before (all previous tests will still work) with
+	  the relaxation on the order of device and instance numbers.
+	* src/components/rocm/roc_profiler.c: rocm: add finalize_features
+	  function  This function is needed as features will be generated on
+	  the fly for rocprofiler rather than saved in the event table.
+	  Therefore, the feature names have to be freed when the rocprofiler
+	  context is closed.
+	* src/components/rocm/roc_profiler.c: rocm: add unique metric utility
+	  functions for intercept mode  In intercept mode we are only
+	  interested in unique events, i.e., events that have the same name
+	  and instance (can be from different devices). This is because in
+	  intercept mode all unique events are monitored on all devices.
+	  Though, only the counters for the actual requested events will be
+	  presented to the user. This is a design choice that accounts for
+	  the fact that once set, callbacks for dispatch queues cannot be
+	  updated (this includes the monitored events).
+	* src/components/rocm/roc_profiler.c: rocm: add event name to info
+	  utility functions  Add functions to extract event info from the
+	  name (e.g., device number and instance number).
+	* src/components/rocm/roc_profiler.c: rocm: remove useless comments
+
+2023-11-03  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: remove useless check for
+	  intercept code path
+	* src/components/rocm/roc_profiler.c: rocm: move init_callbacks call
+	  init_callbacks should be called only once, i.e., when the
+	  intercept_global_state is initialized. After that happens the
+	  callbacks for the dispatch queues in all devices are already set
+	  and cannot longer be changed.
+	* src/components/rocm/roc_profiler.c: rocm: remove intercept global
+	  state macros  Intercept mode macros were simple aliases to entries
+	  in the global intercept mode state. Using explicit references to
+	  the said data structure entries improves readability.
+
+2023-11-21  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_profiler.c: rocm: change type of device id
+	  from unsigned int to int
+
+2023-11-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: add event identifier
+	  utility functions  Add functions to create and query event id
+	  attributes like device and instance.
+
+2023-11-13  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h:
+	  rocm: add bitmap utility functions  Add rocc_dev_set and
+	  rocc_dev_check. The first register the presence of a device in the
+	  passed in bitmap while the second checks the bit corresponding to
+	  the passed in device number is set in the bitmap.
+
+2023-11-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_dispatch.c,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/roc_profiler.c,
+	  src/components/rocm/roc_profiler.h,
+	  src/components/rocm/roc_profiler_config.h,
+	  src/components/rocm/rocm.c: rocm: change the event id type to
+	  uint64_t in backend  Preparatory commit to increase the size of the
+	  event id datatype in the component backend layer so to make it
+	  ready for hosting event id encoded information, such as device and
+	  instance numbers.
+
+2023-07-21  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/template/README.md,
+	  src/components/template/Rules.template,
+	  src/components/template/template.c,
+	  src/components/template/tests/Makefile,
+	  src/components/template/tests/simple.c,
+	  src/components/template/vendor_common.c,
+	  src/components/template/vendor_common.h,
+	  src/components/template/vendor_config.h,
+	  src/components/template/vendor_dispatch.c,
+	  src/components/template/vendor_dispatch.h,
+	  src/components/template/vendor_profiler_v1.c,
+	  src/components/template/vendor_profiler_v1.h: template: add
+	  template for new components
+
+2023-12-01  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/timing_kernels.c: CAT: Initialize
+	  variables to suppress warnings, and move them to correct scope.
+
+2023-11-29  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: add inst cache presets for Zen4 CPUs
+	  Defines various instruction-cache related presets for Zen4.  These
+	  changes have been tested on the Zen4 architecture using the Counter
+	  Analysis Toolkit.
+
+2023-08-30  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/README.md: rocm: extend README with device
+	  partitioning information
+
+2023-11-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/tests/Makefile: sysdetect: add -ffree-form
+	  to silence error in ARM comp
+
+2023-11-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/README.md: rocm: add known problems with some
+	  events to README
+
+2023-11-17  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: fix bug in intercept mode
+	  reset function
+	* src/components/rocm/roc_profiler.c: rocm: fix bug introduced by
+	  commit 4991e1614
+
+2023-11-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/libpfm4/.gitignore: libpfm4: remove leftover .gitignore file
+
+Thu Sep 28 08:01:09 2023 +0000  Clément Foyer <clement.foyer@univ-reims.fr>
+
+	* src/libpfm4/lib/pfmlib_intel_x86_arch.c: libpfm4: update to commit
+	  535c204  Original commit:   Add Intel IceLake and Intel
+	  SapphireRapid performance counters to the event table
+
+2023-11-10  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/dcache.h: CAT: Add information about
+	  the cache sizes in the header of the output file.
+
+2023-11-22  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: add data cache presets for Zen4 CPUs
+	  Includes various data-cache related presets for Zen4.  These
+	  changes have been tested on the Zen4 architecture using the Counter
+	  Analysis Toolkit.
+
+2023-11-12  Anthony <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: CAT: Add missing option in the
+	  usage output.
+
+2023-11-09  Anthony <adanalis@icl.utk.edu>
+
+	* src/utils/Makefile: utils: Fix bogus "Disabled" message in
+	  papi_component_avail for the sde component.  When the sde component
+	  is initialized, in the context of an application that uses PAPI, it
+	  looks for the availability of libsde symbols. The rationale is that
+	  if the application is not linked against libsde, there are no SDEs
+	  to read, so the component disables itself. Therefore,
+	  papi_component_avail, which does not export any SDEs itself, always
+	  reported the sde component as "Disabled". Adding the symbols to the
+	  utility resolves this problem.
+
+2023-10-27  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: fix bug in intercept mode
+	  path  The intercept mode path keeps track of incercepted events
+	  using the same hash table used to map event names to entries in the
+	  native event table. The event names don't collide because intercept
+	  mode keeps track of the base name of the event (discarding device
+	  id and instance number), while native event table entries are
+	  referenced as "name:device=N:instance=M". The reason is that events
+	  are intercepted on all devices' dispatch queues regarless the
+	  device id specified by the user (this approach follows rocprof
+	  strategy). However, using only the event name without the instance
+	  number will cause problems. Instances represent separate events and
+	  should not be treated as a single event.  The proposed patch uses a
+	  separate has table for intercept mode and inserts the feature name
+	  rather than the event base name. This means that events with more
+	  than one instance will have an hash table key of the form
+	  "name[M]", where M represents the instance. If the event only has
+	  one instance the key will be "name".
+
+2023-11-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* .github/workflows/ci.sh: ci: add --enable-warnings to github
+	  actions
+	* src/configure, src/configure.in: configure: add -Wall to the
+	  --enable-warnings configure flag
+
+2023-10-24  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/configure, src/configure.in: configure: add --enable-warnings
+	  flag  The --enable-warnings configure flag allows for a maintainer
+	  build mode where the compiler (gcc) enables extra warnings
+	  (-Wextra).
+
+2023-11-07  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: refactor
+	  get_context_counters  The function already takes rocp_ctx as input
+	  argument thus there is no need to pass events_id as input argument
+	  as well.
+	* src/components/rocm/roc_profiler.c: rocm: get rid of asserts
+	* src/components/rocm/roc_profiler.c: rocm: set return code outside
+	  fn_fail in init_event_table
+
+2023-11-08  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/configure, src/configure.in: configure: fix for issue #112
+
+2023-09-13  Josh Minor <josh.minor@arm.com>
+
+	* src/components/perf_event/pe_libpfm4_events.c: Set size of
+	  perf_attr_struct prior to getting pfm encoding
+
+2023-11-07  William Cohen <wcohen@redhat.com>
+
+	* src/ctests/thrspecific.c: ctests/thrspecific: Have the threads
+	  clean up after themselves  Each thread is doing doing memory
+	  allocations via malloc.  They should also free the memory once they
+	  are done to eliminate the following coverity issues:  Error:
+	  CPPCHECK_WARNING (CWE-401): [#def10]
+	  papi-7.0.1/src/ctests/thrspecific.c:77: error[memleak]: Memory
+	  leak: data.data #   75|                        } #   76|
+	  processing = 0; #   77|->              } #   78|        } #   79|
+	  Error: CPPCHECK_WARNING (CWE-401): [#def11]
+	  papi-7.0.1/src/ctests/thrspecific.c:77: error[memleak]: Memory
+	  leak: data.id #   75|                        } #   76|
+	  processing = 0; #   77|->              } #   78|        } #   79|
+	* src/components/sysdetect/linux_cpu_utils.c: sysdetect: Eliminate
+	  file resource leak in get_vendor_id() function  This fix eliminates
+	  the following issue reported by coverity:  Error: RESOURCE_LEAK
+	  (CWE-772): [#def9]
+	  papi-7.0.1/src/components/sysdetect/linux_cpu_utils.c:900:
+	  alloc_fn: Storage is returned from allocation function "fopen".
+	  papi-7.0.1/src/components/sysdetect/linux_cpu_utils.c:900:
+	  var_assign: Assigning: "fp" = storage returned from
+	  "fopen("/proc/cpuinfo", "r")".
+	  papi-7.0.1/src/components/sysdetect/linux_cpu_utils.c:906:
+	  noescape: Resource "fp" is not freed or pointed-to in
+	  "search_cpu_info".
+	  papi-7.0.1/src/components/sysdetect/linux_cpu_utils.c:968:
+	  leaked_storage: Variable "fp" going out of scope leaks the storage
+	  it points to.
+	* src/components/net/linux-net.c: net: Ensure that strings copied are
+	  NULL terminated  The strncpy function may not put a NULL at the end
+	  of the destination buffer if the source string is longer than the
+	  specified copy size. To ensure that the the copied strings are null
+	  terminated using snprintf instead and checking its return value to
+	  ensure that the copied string was not truncated.  The snprintf
+	  function will always include a NULL at the end of copy.  This
+	  particular fix addresses the following two coverity issues:  Error:
+	  BUFFER_SIZE (CWE-170): [#def6] papi-7.0.1/src/components/net/linux-
+	  net.c:346: buffer_size_warning: Calling "strncpy" with a maximum
+	  size argument of 128 bytes on destination array
+	  "_net_native_events[i].name" of size 128 bytes might leave the
+	  destination string unterminated.  Error: BUFFER_SIZE (CWE-170):
+	  [#def7] papi-7.0.1/src/components/net/linux-net.c:347:
+	  buffer_size_warning: Calling "strncpy" with a maximum size argument
+	  of 128 bytes on destination array
+	  "_net_native_events[i].description" of size 128 bytes might leave
+	  the destination string unterminated.
+	* src/components/coretemp/linux-coretemp.c: coretemp: Ensure strings
+	  copied during initialization are NULL terminated  The strncpy
+	  function will not place a NULL character at the end of the string
+	  if the string being copied is the same length or longer than the
+	  destination of the strncpy function.  Switching the code in the
+	  _coretemp_init_component function to use snprintf and checking the
+	  return value of snprintf to verify the copied string fits in the
+	  destination.
+	* src/components/coretemp/linux-coretemp.c: coretemp: add closedir
+	  operation to function exit  Coverity flagged a resource leak on one
+	  of the possibe exit path of the generateEventList function.  This
+	  patch adds the missing closedir.
+
+2023-10-25  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/rocm/README.md: rocm: update README  For versions of
+	  ROCM >= 5.2.0, the ROCM library path structure is different.  The
+	  README has been updated to reflect this difference.  This was
+	  verified on the Frontier supercomputer.
+
+2023-09-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/sde_lib/Makefile: sde_lib: do not build with debug symbols by
+	  default
+	* src/configure, src/configure.in: configure: do not build with debug
+	  symbols by default  Remove -g being added by default in configure.
+
+2023-10-19  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c: cuda: Fix papi_command_line
+	  segfault when passed non-existent event name
+
+2023-10-06  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c, src/components/cuda/linux-
+	  cuda.c: cuda: Improve CUDA component PAPI_read() overhead, issue 85
+
+2023-10-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c,
+	  .../rocm/tests/sample_multi_thread_monitoring.cpp,
+	  .../rocm/tests/sample_single_thread_monitoring.cpp: rocm: fix
+	  sampling mode multithread issue  Issue #80 was causing sampling
+	  mode multithreading not to work. This was caused by a bug in the
+	  rocm component that tried to monitor multiple GPU devices using the
+	  using the same rocprofiler queue.  Assigning one independent queue
+	  per device solves the issue.
+
+2023-10-09  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: fix typo in ctx_open
+
+2023-09-08  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.c: rocm: add logging to component
+	  backend
+	* src/components/rocm/rocm.c: rocm: add logging to component frontend
+	* src/components/rocm/rocm.c: rocm: funnel exits through same point
+	  in compomnent frontend
+
+2023-07-20  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c: rocm: refactor
+	  rocc_dev_get_{count,id} functions
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_profiler.c: rocm: fix warning in callback
+	  function
+
+2023-07-18  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_profiler.c: rocm: move thread id get
+	  function to roc_common
+
+2023-07-17  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.c: rocm: fix warning in roc_common.c
+	* src/components/rocm/roc_profiler.h: rocm: remove roc_common.h from
+	  roc_profiler.h
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_profiler.c: rocm: move agent to id function
+	  to roc_common
+
+2023-07-14  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_profiler.h: rocm: remove leftover
+	  err_get_last function header
+	* src/components/rocm/roc_dispatch.c,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/roc_profiler.c,
+	  src/components/rocm/roc_profiler.h, src/components/rocm/rocm.c:
+	  rocm: rename evt_get_descr to evt_code_to_descr
+
+2023-07-13  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_dispatch.h,
+	  src/components/rocm/{rocp_config.h => roc_profiler_config.h}: rocm:
+	  rename rocp_config.h to roc_profiler_config.h
+	* src/components/rocm/roc_profiler.c: rocm: reformat roc_profiler.c
+	  code
+	* src/components/rocm/roc_profiler.c: rocm: remove FIXME comment
+	* src/components/rocm/roc_profiler.c: rocm: use snprintf instead of
+	  strncpy
+	* src/components/rocm/roc_common.c, src/components/rocm/roc_common.h,
+	  src/components/rocm/roc_profiler.c: rocm: extract all device
+	  booking and checking functions
+
+2023-07-12  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocm.c, src/components/rocm/rocp_config.h:
+	  rocm: move extern declarations to config header  The rocm lock and
+	  the profiling mode variables need to be shared between the front-
+	  end and the back-end. The reason for the lock is that this has to
+	  be initialized by the front-end which is the only one with access
+	  to the required information. This lock design in PAPI is flawed as
+	  it is hard to extend.
+	* src/components/rocm/roc_profiler.c: rocm: remove unneeded comments
+	* src/components/rocm/Rules.rocm, src/components/rocm/{rocc.c =>
+	  roc_common.c}, src/components/rocm/{rocc.h => roc_common.h},
+	  src/components/rocm/{rocd.c => roc_dispatch.c},
+	  src/components/rocm/{rocd.h => roc_dispatch.h},
+	  src/components/rocm/{rocp.c => roc_profiler.c},
+	  src/components/rocm/{rocp.h => roc_profiler.h},
+	  src/components/rocm/rocm.c: rocm: rename source files for better
+	  readability
+
+2023-05-17  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/Rules.rocm, src/components/rocm/common.h,
+	  src/components/rocm/rocc.c, src/components/rocm/rocc.h,
+	  src/components/rocm/rocd.c, src/components/rocm/rocd.h,
+	  src/components/rocm/rocm.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h, src/components/rocm/rocp_config.h:
+	  rocm: extract shared functionality  Some functionality can be
+	  shared with other profiler versions, if and when these become
+	  available. Thus, it makes sense to extract such functionality from
+	  the specific profiler implementation and make it available to
+	  future profiler versions.
+
+2023-07-12  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocd.c, src/components/rocm/rocp.c,
+	  src/components/rocm/rocp.h, src/configure, src/configure.in: rocm:
+	  remove ROCM_PROF_ROCPROFILER guard  This guard was introduced when
+	  rocmtools was planned instead of rocprofiler V2.
+
+2023-05-16  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: update returned error codes
+	  Errors associated with rocprofiler calls are assigned PAPI_EMISC,
+	  while errors caused by unexpected user actions (e.g. starting an
+	  eventset that is already running) are assigned PAPI_EINVAL.
+	  Everything that is not a memory allocation failure (PAPI_ENOMEM) is
+	  assigned the PAPI_ECMP error.
+	* src/components/rocm/rocp.c: rocm: remove macros handling error
+	  management
+	* src/components/rocm/rocp.c: rocm: rename hsa_agent_arr_t to
+	  device_table_t
+	* src/components/rocm/rocp.c: rocm: replace trailing Ptr in rocm
+	  functions with _p
+
+2023-09-08  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/ci.sh, .github/workflows/spack.sh: changing gcc
+	  version for rocm compatibility
+
+2023-09-29  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/tests/Makefile: sysdetect: fix compiler
+	  flag selection in tests
+	* src/configure, src/configure.in: configure: fix tls detection
+	  Configure TLS detection tests were failing because of wrong usage
+	  of pthread_create(). Problem was caused by wrong definition of
+	  thread functions which require void *f(void *) instead of int
+	  f(void *) or void f(void *).
+
+2023-09-26  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/smoke_tests/Makefile: smoke_tests: fix Makefile  Makefile file
+	  was missing a PAPI_ROOT path and also an additional -pthread in the
+	  linker flags.
+
+2023-09-15  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c, src/papi.h,
+	  src/utils/papi_component_avail.c: cuda: Revert "utils:
+	  papi_component_avail does not support cuda component counters"
+	  This reverts commit 4f15f3d15463df5acfda26fbc6367756e1f62f03.
+	* src/components/lmsensors/linux-lmsensors.c: lmsensors: Replace
+	  numerical literal 1024 with PATH_MAX macro
+
+2023-09-05  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/lmsensors/README.md, src/components/lmsensors/linux-
+	  lmsensors.c: lmsensors: Add lib/ to explicit search path to .so
+	  loader
+
+2023-09-15  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/coretemp/linux-coretemp.c: coretemp: Fix snprintf
+	  warnings for gcc 10
+
+2023-07-12  Caleb Han <calebhantech@gmail.com>
+
+	* src/sde_lib/sde_lib.hpp: sde_lib: fixed make bug
+
+2023-09-18  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/sde/tests/Minimal/Minimal_Test.c: sde: Fix
+	  Minimal_Test.c handle pointer
+
+2023-07-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: fix snprintf handling  The
+	  expected return value from snprintf is < PAPI_MAX_STR_LEN. If it is
+	  >= PAPI_MAX_STR_LEN, the input string was longer than the output
+	  string and this is an unexpected condition that needs to be handled
+	  properly.
+	* src/components/sysdetect/nvidia_gpu.c: sysdetect: fix snprintf n
+	  argument in CUDA backend  The n argument in snprintf specifies the
+	  length of the output string not the one of the input string.
+	* src/components/sysdetect/amd_gpu.c: sysdetect: fix snprintf n
+	  argument in ROCm backend  The n argument in snprintf specifies the
+	  length of the output string not the one of the input string.
+	* src/components/sysdetect/nvidia_gpu.c: sysdetect: do not null
+	  terminate manually in CUDA backend  snprintf will always null
+	  terminate the output string regarless characters from input string
+	  being dropped (i.e. if the output string is shorter than the input
+	  string).
+	* src/components/sysdetect/amd_gpu.c: sysdetect: do not null
+	  terminate manually in ROCm backend  snprintf will always null
+	  terminate the output string regarless characters from input string
+	  being dropped (i.e. if the output string is shorter than the input
+	  string).
+
+2023-07-21  Lukas Alt <lukas.alt@rwth-aachen.de>
+
+	* src/components/rapl/linux-rapl.c: rapl: support for icelake-sp
+
+2023-07-25  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: cat: add missing entry in
+	  usage message  Add a command-line flag for the instructions
+	  benchmark to the usage message.  These changes have been tested on
+	  the Intel Sapphire Rapids architecture.
+	* src/counter_analysis_toolkit/main.c,
+	  src/counter_analysis_toolkit/params.h: cat: add option for conf
+	  file path  Add an optional command-line flag for the path to the
+	  configuration file. This is useful on systems which do not assume
+	  the work directory is where the .cat_cfg file is located.  These
+	  changes have been tested on the Intel Sapphire Rapids architecture.
+
+2023-09-06  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: fix warning "variable
+	  might be used uninitialized"
+
+2023-09-01  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/tests/Makefile,
+	  .../tests/hl_intercept_multi_thread_monitoring.cpp,
+	  .../hl_intercept_single_thread_monitoring.cpp,
+	  .../tests/hl_sample_single_thread_monitoring.cpp,
+	  .../rocm/tests/multi_thread_monitoring.cpp,
+	  .../rocm/tests/single_thread_monitoring.cpp: rocm: remove openmp
+	  dependency  Spack installation of PAPI + rocm component have
+	  dependency issues with openmp caused by the AMD llvm compiler.
+	  Because component tests are always built in PAPI this prevents
+	  spack from installing PAPI in the system. Removing the openmp
+	  dependency and replacing with pthreads solves the issue.
+
+2023-09-06  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c: cuda: fix event enumeration
+
+2023-08-30  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/cupti_common.c: cuda: fix dangerous
+	  dl_iterate_phdr operation
+
+2023-08-15  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c, src/papi.h,
+	  src/utils/papi_component_avail.c: utils: papi_component_avail does
+	  not support cuda component counters
+
+2023-08-24  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/tests/runtest.sh: cuda: Remove x flag from
+	  cuda/tests/runtest.sh
+
+2023-08-18  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/rocp.c: rocm: fix instanced events  Some events
+	  have multiple instances. The way the component was handling those
+	  events was wrong, causing such events to not work. This patch fixes
+	  the problem.
+
+2023-08-23  Bert Wesarg <bert.wesarg@tu-dresden.de>
+
+	* src/components/rocm/rocp.c: rocm: prefer librocprofiler64.so.1
+	  `librocprofiler64.so` was a linker script in 5.6 which was not be
+	  able to `dlopen`ed. In 5.7 this has vanished completely, thus try
+	  `.so.1` first.
+
+Fri Jun 30 15:06:22 2023 -0400  William Cohen <wcohen@redhat.com>
+
+	* src/libpfm4/lib/pfmlib_amd64_perf_event.c,
+	  src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_skx_unc_cha.c,
+	  src/libpfm4/lib/pfmlib_intel_x86.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_perf_event.c: libpfm4: update to
+	  commit efd10fb  Original commit:   Correct the arguments in a
+	  number of printf statements  Adjusted the printf statements to fix
+	  the following issues flagged by static analsysis:  Error:
+	  PRINTF_ARGS (CWE-685): [#def66]
+	  libpfm-4.13.0/lib/pfmlib_intel_x86.c:87: extra_argument: This
+	  argument was not used by the format string: "e->fstr". #   85|
+	  __pfm_vbprintf(" any=%d", reg.sel_anythr); #   86| #   87|->
+	  __pfm_vbprintf("]", e->fstr); #   88| #   89|        for (i = 1 ; i
+	  < e->count; i++)  Error: PRINTF_ARGS (CWE-685): [#def11]
+	  libpfm-4.13.0/lib/pfmlib_amd64_perf_event.c:78: missing_argument:
+	  No argument for format specifier "%d". #   76| #   77|        if
+	  (e->count > 1) { #   78|->              DPRINT("%s: unsupported
+	  count=%d\n", e->count); #   79|                return
+	  PFM_ERR_NOTSUPP; #   80|        }  Error: PRINTF_ARGS (CWE-685):
+	  [#def14] libpfm-4.13.0/lib/pfmlib_common.c:1151: missing_argument:
+	  No argument for format specifier "%d". # 1149| # 1150|
+	  if (pfmlib_is_blacklisted_pmu(p)) { # 1151|->
+	  DPRINT("%d PMU blacklisted, skipping initialization\n"); # 1152|
+	  continue; # 1153|                }  Error: PRINTF_ARGS (CWE-685):
+	  [#def15] libpfm-4.13.0/lib/pfmlib_common.c:1367: missing_argument:
+	  No argument for format specifier "%s". # 1365|
+	  ainfo->equiv= NULL; # 1366|                        if (*endptr) { #
+	  1367|->                              DPRINT("raw umask (%s) is not
+	  a number\n"); # 1368|                                return
+	  PFM_ERR_ATTR; # 1369|  Error: PRINTF_ARGS (CWE-685): [#def34]
+	  libpfm-4.13.0/lib/pfmlib_intel_skx_unc_cha.c:60: missing_argument:
+	  No argument for format specifier "%x". #   58|        f.val =
+	  e->codes[1]; #   59| #   60|->
+	  __pfm_vbprintf("[UNC_CHA_FILTER0=0x%"PRIx64" thread_id=%d
+	  source=0x%x state=0x%x" #   61|                       "
+	  state=0x%x]\n", #   62|                        f.val,  Error:
+	  PRINTF_ARGS (CWE-685): [#def83]
+	  libpfm-4.13.0/lib/pfmlib_intel_x86_perf_event.c:100:
+	  missing_argument: No argument for format specifier "%d". #   98| #
+	  99|        if (e->count > 2) { #  100|->              DPRINT("%s:
+	  unsupported count=%d\n", e->count); #  101|                return
+	  PFM_ERR_NOTSUPP; #  102|        }
+
+2023-08-22  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/cupti_common.c,
+	  src/components/cuda/cupti_common.h: cuda: fix get linked shared
+	  library link error gcc 10.0
+	* src/components/cuda/cupti_common.c,
+	  src/components/cuda/cupti_common.h,
+	  src/components/cuda/cupti_profiler.c: cuda: Load cuda shared
+	  libraries from linked/rpath/LD_LIBRARY_PATH
+
+2023-08-13  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/papi.h: papi.h: Fix warnings for -Wstrict-prototypes
+
+2023-07-25  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add more Ice Lake FLOPs presets  Since there
+	  are enough counters available to monitor both single- and double-
+	  precision floating-point events, PAPI_FP_OPS, PAPI_FP_INS, and
+	  PAPI_VEC_INS are all defined. These presets have been validated
+	  using the Counter Analysis Toolkit.  These changes have been tested
+	  on the Intel Ice Lake architecture.
+
+2023-07-31  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/tests/Makefile: rocm: temporarely remove all
+	  tests from being built  Spack has issues building rocm tests
+	  because of a broken dependency in hip (openmp). To avoid spack
+	  failing to build PAPI altogether this commits temporarely removes
+	  the rocm component tests from being built. A better, and permanent,
+	  solution will follow soon.
+
+2023-07-26  Anustuv Pal <anustuv@icl.utk.edu>
+
+	* src/components/cuda/README.md, src/components/cuda/Rules.cuda,
+	  src/components/cuda/cupti_common.c,
+	  src/components/cuda/cupti_common.h,
+	  src/components/cuda/cupti_config.h,
+	  src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_dispatch.h,
+	  src/components/cuda/cupti_events.c,
+	  src/components/cuda/cupti_events.h,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_profiler.h,
+	  src/components/cuda/cupti_utils.c,
+	  src/components/cuda/cupti_utils.h, src/components/cuda/htable.h,
+	  src/components/cuda/lcuda_debug.h, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/sampling/Makefile,
+	  src/components/cuda/sampling/README,
+	  src/components/cuda/sampling/activity.c,
+	  src/components/cuda/sampling/gpu_activity.c,
+	  src/components/cuda/sampling/path.h.in,
+	  src/components/cuda/sampling/test/matmul.cu,
+	  .../cuda/sampling/test/sass_source_map.cubin,
+	  .../cuda/tests/BlackScholes/BlackScholes.cu,
+	  .../cuda/tests/BlackScholes/BlackScholes_gold.cpp,
+	  .../tests/BlackScholes/BlackScholes_kernel.cuh,
+	  src/components/cuda/tests/BlackScholes/Makefile,
+	  .../cuda/tests/BlackScholes/NsightEclipse.xml,
+	  .../cuda/tests/BlackScholes/README_SETUP.txt,
+	  src/components/cuda/tests/BlackScholes/readme.txt,
+	  .../cuda/tests/BlackScholes/testAllEvents.sh,
+	  .../cuda/tests/BlackScholes/testSomeEvents.sh,
+	  .../cuda/tests/BlackScholes/thr_BlackScholes.cu,
+	  src/components/cuda/tests/HelloWorld.cu,
+	  src/components/cuda/tests/HelloWorld_CUPTI11.cu,
+	  src/components/cuda/tests/HelloWorld_NP_Ctx.cu,
+	  src/components/cuda/tests/HelloWorld_noCuCtx.cu,
+	  src/components/cuda/tests/LDLIB.src,
+	  src/components/cuda/tests/Makefile,
+	  src/components/cuda/tests/concurrent_profiling.cu,
+	  .../cuda/tests/concurrent_profiling_noCuCtx.cu,
+	  src/components/cuda/tests/cudaOpenMP.cu,
+	  src/components/cuda/tests/cudaOpenMP_noCuCtx.cu,
+	  src/components/cuda/tests/cudaTest_cupti_only.cu,
+	  .../cuda/tests/cuda_ld_preload_example.README,
+	  .../cuda/tests/cuda_ld_preload_example.c,
+	  .../tests/cupti_multi_kernel_launch_monitoring.cu,
+	  src/components/cuda/tests/gpu_work.h,
+	  src/components/cuda/tests/likeComp_cupti_only.cu,
+	  src/components/cuda/tests/nvlink_all.cu,
+	  src/components/cuda/tests/nvlink_bandwidth.cu,
+	  .../cuda/tests/nvlink_bandwidth_cupti_only.cu,
+	  src/components/cuda/tests/pthreads.cu,
+	  src/components/cuda/tests/pthreads_noCuCtx.cu,
+	  src/components/cuda/tests/runAll.sh,
+	  src/components/cuda/tests/runBW.sh,
+	  src/components/cuda/tests/runCO.sh,
+	  src/components/cuda/tests/runCTCO.sh,
+	  src/components/cuda/tests/runSMG.sh,
+	  src/components/cuda/tests/runtest.sh,
+	  src/components/cuda/tests/simpleMultiGPU.cu,
+	  .../cuda/tests/simpleMultiGPU_CUPTI11.cu,
+	  .../cuda/tests/simpleMultiGPU_noCuCtx.cu,
+	  .../cuda/tests/test_2thr_1gpu_not_allowed.cu,
+	  .../cuda/tests/test_multi_read_and_reset.cu,
+	  .../cuda/tests/test_multipass_event_fail.c,
+	  .../cuda/tests/test_multipass_event_fail.cu: cuda: New cuda
+	  component based on NVIDIA PerfWorks API.
+
+2023-07-26  Kamil Iskra <iskra@mcs.anl.gov>
+
+	* src/components/powercap/linux-powercap.c: powercap: test counter
+	  read permissions  Check that the files inside /sys/class/powercap
+	  /intel-rapl:<n> directories not only exist, but are readable.  On
+	  recent Linux kernels, "energy_uj" is by default readable by root
+	  only, which is something that PAPI fails to detect, resulting in 0
+	  being returned for that counter without any indication of a
+	  problem.
+	* src/components/powercap/linux-powercap.c: powercap: ignore the psys
+	  entry  This is a bit of a workaround for newer Intel CPUs that, in
+	  addition to the traditional "package-<n>" entries in
+	  /sys/class/powercap/, also contain a "psys" entry that controls the
+	  platform domain (see, e.g.,
+	  https://lkml.kernel.org/lkml/1458516392-2130-3-git-send-email-
+	  srinivas.pandruvada@linux.intel.com/).  PAPI currently assumes that
+	  entries starting with "intel-rapl:0" correspond to socket 0 and
+	  "intel-rapl:1" to socket 1.  With "psys" around that unfortunately
+	  need not be the case; on at least one system relevant to DOE (I
+	  can't post the details as it's not public yet) intel-rapl:0
+	  corresponds to socket 0, intel-rapl:1 corresponds to *psys*, and
+	  intel-rapl:2 corresponds to socket 1 (what a mess!).  What
+	  currently happens is that PAPI entirely misses the counters for
+	  socket 1.  This PR works around the problem by exhaustively
+	  searching for the right "intel-rapl:<n>" directory.  It preserves
+	  the current PAPI assumption that ZONE0 events correspond to socket
+	  0 and ZONE1 to socket 1.  On the other hand, it completely ignores
+	  the "psys" entry, while one could argue that the data it contains
+	  should ideally be made available as well...
+
+2023-07-23  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add various Sapphire Rapids presets  These
+	  changes include cycles, instructions, branching, and FLOPs presets
+	  for Intel Sapphire Rapids, validated using the Counter Analysis
+	  Toolkit.  These changes have been tested on the Intel Sapphire
+	  Rapids architecture.
+
+2023-07-11  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/clang_analysis.sh, .github/workflows/main.yml:
+	  added support for clang static code analysis
+
+2023-06-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile, .../{vec_arch.h =>
+	  cat_arch.h}, src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/flops.h,
+	  src/counter_analysis_toolkit/vec.c,
+	  src/counter_analysis_toolkit/vec_scalar_verify.c,
+	  src/counter_analysis_toolkit/vec_scalar_verify.h: cat: put GEMM
+	  kernels back in  Re-introduce the GEMM operation in each precision
+	  to provide a kernel that executes exclusively fused multiply-add
+	  floating-point operations.  We use intrinsics to ensure that the
+	  FMA instructions are included.  These changes have been tested on
+	  the AMD Zen4, Fujitsu A64FX, and IBM POWER9 architectures.
+
+2023-06-28  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm/tests/Makefile: rocm: user HIP_PATH for hipcc
+	  compiler in tests Makefile  The rocm tests assume hipcc is located
+	  under the same root directory as the rest of rocm toolkit software.
+	  Spack installs rocm dependencies in separate directories however,
+	  which breaks this assumption. This patch introduces a HIP_PATH
+	  variable that, if unset, is set automatically to PAPI_ROCM_ROOT.
+	  Spack can use this variable to let the tests Makefile in the PAPI
+	  rocm component know where the hipcc compiler is located.
+
+2023-06-21  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add cycles and instructions presets for Zen4
+	  These changes include the 'total cycles' and 'instructions
+	  completed' presets for Zen4, validated using the Counter Analysis
+	  Toolkit.  These changes have been tested on the AMD Zen4
+	  architecture.
+
+2023-06-30  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/sde_lib/sde_lib_datastructures.c: sde_lib: Fixed bug in hash-
+	  table deletion.  If the item being deleted from the hash-table
+	  happened to be on the head of a list and there was no other item in
+	  the list, then the head was not being cleaned properly.
+
+2023-06-29  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/sde_lib/sde_lib.c: sde_lib: Allow group placeholders.  If
+	  reading a group has been requested from the application/tool layer
+	  (though PAPI_event_name_to_code()) before the group is actually
+	  registered by the library, we will create a placeholder for it.
+	  This change allows the group registration to overwrite the
+	  placeholder.
+	* src/sde_lib/sde_lib.c, src/sde_lib/sde_lib.h,
+	  src/sde_lib/sde_lib_internal.h, src/sde_lib/sde_lib_misc.c:
+	  sde_lib: Added reference counts for proper unregistering of groups.
+	  Counters can belong in groups, even multiple groups, and groups can
+	  recursively belong in larger groups. This means that a counter (or
+	  group) cannot be unregistered and freed without keep track of which
+	  groups it belong to. Now each counter has a reference counter
+	  "ref_count" which is incremented when it's added in a group and
+	  decremented when the counter is unregistered, or when a parent
+	  group is unregistered.
+	* src/sde_lib/sde_lib_ti.c: sde_lib: Added locking to
+	  sde_ti_read_counter() funtion.  Protected reading funtion with
+	  locks so it can't race against papi_sde_shutdown().
+	* src/sde_lib/sde_lib_datastructures.c,
+	  src/sde_lib/sde_lib_internal.h: sde_lib: Added function for hash-
+	  table serialization.  This function helps abstract the hash-table
+	  from other parts of the code, instead of directly accessing the
+	  internal structure of the hash table from all over the place.
+
+2023-06-28  Vince Weaver <vincent.weaver@maine.edu>
+
+	* src/components/perf_event/perf_event.c: don't use fast rdpmc
+	  counter reads in attach or syswide scenarios  With perf_event we
+	  can use fast rdpmc reads for low-overhead counter access.  This
+	  only works in self-monitoring situations where the thread being
+	  measured is in the same process context and same CPU as PAPI.  This
+	  means it cannot generally be used in the attach case, or if trying
+	  to do system-wide measurements (granularity anything other than
+	  PAPI_GRN_THR).  Ideally the Linux kernel would notice the request
+	  to use rdpmc in inappropriate circumstances and cause the mmap()
+	  read to fail and fallback to using the read() syscall.  However for
+	  various reasons the kernel devs did not want to support this, so
+	  it's up to PAPI to avoid using rdpmc in cases where Linux will
+	  silently fail and allow rdpmc to return invalid counter values.
+	  This should fix the "attach_cpu_sys_validate" test failure.
+
+2023-06-20  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* .github/pull_request_template.md: PR author's checklist  Add PR
+	  author's checklist for github
+
+2023-07-03  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/main.yml, .github/workflows/spack.sh: Implemented
+	  CI check of spack install
+	* src/smoke_tests/Makefile, src/smoke_tests/simple.c,
+	  src/smoke_tests/threads.c: Adding smoke-test code for spack install
+	  validation
+
+2023-06-23  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/intel_gpu/tests/Makefile: intel_gpu: remove
+	  libsupc++ dependency from tests makefile
+	* src/components/intel_gpu/Rules.intel_gpu: intel_gpu: remove
+	  libsupc++ dependency from component makefile
+
+2023-06-27  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/x86_cpu_utils.c: sysdetect: replace logic
+	  AND with bitwise AND operator  There was a typo in the sysdetect
+	  code for the x86 CPU architecture that computed a bitwise AND of
+	  two variables using the logic AND (&&) instead of the bitwise AND
+	  (&). This patch fixes the problem.
+
+2023-06-20  Wileam Y.Phan <wil.phan@rice.edu>
+
+	* src/components/sde/tests/Makefile: sde: fix cray and intel fortran
+	  test flag
+	* src/components/sysdetect/tests/Makefile: sysdetect: fix cray and
+	  intel fortran test flag
+
+2023-06-20  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/Rules.sysdetect: sysdetect: add include
+	  path for cuda headers to makefile
+
+2023-06-18  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/pcp/tests/testPCP.c: pcp: skip test if component is
+	  disabled  Previously, the test would fail if the PCP component was
+	  disabled. These changes check to see if it is disabled, and if so,
+	  skip the test.  These changes have been tested on the IBM POWER9
+	  architecture.
+
+2023-06-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add flops presets for Zen4  These changes
+	  include FLOPs presets for Zen4, validated using the Counter
+	  Analysis Toolkit.  These changes have been tested on the AMD Zen4
+	  architecture.
+
+2023-06-13  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/main.c: cat: fix bug in data cache
+	  benchmarks  Previously, there were no default values given for the
+	  PTS_PER_LX and LX_SPLIT parameters in the ".cat_cfg" file. This
+	  caused a floating-point exception in the data cache benchmarks.
+	  These parameters now have valid default values, even if they are
+	  not specified by the user in the ".cat_cfg" file.  These changes
+	  have been tested on the AMD Zen4 architecture.
+
+2023-06-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* PAPI_FAQ.html, README.md, src/components/sde/README.md: remove
+	  references to Bitbucket  Removed some remaining links and
+	  references to the former Bitbucket repository and replaced them
+	  with the GitHub repository.
+
+Wed Jun 7 00:34:30 2023 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/events/intel_icl_events.h,
+	  src/libpfm4/lib/events/intel_spr_events.h: libpfm4: update to
+	  commit 70b5b4c  Original commit:  commit
+	  70b5b4c82912471b43c7ddf0d1e450c4e0ef477e  add default umask for
+	  ICL/SPR br_inst_retired/br_misp_retired  Were missing a default
+	  umask unlike SKL. That was causing errors when passing these events
+	  with no umask. Default is umask ALL_BRANCHES
+
+2023-06-07  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: add branch presets for Zen3 and Zen4  These
+	  changes include all branching preset events for Zen3 and Zen4,
+	  validated using the Counter Analysis Toolkit.  For Zen3,
+	  PAPI_BR_TKN was modified to exclude unconditional branches taken,
+	  in order to adhere to the preset's meaning.  These changes have
+	  been tested on the AMD Zen3 and Zen4 architectures.
+
+2023-04-07  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/genpapifdef.c: genpapifdef.c: delete file
+
+2023-04-05  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/configure, src/configure.in, src/maint/genpapifdef.pl:
+	  maint/genpapifdef.pl: replacement perl script for genpapifdef.c
+	  Add genpapifdef.pl script in maint directory and hook it to
+	  configure.
+
+2023-06-05  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/ci.sh: changed cuda requirement
+
+2023-03-27  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* .github/workflows/ci.sh, .github/workflows/main.yml: CI: creating
+	  CI files
+
+2023-04-03  John Linford <jlinford@nvidia.com>
+
+	* src/papi_events.csv: Update Neoverse V2 events  Add/remove PAPI
+	  events to match available hardware counters All tests pass on
+	  NVIDIA Grace  Disclaimer: The PAPI team was not able to verify the
+	  functionality included in this commit.
+
+Wed May 17 00:34:35 2023 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/lib/pfmlib_common.c: libpfm4: update to commit 533633a
+	  Original commit:  commit 533633adf7d00bbfcb7f2759567869d585bf97e1
+	  remove unused variable in pfmlib_pmu_validate_encoding()  The n
+	  variable was set and incremented by result was never used, so
+	  remove.
+
+2023-05-16  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/Makefile.in, src/Makefile.inc, src/configure, src/configure.in:
+	  buildsystem: fix install target in Makefile  PR #464 introduced a
+	  --disable-fortran flag that allows users to disable fortran header
+	  and wrappers generation in case the user does not need them. Commit
+	  40b7afc also introduces a bug as the fortran headers no longer
+	  generated by the configure are still part of the install target.
+	  This patch fixes the problem.
+
+2023-05-16  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/intel_gpu/tests/gpu_query_gemm.cc: intel_gpu: fix
+	  test
+
+2023-04-03  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/Makefile_comp_tests.target.in,
+	  src/components/sde/tests/Advanced_C+FORTRAN/sde_symbols.c,
+	  src/components/sde/tests/Makefile,
+	  src/components/sysdetect/tests/Makefile, src/configure,
+	  src/configure.in, src/ftests/Makefile,
+	  src/ftests/Makefile.target.in, src/testlib/Makefile,
+	  src/testlib/Makefile.target.in: fort: do not compile fortran code
+	  if disabled
+	* src/Makefile.in, src/Makefile.inc, src/configure, src/configure.in:
+	  fort: add --disable-fortran switch
+
+2023-05-11  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: fix bug in
+	  get_ntv_events_count  Unchecked rsmi return error codes could led
+	  to errors in the component. Make sure all rsmi error codes are
+	  checked and handled appropriately.
+	* src/linux-memory.c: memory: fix bug in generic_get_memory_info
+	  Level should not be greater than PAPI_MAX_MEM_HIERARCHY_LEVELS and
+	  not greater, equal than.
+
+2023-03-31  Giuseppe Congiu <gcongiu@icl.utk.edu>
+
+	* src/components/sysdetect/Rules.sysdetect,
+	  src/components/sysdetect/amd_gpu.c: sysdetect: fix rocm and
+	  rocm_smi dlopen logic
+
+Tue Mar 28 16:48:58 2023 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/README, src/libpfm4/config.mk,
+	  src/libpfm4/debian/changelog, src/libpfm4/docs/Makefile,
+	  src/libpfm4/docs/man3/libpfm_intel_emr.3,
+	  src/libpfm4/include/perfmon/pfmlib.h, src/libpfm4/lib/Makefile,
+	  src/libpfm4/lib/pfmlib_amd64.c, src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_spr.c,
+	  src/libpfm4/lib/pfmlib_perf_event_pmu.c,
+	  src/libpfm4/lib/pfmlib_priv.h, src/libpfm4/tests/validate_x86.c:
+	  libpfm4: update to commit 52632c7  Original commits:  commit
+	  52632c7ffe3b088846e86ced207e38dfe5bc4731  add Intel EmeraldRapid
+	  core PMU support  Intel EmeraldRapid shares the same PMU as Intel
+	  SapphireRapid. Add an emr:: PMU sharing the same event table.
+	  commit 1befa3d200cc17d5a278fcb2f597c4876c58f949  fix AMD Zen3/Zen4
+	  detection  To cover more models of Zen4.   commit
+	  8ea5575b6b10a91f3d7a079ca35d6e4eb33f379d  Fix unitialized variable
+	  in gen_tracepoint_table()  Need to ensure that p was initialized at
+	  the start of function gen_tracepoint_table otherwise on some
+	  architectures such as s390x will get the following error when
+	  compiling with -Werror:  make[1]: Entering directory
+	  '/root/rpmbuild/BUILD/libpfm-4.13.0/lib' cc -O2 -flto=auto -ffat-
+	  lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall
+	  -Werror=format-security -Wp,-D_FORTIFY_SOURCE=2 -
+	  Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-
+	  hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat
+	  /redhat-annobin-cc1 -m64 -march=z14 -mtune=z15 -fasynchronous-
+	  unwind-tables -fstack-clash-protection -g -Wall -Werror -Wextra
+	  -Wno-unused-parameter -I. -I/root/rp
+	  mbuild/BUILD/libpfm-4.13.0/lib/../include -DCONFIG_PFMLIB_DEBUG
+	  -DCONFIG_PFMLIB_OS_LINUX -D_REENTRANT -I. -fvisibility=hidden
+	  -DCONFIG_PFMLIB_A RCH_S390X -I. -c pfmlib_perf_event_pmu.c
+	  pfmlib_perf_event_pmu.c: In function 'gen_tracepoint_table':
+	  pfmlib_perf_event_pmu.c:434:35: error: 'p' may be used
+	  uninitialized in this function [-Werror=maybe-uninitialized] 434 |
+	  p->modmsk = 0; |                         ~~~~~~~~~~^~~ cc1: all
+	  warnings being treated as errors   commit
+	  72709ed4237e9259348080e05ffd7750ee202506  fix active list ordering
+	  issue  In commit 363825f72afd ("maintain list of active PMUs")  We
+	  introduce an active list of PMUs to speed up lookups of events.
+	  However, there was a bug introduced by this commit which caused
+	  wrong encodings of certain events. For instance, on Intel x86, the
+	  event unhalted_reference_cycles was encoded using an architected
+	  event code instead of the model specific event code which used a
+	  fixed counter. This was due to the fact that the ordering of the
+	  PMU models in pfmlib_pmus[] was inverted by the way we built the
+	  active list. The order in the table matters for lookups. the list
+	  must maintain the same order. This patch fixes the problem by
+	  rewriting the linked list code to support appending to the tail of
+	  the list (instead of the head). That way the order in the table is
+	  maintained.  The patch introduces the notion of a link list node
+	  supporting a double linked list data structure with basic accessor
+	  functions.   commit aa31ca87eb00d0f74d5566fed9a7cf62c48e236a
+	  Revert "optimize active PMU list further"  This reverts commit
+	  b009b1263098eec925bc2dba1760c70d8a46d4b8.  Because it makes it
+	  necessary to have a lock as the head of the list may be changing at
+	  each encoding and that would cause issues with multiple parallel
+	  calls of the encoding entry points.  This optimization will be
+	  redone with a thread local variiable once we modify libpfm4 to
+	  depend on libpthread.   commit
+	  80260a02ab805acfb702ee3eab9af82729f20c79  clear
+	  pfmlib_active_pmus_list on init and terminate  Must clear on
+	  pfm_terminate() to avoid creating cycles in the list in case
+	  pfm_initialize() is called multiple times. Also clear in
+	  pfm_initialize() to make sure we start from a known situation.
+	  commit 9c3d167fa6017836cb6e33004471cebd4d1bf0f6  fix active PMU
+	  list handling for LIBPFM_ENCODE_INACTIVE=1  There was an issue
+	  introduced by: 363825f72afd ("maintain list of active PMUs")  Where
+	  if a PMU is not detected because not exported by OS, it would not
+	  be put on the active list when LIBPFM_ENCODE_INACTIVE=1 causing
+	  tests/validate on some uncore PMU events.  Fix this by correctly
+	  handling the case where a PMU is not exported by the OS.  Also
+	  check that a PMU is actually active in pfmlib_terminate() and
+	  pfm_get_pmu_by_type() again to handle LIBPFM_ENCODE_INACTIVE=1.
+	  commit b009b1263098eec925bc2dba1760c70d8a46d4b8  optimize active
+	  PMU list further  By moving the last PMU matched to the head of the
+	  list each time an event is found in pfmlib_parse_event().   commit
+	  363825f72afde0e8cae2ecfd261a95d2bd0b3868  maintain list of active
+	  PMUs  Given that the list of PMUs supported per architecture keeps
+	  growing, it is becoming expensive to iterate over each PMU looking
+	  for a match. The macro pfmlib_for_each_pmu() is iterating over
+	  active and inactive PMUs looking for active ones. Given that the
+	  number of inactive PMUs is always larger than the number of active,
+	  this was expensive.  Fix this by creating a list of active PMUs and
+	  adding a new macro pfmlib_for_each_active_pmu(). We use a oubly
+	  linked list to allow further optimizations.  As an example on a X86
+	  build, the new iterator allowed a 10x reduction in iterations
+	  inside pfmlib_parse_event() for a core PMU event.  When
+	  LIBPFM_ENCODE_INACTIVE is set to 1, then all PMUs supported by the
+	  architecture are put on the active list even when they are not
+	  detected. This simplifies the parsing loop.   commit
+	  b3e956879bc9499d5c3012f3f82ce31d2f169e5b  Fix parsing of
+	  LIBPFM_ENCODE_INACTIVE  Was not taking into account the value of
+	  the variable, unlike for LIBPFM_DEBUG and LIBPFM_VERBOSE. Passing
+	  LIBPFM_ENCODE_INACTIVE=0 would still activate the feature.   commit
+	  158c879b9408b84ecfc78c1385c81ce25a8f2cd1  Use relative path using
+	  openat(2) in gen_tracepoint_table()  It doesn't need to traverse
+	  the filesystem hierarchy from the root. Instead it can use relative
+	  pathname with openat() and pass it to fdopendir().  Actually it can
+	  introduce some kernel lock contentions when it's invoked from
+	  multiple CPUs at the same time.   commit
+	  f200f50751557a1b9aef6120140bfb13d7cafe9f  Define HAS_OPENAT for
+	  Linux  Now I think all major Linux distro provides openat()
+	  functions in libc as it's specified in POSIX.1-2008.  Maybe we
+	  could add a config check to detect them later if somebody don't.
+	  Also remove the old code to undefine the macro unconditionally.
+	  commit 3d77461cb966259c51f3b3e322564187f4bef7fb  Update to version
+	  4.13.0  Various updates and AMD Zen4 support.
+
+2023-04-25  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/.cat_cfg,
+	  src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/hw_desc.h,
+	  src/counter_analysis_toolkit/main.c: cat: allow user to specify
+	  DCR/DCW sampling  To provide more flexible benchmarks, we allow the
+	  user to specify the number of measurements for each level of the
+	  memory hierarchy.  In addition, we include user-definable
+	  parameters to accommodate the different cache levels shared by
+	  different numbers of cores.  These changes have been tested on the
+	  AMD Zen3 and Zen4 architectures.
+
+2023-04-17  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/dcache.c,
+	  src/counter_analysis_toolkit/timing_kernels.c: cat: non-core events
+	  in multithreaded benchmarks  Each thread in the data-cache
+	  benchmarks previously added events to its local event set. This
+	  caused an error for events that are not from the perf_event (core)
+	  component.  To accommodate such events, we check for the component
+	  to which an event belongs. If the event does not belong to the core
+	  component, then only the thread with ID 0 adds the event to its
+	  event set.  These changes have been tested on the AMD Zen3
+	  architecture.
+
+2023-03-16  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/flops.c,
+	  src/counter_analysis_toolkit/flops.h,
+	  src/counter_analysis_toolkit/flops_aux.c,
+	  src/counter_analysis_toolkit/flops_aux.h: cat: refactor flops
+	  benchmark  Vector-normalization and Cholesky decomposition kernels
+	  are sufficient for characterizing addition, subtraction,
+	  multiplication, division, and square root events.  The Makefile has
+	  been updated to use -O1 for the FLOPs benchmark to enable the
+	  inclusion of scalar square root instructions.  The output now
+	  includes problem size and expected number of each aforementioned
+	  operation in addition to counter readings.  This refactored
+	  benchmark has a greatly reduced execution time.  These changes have
+	  been tested on the AMD Zen3, Zen4, and Fujitsu A64FX architectures.
+
+2023-04-06  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/README,
+	  src/counter_analysis_toolkit/driver.h,
+	  src/counter_analysis_toolkit/icache.c,
+	  src/counter_analysis_toolkit/instr.h,
+	  src/counter_analysis_toolkit/instructions.c,
+	  src/counter_analysis_toolkit/main.c: cat: addition of instructions
+	  benchmarks  This new benchmark includes microkernels to detect
+	  integer, floating- point, and memory read and write instructions.
+	  These changes have been tested on the AMD Zen4 architecture.
+
+2023-04-06  Terry Cojean <terry.cojean@kit.edu>
+
+	* src/sde_lib/sde_lib.c: SDE: Fix shutdown for a consistent global
+	  control struct
+
+2023-03-29  AnustuvICL <anustuv@icl.utk.edu>
+
+	* src/components/cuda/linux-cuda.c: Fix wrong dlsym for
+	  cuptiDisableKernelReplayMode
+
+2023-03-20  John Linford <jlinford@nvidia.com>
+
+	* src/components/sysdetect/arm_cpu_utils.c, src/papi_events.csv: Add
+	  minimal events for Arm Neoverse V2
+	* src/papi_events.csv: Add minimal events for Arm Neoverse N2
+	* src/components/sysdetect/arm_cpu_utils.c, src/papi_events.csv: Add
+	  minimal events for Arm Neoverse V1

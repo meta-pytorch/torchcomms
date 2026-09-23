@@ -1,0 +1,21 @@
+Net component changelog:
+
+2026-03-10 Aleksandar Janicijevic
+
+* Add support for environment variable PAPI_NET_REFRESH_LATENCY
+
+2011-11-07 Jose Pedro Oliveira
+
+ * Dynamically detects the network interfaces
+   (i.e. the ones listed in /proc/net/dev)
+
+ * No longer needs to fork/exec the external ifconfig command and
+   parse its output.  It now reads the Linux kernel network statistics
+   directly from /proc/net/dev.
+
+ * Each network interface now has 16 events instead of 13
+   (all counters in /proc/net/dev).
+
+ * Adds support for PAPI_event_name_to_code()
+
+ * Adds a couple of small tests/examples

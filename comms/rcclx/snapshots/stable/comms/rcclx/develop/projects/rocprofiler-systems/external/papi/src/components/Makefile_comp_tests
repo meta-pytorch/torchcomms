@@ -1,0 +1,23 @@
+UTILOBJS= ../../../testlib/libtestlib.a
+DOLOOPS= ../../../testlib/do_loops.o
+INCLUDE = -I../../../testlib -I../../.. -I.
+LIBRARY = -L../../../ -lpapi
+PAPILIB = $(LIBRARY)
+
+tests: $(NAME)_tests
+
+install:
+	@echo "$(NAME) tests (DATADIR) being installed in: \"$(DATADIR)\"";
+	-mkdir -p $(DATADIR)/$(NAME)/tests
+	-chmod go+rx $(DATADIR)
+	-chmod go+rx $(DATADIR)/$(NAME)/tests
+	-find . -perm -100 -type f -exec cp {} $(DATADIR)/$(NAME)/tests \;
+	-chmod go+rx $(DATADIR)/$(NAME)/*
+	-find . -name "*.[ch]" -type f -exec cp {} $(DATADIR)/$(NAME)/tests \;
+	-cp Makefile $(DATADIR)/$(NAME)/tests
+	-cp ../../Makefile_comp_tests.target $(DATADIR)/Makefile_comp_tests
+
+clean:
+
+distclean clobber: clean
+	rm -f Makefile_comp_tests.target

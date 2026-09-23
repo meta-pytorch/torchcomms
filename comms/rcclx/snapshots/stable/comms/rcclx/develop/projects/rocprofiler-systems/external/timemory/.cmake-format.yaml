@@ -1,0 +1,247 @@
+parse:
+  additional_commands:
+    timemory_checkout_git_submodule:
+      flags:
+      - RECURSIVE
+      kwargs:
+        RELATIVE_PATH: '*'
+        WORKING_DIRECTORY: '*'
+        TEST_FILE: '*'
+        REPO_URL: '*'
+        REPO_BRANCH: '*'
+        ADDITIONAL_COMMANDS: '*'
+    timemory_save_variables:
+      kwargs:
+        VARIABLES: '*'
+        CONDITION: '*'
+    timemory_restore_variables:
+      kwargs:
+        VARIABLES: '*'
+        CONDITION: '*'
+    timemory_create_executable:
+      flags:
+        - INSTALL
+        - EXCLUDE_FROM_ALL
+      kwargs:
+        TARGET_NAME: '*'
+        HEADERS: '*'
+        SOURCES: '*'
+        PROPERTIES: '*'
+        LINK_LIBRARIES: '*'
+        INSTALL_DESTINATION: '*'
+    timemory_add_google_test:
+      flags:
+        - MPI
+        - RUN_SERIAL
+        - ADD_TESTS
+        - DISCOVER_TESTS
+      kwargs:
+        NPROCS: '*'
+        TIMEOUT: '*'
+        TARGET: '*'
+        SOURCES: '*'
+        DEPENDS: '*'
+        DEFINITIONS: '*'
+        LINK_LIBRARIES: '*'
+        COMMAND: '*'
+        OPTIONS: '*'
+        ENVIRONMENT: '*'
+    timemory_build_library:
+      flags:
+        - PIC
+        - NO_CACHE_LIST
+        - EXCLUDE_FROM_ALL
+      kwargs:
+        TYPE: '*'
+        OUTPUT_NAME: '*'
+        TARGET_NAME: '*'
+        OUTPUT_DIR: '*'
+        LANGUAGE: '*'
+        LINKER_LANGUAGE: '*'
+        SOURCES: '*'
+        LINK_LIBRARIES: '*'
+        COMPILE_DEFINITIONS: '*'
+        INCLUDE_DIRECTORIES: '*'
+        C_COMPILE_OPTIONS: '*'
+        CXX_COMPILE_OPTIONS: '*'
+        CUDA_COMPILE_OPTIONS: '*'
+        LINK_OPTIONS: '*'
+        EXTRA_PROPERTIES: '*'
+    timemory_install_libraries:
+      flags:
+        - LINK_VERSION
+        - LINK_SOVERSION
+      kwargs:
+        DESTINATION: '*'
+        EXPORT: '*'
+        TARGETS: '*'
+    timemory_target_precompile_headers:
+      flags:
+        - INSTALL_INTERFACE
+      kwargs:
+        FILES: '*'
+    timemory_build_intermediate_library:
+      flags:
+        - USE_INTERFACE
+        - USE_CATEGORY
+        - INSTALL_SOURCE
+        - FORCE_OBJECT
+        - FORCE_SHARED
+        - FORCE_STATIC
+      kwargs:
+        NAME: '*'
+        TARGET: '*'
+        CATEGORY: '*'
+        FOLDER: '*'
+        VISIBILITY: '*'
+        HEADERS: '*'
+        SOURCES: '*'
+        DEPENDS: '*'
+        INCLUDES: '*'
+        PROPERTY_DEPENDS: '*'
+        PUBLIC_LINK: '*'
+        PRIVATE_LINK: '*'
+    timemory_add_cmake_defines:
+      flags:
+        - VALUE
+        - QUOTE
+        - DEFAULT
+    timemory_add_connector_config:
+      flags:
+        - GPU
+        - DISABLE_COMPILE_OPTIONS
+      kwargs:
+        CONDITION: '*'
+        COMPONENTS: '*'
+        TARGETS: '*'
+        DEFINITIONS: '*'
+        ENVIRONMENT: '*'
+    timemory_add_papi_connector_config:
+      kwargs:
+        COMPONENTS: '*'
+        TARGETS: '*'
+        DEFINITIONS: '*'
+        ENVIRONMENT: '*'
+    timemory_find_package_interface:
+      kwargs:
+        INTERFACE: '*'
+        DESCRIPTION: '*'
+        FIND_ARGS: '*'
+        INCLUDE_DIRS: '*'
+        COMPILE_DEFINITIONS: '*'
+        COMPILE_OPTIONS: '*'
+        LINK_LIBRARIES: '*'
+    timemory_target_flag:
+      flags:
+        - IF_AVAIL
+      kwargs:
+        MODE: '*'
+        FLAGS: '*'
+        LANGUAGES: '*'
+    timemory_find_static_library:
+      kwargs:
+        DOC: '*'
+        NAMES: '*'
+        HINTS: '*'
+        PATHS: '*'
+        PATH_SUFFIXES: '*'
+    _boost_debug_print_var:
+      flags:
+        - ENVIRONMENT
+      kwargs:
+        SOURCE: '*'
+    get_cpu_features:
+      kwargs:
+        TARGET: '*'
+        VALID: '*'
+        CANDIDATES: '*'
+    ctest_memcheck:
+      flags:
+        - APPEND
+        - QUIET
+        - STOP_ON_FAILURE
+      kwargs:
+        BUILD: '*'
+        START: '*'
+        END: '*'
+        STRIDE: '*'
+        EXCLUDE: '*'
+        INCLUDE: '*'
+        EXCLUDE_LABEL: '*'
+        INCLUDE_LABEL: '*'
+        EXCLUDE_FIXTURE: '*'
+        EXCLUDE_FIXTURE_SETUP: '*'
+        EXCLUDE_FIXTURE_CLEANUP: '*'
+        PARALLEL_LEVEL: '*'
+        RESOURCE_SPEC_FILE: '*'
+        TEST_LOAD: '*'
+        SCHEDULE_RANDOM: '*'
+        STOP_TIME: '*'
+        RETURN_VALUE: '*'
+        CAPTURE_CMAKE_ERROR: '*'
+        REPEAT: '*'
+        OUTPUT_JUNIT: '*'
+        DEFECT_COUNT: '*'
+  override_spec: {}
+  vartags: []
+  proptags: []
+format:
+  disable: false
+  line_width: 90
+  tab_size: 4
+  use_tabchars: false
+  fractional_tab_policy: use-space
+  max_subgroups_hwrap: 2
+  max_pargs_hwrap: 8
+  max_rows_cmdline: 2
+  separate_ctrl_name_with_space: false
+  separate_fn_name_with_space: false
+  dangle_parens: false
+  dangle_align: child
+  min_prefix_chars: 4
+  max_prefix_chars: 10
+  max_lines_hwrap: 2
+  line_ending: unix
+  command_case: lower
+  keyword_case: upper
+  always_wrap: []
+  enable_sort: true
+  autosort: false
+  require_valid_layout: false
+  layout_passes: {}
+markup:
+  bullet_char: '*'
+  enum_char: .
+  first_comment_is_literal: true
+  literal_comment_pattern: ^#
+  fence_pattern: ^\s*([`~]{3}[`~]*)(.*)$
+  ruler_pattern: ^\s*[^\w\s]{3}.*[^\w\s]{3}$
+  explicit_trailing_pattern: '#<'
+  hashruler_min_length: 10
+  canonicalize_hashrulers: true
+  enable_markup: true
+lint:
+  disabled_codes: []
+  function_pattern: '[0-9a-z_]+'
+  macro_pattern: '[0-9A-Z_]+'
+  global_var_pattern: '[A-Z][0-9A-Z_]+'
+  internal_var_pattern: _[A-Z][0-9A-Z_]+
+  local_var_pattern: '[a-z][a-z0-9_]+'
+  private_var_pattern: _[0-9a-z_]+
+  public_var_pattern: '[A-Z][0-9A-Z_]+'
+  argument_var_pattern: '[a-z][a-z0-9_]+'
+  keyword_pattern: '[A-Z][0-9A-Z_]+'
+  max_conditionals_custom_parser: 2
+  min_statement_spacing: 1
+  max_statement_spacing: 2
+  max_returns: 6
+  max_branches: 12
+  max_arguments: 5
+  max_localvars: 15
+  max_statements: 50
+encode:
+  emit_byteorder_mark: false
+  input_encoding: utf-8
+  output_encoding: utf-8
+misc:
+  per_command: {}

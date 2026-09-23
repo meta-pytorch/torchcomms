@@ -1,0 +1,24 @@
+.TH "papi_command_line" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_command_line \- executes PAPI preset or native events from the command line\&.
+.SH "Synopsis"
+.PP
+papi_command_line < event > < event > \&.\&.\&.
+.SH "Description"
+.PP
+papi_command_line is a PAPI utility program that adds named events from the command line to a PAPI EventSet and does some work with that EventSet\&. This serves as a handy way to see if events can be counted together, and if they give reasonable results for known work\&.
+.SH "Options"
+.PP
+.PD 0
+.IP "\(bu" 2
+-u Display output values as unsigned integers 
+.IP "\(bu" 2
+-x Display output values as hexadecimal 
+.IP "\(bu" 2
+-h Display help information about this utility\&. 
+.PP
+.SH "Bugs"
+.PP
+There are no known bugs in this utility\&. If you find a bug, it should be reported to the PAPI Mailing List at ptools-perfapi@icl.utk.edu\&. 

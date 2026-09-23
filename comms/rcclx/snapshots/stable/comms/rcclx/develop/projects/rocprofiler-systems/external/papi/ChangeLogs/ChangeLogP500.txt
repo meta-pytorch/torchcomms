@@ -1,0 +1,2279 @@
+2012-08-08  
+
+  * 4b4f87ff ChangeLogP5000.txt: Changelog for PAPI5
+
+  * 6f208c06 doc/Doxyfile-common papi.spec src/Makefile.in...: Bump version
+  numbers in prep for a 5.0 release.
+
+  * c6fdbd11 release_procedure.txt: Update release_procedure.txt  Change the
+  order of when we branch git, so that the main dev branch gets some of the
+  release related changes.
+
+2012-04-17  
+
+  * 97d4687f ChangeLogP440.txt: Pickup the changelog from papi 4.4  This was
+  only included in the stable-4.4 branch.
+
+2012-08-23  
+
+  * 628c2b6e src/buildbot_configure_with_components.sh: Take debug out of the
+  with several components build test config.  When built with PAPI's memory
+  wrapper routines, the threaded stress tests will sometimes get into poor
+  performing situations.  See trac ticket 148 for discussion.
+  http://icl.utk.edu/trac/papi/ticket/148
+
+2012-08-22  
+
+  * 46faae8e src/ctests/overflow2.c src/ctests/overflow_single_event.c
+  src/ctests/overflow_twoevents.c...: Move find_nonderived_event() from
+  overflow_twoevents to test_utils and call it from overflow2 and
+  overflow_single_event to insure that we're not trying to overflow on a
+  derived event.
+
+  * 3e7d8455 src/ctests/zero_smp.c: Fix a memory leak reported on the aix
+  power7 machine.  zero_smp.c did not unregister at the end of its thread
+  function.
+
+  * 3ad5782f src/perf_events.c: perf_events: fix segfault if DEBUG is enabled
+  Was incorrectly using "i" as an index where it should be "0" in a debug
+  statement.
+
+
+2012-08-21  
+
+  * a3cadbdb src/ftests/accum.F src/ftests/avail.F src/ftests/case1.F...: Take
+  #2. Changing len_trim function in ftests to last_char. This time, I respect
+  72 char line limit.
+
+  * c9db8fbf src/ctests/overflow_force_software.c: overflow_force_software was
+  the only test that used a different hard_tolerance value (0.25) than the
+  other overflow tests (0.75). This caused trouble on Power7/AIX. Now we are
+  using the same hard_tolerance value in all overflow tests.
+
+  * 70515343 src/ftests/accum.F src/ftests/avail.F src/ftests/case1.F...:
+  Changed name of function len_trim to last_char.
+
+  * 95168d79 src/components/cuda/linux-cuda.c: Cleanup cuda shutdown code.
+  * The
+  shutdown_thread code cleaned out the whole component's state. This has been
+  split into shutdown_global for the whole component, and shutdown_thread is
+  left to cleanup some control state info.
+
+  * 56284f81 src/ctests/multiplex1_pthreads.c: Fix memory leaks in pthread
+  multiplex tests.
+
+  * aeead8b6 src/threads.c: Remove an outdated comment about
+  _papi_hwi_free_EventSet holding INTERNAL lock
+
+  * e598647b src/perf_events.c: perf_events: fix issue where we dereference a
+  pointer before NULL check.  Fix suggested by Will Cohen, based on a coverity
+  report.
+
+  * 4e0ed976 src/ctests/calibrate.c: Modify warning message to eliminate the
+  word "error" Hopefully this will suppress it in buildbot outputs.
+
+  * 50fbba18 src/ctests/api.c src/ftests/case2.F: Cleanup a few more warnings
+  from the PAPI_perror change.
+
+  * 1f06bf28 src/ftests/case2.F: Missed an instance of perror in the fortran
+  code.
+
+  * 93e6ae2c src/ftests/ftests_util.F: Fix warning in ftest_util.F
+
+2012-08-20  
+
+  * 60c6029e src/perf_events.c: perf_events: Update multiplexing code  It
+  * turns
+  out the PERF_EVENT_IOC_RESET ioctl resets the count but not the multiplexing
+  info.  This means that when we fiddle with the events then reset them in
+  check_scheduability(), we are not really resetting things to zero.  The
+  effect might be small, but since the new multiplex code by definition is
+  always scheduable, then let's skip the test if multiplexing.
+
+  * 9079236c src/ctests/zero.c: Change error reporting so FLOPS > 100% above
+  theoretical FAIL and FLOPS > 25% above theoretical WARN.
+
+2012-08-18  
+
+  * 980558af src/papi_internal.c: papi_internal: fix memory leak  When I made
+  some changes a while back I forgot to free ESI->NativeBits properly.  This
+  was causing memory leak warnings on buildbot.
+
+2012-08-17  
+
+  * 83a14612 src/perf_events.c: perf_events: more cleanups and comments  We
+  really need to go back and figure out in more detail what the
+  profile/sampling/overflow code is doing.
+
+  * 7cafb941 src/perf_events.c: perf_events: more cleanups and comments
+
+  * e9e39a4b src/perf_events.c: perf_events: disable kernel multiplexing
+  * before
+  2.6.34  It turns out even our simple multiplexing won't work on kernels
+  before 2.6.34, so fall back to sw multiplex in that case.
+
+  * 05801901 src/perf_events.c: perf_events: more cleanup and comments
+
+  * 268e31d7 src/perf_events.c: perf_events: more cleanup and commenting
+
+  * d62fc2bf src/perf_events.c: perf_events: more cleanup and comments
+
+  * fb0081bc src/perf_events.c: perf_events: more cleanups and comments
+
+  * a1142fc8 src/perf_events.c: perf_events: cleanup and comment the kernel
+  * bug
+  workarounds
+
+  * b8560369 src/perf_events.c: perf_events: minor cleanups and new comments
+
+  * 6c320bb2 src/perf_events.c: perf_events: fix some debug messages  I forget
+  to test with --with-debug enabled
+
+  * f7a3cccf src/perf_events.c: perf_events: enable new read_code  This makes
+  the read code much simpler.  It finishes the multiplexing changes.  To avoid
+  complication, we no longer enable PERF_FORMAT_ID as reading that extra info
+  is unnecessary with the current implementation.  This passes all the tests
+on
+  a recent kernel, but on 2.6.32 there are still a few issues.
+
+  * 15749cff src/ctests/all_events.c src/ctests/all_native_events.c: Fix
+  warning in all_events and all_native_events.  In the perror semantic change,
+  several strings for use in the old interface were left.
+
+2012-08-16  
+
+  * afdd25fa src/perf_events.c: perf_events: always enable kernel multiplexing
+  The new code should work on any kernel version.
+
+  * 9f5e23ae src/perf_events.c: Rewrite multiplex support.  Drop support for
+  the former "partitioned" multiplexing, as we could never use it.  Instead
+use
+  the simple/braindead model.  This still needs more work, as sometimes reads
+  are failing.
+
+  * cdd29909 src/ftests/strtest.F: Fix strtest.F ftest  It was still making
+  some assumptions about PAPI_perror() writing to a string rather than
+directly
+  to standard error.
+
+  * 565f60b3 src/papi_internal.c: Missing code to set num_error_chunks to 0
+  The new _papi_hwi_cleanup_errors() function was not resetting
+  num_error_chunks to 0, leading to a segfault in the fmultiplex1 test.
+
+2012-08-02  
+
+  * bb85bafd src/genpapifdef.c src/papi.c src/papi_common_strings.h...: Remove
+  usage of _papi_hwi_err.  Move PAPI over to storing errors in a runtime list.
+  * Functions to add/lookup errors. * Generate the list of PAPI_E* errors at
+  library_init time. * genpapifdef pulled the values for the PAPI_* error
+  return codes from the _papi_hwi_err structure at configure time. Since this
+  is now built at run-time, I added the appropriate values to genpapifdef's
+  builting describe_t table. See : _papi_hwi_publish_error
+  _papi_hwi_init_errors For usage hints.
+
+2012-08-10  
+
+  * e27af085 src/perf_events.c: perf_event: rename BRAINDEAD_MULTIPLEXING  It
+  is now "simple_multiplexing" and is a variable not an #ifdef  This is needed
+  before perf_event multiplexing can be sorted out.  It's unclear if it
+  actually works anyway.
+
+  * 7f8e8c58 src/perf_events.c: perf_event: remove context "cookie" field  It
+  was a bit of overkill, we just need an initialized field. Also revamp how
+  context and control are initialized.
+
+  * 8cb8ac6d src/perf_events.c: perf_event: move all event specific info to
+  * the
+  control state  previously half was in the context state and half in the
+  control state  perf_event has a strange architecture with each event being
+  created having its own fd, which is context wide.  In PAPI though we usually
+  only have one eventset (control state) active at once, so there's no need to
+  have the context be aware of this.
+
+2012-08-09  
+
+  * 8d7782cb src/perf_events.c: perf_event: rename evt_t to perf_event_info_t
+  This just makes the code easier to follow.
+
+  * 349de05c src/perf_events.c: perf_event: remove the superfluous
+  per_event_info_t structure
+
+2012-08-08  
+
+  * da8ad0a2 src/ctests/all_native_events.c src/ctests/get_event_component.c
+  src/utils/native_avail.c: Fix warnings about PAPI_enum_cmp_event() return
+not
+  being checked  Reported by coverity checker via Will Cohen  Harmless
+  warnings, and now the checker will likely complain about the value being
+  checked but ignored.
+
+  * b4719888 src/papi_user_events.c: Fix unused value in papi_user_events.c
+  Reported by Coverity checker by Will Cohen
+
+  * 6a8f255c src/utils/event_chooser.c: remove unused
+  * PAPI_get_component_info()
+  call in event_chooser  Reported by Will Cohen from coverity checker
+
+2012-08-06  
+
+  * 62cda478 src/genpapifdef.c src/papi_common_strings.h
+  src/papi_internal.c...: Remove usage of _papi_hwi_err.  genpapifdef pulled
+  the values for the PAPI_* error return codes from the _papi_hwi_err structure
+  at configure time. Since this is now built at run-time, I added the
+  appropriate values to genpapifdef's builting describe_t table.
+
+2012-08-02  
+
+  * d11259f3 src/papi.c src/papi_internal.c src/papi_internal.h...: Move over
+  to generating the list of PAPI errors at library_init time.
+
+  * 097ffc44 src/papi_internal.c: Functions to add/lookup errors.
+
+2012-08-07  
+
+  * 2530533f src/papi_events.csv: tests/zero fails on Power7 due to PAPI_FP_INS
+  Error of 50%. Preset definition has been redefined and test now passes.
+
+  * 8e17836f src/components/appio/Rules.appio src/components/appio/appio.c
+  src/components/appio/appio.h...: We now intercept recv(). The support for
+  recv() requires dynamic linkage. For static linkage, recv is not intercepted.
+
+2012-08-06  
+
+  * 8b1eb84c src/perf_events.c: perf_events: some whitespace cleanup and extra
+  comments
+
+  * f10edba6 src/perf_events.c: perf_events: MAX_READ was no longer being used,
+  remove it
+
+  * 08c06ed1 src/perf_events.c: perf_event event_id is actually 64-bit, so make
+  our copy match
+
+  * a33e8d9c src/perf_events.c: Rename context_t pe_context_t in perf_events.c 
+  Makes the code a bit clearer and matches how other components name things.
+
+  * 96ce9dcd src/perf_events.c: Rename control_state_t pe_control_state_t  This
+  makes the code a bit easier to follow and matches how other components name
+  things.
+
+2012-08-03  
+
+  * 4c5dce7f src/ctests/zero.c: Beef up error reporting.
+
+  * 83b5d28a src/ctests/cycle_ratio.c: Have the cycle_ratio test skip if
+  PAPI_REF_CYC event is not defined.
+
+2012-08-02  
+
+  * 25b1ba41 src/ctests/cycle_ratio.c: Removed all TESTS_QUIET blocks. They
+  aren't needed because tests_quiet() overloads printf. We should probably
+  remove TEST_QUIET blocks in ALL tests at some point for code clarity…
+
+  * 8777d7d4 src/ctests/zero.c: Fixed error reporting. The error computation
+  was inside a TESTS_QUIET block and wasn't getting executed when run quietly.
+  Thus this test always passed on buildbot, even when it didn't.
+
+  * 006fe8e9 src/ctests/Makefile: Fix typo in cycle_ratio make line.
+
+  * 88e6d6a4 src/aix.c src/aix.h: Setting number of multiplex counters back to
+  32 for AIX. Before it was set equal to number of max HW counters. This caused
+  ctests/sdsc-mpx to fail.
+
+  * ab78deda src/papi_events.csv: ctests/calibrate on Power7/AIX failed with a
+  50% error all the way through. Updated the preset FP_OPS with a more
+  appropriate definition. Now the calibrate errors range from 0.0002 to 0.0011%
+  for double and single precision
+
+  * fadce32f src/ctests/calibrate.c: Modify calibrate test in two ways: 1. add
+  a -f flag to suppress failures and allow test to run to completion; 2. change
+  error detection to allow warnings above MAX_WARN and failures above MAX_FAIL.
+  Currently set to 10% and 80% respectively. This allows speculative over
+  counting to pass with warning rather than fail completely.
+
+  * 8a39ac9d src/papi_events.csv: LST_INS for Power7 was defined from 3 native
+  events that cannot be counted together at the same time. Caused
+  ctests/all_events to fail. Updated the preset with a more appropriate
+  definition.
+
+  * cdc16e5d src/papi_events.csv: L1_DCA for Power7 was defined from 3 native
+  events that cannot be counted together at the same time. That caused
+  ctests/tenth to fail. Updated the preset with a more appropriate definition.
+
+2012-08-01  
+
+  * 2bf44d13 src/papi_internal.c src/perf_events.c: icc does not like
+  arithmetic on void pointers. Added cast to unsigned char* when arithmetic was
+  being performed on void pointers in papi_internal and perf_events.
+
+  * 7825ec14 src/ctests/api.c src/ctests/attach2.c src/ctests/attach3.c...:
+  Modify tests that FAIL if PAPI_FP_OPS or PAPI_FP_INS not implemented. Now
+  they will warn and continue. This is specifically to accommodate the
+  brain-dead IvyBridge implementation.
+
+  * fd70a015 src/testlib/test_utils.c: Re-writing of test_utils introduced new
+  bugs that caused ctests/tenth to fail. test_events struct lists the same
+  event twice (MASK_L1_DCW), hence PAPI_add_event() fails because it's forced
+  to add the same preset twice.
+
+  * 74ece3a0 src/run_tests.sh: run_tests.sh was clobbering $EXCLUDE variable if
+  $CUDA was defined. Changed to add entries from run_tests_exclude_cuda.txt to
+  $EXCLUDE which should already contain entries from run_tests_exclude.txt
+  instead of replacing the entries already contained.
+
+  * 11ed2364 src/libpfm4/config.mk: Added check in libpfm4/config.mk to check
+  if using icc. If so, the -Wno-unused-parameter flag will no longer be used
+  because icc does not provide it and provides no alternative.
+
+  * dedf73f6 src/papi_user_events.c: fget() returns an int it should be treated
+  as an int  The coverity scan flagged that the int return by fget was stored
+  in a char. The main concern with this is the EOF that fget() could return is
+  -1. Do not want to mess up that value by typecasting to char and then back to
+  int. 
+
+  * c4fcbe7e src/ctests/kufrin.c: Check return values of PAPI_get_cmp_opt() and
+  calloc  A coverity scan showed that PAPI_get_cmp_opt() could potentially
+  return a negative number.  Also it is good form to check the return value of
+  calloc to ensure it is a non-null pointer. 
+
+  * e89d6ffa src/testlib/test_utils.c: Clean up test_print_event_header() 
+  There were a couple warnings flagged by coverity on
+  test_print_events_header(). The function now checks for error conditions
+  flagged by PAPI_get_cmp_opt() and also frees memory allocated by a calloc()
+  function. 
+
+  * c81d8b60 src/threads.h: Eliminate deadcode from threads.h  If
+  HAVE_THREAD_LOCAL_STORAGE is defined, a portion of the
+  _papi_hwi_lookup_thread() will never be executed.  This patch make either one
+  section or the other section of code be compiled.  This will eliminate a
+  coverity scan warning about unreachable code. 
+
+  * f70f3f56 src/ctests/all_native_events.c: Eliminate unused variable in
+  ctests/all_native_events.c  Coverity identified a variable that was set but
+  never used in all_native_events.c.  This patch removes the unused variable to
+  eliminate that warning. 
+
+  * a9f29840 src/components/appio/appio.c: A couple places in appio.c used the
+  FD_SET() without initializing the variable. Coverity scan pointed out this
+  issue. 
+
+  * 9e535ae2 src/components/rapl/linux-rapl.c: A Coverity scan pointed out that
+  read_msr() could potentially use an invalid value of fd for pread().  Need to
+  check the value of fd before using it. 
+
+  * 7b55c675 src/components/rapl/linux-rapl.c: The arrays used for
+  initialization were hard coded to 1024 packages. Want to avoid hard coding
+  that so the day when machines with 1025 packages are available is a
+  non-event.  Also changed the initialization code to avoid having the
+  initialization be O((number of packages)^2) in time complexity. 
+
+2012-07-27  
+
+  * 3703995a src/papi_internal.c: Fix the component name predending code.  When
+  presented with a NULL component .short_name, the code did the wrong thing.
+
+  * 5258db8b src/components/cuda/linux-cuda.c: Fix a warning in cuda.
+
+2012-07-26  
+
+  * ddd6f193 src/ctests/Makefile src/ctests/cycle_ratio.c: Add a test to
+  compute nominal CPU MHz from real cycles and use PAPI_TOT_CYC and
+  PAPI_REF_CYC to compute effective MHz. Warns if PAPI_REF_CYC is zero, which
+  can happen on kernels < ~3.3.
+
+  * fab5e9ef src/papiStdEventDefs.h src/papi_common_strings.h
+  src/papi_events.csv: Add PAPI_REF_CYC preset event. Define it as
+  UNHALTED_REFERENCE_CYCLES for all Intel platforms on which this native event
+  is supported.
+
+2012-07-25  
+
+  * 8b9b6bef src/papi_events.csv: Modify SandyBridge and IvyBridge tables:
+  SandyBridge FP_OPS only counts scalars; SP_OPS and DP_OPS now count
+  correctly, including SSE and AVX. IvyBridge can't count FP at all;
+  adjustments made to eliminate event differences with SandyBridge.
+
+2012-07-26  
+
+  * 5b11c982 src/components/cuda/linux-cuda.c: Fix the cuda component.  The
+  cuda component prepended CUDA. to all its event names, this is no longer the
+  case.
+
+2012-07-25  
+
+  * db5b0857 src/papi_events.csv: Added 2 new preset definitions for BGQ. Note,
+  these presets use the new feature where a generic event mask together with an
+  ORed opcode string is used. This won't work until the new Q driver is
+  released (currently scheduled for end of August).
+
+2012-07-24  
+
+  * af7cd721 src/components/coretemp/linux-coretemp.c
+  src/components/coretemp/tests/coretemp_pretty.c
+  src/components/cuda/linux-cuda.c...: Enforce all our components to use the
+  same naming.  We setteled on :'s as inter-event seperators. This also touches
+  a few of the components' tests, we changed the name field so their searches
+  needed help.
+
+2012-07-23  
+
+  * 57aeb9d4 src/papi_internal.c: Prepend component .short_name to each event
+  name.  Use ::: as a sep.
+
+2012-07-24  
+
+  * 762e9584 src/ctests/multiplex2.c src/sw_multiplex.c: Fix multiplex2 test 
+  It complained if it tried to add a multiplex event and PAPI properly told it
+  that it couldn't.
+
+  * 531870f1 src/papi_internal.c: Add sanity check at component init time 
+  Looks for num_cntrs being larger than num_mpx_cntrs which doesn't make much
+  sense.
+
+  * 53ad0259 src/extras.c src/genpapifdef.c src/papi.c...: Rename
+  PAPI_MAX_HWCTRS to PAPI_EVENTS_IN_DERIVED_EVENT  Hopefully this will make
+  things a little less confusing.
+
+  * 700af24b src/papi_internal.c: Change EventInfoArrayLength to always return
+  num_mpx_cntrs  Things should be consistently using num_mpx_cntrs rather than
+  num_cntrs now.  Issue reported by Steve Kaufmann
+
+  * d1570bec src/sw_multiplex.c: Fix sw_multiplex bug when max SW counters is
+  less than max HW counters  this was causing kufrin and max_multiplex to fail
+
+  * f47f5d6a src/aix.c src/components/appio/appio.c
+  src/components/bgpm/CNKunit/linux-CNKunit.c...: Remove PAPI_MPX_DEF_DEG  It
+  was not well documented and being used in confused ways all over the code. 
+  Now there is a different define PAPI_MAX_SW_MPX_EVENTS used by the software
+  multiplex code.  All other components have had the value replaced with just
+  the maximum number of counters.  If a component can handle its own
+  (non-software) multiplexing it is up to it to set .num_mpx_cntrs to a value
+  that's different from .num_cntrs
+
+  * 0d83f5db src/papi_internal.c src/papi_internal.h: Split NativeBits off of
+  NativeInfoArray in EventSet  previously we were doing some crazy thing where
+  we allocated both at once and then split them afterward.  The new code is
+  easier to follow.
+
+  * 98f2ecbd src/papi_internal.c: Clean up EventSet creation  Sort out which
+  sizes are used for allocating which structures.
+
+  * e1024579 src/Makefile.inc src/multiplex.c src/multiplex.h...: Rename the
+  multiplex files to be sw_multiplex  That way it's more clear the stuff
+  included only relates to software multiplexing, not generic multiplexing.
+
+  * a6adc7ff src/multiplex.h src/papi_internal.c src/papi_internal.h: Move some
+  sw-multiplex specific terms out of papi_internal.h and into multiplex.h
+
+2012-07-23  
+
+  * 1ddbe117 src/components/README: Added note that lmsensors component
+  requires lmsensors version >=3.0.0
+
+  * 94676869 src/components/appio/appio.c
+  src/components/appio/tests/appio_test_pthreads.c: proper checking of return
+  codes in response to tests using coverity
+
+  * ea958b18 src/components/appio/tests/appio_list_events.c
+  src/components/appio/tests/appio_values_by_code.c: As component name in table
+  has been changed from appio.c to appio, we now use appio in the tests.
+
+2012-07-20  
+
+  * f212cc34 src/components/appio/appio.c
+  src/components/coretemp/linux-coretemp.c
+  src/components/coretemp_freebsd/coretemp_freebsd.c...: Add .short_name
+  entries to each component.
+
+  * 1e755836 src/papi_libpfm4_events.c src/perf_events.c: Fix use-after-free
+  bug in perf_events.c  This turned up in the ctests/flops test, and Valgrind
+  made it easy to track down.
+
+  * 4580ed1d src/perf_events.c: Update perf_event.c rdpmc support  Use the
+  libpfm4 definition for mmap rather than our custom one, now that libpfm4 has
+  been updated
+
+  * 47558b2c src/libpfm4/examples/showevtinfo.c
+  src/libpfm4/include/perfmon/perf_event.h
+  src/libpfm4/lib/pfmlib_intel_nhm_unc.c...: Import current libpfm4 from
+  libpfm4 git  It has some minor uncore fixes plus the header changes needed
+  for rdpmc.
+
+2012-07-17  
+
+  * 65d4c06c src/linux-common.c: Reorder statements to ensure the fclose() are
+  performed  Coverity pointed out that it was possible for resources to be
+  leaked in linux-common.c if the fscanf() encountered error.  This reordering
+  of the statements ensures that the fclose() calls are done regards of the
+  results of the fscanf() functions. 
+
+2012-07-18  
+
+  * 7bf071ff src/papi_user_events.c: Ensure that load_user_event_table() frees
+  files and memory on error  A Coverity scan showed that an error condition in
+  load_user_event_table() function would exit the the function without closing
+  the table file or freeing allocated memory.  This patch addresses those
+  issues. 
+
+2012-07-17  
+
+  * 1ba52e35 src/components/stealtime/linux-stealtime.c: Ensure that
+  read_stealtime() closes the file in case of an error condition  A Coverity
+  scan showed that an error condition could cause read_stealtime() to exit
+  without closing the file.  This patch ensures that the file is closed
+  regardless of success or failure. 
+
+2012-07-18  
+
+  * f37f22e5 src/papi_libpfm4_events.c: Fix warning in papi_libpfm4_events.c 
+  We were setting a value but never using it.
+
+  * 8e8401bc src/testlib/test_utils.c: Remove unused variable in test_utils.c 
+  Most of the machines in buildbot were complaining about this.
+
+  * 133ce6a9 src/linux-timer.c: Add missing papi_vector.h include to
+  linux-timer.c  This was breaking on PPC Linux
+
+2012-07-17  
+
+  * 6fd3cedd src/perf_events.c: Fix perf_events.c warnings reported by ICC
+
+  * 21c8f932 src/perfctr-x86.c: Fix perfctr-x86 build with debug enabled
+
+  * 08f76743 src/configure src/configure.in src/linux-bgq.c: Attempt to fix
+  linux-bgq compilation error.  It turns out BGQ uses the standard
+  linux-context.h header
+
+  * 43457f4f src/linux-bgq.c: Made check for opcodes more robust.
+
+  * d58116b4 src/perf_events.c: More cleanups of perf_events.c file
+
+  * 409438b7 src/freebsd-context.h src/freebsd.c src/freebsd.h: Fix FreeBSD
+  compile warnings  Similar to the perfctr issues.
+
+  * 1e6dfb02 src/aix.c src/aix.h: Fix AIX build warnings  They were similar in
+  cause to the perfctr issues.
+
+  * 3d0b5785 src/Rules.perfmon2 src/components/appio/appio.c
+  src/components/bgpm/CNKunit/linux-CNKunit.h...: Remove papi_vector.h include
+  from papi_internal.h  There were some semi-circular dependencies that came up
+  with the context split changes.  The easiest way to fix things for perfctr
+  was just move papi_vector.h out to be included explicitly.  This touches a
+  lot of files because a lot of files include papi_internal.h  This should also
+  fix the perfctr and perfmon2 builds that were broken yesterday.
+
+2012-07-16  
+
+  * a7a14a5b src/ctests/zero.c src/testlib/test_utils.c: Modify zero test to
+  warm up processor before measuring events, and report timing errors as signed
+  deviations. Modify test_utils add_two_events code to check for errors after
+  adding nominally valid events. This is a more rigorous test than just
+  counting available registers.
+
+  * de0860d3 src/perf_events.c: Remove perf_events.h module header  It's no
+  longer needed, everything important is merged into the perf_events.c file.
+
+  * 22975f14 src/perf_events.c: Remove perf_event SYNCHRONIZED_RESET code  This
+  was never defined and never used, just remove the code.
+
+  * 48750b8c src/perf_events.c: Remove papi_pe_allocate_registers  On
+  perf_event this code wasn't really doing anything useful, as
+  update_control_state would end up re-doing any possible tests we could want
+  to do here.
+
+  * 1775566f src/Makefile.in src/Makefile.inc src/Rules.pfm4_pe...: Remove
+  "include CPUCOMPONENT" from papi_internal.h  This was the last major
+  dependency on CPU component in common PAPI code.  It was mostly necessary for
+  the ucontext definitions when trying to get the instruction pointer when
+  doing sampling.  This change creates new OS-specific header files that handle
+  the ucontext related code, and has papi_internal.h include that instead.
+
+  * 969ce035 src/Rules.pfm4_pe src/Rules.pfm_pe src/configure...: Make
+  perf_event libpfm4 only  perf_event libpfm3 support is not really needed
+  anymore and supporting it was cluttering up the perf_event component.
+
+2012-07-13  
+
+  * adad1d2a src/perf_events.c: Add init time error messages to perf_event
+  component
+
+  * 827ccc07 src/perf_events.c: Add perf_event rdpmc / fast_real_timer
+  detection  Currently we need a custom copy of struct perf_event_mmap_page
+  because the version included with libpfm4 doesn't define the fields we need
+  yet.
+
+  * 4f82fe94 src/perf_events.c: Read in paranoid info on perf_events  This
+  indicates whether a regular user can read CPU-specific or system-wide
+  measurements.
+
+  * 03080450 src/perf_events.c: Add proper perf_event detection  Using the
+  official /proc/sys/kernel/perf_event_paranoid file
+
+  * 6e71d3f7 src/linux-bgq.c: Updated BGQ opcode stuff; cleaned up code.
+
+2012-07-11  
+
+  * 3114d3dc src/multiplex.c src/papi_internal.c src/perf_events.c: Minor
+  documentation improvements  Plus fixes some typos
+
+2012-07-09  
+
+  * b60c0f0c src/perf_events.c: Minor cleanups to perf_events.c
+
+  * 075278a0 src/aix.c src/freebsd.c src/linux-bgp.c...: Change return value
+  for .allocate_registers  For some reason it returned 1 on success and 0 on
+  failure.  Change it so you return PAPI_OK on success and a PAPI error on
+  failure, to better match all of the other component vectors.
+
+  * 29d9e62b src/testlib/test_utils.c: Fixed the print_header routine to report
+  an error message if counters are not found, instead of a negative counter
+  number. Tested by forcing the return value negative; not by running on a Mac,
+  where the error first appeared.
+
+  * 74257334 src/ctests/Makefile src/ctests/remove_events.c: Add remove_events
+  test  This just makes sure EventSets still work after an event has been
+  removed.  This is probably covered by other more elaborate tests, but I
+  needed a simple test to make sure I wasn't breaking anything.
+
+  * 1372714f src/papi.c src/papi_internal.c src/papi_internal.h: Clean up,
+  rename, and comment _papi_hwi_remap_event_position  I've found this section
+  of code to be confusing for a long time. I think I finally have it mostly
+  figured out.  I've renamed it _papi_hwi_map_events_to_native() to better
+  describe what it does.  The issue is that the native event list in an
+  EventSet can change at various times.  At event add, event remove, and
+  somewhat unexpectedly, whenever ->update_control_state is called (a component
+  can re-arrange native events if it wants, to handle conflicts, etc.)  Once
+  the native event list has been changed, _papi_hwi_map_events_to_native() has
+  to be called to make sure the events all map to the proper native_event
+  again.  Currently we have the _papi_hwi_map_events_to_native() calls in odd
+  places. It seems to cover all possible needed locations, but analyzing that
+  we do takes a lot of analysis...
+
+  * f1b837d8 src/papi.c: Remove unused variable in papi.c
+
+  * 541bcf44 src/papi_internal.h: Update commens in papi_internal.h  Some of
+  the EventSetInfo comments were out of date.
+
+  * e6587847 src/papi.c src/papi_internal.c src/papi_internal.h: Remove unused
+  paramater from _papi_hwi_remap_event_position  The mysterious
+  _papi_hwi_remap_event_position function had a "thisindex" field that was
+  ignored.  This will possibly speed PAPI_start() time as it was running a loop
+  over num_native_events on _papi_hwi_remap_event_position even though each
+  call did the same thing since the value being passed was ignored.
+
+  * 3ad3d14b src/papi_internal.c: Clean up and comment add_native_events in
+  papi_internal.c  I'm chasing some weird perf_events behavior with the
+  papi_event_chooser.  The add_native_events code is very hard to understand,
+  working on commenting it more.
+
+  * 4e5e7664 src/utils/event_chooser.c: Fix coverity warning in
+  papi_event_chooser
+
+  * 666249a8 src/jni/EventSet.java src/jni/FlipInfo.java
+  src/jni/FlopInfo.java...: RIP Java.  Java PAPI wrappers have not been
+  supported for years (2005?). They are being removed to declutter the source.
+
+  * e18561fc src/papi_preset.c: Update cmpinfo->num_preset_events properly 
+  This value wasn't being set if we were reading the presets directly from the
+  CSV file.
+
+  * 290ab7c3 src/utils/component.c: Have papi_component_avail report counter
+  and event info
+
+  * 7c421b9c src/testlib/test_utils.c src/utils/native_avail.c: Remove counter
+  number from the testlib header.  The header was only reporting number of
+  counters for the CPU component, even though the header is printed for many
+  utils and the CPU component might not even be involved.  This could be a bit
+  confusing, so remove it.
+
+  * 26432359 src/darwin-common.c src/darwin-memory.c: Improve OSX support  This
+  properly detects CPU information now.  You can get results like this: 
+  Available native events and hardware information.
+  
+  - PAPI Version             : 4.9.0.0 Vendor string and code   : GenuineIntel
+  (1) Model string and code    : Intel(R) Core(TM) i5-2435M CPU @ 2.40GHz (42)
+  CPU Revision             : 7.000000 CPUID Info               : Family: 6 
+  Model: 42  Stepping: 7 CPU Max Megahertz        : 2400 CPU Min Megahertz     
+    : 2400 CPUs per Node            : 0 Total CPUs               : 4 Running in
+  a VM          : no Number Hardware Counters : -4 Max Multiplex Counters   :
+  -4
+  
+  -
+
+2012-07-08  
+
+  * 845d9ecb src/Makefile.inc src/configure src/configure.in...: Add Mac OSX
+  support  This is enough that things compile and simple utilities run.  No CPU
+  perf counter support.
+
+2012-07-06  
+
+  * ff6f9ab4 src/linux-bgq.c: missed to delete a debug output.
+
+2012-04-17  
+
+  * 12e9a11a RELEASENOTES.txt: Release notes for the 4.4 release.
+
+2012-07-06  
+
+  * ac2eac56 src/papi.c src/papi.h: Add a PAPI_disable_component_by_name entry
+  point.
+
+  * 8c490849 src/components/coretemp_freebsd/coretemp_freebsd.c src/freebsd.c:
+  Fix FreeBSD to work  I'm not sure how it ever worked in the past.  With these
+  changes I can at least do a papi_component_avail and a papi_native_avail and
+  get sane results
+
+  * 108b5ce6 src/freebsd.c src/freebsd.h src/freebsd/map-atom.c...: Fix FreeBSD
+  build  some of the recent changes broke the FreeBSD build
+
+  * 40a60f0a src/linux-bgq.c src/linux-bgq.h: Added BGQ's opcode and generic
+  event functionality to PAPI. For BGQ there are multiple ways to define
+  presets. The naive way is to derive from multiple events. This eats up
+  multiple counters and we lose sample capability as well as overflow
+  capability. On the other side, some events come with multiple InstrGroup
+  derived in the field. If that's the case we can use a generic event and
+  opcodes to filter multiple groups in a single counter. This is not working
+  properly yet due to a known error in BGPM. Bgpm_AddEvent() does not work
+  properly when multiple generic events are added to an EventSet. The BGPM
+  folks have been made aware of this issue, they confirmed the error, and they
+  are currently working on a fix.
+
+  * 6f72b70f src/papi_events_table.sh: Make this script robust enough to handle
+  any line ending, including CR (Mac), CRLF (Windows), and LF (Unix). It
+  appears that google mail now automagically converts attached files to CRLF
+  format.
+
+  * 765ed0d2 src/papi_internal.c: Fix a type warning in the UE code.
+
+  * 94bc1b15 src/MACROS: Remove the MACROS file  it held out of date info and
+  hasn't been touched since 2004
+
+  * d19e73ba src/ctests/Makefile src/ctests/clockcore.c
+  src/testlib/Makefile...: Move the clockcore.c file from ctests to testlib 
+  it's common code used by multiple tests, including some in the utils
+  directory  also add a function definition to fix a build-time warning
+
+  * 1101a6aa src/aix-lock.h src/aix.h src/configure...: Make papi_lock.h
+  changes for non Linux architectures
+
+2012-07-05  
+
+  * 3b82b03d src/Makefile.in src/Makefile.inc src/aix.c...: Make the PAPI locks
+  be tied to OS, not to CPU  There is not a papi_lock.h file that when included
+  gets the proper lock include for the OS.  This fixes a lot of previous build
+  hacks where a CPU component was needed in order for locks to work.
+
+  * 0632ef42 src/threads.c: Fix spurious init_thread call in threads.c 
+  threads.c was calling init_thread() on all components, even ones that were
+  disabled  Fix it to honor the disable bit, as well as for shutdown_thread(). 
+  This was causing perfctr disable code to not work.
+
+  * 19d9de7f src/Makefile.in src/Makefile.inc src/Rules.pfm4_pe...: Replace
+  SUBSTRATE with CPUCOMPONENT in build  This was mostly a configure/build
+  change but it also cleaned up some cases where we were including SUBSTRATE
+  where we didn't have to.
+
+  * 829780db src/solaris-common.c src/solaris-common.h
+  src/solaris-niagara2.c...: Move some common solaris code to solaris-common
+
+  * 681ef027 src/configure src/configure.in src/solaris-memory.c...: Merge
+  solaris-memory.c and solaris-niagara2-memory.c
+
+  * bbd41743 src/solaris-ultra/get_tick.S src/solaris.h: Remove
+  solaris-ultra/get_tick.S  Nothing was using it.
+
+  * dc3b6920 src/papi_sys_headers.h src/solaris.h: Remove papi_sys_headers.h 
+  Solaris was the only thing including it, and it wasn't really using it.
+
+  * 7ccfa9df src/Makefile.in src/Makefile.inc src/configure...: Move move OS
+  specific code into the new OSFILESSRC  Linux in particular was using MISC for
+  this.
+
+  * 6f16c0c5 src/configure: Re-run autoconf to pickup the substrate=>component
+  change.
+
+  * cfff1ede src/Makefile.in src/Makefile.inc src/configure...: Remove
+  MEMSUBSTR  In reality, what we want instead of a Memory Substrate is an idea
+  of the OS-specific common code that includes the memory substrate.  This
+  change adds OSFILESSRC and OSFILESOBJ to handle this case in configure
+
+  * ca4729e6 src/configure.in: Separate out MEMSUBSTR and make it per-OS
+
+  * 3148cba5 src/Matlab/PAPI_Matlab.dsp src/ctests/calibrate.c
+  src/ctests/flops.c...: RIP Windows, remove the windows support code.  Windows
+  has not been activly supported since the transition to Component PAPI (4.0)
+  This cleans up the code-base.
+
+2012-07-03  
+
+  * a366adf7 src/papi.c src/utils/error_codes.c: Change PAPI_strerror and
+  PAPI_perror to behave more like thir POSIX namesakes.  PAPI_error_descr is
+  made redundant and removed as a result.
+
+2012-07-05  
+
+  * 7df46f81 src/Rules.pfm src/aix.c
+  src/components/coretemp/linux-coretemp.c...: Move uses of PAPI_ESBSTR to
+  PAPI_ECMP  I left PAPI_ESBSTR defined too for backward compatability.  Also
+  some of the changes update PAPI_ESBSTR to be a more relevant error code, it
+  one is available.
+
+2012-07-03  
+
+  * fdb348ad src/components/coretemp_freebsd/coretemp_freebsd.c
+  src/components/example/example.c src/components/net/linux-net.c...: A few
+  more substrate removals
+
+  * 791747c1 src/cpus.c src/papi.h src/perf_events.c...: Fix bugs introduced by
+  substrate -> component change  Fix some stupid compile bugs that I missed.
+
+  * 79b01a47 src/aix.c src/components/appio/appio.c
+  src/components/bgpm/CNKunit/linux-CNKunit.c...: More substrate -> component
+  changes  This changes the vectors .init_substrate -> .init_component
+  .shutdown_substrate -> .shutdown_substrate .init -> .init_thread .shutdown ->
+  .shutdown_thread  hopefully this will make the code clearer.
+
+  * 02a10d71 src/Makefile.inc src/aix.c src/cpus.c...: Rename "substrate" to
+  "component"  This first pass only re-names things in comments.
+
+2012-07-02  
+
+  * c4bbff1c src/papi.c src/papi.h: Minor documentation fixes  Found when
+  writing up the PAPI 5.0 changes document
+
+2012-06-30  
+
+  * f9cb7346 src/components/vmware/vmware.c: Fix vmware component  apparently I
+  forgot to test the build with the vmguestlib support disabled.
+
+2012-06-22  
+
+  * 599040d1 src/components/coretemp/linux-coretemp.c
+  src/components/rapl/linux-rapl.c
+  src/components/stealtime/linux-stealtime.c...: Fix libpfm4 ntv_event_to_info
+  event_info_t on other components  This was actually a widespead problem due
+  to cut-and-paste.
+
+  * 2b51b439 src/papi_libpfm4_events.c: Properly fix libpfm4 ntv_event_to_info
+  event_info_t event value  The previous fix was subtly wrong.  This is the
+  proper fix, which is to do nothing inside of papi_libpfm4_events.c because
+  papi_internal.c does the right thing for us and we were overwriting that with
+  the wrong value.
+
+  * a4f576bf src/ctests/overflow_allcounters.c src/testlib/papi_test.h
+  src/testlib/test_utils.c: Clean up overflow_allcounters code  While tracking
+  down a previous issue I also cleaned up the overflow_allcounters test code to
+  use some of the new interfaces.
+
+  * 6903e053 src/papi_libpfm4_events.c: Fix libpfm4 ntv_event_to_info
+  event_info_t event value  The recently added libpfm4 ntv_event_to_info
+  function was not properly oring PAPI_NATIVE_MASK to the event value in the
+  event_info_t struct.  That means if you tried to use that event value to add
+  an event it would fail.  The overflow_allcounters test broke because of this.
+
+  * 420c3d11 src/ctests/Makefile src/ctests/disable_component.c src/papi.c...:
+  Add PAPI_get_component_index() and PAPI_disable_component() 
+  PAPI_get_component_index() will return a component index if you give it the
+  name of a component to match.  This saves you having to iterate the entire
+  component list looking.  PAPI_disable_component() will manually mark a
+  component as disabled. It has to be run before PAPI_library_init() is called.
+
+  * 11946525 src/aix.c src/components/cuda/linux-cuda.c
+  src/components/example/example.c...: Standardize component names to not end
+  in .c  We were being inconsistent; the time to make them all be the same is
+  now before 5.0 gets out.
+
+2012-06-21  
+
+  * 274e1ad8 src/components/vmware/tests/Makefile: Fix cut-and-paste error in
+  the vmware component Makefile
+
+  * 85d6438d src/utils/event_chooser.c: Update papi_event_chooser to work with
+  components  Now you can specify events from components and it will tell you
+  all the other events on that component that can run with it.  Previously the
+  utility was limited to the CPU component (0) only.
+
+  * 3c2fcc83 src/papi_libpfm3_events.c src/papi_libpfm4_events.c
+  src/perf_events.c: Hook up .ntv_code_to_info on perf_event
+
+  * 36e864b3 src/papi_libpfm4_events.c src/papi_libpfm_events.h
+  src/perf_events.c: Enable support for showing extended umasks on perf_event 
+  With this change, papi_native_avail now shows event umasks such as :u, :k,
+  :c, :e, and :i. (user, kernel, cmask, edge-trigger, invert)  Thes are boolean
+  or integer events.  They were supported by previous PAPI but they were never
+  enumerated.
+
+  * 8f3e305e src/components/coretemp/linux-coretemp.c: Fix cut-and-paste error 
+  in linux-coretemp.c that could lead to wrong size being copied
+
+  * 0eedd562 src/libpfm4/lib/events/intel_atom_events.h
+  src/libpfm4/lib/events/intel_core_events.h
+  src/libpfm4/lib/events/intel_coreduo_events.h...: Import most recent libpfm4
+  git  This fixes an issue where there can be confusion between :i and :i=1
+  type events.  It also has initial support for Uncore, though you need a
+  specially patched kernel and PAPI does not support it yet.
+
+  * 2f86ec78 src/components/appio/tests/Makefile
+  src/components/appio/tests/appio_test_blocking.c
+  .../appio/tests/appio_test_fread_fwrite.c...: - Fixed tests verbosity by
+  using TESTS_QUIET macro - Fixed Makefile to only include necessary tests for
+  automatic builds (skip blocking tests that read from stdin)
+
+  * 6936b955 src/components/appio/README src/components/appio/appio.c
+  src/components/appio/appio.h...: Added polling of read/write descriptor to
+  check which operations would block.
+
+  * 48cacccf src/papi.h: Add back PAPI_COMPONENT_INDEX() for backward
+  compatability  It turns out some people were using this for cases other than
+  enumeration.  The proper way to do things now is to use
+  PAPI_get_event_component() which is what this PAPI_COMPONENT_INDEX() now maps
+  to.
+
+  * d1ed12b7 src/ctests/Makefile src/ctests/get_event_component.c
+  src/papi.c...: Add PAPI_get_event_component()  This function returns the
+  component an event belongs to.  It also adds a test to test this
+  functionality.
+
+2012-06-20  
+
+  * ffccf633 src/papi.h: Add component_type field to .cmp_info  The idea is
+  we'll specify CPU, I/O, GPU, hardware, etc.
+
+  * 9998eecc src/components/lmsensors/Rules.lmsensors: Another lmsensors build
+  fix
+
+  * caa94d64 src/components/lmsensors/linux-lmsensors.c: Update lmsensors
+  component to actually compile.  I finally found a machine with lmsensors
+  installed.
+
+  * fbcde325 src/components/lmsensors/linux-lmsensors.c
+  src/components/lmsensors/linux-lmsensors.h: Update lmsensor component  Unlike
+  the other components it hadn't been updated to PAPI 5 standards.  Also, it
+  was wrongly de-allocating all state in "_shutdown" rather than
+  "_shutdown_substrate" which was causing double-frees during tests.
+
+  * 0d3c0ae2 src/papi_internal.c: Add some extra debugging to
+  _papi_hwi_get_native_event_info
+
+  * 5961c03d src/aix.c src/components/nvml/linux-nvml.c
+  src/ctests/subinfo.c...: Remove cntr_groups from .cmp_info  This information
+  is better exposed by enumeration.
+
+  * 2b4193fd src/utils/event_chooser.c: Cleanup and comment event_chooser code
+
+  * 7f9fab2b src/ctests/all_native_events.c: Cleanup and add comments to
+  all_native_events.c
+
+  * a245b502 src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/freebsd.c...: Remove profile_ear from .cmp_info  The CPU components
+  should handle this internally.
+
+  * bca07f3c src/papi.c: Add comments to the PAPI_sprofil code.
+
+  * b1e2090c src/papi.c: Minor papi.c cleanups  Fix some minor cosmetic things,
+  including a typo in a comment.
+
+  * 8f3aef4a src/ctests/subinfo.c src/papi.h: Remove opcode_match_width field
+  from .cmp_info  This should be exposed via enumeration and not by a field in
+  the generic cmp_info structure.
+
+  * 047af629 src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/papi.h...: Remove cntr_OPCM_events field from .cmp_info  This should be
+  exposed via enumeration and not by a field in the generic cmp_info structure.
+
+  * 3f1f9e10 src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/papi.h...: Remove cntr_DEAR_events field from .cmp_info  This should be
+  exposed via enumeration and not by a field in the generic cmp_info structure.
+
+  * 962c642a src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/papi.h...: Remove cntr_IEAR_events field from .cmp_info  This should be
+  exposed via enumeration and not by a field in the generic cmp_info structure.
+
+  * 5aa7eac1 src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/papi.h...: Remove instr_address_range from .cmp_info  This feature should
+  be deteced via enumeration, not via a flag in the generic .cmp_info
+  structure.
+
+  * 1bf68d5d src/components/nvml/linux-nvml.c src/ctests/subinfo.c
+  src/papi.h...: Remove data_address_range field from .cmp_info  The proper way
+  to detect this feature is via enumeration.
+
+2012-06-19  
+
+  * 90037307 src/linux-context.h: Change Linux from using "struct siginfo" to
+  "siginfo_t"  This conforms to POSIX, and fixes newer Fedora where struct
+  siginfo is no longer supported.  This can in theory break on older setups
+  (possibly kernel 2.4). If that happens, we need to somehow detect this using
+  autoconf.
+
+2012-06-18  
+
+  * ad48b4fa src/Rules.perfctr-pfm: Fix the perfctr-pfm build; for buildbot,
+  mostly.  Have the perfctr-pfm build only build libpfm, like the perfevents
+  builds. The icc build was choking on warnings (-Werror => errors) in the
+  example programs with libpfm, this is not something we depend upon.
+
+2012-06-17  
+
+  * 358b14f9 src/papi_events.csv: Update BGQ presets
+
+  * cf26fc87 src/components/bgpm/CNKunit/linux-CNKunit.c
+  src/components/bgpm/IOunit/linux-IOunit.c
+  src/components/bgpm/L2unit/linux-L2unit.c...: Update bgpm components
+  according to the papi5 changes
+
+  * a7b08a91 src/configure src/configure.in src/linux-bgq.c: Merging the BG/Q
+  stuff from stable_4.2 to PAPI 5 did break it. It's corrected now; also
+  predefined events are now working.)
+
+2012-06-15  
+
+  * 2d5a4205 src/components/bgpm/IOunit/linux-IOunit.c
+  src/components/bgpm/L2unit/linux-L2unit.c src/configure...: Merging the BG/Q
+  stuff from stable_4.2 to PAPI 5 did break it. It's corrected now (almost);
+  predefined events are not working yet.)
+
+  * 1b034920 src/papi.c: Re-enable PAPI_event_name_to_code() optimization  In
+  PAPI_event_name_to_code() there was a commented-out optimization where we
+  would check if an event name begins with "PAPI_" before searching the entire
+  preset list for an event name.  The comment says we had to disable this due
+  to "user events", but a check shows that was introduced in e7bd768850ecf90
+  and that the "user events" it means is not the current support, but the
+  now-removed PAPI_set_event_info() function where you could change the names
+  of presets on the fly (even to something not starting with PAPI_).  Since we
+  don't support that anymore, we can re-enable the optimization.
+
+2012-06-14  
+
+  * 9a26b43d src/papi_internal.c src/papi_internal.h src/papi_preset.c: Remove
+  the 16-component limit  This turned out to be easier than I thought it would
+  be.  Now determining which component an event is in is a two step process. 
+  Before, the code shifted and masked to find the component from bits 26-30. 
+  Now, _papi_hwi_component_index() is used.  There's a new native event table
+  which maps all native events (which are allocated incrementally at first use
+  starting with 0x4000000) to two values, a component number and an "internal"
+  event number.
+
+2012-06-13  
+
+  * d5c50353 src/papi_internal.c: Fix for the PAPI_COMPONENT_MASK change  I
+  missed two cases in papi_internal.c This was causing the overflow_allcounters
+  test to fail
+
+  * 46fd84ce src/components/bgpm/CNKunit/linux-CNKunit.c
+  src/components/bgpm/CNKunit/linux-CNKunit.h
+  src/components/bgpm/IOunit/linux-IOunit.c...: Updating the Q substrate
+  according to the PAPI 5 changes
+
+  * 05a8dcbf src/components/appio/appio.c
+  src/components/appio/tests/appio_list_events.c
+  src/components/appio/tests/appio_values_by_code.c...: First steps of removing
+  16-component limit  This change removes PAPI_COMPONENT_INDEX(),
+  PAPI_COMPONENT_MASK and PAPI_COMPONENT_AND_MASK.  It adds the new functions
+  _papi_hwi_component_index() _papi_hwi_native_to_eventcode()
+  _papi_hwi_eventcode_to_native()  By replacing all of the former macros with
+  the equivalent of the latter functions, it allows all of the future
+  16-component limit changes to be made in the functions.  Components now
+  receive as events a plain 32-bit value as their internal native event; the
+  high bits are not set.  This may break some external components.  This change
+  should not break things, but a lot of testing is needed.
+
+  * af4cbb86 src/run_tests_exclude.txt: Exclude iozone helper scripts from
+  run_tests.  run_tests.sh looks for executible files under components/*/tests
+  Some of the plotting scripts in appio/iozone were getting picked up.
+
+2012-06-12  
+
+  * c10c7ccb src/configure src/configure.in: Configure does not work on BGQ due
+  to missing subcomp feature. It worked for stable-4.2 but got lost in current
+  git origin.
+
+  * d9a58148 src/aix.c src/ctests/hwinfo.c src/ctests/overflow.c...: Update
+  hw_info_t CPU frequency reporting.  Previously PAPI reported "float mhz" and
+  "int clock_mhz". In theory the first was the current CPU speed, and the
+  latter was the resolution of the cycle counter.  In practice they were both
+  set to the same value (on Linux, read from /proc/cpuinfo) and not very useful
+  when DVFS was enabled, as the value reported was usually lower than the
+  actual frequency running once CPU started being used.  This change adds two
+  new values "cpu_max_mhz" and "cpu_min_mhz" which are read from
+  /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq and
+  /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq if they are available,
+  and falls back to /proc/cpuinfo otherwise.  All of the tests were updated to
+  use cpu_max_mhz.  The old mhz and clock_mhz values are left for compatability
+  reasons (and set to cpu_max_mhz) but are currently unused otherwise.
+
+2012-06-11  
+
+  * 0f124891 src/papi_events.csv: Initial PAPI Ivy Bridge Support  for now try
+  to re-use the sandy bridge event presets
+
+  * a1f46077 src/libpfm4/docs/man3/libpfm_intel_ivb.3
+  src/libpfm4/include/perfmon/err.h
+  src/libpfm4/lib/events/intel_ivb_events.h...: Import libpfm4 git snapshot 
+  This adds IvyBridge support
+
+  * 3bb983cc src/libpfm-3.y/examples_v2.x/self_smpl_multi.c: Fix a libpfm3
+  example program for icc, local fix because libpfm3 is deprecated.  icc does
+  have more enjoyable warnings than gcc, : error 186: pointless comparison of
+  unsigned integer with zero  on this: unsigned int foo; ... if ( foo < 0 )
+
+2012-06-06  
+
+  * d28adccf src/papi_user_events.c: The user events code had a call to exit,
+  this was bad...
+
+2012-06-04  
+
+  * 6bf43022 src/testlib/test_utils.c: Further the hack for testing for perf SW
+  events.  Events like
+  
+  - | perf::CPU-CLOCK                                                          
+     | |            PERF_COUNT_SW_CPU_CLOCK                                    
+        |
+  
+  - were passing the check, now we also check the event_info_struct.long_descr
+  field for PERF_COUNT_SW....
+
+  * fa4b1a28 src/components/nvml/linux-nvml.c: Cleanup nvml code a little.  A
+  few print statements were left over from debugging. Also check errors from
+  nvml and cuda pciinfo functions, disabling the component in a few more cases.
+
+2012-06-01  
+
+  * da144a94 src/components/nvml/Makefile.nvml.in src/components/nvml/README
+  src/components/nvml/Rules.nvml...: Rewrite and merge of the nVidia Management
+  library component.  This component attempts to expose all supported
+  'performance counters' on each card cuda knows about at runtime. Much like
+  the cuda component reads happen on the card you're executing on at PAPI_read
+  time.  The test included is a copy of the cuda helloworld test, but it
+  attempts to start/stop the event on each gpgpu. If you select an event that
+  is not supported on the card you're running on we should fail gracefully but
+  this has not been tested.
+
+2012-05-23  
+
+  * b2d414dc src/components/stealtime/linux-stealtime.c: At units to stealtime
+  component  Added the function but forgot to add a function vector for it.
+
+  * ce9d4500 src/components/stealtime/linux-stealtime.c: Add units to stealtime
+   Properly report that the units are in micro seconds.
+
+  * 149948c8 src/components/rapl/linux-rapl.c: Minor cleanup of RAPL code 
+  missing "void" paramter in init_substrate function
+
+  * 6a7e22fa src/components/vmware/vmware.c: More vmware component fixes.  This
+  makes the component thread-safe.  Also makes it fail more gracefully if the
+  guestlib SDK is installed but does not support our hypervisor (for example,
+  if we are running under VM Workstation).  Still need to test on ESX.
+
+  * 072d6473 src/components/appio/tests/appio_test_select.c: added code to
+  intercept and time select() calls.
+
+2012-05-22  
+
+  * 12b6d0d7 src/components/vmware/vmware.c: Some more minor fixes to VMware
+  component  Try to handle things better if VMguest SDK not working
+
+  * 6e015bc5 src/components/vmware/Rules.vmware src/components/vmware/vmware.c:
+  More vmware component fixups  Now works with the events from the VMguest SDK
+  library
+
+  * 5fc0f646 src/components/vmware/vmware.c: More cleanup of vmware component 
+  The pseudo-performance counters work again.  Now they behave in accumulate
+  mode, like all other PAPI counters.
+
+  * f72b0967 src/components/vmware/tests/vmware_basic.c: Make vmware test a bit
+  more complete
+
+  * 070e5481 src/components/vmware/tests/Makefile
+  src/components/vmware/tests/vmware_basic.c: Add a test for the vmware
+  component
+
+  * 7cf62498 src/components/vmware/Makefile.vmware.in
+  src/components/vmware/Rules.vmware src/components/vmware/configure...: Clean
+  up the vmware component.  bring it up to date with other components.  make it
+  possible to build it without the vmguest library being installed
+
+  * b32ae1ae src/components/stealtime/Rules.stealtime
+  src/components/stealtime/linux-stealtime.c
+  src/components/stealtime/tests/Makefile...: Add a stealtime component  When
+  running in a VM, this provides information on how much time was "stolen" by
+  the hypervisor due to the VM being disabled.  This info is gathered from
+  column 8 of /proc/stat  This currently only works on KVM.
+
+  * 9e95b480 src/components/appio/tests/appio_test_blocking.c: Use a
+  non-blocking select to determine which reads and writes would block
+
+2012-05-19  
+
+  * f60d991f src/components/appio/README src/components/appio/appio.c
+  src/components/appio/tests/appio_test_read_write.c...: Interception of
+  close() implemented. This allows us to correctly determine the number of
+  currently open descriptors.
+
+2012-05-17  
+
+  * 7cd8b5a3 src/libpfm4/.gitignore src/libpfm4/config.mk
+  src/libpfm4/lib/Makefile...: Update libpfm4 to current git tree
+
+  * ebffdb7e src/components/rapl/tests/rapl_overflow.c: Skip rapl_overflow test
+  if RAPL not available
+
+  * 98d21ef3 src/components/example/example.c src/components/rapl/linux-rapl.c:
+  Fix some component warnings.
+
+  * 0447f373 src/configure src/configure.in src/linux-generic.h: Make build not
+  stall if PAPI_EVENTS_CSV not set  This is some fallout from the FreeBSD
+  changes. PAPI_EVENTS_CSV could not be set, which would make the event
+  creation script hang forever.  Also catch various fallthroughs in the code
+  where SUBSTR wasn't being set, which is how the above problem can happen.
+
+  * ef484c00 src/linux-timer.h: Fix typo in linux-timer.h
+
+2012-04-14  
+
+  * 7c3385f4 src/components/bgpm/CNKunit/CVS/Entries
+  src/components/bgpm/CNKunit/CVS/Repository
+  src/components/bgpm/CNKunit/CVS/Root...: Removed CVS stuff from Q code.
+
+  * 2cf4aeb2 src/configure src/configure.in src/linux-bgq.c...: Removed
+  papi_events.csv parsing from Q code. (CVS stuff still needs to be taken care
+  of.)
+
+2012-04-12  
+
+  * 153c2bb1 INSTALL.txt: Updated INSTALL notes for Q
+
+2012-05-17  
+
+  * ff6a43fb src/Makefile.in src/Makefile.inc src/components/README...: Added
+  missing files for Q merge.  Conflicts:  src/configure src/configure.in
+  src/freq.c
+
+2012-04-12  
+
+  * 0e142630 src/Rules.bgpm src/components/bgpm/CNKunit/CVS/Entries
+  src/components/bgpm/CNKunit/CVS/Repository...: Added PAPI support for Blue
+  Gene/Q.
+
+2012-05-14  
+
+  * ad7e3fa0 src/components/rapl/linux-rapl.c: Properly accumulate RAPL results
+   Previously it was resetting the counts on read, instead of continuing to
+  count as per other PAPI events.
+
+  * c79e3018 src/components/rapl/tests/rapl_overflow.c: Fix some warnings in
+  rapl_overflow test
+
+  * 731afd1a src/components/rapl/tests/Makefile
+  src/components/rapl/tests/rapl_overflow.c: Add rapl_overflow test  This test
+  sees if we can measure RAPL in conjunction with overflow CPU performance
+  events.
+
+  * b0e201bb src/components/rapl/utils/Makefile
+  src/components/rapl/utils/rapl_plot.c: Remove derived "uncore" values from
+  rapl tool  They weren't really measuring uncore, but were just TOTAL - PP0. 
+  It was causing some confusion.
+
+2012-05-09  
+
+  * 547e9379 doc/Doxyfile-common papi.spec src/Makefile.in...: Bump the version
+  number to 4.9.0.0  Read 4.9 as pre-5.0 master was at version number 4.2.1,
+  this was archaic... Sorry for the confusion Tushar, master is the correct
+  branch for the latest development code.
+
+  * 133e3d67 src/configure src/configure.in: Fix perfctr build  In the FreeBSD
+  changes I removed the CPU determination by reading /proc/cpuinfo as that was
+  prone to failure and non-portable.  This broke perfctr as it was doing a huge
+  CPU name lookup to determine if it was on an x86 system or not.  This change
+  fixes that.
+
+2012-05-08  
+
+  * 42b21d67 src/papi_libpfm4_events.c: Fix PAPI event enumeration inside of
+  VMware  VMware disables the availability of architectural events when
+  virtualized PMU is not available.  libpfm4 was checkign this when enumerating
+  events, and we would end up in the situation where ix86arch was marked active
+  but 0 events were available.  We didn't check for this error condition and
+  thus end up thoroughly confused.
+
+2012-05-07  
+
+  * fd79a584 src/freebsd.c: Fix event enumeration on FreeBSD  It was passing
+  PAPI_OK in all cases, causing papi_native_avail to try to do things like
+  report groups even when groups weren't available.
+
+  * 53732c2e src/freebsd.c: Add Virtual Machine detection support to FreeBSD 
+  again, support for this on x86 is OS Neutral
+
+  * 7b4d7c96 src/configure src/configure.in src/freebsd-memory.c...: Add
+  x86_cacheinfo support to FreeBSD  The x86 cache and memory info is
+  OS-independent, so add support for it to FreeBSD.
+
+  * 91033df6 src/Makefile.in src/Makefile.inc src/configure...: Re-enable
+  predefined events on FreeBSD
+
+  * 36f6dc1b src/freebsd.c src/freebsd/map.c src/freebsd/map.h: Modify FreeBSD
+  to use _papi_load_preset_table
+
+  * 45651746 src/freebsd.c: Cleanup the freebsd code a bit.
+
+  * e1554ed8 src/configure: re-run autoconf for updated configure
+
+  * 1deb2f5d src/Makefile.inc: Make sure a proper dependency for
+  papi_events_table.h exists  Our Makefile code that builds a shared library is
+  way broken; it will fail to rebuild in many cases where the static library
+  properly detects thing.
+
+  * 28e28006 src/configure.in: Make papi_events_table.h build normally, not by
+  configure.
+
+  * 9a66dfa5 src/configure.in: Another place papi_events_table.sh is called
+
+  * 12e4a934 src/Makefile.inc src/papi_events_table.sh: Make
+  papi_events_table.sh take a command line argument  This way we can use it on
+  any .csv file, not just papi_events.csv
+
+  * 7018528f src/freebsd/memory.c: Remove unused freebsd/memory.c file
+
+  * 819e5826 src/freebsd_events.csv: Make freebsd_events.csv a valid PAPI event
+  file
+
+  * 9cc4a468 src/freebsd.c src/freebsd/map-atom.c src/freebsd/map-core.c...:
+  Fix FreeBSD build on head.  This temporarily disables preset events.  There
+  are also a few other minor fixes.
+
+2012-05-01  
+
+  * ab36c0a2 src/Makefile.inc src/configure src/configure.in: Update build
+  system for FreeBSD
+
+  * 2b61d8b7 src/freebsd.c src/freebsd.h: Fix various compiler warnings on
+  FreeBSD
+
+  * 2c0bcc84 src/freebsd.c: Enable new Westmere events on FreeBSD
+
+  * b0499663 src/freebsd/map-i7.c src/freebsd/map-i7.h
+  src/freebsd/map-westmere.c...: Add Westmere event support for FreeBSD
+
+  * e54cabc6 src/ctests/inherit.c: Fix the inherit ctest to compile on FreeBSD
+
+  * d9dbdd31 src/components/appio/appio.c: - change in appio component
+  (appio.c): removed reference to .ntv_bits_to_info  as it doesn't exist in the
+  PAPI component interface.
+
+2012-04-27  
+
+  * 5d661b2d src/Rules.pfm src/Rules.pfm_pe: Add the libpfm -Wno-override-init
+  bandaid to the other rules files.  In
+  b33331b66137668155c02e52c98a7e389fad402e we test if gcc -Wextra complains
+  about some structure initialization that libpfm does. This was incoperated
+  into Rules.pfm4_pe only.  Jim Galarowicz noticed the other Rules files didn't
+  have it.
+
+  * 4349b6fd src/Rules.pfm4_pe src/Rules.pfm_pe: Cleanup the perf events Rules
+  files.  Steve Kaufmann reported that CONFIG_PFMLIB_OLD_PFMV2 is only used for
+  libpfm3 builds targeting old versions of perfmon2.
+
+2012-04-26  
+
+  * 8a7fef68 src/mb.h: Add memory barries for ia64
+
+2012-04-24  
+
+  * 9af4dd4a src/libpfm4/README src/libpfm4/config.mk
+  src/libpfm4/include/perfmon/perf_event.h...: Import libpfm4 git snapshot 
+  This brings libpfm4 up to 9ffc45e048661a29c2a8ba4bfede78d3feb828f4  The
+  important change is support for Intel Atom Cedarview.
+
+2012-04-20  
+
+  * fac6aec0 src/linux-bgp-memory.c src/linux-bgp.c: Some BG/P cleanups. 
+  Removed a lot of dead code, noticed when looking for any potential BG/P
+  issues.
+
+  * 977709f6 src/linux-bgp-preset-events.c src/linux-bgp.c: Fix PAPI compile on
+  BG/P  Thanks to Harald Servat <harald.servat@bsc.es>
+
+2012-04-19  
+
+  * 5207799e release_procedure.txt: Modified release_procedure.txt to push
+  tags.
+
+2012-04-18  
+
+  * b248ae80 doc/Makefile: Have clean remove the doxygen error file.
+
+  * 1d4f75a3 doc/Doxyfile-man1 doc/Doxyfile-man3: Fix an error in the Doxygen
+  config files.  Doxygen includes things with @INCLUDE not @include. The html
+  file had this, the man page files did not...
+
+2012-04-17  
+
+  * 979cda20 cvs2cl.pl delete_before_release.sh gitlog2changelog.py...: Update
+  the release machinery for git.  gitlog2changelog.py takes the output of git
+  log and parses it to something like a changelog.
+
+  * 67bdd45f doc/Doxyfile-html: Cover up an instance of doxygen using full
+  paths.  Doxygen ( up to 1.8.0, the most recent at this writing ) would use
+  full paths in directory dependencies ignoring the use relative paths config
+  option.
+
+2012-04-13  
+
+  * c38eb0b7 src/libpfm-3.y/lib/intel_corei7_events.h
+  src/libpfm-3.y/lib/intel_wsm_events.h src/libpfm-3.y/lib/pfmlib_intel_nhm.c:
+  Add missing update to libpfm3  Somehow during all of the troubles we had with
+  importing libpfm3 into CVS, we lost some Nehalem/Westmere updates.  Tested on
+  a Nehalem machine to make sure this doesn't break anything.
+
+  * 193d8d06 src/papi_libpfm3_events.c: Fix max_multiplex case on
+  perf_event/libpfm3  num_mpx_cntrs was being set to 512 even though the real
+  maximum is 32, causing a buffer overflow and segfault.
+
+2012-04-12  
+
+  * f1f7fb5b src/threads.h: Fix minor typo in a comment
+
+  * 0373957d src/linux-timer.c: Fix potential fd leak  Noticed by coverity
+  checker.
+
+  * 71727e38 src/ctests/max_multiplex.c: Improve max_multiplex ctest  on
+  perfmon2, this test was failing because the maximum number of multiplexed
+  counters was much more than the available counters we could test with.  This
+  change modifies the test to not fail in this case.
+
+2012-04-11  
+
+  * fdbdac9f src/perfmon.c: Fix the perfmon substrate.  It was missing a
+  _papi_libpfm_init() call, which meant the number of events was being left at
+  0.
+
+2012-04-09  
+
+  * 2a44df97 src/libpfm-3.y/examples_v2.x/multiplex.c
+  src/libpfm-3.y/examples_v2.x/pfmsetup.c
+  src/libpfm-3.y/examples_v2.x/rtop.c...: Catch a few libpfm-3.y files up to
+  libpfm-3.10.  More skeletons keep falling out of the cvs closet. This is just
+  what diff -q -r catches.
+
+2012-04-04  
+
+  * 0e05da68 src/components/rapl/utils/Makefile
+  src/components/rapl/utils/README src/components/rapl/utils/rapl_plot.c: Add
+  the rapl_plot utility to the RAPL component.  This utility uses PAPI to
+  periodicly poll the RAPL counters and generate average power results suitable
+  for plotting.  There's been a lot of interest in this utility so it's
+  probably useful to include it with the RAPL component.
+
+  * 2daa03ac src/papi_internal.c: Check if a component is disabled at init
+  time.  This change modifies the code so that at PAPI_library_init() time we
+  check the component disable field, and we don't call the init routines for
+  components the user has disabled.  This allows code like the following to
+  happen _before_ PAPI_library_init():  numcmp = PAPI_num_components();
+  for(cid=0; cid<numcmp; cid++) { cmpinfo = PAPI_get_component_info(cid); if
+  (strstr(cmpinfo->name,"cuda")) { cmpinfo->disabled=1;
+  strncpy(cmpinfo->disabled_reason,"Disabled by user",PAPI_MAX_STR_LEN); } } 
+  We might want to add a specific PAPI_disable_component(int cid) call of maybe
+  even a PAPI_disable_component(char *name) as the above code causes compiler
+  warnings since cmpinfo is returned as a const pointer.  This all works
+  because currently PAPI currently statically allocates all of the components
+  at compile time, so we can view and modify the cmp_info structure before
+  PAPI_library_init() is called.
+
+  * 3fd2b21e src/components/appio/README src/components/appio/appio.c
+  src/components/appio/appio.h...: Added support to count reads that are
+  interrupted or would block.
+
+2012-04-03  
+
+  * dd3a192f release_procedure.txt: Change chmod flags for doxygen stuff from
+  755 to 775 to allow group write permissions.
+
+2012-03-30  
+
+  * deac54cc src/components/coretemp/linux-coretemp.c
+  src/components/coretemp/tests/coretemp_basic.c
+  src/components/coretemp/tests/coretemp_pretty.c...: Add new
+  PAPI_enum_cmp_event() function  This will be needed when we remove the
+  16-component limit.  Currently in PAPI_enum_event() the component number is
+  gathered from bits 29-26 of the eventcode.  This won't work anymore once we
+  remove those bits.  Also update the various components to not use
+  PAPI_COMPONENT_MASK() as this too will go away in the transition.
+
+  * 48331cc9 src/configure src/configure.in src/papi.c...: Place all
+  compiled-in components in the _papi_hwd[] array.  Previously we had separate
+  compiled_in[] and _papi_hwd[] arrays. At init time a pointer to the
+  compiled_in[] was copied to _papi_hwd[] if initialization passed.  This kind
+  of code setup makes enumerating components hard, and finding info from
+  non-available components would require additional function entry points. 
+  This change leaves all compiled in components to _papi_hwd[]. Availability of
+  the component can be checked with the new "disabled" field.  This will make
+  enumeration support a lot easier to add. It can possibly cause user confusion
+  if they try to access component structures directly without checking the
+  "disabled" field first.  This change should also make any eventual support
+  for run-time component enabling/disabling a lot easier.
+
+  * 66a72f44 src/papi.c: Documentation was referring to nonexistent
+  "PAPI_enum_events()"  The actual function we have is PAPI_enum_event()
+
+  * 0f2c2593 src/components/coretemp/linux-coretemp.c
+  src/components/lustre/linux-lustre.c src/components/mx/linux-mx.c...: Add
+  support for reporting reason for failed component initialization.  This
+  change adds the fields "disabled" and "disabled_reason" to the
+  component_info_t structure.  At initialization time, PAPI will set the
+  "disabled" field to the value returned by component init (that is PAPI_OK if
+  OK or an error otherwise).  This can be checked later to find why component
+  init failed.  Also provided is the "disabled_reason" string.  The components
+  can set this at failure time, and this can be printed later.  For example,
+  this is sample output of the updated papi_component_avail routine: 
+  
+  -  Compiled-in components: Name:   perf_events.c           Linux perf_event
+  CPU counters Name:   linux-rapl              Linux SandyBridge RAPL energy
+  measurements \-> Disabled: Not a SandyBridge processor Name:   example.c     
+           A simple example component Name:   linux-coretemp          Linux
+  hwmon temperature and other info \-> Disabled: No coretemp events found Name:
+    linux-net.c             Linux network driver statistics Name:   linux-mx.c 
+              Myricom MX (Myrinet Express) statistics \-> Disabled: No MX
+  utilities found Name:   linux-lustre.c          Lustre filesystem statistics
+  \-> Disabled: No lustre filesystems found  Active components: Name:  
+  perf_events.c           Linux perf_event CPU counters Name:   example.c      
+          A simple example component Name:   linux-net.c             Linux
+  network driver statistics
+
+2012-03-29  
+
+  * d84b144e src/components/rapl/Rules.rapl src/components/rapl/linux-rapl.c
+  src/components/rapl/tests/Makefile...: Add a SandyBridge RAPL (Running
+  Average Power Level) Component  This component allows energy measurement at
+  the package-level on Sandybridge machines.  To run, you need the Linux
+  x86-msr kernel module installed and read permissions to /dev/cpu/*/msr  The
+  output from the rapl_busy test looks like this on a SandyBridge-EP machine: 
+  Trying all RAPL events Found rapl component at cid 2  Starting
+  measurements...  Doing a naive 1024x1024 MMM... Matrix multiply sum:
+  s=1016404871450364.375000  Stopping measurements, took 3.979s, gathering
+  results...  Energy measurements: PACKAGE_ENERGY:PACKAGE0	175.786011J	(Average
+  Power 44.2W) PACKAGE_ENERGY:PACKAGE1	 73.451096J	(Average Power 18.5W)
+  DRAM_ENERGY:PACKAGE0	 11.663467J	(Average Power 2.9W) DRAM_ENERGY:PACKAGE1	 
+  8.055389J	(Average Power 2.0W) PP0_ENERGY:PACKAGE0	    119.215500J	(Average
+  Power 30.0W) PP0_ENERGY:PACKAGE1	     16.315216J	(Average Power 4.1W)  Fixed
+  values: THERMAL_SPEC:PACKAGE0	135.000W THERMAL_SPEC:PACKAGE1	135.000W
+  MINIMUM_POWER:PACKAGE0	51.000W MINIMUM_POWER:PACKAGE1	51.000W
+  MAXIMUM_POWER:PACKAGE0	215.000W MAXIMUM_POWER:PACKAGE1	215.000W
+  MAXIMUM_TIME_WINDOW:PACKAGE0	0.046s MAXIMUM_TIME_WINDOW:PACKAGE1	0.046s
+  rapl_basic.c                           PASSED
+
+2012-03-26  
+
+  * b44d60ca src/components/appio/appio.c src/components/appio/appio.h
+  src/components/appio/tests/appio_test_read_write.c: Added support for
+  intercepting open calls.
+
+2012-03-23  
+
+  * 9e9fac4b src/Makefile.in src/Rules.pfm4_pe src/configure...: Fix the test
+  case in configure at 0cea1848  Make use of the structure we're using for the
+  override-init test case.
+
+  * 0cea1848 src/configure src/configure.in: Doctor CFLAGS when testing for a
+  gcc warning.  -Wextra was not in CFLAGS when I attempted to check for the
+  initialized field overwritten warning. So we set -Wall -Wextra -Werror when
+  running the test code.
+
+2012-03-22  
+
+  * b33331b6 src/Makefile.in src/Rules.pfm4_pe src/configure...: Fix
+  initialized field overwritten warning when building libpfm4 on some gcc
+  versions.  In gcc 4.2 or so, -Woverride-init was added to -Wextra causing
+  issues with code like struct foo { int a; int b;};  struct foo bar = { .a=0,
+  .b=0, .b=5; };  --Wno-override-init allows us to keep -Werror for libpfm4
+  compiles.
+
+2012-03-21  
+
+  * ae149766 src/papi_internal.h: Delete an old comment.  Yes, Dan in 2003, we
+  should and do use MAX_COUNTER_TERMS as the size of the event position array.
+
+2012-03-20  
+
+  * b937cdd8 src/papi_user_events.c: Move the user events code over to using
+  the new preset event data structure.
+
+2012-03-14  
+
+  * 6ca599e2 src/papi_internal.c: Fix a small memory leak.  We weren't freeing
+  _papi_hwd, causing a lot of MEM_LEAK warnings in buildbot.
+
+2012-03-13  
+
+  * 473b8203 src/aix.h src/configure src/configure.in...: Remove last MY_VECTOR
+  usage.  Have configure explicitly set the name of the perf counter substrate
+  vector in the components_config.h file  This removes one more special case,
+  and gets us slightly closer to being able to have multiple CPU substrates
+  compiled in at once.
+
+  * 360c3003 src/papi.c src/papi_libpfm3_events.c src/papi_libpfm_events.h...:
+  Clean up the papi_libpfm3_events.c code.  Move code that was perfctr specific
+  into perfctr-x86.c
+
+  * 03de65e3 src/libpfm-3.y/examples_v2.x/multiplex.c
+  src/libpfm-3.y/examples_v2.x/pfmsetup.c
+  src/libpfm-3.y/examples_v2.x/rtop.c...: Fix some libpfm3 warnings.  libpfm3
+  is not maintained anymore, so applied these changes locally.  libpfm3 is
+  compiled with -Werror so they broke the build with newer gcc even though they
+  are just warnings in example programs.
+
+  * ad490353 src/ctests/zero_named.c src/utils/multiplex_cost.c: Fix a few
+  compiler warnings in the tests.
+
+  * a0fec783 src/linux-timer.c: Fix another linux-timer.c compile problem.  I
+  hadn't tested with debug enabled, so all of buildbot failed last night.
+
+2012-03-12  
+
+  * a3733ecd src/linux-timer.h: Fix typo in the linux-timer.h header 
+  _linux_get_virt_usec_timess should have been _linux_get_virt_usec_times 
+  Thanks to Steve Kaufmann for noticing this.
+
+  * 785db5ae src/linux-common.c src/linux-timer.c: Fix timer compile on Power
+  machines  Power, ARM, and MIPS have no get_cycles() call so provide a dummy
+  function on these architectures.
+
+  * 708090ee src/linux-common.c src/linux-timer.h: Another fix for non-POSIX
+  timers  The recent changes had the name of the fallback usec method wrong.
+
+  * 88e8d355 src/papi_libpfm3_events.c: Fix a warning in the libpfm3 code.
+
+  * 8ca63705 src/configure src/configure.in src/linux-common.c...: Fix build
+  when not using POSIX timers  The PAPI build system was being overly clever
+  with how it defined what kind of wall clock timers were to be used, so of
+  course I broke things when breaking the timer code out to make it a bit more
+  understandable.  This patch breaks out the timer define into two pieces; one
+  saying it's a POSIX timer and one saying whether to use HR timers or not.
+
+2012-03-09  
+
+  * b69ad727 src/linux-common.c src/linux-timer.c src/linux-timer.h: Add Linux
+  posix gettime() nanosecond functions
+
+  * af2c9a49 src/papi.c src/papi_vector.c src/papi_vector.h: Add
+  ->get_virt_nsec() and ->get_real_nsec() OS vectors  Currently PAPI was just
+  cheating and running the usec functions and multiplying by 1000.  Make this
+  the default, but allow the OS code to override if they have timers capable of
+  returning nsec percision.
+
+  * 24c68dbe src/aix.c src/freebsd.c src/linux-bgp.c...: Clean up
+  ->get_virt_usec()  It no longer needs to be passed a context, so remove that
+  from all callers.  Also, ->get_virt_cycles() was just a get_virt_usec()*MHz
+  on most platforms.  While this is a bit dubious (especially as MHz can't be
+  relied on) make this a common routine that will be added at innoculate time
+  if ->get_virt_cycles() is set to NULL.
+
+  * a3ef7cef src/linux-common.c src/linux-timer.c src/linux-timer.h: Cleanup
+  the Linux timer code.  Split things up a bit to make the code more readable.
+
+  * 50ce8ea0 src/papi_internal.c: Change a strcpy() to strncpy() just to be a
+  bit safer.
+
+  * 0526b125 src/components/lmsensors/linux-lmsensors.c: Fix buffer overrun in
+  lmsensors component
+
+  * b088db70 src/libpfm4/config.mk
+  src/libpfm4/docs/man3/pfm_get_os_event_encoding.3
+  src/libpfm4/examples/showevtinfo.c...: Update to current git libpfm4 snapshot
+
+  * ccb45f61 src/aix.c src/extras.c: Fix segfault on AIX  During some of the
+  cleanups, the extras.h header was not added to aix.c  This made some of the
+  functions (silently) use default data types for the function parameters,
+  leading to segfaults in some of the tests.
+
+2012-03-08  
+
+  * 1cb22d0b src/components/coretemp/linux-coretemp.c src/utils/native_avail.c:
+  Make "native_avail -d" report units if available  Add units support to the
+  coretemp component, have native_avail -d (detailed mode) print it to make
+  sure it works.
+
+  * 9c54840e src/extras.c src/extras.h src/papi_internal.c...: Add new
+  ntv_code_to_info vector  This will allow components to return the extended
+  event_info data for native events.  If a component doesn't implement
+  ntv_code_to_info then get_event_info falls back to the old way of just
+  reporting symbol name and long description.
+
+  * c4579559 src/papi.h: Add new event_info fields  New fields are added to
+  event_info that allow passing on extended information.  This includes things
+  such as measurement units, data type, location, timescope, etc.
+
+  * 17533e4e src/ctests/all_events.c src/ctests/derived.c
+  src/ctests/kufrin.c...: Restore fields to event_info structure  The changes
+  made were probably too ambitious, even for a 5.0 release.  In the end it
+  looks like we can remain API compatible while just using up a little more
+  memory.  We can still save space by shrinking preset_t behind the scenes.
+
+  * 6f13a5f6 src/aix.c src/components/coretemp/linux-coretemp.c
+  src/components/coretemp_freebsd/coretemp_freebsd.c...: Remove
+  ->ntv_bits_to_info vector from component interface  We weren't using it
+  anymore, and many of the components were just setting it to NULL
+  unncessarily.  We'll be replacing the functionality soon with
+  ntv_code_to_info
+
+  * 401f37bc src/components/example/example.c src/ctests/subinfo.c src/papi.h:
+  Remove invert and edge_detect fields from component info  These fields were
+  there to indicate if a CPU component supported these attributes (for Intel
+  processors) but in the end we never used these.  The proper way to export
+  this info is during event enumeration.
+
+  * f32fe481 src/papi_events.csv: We had the PAPI_VEC_INS preset wrong on amd
+  fam12h llano
+
+  * 38a8d8a7 src/ctests/multiplex2.c src/papi_preset.c: Fix preset adding code
+  to be more robust.  If an invalid event is in a preset definition, we'd
+  currently add it with an eventcode of 0 to the preset, which would break if
+  you tried to use the event.  This change properly prints a warning in this
+  case, and sets the preset to be unavailable.
+
+  * 2591a546 src/ctests/val_omp.c src/ctests/zero_omp.c: Remove the hw_info
+  field from add_two_events calls.  Two ctests missed the bus when Vince
+  reworked the add_two_events call.
+
+  * 358a2e32 src/papi_internal.c src/papi_preset.c: Fix segfault seen on an AMD
+  fusion machine  With the recent preset and component hanges, we were not
+  properly resetting papi_num_components if PAPI_library_init()/PAPI_shutdown()
+  was called multiple times.
+
+2012-03-07  
+
+  * 7751f5d8 src/ftests/zeronamed.F: Fix a compile error on aix.  Dan ran over
+  72 characters on a single line. xlf actually enforced that part the Fortran
+  spec.
+
+2012-03-06  
+
+  * 1c87d89c src/ftests/Makefile src/ftests/zeronamed.F src/papi_fwrappers.c:
+  Add support for {add, remove, query}_named to Fortran interface; add zero
+  named.F test case; modify ftests Makefile to support "all" tag.
+
+  * 71bd4fdd src/configure src/configure.in: Modify configure to define the
+  default FTEST_TARGETS as "all"
+
+  * 54e39855 src/components/vmware/vmware.c: Changed tri8ggering environment
+  variable to PAPI_VMWARE_PSEUDOPERFORMANCE per Vince's earlier email. This
+  should complete all the VMware component changes.
+
+2012-03-05  
+
+  * 845503fb src/Makefile.inc: Add missing MISCSRCS line to Makefile.inc  This
+  was breaking the shared library build
+
+2012-02-01  
+
+  * 11be8e4b .../appio/tests/appio_test_fread_fwrite.c
+  src/components/appio/tests/appio_test_pthreads.c
+  src/components/appio/tests/appio_test_read_write.c: updated these tests to
+  print timing information
+
+  * 9ad62ab1 src/components/appio/README src/components/appio/appio.c
+  src/components/appio/appio.h...: Added support for timing I/O calls. Updated
+  tests and README.
+
+2012-01-31  
+
+  * beaa5ff0 src/components/appio/tests/iozone/Changes.txt
+  src/components/appio/tests/iozone/Generate_Graphs
+  src/components/appio/tests/iozone/Gnuplot.txt...: added the latest stable
+  iozone to the appio tests.
+
+  * 4af58174 src/components/appio/README src/components/appio/tests/Makefile
+  src/components/appio/tests/init_fini.c: added a hook to run the appio test
+  for iozone.
+
+2012-01-21  
+
+  * 15c733cf src/components/appio/CHANGES src/components/appio/README
+  src/components/appio/appio.c...: Removed stray 'net' references. All
+  remaining references are only for the purpose of giving credit. Updated
+  change log.
+
+2012-01-20  
+
+  * ca4b6785 src/components/appio/README src/components/appio/appio.c
+  src/components/appio/tests/appio_list_events.c...: - general cleanup -
+  improved tests to be quiet and be conform to other PAPI tests - replaced
+  hardwire constants in appio.c with symbolic ones - tests will now write to
+  /dev/null to avoid filling the terminal screen with useless text - more
+  comments added - @author added to files - updated README
+
+2012-01-18  
+
+  * bb22ed9f src/components/appio/README src/components/appio/Rules.appio
+  src/components/appio/appio.c...: - Added support to measure
+  bytes/calls/eof/short calls for read/write calls. - Interception of
+  read/write and fread/fwrite calls. - Works for static and dynamic linkage
+  (without need for LD_PRELOAD) - Tested OK on 32-bit i686 Linux 2.6.38. 
+  Tushar
+
+2011-12-03  
+
+  * d58b34b6 src/components/appio/tests/Makefile
+  src/components/appio/tests/appio_list_events.c
+  src/components/appio/tests/appio_values_by_code.c...: *** empty log message
+  ***
+
+  * cd7d7acc src/components/appio/tests/appio_values_by_name.c: file
+  appio_values_by_name.c was added on branch appio on 2011-12-03 05:22:06 +0000
+
+  * 425e4d09 src/components/appio/tests/appio_values_by_code.c: file
+  appio_values_by_code.c was added on branch appio on 2011-12-03 05:22:06 +0000
+
+  * 596ad9bb src/components/appio/tests/appio_list_events.c: file
+  appio_list_events.c was added on branch appio on 2011-12-03 05:22:06 +0000
+
+  * 119543dc src/components/appio/tests/Makefile: file Makefile was added on
+  branch appio on 2011-12-03 05:22:06 +0000
+
+2012-03-05  
+
+  * ba748a41 src/components/vmware/configure: Remove old configuration
+  parameters from vmware/configure
+
+2012-03-02  
+
+  * 2b7e2abb src/ctests/Makefile src/ctests/max_multiplex.c: Add a new
+  max_multiplex test  This tries to use the maximum number of multiplexed
+  events.  This was written in response to the 32/64 perf_event multiplexed
+  event limit reported by Mohammad j. Ranji
+
+  * a0985ff5 src/multiplex.c src/papi_internal.c src/papi_libpfm4_events.c...:
+  Fix issue when using more than 32 multiplexed events on perf_event  On
+  perf_event we were setting num_mpx_cntrs to 64.  This broke, as the
+  MPX_EventSet struct only allocates room for PAPI_MPX_DEF_DEG events, which is
+  32.  This patch makes perf_event use a value of 32 for num_mpx_cntrs,
+  especially as 64 was arbitrarily chosen at some point (the actual value
+  perf_event can support is static, but I'm pretty sure it is higher than 64).
+
+  * 331c516c src/ctests/acpi.c: Remove the acpi.c file from ctests  It wasn't
+  being built, and we removed the ACPI component a while ago.
+
+  * 73e7d191 src/components/vmware/vmware.c: Removed all old references to
+  #define VMWARE_PSEUDO_PPERF and switched over to getenv
+
+2012-03-01  
+
+  * 969b8aa9 src/ctests/Makefile src/ctests/zero_named.c src/papi.c: Three new
+  APIs: PAPI_query_named_event PAPI_add_named_event PAPI_remove_named_event and
+  a new test: zero_named Still to do: maybe test named native events and
+  support Fortran
+
+  * 97bf9bf8 src/papi.c src/papi.h: First pass implementation of {add, remove,
+  query}_named_event
+
+  * 2416af88 src/components/vmware/vmware.c: Add functionality to getenv
+  selectors
+
+  * 297f9cd6 src/papi.c: Fix possible race in _papi_hwi_gather_all_thrspec_data
+   The valgrind helgrind tool noticed this with the thrspecific test
+
+  * be599976 src/papi_internal.c: Add some locking in
+  _papi_hwi_shutdown_global_internal  This caused a glibc double-free warning,
+  and was caught by the Valgrind helgrind tool in krentel_pthreads  There are
+  some other potential locking issues in PAPI_shutdown, especially when debug
+  is enabled.
+
+  * 8444d577 src/utils/clockres.c src/utils/command_line.c: Cleanup the oxygen
+  markup for the utilities.
+
+  * 7144394f doc/Doxyfile-html: Missed a recursive tag for the html config
+  file.
+
+  * 63b2efc4 src/papi_preset.c: Fix segfaults in tests on AMD machines  The
+  papi_preset code was wrongly calling papi_free() on some code that was
+  allocated with strdup()  (not with papi_malloc).  We were only noticing this
+  on AMD machines because it was the code for freeing developer notes in
+  presets, and currently only AMD events have developer notes.
+
+  * 0b1350df src/linux-common.c: Touch 'virtual_vendor_name' to cleanup a
+  warning on bluegrass.
+
+2012-02-29  
+
+  * 1f17b571 src/Makefile.inc src/Rules.perfctr-pfm src/Rules.pfm4_pe...: Merge
+  the contents of papi_libpfm_presets.c into papi_preset.c  The code isn't
+  libpfm specific at all anymore, it's the generic "read presets from a file"
+  code.  It makes more sense to find it in papi_presets.c
+
+  * d087d49f src/papi_fwrappers.c: Fix Fortran breakage after the preset event
+  changes
+
+  * 156141ec src/papi_libpfm_presets.c src/papi_preset.c src/papi_preset.h:
+  Simplify papi_libpfm_presets.c  Previously adding presets from
+  papi_events.csv was a three step process.  1.  Load the presets from the
+  file, put in temporary structure. 2.  Convert this temporary structure to a
+  "findem" dense structure 3.  Pass this dense structure to
+  _papi_hwi_setup_all_presets for final assignment.  This change creates the
+  final assignment directly without the intermediate two steps.
+
+  * 8bc2bafd src/papi.c src/papi.h src/papi_common_strings.h...: Make the
+  internal preset_info match the one exported by papi.h  There were a lot of
+  cases where the same structure fields were available, just with different
+  names.  That was confusing.  Also, this allows using a pointer to the preset
+  info instead of having to copy values out of the structure when gathering
+  event info for presets.
+
+  * 8fda68cb src/genpapifdef.c src/papi.c src/papi_common_strings.h...: Merge
+  the 4 separate preset structs into one.  _papi_hwi_presets was a structure
+  containing pointers to 4 other arrays of structures which held the actual
+  preset data.  This change merges all of these into one big structure.
+
+2012-02-28  
+
+  * e69815d7 src/linux-bgp.c src/papi_internal.c src/papi_internal.h...:
+  Removing remaining vestiges of references to bipartite routines. Now the only
+  references are in papi_bipartite.h, perfctr-x86.c and winpmc-p3.c.
+
+  * 5766b641 src/papi_bipartite.h src/perfctr-x86.c
+  src/win2k/substrate/winpmc-p3.c: These changes implement the bipartite
+  allocation routine as a header file to be included in whatever cpu component
+  needs it. Right now, that's just perfecter-x86 and windows. Both components
+  have been modified and perfecter-86 compiles cleanly. Neither has been tested
+  since I don't have access to a test bed.
+
+  * 7f444b76 src/papi_libpfm_presets.c src/papi_preset.c src/papi_preset.h:
+  Merge the hwi_dev_notes structure into hwi_preset_data
+
+  * 21a1d197 src/components/vmware/vmware.c: add getenv
+
+  * 08c1b474 src/perfctr-x86.c: Merge bipartite routine into perfecter-x86
+  component, since this is effectively the only place it is used.
+
+  * 9ed9b1f5 src/papi.c: Remove a reference to PAPI_set_event_info() which was
+  removed for PAPI 4
+
+  * c626f064 src/ctests/all_events.c src/ctests/derived.c
+  src/ctests/kufrin.c...: Convert PAPI_event_info_t to separate preset event
+  info  This moves the preset event info to its own separate structure, which
+  reduces greatly the large string overhead that is not used by the native
+  events.
+
+  * 787d6822 src/perfctr-x86.c: Move bipartite stuff to perfctr_x86 since
+  that's really the only place it's currently used.
+
+  * 229c8b41 src/components/vmware/vmware.h: Add env_var definition to vmware.h
+
+  * 46aaf6ca src/components/vmware/vmware.c: Remove all unneeded cases
+
+  * 874a5718 src/freebsd.c src/perfctr-ppc64.c: Remove more unused references
+  to .bpt_ routines in preparation for refactoring.
+
+  * 74e5a5fd src/components/vmware/vmware.h: Remove uneeded defines from
+  vmware.h header
+
+  * 58b51367 src/components/coretemp_freebsd/coretemp_freebsd.c
+  src/components/vmware/vmware.c src/solaris-niagara2.c...: Remove unused
+  references to .bpt_ routines in preparation for refactoring.
+
+2012-02-27  
+
+  * 6b184158 src/Makefile.inc src/components/coretemp/linux-coretemp.c
+  src/configure...: Have separate concept of "compiled-in" versus "active"
+  components  With this change, the _papi_hwd[] component info array only
+  contains a null-terminated list of _active_ components.  The
+  _papi_compiled_components[] array has the original full list.  At
+  init_substrate[] time a pointer to a component is only put in the _papi_hwd[]
+  list if it is successfully initialized.  In addition the
+  PAPI_num_compiled_components() and PAPI_get_compiled_component_info() calls
+  have been added, but this is probably a confusing interface so they might
+  only be temporary additions.
+
+  * 042bfd5b src/Makefile.inc src/papi.c src/papi_data.c...: Split the contents
+  of papi_data.c to various other files.  The data declarations in papi_data.c
+  were mostly used in other files. Move these into more relevant locations.
+
+  * 1877862c src/papiStdEventDefs.h src/papi_common_strings.h: Remove the BGL
+  and BGP specific pre-defined events.  They can be better replaced by
+  user-events, and we also had already removed BGL support completely a while
+  back.  This removes some ifdefs from the pre-defined event list and keeps
+  future pre-defined events from having different eventcodes on different
+  platforms.
+
+  * c3986b79 src/components/coretemp/linux-coretemp.c
+  src/components/cuda/linux-cuda.c
+  src/components/infiniband/linux-infiniband.c...: Add names and descriptions
+  for components.  Also fixes cuda and lmsensors build issues introduced by
+  vector.h cleanup
+
+  * 2c84f920 src/aix.c src/freebsd.c src/perf_events.c...: Add names and
+  descriptions to all of the CPU substrates.
+
+  * 9f3e634a src/components/example/example.c src/papi.h src/utils/component.c:
+  Add new "description" and "short_name" fields to .cmp_info structure  This
+  description field allows components to provide extra information on what they
+  do.  The short_name field will eventually be used to pre-pend event names. 
+  The papi_component_avail utility has been updated to print the description. 
+  The example component was updated to fill in these values.
+
+  * ab61c9a7 src/Makefile.inc src/genpapifdef.c src/papi_common_strings.h...:
+  Split papi_data.c into two parts  papi_data.c was half data structure
+  definitions for all of PAPI and half string definitions used by both PAPI
+  *and* genpapifdef  This splits the common string definitions to
+  papi_common_strings.h so that genpapifdef can still be built w/o linking
+  libpapi.a while making the code a lot easier to follow.
+
+  * b8e6294c src/solaris-ultra.c: Remove unncessary extern declarations from
+  solaris-ultra.c.
+
+  * 5ddaff91 src/sys_perf_event_open.c: Remove unncessary extern declarations
+  from sys_perf_event_open.c
+
+  * a6c463b7 doc/Doxyfile-common.config: Create a common config file for
+  doxygen.  As part of streamlining the doxygen process, this is a new template
+  doxygen config files. This is a blank template file generated by doxygen
+  1.7.4 (the version currently mandated by the release procedure )
+
+  * dc2c11fa src/aix.c src/aix.h src/perfmon.c...: The vector pre-definition
+  should be in the .c file, not the .h file
+
+  * 0b3c83c3 src/perf_events.c: Remove unnecessary extern declarations in
+  perf_events.c
+
+  * b93efca0 src/perfmon.c src/perfmon.h: Remove unnecessary extern
+  declarations in perfmon.c
+
+  * 7f7a2359 src/papi_preset.c: Remove unnecessary extern declarations from
+  papi_preset.c
+
+  * ecec03ad src/papi_libpfm_presets.c: Remove extraneous extern declarations
+  from papi_libpfm_presets.c
+
+  * 7b5f3991 src/extras.c: remove extraneous extern declarations from extras.c
+
+  * f6470e4d src/aix-memory.c src/aix.c src/aix.h: Remove unncessary extern
+  declarations from aix.c
+
+  * f197d4ab src/papi_data.h src/papi_internal.c: Remove unncessary extern
+  declarations in papi_internal.c
+
+  * e7b39d48 src/papi.c src/papi_data.c src/papi_data.h...: remove unnecessary
+  extern definitions from papi.c
+
+2012-02-24  
+
+  * 92689f62 src/configure src/configure.in src/linux-common.c...: Add a
+  --with-pthread-mutexes option to enable using pthread mutexes rather than
+  PAPI custom locks  This is useful when running on new architectures that
+  don't have a custom PAPI lock coded yet, and also for running valgrind
+  deadlock detection utilities that only work with pthread based locking.
+
+  * ca51ae67 src/papi_events.csv: Fix broken Pentium 4 Prescott support  We
+  were missing the netbusrt_p declaration in papi_events.csv
+
+  * f6460736 src/linux-common.c: Fix build on POWER, broken by the
+  virtualization change.
+
+  * 91d32585 src/perfctr-x86.c src/perfmon.c: Fix some warnings that have
+  appeared due to recent changes.
+
+  * ae0cf00f src/linux-common.c src/papi_libpfm3_events.c
+  src/papi_libpfm4_events.c...: Clean up the Linux lock files  The locking
+  primitives for some reason were spread among the libpfm code and the
+  substrate codes.  This change moves them into linux-common and has them part
+  of the OS code.  This way they will get properly initialized even if the perf
+  counter or libpfm code isn't being used.
+
+2012-02-23  
+
+  * 88847e52 src/papi.c src/papi_memory.h: Remove _papi_cleanup_all_memory
+  define from papi_memory.h  The code in papi_memory.h said:  /* define an
+  alternate entry point for compatibility with papi.c for 3.1.x*/ /* this line
+  should be deleted for the papi 4.0 head */  Since we are post papi-4.0 I
+  thought it was time to act on this. Of course papi.c was still using the old
+  name in one place.
+
+  * 1d29dfc6 src/papi_libpfm_presets.c src/perfctr.c src/perfmon.c: Fix some
+  missing includes found after the header cleanup.
+
+  * b425a9f4 src/Makefile.inc src/extras.c src/extras.h...: Header file cleanup
+   The papi_protos.h file contained a lot of no-longer in use exports.  I split
+  up the ones that are still relevant to header files corresponding to the C
+  file that the functions are defined in.
+
+  * 07199b41 src/extras.c src/papi_vector.c src/papi_vector.h: Clean up the
+  papi_vector code.  Remove things no longer being used, mark static functions
+  as static.
+
+  * d7496311 src/linux-common.c src/x86_cpuid_info.c src/x86_cpuid_info.h: Fix
+  a missing "return 1" which meant that the virtualization flag wasn't being
+  set right.  With this fix, on saturn-vm1 we now get:  Running in a VM        
+   : yes VM Vendor:               : VMwareVMware  in the papi_native_avail
+  header
+
+  * 8da36222 src/freebsd.c src/linux-bgp.c src/papi.c...: Remove the
+  ->add_prog_event function vector  As far as I can tell this is a PAPI 2.0
+  remnant that was never properly removed.  This also removes
+  PAPI_add_pevent(), PAPI_save(), and PAPI_restore(), none of which were
+  exported in papi.h so in theory no one could have been using them.  Also
+  removes _papi_hwi_add_pevent()
+
+  * a5f3c8b5 src/aix.c src/freebsd.c src/linux-timer.c...: Reduce the usage of
+  MY_VECTOR whenever possible.  This is an attempt to make the cpu-counter
+  components to be as similar as possible to external components.
+
+  * abbcbf29 src/any-null.h: Missed removing any-null.h during the any-null
+  removal.
+
+  * 665d4c5c src/linux-common.c: Somehow missed an include during the
+  virtualization addition.
+
+  * 0c06147b src/perfctr-2.6.x/usr.lib/event_set_centaur.os
+  src/perfctr-2.6.x/usr.lib/event_set_p5.os
+  src/perfctr-2.6.x/usr.lib/event_set_p6.os: Removes the last of the binary
+  files from perfctr2.6.x  Some binary files were left out in the cold after a
+  mishap trying to configure perfctr for the build test.
+
+  * 3acb7d57 src/Makefile.inc src/configure src/configure.in...: Add support
+  for reporting if we are running in a virtualized environment to the
+  PAPI_hw_info_t structure.  This currently only works on x86.  it works by
+  looking at bit 31 of ecx after a cpuid (the "in a VM" bit) and then using
+  leaf 0x40000000 to get the name of the VM software (this works for VMware and
+  Xen at least)  x86_cache_info.c was renamed to x86_cpuid_info.c to better
+  reflect what goes on in that file (it does various things based on the cpuid
+  instruction).  the testlib header was updated to report virtualization status
+  in the papi header (printed for things like papi_native_avail).
+
+2012-02-22  
+
+  * 9c7659b5 src/Makefile.inc src/freq.c: Remove the freq.c file as nothing
+  seemed to be using it.
+
+  * d205e2d3 src/perfctr-x86.c: Made a stupid typo when converting perfctr to
+  call libpfm functions with the component id.
+
+  * 25b41779 src/papi_libpfm3_events.c src/papi_libpfm4_events.c
+  src/papi_libpfm_events.h...: When updating the preset code to take a
+  component index I missed a few callers.
+
+  * a713ffb1 src/papi_internal.c src/papi_vector.c: Remove any-null component
+
+  * 27e1c2c5 src/any-null-memory.c src/any-null.c src/any-proc-null.c...:
+  Remove the any-null component.
+
+  * 25779ae0 PAPI_FAQ.html: Saving another version of the FAQ after adding a
+  git section, and removing several obsolete sections. These questions still
+  need detailed review for relevance and timeliness.
+
+  * 449a1a61 src/ctests/overflow_allcounters.c: Fix overflow_allcounters which
+  was making assumptions about component 0 existing.
+
+  * f21be742 src/ctests/hwinfo.c: Make the hwinfo test not bail out if no
+  counters are available.
+
+  * ebc675e6 src/ctests/memory.c: Make sure the memory ctest runs even if no
+  components are available.
+
+  * 9b3de551 src/linux-common.c src/perf_events.c src/perfmon-ia64.c...: Make
+  sure the system info init happens at os init time.  Otherwise the system info
+  never gets set if a perfcounter component isn't available.
+
+  * 59e47e12 src/papi_internal.c: Make sure that _papi_hwi_assign_eventset()
+  does the right thing if no components are available.
+
+  * dd51e5d6 src/ctests/api.c: The api test would fail in the no cpu component
+  case.  Fix it to properly check for errors before attempting to run
+  high-level PAPI tests.
+
+  * 069e9d2f src/aix.c src/papi.c src/papi_internal.h...: Fix code that was
+  depending on _papi_hwd[0] existing.  Most of this was in the presets code. 
+  The preset code had many assumptions so that you can only code presets with
+  component[0]. This fixes some of them by passing the component index around.
+
+  * 7259eaec src/papi_vector.c: Fix up papi_vector to get rid of some warnings
+  introduced on AIX.
+
+  * 16fe0a61 src/aix.c src/solaris-ultra.c: Fix two last substrates where I
+  missed some fields in the OS structure conversion.
+
+  * 625871ec src/perfmon.c: Missed a cmp_info field in perfmon.c
+
+  * 680919d9 PAPI_FAQ.html: Saving the latest version of the FAQ before
+  undertaking major revisions.
+
+  * 3d4fa2e5 src/linux-timer.c src/perfctr-x86.h: Fix the perfctr code to
+  compile if configured with --with-virtualtimer=perfctr
+
+  * bbd7871f src/perfctr.c: Missed two OS vector calls in the perfctr code
+  during the conversion.
+
+  * bc6d1713 src/Makefile.inc: Removed one of the two instances of MISCOBJS
+  listed in Makefile.inc.
+
+2012-02-21  
+
+  * 40bc4c57 src/papi_vector.c src/papi_vector.h: Remove now-unused OS vectors
+  from the main papi vector table.
+
+  * 3c6a0f7b src/aix.c src/freebsd.c src/linux-bgp.c...: Convert PAPI to use
+  the _papi_os_vector for the operating-system specific function vectors.
+
+  * 568abad5 src/papi_vector.h: Add new _papi_os_vector structure to hold
+  operating-system specific function vectors.
+
+  * a39d2373 src/ctests/subinfo.c: Missed removing a field from the subinfo
+  ctest.
+
+  * 1d930868 src/papi.h: Remove fields now in PAPI_os_info_t from the
+  component_info_t struct.
+
+  * d397d74a src/components/example/example.c: Remove fields now in
+  PAPI_os_info_t from the example component.
+
+  * 8cd5c8e0 src/aix.c src/freebsd.c src/linux-bgp.c...: Modify all the
+  substrates to use _papi_os_info. instead of _papi_hwd[0]->cmp_info for the
+  values moved to the OS struct
+
+  * 58855d3a src/papi_internal.h: Add padding for future expansion to
+  PAPI_os_info_t  Add _papi_hwi_init_os(void); definition
+
+  * ea1930e1 src/papi_internal.h: Add new PAPI_os_info_t structure to
+  papi_internal.h
+
+  * 0eac1b29 src/utils/multiplex_cost.c: Modify multiplex_cost to properly use
+  the API_get_opt() interface to get itimer data, rather than directly
+  accessing the fields from the cmp_info structure.  This would have broken
+  after the OS split.
+
+  * 87c2aa2f src/ctests/subinfo.c: subinfo was printing itimer data from the
+  cmpinfo structure.  These values will not be in cmpinfo once the OS split
+  happens.
+
+  * f2c62d50 src/components/vmware/vmware.h: Clean up the VMware Header a bit
+
+2012-02-17  
+
+  * 6f0c1230 src/aix.c src/components/coretemp/linux-coretemp.c
+  src/components/coretemp_freebsd/coretemp_freebsd.c...: The git conversion
+  reset all of the CVS $Id$ lines to just $Id$  Since we depend on the $Id$
+  lines for the component names, I had to go back and fix all of them to be the
+  component names again.
+
+  * 2d208d0e src/perfctr-2.6.x/usr.lib/event_set_centaur.o
+  src/perfctr-2.6.x/usr.lib/event_set_p5.o
+  src/perfctr-2.6.x/usr.lib/event_set_p6.o: Remove a few binary files in
+  perfctr-2.6.x
+
+  * f78bf1af src/libpfm-3.y/Makefile src/libpfm-3.y/README
+  src/libpfm-3.y/docs/Makefile...: More cleanups from the migration, latest
+  version of libpfm-3.y perfctr-2.[6,7]  Version numbers got really confused in
+  cvs and the git cvsimport didn't know that eg 1.1.1.28 > 1.1 ( see
+  perfctr-2.6.x/CHANGES revision 1.1.1.28.6.1 :~)
+
+  * e8aa2e61 INSTALL.txt: Explicitly state that 3.7 was the last version of
+  PAPI with good windows support.
+
+  * 546901fa src/components/cuda/linux-cuda.c: Modified CUDA component so that
+  a PAPI version - that was configured with CUDA - will successfully build on a
+  machine that does not have GPUs.
+
+2012-02-16  
+
+  * 49d9f71c src/.gitignore: Add a .gitignore file with the files that PAPI
+  autogenerates.  This way they won't clutter up "git status" messages
+

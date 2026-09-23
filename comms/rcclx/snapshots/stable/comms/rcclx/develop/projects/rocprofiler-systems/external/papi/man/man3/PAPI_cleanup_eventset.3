@@ -1,0 +1,68 @@
+.TH "PAPI_cleanup_eventset" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_cleanup_eventset \- Empty and destroy an EventSet\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_cleanup_eventset( int  EventSet );
+.RE
+.PP
+\fBPAPI_cleanup_eventset\fP removes all events from a PAPI event set and turns off profiling and overflow for all events in the EventSet\&. This can not be called if the EventSet is not stopped\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP An integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. Attempting to destroy a non-empty event set or passing in a null pointer to be destroyed\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The EventSet is currently counting events\&. 
+.br
+\fIPAPI_EBUG\fP Internal error, send mail to ptools-perfapi@icl.utk.edu and complain\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+// Remove all events in the eventset
+if ( PAPI_cleanup_eventset( EventSet ) != PAPI_OK )
+handle_error( 1 );
+
+.fi
+.PP
+.RE
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_profil\fP 
+.br
+ \fBPAPI_create_eventset\fP 
+.br
+ \fBPAPI_add_event\fP 
+.br
+ \fBPAPI_stop\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

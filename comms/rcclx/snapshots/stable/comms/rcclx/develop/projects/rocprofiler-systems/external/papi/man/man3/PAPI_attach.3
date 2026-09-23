@@ -1,0 +1,79 @@
+.TH "PAPI_attach" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_attach \- Attach PAPI event set to the specified thread id\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_attach( int EventSet, unsigned long tid );
+.RE
+.PP
+\fBPAPI_attach\fP is a wrapper function that calls \fBPAPI_set_opt\fP to allow PAPI to monitor performance counts on a thread other than the one currently executing\&. This is sometimes referred to as third party monitoring\&. \fBPAPI_attach\fP connects the specified EventSet to the specified thread; \fBPAPI_detach\fP breaks that connection and restores the EventSet to the original executing thread\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP An integer handle for a PAPI EventSet as created by \fBPAPI_create_eventset\fP\&. 
+.br
+\fItid\fP A thread id as obtained from, for example, \fBPAPI_list_threads\fP or \fBPAPI_thread_id\fP\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ECMP\fP This feature is unsupported on this component\&. 
+.br
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOEVST\fP The event set specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The event set is currently counting events\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+unsigned long pid;
+pid = fork( );
+if ( pid <= 0 )
+exit( 1 );
+if ( PAPI_create_eventset( &EventSet ) != PAPI_OK )
+exit( 1 );
+// Add Total Instructions Executed to our EventSet
+if ( PAPI_add_event( EventSet, PAPI_TOT_INS ) != PAPI_OK )
+exit( 1 );
+// Attach this EventSet to the forked process
+if ( PAPI_attach( EventSet, pid ) != PAPI_OK )
+exit( 1 );
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_opt\fP 
+.PP
+\fBPAPI_list_threads\fP 
+.PP
+\fBPAPI_thread_id\fP 
+.PP
+\fBPAPI_thread_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

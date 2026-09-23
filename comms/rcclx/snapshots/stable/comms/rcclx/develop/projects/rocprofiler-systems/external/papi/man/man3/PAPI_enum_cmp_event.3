@@ -1,0 +1,165 @@
+.TH "PAPI_enum_cmp_event" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_enum_cmp_event \- Enumerate PAPI preset or native events for a given component\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_enum_cmp_event( int *EventCode, int  modifer, int cidx );
+.RE
+.PP
+Given an event code, \fBPAPI_enum_event\fP replaces the event code with the next available event\&.
+.PP
+The modifier argument affects which events are returned\&. For all platforms and event types, a value of PAPI_ENUM_ALL (zero) directs the function to return all possible events\&. 
+.br
+ For native events, the effect of the modifier argument may be different on each platform\&. See the discussion below for platform-specific definitions\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fI*EventCode\fP A defined preset or native event such as PAPI_TOT_INS\&. 
+.br
+\fImodifier\fP Modifies the search logic\&. See below for full list\&. For native events, each platform behaves differently\&. See platform-specific documentation for details\&.
+.br
+\fIcidx\fP Specifies the component to search in
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOEVNT\fP The next requested PAPI preset or native event is not available on the underlying hardware\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+// Scan for all supported native events on the first component
+printf( "Name\\t\\t\\t       Code\\t   Description\\n" );
+do {
+    retval = PAPI_get_event_info( i, &info );
+    if ( retval == PAPI_OK ) {
+    printf( "%\-30s %#\-10x\\n%s\\n", info\&.symbol, info\&.event_code, info\&.long_descr );
+    }
+} while ( PAPI_enum_cmp_event( &i, PAPI_ENUM_ALL, 0 ) == PAPI_OK );
+
+.fi
+.PP
+ 
+.PP
+.nf
+@par Generic Modifiers
+
+.fi
+.PP
+ The following values are implemented for preset events 
+.PD 0
+.IP "\(bu" 2
+PAPI_ENUM_EVENTS -- Enumerate all (default) 
+.IP "\(bu" 2
+PAPI_ENUM_FIRST -- Enumerate first event (preset or native) preset/native chosen based on type of EventCode 
+.PP
+.PP
+.nf
+@par Native Modifiers
+.fi
+.PP
+ The following values are implemented for native events 
+.PD 0
+.IP "\(bu" 2
+PAPI_NTV_ENUM_UMASKS -- Given an event, iterate through possible umasks one at a time 
+.IP "\(bu" 2
+PAPI_NTV_ENUM_UMASK_COMBOS -- Given an event, iterate through all possible combinations of umasks\&. This is not implemented on libpfm4\&. 
+.PP
+.RE
+.PP
+\fBPreset Modifiers\fP
+.RS 4
+The following values are implemented for preset events 
+.PD 0
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_AVAIL -- enumerate only available presets 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_MSC -- Miscellaneous preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_INS -- Instruction related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_IDL -- Stalled or Idle preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_BR -- Branch related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_CND -- Conditional preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_MEM -- Memory related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_CACH -- Cache related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_L1 -- L1 cache related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_L2 -- L2 cache related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_L3 -- L3 cache related preset events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_TLB -- Translation Lookaside Buffer events 
+.IP "\(bu" 2
+PAPI_PRESET_ENUM_FP -- Floating Point related preset events 
+.PP
+.RE
+.PP
+\fBITANIUM Modifiers\fP
+.RS 4
+The following values are implemented for modifier on Itanium: 
+.PD 0
+.IP "\(bu" 2
+PAPI_NTV_ENUM_IARR - Enumerate IAR (instruction address ranging) events 
+.IP "\(bu" 2
+PAPI_NTV_ENUM_DARR - Enumerate DAR (data address ranging) events 
+.IP "\(bu" 2
+PAPI_NTV_ENUM_OPCM - Enumerate OPC (opcode matching) events 
+.IP "\(bu" 2
+PAPI_NTV_ENUM_IEAR - Enumerate IEAR (instr event address register) events 
+.IP "\(bu" 2
+PAPI_NTV_ENUM_DEAR - Enumerate DEAR (data event address register) events 
+.PP
+.RE
+.PP
+\fBPOWER Modifiers\fP
+.RS 4
+The following values are implemented for POWER 
+.PD 0
+.IP "\(bu" 2
+PAPI_NTV_ENUM_GROUPS - Enumerate groups to which an event belongs 
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+PAPI 
+.br
+PAPIF 
+.br
+ \fBPAPI_enum_event\fP 
+.br
+\fBPAPI_get_event_info\fP 
+.br
+\fBPAPI_event_name_to_code\fP 
+.br
+PAPI_preset 
+.br
+PAPI_native 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

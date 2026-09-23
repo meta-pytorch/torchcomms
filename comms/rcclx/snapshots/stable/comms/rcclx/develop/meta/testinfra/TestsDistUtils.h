@@ -404,10 +404,6 @@ class RcclxBaseTest : public ::testing::Test {
     setenv("NCCL_LOCAL_REGISTER", "1", 1);
 #endif
 
-#if defined(TEST_CUDA_GRAPH_MODE)
-    setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
-#endif
-
     CUDACHECKABORT(cudaSetDevice(this->localRank));
 
     if (initEnvAtSetup) {

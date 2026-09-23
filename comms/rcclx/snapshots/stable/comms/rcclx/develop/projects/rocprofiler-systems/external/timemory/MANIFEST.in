@@ -1,0 +1,56 @@
+
+# direct includes
+
+include .clang-format
+include .clang-tidy
+include .gitignore
+include .readthedocs.yml
+include CHANGELOG.md
+include CMakeLists.txt
+include CODE_OF_CONDUCT.md
+include CONTRIBUTING.md
+include LICENSE
+include MANIFEST.in
+include pyproject.toml
+include pytest.ini
+include README.md
+include requirements.txt
+include setup.cfg
+include setup.py
+include VERSION
+
+# recursive includes
+
+recursive-include cmake *
+recursive-include recipe *
+recursive-include examples *
+recursive-include external *
+recursive-include source *
+recursive-include timemory *
+recursive-include tests *
+recursive-include scripts *
+recursive-include .misc *
+recursive-include .requirements *
+
+# global exclude
+
+global-exclude *.pyc
+global-exclude *.git*
+global-exclude *__pycache__*
+global-exclude *.so
+global-exclude *.sql
+
+# recursive excludes
+
+recursive-exclude timemory.egg-info *
+recursive-exclude _skbuild *
+recursive-exclude build *
+recursive-exclude dist *
+recursive-exclude external/hatchet/build *
+recursive-exclude external/perfetto *
+
+# bypass global exclude of git files
+
+include docs/.gitinfo
+include external/perfetto/sdk/perfetto.h
+include external/perfetto/sdk/perfetto.cc

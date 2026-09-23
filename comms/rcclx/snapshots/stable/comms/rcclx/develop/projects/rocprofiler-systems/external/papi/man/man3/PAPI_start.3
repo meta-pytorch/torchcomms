@@ -1,0 +1,82 @@
+.TH "PAPI_start" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_start \- Start counting hardware events in an event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_start( int  EventSet );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP -- an integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP -- One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ESYS\fP -- A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_ENOEVST\fP -- The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP -- The EventSet is currently counting events\&. 
+.br
+\fIPAPI_ECNFLCT\fP -- The underlying counter hardware can not count this event and other events in the EventSet simultaneously\&. 
+.br
+\fIPAPI_ENOEVNT\fP -- The PAPI preset is not available on the underlying hardware\&.
+.RE
+.PP
+\fBPAPI_start\fP starts counting all of the hardware events contained in the previously defined EventSet\&. All counters are implicitly set to zero before counting\&. Assumes an initialized PAPI library and a properly added event set\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+long long values[2];
+int ret;
+
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Add Total Instructions Executed to our EventSet
+ret = PAPI_add_event(EventSet, PAPI_TOT_INS);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Start counting
+ret = PAPI_start(EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+poorly_tuned_function();
+ret = PAPI_stop(EventSet, values);
+if (ret != PAPI_OK) handle_error(ret);
+printf("%lld\\\\n",values[0]);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_create_eventset\fP \fBPAPI_add_event\fP \fBPAPI_stop\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

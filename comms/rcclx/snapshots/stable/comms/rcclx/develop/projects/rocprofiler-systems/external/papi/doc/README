@@ -1,0 +1,17 @@
+/* 
+* File:    papi/doc/README
+* CVS:     $Id$
+* Author:  Dan Terpstra
+*          terpstra@cs.utk.edu
+* Mods:    <your name here>
+*          <your email address>
+*/  
+
+This directory contains:
+
+A collection of files to aid in the preparation of PAPI doxygen documentation.
+Beginning with PAPI 4.2.0, doxygen and an on-line wiki are the two primary
+sources of documentation. Man pages generated from doxygen can be found in the
+man directories and installed on your system. A PAPI Overview and html versions
+of the man pages can also be found online at: 
+	http://icl.cs.utk.edu/projects/papi/wiki/Main_Page

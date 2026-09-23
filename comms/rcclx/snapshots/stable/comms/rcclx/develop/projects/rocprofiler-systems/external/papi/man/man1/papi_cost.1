@@ -1,0 +1,35 @@
+.TH "papi_cost" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_cost \- papi_cost utility\&.   
+.PP
+file papi_cost\&.c 
+.SH "NAME"
+.PP
+papi_cost - computes execution time costs for basic PAPI operations\&.
+.SH "Synopsis"
+.PP
+papi_cost [-dhps] [-b bins] [-t threshold]
+.SH "Description"
+.PP
+papi_cost is a PAPI utility program that computes the min / max / mean / std\&. deviation of execution times for PAPI start/stop pairs and for PAPI reads\&. This information provides the basic operating cost to a user's program for collecting hardware counter data\&. Command line options control display capabilities\&.
+.SH "Options"
+.PP
+.PD 0
+.IP "\(bu" 2
+-b < bins > Define the number of bins into which the results are partitioned for display\&. The default is 100\&. 
+.IP "\(bu" 2
+-d Display a graphical distribution of costs in a vertical histogram\&. 
+.IP "\(bu" 2
+-h Display help information about this utility\&. 
+.IP "\(bu" 2
+-p Display 25/50/75 perecentile results for making boxplots\&. 
+.IP "\(bu" 2
+-s Show the number of iterations in each of the first 10 standard deviations above the mean\&. 
+.IP "\(bu" 2
+-t < threshold > Set the threshold for the number of iterations to measure costs\&. The default is 1,000,000\&. 
+.PP
+.SH "Bugs"
+.PP
+There are no known bugs in this utility\&. If you find a bug, it should be reported to the PAPI Mailing List at ptools-perfapi@icl.utk.edu\&. 

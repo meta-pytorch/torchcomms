@@ -1,0 +1,93 @@
+.TH "PAPI_list_events" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_list_events \- list the events in an event set  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+List the events in an event set\&.
+.PP
+PAPI_list_events() returns an array of events and a count of the total number of events in an event set\&. This call assumes an initialized PAPI library and a successfully created event set\&.
+.PP
+\fBC Interface\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_list_events(int EventSet, int *Events, int *number);
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP An integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP 
+.br
+\fI*Events\fP A pointer to a preallocated array of codes for events, such as PAPI_INT_INS\&. No more than *number codes will be stored into the array\&. 
+.br
+\fI*number\fP On input, the size of the Events array, or maximum number of event codes to be returned\&. A value of 0 can be used to probe an event set\&. On output, the number of events actually in the event set\&. This value may be greater than the actually stored number of event codes\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP 
+.br
+\fIPAPI_ENOEVST\fP 
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+if (PAPI_event_name_to_code("PAPI_TOT_INS",&EventCode) != PAPI_OK)
+exit(1);
+if (PAPI_add_event(EventSet, EventCode) != PAPI_OK)
+exit(1);
+Convert a second event name to an event code 
+if (PAPI_event_name_to_code("PAPI_L1_LDM",&EventCode) != PAPI_OK)
+exit(1);
+if (PAPI_add_event(EventSet, EventCode) != PAPI_OK)
+exit(1);
+number = 0;
+if(PAPI_list_events(EventSet, NULL, &number))
+exit(1);
+if(number != 2)
+exit(1);
+if(PAPI_list_events(EventSet, Events, &number))
+exit(1);
+
+.fi
+.PP
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_event_code_to_name\fP 
+.PP
+\fBPAPI_event_name_to_code\fP 
+.PP
+\fBPAPI_add_event\fP 
+.PP
+\fBPAPI_create_eventset\fP
+.RE
+.PP
+\fBFortran Interface:\fP
+.RS 4
+#include 'fpapi\&.h' 
+.br
+ \fBPAPI_list_events( C_INT EventSet, C_INT(*) Events, C_INT number, C_INT check )\fP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_list_events\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

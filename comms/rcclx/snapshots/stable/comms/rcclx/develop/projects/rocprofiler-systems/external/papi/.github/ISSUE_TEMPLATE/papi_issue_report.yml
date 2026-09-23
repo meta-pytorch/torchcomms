@@ -1,0 +1,76 @@
+name: PAPI Issue Report
+description: Create a report for a PAPI related issues on Linux
+title: "[Issue]: "
+body:
+  - type: markdown
+    attributes:
+      value: Thank you for taking the time to fill out this issue report!
+  - type: textarea
+    id: issue-description
+    attributes:
+      label: Issue Description
+      description: What is the issue that you are encountering?
+    validations:
+      required: True
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating System
+      description: What is your machines operating system? Include name and version number.<br>(`cat /etc/os-release | grep -E "^(NAME=|VERSION=)"`)
+      placeholder: e.g. Rocky Linux Version 9.5
+    validations:
+      required: True
+  - type: input
+    id: architecture
+    attributes:
+      label: Architecture
+      description: What is your machines architecture?<br>(`uname -m`)
+      placeholder: e.g. x86_64
+    validations:
+      required: True
+  - type: input
+    id: cpu-architecture
+    attributes:
+      label: CPU Architecture
+      description: What CPU architecture are you using?<br>(`cat /proc/cpuinfo | grep "name" | head -n 1`)
+      placeholder: e.g. Intel Xeon Gold 6140 CPU
+    validations:
+      required: True
+  - type: input
+    id: compiler
+    attributes:
+      label: Compiler
+      description: What is your compiler and compiler version?<br>(`gcc --version` or `clang --version`)
+      placeholder: e.g. GCC 11.5.0
+    validations:
+      required: True
+  - type: input
+    id: papi-version
+    attributes:
+      label: PAPI Version
+      description: What version of PAPI are you using (optional)?<br>(`(cd path_to_your_papi_install/bin && ./papi_version)`)
+      placeholder: e.g. master or PAPI 7.2.0
+    validations:
+      required: False
+  - type: input
+    id: component
+    attributes:
+      label: Component
+      description: What component does this issue pertain to (optional)?<br>(`(cd path_to_your_papi_install/bin && ./papi_component_avail)`) 
+      placeholder: e.g. Cuda
+    validations:
+      required: False
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Provide steps to reproduce this issue (optional).
+    validations:
+      required: False
+  - type: textarea
+    id: additional-information
+    attributes:
+      label: Additional Information
+      description: Is there any additional information that is relevant to your issue? This could be node parallelization used or is the program ran directly on your system or a batch system.
+    validations:
+      required: False

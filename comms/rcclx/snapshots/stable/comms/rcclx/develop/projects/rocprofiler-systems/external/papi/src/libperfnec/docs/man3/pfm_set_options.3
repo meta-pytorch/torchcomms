@@ -1,0 +1,59 @@
+.TH LIBPFM 3 "November, 2003" "" "Linux Programmer's Manual"
+.SH NAME
+pfm_set_options \- set performance monitoring library debug options
+.SH SYNOPSIS
+.nf
+.B #include <perfmon/pfmlib.h>
+.sp
+.BI "int pfm_set_options(pfmlib_options_t *"opt);
+.sp
+.SH DESCRIPTION
+This function can be called at any time to adjust the level
+of debug of the library. In both cases, extra output will be
+generated on standard error when the library gets
+called. This can be useful to figure out how the PMC
+registers are initialized for instance.
+.sp
+The opt argument to this function is a pointer to a 
+.B pfmlib_options_t 
+structure which is defined as follows:
+.sp
+.nf 
+typedef struct {
+	unsigned int	pfm_debug:1;
+	unsigned int	pfm_verbose:1;
+} pfmlib_options_t;
+.fi
+.sp
+.sp
+Setting \fBpfm_debug\fR to 1 will enable debug messages whereas setting
+\fBpfm_verbose\fR will enable verbose messages. 
+
+.SH ENVIRONMENT VARIABLES
+Setting library options with this function has lower priority than
+with environment variables. As such, the call to this function may
+not have any actual effects. A user can set the following environment
+variables to control verbosity and debug output:
+.TP
+.B LIBPFM_VERBOSE
+Enable verbose output. Value must be 0 or 1. When not set, verbosity level
+can be controlled with this function.
+.TP
+.B LIBPFM_DEBUG
+Enable debug  output. Value must be 0 or 1. When not set, debug level
+can be controlled with this function.
+.LP
+.SH RETURN
+The function returns whether or not it was successful. A return
+value of \fBPFMLIB_SUCCESS\fR indicates success, otherwise the 
+value is the error code.
+.sp
+When environment variables exist, they take precedence and this
+function returns \fBPFMLIB_SUCCESS\fR.
+.SH ERRORS
+.TP
+.B PFMLIB_ERR_INVAL 
+the argument is invalid, most likely a NULL pointer.
+.SH AUTHOR
+Stephane Eranian <eranian@hpl.hp.com>
+.PP

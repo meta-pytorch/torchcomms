@@ -1,0 +1,78 @@
+.TH "PAPI_strerror" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_strerror \- Returns a string describing the PAPI error code\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ char * PAPI_strerror( int errorCode );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIcode\fP 
+.br
+ -- the error code to interpret
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fI*error\fP -- a pointer to the error string\&. 
+.br
+\fINULL\fP -- the input error code to PAPI_strerror() is invalid\&.
+.RE
+.PP
+PAPI_strerror() returns a pointer to the error message corresponding to the error code code\&. If the call fails the function returns the NULL pointer\&. This function is not implemented in Fortran\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int ret;
+int EventSet = PAPI_NULL;
+int native = 0x0;
+char error_str[PAPI_MAX_STR_LEN];
+
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK)
+{
+   fprintf(stderr, "PAPI error %d: %s\\n", ret, PAPI_strerror(retval));
+   exit(1);
+}
+// Add Total Instructions Executed to our EventSet
+ret = PAPI_add_event(EventSet, PAPI_TOT_INS);
+if (ret != PAPI_OK)
+{
+   PAPI_perror( "PAPI_add_event");
+   fprintf(stderr,"PAPI_error %d: %s\\n", ret, error_str);
+   exit(1);
+}
+// Start counting
+ret = PAPI_start(EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_perror\fP \fBPAPI_set_opt\fP \fBPAPI_get_opt\fP \fBPAPI_shutdown\fP \fBPAPI_set_debug\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

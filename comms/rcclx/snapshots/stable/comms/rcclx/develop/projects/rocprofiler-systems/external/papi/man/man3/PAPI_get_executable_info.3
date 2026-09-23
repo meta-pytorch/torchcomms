@@ -1,0 +1,72 @@
+.TH "PAPI_get_executable_info" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_executable_info \- Get the executable's address space info\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+const \fBPAPI_exe_info_t\fP *PAPI_get_executable_info( void );
+.RE
+.PP
+This function returns a pointer to a structure containing information about the current program\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIfullname\fP Fully qualified path + filename of the executable\&. 
+.br
+\fIname\fP Filename of the executable with no path information\&. 
+.br
+\fItext_start,text_end\fP Start and End addresses of program text segment\&. 
+.br
+\fIdata_start,data_end\fP Start and End addresses of program data segment\&. 
+.br
+\fIbss_start,bss_end\fP Start and End addresses of program bss segment\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+const PAPI_exe_info_t *prginfo = NULL;
+if ( ( prginfo = PAPI_get_executable_info( ) ) == NULL )
+exit( 1 );
+printf( "Path+Program: %s\\n", exeinfo\->fullname );
+printf( "Program: %s\\n", exeinfo\->address_info\&.name );
+printf( "Text start: %p, Text end: %p\\n", exeinfo\->address_info\&.text_start, exeinfo\->address_info\&.text_end) ;
+printf( "Data start: %p, Data end: %p\\n", exeinfo\->address_info\&.data_start, exeinfo\->address_info\&.data_end );
+printf( "Bss start: %p, Bss end: %p\\n", exeinfo\->address_info\&.bss_start, exeinfo\->address_info\&.bss_end );
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_opt\fP 
+.PP
+\fBPAPI_get_hardware_info\fP 
+.PP
+\fBPAPI_exe_info_t\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

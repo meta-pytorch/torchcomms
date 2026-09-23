@@ -1,0 +1,219 @@
+.TH "PAPI_derived_event_files" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_derived_event_files \- Describes derived event definition file syntax\&.
+.SH "Derived Events"
+.PP
+PAPI provides the ability to define events whose value will be derived from multiple native events\&. The list of native events to be used in a derived event and a formula which describes how to use them is provided in an event definition file\&. The PAPI team provides an event definition file which describes all of the supported PAPI preset events\&. PAPI also allows a user to provide an event definition file that describes a set of user defined events which can extend the events PAPI normally supports\&.
+.PP
+This page documents the syntax of the commands which can appear in an event definition file\&.
+.PP
+
+.br
+ 
+.SS "General Rules:"
+.PD 0
+.IP "\(bu" 2
+Blank lines are ignored\&. 
+.IP "\(bu" 2
+Lines that begin with '#' are comments (they are also ignored)\&. 
+.IP "\(bu" 2
+Names shown inside < > below represent values that must be provided by the user\&. 
+.IP "\(bu" 2
+If a user provided value contains white space, it must be protected with quotes\&. 
+.PP
+.PP
+
+.br
+ 
+.SS "Commands:"
+\fBCPU,<pmuName>\fP
+.RS 4
+Specifies a PMU name which controls if the PRESET and EVENT commands that follow this line should be processed\&. Multiple CPU commands can be entered without PRESET or EVENT commands between them to provide a list of PMU names to which the derived events that follow will apply\&. When a PMU name provided in the list matches a PMU name known to the running system, the events which follow will be created\&. If none of the PMU names provided in the list match a PMU name on the running system, the events which follow will be ignored\&. When a new CPU command follows either a PRESET or EVENT command, the PMU list is rebuilt\&.
+.br
+
+.br
+.RE
+.PP
+\fBPRESET,<eventName>,<derivedType>,<eventAttr>,LDESC,"<longDesc>",SDESC,"<shortDesc>",NOTE,"<note>"\fP
+.RS 4
+Declare a PAPI preset derived event\&.
+.br
+
+.br
+.RE
+.PP
+\fBEVENT,<eventName>,<derivedType>,<eventAttr>,LDESC,"<longDesc>",SDESC,"<shortDesc>",NOTE,"<note>"\fP
+.RS 4
+Declare a user defined derived event\&.
+.br
+
+.br
+.RE
+.PP
+\fBWhere:\fP
+.RS 4
+
+.RE
+.PP
+\fBpmuName:\fP
+.RS 4
+The PMU which the following events should apply to\&. A list of PMU names supported by your system can be obtained by running papi_component_avail on your system\&.
+.br
+ 
+.RE
+.PP
+\fBeventName:\fP
+.RS 4
+Specifies the name used to identify this derived event\&. This name should be unique within the events on your system\&.
+.br
+ 
+.RE
+.PP
+\fBderivedType:\fP
+.RS 4
+Specifies the kind of derived event being defined (see 'Derived Types' below)\&.
+.br
+ 
+.RE
+.PP
+\fBeventAttr:\fP
+.RS 4
+Specifies a formula and a list of base events that are used to compute the derived events value\&. The syntax of this field depends on the 'derivedType' specified above (see 'Derived Types' below)\&.
+.br
+ 
+.RE
+.PP
+\fBlongDesc:\fP
+.RS 4
+Provides the long description of the event\&.
+.br
+ 
+.RE
+.PP
+\fBshortDesc:\fP
+.RS 4
+Provides the short description of the event\&.
+.br
+ 
+.RE
+.PP
+\fBnote:\fP
+.RS 4
+Provides an event note\&.
+.br
+ 
+.RE
+.PP
+\fBbaseEvent (used below):\fP
+.RS 4
+Identifies an event on which this derived event is based\&. This may be a native event (possibly with event masks), an already known preset event, or an already known user event\&.
+.br
+.RE
+.PP
+
+.br
+ 
+.SS "Notes:"
+The PRESET command has traditionally been used in the PAPI provided preset definition file\&. The EVENT command is intended to be used in user defined event definition files\&. The code treats them the same so they are interchangeable and they can both be used in either event definition file\&.
+.br
+.PP
+
+.br
+ 
+.SS "Derived Types:"
+This describes values allowed in the 'derivedType' field of the PRESET and EVENT commands\&. It also shows the syntax of the 'eventAttr' field for each derived type supported by these commands\&. All of the derived events provide a list of one or more events which the derived event is based on (baseEvent)\&. Some derived events provide a formula that specifies how to compute the derived events value using the baseEvents in the list\&. The following derived types are supported, the syntax of the 'eventAttr' parameter for each derived event type is shown in parentheses\&.
+.br
+
+.br
+.PP
+\fBNOT_DERIVED (<baseEvent>):\fP
+.RS 4
+This derived type defines an alias for the existing event 'baseEvent'\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_ADD (<baseEvent1>,<baseEvent2>):\fP
+.RS 4
+This derived type defines a new event that will be the sum of two other events\&. It has a value of 'baseEvent1' plus 'baseEvent2'\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_PS (PAPI_TOT_CYC,<baseEvent1>):\fP
+.RS 4
+This derived type defines a new event that will report the number of 'baseEvent1' events which occurred per second\&. It has a value of ((('baseEvent1' * cpu_max_mhz) * 1000000 ) / PAPI_TOT_CYC)\&. The user must provide PAPI_TOT_CYC as the first event of two events in the event list for this to work correctly\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_ADD_PS (PAPI_TOT_CYC,<baseEvent1>,<baseEvent2>):\fP
+.RS 4
+This derived type defines a new event that will add together two event counters and then report the number which occurred per second\&. It has a value of (((('baseEvent1' + baseEvent2) * cpu_max_mhz) * 1000000 ) / PAPI_TOT_CYC)\&. The user must provide PAPI_TOT_CYC as the first event of three events in the event list for this to work correctly\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_CMPD (<baseEvent1>,<baseEvent2):\fP
+.RS 4
+This derived type works much like the NOT_DERIVED type\&. It is rarely used and it looks like the code just returns a single value returned from the kernel\&. There is no calculation done to compute this events value\&. Not sure why multiple input events seem to be needed to use this event type\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_SUB (<baseEvent1>,<baseEvent2>):\fP
+.RS 4
+This derived type defines a new event that will be the difference between two other events\&. It has a value of 'baseEvent1' minus 'baseEvent2'\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_POSTFIX (<pfFormula>,<baseEvent1>,<baseEvent2>, \&.\&.\&. ,<baseEventn>):\fP
+.RS 4
+This derived type defines a new event whose value is computed from several native events using a postfix (reverse polish notation) formula\&. Its value is the result of processing the postfix formula\&. The 'pfFormula' is of the form 'N0|N1|N2|5|*|+|-|' where the '|' acts as a token separator and the tokens N0, N1, and N2 are place holders that represent baseEvent0, baseEvent1, and baseEvent2 respectively\&.
+.br
+ 
+.RE
+.PP
+\fBDERIVED_INFIX (<ifFormula>,<baseEvent1>,<baseEvent2>, \&.\&.\&. ,<baseEventn>):\fP
+.RS 4
+This derived type defines a new event whose value is computed from several native events using an infix (algebraic notation) formula\&. Its value is the result of processing the infix formula\&. The 'ifFormula' is of the form 'N0-(N1+(N2*5))' where the tokens N0, N1, and N2 are place holders that represent baseEvent0, baseEvent1, and baseEvent2 respectively\&.
+.br
+.RE
+.PP
+
+.br
+ 
+.SS "Example:"
+In the following example, the events PAPI_SP_OPS, USER_SP_OPS, and ALIAS_SP_OPS will all measure the same events and return the same value\&. They just demonstrate different ways to use the PRESET and EVENT event definition commands\&.
+.br
+
+.br
+.PP
+.PD 0
+.IP "\(bu" 2
+# The following lines define pmu names that all share the following events 
+.IP "\(bu" 2
+CPU nhm 
+.IP "\(bu" 2
+CPU nhm-ex 
+.IP "\(bu" 2
+# Events which should be defined for either of the above pmu types 
+.IP "\(bu" 2
+PRESET,PAPI_TOT_CYC,NOT_DERIVED,UNHALTED_CORE_CYCLES 
+.IP "\(bu" 2
+PRESET,PAPI_REF_CYC,NOT_DERIVED,UNHALTED_REFERENCE_CYCLES 
+.IP "\(bu" 2
+PRESET,PAPI_SP_OPS,DERIVED_POSTFIX,N0|N1|3|*|+|,FP_COMP_OPS_EXE:SSE_SINGLE_PRECISION,FP_COMP_OPS_EXE:SSE_FP_PACKED,NOTE,'Using a postfix formula' 
+.IP "\(bu" 2
+EVENT,USER_SP_OPS,DERIVED_INFIX,N0+(N1*3),FP_COMP_OPS_EXE:SSE_SINGLE_PRECISION,FP_COMP_OPS_EXE:SSE_FP_PACKED,NOTE,'Using the same formula in infix format' 
+.IP "\(bu" 2
+EVENT,ALIAS_SP_OPS,NOT_DERIVED,PAPI_SP_OPS,LDESC,'Alias for preset event PAPI_SP_OPS' 
+.IP "\(bu" 2
+# End of event definitions for above pmu names and start of a section for a new pmu name\&. 
+.IP "\(bu" 2
+CPU snb 
+.PP
+

@@ -1,0 +1,71 @@
+.TH "PAPI_query_event" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_query_event \- Query if PAPI event exists\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_query_event(int EventCode);
+.RE
+.PP
+PAPI_query_event() asks the PAPI library if the PAPI Preset event can be counted on this architecture\&. If the event CAN be counted, the function returns PAPI_OK\&. If the event CANNOT be counted, the function returns an error code\&. This function also can be used to check the syntax of native and user events\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventCode\fP -- a defined event such as PAPI_TOT_INS\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOEVNT\fP The PAPI preset is not available on the underlying hardware\&.
+.RE
+.PP
+\fBExamples\fP
+.RS 4
+
+.PP
+.nf
+int retval;
+// Initialize the library
+retval = PAPI_library_init(PAPI_VER_CURRENT);
+if (retval != PAPI_VER_CURRENT) {
+  fprintf(stderr,\\"PAPI library init error!\\\\n\\");
+  exit(1); 
+}
+if (PAPI_query_event(PAPI_TOT_INS) != PAPI_OK) {
+  fprintf(stderr,\\"No instruction counter? How lame\&.\\\\n\\");
+  exit(1);
+}
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_remove_event\fP 
+.PP
+\fBPAPI_remove_events\fP 
+.PP
+PAPI_presets 
+.PP
+PAPI_native 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

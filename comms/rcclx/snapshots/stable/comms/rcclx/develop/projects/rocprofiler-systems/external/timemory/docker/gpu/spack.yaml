@@ -1,0 +1,48 @@
+spack:
+  specs:
+    - cmake
+    - cuda
+    - papi
+    - mpich
+    - upcxx
+    - gotcha
+    - dyninst
+    - caliper~papi
+    - gperftools
+    - python
+    - py-scikit-build
+    - py-numpy
+    - py-cython
+    - py-pillow
+    - py-ipython
+    - py-matplotlib
+    - py-mpi4py
+    - py-pip
+    - llvm-openmp
+
+  container:
+    # Select the format of the recipe e.g. docker,
+    # singularity or anything else that is currently supported
+    format: docker
+
+    # Select from a valid list of images
+    base:
+      image: "ubuntu:18.04"
+      spack: develop
+
+    # Whether or not to strip binaries
+    strip: false
+
+    # Additional system packages that are needed at runtime
+    # os_packages:
+    #  - libgomp
+
+    # Extra instructions
+    extra_instructions:
+      final: |
+        RUN echo 'export PS1="\[$(tput bold)\]\[$(tput setaf 1)\][timemory]\[$(tput setaf 2)\]\u\[$(tput sgr0)\]:\w $ \[$(tput sgr0)\]"' >> ~/.bashrc
+
+    # Labels for the image
+    labels:
+      app: "timemory"
+      mpi: "mpich"

@@ -1,0 +1,53 @@
+.TH "PAPI_num_cmp_hwctrs" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_num_cmp_hwctrs \- Return the number of hardware counters for the specified component\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+PAPI_num_cmp_hwctrs() returns the number of counters present in the specified component\&. By convention, component 0 is always the cpu\&.
+.PP
+On some components, especially for CPUs, the value returned is a theoretical maximum for estimation purposes only\&. It might not be possible to easily create an EventSet that contains the full number of events\&. This can be due to a variety of reasons: 1)\&. Some CPUs (especially Intel and POWER) have the notion of fixed counters that can only measure one thing, usually cycles\&. 2)\&. Some CPUs have very explicit rules about which event can run in which counter\&. In this case it might not be possible to add a wanted event even if counters are free\&. 3)\&. Some CPUs halve the number of counters available when running with SMT (multiple CPU threads) enabled\&. 4)\&. Some operating systems 'steal' a counter to use for things such as NMI Watchdog timers\&. The only sure way to see if events will fit is to attempt adding events to an EventSet, and doing something sensible if an error is generated\&.
+.PP
+PAPI_library_init() must be called in order for this function to return anything greater than 0\&.
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_num_cmp_hwctrs(int  cidx );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIcidx\fP -- An integer identifier for a component\&. By convention, component 0 is always the cpu component\&.
+.RE
+.PP
+\fBExample\fP
+.RS 4
+
+.PP
+.nf
+// Query the cpu component for the number of counters\&.
+printf(\\"%d hardware counters found\&.\\\\n\\", PAPI_num_cmp_hwctrs(0));
+
+.fi
+.PP
+.RE
+.PP
+\fBReturns\fP
+.RS 4
+On success, this function returns a value greater than zero\&.
+.br
+ A zero result usually means the library has not been initialized\&.
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

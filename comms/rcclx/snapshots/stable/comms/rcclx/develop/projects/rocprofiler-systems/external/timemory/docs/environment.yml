@@ -1,0 +1,23 @@
+name: docs
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.7
+  - cmake
+  - curl
+  - doxygen
+  - git
+  - graphviz
+  - matplotlib
+  - mkdocs
+  - numpy
+  - openssl
+  - pillow
+  - pip
+  - setuptools
+  - breathe <4.30.0
+  - sphinx <4.0.0
+  - sphinx-markdown-tables
+  - docutils
+  - jinja2 <3.1

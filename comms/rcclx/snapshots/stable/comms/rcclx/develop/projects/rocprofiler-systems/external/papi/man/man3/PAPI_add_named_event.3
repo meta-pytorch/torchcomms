@@ -1,0 +1,90 @@
+.TH "PAPI_add_named_event" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_add_named_event \- add PAPI preset or native hardware event by name to an EventSet  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_add_named_event( int EventSet, const char *EventName );
+.RE
+.PP
+\fBPAPI_add_named_event\fP adds one event to a PAPI EventSet\&. 
+.br
+A hardware event can be either a PAPI preset or a native hardware event code\&. For a list of PAPI preset events, see PAPI_presets or run the avail test case in the PAPI distribution\&. PAPI presets can be passed to \fBPAPI_query_event\fP to see if they exist on the underlying architecture\&. For a list of native events available on current platform, run the papi_native_avail utility in the PAPI distribution\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP An integer handle for a PAPI Event Set as created by \fBPAPI_create_eventset\fP\&. 
+.br
+\fIEventCode\fP A defined event such as PAPI_TOT_INS\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPositive-Integer\fP The number of consecutive elements that succeeded before the error\&. 
+.br
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOINIT\fP The PAPI library has not been initialized\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&. 
+.br
+\fIPAPI_ENOEVST\fP The event set specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The event set is currently counting events\&. 
+.br
+\fIPAPI_ECNFLCT\fP The underlying counter hardware can not count this event and other events in the event set simultaneously\&. 
+.br
+\fIPAPI_ENOEVNT\fP The PAPI preset is not available on the underlying hardware\&. 
+.br
+\fIPAPI_EBUG\fP Internal error, please send mail to the developers\&. 
+.br
+\fIPAPI_EMULPASS\fP Event exists, but cannot be counted due to multiple passes required by hardware\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+char EventName = "PAPI_TOT_INS";
+int EventSet = PAPI_NULL;
+unsigned int native = 0x0;
+if ( PAPI_create_eventset( &EventSet ) != PAPI_OK )
+handle_error( 1 );
+// Add Total Instructions Executed to our EventSet
+if ( PAPI_add_named_event( EventSet, EventName ) != PAPI_OK )
+handle_error( 1 );
+// Add native event PM_CYC to EventSet
+if ( PAPI_add_named_event( EventSet, "PM_CYC" ) != PAPI_OK )
+handle_error( 1 );
+
+.fi
+.PP
+.RE
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_add_event\fP 
+.br
+\fBPAPI_query_named_event\fP 
+.br
+\fBPAPI_remove_named_event\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

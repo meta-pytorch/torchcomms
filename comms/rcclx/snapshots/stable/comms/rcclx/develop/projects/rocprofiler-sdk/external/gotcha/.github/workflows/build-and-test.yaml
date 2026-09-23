@@ -1,0 +1,86 @@
+name: GOTCHA Build and Test
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+
+jobs:
+  build-and-test-ubuntu:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04]
+
+    name: ${{ matrix.os }}
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      CC: gcc
+      CXX: g++
+
+    steps:
+      - name: Push checkout
+        if: github.event_name == 'push'
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+      - name: PR checkout
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      - name: Install additional packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install cmake gcovr check clang-format
+
+      - name: Check code formatting
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          git clang-format --diff HEAD~1 -q
+          if git clang-format --diff HEAD~1 -q | grep -m 1 '^' >/dev/null; then
+              echo >&2 "Failed clang-format check. Run: git clang-format HEAD~1"
+          exit 1
+          fi
+      - name: Configure and Build
+        run: |
+          cmake . -B build -DGOTCHA_ENABLE_TESTS=ON -DCMAKE_BUILD_TYPE=PROFILE -DGOTCHA_ENABLE_WARNING_ERROR=ON
+          cmake --build build
+      - name: Unit Tests
+        run: |
+          ctest --test-dir build -VV
+      - name: Create Coverage
+        if: matrix.os == 'ubuntu-22.04'
+        run : |
+          mkdir coverage
+          FILE=$PWD/coverage/coverage.json
+          cd build
+          COVERALLS_REPO_TOKEN=${{ secrets.GITHUB_TOKEN }} gcovr -r ../ . --coveralls $FILE -e ../test/ -e ../src/example
+          if [ -e '$FILE' ]; then
+          sed -i'' -e 's/"service_name": "github-actions-ci"/"service_name": "github"/' '$FILE'
+          fi
+          cat $FILE
+          curl -v -F json_file=@$FILE https://coveralls.io/api/v1/jobs
+
+  build-and-test-fedora:
+    name: fedora
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Setup Podman
+        run: |
+          sudo apt update
+          sudo apt-get -y install podman
+          podman pull fedora:latest
+      - name: Get source
+        uses: actions/checkout@v3
+        with:
+          path: 'GOTCHA'
+      - name: Create container and run tests
+        run: |
+          cp GOTCHA/.github/docker/fedora.dockerfile .
+          podman build --tag fedora_latest_test --file=fedora.dockerfile          

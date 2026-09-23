@@ -1,0 +1,91 @@
+.TH "PAPI_remove_named_event" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_remove_named_event \- removes a named hardware event from a PAPI event set\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+A hardware event can be either a PAPI Preset or a native hardware event code\&. For a list of PAPI preset events, see PAPI_presets or run the papi_avail utility in the PAPI distribution\&. PAPI Presets can be passed to \fBPAPI_query_event\fP to see if they exist on the underlying architecture\&. For a list of native events available on the current platform, run papi_native_avail in the PAPI distribution\&.
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_remove_named_event( int  EventSet, const char *EventName );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP -- an integer handle for a PAPI event set as created by \fBPAPI_create_eventset\fP 
+.br
+\fIEventName\fP -- a defined event such as PAPI_TOT_INS or a native event\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP Everything worked\&. 
+.br
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOINIT\fP The PAPI library has not been initialized\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The EventSet is currently counting events\&. 
+.br
+\fIPAPI_ECNFLCT\fP The underlying counter hardware can not count this event and other events in the EventSet simultaneously\&. 
+.br
+\fIPAPI_ENOEVNT\fP The PAPI preset is not available on the underlying hardware\&.
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+char EventName = "PAPI_TOT_INS";
+int EventSet = PAPI_NULL;
+int ret;
+
+// Create an empty EventSet
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Add Total Instructions Executed to our EventSet
+ret = PAPI_add_named_event(EventSet, EventName);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Start counting
+ret = PAPI_start(EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Stop counting, ignore values
+ret = PAPI_stop(EventSet, NULL);
+if (ret != PAPI_OK) handle_error(ret);
+
+// Remove event
+ret = PAPI_remove_named_event(EventSet, EventName);
+if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_remove_event\fP 
+.br
+\fBPAPI_query_named_event\fP 
+.br
+\fBPAPI_add_named_event\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

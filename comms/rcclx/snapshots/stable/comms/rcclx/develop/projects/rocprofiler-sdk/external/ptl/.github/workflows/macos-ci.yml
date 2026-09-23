@@ -1,0 +1,69 @@
+name: macos-ci
+
+on:
+  push:
+    branches: [master, main, develop]
+  pull_request:
+    branches: [master, main, develop]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os-release }}
+    strategy:
+      matrix:
+        build_libs: ["shared static"]
+        build_type: ["Release"]
+        compiler: ["clang-14", "clang-15"]
+        extra_args: ["--num-tasks=256 --tbb"]
+        extra_packages: ["clangdev tbb-devel"]
+        os-release: ["macos-12", "macos-11"]
+        standard: ["11", "17"]
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install Conda
+        run: |
+          wget https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -O miniconda.sh
+          bash miniconda.sh -b -p $HOME/conda
+          export PATH="$HOME/conda/bin:${PATH}"
+          conda config --set always_yes yes --set changeps1 yes
+          conda create -n pyctest -c defaults -c conda-forge python=3.7 pyctest ${{ matrix.compiler }} ${{ matrix.extra_packages }}
+          source activate
+          conda activate pyctest
+
+      - name: Build and Test
+        run: |
+          export PATH="$HOME/conda/bin:${PATH}"
+          source activate
+          conda activate pyctest
+          export CMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}:${CONDA_PREFIX}"
+          export CC=$(which ${{ matrix.compiler }})
+          export CXX=$(which clang++)
+          echo "C compiler is ${CC}"
+          echo "C++ compiler is ${CXX}"
+          python ./pyctest-runner.py -SF \
+            --pyctest-model=Continuous \
+            --pyctest-site=GitHub-macOS \
+            --pyctest-build-type=${{ matrix.build_type }} \
+            --build-libs ${{ matrix.build_libs }} \
+            ${{ matrix.extra_args }} \
+            -- -VV ${{ matrix.extra_ctest }} \
+            -- -DCMAKE_INSTALL_PREFIX=${HOME}/ptl-install \
+            -DCMAKE_CXX_STANDARD=${{ matrix.standard }} ${{ matrix.extra_cmake }}
+
+      - name: Install
+        run: |
+          export PATH="$HOME/conda/bin:${PATH}"
+          source activate
+          conda activate pyctest
+          export CMAKE_PREFIX_PATH="${HOME}/ptl-install:${CMAKE_PREFIX_PATH}:${CONDA_PREFIX}"
+          export CC=$(which ${{ matrix.compiler }})
+          export CXX=$(which clang++)
+          echo "C compiler is ${CC}"
+          echo "C++ compiler is ${CXX}"
+          cmake --build build-PTL --target install
+          cmake -B ${HOME}/ptl-examples-build ${PWD}/examples
+          cmake --build ${HOME}/ptl-examples-build --target all

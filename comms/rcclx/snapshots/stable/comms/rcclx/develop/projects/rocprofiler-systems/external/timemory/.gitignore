@@ -1,0 +1,72 @@
+
+# IDE files
+/CMakeLists.txt.user*
+/.vscode
+/.vs
+/*.nja
+settings.json
+*.swp
+.spack-env
+/.cache
+/compile_commands.json
+/.clangd
+
+# Edit files
+*~
+._*
+
+# build directories
+/build-*
+/build
+/install-*
+/install
+/examples/**/build*
+/_skbuild
+
+# setup.py files
+/dist*
+/TiMemory.*
+/timemory.*
+__pycache__
+*.pyc
+
+# miscellaneous
+timing_report*
+/test_output*
+*timemory_output*
+*.autosave
+/coverage.info
+
+# macOS Finder files
+.DS_Store
+
+# setup.py
+/TiMemory-*
+/dist
+/.eggs
+/MANIFEST
+
+# info files
+/timemory/mpi_support/*.txt
+
+# unused examples
+/examples/ex4
+
+# documentation
+/html
+/site
+/docs/html
+
+# images
+/*.png
+/*.tif
+/*.tiff
+/*.jpeg
+/*.jpg
+/*.gif
+/run*.sh
+
+# stashed source tree
+/.stash
+/source/tests/timemory-*output
+/examples/ex-pmpi/mfdn-*

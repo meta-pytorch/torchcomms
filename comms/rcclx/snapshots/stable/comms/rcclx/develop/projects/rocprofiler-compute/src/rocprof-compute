@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Main entry point for rocprof-compute"""
+
+# Copyright (c) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier:  MIT
+
+import re
+import sys
+import traceback
+import warnings
+from pathlib import Path
+
+# Suppress pandas FutureWarning about chained assignment
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+try:
+    from importlib import metadata
+
+    from rocprof_compute_base import RocProfCompute
+    from utils.logger import console_error
+except ImportError as e:
+    print(f"{e}")
+    # In wheel package, softlink is not supported.
+    # rocprof-compute will get installed in bin and libexec/rocprofiler-compute.
+    # When invoked from bin folder, the extra paths are required to import the
+    # dependent scripts
+
+    try:
+        current_path = Path(__file__).resolve().parent
+        additional_path = current_path / "../libexec/rocprofiler-compute"
+        sys.path.append(str(additional_path.resolve()))
+
+        from importlib import metadata
+
+        from rocprof_compute_base import RocProfCompute
+        from utils.logger import console_error
+    except ImportError:
+        print(
+            "\n[ERROR] Could not import rocprofiler-compute modules. "
+            "Please check your installation."
+        )
+        script_path = Path(__file__).resolve().parent
+        print(f"Searched: {script_path}, {additional_path.resolve()}")
+        traceback.print_exc()
+        sys.exit(1)
+
+
+def check_version(local_ver: str, desired_ver: str, operator: str) -> bool:
+    """Check package version strings with simple operators used in companion
+    requirements.txt file"""
+    ops = {
+        "==": lambda loc, des: loc == des,
+        ">=": lambda loc, des: loc >= des,
+        "<=": lambda loc, des: loc <= des,
+        ">": lambda loc, des: loc > des,
+        "<": lambda loc, des: loc < des,
+    }
+    return ops.get(operator, lambda loc, des: True)(local_ver, desired_ver)
+
+
+def check_python_version() -> None:
+    """Check that Python version meets minimum requirement for rocprofiler-compute.
+
+    Both profile and analyze modes require Python 3.8+.
+    """
+    min_python = (3, 8)
+    # Check which version of python is being used
+    if sys.version_info < min_python:  # noqa: UP036
+        print(
+            f"[ERROR] Python {min_python[0]}.{min_python[1]} or higher "
+            f"is required for rocprofiler-compute. "
+            f"The current version is "
+            f"{sys.version_info[0]}.{sys.version_info[1]}."
+        )
+        sys.exit(1)
+
+
+def verify_deps() -> None:
+    """Verify that all required packages from requirements.txt are installed
+    with correct versions for analyze mode execution.
+
+    NOTE: Only called for analyze mode. Profile mode requires no external
+    dependencies (uses stdlib only).
+    """
+    bindir = str(Path(__file__).resolve().parent)
+    deps_locations = ["requirements.txt", "../requirements.txt"]
+
+    for location in deps_locations:
+        check_file = Path(bindir).joinpath(location)
+        if check_file.exists():
+            dependencies = check_file.read_text(encoding="utf-8").splitlines()
+
+            error = False
+            version_pattern = re.compile(r"^([^=<>]+)([=<>]+)(.*)$")
+
+            for dependency in dependencies:
+                match = version_pattern.match(dependency)
+                if match:
+                    package, operator, desired_version = match.groups()
+                else:
+                    package, operator, desired_version = dependency, None, None
+
+                try:
+                    local_version = metadata.distribution(package).version
+                except metadata.PackageNotFoundError:
+                    error = True
+                    print(
+                        f"[ERROR] The '{dependency}' package was not found "
+                        "in the current execution environment."
+                    )
+                    continue
+
+                # Check version requirement
+                if desired_version and not check_version(
+                    local_version, desired_version, operator
+                ):
+                    print(
+                        f"[ERROR] the '{dependency}' distribution does not meet "
+                        "version requirements to use rocprofiler-compute."
+                    )
+                    print(f"  --> version installed : {local_version}")
+                    error = True
+
+            if error:
+                print(
+                    "\nPlease verify all of the python dependencies called out "
+                    "in the requirements file"
+                )
+                print("are installed locally prior to running rocprofiler-compute.")
+                print(f"\nSee: {check_file}")
+                sys.exit(1)
+            return
+
+
+def main() -> None:
+    """Main function for rocprofiler-compute"""
+
+    # Check Python version requirement applies to both profile and analyze modes
+    check_python_version()
+
+    rocprof_compute = RocProfCompute()
+    mode = rocprof_compute.get_mode()
+
+    # major rocprofiler-compute execution modes
+    if mode == "profile":
+        rocprof_compute.run_profiler()
+    elif mode == "analyze":
+        # Analyze mode requires external dependencies - verify them
+        verify_deps()
+        rocprof_compute.run_analysis()
+    else:
+        console_error("Unsupported execution mode")
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

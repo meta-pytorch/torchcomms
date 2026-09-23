@@ -1,0 +1,86 @@
+.TH "PAPI_event_code_to_name" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_event_code_to_name \- Convert a numeric hardware event code to a name\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_event_code_to_name( int  EventCode, char * EventName );
+.RE
+.PP
+\fBPAPI_event_code_to_name\fP is used to translate a 32-bit integer PAPI event code into an ASCII PAPI event name\&. Either Preset event codes or Native event codes can be passed to this routine\&. Native event codes and names differ from platform to platform\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventCode\fP The numeric code for the event\&. 
+.br
+\fI*EventName\fP A string containing the event name as listed in PAPI_presets or discussed in PAPI_native\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOTPRESET\fP The hardware event specified is not a valid PAPI preset\&. 
+.br
+\fIPAPI_ENOEVNT\fP The hardware event is not available on the underlying hardware\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int EventCode, EventSet = PAPI_NULL;
+int Event, number;
+char EventCodeStr[PAPI_MAX_STR_LEN];
+// Create the EventSet
+if ( PAPI_create_eventset( &EventSet ) != PAPI_OK )
+handle_error( 1 );
+// Add Total Instructions Executed to our EventSet
+if ( PAPI_add_event( EventSet, PAPI_TOT_INS ) != PAPI_OK )
+handle_error( 1 );
+number = 1;
+if ( PAPI_list_events( EventSet, &Event, &number ) != PAPI_OK )
+handle_error(1);
+// Convert integer code to name string
+if ( PAPI_event_code_to_name( Event, EventCodeStr ) != PAPI_OK )
+handle_error( 1 );
+printf( "Event Name: %s\\n", EventCodeStr );
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_event_name_to_code\fP 
+.PP
+\fBPAPI_remove_event\fP 
+.PP
+\fBPAPI_get_event_info\fP 
+.PP
+\fBPAPI_enum_event\fP 
+.PP
+\fBPAPI_add_event\fP 
+.PP
+PAPI_presets 
+.PP
+PAPI_native 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

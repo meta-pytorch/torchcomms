@@ -1,0 +1,25 @@
+.TH "PAPI_get_virt_nsec" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_virt_nsec \- Get virtual time counter values in nanoseconds\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ECNFLCT\fP If there is no master event set\&. This will happen if the library has not been initialized, or for threaded applications, if there has been no thread id function defined by the \fBPAPI_thread_init\fP function\&. 
+.br
+\fIPAPI_ENOMEM\fP For threaded applications, if there has not yet been any thread specific master event created for the current thread, and if the allocation of such an event set fails, the call will return PAPI_ENOMEM or PAPI_ESYS \&.
+.RE
+.PP
+This function returns the total number of virtual units from some arbitrary starting point\&. Virtual units accrue every time the process is running in user-mode on behalf of the process\&. Like the real time counters, this count is guaranteed to exist on every platform PAPI supports\&. However on some platforms, the resolution can be as bad as 1/Hz as defined by the operating system\&. 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

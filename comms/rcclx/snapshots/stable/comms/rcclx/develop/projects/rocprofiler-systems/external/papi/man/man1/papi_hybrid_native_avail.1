@@ -1,0 +1,54 @@
+.TH "papi_hybrid_native_avail" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_hybrid_native_avail \- papi_hybrid_native_avail utility\&.
+.PP
+file hybrid_native_avail\&.c   
+.SH "NAME"
+.PP
+papi_hybrid_native_avail - provides detailed information for PAPI native events\&.
+.SH "Synopsis"
+.PP
+.SH "Description"
+.PP
+papi_hybrid_native_avail is a PAPI utility program that reports information about the native events available on the current platform or on an attached MIC card\&. A native event is an event specific to a specific hardware platform\&. On many platforms, a specific native event may have a number of optional settings\&. In such cases, the native event and the valid settings are presented, rather than every possible combination of those settings\&. For each native event, a name, a description, and specific bit patterns are provided\&.
+.SH "Options"
+.PP
+.PD 0
+.IP "\(bu" 2
+--help, -h print this help message 
+.IP "\(bu" 2
+-d display detailed information about native events 
+.IP "\(bu" 2
+-e EVENTNAME display detailed information about named native event 
+.IP "\(bu" 2
+-i EVENTSTR include only event names that contain EVENTSTR 
+.IP "\(bu" 2
+-x EVENTSTR exclude any event names that contain EVENTSTR 
+.IP "\(bu" 2
+--noumasks suppress display of Unit Mask information 
+.IP "\(bu" 2
+--mic < index > report events on the specified target MIC device 
+.PP
+.PP
+Processor-specific options 
+.PD 0
+.IP "\(bu" 2
+--darr display events supporting Data Address Range Restriction 
+.IP "\(bu" 2
+--dear display Data Event Address Register events only 
+.IP "\(bu" 2
+--iarr display events supporting Instruction Address Range Restriction 
+.IP "\(bu" 2
+--iear display Instruction Event Address Register events only 
+.IP "\(bu" 2
+--opcm display events supporting OpCode Matching 
+.IP "\(bu" 2
+--nogroups suppress display of Event grouping information 
+.PP
+.SH "Bugs"
+.PP
+There are no known bugs in this utility\&. If you find a bug, it should be reported to the PAPI Mailing List at ptools-perfapi@icl.utk.edu\&.
+.PP
+Modified by Gabriel Marin gmarin@icl.utk.edu to use offloading\&. 

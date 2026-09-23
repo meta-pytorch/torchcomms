@@ -1,0 +1,83 @@
+.TH "papi_hl_output_writer.Sum_Counters" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_hl_output_writer.Sum_Counters \- \fBSum_Counters\fP class defintion\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+Inherits object\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fB__init__\fP (self)"
+.br
+.RI "\fBSum_Counters\fP class initializer\&. "
+.ti -1c
+.RI "\fBadd_region\fP (self, rank_id, thread_id, events=OrderedDict())"
+.br
+.RI "Method defintion for add_region\&. "
+.ti -1c
+.RI "\fBget_json\fP (self)"
+.br
+.RI "Method definition for get_json\&. "
+.in -1c
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "\fBregions\fP"
+.br
+.ti -1c
+.RI "\fBregions_last_rank_id\fP"
+.br
+.ti -1c
+.RI "\fBregions_rank_num\fP"
+.br
+.ti -1c
+.RI "\fBregions_last_thread_id\fP"
+.br
+.ti -1c
+.RI "\fBregions_thread_num\fP"
+.br
+.ti -1c
+.RI "\fBclean_regions\fP"
+.br
+.ti -1c
+.RI "\fBsum_counters\fP"
+.br
+.in -1c
+.SH "Detailed Description"
+.PP 
+Gathers summary output for a region (e\&.g\&. computation) and accompanying measurements for a recorded event (e\&.g\&. PAPI_TOT_INS)\&. 
+.SH "Member Function Documentation"
+.PP 
+.SS "papi_hl_output_writer\&.Sum_Counters\&.add_region ( self,  rank_id,  thread_id,  events = \fROrderedDict()\fP)"
+Adds the region (e\&.g\&. computation) and accompanying measurements for a recorded event (e\&.g\&. PAPI_TOT_INS) to summary output\&.
+.PP
+\fBParameters\fP
+.RS 4
+\fIrank_id\fP MPI rank, if no MPI rank is present this value will be random\&. 
+.br
+\fIthread_id\fP Thread identifier containing performance events\&. E\&.g\&. 0\&. 
+.br
+\fIevents\fP An ordered dictionary containing measurements for recorded events obtained through PAPI HL function calls\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+.SS "papi_hl_output_writer\&.Sum_Counters\&.get_json ( self)"
+Calculates the min, max, median, or sum for a set of measurements for a recorded event\&. E\&.g\&. PAPI_TOT_INS\&.
+.PP
+\fBReturns\fP
+.RS 4
+An ordered dictionary containing summary measurements for recorded events\&. E\&.g\&. PAPI_TOT_INS\&. 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

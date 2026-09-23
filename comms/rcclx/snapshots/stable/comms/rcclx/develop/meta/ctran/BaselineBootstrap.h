@@ -2,17 +2,19 @@
 
 #pragma once
 
-#include "comms/common/bootstrap/IBootstrap.h" // @manual
+#include "comms/ctran/bootstrap/ICtranBootstrap.h" // @manual
 #include "nccl.h"
 
 namespace rcclx {
 
-class BaselineBootstrap : public ::meta::comms::IBootstrap {
+class BaselineBootstrap : public ::meta::comms::ICtranBootstrap {
  public:
   explicit BaselineBootstrap(ncclComm_t comm) : comm_(comm) {}
 
   virtual folly::SemiFuture<int>
   allGather(void* buf, int len, int rank, int nranks) override;
+
+  virtual folly::SemiFuture<int> barrier(int rank, int nranks) override;
 
   virtual folly::SemiFuture<int> allGatherNvlDomain(
       void* buf,
@@ -20,8 +22,6 @@ class BaselineBootstrap : public ::meta::comms::IBootstrap {
       int nvlLocalRank,
       int nvlNranks,
       std::vector<int> nvlRankToCommRank) override;
-
-  virtual folly::SemiFuture<int> barrier(int rank, int nranks) override;
 
   virtual folly::SemiFuture<int> barrierNvlDomain(
       int nvlLocalRank,

@@ -1,0 +1,10 @@
+hbw_calloc
+hbw_check_available
+hbw_free
+hbw_get_policy
+hbw_malloc
+hbw_posix_memalign
+hbw_posix_memalign_psize
+hbw_realloc
+hbw_set_policy
+hbw_verify_memory_region

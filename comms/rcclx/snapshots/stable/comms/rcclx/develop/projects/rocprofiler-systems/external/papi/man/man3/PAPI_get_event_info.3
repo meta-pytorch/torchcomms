@@ -1,0 +1,41 @@
+.TH "PAPI_get_event_info" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_event_info \- Get the event's name and description info\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventCode\fP event code (preset or native) 
+.br
+\fIinfo\fP structure with the event information \fBPAPI_event_info_t\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. 
+.br
+\fIPAPI_ENOTPRESET\fP The PAPI preset mask was set, but the hardware event specified is not a valid PAPI preset\&. 
+.br
+\fIPAPI_ENOEVNT\fP The PAPI preset is not available on the underlying hardware\&.
+.RE
+.PP
+This function fills the event information into a structure\&. In Fortran, some fields of the structure are returned explicitly\&. This function works with existing PAPI preset and native event codes\&.
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_event_name_to_code\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

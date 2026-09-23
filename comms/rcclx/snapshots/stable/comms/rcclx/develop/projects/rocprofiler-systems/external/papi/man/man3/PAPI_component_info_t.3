@@ -1,0 +1,204 @@
+.TH "PAPI_component_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_component_info_t
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "char \fBname\fP [128]"
+.br
+.ti -1c
+.RI "char \fBshort_name\fP [64]"
+.br
+.ti -1c
+.RI "char \fBdescription\fP [128]"
+.br
+.ti -1c
+.RI "char \fBversion\fP [64]"
+.br
+.ti -1c
+.RI "char \fBsupport_version\fP [64]"
+.br
+.ti -1c
+.RI "char \fBkernel_version\fP [64]"
+.br
+.ti -1c
+.RI "char \fBdisabled_reason\fP [1024]"
+.br
+.ti -1c
+.RI "int \fBdisabled\fP"
+.br
+.ti -1c
+.RI "char \fBpartially_disabled_reason\fP [1024]"
+.br
+.ti -1c
+.RI "int \fBpartially_disabled\fP"
+.br
+.ti -1c
+.RI "int \fBinitialized\fP"
+.br
+.ti -1c
+.RI "int \fBCmpIdx\fP"
+.br
+.ti -1c
+.RI "int \fBnum_cntrs\fP"
+.br
+.ti -1c
+.RI "int \fBnum_mpx_cntrs\fP"
+.br
+.ti -1c
+.RI "int \fBnum_preset_events\fP"
+.br
+.ti -1c
+.RI "int \fBnum_native_events\fP"
+.br
+.ti -1c
+.RI "int \fBdefault_domain\fP"
+.br
+.ti -1c
+.RI "int \fBavailable_domains\fP"
+.br
+.ti -1c
+.RI "int \fBdefault_granularity\fP"
+.br
+.ti -1c
+.RI "int \fBavailable_granularities\fP"
+.br
+.ti -1c
+.RI "int \fBhardware_intr_sig\fP"
+.br
+.ti -1c
+.RI "int \fBcomponent_type\fP"
+.br
+.ti -1c
+.RI "char * \fBpmu_names\fP [80]"
+.br
+.ti -1c
+.RI "int \fBreserved\fP [8]"
+.br
+.ti -1c
+.RI "unsigned int \fBhardware_intr\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBprecise_intr\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBposix1b_timers\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBkernel_profile\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBkernel_multiplex\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBfast_counter_read\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBfast_real_timer\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBfast_virtual_timer\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBattach\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBattach_must_ptrace\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBcntr_umasks\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBcpu\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBinherit\fP:1"
+.br
+.ti -1c
+.RI "unsigned int \fBreserved_bits\fP:19"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "unsigned int PAPI_component_info_t::attach"
+Supports attach 
+.SS "unsigned int PAPI_component_info_t::attach_must_ptrace"
+Attach must first ptrace and stop the thread/process 
+.SS "int PAPI_component_info_t::available_domains"
+Available domains 
+.SS "int PAPI_component_info_t::available_granularities"
+Available granularities 
+.SS "int PAPI_component_info_t::CmpIdx"
+Index into the vector array for this component; set at init time 
+.SS "unsigned int PAPI_component_info_t::cntr_umasks"
+counters have unit masks 
+.SS "int PAPI_component_info_t::component_type"
+Type of component 
+.SS "unsigned int PAPI_component_info_t::cpu"
+Supports specifying cpu number to use with event set 
+.SS "int PAPI_component_info_t::default_domain"
+The default domain when this component is used 
+.SS "int PAPI_component_info_t::default_granularity"
+The default granularity when this component is used 
+.SS "char PAPI_component_info_t::description[128]"
+Description of the component 
+.SS "int PAPI_component_info_t::disabled"
+0 if enabled, otherwise error code from initialization 
+.SS "char PAPI_component_info_t::disabled_reason[1024]"
+Reason for failure of initialization 
+.SS "unsigned int PAPI_component_info_t::fast_counter_read"
+Supports a user level PMC read instruction 
+.SS "unsigned int PAPI_component_info_t::fast_real_timer"
+Supports a fast real timer 
+.SS "unsigned int PAPI_component_info_t::fast_virtual_timer"
+Supports a fast virtual timer 
+.SS "unsigned int PAPI_component_info_t::hardware_intr"
+hw overflow intr, does not need to be emulated in software 
+.SS "int PAPI_component_info_t::hardware_intr_sig"
+Signal used by hardware to deliver PMC events 
+.SS "unsigned int PAPI_component_info_t::inherit"
+Supports child processes inheriting parents counters 
+.SS "int PAPI_component_info_t::initialized"
+Component is ready to use 
+.SS "unsigned int PAPI_component_info_t::kernel_multiplex"
+In kernel multiplexing 
+.SS "unsigned int PAPI_component_info_t::kernel_profile"
+Has kernel profiling support (buffered interrupts or sprofil-like) 
+.SS "char PAPI_component_info_t::kernel_version[64]"
+Version of the kernel PMC support driver 
+.SS "char PAPI_component_info_t::name[128]"
+Name of the component we're using 
+.SS "int PAPI_component_info_t::num_cntrs"
+Number of hardware counters the component supports 
+.SS "int PAPI_component_info_t::num_mpx_cntrs"
+Number of hardware counters the component or PAPI can multiplex supports 
+.SS "int PAPI_component_info_t::num_native_events"
+Number of native events the component supports 
+.SS "int PAPI_component_info_t::num_preset_events"
+Number of preset events the component supports 
+.SS "int PAPI_component_info_t::partially_disabled"
+1 if component is partially disabled, 0 otherwise 
+.SS "char PAPI_component_info_t::partially_disabled_reason[1024]"
+Reason for partial initialization 
+.SS "char* PAPI_component_info_t::pmu_names[80]"
+list of pmu names supported by this component 
+.SS "unsigned int PAPI_component_info_t::posix1b_timers"
+Using POSIX 1b interval timers (timer_create) instead of setitimer 
+.SS "unsigned int PAPI_component_info_t::precise_intr"
+Performance interrupts happen precisely 
+.SS "char PAPI_component_info_t::short_name[64]"
+Short name of component, to be prepended to event names 
+.SS "char PAPI_component_info_t::support_version[64]"
+Version of the support library 
+.SS "char PAPI_component_info_t::version[64]"
+Version of this component 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

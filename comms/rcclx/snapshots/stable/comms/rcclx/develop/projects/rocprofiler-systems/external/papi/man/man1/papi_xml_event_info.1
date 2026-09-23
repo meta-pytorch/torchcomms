@@ -1,0 +1,32 @@
+.TH "papi_xml_event_info" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_xml_event_info \- papi_xml_event_info utility\&.
+.PP
+file papi_xml_event_info\&.c   
+.SH "NAME"
+.PP
+papi_xml_event_info - provides detailed information for PAPI events in XML format
+.SH "Synopsis"
+.PP
+.SH "Description"
+.PP
+papi_native_avail is a PAPI utility program that reports information about the events available on the current platform in an XML format\&.
+.PP
+It will attempt to create an EventSet with each event in it, which can be slow\&.
+.SH "Options"
+.PP
+.PD 0
+.IP "\(bu" 2
+-h print help message 
+.IP "\(bu" 2
+-p print only preset events 
+.IP "\(bu" 2
+-n print only native events 
+.IP "\(bu" 2
+-c COMPONENT print only events from component number COMPONENT event1, event2, \&.\&.\&. Print only events that can be created in the same event set with the events event1, event2, etc\&. 
+.PP
+.SH "Bugs"
+.PP
+There are no known bugs in this utility\&. If you find a bug, it should be reported to the PAPI Mailing List at ptools-perfapi@icl.utk.edu\&. 

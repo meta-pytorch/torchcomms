@@ -1,0 +1,598 @@
+2011-05-10
+
+	* src/Rules.pfm_pe: The --with-bitmode parameter was not being
+	  passed along to libpfm3,  so it was not possible to build
+	  perf_event PAPI on non-default bitmodes.  This change passes
+	  along the $(BITFLAGS) value to the libpfm3 make invocation.
+
+	* src/: papi_pfm_events.c, papi_pfm_events.h, perf_events.c: The
+	  perf_events code was using __u64 instead of uint64_t and this was
+	  causing a warning when compiling for 64-bit Power.
+
+	* src/libpfm-3.y/lib/amd64_events_fam15h.h: Added Robert Richter's
+	  patch with a few new events for AMD Family 15h.
+
+2011-05-06
+
+	* INSTALL.txt: Load the 'gcc' module not 'gnu' module for Cray.
+
+	* INSTALL.txt: Update the install instructions for Cray XT and XE
+	  systems.
+
+	* src/ctests/: multiattach.c, multiattach2.c: Make the multiattach
+	  and multiattach2 failures into warnings.
+
+	  I have a proposed fix that makes the failures go away, but it has
+	  not been tested much and also causes some new fcntl() error
+	  messages under perfctr.
+
+	  So temporarily make the tests only warn for the release and I'll
+	  work on a proper fix for after.  The behavior in these tests has
+	  been broken for a long time so it is not a recent regression.
+
+	* src/papi_memory.c: Band-aid for the leak debugging statement in
+	  papi_memory.c on NO_VARARG_MACRO systems.  (aix currently)
+
+2011-05-05
+
+	* src/ctests/multiattach.c: Had the division backwards on the
+	  validation.
+
+	* src/ctests/multiattach.c: Update the multiattach test to fail if
+	  the results aren't in the proper ratio.  This was failing on
+	  perf_event kernels but since the results weren't checked   it was
+	  never reported as an error.
+
+	* delete_before_release.sh: delete cvs2cl.pl before release
+
+	* ChangeLogP413.txt: First cut change log for the 4.1.3 release.
+	  Nothing's frozen yet...
+
+	* cvs2cl.pl: Perl script to generate change logs. Keeping it with
+	  the project makes life easier.
+
+	* INSTALL.txt: Change INSTALL to reflect that we support power7.
+
+	* src/Makefile.in, src/configure, src/configure.in, src/papi.h,
+	  doc/Doxyfile, doc/Doxyfile-everything, papi.spec: Modfy version
+	  number for pending release: 4.1.3.0
+
+2011-05-03
+
+	* src/: papi_internal.c, papi_internal.h, sys_perf_event_open.c,
+	  ctests/attach2.c: Cleanup the _papi_hwi_cleanup_eventset()
+	  function in papi_internal.c
+
+	  This function was re-using existing functionality to remove one
+	  event at a  time before cleaning out the eventset.  This is not
+	  strictly necessary  and was breaking on perf_event eventsets that
+	  were attached to  finished processes, as a call to
+	  update_control_state() would close/reopen  the perf_event fd,
+	  failing when the finished process went away after the close.
+
+	  The new code removes all events from the eventset in one go
+	  before  calling update_control_state.
+
+	  The change here also updates code comments as necessary, as some
+	  of the  code in papi_internal.c can be a bit obscure.
+
+	  It also updates some of the comments in ctests/attach2.c to give
+	  better  debugging info.
+
+2011-04-28
+
+	* src/threads.c: Uncomment the actual signal passing functionality
+	  in _papi_hwi_broadcast_signal
+
+	* src/papi_debug.h: Include files added to papi_debug.h
+
+	* src/components/README: Added detailed instructions on how to
+	  build PAPI with the CUDA component
+
+2011-04-27
+
+	* src/threads.c: Move an escape test to the outer loop in
+	  _papi_hwi_broadcast_signal.
+
+	  This cleans up an infinite loop where before we would only break
+	  out of the component look, not the thread list walking loop.
+
+	* src/: papi.c, papi_internal.c, papi_internal.h, papi_protos.h:
+	  Clean up papi_internal.c so that functions not used outside are
+	  marked static.
+
+	* src/: papi_pfm_events.c, papi_preset.c, pmapi-ppc64_events.c:
+	  papi: Fix some memory leaks
+
+	  Signed-off-by: Robert Richter <robert.richter@amd.com>
+
+	* src/perf_events.c: papi: Make functions and variables static in
+	  perf_events.c
+
+	  All this functions and variables are not used outside
+	  perf_events.c.  Making them static.
+
+	  Signed-off-by: Robert Richter <robert.richter@amd.com>
+
+	* src/papi_pfm_events.c: papi: Fix crash in error handler for
+	  pfm_get_event_code_counter()
+
+	  Signed-off-by: Robert Richter <robert.richter@amd.com>
+
+	* src/utils/native_avail.c: papi: Fix error check in native_avail.c
+
+	  Signed-off-by: Robert Richter <robert.richter@amd.com>
+
+2011-04-26
+
+	* src/libpfm-3.y/: include/perfmon/pfmlib_amd64.h,
+	  lib/pfmlib_amd64.c: AMD architectural PMU could not be detected
+	  for family 15h as there was a strict check for AMD family 10h.
+	  Enabling it now for all families from 10h.
+
+	  Signed-off-by: Robert Richter
+
+	* src/libpfm-3.y/lib/amd64_events_fam15h.h: There is no kernel
+	  support for AMD family 15h northbridge events, disabling them in
+	  libpfm3 to not report them as available native events.
+
+	  Patch from Robert Richter
+
+	* src/: configure, configure.in, linux-common.c: Add some extra
+	  debug messages for better tracking of the   --with-assumed-kernel
+	  configure option.
+
+2011-04-25
+
+	* src/: configure, configure.in, linux-common.c: Add a new
+	  configure option:   --with-assumed-kernel=<ver> This allows you
+	  to specify a kernel revision to (instead of being   autodetected
+	  with uname) for perf_event workaround purposes.  With   this you
+	  can force PAPI to not use workarounds on kernels with
+	  backported versions of perf_event features.
+
+2011-04-19
+
+	* src/: Makefile.inc, configure, configure.in, papi_debug.h,
+	  papi_internal.h, sys_perf_event_open.c: Add debugging to
+	  sys_perf_event_open.c to show exactly what   values are being
+	  passed to the perf_event_open syscall.
+
+2011-04-18
+
+	* src/: run_tests.sh, ctests/attach2.c, ctests/attach3.c: Fix for
+	  finding attach_target with execlp to search the path.
+
+2011-04-14
+
+	* src/: Rules.pfm, configure, configure.in, linux-ia64-pfm.h,
+	  linux-ia64.c, linux-ia64.h, perfmon-ia64-pfm.h, perfmon-ia64.c,
+	  perfmon-ia64.h, perfmon.h: Rename the linux-ia64-* files to be
+	  called perfmon-ia64-*
+
+	  This is a more descriptive name, and makes it more obvious what
+	  the files are for.
+
+	* src/libpfm-3.y/: include/perfmon/pfmlib_amd64.h,
+	  lib/pfmlib_amd64.c, lib/pfmlib_amd64_priv.h: Patch to have
+	  libpfm3 use 6 counters on Interlagos.
+
+	  Patch provided by Robert Richter
+
+	* src/linux-memory.c: Fix the POWER cache detection routines to
+	  work properly on POWER7.
+
+	  Patch provided by Corey Ashford
+
+	* src/: configure, configure.in: Have configure check for ifort if
+	  gfortran, etc, not found.
+
+	  Patch by Gary Mohr
+
+	* src/ctests/johnmay2.c: Update the validation message on the
+	  ctests/johnmay2.c test to be	 less confusing.  Also add some
+	  comments to the source code.
+
+	  Problem reported by Steve Kaufmann.
+
+2011-04-13
+
+	* src/ctests/: multiattach2, multiattach2.c: Remove the
+	  accidentally added ctests/multiattach2 and add instead the proper
+	  ctests/multiattach2.c
+
+	* src/Makefile.inc: components_config.h is cleaned out with make
+	  clobber, not make clean this should fix the build bot issues.
+
+	* src/ctests/: Makefile, attach3.c, multiattach.c, multiattach2,
+	  zero_attach.c: Minor typos in comments. Discovered another bug in
+	  attach code demonstrated by multiattach2. You cannot have an
+	  eventset running that is self counting as well as one that is
+	  attached. PAPI thinks that both are running and throws an error.
+
+	* src/perf_events.c: We must update the control state after
+	  attaching for perf_events, zero_attach now passes
+
+	* src/ctests/: Makefile, attach2.c, attach3.c, do_loops.c: This
+	  commit adds testing of attaching to fork/exec'd executables.
+	  zero_attach and multiattach just test forks. This also modifies
+	  do_loops.c to be able to generate a test driver when
+	  -DDUMMY_DRIVER is defined so we can use it to generate flops as a
+	  sub process.
+
+	  Attach2 and attach3 have one important difference.
+
+	  Attach3 does a 'assign component' before attaching and then
+	  adding events.  Attach2 does not assign a component and thus
+	  should inherit the default component.
+
+	  The current bug in PAPI is that: * The default component is not
+	  assigned until you add an event.  * However, attaching an
+	  eventset without events is perfectly valid, but we get an error.
+
+	  Possible solution is that the default component should be
+	  assigned at create time.
+
+2011-04-12
+
+	* src/ctests/multiattach.c: Make sure the two processes compute
+	  different numbers of flops to test attach
+
+2011-04-05
+
+	* src/power7_events.h: Turns out Maynard Johnson answered my
+	  questions about the native_name enum back in December.  ( this is
+	  a correct version of the events file )
+
+	  As I found out, the AIX substrates do not use the native_name
+	  enum.  But a hypothetical perfctr build would.
+
+2011-04-04
+
+	* src/Makefile.inc: Clear out the components_config.h file on make
+	  clobber
+
+	* src/: aix.c, power7_events.h: Initial support for power7 aix, the
+	  events file is a copy of power6_events.h with the number of
+	  groups changed. The native_name enum is unchanged, but unused?
+
+2011-04-01
+
+	* src/configure.in: Commited wrong configure.in
+
+	* src/: configure, configure.in: Clean up setting bitmode flags for
+	  non-gcc (xlc in this case) compilers.
+
+	* src/papi_events.csv: Change the Nehalem PAPI_FP_OPS event from
+	  FP_COMP_OPS_EXE:SSE_SINGLE_PRECISION+FP_COMP_OPS_EXE:DOUBLE_PRECISION
+	  to   FP_COMP_OPS_EXE:SSE+FP_COMP_OPS_EXE:X87
+
+	  The new event gives the same results as the previous one, with
+	  the added benefit of also counting 32-bit compiled x87 fp ops
+	  properly.
+
+	  More detailed analysis can be found here:
+	  http://web.eecs.utk.edu/~vweaver1/projects/nehalem-fp_ops/
+
+2011-03-28
+
+	* src/utils/multiplex_cost.c: Turns out that getopt_long isn't as
+	  standard as I had hoped.
+
+	  Convert multiplex_cost to use only getopt.  -s disables software
+	  multiplexing -k disables kernel multiplexing
+
+2011-03-25
+
+	* src/: configure, utils/Makefile, utils/multiplex_cost.c,
+	  configure.in: Multiplex_cost utility.
+
+	* src/utils/: Makefile, cost.c, cost_utils.c, cost_utils.h: Split
+	  off the statistics functions from cost.
+
+2011-03-22
+
+	* src/: run_tests_exclude_cuda.txt, run_tests.sh: Exclude some
+	  fork/thread tests from fulltest that won't run with CUDA (reason:
+	  cannot invoke same GPU from different threads)
+
+2011-03-21
+
+	* src/utils/cost.c: Add a test for DERIVED_[ADD | SUB ] events to
+	  papi_cost.
+
+2011-03-18
+
+	* src/components/cuda/linux-cuda.c: all_native_events ctest failed
+	  when CUDA Component is used. Reason: removing cuda events from
+	  the eventset is currently not supported. According to the NVIDIA
+	  folks this is a bug in cuda 4.0rc and will be fixed in rc2. Note
+	  also, several fork and thread tests fail since it's illegal to
+	  invoke the same GPU device from different processes / threads. We
+	  need a mechanism that allows us to run tests for the CPU
+	  component only.
+
+2011-03-15
+
+	* src/utils/cost.c: Add a test case to cost util, look for a
+	  derived-postfix event and if found, give timing information for
+	  read calls to it.
+
+	  This is just a first run at the test, Core2 and AMD have
+	  candidate events and the test runs, but that is the extent of my
+	  testing so far.
+
+2011-03-11
+
+	* src/components/: README, cuda/Makefile.cuda.in, cuda/Rules.cuda,
+	  cuda/configure, cuda/configure.in, cuda/linux-cuda.c,
+	  cuda/linux-cuda.h: Added CUDA component, a hardware performance
+	  counter measurement technology for the NVIDIA CUDA platform which
+	  provides access to the hardware counters inside the GPU. PAPI
+	  CUDA is based on CUPTI support - shipped with CUDA 4.0rc - in the
+	  NVIDIA driver library. In any environment where the CUPTI-enabled
+	  driver is installed, the PAPI CUDA component can provide detailed
+	  performance counter information regarding the execution of GPU
+	  kernels.
+
+	* src/components/: coretemp/linux-coretemp.c,
+	  lustre/linux-lustre.c: Add some missing includes to components.
+
+	  Thanks to Will Cohen for reminding us warnings matter. :)
+
+	* src/: configure, configure.in, perf_events.c: The SYNC_READ
+	  workaround in perf_events.c was being handled at compile time,
+	  rather than at run-time like all of our other workarounds.
+
+	  Change it to be like our other kernel-version related
+	  workarounds.
+
+2011-03-09
+
+	* src/ctests/multiplex1_pthreads.c: Between 4.0.0 and 4.1.0 a
+	  pthread_exit() call was added to ctest/multiplex1_pthreads.c that
+	  caused the test to exit partway through the test and without
+	  doing a proper PASS/FAIL result.
+
+	  This changeset backs out that change, though the original change
+	  was marked as a memory leak fix so a different fix may be needed.
+
+	  Reported by Steve Kaufmann
+
+	* src/linux-timer.c: Add missing header needed by
+	  --with-virtualtimer=times build.
+
+	  Reported by Steve Kaufmann
+
+2011-03-01
+
+	* src/: papi_pfm_events.c, perf_events.c: Fix broken Linux/PPC
+	  build caused by my pfm_events code movement changes.
+
+2011-02-25
+
+	* src/: papi_pfm_events.c, papi_pfm_events.h, perfctr-x86.h: My
+	  changes yesterday broke the perfctr build.  This should fix it.
+
+2011-02-24
+
+	* src/ctests/inherit.c: Make the inherit test respect TESTS_QUIET
+	  so that it does not print extra output during a run_tests.sh run
+
+	* src/ctests/overflow.c: Fix missing newline in the overflow
+	  output.
+
+	  Reported by Gary Mohr
+
+	* src/: papi_pfm_events.c, papi_pfm_events.h, perf_events.c: Move
+	  the libpfm3 specific functions from perf_events.c into
+	  papi_pfm_events.c
+
+	* src/perf_events.c: Separate the libpfm3-specific code from
+	  _papi_pe_init_substrate() and _papi_pe_update_control_state()
+	  into their own functions.  This will allow eventual code sharing
+	  and also make the libpfm4 merge easier.
+
+	* src/perf_events.c: Some minor cleanups I found after reviewing
+	  the inherit merge.	+ Add missing "static inline" to the new
+	  kernel-version codes	  + Remove duplicated test for Pentium 4
+	  + Fix a warning only seen if --with-debug is enabled
+
+	* src/: papi.c, papi.h, papi_internal.h, perf_events.c,
+	  perf_events.h, ctests/Makefile, ctests/inherit.c,
+	  ctests/test_utils.c: Merging Gary Mohr's re-implementation of
+	  inherit into the code base.  Thanks, Gary!
+
+2011-02-23
+
+	* src/: any-null.h, freebsd.h, linux-bgp.h, linux-common.c,
+	  linux-common.h, linux-context.h, linux-ia64.c, linux-ia64.h,
+	  linux-lock.h, linux-memory.c, linux-ppc64.h, linux-timer.c,
+	  papi_internal.h, papi_pfm_events.c, perf_events.c, perf_events.h,
+	  perfctr-x86.h, perfctr.c, perfmon.h, solaris-niagara2.h,
+	  solaris-ultra.h, solaris.h, x86_cache_info.c: Move some more
+	  duplicated OS common code (in this case the locking code and the
+	  context accessing code) out of the various substrate include
+	  files and into a common location.
+
+2011-02-22
+
+	* src/perf_events.c: Separate out the kernel-version dependent
+	  checks and group them together near the beginning of the code.
+	  This not only allows us to easily see which routines are
+	  kernel-version dependent, but it makes it easier to disable the
+	  checks one-by-one when debugging kernel-version related issues
+	  like those found with the inherit patches.
+
+2011-02-21
+
+	* src/papi_internal.c: Extend _papi_hwi_cleanup_eventset to free
+	  memory and better cleanup after us.
+
+2011-02-18
+
+	* src/papi.c: PAPI_assign_eventset_component changed; refuses to
+	  reassign components.
+
+2011-02-17
+
+	* src/: papi_events.csv, libpfm-3.y/include/perfmon/pfmlib.h,
+	  libpfm-3.y/lib/amd64_events.h,
+	  libpfm-3.y/lib/amd64_events_fam10h.h,
+	  libpfm-3.y/lib/amd64_events_fam15h.h,
+	  libpfm-3.y/lib/pfmlib_amd64.c,
+	  libpfm-3.y/lib/pfmlib_amd64_priv.h: Add support for AMD Family
+	  15h processors.  Also adds suport for Family 10h RevE
+
+	  Patches provided by Robert Richter
+
+	* src/utils/native_avail.c: Modify papi_native_avail to properly
+	  handle event names with libpfm4-style  "::" separators in them.
+
+2011-02-15
+
+	* src/Makefile.inc: make install-doxyman will build/install the
+	  doxygen version of the manpages.
+
+	  Note that these pages are very rough right now, much work is
+	  needed to get them to be a drop in replacement for the current
+	  man pages. (mostly formatting related/use related issues, eg man
+	  PAPI_start will not work yet; the content is there.)
+
+	* doc/Makefile: Add install target for doxygen generated man pages.
+
+2011-02-11
+
+	* src/: perfctr-x86.c, perfctr.c: perfctr-2.6.42 introduced
+	  PERFCTR_X86_INTEL_WSTMR PAPI added support for
+	  PERFCTR_X86_INTEL_WSMR notice the missing T
+
+	  Fix PAPI to use the proper define.  This should fix Westmere
+	  support on perfctr kernels.
+
+2011-02-09
+
+	* src/: papi_protos.h, papi_vector.c, papi_vector.h,
+	  papi_vector_redefine.h: Added function pointer destroy_eventset
+	  to the PAPI vector table. Needed for the CUDA Component to
+	  disable CUDA eventGroups, to destroy floating CUDA context, and
+	  to free perfmon hardware on the GPU. (Note: the CUDA Component
+	  cannot be released yet since we are still under NDA with NVIDIA.
+	  Stay tuned.)
+
+2011-02-07
+
+	* src/x86_cache_info.c: The cpuid leaf2 code was printing a message
+	  to stderr if leaf4 was needed (only happens on Westmere
+	  currently).  Change this to be a MEMDBG() debug message instead.
+
+2011-02-03
+
+	* src/: papi_events.csv, perfctr-x86.c: perfctr-x86 was reporting
+	  "Core i7" instead of "Nehalem".  i7 can mean Westmere or Sandy
+	  Bridge too, so change the code to properly report Nehalem.
+
+2011-01-27
+
+	* src/ctests/all_native_events.c:
+	  Fix this ctest. It failed when the package was built with several
+	  components because the eventset was reused and failed to add
+	  events that were not from the first component.
+
+	  In order to fix it, I recreate & destroy the eventset when the
+	  current event does not belong to the previous component.
+
+2011-01-26
+
+	* src/: configure, configure.in, linux-timer.c, perfmon.c: Fix Cray
+	  CLE build.
+
+	* src/: configure, configure.in: Putting -Wall in cflags now
+	  requires CC = gcc
+
+	* src/: aix.c, freebsd.c, linux-bgp.c, linux-common.c,
+	  linux-memory.c, linux-memory.h, papi.c, papi_protos.h,
+	  papi_vector.c, papi_vector.h, solaris-niagara2.c,
+	  solaris-ultra.c, windows-common.c, windows-memory.c: Change the
+	  paramaters passed to update_shlib_info() to match better with
+	  those passed to get_system_info().  This only affects the
+	  substrates, outside users of PAPI will not notice this change.
+
+2011-01-25
+
+	* src/: configure, configure.in: Make sure that aix gets -g.
+
+	* src/: configure, configure.in: Give everyone else -g when
+	  configuring with debug.
+
+	  To wit, we pass gcc -g3 but neglected platforms where CC!=gcc.
+
+	* src/aix.c: First run at supporting power7.  NOTE: this code is
+	  only good for getting event listings eg papi_native_avail,
+
+	  passing PM_GET_GROUPS causes our code to segfault later on, a
+	  buffer overflow I'm still tracking down.
+
+	* src/perfctr-x86.c: Accidentally converted a function to _perfctr_
+	  that should have stayed _linux_.
+
+	* src/: perfctr-x86.c, perfctr.c: Rename the various perfctr
+	  functions to be _perfctr_ rather than _linux_.  This way _linux_
+	  is reserved for the common functions used by all.
+
+	* src/: linux-common.c, linux-memory.c, linux-timer.c,
+	  perf_events.c, windows-common.c, windows-memory.c,
+	  windows-timer.c: Split the WIN32 specific code out from the new
+	  linux common code.
+
+	  In most cases very little code was shared (it tended to be a big
+	  #ifdef block) and it is confusing to have windows-specific code
+	  in files named linux-*
+
+2011-01-24
+
+	* src/linux-timer.c: Fix a compile error that only shows up on PPC.
+
+	* src/linux-timer.c: Fix compile warning if mmtimer is enabled.
+
+	* src/perfctr-x86.c: Missing comma in the perfctr code.
+
+	* src/: Makefile.inc, aix.c, configure, configure.in,
+	  hwinfo_linux.c, linux-bgp.c, linux-common.c, linux-common.h,
+	  linux-ia64.c, linux-timer.c, linux-timer.h, papi_vector.h,
+	  perf_events.c, perfctr-x86.c, perfctr.c, perfmon.c,
+	  solaris-niagara2.c, solaris-ultra.c: One last batch of
+	  consolidation changes.
+
+	  This one moves get_system_info and get_cpu_info into
+	  linux-common.c, plus moves some other routines from perf_events.c
+	  there that are shared by the future libpfm4 version.
+
+	  Some non-linux substrates are touched here; these are just short
+	  fixes to   make sure the get_system_info() function pointed to by
+	  the papi_vector   has the same format on all substrates.
+
+	* src/: Makefile.inc, configure, configure.in, linux-memory.c,
+	  linux-memory.h, perf_events.c, perfctr-x86.c, perfctr.c,
+	  perfmon.c: Move the various Linux update_shlib_info() functions
+	  into a common place.
+
+	* src/: Makefile.inc, linux-timer.c, linux-timer.h, perf_events.c,
+	  perfctr-x86.c, perfctr.c, perfmon.c: Move the various
+	  timer-related functions to linux-timer.c This gets rid of the
+	  duplicated code spread throughout the substrates.
+
+2011-01-21
+
+	* delete_before_release.sh, release_procedure.txt: Updated the
+	  release docs with what I learned when making the 4.1.2.1 release.
+
+	* src/: configure, configure.in, freebsd-memory.c,
+	  linux-ia64-memory.c, linux-memory.c, linux-memory.h,
+	  linux-mx-memory.c, linux-ppc64-memory.c, perf_events.c,
+	  perfctr-x86.c, perfmon-memory.c, perfmon.c: Currently there are
+	  at least 3 identical copies of the linux memory detection code
+	  spread throughout the PAPI source code.
+
+	  This change puts them all in linux-memory.c, and then has all the
+	  individual substrates use the common code.

@@ -1,0 +1,107 @@
+.TH "PAPI_set_opt" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_set_opt \- Set PAPI library or event set options\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_set_opt(  int option, PAPI_option_t * ptr );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIoption\fP Defines the option to be set\&. Possible values are briefly described in the table below\&.
+.br
+\fIptr\fP Pointer to a structure determined by the selected option\&. See \fBPAPI_option_t\fP for a description of possible structures\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP The specified option or parameter is invalid\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.br
+\fIPAPI_EISRUN\fP The EventSet is currently counting events\&. 
+.br
+\fIPAPI_ECMP\fP The option is not implemented for the current component\&. 
+.br
+\fIPAPI_ENOINIT\fP PAPI has not been initialized\&. 
+.br
+\fIPAPI_EINVAL_DOM\fP Invalid domain has been requested\&.
+.RE
+.PP
+PAPI_set_opt() changes the options of the PAPI library or a specific EventSet created by \fBPAPI_create_eventset\fP\&. Some options may require that the EventSet be bound to a component before they can execute successfully\&. This can be done either by adding an event or by explicitly calling \fBPAPI_assign_eventset_component\fP\&.
+.PP
+Ptr is a pointer to the \fBPAPI_option_t\fP structure, which is actually a union of different structures for different options\&. Not all options require or return information in these structures\&. Each requires different values to be set\&. Some options require a component index to be provided\&. These options are handled implicitly through the option structures\&.
+.PP
+\fBNote\fP
+.RS 4
+Some options, such as PAPI_DOMAIN and PAPI_MULTIPLEX are also available as separate entry points in both C and Fortran\&.
+.RE
+.PP
+The reader is encouraged to peruse the ctests code in the PAPI distribution for examples of usage of \fBPAPI_set_opt\fP\&.
+.PP
+\fBPossible values for the PAPI_set_opt option parameter\fP
+.RS 4
+ 
+OPTION          DEFINITION
+PAPI_DEFDOM     Set default counting domain for newly created event sets. Requires a 
+                component index.
+PAPI_DEFGRN     Set default counting granularity. Requires a component index.
+PAPI_DEBUG      Set the PAPI debug state and the debug handler. The debug state is 
+                specified in ptr->debug.level. The debug handler is specified in 
+                ptr->debug.handler. For further information regarding debug states and
+                the behavior of the handler, see PAPI_set_debug.
+PAPI_MULTIPLEX  Enable specified EventSet for multiplexing.
+PAPI_DEF_ITIMER Set the type of itimer used in software multiplexing, overflowing 
+                and profiling.
+PAPI_DEF_MPX_NS Set the sampling time slice in nanoseconds for multiplexing and overflow.
+PAPI_DEF_ITIMER_NS See PAPI_DEF_MPX_NS.
+PAPI_ATTACH     Attach EventSet specified in ptr->attach.eventset to thread or process id
+                specified in in ptr->attach.tid.
+PAPI_CPU_ATTACH Attach EventSet specified in ptr->cpu.eventset to cpu specified in in
+                ptr->cpu.cpu_num.
+PAPI_DETACH     Detach EventSet specified in ptr->attach.eventset from any thread
+                or process id.
+PAPI_DOMAIN     Set domain for EventSet specified in ptr->domain.eventset. 
+                Will error if eventset is not bound to a component.
+PAPI_GRANUL     Set granularity for EventSet specified in ptr->granularity.eventset. 
+                Will error if eventset is not bound to a component.
+PAPI_INHERIT        Enable or disable inheritance for specified EventSet.
+PAPI_DATA_ADDRESS   Set data address range to restrict event counting for EventSet specified
+                in ptr->addr.eventset. Starting and ending addresses are specified in
+                ptr->addr.start and ptr->addr.end, respectively. If exact addresses
+                cannot be instantiated, offsets are returned in ptr->addr.start_off and
+                ptr->addr.end_off. Currently implemented on Itanium only.
+PAPI_INSTR_ADDRESS  Set instruction address range as described above. Itanium only.
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_debug\fP 
+.PP
+\fBPAPI_set_multiplex\fP 
+.PP
+\fBPAPI_set_domain\fP 
+.PP
+\fBPAPI_option_t\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

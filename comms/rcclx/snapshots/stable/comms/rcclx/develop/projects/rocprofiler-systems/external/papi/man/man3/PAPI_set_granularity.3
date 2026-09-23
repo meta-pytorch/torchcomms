@@ -1,0 +1,87 @@
+.TH "PAPI_set_granularity" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_set_granularity \- Set the default counting granularity for eventsets bound to the cpu component\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Prototype:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_set_granularity( int granularity );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fI--\fP granularity one of the following constants as defined in the \fBpapi\&.h\fP header file 
+.PD 0
+.IP "\(bu" 1
+PAPI_GRN_THR -- Count each individual thread 
+.IP "\(bu" 1
+PAPI_GRN_PROC -- Count each individual process 
+.IP "\(bu" 1
+PAPI_GRN_PROCG -- Count each individual process group 
+.IP "\(bu" 1
+PAPI_GRN_SYS -- Count the current CPU 
+.IP "\(bu" 1
+PAPI_GRN_SYS_CPU -- Count all CPUs individually 
+.IP "\(bu" 1
+PAPI_GRN_MIN -- The finest available granularity 
+.IP "\(bu" 1
+PAPI_GRN_MAX -- The coarsest available granularity  
+    
+.PP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&.  
+    
+.RE
+.PP
+\fBPAPI_set_granularity\fP sets the default counting granularity for all new event sets created by \fBPAPI_create_eventset\fP\&. This call implicitly sets the granularity for the cpu component (component 0) and is included to preserve backward compatibility\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int ret;
+
+// Initialize the library
+ret = PAPI_library_init(PAPI_VER_CURRENT);
+if (ret > 0 && ret != PAPI_VER_CURRENT) {
+  fprintf(stderr,"PAPI library version mismatch!\\n");
+  exit(1); 
+}
+if (ret < 0) handle_error(ret);
+
+// Set the default granularity for the cpu component
+ret = PAPI_set_granularity(PAPI_GRN_PROC);
+if (ret != PAPI_OK) handle_error(ret);
+ret = PAPI_create_eventset(&EventSet);
+if (ret != PAPI_OK) handle_error(ret);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_cmp_granularity\fP \fBPAPI_set_domain\fP \fBPAPI_set_opt\fP \fBPAPI_get_opt\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

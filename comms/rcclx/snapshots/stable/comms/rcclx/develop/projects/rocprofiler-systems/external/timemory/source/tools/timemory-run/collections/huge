@@ -1,0 +1,12 @@
+free_huge_pages
+free_hugepage_region
+get_huge_pages
+get_hugepage_region
+gethugepagesize
+gethugepagesizes
+getpagesizes
+hugetlbfs_find_path
+hugetlbfs_find_path_for_size
+hugetlbfs_test_path
+hugetlbfs_unlinked_fd
+hugetlbfs_unlinked_fd_for_size

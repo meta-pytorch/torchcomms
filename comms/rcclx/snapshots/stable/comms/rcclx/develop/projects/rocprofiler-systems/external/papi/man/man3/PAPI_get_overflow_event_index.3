@@ -1,0 +1,64 @@
+.TH "PAPI_get_overflow_event_index" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_overflow_event_index \- converts an overflow vector into an array of indexes to overflowing events  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP an integer handle to a PAPI event set as created by \fBPAPI_create_eventset\fP 
+.br
+\fIoverflow_vector\fP a vector with bits set for each counter that overflowed\&. This vector is passed by the system to the overflow handler routine\&. 
+.br
+\fI*array\fP an array of indexes for events in EventSet\&. No more than *number indexes will be stored into the array\&. 
+.br
+\fI*number\fP On input the variable determines the size of the array\&. On output the variable contains the number of indexes in the array\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&. This could occur if the overflow_vector is empty (zero), if the array or number pointers are NULL, if the value of number is less than one, or if the EventSet is empty\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet specified does not exist\&. 
+.RE
+.PP
+\fBExamples\fP
+.RS 4
+
+.PP
+.nf
+void handler(int EventSet, void *address, long_long overflow_vector, void *context){
+int Events[4], number, i;
+int total = 0, retval;
+printf("Overflow #%d\\n  Handler(%d) Overflow at %p! vector=%#llx\\n",
+total, EventSet, address, overflow_vector);
+total++;
+number = 4;
+retval = PAPI_get_overflow_event_index(EventSet,
+overflow_vector, Events, &number);
+if(retval == PAPI_OK)
+for(i=0; i<number; i++) printf("Event index[%d] = %d", i, Events[i]);}
+
+.fi
+.PP
+ 
+.RE
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_overflow\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

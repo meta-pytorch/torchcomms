@@ -1,0 +1,881 @@
+2025-06-25  Treece Burgess <tburgess@icl.utk.edu>
+
+	* doc/Doxyfile-common, papi.spec, src/Makefile.in, src/configure.in,
+	  src/papi.h: The version numbers for doc/Doxyfile-common, papi.spec,
+	  src/Makefile.in, src/configure.in, and src/papi.h have been
+	  updated.
+
+2025-06-13  Heike Jagode <jagode@icl.utk.edu>
+
+	* RELEASENOTES.txt: Prepared Release Notes for PAPI 7.2.0 release.
+
+2025-06-17  Treece Burgess <tburgess@gilgamesh.nic.uoregon.edu>
+
+	* src/components/rocm/tests/sample_overflow_monitoring.cpp: rocm:
+	  Skip the test sample_overflow_monitoring.cpp.
+
+2025-06-20  Anthony Danalis <adanalis@odyssey.nic.uoregon.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: Ensure env
+	  variables are always respected.
+	* src/components/rocp_sdk/rocp_sdk.c: ROCP_SDK: Improve the file/dir
+	  check to skip "." and "."
+	* src/components/rocp_sdk/rocp_sdk.c: ROCP_SDK: use path instead of
+	  hsa to test for devices.
+
+2025-06-16  Daniel Barry <dbarry@vols.utk.edu>
+
+	* .../rocm/tests/multi_thread_monitoring.cpp: rocm: fix segmentation
+	  fault in component test  On Frontier, the invocation of the exit()
+	  call before pthread_merge() causes a segmentation fault. I remedy
+	  this issue by only calling test_warn(), test_fail(), and
+	  hip_test_fail() after the threads have been merged.  These changes
+	  were tested using ROCm versions 6.1.3, 6.2.0, 6.2.4, 6.3.1, and
+	  6.4.0 with the AMD MI250X architecture on the Frontier
+	  supercomputer.
+
+2025-06-12  Gerald Ragghianti <ragghianti@icl.utk.edu>
+
+	* src/components/rocm/tests/Makefile,
+	  src/components/rocm_smi/tests/Makefile: rocm/rocm_smi: Allow users
+	  to optionally set HIPCC.
+
+2025-06-10  Treece Burgess <tburgess@gilgamesh.nic.uoregon.edu>
+
+	* src/components/cuda/linux-cuda.c, src/components/rocm/rocm.c,
+	  src/components/template/template.c: cuda/rocm components:
+	  Restructure update_native_events to not call realloc on a size of
+	  0.
+
+2025-06-11  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/configure, src/configure.in: configure: Add a warning message
+	  if rocm and rocp_sdk are configured together.
+
+2025-06-04  Treece Burgess <tburgess@odyssey.nic.uoregon.edu>
+
+	* src/components/rapl/linux-rapl.c: RAPL Component: Add support in
+	  RAPL for Intel Emerald Rapids. Note at this time the PAPI team does
+	  not have access to a machine with an Intel Emerald Rapids CPU to
+	  verify this addition.
+
+2025-06-12  Treece Burgess <tburgess@pinwheel>
+
+	* src/components/rocp_sdk/tests/Makefile: rocp_sdk: In the tests
+	  Makefile account for CPU agents on amd64.
+
+2025-06-12  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/intel_gpu/README.md: intel_gpu: update environment
+	  variable name  On a system containing the Intel Arc A770 device, I
+	  am met with the following warning:  ZET_ENABLE_API_TRACING_EXP is
+	  deprecated. Use ZE_ENABLE_TRACING_LAYER instead.  The current
+	  README states to set ZET_ENABLE_API_TRACING_EXP; however,
+	  ZE_ENABLE_TRACING_LAYER is the correct variable to set. Setting
+	  ZE_ENABLE_TRACING_LAYER prevents the above warning.
+
+2025-06-10  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/cuda/linux-cuda.c, src/papi.c, src/papi_internal.c,
+	  src/papi_preset.c, src/papi_vector.c, src/papi_vector.h: framework:
+	  force init per existing policy  PR #284 introduced code that always
+	  forced the initialization of all components. However, this defeats
+	  the purpose of having PAPI_EDELAY_INIT.  The changes in this pull
+	  request only force initialization of components when necessary.
+	  These changes have been tested on systems containing: - NVIDIA
+	  Hopper architecture - AMD Zen3 CPU and AMD MI250X GPU architectures
+	  (Frontier).
+
+2025-06-07  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/intel_gpu/Rules.intel_gpu: intel_gpu: Remove -DDEBUG
+	  from Rules.intel_gpu.
+
+2025-06-06  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/rocm/README.md: rocm: Update the component README.md
+	  to account for new limitations.
+
+2025-06-09  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/sysdetect/sysdetect.c: sysdetect: Add newline
+	  characters to the SUBDBG messages.
+
+2025-06-06  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/rocm/rocm.c: ROCM: PAPI_strerror() cannot be used at
+	  shutdown.
+
+2025-06-05  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/papi.c: PAPI_list_events: Update functions documentation to
+	  match the function protoype.
+
+2025-06-04  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c: ROCP_SDK: Handle case where all
+	  events are removed.
+
+2025-06-03  Treece Burgess <tburgess@odyssey.nic.uoregon.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c: rocp_sdk: Remove assignment of
+	  info->event_code and info->component_index in rocp_sdk as it is
+	  already done in papi_internal.c.
+
+2025-06-02  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/papi_events.csv: PAPI Presets: Update AMD Family 17h to account
+	  for PMCx080 and PMCx081 reporting incorrect IC accesses and misses
+	  respectively. PMCx060 unit mask 0x10 replaces PMCx081, but there is
+	  no suitable replacement for PMCx080 therefore those instances are
+	  removed.
+
+2025-05-29  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/coretemp/linux-coretemp.c,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_utils.c, src/components/cuda/htable.h,
+	  src/components/cuda/linux-cuda.c,
+	  src/components/cuda/papi_cupti_common.c,
+	  src/components/infiniband/linux-infiniband.c,
+	  src/components/net/linux-net.c, src/components/rocm/htable.h,
+	  src/components/rocm_smi/htable.h, src/components/rocm_smi/rocs.c:
+	  Various Components: Use only PAPI memory allocation or C memory
+	  allocation to avoid possible segmentation faults.
+
+2025-06-02  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/rocm_smi/linux-rocm-smi.c,
+	  src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/template/template.c: rocm_smi/rocp_sdk: Restructure
+	  init_private functions to avoid setting initialized equal to 1 even
+	  when initialization fails.
+
+2025-05-29  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/infiniband/linux-infiniband.c,
+	  src/components/nvml/linux-nvml.c,
+	  src/components/sysdetect/sysdetect.c,
+	  src/components/topdown/topdown.c, src/components/topdown/topdown.h:
+	  Sysdetect/Topdown/Infiniband/NVML Components: Properly set .size in
+	  a components vector to avoid possible Error! PAPI_library_init.
+
+2025-05-27  Treece Burgess <tburgess@picard.nic.uoregon.edu>
+
+	* src/components/lmsensors/tests/lmsensors_read.c: lmsensors
+	  component: Remove restriction on the events chosen to be added to
+	  an eventset for the test lmsensors_read.c.
+
+Thu Sep 19 23:41:22 2024 -0700  Stephane Eranian <eranian@gmail.com>
+
+	* src/libpfm4/docs/man3/libpfm_intel_knl.3,
+	  src/libpfm4/docs/man3/libpfm_intel_knm.3,
+	  src/libpfm4/lib/events/amd64_events_fam1ah_zen5.h,
+	  src/libpfm4/lib/pfmlib_arm.c, src/libpfm4/lib/pfmlib_arm_armv6.c,
+	  src/libpfm4/lib/pfmlib_arm_armv7_pmuv1.c,
+	  src/libpfm4/lib/pfmlib_arm_armv8.c,
+	  src/libpfm4/lib/pfmlib_arm_armv8_kunpeng_unc.c,
+	  src/libpfm4/lib/pfmlib_arm_armv8_thunderx2_unc.c,
+	  src/libpfm4/lib/pfmlib_arm_armv9.c,
+	  src/libpfm4/lib/pfmlib_arm_perf_event.c,
+	  src/libpfm4/lib/pfmlib_arm_priv.h, src/libpfm4/lib/pfmlib_common.c,
+	  src/libpfm4/lib/pfmlib_intel_x86_perf_event.c,
+	  src/libpfm4/lib/pfmlib_perf_event.c,
+	  src/libpfm4/lib/pfmlib_perf_event_pmu.c,
+	  src/libpfm4/lib/pfmlib_perf_event_priv.h,
+	  src/libpfm4/lib/pfmlib_priv.h: Update libpfm4 Current with commit
+	  0727e5f5561101d8c635a36e139dd7512616d49e  add another perf_name for
+	  ARM Cortex-A57  PAPI developers with NVIDIA Jetson board and ARM
+	  Cortex-A57 reported that the Linux PMU type is "armv8_pmuv3" Add
+	  that name as a possible name to the list of perf_name for Cortex
+	  A57.   commit 75d2e605f763f3220793c3bb52a6b6effffe4d9c  fix AMD
+	  Zen5 umasks for L2_PREFETCH_MISS_L3 and L2_FILL_RESPONSE_SRC  The
+	  umasks tables were swapped between the two events. Simplify umasks
+	  names for L2_FILL_RESPONSE_SRC   commit
+	  c5587f9931123be6fcb6f8133497d93cab36bdcd  Hotfix ARM CPU detection
+	  due to arch mismatch  This is a hotfix to avoid failure of ARM CPU
+	  detection with the new detection code introduce by commit
+	  15c4cd9f1f4a ("Add ARM hybrid detection").  For some processors,
+	  the architecture revision expected by libpfm4 does not match the
+	  revision exported by the Linux kernel via cpuinfo. For instance,
+	  the Neoverse V2 is a V9 processor, yet cpuinfo reports arch: 8. A
+	  few other ARM processors may exhibit the same error.  The hotfix
+	  simply skips checking the arch revision for now.   commit
+	  b2888ea7995d781d1c59d9c8714487b863774912  Cope with empty
+	  /proc/cpuinfo file  When running inside e.g. lxc containers,
+	  /proc/cpuinfo may be empty, in which case pfmlib_getl() never
+	  allocates a buffer, and the trailing b[i] = '\0' thus becomes
+	  bogus.   commit f09c366b45fba75f1143cb14ec8f22ad96c4c1b1 Merge:
+	  e887d24 8ca3087  Merge /u/mousezhang/perfmon2/ branch master into
+	  master  https://sourceforge.net/p/perfmon2/libpfm4/merge-
+	  requests/32/  commit e887d24a6c4b97b8087e5a284c79f63adaab4fc0  Add
+	  sysfs PMU caching on initialization  In order to accommodate the
+	  growing number of PMUs active and to handle hybrid processors
+	  better, this patch adds sysfs PMU perf_events information caching
+	  to avoid going back to sysfs for each encoded event. The caching
+	  stores the name of PMU, e.g., armv8_pmu3, and the perf_events type
+	  which is then use to build the perf_events encoding.   commit
+	  ff3291fe3f6d2c280ed2e33c42842e5dc08f38df  Remove references to
+	  /sys/devices to remain compatible with upstream  The PMUs will not
+	  appear in /sys/devices for much longer. The proper way to access
+	  PMU directories is via: /sys/bus/event_source/devices/  Where each
+	  PMU has a symlink.  It should be noted that this alternate
+	  directory is not new. It has been there all along. Therefore it is
+	  okay to remove all references to /sys/devices.   commit
+	  a41f8eeedf2c81232e5fa9129928edf9215bf3fc  Add ARM hybrid encoding
+	  support for perf_events  This patch adds the new logic to handle
+	  encoding of the PMU type for the Linux perf_events interface.
+	  Hybrids are a challenge in that it is not possible to simply use
+	  PERF_TYPE_RAW because that does not disambiguate which of the core
+	  PMU models to attach the events to. Instead, the PMU type must be
+	  collected from the Linux sysfs interface. But for that to happen
+	  the library needs to know the PMU instance name assigned by
+	  perf_events for each PMU model detected. On ARM, this is not
+	  straightforward.  The patch extends the meaning the the
+	  pmu->perf_name string to include a comma separated list of names
+	  instead of just one. The library then tries each name until there
+	  is a match in /sys/bus/event_source/devices/. This accommodates
+	  situations where the same PMU model is used in a homogeneous vs.
+	  hybrid config.   commit 15c4cd9f1f4a382ef6753a05a5d4d6c27bd449c5
+	  Add ARM hybrid detection  This patch rewrites the ARM core PMU
+	  detection logic to handle the case of hybrid processors. On ARM,
+	  there can be many different cores in the same SoC. Each potentially
+	  shows up with a different implementer, part, variant. That means
+	  just looking at the first entry in cpuinfo on Linux is not enough
+	  to activate all supported event tables.  The new code parses the
+	  entire cpuinfo once and detects each unique core identifiers. Then,
+	  for each core PMU table, the detection code checks against that
+	  pre-built list of detected core models. That way up to N (currently
+	  8) different core models can be detected.  This new detection code
+	  is provided for Linux. For other operating systems, new code must
+	  be added to get the implementer, part, variant codes for all cores
+	  in the system.  Thanks to Vince Weaver for providing the test cases
+	  to exercise this new code.   Testing: AMD Zen5 Update (Tested on a
+	  AMD Ryzen 9 9950X 16-Core Processor): - papi_avail - runs
+	  successfully and matches master branch - papi_component_avail -
+	  runs successfully and matches master branch - papi_native_avail -
+	  runs successfully and matches master branch - papi_command_line -
+	  runs successfully  I verified that with papi_native_avail we see
+	  the swapped umasks for L2_PREFETCH_MISS_L3 and
+	  L2_FILL_RESPONSE_SRC. Using the swapped umasks with
+	  papi_command_line work as expected.  ARM Updates (Tested on ARM
+	  Cortex A57, ARM Cortex A72, and ARM Neoverse V2): - papi_avail -
+	  runs successfully on all three models and matches master branch -
+	  papi_component_avail - runs successfully on all three models and
+	  matches master branch - papi_native_avail - runs successfully on
+	  all three models and matches master branch - papi_command_line -
+	  runs successfully on all three models  Note that for the ARM
+	  updates, this includes Vince's patch to resolve Issue #364.
+
+2025-05-23  Treece Burgess <tburgess@gilgamesh.nic.uoregon.edu>
+
+	* src/components/lmsensors/linux-lmsensors.c: lmsensors component:
+	  Replace fprintf with SUBDBG.
+
+2025-05-19  Treece Burgess <tburgess@gilgamesh.nic.uoregon.edu>
+
+	* src/components/cuda/linux-cuda.c: Cuda component: Initialize count
+	  variable in function cuda_init_private.
+
+2025-05-23  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: More verbose debug
+	  messages.
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: Do not overwrite
+	  library in PAPI_ROCP_SDK_LIB.
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: Cleanup dlopen()
+	  error handling.
+
+2025-05-21  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_preset.c: framework: proper memory management functions
+	  This makes the usage of memory allocation and freeing functions
+	  consistent to prevent segmentation faults when using preset events.
+	  These changes were tested on the ARM Neoverse-V2 and NVIDIA Hopper
+	  architectures.
+
+2025-05-20  Anthony <adanalis@icl.utk.edu>
+
+	* src/components/rocm_smi/tests/Makefile: ROCM_SMI: Added -pthread
+	  flag in tests/Makefile.
+
+2025-05-20  Treece Burgess <tburgess@tellico-master0.local>
+
+	* src/utils/print_header.c: utils/print_header.c: Move for loop
+	  counter declaration out of for loop header.
+
+2025-05-18  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c: Adding multiple search path
+	  functionality for libhsa
+
+2025-05-16  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/README: Remove perfctr and perfctr_ppc documentation
+	  from src/components README.
+
+2025-05-13  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/utils/papi_avail.c: utils: fix compiler warnings for
+	  papi_avail.c  Revert the structure of printf() statements to those
+	  prior to commit c214d8ca879ba5195d7cae1d8808e807ea2f812c, which
+	  inappropriately modified certain fields. This resulted in the
+	  following compiler warnings from GCC 13.3.0 (architecture: AMD
+	  Ryzen 9 9950X 16-Core CPU and NVIDIA GeForce RTX 5080 GPU):
+	  papi_avail.c: In function ‘main’: papi_avail.c:573:17: warning: too
+	  many arguments for format [-Wformat-extra-args] 573 |
+	  printf( "%-*s%-11s%-8s%-16s\n |Long Description|\n", maxSymLen, |
+	  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ papi_avail.c:687:21:
+	  warning: too many arguments for format [-Wformat-extra-args] 687 |
+	  printf( "%-*s%-11s%-8s%-16s\n |Long Description|\n", maxCompSymLen,
+	  |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+	  These changes have been tested on systems containing the NVIDIA
+	  Hopper and Blackwell architectures.
+	* src/utils/papi_avail.c: utils: convert tabs in papi_avail.c to
+	  spaces  These changes have been tested on systems containing the
+	  NVIDIA Hopper and Blackwell architectures.
+
+2025-05-14  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/papi_memory.c, src/papi_memory.h: HEADERS: __FILE__ is "const
+	  char *", not "char *"
+	* src/components/rocp_sdk/sdk_class.hpp: ROCP_SDK: protect the
+	  included papi headers from C++
+
+2025-05-13  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/tests/HelloWorld.cu,
+	  src/components/cuda/tests/HelloWorld_noCuCtx.cu,
+	  src/components/cuda/tests/concurrent_profiling.cu,
+	  .../cuda/tests/concurrent_profiling_noCuCtx.cu,
+	  src/components/cuda/tests/cudaOpenMP.cu,
+	  src/components/cuda/tests/cudaOpenMP_noCuCtx.cu,
+	  src/components/cuda/tests/pthreads.cu,
+	  src/components/cuda/tests/pthreads_noCuCtx.cu,
+	  src/components/cuda/tests/runtest.sh,
+	  src/components/cuda/tests/simpleMultiGPU.cu,
+	  .../cuda/tests/simpleMultiGPU_noCuCtx.cu,
+	  .../cuda/tests/test_2thr_1gpu_not_allowed.cu,
+	  .../cuda/tests/test_multi_read_and_reset.cu: Cuda component: Update
+	  tests to more gracefully handle multiple pass events.
+
+2025-05-13  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/README.md: ROCP_SDK: Update README with
+	  linking limitations.
+
+2025-05-12  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/appio/appio.c: Appio Component: Add a component
+	  description, as it is missing from papi_component_avail
+	* src/components/rocm/roc_profiler.c: ROCm component: Bug fix for
+	  typo in rocm_verify_no_repeated_qualifiers.
+
+2025-05-10  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/configure, src/configure.in: Update configure.in to have a
+	  default value for --with-debug if not provided by a user.
+
+2025-05-06  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/configure, src/configure.in: Configure: Correctly output the
+	  tests chosen by a user with --with-tests.
+
+2025-05-08  Treece Burgess <tburgess@hopper1.nic.uoregon.edu>
+
+	* src/components/cuda/cupti_dispatch.c: Cuda component: Properly set
+	  return value in cuptid_init.
+
+2024-11-07  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/utils/papi_avail.c: utils: papi_avail extension for component
+	  presets  Enumerate presets for components as well as the CPU.
+	  These changes have been tested on the NVIDIA Grace-Hopper
+	  architecture.
+	* src/utils/papi_avail.c: utils: new modifiers for strictly CPU
+	  presets  Replace modifiers with only those that enumerate the CPU
+	  preset events.  These changes have been tested on the NVIDIA Grace-
+	  Hopper architecture.
+
+2024-10-31  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/utils/papi_avail.c: utils: convert tabs to spaces in
+	  papi_avail.c  This is an aesthetic change to improve the
+	  development process.  These changes have been tested on the NVIDIA
+	  Grace-Hopper architecture.
+	* src/papi.c, src/papi.h, src/papi_common_strings.h,
+	  src/papi_internal.c, src/papi_internal.h, src/papi_preset.c,
+	  src/papi_preset.h: framework: support for component presets
+	  Updates to framework to facilitate preset events defined by native
+	  events of non-perf_event components.  These changes have been
+	  tested on the NVIDIA Hopper architecture.
+	* src/Makefile.inc, src/configure, src/configure.in,
+	  src/papiStdEventDefs.h: config: updates for component presets
+	  Update configure to track both the number of presets per component
+	  and the arrays of presets belonging to each component.  These
+	  changes have been tested on the NVIDIA Hopper architecture.
+
+2024-10-28  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_events.csv: presets: support for NVIDIA Hopper and Ampere
+	* src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_dispatch.h,
+	  src/components/cuda/cupti_profiler.c, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/papi_cuda_presets.h,
+	  src/components/cuda/papi_cuda_std_event_defs.h,
+	  src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h: cuda: updates for presets
+	  Add functions to facilitate CUDA presets.  These changes have been
+	  tested on the NVIDIA Hopper architecture.
+
+2024-10-31  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/papi_vector.c, src/papi_vector.h: framework: fields for
+	  component presets  Create fields in the vector struct for
+	  components to define presets.  These changes have been tested on
+	  the NVIDIA Hopper architecture.
+
+2024-12-20  Dandan Zhang <zhangdandan@loongson.cn>
+
+	* src/linux-context.h, src/linux-timer.c, src/mb.h: Add loongarch64
+	  support
+
+2025-05-06  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c,
+	  src/components/rocm/roc_profiler.c: ROCm component: Add stricter
+	  qualifiers checks.
+	* src/components/cuda/cupti_profiler.c: Cuda component: Add stricter
+	  qualifiers checks.
+
+2025-05-05  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/coretemp/linux-coretemp.c: Coretemp: Enable support
+	  for multiplexing.
+
+2025-05-06  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: Improved handling
+	  of pathological paths.
+
+2025-05-03  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c: Cuda component: Replace int
+	  typing with long long to avoid overflow with measured values.
+
+2025-05-06  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/sdk_class.cpp,
+	  src/components/rocp_sdk/sdk_class.hpp: ROCP_SDK: Force fail if
+	  PAPI_ROCP_SDK_LIB is bogus.
+
+2025-05-05  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c: ROCP_SDK: Suppress ROCprofiler-
+	  SDK warnings.
+	* src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: Enable default
+	  dlopen() paths, and cleaner error handling.
+	* src/components/rocp_sdk/rocp_sdk.c: ROCP_SDK: Move dlclose() to
+	  component finalization.  This avoid a conflict between the two
+	  components rocp_sdk and rocm, if both components are configured in.
+
+2025-04-29  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/rocp_sdk/sdk_class.cpp: ROCP_SDK: call
+	  configure_device_counting_service as early as possible.  When
+	  applications are linked against libpapi.a rocprofiler_configure()
+	  is not called on-load, so we have to explicitly initialize
+	  everything. This PR moves some of the necessary steps earlier, so
+	  that everything is initialized after PAPI_library_init().
+
+2025-04-24  Treece Burgess <tburgess@icl.utk.edu>
+
+	* .../cuda/tests/test_multipass_event_fail.cu: Cuda component: Update
+	  the error checks in the test test_multipass_event_fail to PASS even
+	  when events that do not require multiple passes are provided.
+
+2025-04-30  Treece Burgess <tburgess@voltar.nic.uoregon.edu>
+
+	* src/components/cuda/cupti_config.h,
+	  src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_dispatch.h,
+	  src/components/cuda/cupti_events.c,
+	  src/components/cuda/cupti_profiler.c, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h, src/papi.h,
+	  src/papi_internal.c, src/utils/papi_component_avail.c: Cuda
+	  component: Add functionality for a partially disabled Cuda
+	  component for CCs >= 7.0 (Perfworks API).
+
+2025-04-28  Dong Jun Woun <dwoun@histamine0.cluster>
+
+	* src/components/rocm_smi/rocs.c: rocm_smi: Add proper fan_speed
+	  access, control, and return
+
+2025-04-29  Treece Burgess <tburgess@athena.nic.uoregon.edu>
+
+	* src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h,
+	  src/components/nvml/Rules.nvml, src/components/nvml/linux-nvml.c:
+	  Cuda/NVML Components: Check for variation of shared objects e.g.
+	  libcudart.so, libcudart.so.1 or libcudart (catch all).
+
+2025-04-28  Dong Jun Woun <dwoun@histamine0.cluster>
+
+	* .../rocm_smi/tests/rocm_smi_writeTests.cpp: rocm_smi: Update
+	  read/write test
+
+2025-04-29  Treece-Burgess <burgesstreece@gmail.com>
+
+	* src/components/perf_event/perf_event.c: perf_event: Disable
+	  component if perf_event_paranoid is set to 4 in
+	  /proc/sys/kernel/perf_event_paranoid.
+	* src/components/cuda/Rules.cuda,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_utils.h,
+	  src/components/cuda/lcuda_debug.h, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/papi_cupti_common.c,
+	  src/components/cuda/papi_cupti_common.h,
+	  src/components/cuda/tests/concurrent_profiling.cu,
+	  .../cuda/tests/concurrent_profiling_noCuCtx.cu: Cuda component:
+	  Refactor to support the MetricsEvaluator API (Cuda Versions 11.3
+	  and greater).
+
+2025-04-23  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/Rules.rocp_sdk,
+	  src/components/rocp_sdk/rocp_sdk.c,
+	  src/components/rocp_sdk/tests/Makefile,
+	  src/components/rocp_sdk/tests/advanced.c,
+	  src/components/rocp_sdk/tests/kernel.cpp,
+	  src/components/rocp_sdk/tests/simple.c,
+	  src/components/rocp_sdk/tests/simple_sampling.c,
+	  src/components/rocp_sdk/tests/two_eventsets.c: ROCP_SDK: Accomodate
+	  machines with fewer AMD GPUs.
+
+2025-02-26  Yoshihiro Furudera <fj5100bi@fujitsu.com>
+
+	* src/papi_events.csv: Remove some preset events for FUJITSU-MONAKA
+	  The following preset events of FUJITSU-MONAKA are not counted
+	  properly:  PAPI_L3_DCM PAPI_L3_TCM PAPI_PRF_DM PAPI_L3_DCH
+	  PAPI_L3_TCH  Specifically, the native event that is the source of
+	  the above preset event is counted inaccurately. So I remove these
+	  events in papi_events.csv.
+
+2024-09-19  Akio Kakuno <fj3333bs@aa.jp.fujitsu.com>
+
+	* src/components/sysdetect/arm_cpu_utils.c, src/papi_events.csv:
+	  papi_events.csv: Add preset events support for FUJITSU-MONAKA  This
+	  commit adds preset events support for FUJITSU-MONAKA. Also update
+	  arm_cpu_util.c to show the processor name in papi_hardware_avail
+	  command.
+
+2025-04-20  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/README.md,
+	  src/components/topdown/Rules.topdown,
+	  src/components/topdown/topdown.c, src/components/topdown/topdown.h:
+	  topdown: Use librseq to protect rdpmc on het cpus  On Intel's
+	  heterogeneous multicore processors such as Raptor Lake, the
+	  PERF_METRICS MSR is only available on the performance cores
+	  (p-cores). If the rdpmc instruction is executed attempting to
+	  access the MSR while the process is on an efficient core (e-core),
+	  a segmentation fault occurs.  Previously, the topdown component has
+	  used a simple check before every execution of the rdpmc instruction
+	  to ensure the core the program is bound to is a p-core. However,
+	  this can fail if the program is moved to another core between the
+	  check and the execution of rdpmc. While rare, a worst-case scenario
+	  test that repeatedly moves a program which is using the topdown
+	  component from p-core to e-core at a random time saw 338
+	  segmentation faults out of 1 million affinity switches (a 0.0338%
+	  error rate). This is a non-zero number of segmentation faults, and
+	  we can do better.  Use librseq to protect the rdpmc instruction
+	  with a restartable sequence (rseq). When the process is preempted
+	  by an affinity change, the sequence immediately aborts and can be
+	  restarted. By keeping the check that the process is on a p-core and
+	  the rdpmc instruction itself within the critical section of the
+	  rseq, it is guaranteed that the rdpmc instruction will never be
+	  executed on an invalid core. The same test described in the
+	  previous paragraph sees 0 segmentation faults.
+
+2025-04-22  Dong Jun Woun <dwoun@picard.nic.uoregon.edu>
+
+	* src/components/cuda/cupti_profiler.c: cuda: Adding stat|device case
+	  to code_to_info
+
+2025-04-22  Anthony <adanalis@icl.utk.edu>
+
+	* papi.spec: .SPEC: Logic for setting rocm_smi env. variables.
+
+2025-04-18  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c,
+	  src/components/rocm/roc_profiler.c, src/components/rocm_smi/rocs.c,
+	  src/components/template/vendor_profiler_v1.c: components: improper
+	  usage of PAPI_END macro  PAPI_END is a macro defined in
+	  papiStdEventDefs.h to denote the end of the list of preset macros.
+	  However, it was being used as an error code in various components
+	  in cases unrelated to the number of presets.  This commit changes
+	  this to a more appropriate error code: PAPI_ENOEVNT.  These changes
+	  have been tested with ROCm 6.3.1 on Frontier.
+
+2024-08-21  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/rocm/roc_common.c, src/components/rocm/rocm.c: rocm:
+	  add reason for disabled component  Previously, in the absence of a
+	  ROCm device, the rocm component did not set the string containing
+	  the reason that the component was disabled.  These changes have
+	  been tested with ROCm 6.3.1 on Frontier and with ROCm 6.3.2 on a
+	  system with no ROCm devices.
+
+2025-04-18  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/components/rocm_smi/tests/Makefile: rocm_smi: updates to
+	  Makefile  The rocm_smi component tests were not getting compiled
+	  during the build process. These updates point to the proper
+	  location of 'hipcc' and automatically builds the component tests.
+	  The 'square' test was removed due to the source file missing.
+	  These changes have been tested with ROCm 6.3.1 on Frontier.
+
+2025-04-17  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c: For the stats qualifier check
+	  for excess characters
+
+2025-01-08  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/cuda/cupti_profiler.c,
+	  src/components/rocm/roc_profiler.c: Add a check to parse event
+	  qualifiers to make sure no excess characters are appended.
+
+2024-12-13  Treece Burgess <tburgess@icl.utk.edu>
+
+	* src/components/rapl/linux-rapl.c: Add support for Intel Comet Lake
+	  S/H in RAPL component.
+
+2025-04-16  voidbert <humbertogilgomes@protonmail.com>
+
+	* src/components/perf_event_uncore/perf_event_uncore.c:
+	  perf_event_uncore: fix compilation when CAP_PERFMON is missing
+
+2024-11-04  Daniel Barry <dbarry@vols.utk.edu>
+
+	* src/counter_analysis_toolkit/Makefile,
+	  src/counter_analysis_toolkit/cat_arch.h,
+	  src/counter_analysis_toolkit/vec.c,
+	  src/counter_analysis_toolkit/vec_fma_dp.c,
+	  src/counter_analysis_toolkit/vec_fma_hp.c,
+	  src/counter_analysis_toolkit/vec_fma_sp.c,
+	  src/counter_analysis_toolkit/vec_nonfma_dp.c,
+	  src/counter_analysis_toolkit/vec_nonfma_hp.c,
+	  src/counter_analysis_toolkit/vec_nonfma_sp.c,
+	  src/counter_analysis_toolkit/vec_scalar_verify.c,
+	  src/counter_analysis_toolkit/vec_scalar_verify.h: cat: updates in
+	  vector-FLOPs benchmarks  Include kernels that perform scalar
+	  floating-point operations.  These changes have been tested on the
+	  Intel Sapphire Rapids and IBM POWER10 architectures.
+
+2025-01-22  William Cohen <wcohen@redhat.com>
+
+	* src/high-level/papi_hl.c, src/papi_vector.c: Eliminate conflicting
+	  type errors generated by GCC15  Recent PAPI compiles on Fedora
+	  rawhide (F42) fail because of "conflicting types" errors produced
+	  by GCC15.  Proper arguments types have been added to
+	  _internal_hl_read_user_events function declaration in papi_hl.c and
+	  the typecasting in papi_vector.c.
+
+2024-11-09  Dong Jun Woun <dwoun@hopper1.nic.uoregon.edu>
+
+	* src/components/cuda/README_internal.md,
+	  src/components/cuda/cupti_dispatch.c,
+	  src/components/cuda/cupti_dispatch.h,
+	  src/components/cuda/cupti_events.c,
+	  src/components/cuda/cupti_events.h,
+	  src/components/cuda/cupti_profiler.c,
+	  src/components/cuda/cupti_profiler.h,
+	  src/components/cuda/cupti_utils.c,
+	  src/components/cuda/cupti_utils.h, src/components/cuda/linux-
+	  cuda.c, src/components/cuda/tests/runtest.sh: Cuda: Statistic
+	  Qualifier
+
+2024-01-18  Evans, Richard Todd <richard1.evans@intel.com>
+
+	* src/components/rapl/linux-rapl.c: added Sapphire Rapids (Model 143)
+	  support to RAPL component
+
+2024-09-25  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/papi_events.csv: papi_events.csv: Added preset events for the
+	  Arm Cortex A72 processor.  Because the A72 has the same events as
+	  the A57, this addition is a one-liner. This work is based on a
+	  patch by Stack Exchange user Bambo Wu, published in May 2021:
+	  https://raspberrypi.stackexchange.com/a/112396
+
+2025-02-21  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/papi_events.csv: papi_events.csv: Second pass at arm cortex-a76
+	  events  The previous commit adding preset events for the arm cortex
+	  a76 lacked important preset events such as L3 cache misses. Add
+	  missing events based on arm documentation and validation tests.
+	  All tests passing or warning on Raspberry Pi 5.
+
+2024-10-11  Willow Cunningham <willow.e.cunningham@maine.edu>
+
+	* src/validation_tests/Makefile.recipies,
+	  src/validation_tests/load_store_testcode.c,
+	  src/validation_tests/papi_ld_ins.c,
+	  src/validation_tests/papi_sr_ins.c,
+	  src/validation_tests/testcode.h: validation_tests: Add load/store
+	  ARM assembly testcode  The previous load/store validation tests
+	  were being optimized by the compiler in a way that caused the tests
+	  to mispredict the amount of memory instructions that are generated.
+	  This made it appear like the counters were incorrect, when it was
+	  really the test being inaccurate.  To fix this, add assembly
+	  testcode for ARM to eliminate the problem of compiler
+	  optimizations. When load/store testcode is unavailable for the
+	  current platform, default back to the original matrix
+	  multiplication test.
+	* src/papi_events.csv: papi_events: Add preset events for the Arm
+	  Cortex-A76
+
+2025-01-17  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/topdown.c: topdown: simplified metrics
+	  calculation  Previously, the topdown component calculated metrics
+	  by taking the difference of the metrics before and the metrics
+	  after the calculated code block using Equation 1:  M% = (Mb*Sb/255
+	  - Ma*Sa/255) / (Sb - Sa) * 100                   (1)  where Mx are
+	  the raw bytes of the metric before and after the calipered code
+	  block and Sx are the slots. However, if Sa = 0 this simplifies to
+	  M% = Mb/255 * 100
+	  (2)  Therefore it is sufficient to simply reset the PERF_METRICS
+	  MSR and SLOTS during PAPI_start() and then use Equation 2 in
+	  PAPI_stop, reducing the number of dangerous rdpmc calls, reducing
+	  overhead, and simplifying the code.
+
+2025-01-07  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/topdown.c: topdown: relocated core type
+	  checks  To prevent programs using the topdown component on
+	  heterogeneous processors that only supply the PERF_METRICS MSR on
+	  some of their cores from segfaulting due to trying to read the MSR
+	  after being moved to an unsupported core type, the topdown
+	  component periodically checks it is on a supported core and exits
+	  if not.  Previously, this check occured at the start of PAPI_start
+	  and PAPI_stop. After writing a script that starts a program being
+	  calipered with the topdown component and moves it to an unsupported
+	  core after a random amount of time, for N=100,000 tests the
+	  heterogeneous checks failed to prevent a segmentation fault 0.08%
+	  of the time. This patch moves the heterogeneous checks to occur
+	  only directly before the rdpmc calls, resulting in cleaner code and
+	  a reduced segfault prevention failure rate of 0.064%.  While it is
+	  frustrating that the failure rate is non-zero, since there appears
+	  to be no way to tell a process to ignore changes to its affinity, I
+	  believe there to be no perfect solution at this time.
+
+2024-12-17  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/topdown.c: topdown: stop including
+	  x86intrin.h  Previously, the x86intrin.h header file had been
+	  included in order to provide definitions for _rdpmc(). However,
+	  this has caused the github actions testing compilation of the
+	  component on ARM systems to fail. Therefore, remove the include and
+	  add a manual definition for _rdpmc() taken from the perf_event
+	  component.
+
+2024-12-11  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/README.md, src/components/topdown/topdown.c:
+	  topdown: Prevent segfault on heterogeneous CPUs  All of Intel's
+	  heterogeneous CPUs that support the PERF_METRICS MSR only support
+	  it for their performance (p-core) cores. This means that if a
+	  program that is being measured using the topdown component in PAPI
+	  happens to be rescheduled to a e-core during its runtime, PAPI will
+	  segfault.  To fix this, add a check in _topdown_start() and
+	  _topdown_stop() to exit gracefully if the core affinity of the
+	  process has changed to an unsupported core type.
+
+2024-12-04  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/topdown.c: topdown: add arch support based
+	  on perfmon-intel  While the offical Software Developer Manual only
+	  lists the availability of the PERF_METRICS MSR for three
+	  architectures, we can use the 'perfmon' repository maintained by
+	  Intel to discover what architectures support the MSR (repo here:
+	  https://github.com/intel/perfmon).  Architectures that the
+	  repository demonstrates support the events
+	  'PERF_METRICS.BACKEND_BOUND', 'PERF_METRICS.FRONTEND_BOUND', etc.
+	  must support the topdown level 1 metrics of the PERF_METRICS MSR.
+	  Similarly, the presence of the events 'PERF_METRICS.FETCH_LATENCY',
+	  'PERF_METRICS.MEMORY_BOUND', etc. demonstrates support for topdown
+	  L2 metrics in the PERF_METRICS MSR. By cross-referencing the
+	  architecture names in the perfmon repository with their
+	  DisplayFamily/DisplayModel values in Table 2-1 of volume 4 of the
+	  IA32 SDM, we can add support for the following architectures:  -
+	  Rocket Lake - Ice Lake (icl & icx) - Tiger Lake - Sapphire Rapids -
+	  Meteor Lake (redwood cove p-core only) - Alder Lake (golden cove
+	  p-core only) - Granite Rapids - Everald Rapids  None of these
+	  additional architectures have been tested with the topdown
+	  component yet. While Arrow Lake is shown to support L1 & L2 metrics
+	  in the prefmon repository, its FamilyModel is not yet available in
+	  the IA32 SDM so it has not been added.
+
+2024-11-11  Willow Cunningham <willow.e.cunningham@gmail.com>
+
+	* src/components/topdown/README.md,
+	  src/components/topdown/Rules.topdown,
+	  src/components/topdown/tests/Makefile,
+	  src/components/topdown/tests/topdown_L1.c,
+	  src/components/topdown/tests/topdown_L2.c,
+	  src/components/topdown/tests/topdown_basic.c,
+	  src/components/topdown/topdown.c, src/components/topdown/topdown.h:
+	  topdown: Created a component for interfacing with Intel's
+	  PERF_METRICS MSR  Add a component that collects Intel's topdown
+	  metrics from the PERF_METRICS MSR and automatically converts the
+	  raw metric values to user-consumable percentages.  The intent of
+	  this component is to provide an intuitive interface for accessing
+	  topdown metrics on the supported processors.  Tested on a
+	  RaptorLake-S/HX machine (family/model/stepping 0x6/0xb7/0x1). To
+	  add other supported architectures the switch statment in
+	  _topdown_init_component() should be populated for the
+	  architecture's model number, whether it supports level 2 topdown
+	  metrics, and in the case of a heterogeneous processor what core
+	  type it must be run on.
+
+2024-06-28  voidbert <50591320+voidbert@users.noreply.github.com>
+
+	* .../perf_event_uncore/perf_event_uncore.c: perf_event_uncore:
+	  consider capabilities for permissions
+
+2025-02-27  Dong Jun Woun <dwoun@odyssey.nic.uoregon.edu>
+
+	* src/components/rocm_smi/README.md: rocm_smi: Update readme to note
+	  two cases of root path
+
+2025-03-27  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* src/configure, src/configure.in: Include the comp_tests in the list
+	  of tests that are enabled by the '--with-tests' configure option
+
+2025-03-20  Treece Burgess <tburgess@icl.utk.edu>
+
+	* .github/workflows/papi_framework_workflow.yml: Using paths-ignore
+	  instead of paths for framework workflow
+
+2025-03-18  Treece Burgess <tburgess@icl.utk.edu>
+
+	* .github/workflows/ci_papi_framework.sh,
+	  .github/workflows/papi_framework_workflow.yml: Remove infiniband
+	  from the papi_components_comprehensive CI test
+
+2025-03-20  Anthony Danalis <adanalis@icl.utk.edu>
+
+	* src/components/rocp_sdk/tests/Makefile: ROCP_SDK: Change
+	  tests/Makefile for spack builds.
+
+2025-03-05  G-Ragghianti <ragghianti@icl.utk.edu>
+
+	* src/components/rocm_smi/Rules.rocm_smi: Adding location of rocm_smi
+	  header files for newer versions of rocm

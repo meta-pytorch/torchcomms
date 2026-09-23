@@ -1,0 +1,33 @@
+.TH "PAPI_mpx_info_t" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_mpx_info_t
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "int \fBtimer_sig\fP"
+.br
+.ti -1c
+.RI "int \fBtimer_num\fP"
+.br
+.ti -1c
+.RI "int \fBtimer_us\fP"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "int PAPI_mpx_info_t::timer_num"
+Number of the itimer or POSIX 1 timer used by the multiplex timer: PAPI_ITIMER 
+.SS "int PAPI_mpx_info_t::timer_sig"
+Signal number used by the multiplex timer, 0 if not: PAPI_SIGNAL 
+.SS "int PAPI_mpx_info_t::timer_us"
+uS between switching of sets: PAPI_MPX_DEF_US 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

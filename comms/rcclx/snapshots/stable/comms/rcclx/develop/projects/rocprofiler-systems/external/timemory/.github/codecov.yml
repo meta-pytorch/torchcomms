@@ -1,0 +1,50 @@
+codecov:
+  require_ci_to_pass: no
+  notify:
+    after_n_builds: 2
+    wait_for_ci: no
+
+coverage:
+  precision: 1
+  round: up
+  range: "70...100"
+  status:
+    patch:
+      default:
+        base: auto
+        target: auto
+        threshold: 10%
+        only_pulls: true
+        if_ci_failed: error
+        informational: true
+    project:
+      default:
+        base: auto
+        target: auto
+        threshold: 1%
+        only_pulls: false
+        if_ci_failed: error
+        informational: true
+
+ignore:
+  - "external"
+  - "examples"
+  - "source/tests"
+  - "source/tools"
+  - "source/python"
+  - "source/timemory/tpls"
+  - "source/timemory/**/signals.hpp"
+  - "source/timemory/utility/popen.cpp"
+
+parsers:
+  gcov:
+    branch_detection:
+      conditional: yes
+      loop: yes
+      method: no
+      macro: no
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: no

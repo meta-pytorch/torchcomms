@@ -1,0 +1,20 @@
+set_property(GLOBAL PROPERTY COVERAGE_FILES "")
+function(gotcha_add_test)
+  add_test(${ARGV})
+  set_tests_properties(${ARGV0} PROPERTIES
+    ENVIRONMENT "LLVM_PROFILE_FILE=${ARGV0}.profraw")
+  get_property(OLD_CF GLOBAL PROPERTY COVERAGE_FILES)
+  set(NEW_CF ${OLD_CF} ${CMAKE_CURRENT_BINARY_DIR}/${ARGV0}.profraw)
+  set_property(GLOBAL PROPERTY COVERAGE_FILES ${NEW_CF})
+endfunction()
+
+macro(environment_add target type property)
+  get_property(local_env ${type} ${target} PROPERTY ENVIRONMENT)
+  set_property(${type} ${target} PROPERTY ENVIRONMENT ${local_env} ${property})
+endmacro()
+
+macro(setup_coverage_target)
+  get_property(COVERAGE_FILE_LIST GLOBAL PROPERTY COVERAGE_FILES)
+  add_custom_command(OUTPUT default.profdata COMMAND llvm-profdata merge -sparse ${COVERAGE_FILE_LIST} -o default.profdata VERBATIM)
+  add_custom_target(merged_coverage DEPENDS default.profdata)
+endmacro()

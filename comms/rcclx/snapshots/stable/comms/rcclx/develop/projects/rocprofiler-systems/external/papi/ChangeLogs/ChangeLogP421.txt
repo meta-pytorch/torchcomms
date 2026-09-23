@@ -1,0 +1,1103 @@
+2012-02-13
+
+	* src/components/net/linux-net.c: Repairing more coverity warnings.
+
+2012-02-11
+
+	* src/windows-common.c: Missed an instance of CPUs yesterday.
+
+	* src/: papi_internal.c, threads.c: This changes fixes two race
+	  conditions that are probably the cause of the pthrtough
+	  double-free error.
+
+	  When freeing a thread, we remove and free all eventsets belonging
+	  to that thread.  This could race with the thread itself removing
+	  the evenset, causing some ESI fields to be freed twice.
+
+	  The problem was found by using the Valgrind 3.8 Helgrind tool
+
+	    valgrind --tool=helgrind --free-is-write=yes ctests/pthrtough
+
+	  In order for Helgrind to work, I had to temporarily modify PAPI
+	  to use POSIX pthread mutexes for locking.  Is there any reason we
+	  don't use these all the time?
+
+2012-02-10
+
+	* src/utils/: avail.c, component.c, event_chooser.c,
+	  native_avail.c: ix one more case of "CPU's" in the print header
+	  code.
+
+	  Also remove the extraneous	The following correspond to fields
+	  in the PAPI_event_info_t structure.  message
+
+	* src/: testlib/papi_test.h, testlib/test_utils.c,
+	  ctests/all_native_events.c, ctests/calibrate.c,
+	  ctests/code2name.c, ctests/hwinfo.c: Fix one more case of "CPU's"
+	  in the print header code.
+
+	  Also remove the extraneous	The following correspond to fields
+	  in the PAPI_event_info_t structure.  message
+
+	* src/buildbot_configure_with_components.sh: take infiniband out of
+	  the buildbot test.
+
+	* src/: x86_cache_info.c, components/coretemp/linux-coretemp.c,
+	  components/lmsensors/linux-lmsensors.c,
+	  components/lustre/linux-lustre.c, components/net/linux-net.c,
+	  utils/event_chooser.c: Fix coverity errors reported by Will
+	  Cohen.
+
+	* src/: aix.c, any-proc-null.c, linux-common.c, papi.c, papi.h,
+	  papivi.h, solaris-niagara2.c, solaris-ultra.c,
+	  ctests/clockres_pthreads.c: Address Redhat bug 785975.  The
+	  plural of CPU appears to be CPUs
+
+	* src/Makefile.inc: Patch to cleanup dependencies, allowing for
+	  parallel makes.  Patch due to Will Cohen from redhat
+
+2012-02-09
+
+	* src/buildbot_configure_with_components.sh: Add infiniband and mx
+	  component to buildbot component tests.
+
+	* src/components/net/tests/: net_values_by_code.c,
+	  net_values_by_name.c: Apply patch suggested by Will Cohen to
+	  check for system return values.
+
+	* src/components/lmsensors/linux-lmsensors.h: Added missing string
+	  header
+
+2012-02-08
+
+	* man/... : update man pages one more time for 4.2.1
+	  release
+
+	* release_procedure.txt: Make sure generated html has papi group
+	  id.
+
+2012-02-07
+
+	* src/multiplex.c: Fix the @file matching multiple files warning.
+
+	* src/components/README: Cleanup doxygen errors.
+
+	* doc/Doxyfile-html: Typo introduced by the last commit.
+
+	* doc/Doxyfile-html: Exclude linux-bgp.c from doxygen.
+
+	* doc/Doxyfile-html: Make sure the component README file gets
+	  included in doxygen.
+
+	* src/components/coretemp_freebsd/coretemp_freebsd.c: Cleanup
+	  doxygen warnings in freebsd coretemp component.
+
+	* src/papi.h: Cleanup some doxygen warnings related to the
+	  groupings.
+
+	* src/components/example/example.c: fix doxygen warning in the
+	  example component
+
+	* doc/Doxyfile-html: Remove some cruft from doxygen config file.
+
+	  This addresses the warning about dot not found at /sw/bin/dot .
+
+	* src/components/: infiniband/linux-infiniband.c,
+	  infiniband/linux-infiniband.h, cuda/linux-cuda.c,
+	  cuda/linux-cuda.h: Cleaned up some doxygen issues
+
+	* src/components/lmsensors/linux-lmsensors.c: Removed long
+	  forgotten debug outputs
+
+	* src/papi_libpfm4_events.c: Fix minor doxygen typos.
+
+	* src/components/vmware/vmware.c: Add params for doxygen
+
+	* man/... : update man pages
+
+2012-02-06
+
+	* doc/Doxyfile-man1: Fix a typo in a doxygen config file.
+
+2012-02-03
+
+	* release_procedure.txt, doc/Doxyfile, doc/Doxyfile-everything,
+	  doc/Doxyfile-html, doc/Doxyfile.utils, doc/Doxyfile-man1,
+	  doc/Doxyfile-man3, doc/Makefile, doc/doxygen_procedure.txt:
+	  Rework the doxygen configuration files.
+
+	* RELEASENOTES.txt: Update for the impending release.
+
+	* ChangeLogP421.txt, RELEASENOTES.txt: Updates for the impending
+	  release.
+
+2012-02-02
+
+	* src/: papi.c, papi.h: Minor tweaks for doxygen errors
+
+2012-02-01
+
+	* src/components/lmsensors/: Rules.lmsensors, configure.in: Fixed
+	  configure error message and rules link error for shared object
+	  linking. Thanks Will Cohen.
+
+	* src/components/appio/Rules.appio: Correct pathing
+
+	* src/ctests/api.c: One minor tiny fix to check for PAPI_ENOEVNT
+	  when testing PAPI_flops. If PAPI_FP_OPS does not exist on the
+	  processor (like many of em), then this tests fails.
+
+2012-01-31
+
+	* src/ctests/multiattach.c: Increase acceptance criteria for
+	  cycles.
+
+	* src/Makefile.in, src/configure, src/configure.in, src/papi.h,
+	  doc/Doxyfile, doc/Doxyfile-everything, doc/Doxyfile.utils,
+	  papi.spec: Update version number to 4.2.1 in preparation for
+	  release.
+
+	* src/ctests/prof_utils.c: Correct a warning on 32bit builds about
+	  casting caddr_t to (long long)
+
+	  Specifically: prof_utils.c:234: warning: cast from pointer to
+	  integer of different size prof_utils.c:248: warning: cast from
+	  pointer to integer of different size prof_utils.c:262: warning:
+	  cast from pointer to integer of different size
+
+	  We first cast to unsigned long and then on to long long.  ( This
+	  maybe overkill, but its for a printf format string )
+
+2012-01-30
+
+	* release_procedure.txt: Add the correct path for doxygen on ICL
+	  machines.
+
+	* src/papi_events.csv: Modify Intel Sandybridge PAPI_FP_OPS and
+	  PAPI_FP_INS events to not count x87 fp instructions.
+
+	  The problem is that the current predefines were made by adding 5
+	  events.  With the NMI watchdog stealing an event and/or
+	  hyperthreading reducing the numbr of available counters by half,
+	  we just couldn't fit.
+
+	  This now raises the potential for people using x87-compiled
+	  floating point on Sandybridge and getting 0 FP_OPS.  This is only
+	  likely if running a 32-bit kernel and *not* compiling your code
+	  with -msse.
+
+	  A long-term solution might be trying to find a better set of FP
+	  predefines for sandybridge.
+
+	* src/components/: lustre/linux-lustre.c, mx/linux-mx.c: Some
+	  really minor cleanups to the lustre and mx components.
+
+2012-01-28
+
+	* src/components/example/: example.c, tests/example_basic.c: Update
+	  example component
+
+	  Cleans up code, adds some more documentation, adds counter write
+	  support.
+
+2012-01-27
+
+	* src/papi_user_events.c: Minor cleanups for user events.
+
+	* src/libpfm4/: README, include/perfmon/pfmlib.h, lib/Makefile,
+	  lib/pfmlib_amd64.c, lib/pfmlib_common.c, lib/pfmlib_priv.h: Fix
+	  "conflicts" in git import of libpfm4.
+
+	* src/libpfm4/lib/: pfmlib_amd64_fam11h.c,
+	  events/amd64_events_fam11h.h: Initial revision
+
+2012-01-26
+
+	* src/papi_fwrappers.c: Escape the include directives in the
+	  documentation.
+
+	  (Cleans up doxygen )
+
+	* src/components/README: Adding vmware to component README
+
+	* src/components/vmware/: Makefile.vmware.in,
+	  PAPI-VMwareComponentDocument.pdf, Rules.vmware,
+	  VMwareComponentDocument.txt, configure, configure.in, vmware.c,
+	  vmware.h: merge vmware branch to head
+
+	* src/perf_events.c: Set fast_counter_read back to 0 on x86/x86_64
+	  perf_events, as currently rdpmc counter access is not supported.
+
+	  There are patches floating around that enable this (although
+	  performance is still a long way from perfctr) but they will  not
+	  likely be merged for a while now, and the perf_events substrate
+	  will require a lot of extra code to support it once it does make
+	  it into a shipping kernel.
+
+	* src/buildbot_configure_with_components.sh: Remove acpi from the
+	  buildbot configure script.
+
+2012-01-25
+
+	* src/components/mx/: Makefile.mx.in, Rules.mx, configure,
+	  configure.in, linux-mx.c, linux-mx.h, tests/Makefile,
+	  tests/mx_basic.c, tests/mx_elapsed.c, utils/fake_mx_counters.c,
+	  utils/sample_output: Re-write of the MX component
+
+	  + Add tests + Modernize code + Remove the need to run ./configure
+	  in the mx directory + Add fake mx_counters program that lets you
+	  test component   on machine without myrinet installed
+
+	* src/components/: README, acpi/Rules.acpi,
+	  acpi/linux-acpi-memory.c, acpi/linux-acpi.c, acpi/linux-acpi.h:
+	  Remove the ACPI component.
+
+	  It was one of the oldest components and needed a lot of cleanup
+	  work, and it turns out that the main useful event it provided
+	  (temperature) isn't available on modern machines/kernels
+	  (coretemp should be used instead).
+
+2012-01-23
+
+	* src/perf_events.c: Restored Phil's changes that I inadvertently
+	  clobbered with my last commit :(
+
+	* src/perf_events.c: Remove a warning about an uninitialized
+	  variable.
+
+	* src/utils/: component.c, event_info.c, native_avail.c: Update the
+	  Doxygen comments on these utilities to have the command line
+	  options listed in a list like the other utils.
+
+	* src/perf_events.c: More improvements to the read path for
+	  multiplexed counters. Now the case for bad kernel behavior is
+	  built in, and is not required with a #define.
+
+	  Basically, there are situations when either enabled or running is
+	  zero but not both. This could result in a divide by 0 in the
+	  worst case, as was observed by Tushar Mohan in papiex. You could
+	  trigger it by doing a read immediately after doing a start with
+	  perf events and use a FORMAT_SCALE argument.
+
+	  Now the logic goes, assuming mpxing.
+
+	  1) if (running=enabled)	  return raw counter 2) if (running
+	  && enabled)	scale counter by ratio 3) else	warn in debug mode
+	      return raw counter
+
+	  Apparently we need a test case that does a read immediately after
+	  a start.  That's a hole.
+
+	  Tested on brutus, core2 2.6.36
+
+	  Here's the original report.  ------------------- Model string and
+	  code	       : Intel(R) Pentium(R) M processor 1600MHz (9) Linux
+	  thinkpad 2.6.38-02063808-generic #201106040910 SMP Sat Jun 4
+	  10:51:30 UTC 2011 i686 GNU/Linux PAPI Version: 4.2.0.0
+
+	  I think I ran into a bug similar to what we ran with MIPS.
+
+	  With the latest PAPI (from CVS), on an x86 (32-bit machine), when
+	  using papiex with multiplex with anything more than two events, I
+	  get a floating point exception in PAPI during the PAPI_read call.
+	  On enabling debugging in the substrate, I think the problem is
+	  the same (namely a division by zero, because some event had a
+	  zero time of running):
+
+	  libpapiex debug: 24625,0x0,papiex_thread_init_routine Starting
+	  counters with PAPI_start
+	  SUBSTRATE:perf_events.c:pe_enable_counters:953:24625
+	  ioctl(enable): ctx: 0x96a4bc8, fd: 3
+	  SUBSTRATE:perf_events.c:pe_enable_counters:953:24625
+	  ioctl(enable): ctx: 0x96a4bc8, fd: 5 libpapiex debug:
+	  24625,0x0,papiex_thread_init_routine Calling PAPI_lock before
+	  critical section libpapiex debug:
+	  24625,0x0,papiex_thread_init_routine Released PAPI lock libpapiex
+	  debug: 24625,0x0,papiex_start START POINT 0 LABEL libpapiex
+	  debug: 24625,0x0,papiex_start Reading counters (PAPI_read) to get
+	  initial counts SUBSTRATE:perf_events.c:_papi_pe_read:1147:24625
+	  read: fd:  3, tid: 0, cpu: -1, ret: 56
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1148:24625 read: 2 1341021
+	  1341021 SUBSTRATE:perf_events.c:_papi_pe_read:1181:24625
+	  (papi_pe_buffer[3] 33405 * tot_time_enabled 1341021) /
+	  tot_time_running 1341021
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1181:24625
+	  (papi_pe_buffer[5] 44552 * tot_time_enabled 1341021) /
+	  tot_time_running 1341021
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1147:24625 read: fd:  5,
+	  tid: 0, cpu: -1, ret: 40
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1148:24625 read: 1 214777 0
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1181:24625
+	  (papi_pe_buffer[3] 0 * tot_time_enabled 214777) /
+	  tot_time_running 0
+
+	  The above debug log is for three events: PAPI_TOT_CYC,
+	  PAPI_TOT_INS and PAPI_L1_DCM. Multiplexing works with two events.
+	  Adding the third (any event), gives this error. Basically, the
+	  floating point exception kills the program, and PAPI_read never
+	  returns.
+
+	  I think I know why papiex always hits this bug: It's because
+	  right after starting the counters with PAPI_start, papiex does a
+	  PAPI_read to store the initial values of the counters in a tmp
+	  variable. These are then subtracted from the final counter
+	  values. Should we put a deliberate delay? Of course, the real bug
+	  should be fixed in PAPI.  ----
+
+	* src/utils/event_info.c: Major re-write of the papi_xml_event_info
+	  program.  + Remove event code numbers, as they are not stable
+	  run-to-run + Add some Doxygen comments + Remove some wrong
+	  assumptions that could cause potential buffer overflows + Improve
+	  usage information
+
+2012-01-20
+
+	* src/components/lustre/: Rules.lustre, linux-lustre.c,
+	  linux-lustre.h,
+	  fake_proc/fs/lustre/llite/hpcdata-ffff81022a732800/read_ahead_stats,
+	  fake_proc/fs/lustre/llite/hpcdata-ffff81022a732800/stats,
+	  tests/Makefile, tests/lustre_basic.c: Finish the re-write of the
+	  lustre component.
+
+	  It would be nice if someone with access to a machine with a
+	  lustre filesystem could test this for us.
+
+	* src/: papi_internal.c, components/lustre/linux-lustre.c: Update
+	  the component initialization code so that it can handle a PAPI
+	  ERROR return gracefully.  Previously there was no way to indicate
+	  initialization failure besides just setting num_native_events to
+	  0.
+
+2012-01-19
+
+	* src/components/lustre/: linux-lustre.c, linux-lustre.h: First
+	  pass at cleaning up the lustre component.
+
+	  It should now properly report no events when no lustre
+	  filesystems are available.
+
+2012-01-11
+
+	* src/papi_events.csv: Add AMD fam12h support to the events file.
+	  Right now it is just an alias to the similar fam10h event list;
+	  this can be split out if necessary once we find a tester with the
+	  hardware.
+
+	* src/libpfm4/: README, docs/man3/pfm_get_event_next.3,
+	  docs/man3/pfm_get_pmu_info.3, include/perfmon/perf_event.h,
+	  include/perfmon/pfmlib.h, lib/Makefile, lib/pfmlib_amd64.c,
+	  lib/pfmlib_amd64_priv.h, lib/pfmlib_common.c,
+	  lib/pfmlib_perf_event.c, lib/pfmlib_priv.h,
+	  lib/events/intel_coreduo_events.h, lib/events/perf_events.h,
+	  perf_examples/Makefile, perf_examples/perf_util.c,
+	  perf_examples/perf_util.h, perf_examples/self.c,
+	  perf_examples/task_smpl.c, perf_examples/x86/bts_smpl.c: Fix
+	  "merge" conflicts with libpfm4 merge.
+
+	* src/libpfm4/lib/: pfmlib_amd64_fam12h.c,
+	  events/amd64_events_fam12h.h: Initial revision
+
+	* src/papi_libpfm4_events.c: Properly use the  pfm_get_event_next()
+	  iterator to find next event.
+
+	  Without this, on AMD Fam10h some events are missed.
+
+	  Some events are still missed due to libpfm4 bug, this will be
+	  fixed once I update the libpfm4 tree included with PAPI.
+
+	  Note, enumeration fixes like this often break things, so please
+	  test if possible.
+
+	* src/papi_events.csv: Update the coreduo (not core2) events.  Most
+	  notably the FP events were wrong.
+
+	  This, along with a forthcoming libpfm4 update, make all the
+	  CTESTS pass on an old Yonah coreduo laptop I have.
+
+2012-01-05
+
+	* src/ctests/api.c: Make the api test actually test PAPI_flops() as
+	  it claims to do, rather than PAPI_flips().
+
+	  Patch thanks to: Emilio De Camargo Francesquini
+
+	* src/papi_hl.c: Fix some copy-and-paste documentation remnants in
+	  the papi_hl.c file, mostly where it said FLIPS where it meant
+	  FLOPS.
+
+2012-01-04
+
+	* src/utils/native_avail.c: Update papi_native_avail to *not* print
+	  the event codes, as these are not guaranteed to be stable from
+	  run to run.
+
+	  Also fix up the formatting and print some component info too.
+
+	  Please try and let me know if you don't like the new output.
+
+	* src/: configure, configure.in: Respect a FORCED option in
+	  configure.
+
+2011-12-22
+
+	* src/Rules.pfm4_pe: Remove perfmon.h from MISCHDRS.
+
+2011-12-20
+
+	* src/: Rules.perfctr, Rules.perfctr-pfm, Rules.pfm, Rules.pfm4_pe,
+	  Rules.pfm_pe, linux-lock.h, mb.h: Merry Christmas ARM users.
+
+	  This patch fixes the SMP ARM issues reported by Harald Servat.
+	  Also, adds proper header dependency checking in the Rules files.
+	  People, please when you add headers, please add them to the
+	  dependency lines so everything gets rebuilt properly.
+
+	  New implementation of SMP locks are very pedantic, that is, they
+	  are nost the fastest, but they do use atomics and avoid kernel
+	  intervention.
+
+	  Passed on our 2 core ARM v7. All pthreads tests now pass, except
+	  the ones that also fail in the single processor case usually due
+	  to a missing event.
+
+	  Samples:
+
+	  mucci@panda:~/papi.head/src$ uname -a Linux panda 3.0.0 #2 SMP
+	  Fri Jul 29 16:23:54 EDT 2011 armv7l GNU/Linux
+
+	  mucci@panda:~/papi.head/src$ hostname panda
+
+	  mucci@panda:~/papi.head/src$ cat /proc/cpuinfo Processor: ARMv7
+	  Processor rev 2 (v7l) processor: 0 BogoMIPS: 2007.19
+
+	  processor: 1 BogoMIPS: 1965.18
+
+	  Features: swp half thumb fastmult vfp edsp thumbee neon vfpv3 CPU
+	  implementer: 0x41 CPU architecture: 7 CPU variant: 0x1 CPU part:
+	  0xc09 CPU revision: 2
+
+	  Hardware: OMAP4 Panda board Revision: 0020 Serial:
+	  0000000000000000
+
+	  mucci@panda:~/papi.head/src$ ./ctests/locks_pthreads Creating 2
+	  threads 10000 iterations took 13489 us.  Running 44480 iterations
+	  Expected: 88960 Received: 88960 locks_pthreads.c
+	   PASSED
+
+	  mucci@panda:~/papi.head/src$ ./ctests/pthrtough Creating 2
+	  threads for 1000 iterations each of: register create_eventset
+	  destroy_eventset unregister pthrtough.c
+	    PASSED
+
+	  mucci@panda:~/papi.head/src$ ./ctests/pthrtough2 Creating 2000
+	  threads for 1 iterations each of: register create_eventset
+	  destroy_eventset unregister Failed to create thread: 238
+	  Continuing test with 237 threads.  pthrtough2.c
+		  PASSED
+
+	  mucci@panda:~/papi.head/src$ ./ctests/thrspecific Thread
+	  0x40ae1470 started, specific data is at 0xbea9c6d4 Thread
+	  0x40021000 started, specific data is at 0xbea9c6c4 Thread
+	  0x4244d470 started, specific data is at 0xbea9c6c8 Thread
+	  0x4138d470 started, specific data is at 0xbea9c6d0 Thread
+	  0x41c4d470 started, specific data is at 0xbea9c6cc Entry 0,
+	  Thread 0x41c4d470, Data Pointer 0xbea9c6cc, Value 4000000 Entry
+	  1, Thread 0x40021000, Data Pointer 0xbea9c6c4, Value 500000 Entry
+	  2, Thread 0x40ae1470, Data Pointer 0xbea9c6d4, Value 1000000
+	  Entry 3, Thread 0x4244d470, Data Pointer 0xbea9c6c8, Value
+	  8000000 Entry 4, Thread 0x4138d470, Data Pointer 0xbea9c6d0,
+	  Value 2000000 thrspecific.c			      PASSED
+
+	  mucci@panda:~/papi.head/src$ ./ctests/krentel_pthreads
+	  program_time = 6, threshold = 20000000, num_threads = 3
+
+	  launched timer in thread 0 launched timer in thread 1 launched
+	  timer in thread 3 launched timer in thread 2 [1] time = 1, count
+	  = 7, iter = 5, rate = 1400.0/Kiter [2] time = 1, count = 7, iter
+	  = 5, rate = 1400.0/Kiter [0] time = 1, count = 7, iter = 5, rate
+	  = 1400.0/Kiter [3] time = 1, count = 7, iter = 5, rate =
+	  1400.0/Kiter [1] time = 2, count = 25, iter = 16, rate =
+	  1562.5/Kiter [0] time = 2, count = 25, iter = 16, rate =
+	  1562.5/Kiter [3] time = 2, count = 25, iter = 16, rate =
+	  1562.5/Kiter [2] time = 2, count = 25, iter = 16, rate =
+	  1562.5/Kiter [1] time = 3, count = 25, iter = 16, rate =
+	  1562.5/Kiter [2] time = 3, count = 25, iter = 16, rate =
+	  1562.5/Kiter [0] time = 3, count = 25, iter = 16, rate =
+	  1562.5/Kiter [3] time = 3, count = 25, iter = 16, rate =
+	  1562.5/Kiter [1] time = 4, count = 25, iter = 16, rate =
+	  1562.5/Kiter [0] time = 4, count = 25, iter = 16, rate =
+	  1562.5/Kiter [3] time = 4, count = 25, iter = 16, rate =
+	  1562.5/Kiter [2] time = 4, count = 25, iter = 16, rate =
+	  1562.5/Kiter [3] time = 5, count = 25, iter = 16, rate =
+	  1562.5/Kiter [0] time = 5, count = 25, iter = 16, rate =
+	  1562.5/Kiter [2] time = 5, count = 25, iter = 16, rate =
+	  1562.5/Kiter [1] time = 5, count = 26, iter = 17, rate =
+	  1529.4/Kiter [2] time = 6, count = 25, iter = 16, rate =
+	  1562.5/Kiter [0] time = 6, count = 27, iter = 17, rate =
+	  1588.2/Kiter done krentel_pthreads.c		     PASSED
+
+2011-12-15
+
+	* src/papi_libpfm_presets.c: Change PAPI_PERFMON_EVENT_FILE
+	  environment variable name to PAPI_CSV_EVENT_FILE since it's not
+	  just for perfmon anymore.
+
+	* src/: configure, configure.in: Open mouth, insert foot; fix
+	  perfctr configure by not testing a library we have not built yet.
+
+2011-12-14
+
+	* src/: configure, configure.in: Missed one more place where we
+	  tested perfctr != "no"
+
+	* src/: configure, configure.in: Fix a typo in the perfctr section;
+	  it was causing a machine to default to perfctr when it had no
+	  performance interface.  ( a centos vm image with a 2.6.18 kernel
+	  )
+
+	  Also checks that we actually have perfctr if we specify
+	  --with-perfctr.
+
+2011-12-08
+
+	* src/components/cuda/: Makefile.cuda.in, Rules.cuda, configure,
+	  configure.in, linux-cuda.c, linux-cuda.h: Added auto-detection of
+	  CUDA version to PAPI CUDA Component. Reason is, the interface has
+	  changed between CUDA/CUPTI 4.0 and 4.1. PAPI now supports both
+	  CUDA versions without any exposure to the users. Configure step
+	  is unchanged and no additional knowledge of which CUDA version is
+	  installed is required.
+
+2011-12-03
+
+	* src/components/appio/: CHANGES, README, Rules.appio, appio.c,
+	  appio.h, tests/Makefile, tests/appio_list_events.c,
+	  tests/appio_values_by_code.c, tests/appio_values_by_name.c: [no
+	  log message]
+
+2011-11-25
+
+	* src/linux-timer.c: Fix compilation warning if you specify
+	  --with-walltime=gettimeofday
+
+	* src/linux-timer.c: Fix the build on Linux systems using mmtimer
+
+	* src/linux-common.c: Update the linux MHz detection code to use
+	  bogoMIPS when there is no MHz field available in /proc/cpuinfo.
+
+	  This gives roughly correct MHz on ARM, and the MIPS workaround
+	  should also still work.
+
+2011-11-23
+
+	* src/components/net/linux-net.c: Fix compile errors in a debug
+	  message.  (pathname didn't exist but we are working on
+	  NET_PROC_FILE)
+
+2011-11-22
+
+	* src/components/net/: linux-net.c, tests/net_values_by_code.c,
+	  tests/net_values_by_name.c: Change the ping command in the net
+	  tests to not use &> to redirect to NULL.
+
+	  This would work on a system with csh, but on systems with a bash
+	  shell this runs ping in the background instead, so the test
+	  finishes before ping can generate any packets.
+
+	* src/components/net/linux-net.c: Fix slight bug in the net
+	  component, where a memset() had the wrong arguments.	This made
+	  for weird results in the case where we start/stop quickly enough
+	  that we return the initial data.
+
+	* src/components/net/: CHANGES, Makefile.net.in, README, Rules.net,
+	  configure, configure.in, linux-net.c, linux-net.h,
+	  tests/Makefile, tests/net_list_events.c,
+	  tests/net_values_by_code.c, tests/net_values_by_name.c: Replace
+	  net component with updated version written by    Jose Pedro
+	  Oliveira
+
+	   * Dynamically detects the network interfaces
+	      (i.e. the ones listed in /proc/net/dev)
+
+	  * No longer needs to fork/exec the external ifconfig command and
+		parse its output.  It now reads the Linux kernel network
+	  statistics	 directly from /proc/net/dev.
+
+	  * Each network interface now has 16 events instead of 13
+	  (all counters in /proc/net/dev).
+
+	  * Adds support for PAPI_event_name_to_code()
+
+	  * Adds a couple of small tests/examples
+
+2011-11-16
+
+	* doc/Doxyfile-everything: Fix the exclude libpfm/perfctr config.
+
+2011-11-10
+
+	* src/perf_events.c: Only scale when running != enabled.
+
+	  Now verified on ig, brutus and the malta
+
+	* src/perf_events.c: Further tuneups for mpx'ing.
+
+	  Previous commit broke systems with valid return values from
+	  perf_events for running & enabled. My attempt at scaling in long
+	  long world caused an overflow which led to a negative number when
+	  passed up the chain.
+
+	  Also consolidated types... best way to avoid this stuff is to
+	  start as the type you are ending as.
+
+	  Now we use some better integer scaling...guaranteed within +-0.5%
+	  of the actual scaled value of enabled / running.
+
+	  New results on brutus: multiplex1
+
+	  case1: Does PAPI_multiplex_init() not break regular operation?
+	  Added PAPI_TOT_CYC Added PAPI_FP_INS case1: PAPI_TOT_CYC
+	  PAPI_FP_INS case1:	     2739865106    600002876
+
+	  case2: Does setmpx/add work? Added PAPI_TOT_CYC Added PAPI_FP_INS
+	  case2: PAPI_TOT_CYC  PAPI_FP_INS case2:	  2739678237
+	  600002258
+
+	  case3: Does add/setmpx work? Added PAPI_TOT_CYC Added PAPI_FP_INS
+	  case3: PAPI_TOT_CYC  PAPI_FP_INS case3:	  2739847832
+	  600002298
+
+	  case4: Does add/setmpx/add work? Added PAPI_TOT_CYC Added
+	  PAPI_FP_INS case4: PAPI_TOT_CYC  PAPI_FP_INS case4:
+	  2737832980	600013404
+
+	  case5: Does setmpx/add/add/start/read work? Added PAPI_TOT_CYC
+	  Added PAPI_FP_INS read @start counter[0]: 7106 read @stop
+	  counter[0]: 2740387017 difference  counter[0]: 2740379911  read
+	  @start counter[1]: 0 read @stop  counter[1]: 600017169 difference
+	   counter[1]: 600017169  multiplex1.c
+	  PASSED
+
+2011-11-09
+
+	* src/components/cuda/linux-cuda.c: For the CUDA Component,
+	  PAPI_read() now accumulates event values. This has to be
+	  explicitly done in PAPI because CUPTI automatically resets all
+	  counter values to 0 after a read. (PAPI_start()/stop() continues
+	  to reset the values to 0)
+
+	* src/perf_events.c: Last of the multiplex fixes to perf events.
+	  The root of all evil was this:
+
+	  counts[i] =					      ( uint64_t )
+	  ( ( double ) buffer[count_idx] * ( double )
+
+	  buffer[get_total_time_enabled_idx(  )] /
+						 ( double )
+
+	  buffer[get_total_time_running_idx(  )] ) ; In addition to
+	  improper casting to uints... (papi returns int64s), using
+	  floating point arith is a no-no. Plus this resulted in divide by
+	  zeros...
+
+	  Before:
+
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1155:12218 read: fd:  3,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x6cba, 0x0, 0x0, ret: 24
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1155:12218 read: fd:  4,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x23, 0x0, 0x0, ret: 24
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1155:12218 read: fd:  3,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x6de72b5d, 0x8ae0fa80, 0x8ae0fa80,
+	  ret: 24 SUBSTRATE:perf_events.c:_papi_pe_read:1155:12218 read:
+	  fd:  4, tid: 0, cpu: -1, buffer[0-2]: 0x4c4b46b, 0x8ae0fa80,
+	  0x8ae0fa80, ret: 24
+
+	  So kernel is good, but errors in multiplexed scaling.
+
+	  case5: Does setmpx/add/add/start/read work? Added PAPI_TOT_CYC
+	  Added PAPI_FP_INS read @start counter[0]: 9223372034707292159
+	  read @stop  counter[0]: 1843791732 difference  counter[0]:
+	  -9223372032863500427	multiplex1.c
+	  FAILED Line # 389
+
+	  With fix:
+
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1151:12821 read: fd:  3,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x6782, 0x0, 0x0, ret: 24
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1151:12821 read: fd:  4,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x0, 0x0, 0x0, ret: 24
+	  SUBSTRATE:perf_events.c:_papi_pe_read:1151:12821 read: fd:  3,
+	  tid: 0, cpu: -1, buffer[0-2]: 0x6de725dc, 0x8ae0fa80, 0x8ae0fa80,
+	  ret: 24 SUBSTRATE:perf_events.c:_papi_pe_read:1151:12821 read:
+	  fd:  4, tid: 0, cpu: -1, buffer[0-2]: 0x4c4b400, 0x8ae0fa80,
+	  0x8ae0fa80, ret: 24 read @start counter[0]: 26498 read @stop
+	  counter[0]: 1843865052 difference  counter[0]: 1843838554  read
+	  @start counter[1]: 0 read @stop  counter[1]: 80000000 difference
+	  counter[1]: 80000000
+	  SUBSTRATE:perf_events.c:_papi_pe_update_control_state:1288:12821
+	  Called with count == 0
+	  SUBSTRATE:papi_libpfm4_events.c:_papi_libpfm_shutdown:1178:12821
+	  shutdown  multiplex1.c			   PASSED
+
+	  New code is vastly simpler and smaller and checks for bad kernel
+	  behavior:
+
+		int64_t tot_time_running =
+	  papi_pe_buffer[get_total_time_running_idx(  )];
+		int64_t tot_time_enabled =
+	  papi_pe_buffer[get_total_time_enabled_idx(  )];
+	  #ifdef BRAINDEAD_MULTIPLEXING       if (tot_time_enabled == 0)
+	       tot_time_enabled = 1;	   if (tot_time_running == 0)
+	    tot_time_running = 1; #else       /* If we are convinced this
+	  platform's kernel is fully operational, then this stuff will
+	  never happen. If it does,	     then BRAINDEAD_MULTIPLEXING
+	  needs to be enabled. */	if ((tot_time_running == 0) &&
+	  (papi_pe_buffer[count_idx])) {	 PAPIERROR("This platform
+	  has a kernel bug in multiplexing, count is %lld (not 0), but time
+	  running is 0.\n",papi_pe_buffer[count_idx]);	   return
+	  PAPI_EBUG;	   }	   if ((tot_time_enabled == 0) &&
+	  (papi_pe_buffer[count_idx])) {	 PAPIERROR("This platform
+	  has a kernel bug in multiplexing, count is %lld (not 0), but time
+	  enabled is 0.\n",papi_pe_buffer[count_idx]);	 return PAPI_EBUG;
+	       } #endif       pe_ctl->counts[i] =
+	  (papi_pe_buffer[count_idx] * tot_time_enabled) /
+	  tot_time_running;
+
+	  Also, renamed all instances of 'buffer' to papi_pe_buffer because
+	  buffer is a global variable on MIPS/Linux/libc. Yikes! (gdb)
+	  whatis buffer type = struct utmp *
+
+	* src/ctests/multiplex1.c: Made sure that PAPI_TOT_CYC is the first
+	  event added to multiplexing event set.
+
+	  This will demonstrate the bug in perf_event multiplexing
+	  arithmetic in case5 on MIPS and other perf_event subsystems that
+	  likely have some breakage in the kernels handling of
+	  multiplexing. The common bug is that the perf_event subsystem
+	  does not fill in the second and third elements of the 24 byte
+	  read that gets returned from the kernel. These values are
+	  time_enabled and time_running. MIPS as of 3.0.3 just fills this
+	  in after a HZ tick has happened. Workarounds are pretty simple in
+	  the low level layer...
+
+	  A buggy output looks like this (3.0.3 MIPS/Linux Big Endian)
+
+	  -bash-4.1$ ./ctests/multiplex1 case1: Does PAPI_multiplex_init()
+	  not break regular operation? Added PAPI_TOT_CYC Added PAPI_FP_INS
+	  case1: PAPI_TOT_CYC  PAPI_FP_INS case1:	  1843775252
+	  80000000
+
+	  case2: Does setmpx/add work? Added PAPI_TOT_CYC Added PAPI_FP_INS
+	  case2: PAPI_TOT_CYC  PAPI_FP_INS case2:	  1843773254
+	  80000037
+
+	  case3: Does add/setmpx work? Added PAPI_TOT_CYC Added PAPI_FP_INS
+	  case3: PAPI_TOT_CYC  PAPI_FP_INS case3:	  1843772919
+	  80000037
+
+	  case4: Does add/setmpx/add work? Added PAPI_TOT_CYC Added
+	  PAPI_FP_INS case4: PAPI_TOT_CYC  PAPI_FP_INS case4:
+	  1843773959	 80000037
+
+	  case5: Does setmpx/add/add/start/read work? Added PAPI_TOT_CYC
+	  Added PAPI_FP_INS read @start counter[0]: 9223372034707292159
+	  read @stop  counter[0]: 1843784577 difference  counter[0]:
+	  -9223372032863507582	multiplex1.c
+	  FAILED Line # 389 Error: Difference in start and stop resulted in
+	  negative value!
+
+2011-11-08
+
+	* src/components/cuda/: linux-cuda.c, linux-cuda.h: Updated CUDA
+	  component for CUPTI 4.1 (RC1). Note, SetCudaDevice() should now
+	  work with the latest CUDA 4.1 version.
+
+2011-11-07
+
+	* src/components/coretemp/linux-coretemp.c: Update coretemp to
+	  better handle sparse numbering of the inputs.
+
+	* doc/Doxyfile-everything: Exclude the libpfm* and perfctr-*
+	  directories from consideration when generating Doxygen docs.
+
+	* src/: papi.h, components/acpi/linux-acpi.h,
+	  components/coretemp_freebsd/coretemp_freebsd.c,
+	  components/cuda/linux-cuda.h,
+	  components/infiniband/linux-infiniband.h,
+	  components/mx/linux-mx.h, components/net/linux-net.h: Place a
+	  space in < your name here > to cleanup doxygen warnings.
+
+	* src/perf_events.c: Only perf event systems that have FAST counter
+	  reads and FAST hw timer access are x86...
+
+	* src/linux-common.c: MIPS clock and Linux fixup code
+
+	* src/components/example/example.c: A little more documentation on
+	  which of the component vector function pointers are relevant.
+
+	* src/papi_vector.c: Tested the dummy get_{real,virt}_{cyc,usec}
+	  functions on zeus, they appear to work.
+
+	* src/components/example/tests/example_multiple_components.c:
+	  Another fix to properly skip the multiple component case if CPU
+	  component not available.
+
+	* src/components/example/tests/example_multiple_components.c: Skip
+	  the test if no CPU component enabled, rather than fail.
+
+2011-11-04
+
+	* src/components/example/example.c: Free example_native_table with
+	  papi_free, glibc didn't like it if we just called free.  (we
+	  allocate it with papi_calloc)
+
+	* man/...: Version number bump. (since the pages are
+	  quantifiably different from those released in 4.2.0 )
+
+	* doc/: Doxyfile, Doxyfile-everything, Doxyfile.utils: Bump version
+	  number in the doxygen config files.
+
+	* src/components/example/example.c:
+	  _papi_example_shutdown_substrate does not have any arguments.
+
+	* src/components/net/linux-net.c: Include ctype.h for isspace().
+
+	* release_procedure.txt: release_procedure now reflects the correct
+	  version of doxygen to use.
+
+	* src/buildbot_configure_with_components.sh: Do not always
+	  configure with not cpu counters, allow this to be passed in.
+	  Allows us to use one script for both types of builds we test.
+
+	* delete_before_release.sh,
+	  src/buildbot_configure_with_components.sh: Create a script for
+	  buildbot to configure with several components.
+
+	  Buildbot runs all commandline arguments through a sanitization
+	  before passing them to sh.  Thus --with-configure="a b c" =>
+	  '--with-configure="a b c"' which is bad.
+	  delete_before_release.sh has been instructed to remove this file.
+
+	* man/...:  Rebuild the manpages with doxygen 1.7.4 to
+	  remove the 's at the end of sentances.
+
+	  The html output looks clean.
+
+2011-11-03
+
+	* src/: multiplex.c, papi.c: Fix some gcc-4.6 compile warnings
+	  complaining that retval was being set but not used.
+
+	* src/papi.c: Add some extra comments to the PAPI_num_cmp_hwctrs()
+	  code that describe its limitations a bit better.
+
+2011-11-02
+
+	* src/: ctests/overflow_allcounters.c, testlib/test_utils.c: Add
+	  lots of debugging to make results of overflow_allcounters test a
+	  bit more clear.
+
+	* src/components/coretemp/tests/coretemp_pretty.c: coretemp_pretty
+	  wasn't printing the description for fan inputs.
+
+	  The result on an apple MacBook Pro (running Linux) now looks like
+	  this:
+
+	  Trying all coretemp events Found coretemp component at cid 2
+	  hwmon0.temp1_input	     value: 33.50 degrees C, applesmc
+	  module, label TB0T hwmon0.temp2_input  value: 33.50 degrees C,
+	  applesmc module, label TB1T hwmon0.temp3_input  value: 32.00
+	  degrees C, applesmc module, label TB2T hwmon0.temp4_input  value:
+	  0.00 degrees C, applesmc module, label TB3T hwmon0.temp5_input
+	  value: 62.25 degrees C, applesmc module, label TC0D
+	  hwmon0.temp6_input  value: 54.25 degrees C, applesmc module,
+	  label TC0F hwmon0.temp7_input  value: 57.25 degrees C, applesmc
+	  module, label TC0P hwmon0.temp8_input  value: 69.00 degrees C,
+	  applesmc module, label TG0D hwmon0.temp9_input  value: 58.00
+	  degrees C, applesmc module, label TG0F hwmon0.temp10_input
+	   value: 51.25 degrees C, applesmc module, label TG0H
+	  hwmon0.temp11_input	      value: 58.25 degrees C, applesmc
+	  module, label TG0P hwmon0.temp12_input	 value: 60.75
+	  degrees C, applesmc module, label TG0T hwmon0.temp13_input
+	   value: 62.25 degrees C, applesmc module, label TN0D
+	  hwmon0.temp14_input	      value: 59.25 degrees C, applesmc
+	  module, label TN0P hwmon0.temp15_input	 value: 49.00
+	  degrees C, applesmc module, label TTF0 hwmon0.temp16_input
+	   value: 54.00 degrees C, applesmc module, label Th2H
+	  hwmon0.temp17_input	      value: 58.75 degrees C, applesmc
+	  module, label Tm0P hwmon0.temp18_input	 value: 31.50
+	  degrees C, applesmc module, label Ts0P hwmon0.temp19_input
+	   value: 44.25 degrees C, applesmc module, label Ts0S
+	  hwmon0.fan1_input   value: 1999 RPM, applesmc module, label Left
+	  side hwmon0.fan2_input     value: 2003 RPM, applesmc module,
+	  label Right side coretemp_pretty.c		     PASSED
+
+	* src/components/coretemp/: linux-coretemp.c, linux-coretemp.h,
+	  tests/coretemp_pretty.c: Make the coretemp code a bit pickier
+	  about which events it supports.  Add descriptions to the events.
+	  Also add support for Voltage (in*) events.
+
+	  On an amd14h machine I have access to, coretemp_pretty now
+	  prints:
+
+	  Trying all coretemp events Found coretemp component at cid 2
+	  hwmon0.in1_input value: 1.31 V, it8721 module, label ?
+	  hwmon0.in2_input value: 2.22 V, it8721 module, label ?
+	  hwmon0.in3_input value: 3.34 V, it8721 module, label +3.3V
+	  hwmon0.in4_input value: 1.02 V, it8721 module, label ?
+	  hwmon0.in5_input value: 1.52 V, it8721 module, label ?
+	  hwmon0.in6_input value: 1.13 V, it8721 module, label ?
+	  hwmon0.in7_input value: 3.26 V, it8721 module, label 3VSB
+	  hwmon0.in8_input value: 3.17 V, it8721 module, label Vbat
+	  hwmon0.temp1_input value: 28.00 degrees C, it8721 module, label ?
+	  hwmon0.temp2_input value: -128.00 degrees C, it8721 module, label
+	  ? hwmon0.temp3_input value: -128.00 degrees C, it8721 module,
+	  label ? hwmon0.fan1_input value: 0 RPM hwmon0.fan2_input value:
+	  1320 RPM hwmon1.temp1_input value: 33.00 degrees C, jc42 module,
+	  label ? hwmon2.temp1_input value: 31.75 degrees C, jc42 module,
+	  label ? hwmon3.temp1_input value: 53.00 degrees C, radeon module,
+	  label ? hwmon4.temp1_input value: 53.12 degrees C, k10temp
+	  module, label ? coretemp_pretty.c		    PASSED
+
+	* src/components/coretemp/: linux-coretemp.c,
+	  tests/coretemp_pretty.c: Cut and paste error slipped in to that
+	  last commit.	Fixes a build issue.
+
+	* src/components/coretemp/: linux-coretemp.c, tests/Makefile,
+	  tests/coretemp_pretty.c: Clean up coretemp with same cleanups
+	  done in example component.
+
+	  Add a new test, "coretemp_pretty" that prints coretemp results in
+	  a more user-friendly way.
+
+	* man/:... Rebuild the man pages with a newer version of
+	  doxygen. ( older versions of doxygen had a nasty bug in man
+	  output. )
+
+	  Also reworked the utilities documentation to remove pages for the
+	  files.  Thanks to Jose Pedre Oliveria for pointing this out.
+
+	* src/components/example/tests/: Makefile,
+	  example_multiple_components.c: Add a test that makes sure you can
+	  have active EventSets on multiple components at the same time.
+
+	* release_procedure.txt: Change PATH specification to include tcsh
+	  syntax; other minor syntax corrections.
+
+	* src/components/example/example.c: More cleanups and documentation
+	  for the example component.
+
+2011-11-01
+
+	* src/components/example/example.c: Some more major overhaul of the
+	  example component.  A lot more documentation, plus make is behave
+	  a lot more like a real component would.
+
+	* doc/Doxyfile.utils: Turn off undocumented warnings for the utils.
+	  doxygen run.
+
+	* src/utils/: avail.c, command_line.c, cost.c, event_chooser.c,
+	  multiplex_cost.c: Add spaces to the comments so doxygen doesn't
+	  think <event> is an xml tag.
+
+2011-10-31
+
+	* src/utils/: avail.c, clockres.c, command_line.c, component.c,
+	  cost.c, decode.c, error_codes.c, event_chooser.c, mem_info.c,
+	  multiplex_cost.c, native_avail.c: Remove the @file directive from
+	  the doxygen comment blocks for the utilities.  This cleans up the
+	  generated man pages. ( we nolonger build *.c.1 )
+
+	* src/components/example/: example.c, tests/example_basic.c:
+	  Clarify in the example component that ->reset only gets called if
+	  an eventset is currently running.
+
+	  Extend the example_basic test to test PAPI_reset()
+
+	* release_procedure.txt: Fix a maketarget typo.
+
+	* release_procedure.txt: We now have a good version of doxygen
+	  installed on most icl run machines.  (
+	  /mnt/scratch/sw/doxygen-1.7.5.1 )
+
+	* doc/doxygen_procedure.txt: [no log message]
+
+	* release_procedure.txt: Update release_procedure to inform how to
+	  update the website documentation link.
+
+2011-10-28
+
+	* RELEASENOTES.txt: Correct the RELEASENOTES for some things I
+	  missed when reviewing it.
+
+	  It's Offcore events that we don't support on
+	  Nehalem/Westmere/Sandybridge.
+
+	  Also the power6 libpfm4 bug that was listed as an outstanding bug
+	  was fixed a long time ago.
+
+	* src/components/coretemp/linux-coretemp.c: Have coretemp set the
+	  num_native_events field.
+
+	* src/components/example/tests/example_basic.c: Update example test
+	  to print num_native_events, to help debug issues with other
+	  components not updating the value.
+
+	* src/components/coretemp/: linux-coretemp.c, linux-coretemp.h: Fix
+	  typo enent -> event Also remove residual LMSENSOR mentions from
+	  the coretemp header.
+
+	* src/papi_libpfm4_events.c: Fix two memory leak locations.
+
+	  The attached patch reduces the number of lost memory blocks
+	  reported by valgrind from 234 to 39.	It frees the memory
+	  allocated by the 4 strdups and the calloc functions in
+	  papi_libpfm4_events.c:allocate_native_event().
+
+	  Patch by: José Pedro Oliveira
+
+	* src/components/cuda/tests/Makefile: The change to pass the PAPI
+	  CC/CFLAGS to the component tests broke the nvidia test as it
+	  wants CC to be nvcc.	So update that Makefile to use nvcc
+	  instead.
+
+2011-10-27
+
+	* src/components/example/tests/example_basic.c: Improve the
+	  example_basic component test to be much more comprehensive.
+
+	* src/components/example/: example.c, tests/HelloWorld.c,
+	  tests/Makefile, tests/example_basic.c: Cleanup the example test.
+	  Fix various mistakes in the comments as well as add better error
+	  checking.
+
+	  Also rename the "HelloWorld" test to "example_basic"
+
+	* src/components/coretemp/tests/Makefile: The coretemp_test target
+	  was example_test due to cut-and-paste error.
+
+	  Patch from Jose Pedro Oliveira
+
+	* src/Makefile.inc: Add a component_tests dependency so that the
+	  component_tests are made during a make -j build
+
+	* src/Makefile.inc: Make sure the component test makefiles get
+	  passed the CC and CFLAGS definitions.
+
+	* src/components/coretemp/: linux-coretemp.c, tests/Makefile,
+	  tests/coretemp_basic.c: Fix up the coretemp component some more.
+	  Make sure the enumerate function returns PAPI_ENOEVNT if no
+	  events are available.
+
+	  Update the Makefile so it has proper dependencies.
+
+	  Update the test so it prints the first event available.  (The
+	  latter based on a patch from Jose Pedro Oliveira)
+
+	* src/: solaris-ultra.c, ctests/all_native_events.c: The
+	  solaris-ultra substrate was still broken.  This is because recent
+	  changes to component bind time explictly used the ->set_domain()
+	  call, and this vector was not set up in solaris_ultra.
+
+	  Also made the all_native_events test report the returned error
+	  value to aid in debugging problems like this in the future.

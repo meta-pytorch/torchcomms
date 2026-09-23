@@ -1,0 +1,48 @@
+.TH "PAPI_multiplex_init" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_multiplex_init \- Initialize multiplex support in the PAPI library\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+PAPI_multiplex_init() enables and initializes multiplex support in the PAPI library\&. Multiplexing allows a user to count more events than total physical counters by time sharing the existing counters at some loss in precision\&. Applications that make no use of multiplexing do not need to call this routine\&.
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int \fBPAPI_multiplex_init\fP (void);
+.RE
+.PP
+\fBExamples\fP
+.RS 4
+
+.PP
+.nf
+retval = PAPI_multiplex_init();
+
+.fi
+.PP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP This call always returns PAPI_OK
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_multiplex\fP 
+.PP
+\fBPAPI_get_multiplex\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

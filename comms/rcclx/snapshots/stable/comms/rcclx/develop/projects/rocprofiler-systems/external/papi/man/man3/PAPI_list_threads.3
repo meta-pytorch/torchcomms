@@ -1,0 +1,56 @@
+.TH "PAPI_list_threads" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_list_threads \- List the registered thread ids\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+PAPI_list_threads() returns to the caller a list of all thread IDs known to PAPI\&.
+.PP
+This call assumes an initialized PAPI library\&.
+.PP
+\fBC Interface\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_list_threads(PAPI_thread_id_t *tids, int * number );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fI*tids\fP -- A pointer to a preallocated array\&. This may be NULL to only return a count of threads\&. No more than *number codes will be stored in the array\&. 
+.br
+\fI*number\fP -- An input and output parameter\&. 
+.br
+ Input specifies the number of allocated elements in *tids (if non-NULL) and output specifies the number of threads\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP The call returned successfully\&. 
+.br
+\fIPAPI_EINVAL\fP *number has an improper value
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_thr_specific\fP 
+.PP
+\fBPAPI_set_thr_specific\fP 
+.PP
+\fBPAPI_register_thread\fP 
+.PP
+\fBPAPI_unregister_thread\fP 
+.PP
+\fBPAPI_thread_init\fP \fBPAPI_thread_id\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

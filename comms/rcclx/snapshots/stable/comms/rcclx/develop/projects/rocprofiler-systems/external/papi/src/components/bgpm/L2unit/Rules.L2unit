@@ -1,0 +1,7 @@
+# $Id$
+
+COMPSRCS += components/bgpm/L2unit/linux-L2unit.c
+COMPOBJS += linux-L2unit.o
+
+linux-L2unit.o: components/bgpm/L2unit/linux-L2unit.c components/bgpm/L2unit/linux-L2unit.h $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/bgpm/L2unit/linux-L2unit.c -o linux-L2unit.o

@@ -1,0 +1,33 @@
+.TH "papi_multiplex_cost" 1 "Wed Jun 25 2025 19:17:03" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+papi_multiplex_cost \- papi_multiplex_cost utility\&.   
+.PP
+file papi_multiplex_cost\&.c 
+.SH "NAME"
+.PP
+papi_multiplex_cost - computes execution time costs for basic PAPI operations on multiplexed EventSets\&.
+.SH "Synopsis"
+.PP
+papi_cost [-m, --min < min >] [-x, --max < max >] [-k,-s]
+.SH "Description"
+.PP
+papi_multiplex_cost is a PAPI utility program that computes the min / max / mean / std\&. deviation of execution times for PAPI start/stop pairs and for PAPI reads on multiplexed eventsets\&. This information provides the basic operating cost to a user's program for collecting hardware counter data\&. Command line options control display capabilities\&.
+.SH "Options"
+.PP
+.PD 0
+.IP "\(bu" 2
+-m < Min number of events to test > 
+.IP "\(bu" 2
+-x < Max number of events to test > 
+.IP "\(bu" 2
+-k, Do not time kernel multiplexing 
+.IP "\(bu" 2
+-s, Do not ime software multiplexed EventSets 
+.IP "\(bu" 2
+-t THRESHOLD, Test with THRESHOLD iterations of counting loop\&. 
+.PP
+.SH "Bugs"
+.PP
+There are no known bugs in this utility\&. If you find a bug, it should be reported to the PAPI Mailing List at ptools-perfapi@icl.utk.edu\&. 

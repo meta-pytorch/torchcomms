@@ -1,0 +1,21 @@
+COMPSRCS += components/template/template.c \
+            components/template/vendor_dispatch.c \
+            components/template/vendor_common.c \
+            components/template/vendor_profiler_v1.c
+
+COMPOBJS += template.o vendor_dispatch.o vendor_common.o vendor_profiler_v1.o
+
+CFLAGS  += -g
+LDFLAGS += $(LDL)
+
+template.o: components/template/template.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@
+
+vendor_dispatch.o: components/template/vendor_dispatch.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@
+
+vendor_common.o: components/template/vendor_common.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@
+
+vendor_profiler_v1.o: components/template/vendor_profiler_v1.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@

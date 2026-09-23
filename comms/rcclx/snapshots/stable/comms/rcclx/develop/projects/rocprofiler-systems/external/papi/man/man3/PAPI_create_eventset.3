@@ -1,0 +1,71 @@
+.TH "PAPI_create_eventset" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_create_eventset \- Create a new empty PAPI EventSet\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+PAPI_create_eventset( int * EventSet );
+.RE
+.PP
+\fBPAPI_create_eventset\fP creates a new EventSet pointed to by EventSet, which must be initialized to PAPI_NULL before calling this routine\&. The user may then add hardware events to the event set by calling \fBPAPI_add_event\fP or similar routines\&.
+.PP
+\fBNote\fP
+.RS 4
+PAPI-C uses a late binding model to bind EventSets to components\&. When an EventSet is first created it is not bound to a component\&. This will cause some API calls that modify EventSet options to fail\&. An EventSet can be bound to a component explicitly by calling \fBPAPI_assign_eventset_component\fP or implicitly by calling \fBPAPI_add_event\fP or similar routines\&.
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fI*EventSet\fP Address of an integer location to store the new EventSet handle\&.
+.RE
+.PP
+\fBExceptions\fP
+.RS 4
+\fIPAPI_EINVAL\fP The argument handle has not been initialized to PAPI_NULL or the argument is a NULL pointer\&.
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+if ( PAPI_create_eventset( &EventSet ) != PAPI_OK )
+handle_error( 1 );
+// Add Total Instructions Executed to our EventSet
+if ( PAPI_add_event( EventSet, PAPI_TOT_INS)  != PAPI_OK )
+handle_error( 1 ); 
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_add_event\fP 
+.br
+\fBPAPI_assign_eventset_component\fP 
+.br
+\fBPAPI_destroy_eventset\fP 
+.br
+\fBPAPI_cleanup_eventset\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

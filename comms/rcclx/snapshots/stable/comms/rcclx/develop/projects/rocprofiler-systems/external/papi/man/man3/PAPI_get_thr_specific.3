@@ -1,0 +1,75 @@
+.TH "PAPI_get_thr_specific" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_thr_specific \- Retrieve a pointer to a thread specific data structure\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBPrototype:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_get_thr_specific( int tag, void **ptr );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fItag\fP An identifier, the value of which is either PAPI_USR1_TLS or PAPI_USR2_TLS\&. This identifier indicates which of several data structures associated with this thread is to be accessed\&. 
+.br
+\fIptr\fP A pointer to the memory containing the data structure\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP The \fItag\fP argument is out of range\&.
+.RE
+.PP
+In C, \fBPAPI_get_thr_specific\fP \fBPAPI_get_thr_specific\fP will retrieve the pointer from the array with index \fItag\fP\&. There are 2 user available locations and \fItag\fP can be either PAPI_USR1_TLS or PAPI_USR2_TLS\&. The array mentioned above is managed by PAPI and allocated to each thread which has called \fBPAPI_thread_init\fP\&. There is no Fortran equivalent function\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+ int ret;
+ RateInfo *state = NULL;
+ ret = PAPI_thread_init(pthread_self);
+ if (ret != PAPI_OK) handle_error(ret);
+ 
+ // Do we have the thread specific data setup yet?
+
+ret = PAPI_get_thr_specific(PAPI_USR1_TLS, (void *) &state);
+if (ret != PAPI_OK || state == NULL) {
+    state = (RateInfo *) malloc(sizeof(RateInfo));
+    if (state == NULL) return (PAPI_ESYS);
+    memset(state, 0, sizeof(RateInfo));
+    state\->EventSet = PAPI_NULL;
+    ret = PAPI_create_eventset(&state\->EventSet);
+    if (ret != PAPI_OK) return (PAPI_ESYS);
+    ret = PAPI_set_thr_specific(PAPI_USR1_TLS, state);
+    if (ret != PAPI_OK) return (ret);
+}
+
+.fi
+.PP
+ 
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_register_thread\fP \fBPAPI_thread_init\fP \fBPAPI_thread_id\fP \fBPAPI_set_thr_specific\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

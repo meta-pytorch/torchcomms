@@ -1,0 +1,130 @@
+ALL = fp_validation_hl \
+	cycles_validation flops_validation \
+	papi_br_cn papi_br_ins papi_br_msp \
+	papi_br_ntk papi_br_prc papi_br_tkn papi_br_ucn \
+	papi_dp_ops papi_fp_ops papi_sp_ops papi_hw_int \
+	papi_l1_dca papi_l1_dcm \
+	papi_l2_dca papi_l2_dcm papi_l2_dcr papi_l2_dcw \
+	papi_ld_ins papi_sr_ins \
+	papi_ref_cyc papi_tot_cyc papi_tot_ins
+
+all: $(ALL)
+
+%.o:%.c
+	$(CC) $(CFLAGS) $(OPTFLAGS) $(INCLUDE) -c $<
+
+display_error.o:	display_error.c display_error.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c display_error.c
+
+cache_helper.o:	cache_helper.c cache_helper.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c cache_helper.c
+
+
+branches_testcode.o:	branches_testcode.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c branches_testcode.c
+
+busy_work.o:	busy_work.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c busy_work.c
+
+cache_testcode.o:	cache_testcode.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c cache_testcode.c
+
+flops_testcode.o:	flops_testcode.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c flops_testcode.c
+
+instructions_testcode.o:	instructions_testcode.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c instructions_testcode.c
+
+matrix_multiply.o:	matrix_multiply.c matrix_multiply.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -O1 -c matrix_multiply.c
+
+load_store_testcode.o:	load_store_testcode.c testcode.h
+	$(CC) $(INCLUDE) $(CFLAGS) $(OPTFLAGS) -c load_store_testcode.c
+
+fp_validation_hl: fp_validation_hl.o $(TESTLIB) $(PAPILIB) flops_testcode.o
+	$(CC) -o fp_validation_hl fp_validation_hl.o $(TESTLIB) flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB) -lpthread
+
+cycles_validation: cycles_validation.o $(TESTLIB) $(PAPILIB) display_error.o instructions_testcode.o
+	$(CC) -o cycles_validation cycles_validation.o $(TESTLIB) display_error.o instructions_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+flops_validation: flops_validation.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o flops_testcode.o
+	$(CC) -o flops_validation flops_validation.o $(TESTLIB) display_error.o branches_testcode.o flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+
+memleak_check: memleak_check.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o memleak_check memleak_check.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_cn: papi_br_cn.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_cn papi_br_cn.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_ins: papi_br_ins.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_ins papi_br_ins.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_msp: papi_br_msp.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_msp papi_br_msp.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_ntk: papi_br_ntk.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_ntk papi_br_ntk.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_prc: papi_br_prc.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_prc papi_br_prc.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_tkn: papi_br_tkn.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_tkn papi_br_tkn.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_br_ucn: papi_br_ucn.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o
+	$(CC) -o papi_br_ucn papi_br_ucn.o $(TESTLIB) display_error.o branches_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_dp_ops: papi_dp_ops.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o flops_testcode.o
+	$(CC) -o papi_dp_ops papi_dp_ops.o $(TESTLIB) display_error.o branches_testcode.o flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_fp_ops: papi_fp_ops.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o flops_testcode.o
+	$(CC) -o papi_fp_ops papi_fp_ops.o $(TESTLIB) display_error.o branches_testcode.o flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_hw_int: papi_hw_int.o $(TESTLIB) $(PAPILIB)
+	$(CC) -o papi_hw_int papi_hw_int.o $(TESTLIB) $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_ld_ins: papi_ld_ins.o $(TESTLIB) $(PAPILIB) display_error.o matrix_multiply.o load_store_testcode.o
+	$(CC) -o papi_ld_ins papi_ld_ins.o $(TESTLIB) display_error.o matrix_multiply.o load_store_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l1_dca: papi_l1_dca.o $(TESTLIB) $(PAPILIB) cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l1_dca papi_l1_dca.o $(TESTLIB) cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l1_dcm: papi_l1_dcm.o $(TESTLIB) $(PAPILIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l1_dcm papi_l1_dcm.o $(TESTLIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l2_dca: papi_l2_dca.o $(TESTLIB) $(PAPILIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l2_dca papi_l2_dca.o $(TESTLIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l2_dcm: papi_l2_dcm.o $(TESTLIB) $(PAPILIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l2_dcm papi_l2_dcm.o $(TESTLIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l2_dcr: papi_l2_dcr.o $(TESTLIB) $(PAPILIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l2_dcr papi_l2_dcr.o $(TESTLIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_l2_dcw: papi_l2_dcw.o $(TESTLIB) $(PAPILIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o
+	$(CC) -o papi_l2_dcw papi_l2_dcw.o $(TESTLIB) cache_helper.o cache_testcode.o display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_ref_cyc: papi_ref_cyc.o $(TESTLIB) $(PAPILIB) display_error.o flops_testcode.o
+	$(CC) -o papi_ref_cyc papi_ref_cyc.o $(TESTLIB) display_error.o flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_sp_ops: papi_sp_ops.o $(TESTLIB) $(PAPILIB) display_error.o branches_testcode.o flops_testcode.o
+	$(CC) -o papi_sp_ops papi_sp_ops.o $(TESTLIB) display_error.o branches_testcode.o flops_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_sr_ins: papi_sr_ins.o $(TESTLIB) $(PAPILIB) display_error.o matrix_multiply.o load_store_testcode.o
+	$(CC) -o papi_sr_ins papi_sr_ins.o $(TESTLIB) display_error.o matrix_multiply.o load_store_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_tot_cyc: papi_tot_cyc.o $(TESTLIB) $(PAPILIB) display_error.o matrix_multiply.o
+	$(CC) -o papi_tot_cyc papi_tot_cyc.o $(TESTLIB) display_error.o matrix_multiply.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+papi_tot_ins: papi_tot_ins.o $(TESTLIB) $(PAPILIB) display_error.o instructions_testcode.o
+	$(CC) -o papi_tot_ins papi_tot_ins.o $(TESTLIB) display_error.o instructions_testcode.o $(PAPILIB) $(LDFLAGS) $(EXTRALIB)
+
+
+.PHONY : all clean distclean clobber
+
+clean:
+	rm -f *.o *.stderr *.stdout core *~ $(ALL)
+
+distclean clobber: clean
+	rm -f Makefile.target

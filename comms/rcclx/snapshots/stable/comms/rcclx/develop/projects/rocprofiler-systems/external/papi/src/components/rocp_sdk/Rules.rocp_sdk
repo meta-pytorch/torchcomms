@@ -1,0 +1,25 @@
+COMPSRCS += components/rocp_sdk/rocp_sdk.c components/rocp_sdk/sdk_class.cpp
+
+COMPOBJS += rocp_sdk.o sdk_class.o
+
+ROCP_SDK_INCL=-I$(PAPI_ROCP_SDK_ROOT)/include     \
+              -I$(PAPI_ROCP_SDK_ROOT)/include/hsa \
+              -I$(PAPI_ROCP_SDK_ROOT)/hsa/include
+
+# If ROCprofiler_SDK is installed at a different
+# path than the rest of ROCm, then the path to
+# ROCm should be specified via PAPI_ROCM_ROOT
+ifneq ($(PAPI_ROCM_ROOT),)
+ROCP_SDK_INCL+=-I$(PAPI_ROCM_ROOT)/include     \
+              -I$(PAPI_ROCM_ROOT)/include/hsa \
+              -I$(PAPI_ROCM_ROOT)/hsa/include
+endif
+
+CFLAGS  += -g $(ROCP_SDK_INCL) -D__HIP_PLATFORM_AMD__
+LDFLAGS += $(LDL)
+
+rocp_sdk.o: components/rocp_sdk/rocp_sdk.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@
+
+sdk_class.o: components/rocp_sdk/sdk_class.cpp $(HEADERS)
+	$(CXX) $(LIBCFLAGS) $(OPTFLAGS) -c $< -o $@

@@ -1,0 +1,9 @@
+craymem_allocate_global
+craymem_attr_to_mem_index
+craymem_calloc
+craymem_free
+craymem_malloc
+craymem_mem_index_count
+craymem_mem_index_to_desc
+craymem_posix_memalign
+craymem_realloc

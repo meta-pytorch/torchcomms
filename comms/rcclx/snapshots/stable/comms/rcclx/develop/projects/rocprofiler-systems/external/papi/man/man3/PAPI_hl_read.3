@@ -1,0 +1,83 @@
+.TH "PAPI_hl_read" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_hl_read \- Read performance events inside of a region and store the difference to the corresponding beginning of the region\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_hl_read( const char* region );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIregion\fP -- a unique region name corresponding to \fBPAPI_hl_region_begin\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_ENOTRUN\fP -- EventSet is currently not running or could not determined\&. 
+.br
+\fIPAPI_ESYS\fP -- A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_EMISC\fP -- PAPI has been deactivated due to previous errors\&. 
+.br
+\fIPAPI_ENOMEM\fP -- Insufficient memory\&.
+.RE
+.PP
+\fBPAPI_hl_read\fP reads performance events inside of a region and stores the difference to the corresponding beginning of the region\&.
+.PP
+Assumes that \fBPAPI_hl_region_begin\fP was called before\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.RE
+.PP
+.PP
+.nf
+int retval;
+
+retval = PAPI_hl_region_begin("computation");
+if ( retval != PAPI_OK )
+    handle_error(1);
+
+ //Do some computation here
+
+retval = PAPI_hl_read("computation");
+if ( retval != PAPI_OK )
+    handle_error(1);
+
+ //Do some computation here
+
+retval = PAPI_hl_region_end("computation");
+if ( retval != PAPI_OK )
+    handle_error(1);
+.fi
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_hl_region_begin\fP 
+.PP
+\fBPAPI_hl_region_end\fP 
+.PP
+\fBPAPI_hl_stop\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

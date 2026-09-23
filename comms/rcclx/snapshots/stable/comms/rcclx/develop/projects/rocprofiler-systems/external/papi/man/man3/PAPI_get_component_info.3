@@ -1,0 +1,55 @@
+.TH "PAPI_get_component_info" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_component_info \- get information about a specific software component  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIcidx\fP Component index
+.RE
+.PP
+This function returns a pointer to a structure containing detailed information about a specific software component in the PAPI library\&. This includes versioning information, preset and native event information, and more\&. For full details, see \fBPAPI_component_info_t\fP\&.
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+const PAPI_component_info_t *cmpinfo = NULL;
+if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT)
+exit(1);
+if ((cmpinfo = PAPI_get_component_info(0)) == NULL)
+exit(1);
+printf("This component supports %d Preset Events and %d Native events\&.\\n",
+cmpinfo\->num_preset_events, cmpinfo\->num_native_events);
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_executable_info\fP 
+.PP
+\fBPAPI_get_hardware_info\fP 
+.PP
+\fBPAPI_get_dmem_info\fP 
+.PP
+\fBPAPI_get_opt\fP 
+.PP
+\fBPAPI_component_info_t\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

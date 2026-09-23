@@ -1,0 +1,39 @@
+# this file enumerates test cases that will NOT be run
+# when the run_tests.sh macro is executed
+# enter each test name on a separate line
+# lines beginning with # will be ignored
+# this file must have UNIX line endings
+
+# For starters we do not want to try and execute Makefiles
+ftests/Makefile.recipies
+ftests/Makefile
+ftests/Makefile.target.in
+ctests/Makefile.recipies
+ctests/Makefile
+ctests/Makefile.target.in
+ctests/Make-export
+components/infiniband/tests/Makefile
+components/cuda/tests/Makefile
+components/Makefile_comp_tests
+components/net/tests/Makefile
+components/lustre/tests/Makefile
+components/perf_event/tests/Makefile
+components/nvml/tests/Makefile
+components/perf_event_uncore/tests/Makefile
+components/rapl/tests/Makefile
+components/bcs/tests/Makefile
+testlib/Makefile
+testlib/Makefile.target.in
+
+# Template PBS Job Script for Parallel Job on Myrinet Nodes
+ctests/cpi.pbs
+
+# Time wasting support program, not a standalone test
+ctests/burn
+ctests/shlib
+
+# long running tests (if you are not in a hurry remove comment from these lines)
+#ctests/pthrtough2
+#ctests/timer_overflow
+
+# these tests haven't been implemented

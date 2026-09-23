@@ -1,0 +1,375 @@
+#!@PYTHON_EXECUTABLE@
+# -*- coding: UTF-8 -*-
+# MIT License
+#
+# Copyright (c) 2018, The Regents of the University of California,
+# through Lawrence Berkeley National Laboratory (subject to receipt of any
+# required approvals from the U.S. Dept. of Energy).  All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+
+from __future__ import absolute_import
+
+__author__ = "Jonathan Madsen"
+__copyright__ = "Copyright 2020, The Regents of the University of California"
+__credits__ = ["Jonathan Madsen"]
+__license__ = "MIT"
+__version__ = "@PROJECT_VERSION@"
+__maintainer__ = "Jonathan Madsen"
+__email__ = "jrmadsen@lbl.gov"
+__status__ = "Development"
+
+import os
+
+os.environ.setdefault("TIMEMORY_BANNER", "OFF")
+os.environ.setdefault("PROFILESELECTED", "1")
+
+"""
+Setting PROFILESELECTED=1 attempts to ensure that when gperftools is linked,
+cpu profiler, heap checker, and heap profiler lie dormant until activated.
+
+Other relevant gperftools environment variables:
+
+    HEAPPROFILE=<pre>       -- turns on heap profiling and dumps data
+                               using this prefix
+    HEAPCHECK=<type>        -- turns on heap checking with strictness 'type'
+    CPUPROFILE=<file>       -- turns on cpu profiling and dumps data to this
+                               file.
+    PROFILESELECTED=1       -- if set, cpu-profiler will only profile regions
+                               of code surrounded with
+                               ProfilerEnable()/ProfilerDisable().
+    CPUPROFILE_FREQUENCY=x  -- how many interrupts/second the cpu-profiler
+                               samples.
+    PERFTOOLS_VERBOSE=<lvl> -- the higher level, the more messages malloc emits
+    MALLOCSTATS=<level>     -- prints memory-use stats at program-exit
+
+See also: https://github.com/gperftools/gperftools
+
+If applications that use timemory + gperftools experience errors during exit
+w.r.t. corrupted sizes, set:
+
+    (linux)
+    export LD_PRELOAD=/path/to/libtcmalloc.so
+
+    (macOS)
+    export DYLD_INSERT_LIBRARIES=/path/to/libtcmalloc.dylib
+    export DYLD_FORCE_FLAT_NAMESPACE=1
+
+before BEFORE running Python
+"""
+
+
+def __str2bool(v):
+    return v.lower() in ("yes", "y", "true", "t", "1", "on")
+
+
+def __load_component_libs():
+    """Loads the timemory library"""
+    relative_lib_path = "@LIB_RELPATH@"
+    ext = None
+
+    import platform
+
+    if platform.system().lower().startswith("darwin"):
+        ext = "dylib"
+    elif platform.system().lower().startswith("linux"):
+        ext = "so"
+    elif platform.system().lower().startswith("win"):
+        ext = "dll"
+
+    def __load(name):
+        # get the path to this directory
+        this_path = os.path.abspath(os.path.dirname(__file__))
+        p = os.path.realpath(os.path.join(this_path, relative_lib_path, name))
+        if not os.path.exists(p):
+            p = os.path.realpath(
+                os.path.join(this_path, relative_lib_path, "timemory", name)
+            )
+
+    try:
+        __load("libtimemory.{}".format(ext))
+    except Exception as e:
+        print(f"Error loading libtimemory: {e}")
+
+
+import sys
+
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
+
+
+_no_bindings = __str2bool(
+    os.environ.get("TIMEMORY_CXX_PLOT_MODE", "0")
+) or not __str2bool(os.environ.get("TIMEMORY_PYTHON_BINDINGS", "1"))
+if _no_bindings:
+    from . import mpi_support
+    from . import mpi
+    from . import roofline
+    from .common import LINE, FUNC, FILE, line, func, file, frame
+
+    __all__ = [
+        "version_info",
+        "build_info",
+        "version",
+        "mpi_support",
+        "roofline",
+        "mpi",
+        "LINE",
+        "FUNC",
+        "FILE",
+        "line",
+        "func",
+        "file",
+        "frame",
+    ]
+
+else:
+    _loaded_bindings = True
+    try:
+        from .libs import *
+    except Exception:
+        _loaded_bindings = False
+        __load_component_libs()
+
+    try:
+        if not _loaded_bindings:
+            from .libs import *
+
+        from .libs.libpytimemory import component as component
+        from .libs.libpytimemory import storage as storage
+        from .libs.libpytimemory import initialize as init
+        from . import plotting as plotting
+        from . import roofline as roofline
+        from . import mpi_support as mpi_support
+        from . import mpi as mpi
+        from . import util as util
+        from . import tools as tools
+        from . import bundle as bundle
+        from . import options as options
+        from . import units as units
+        from . import signals as signals
+        from . import region as region
+        from . import profiler as profiler
+        from . import trace as trace
+        from . import api as api
+        from . import hardware_counters as hardware_counters
+
+        from .common import LINE, FUNC, FILE, line, func, file, frame
+
+        sys.modules["timemory.plotting"] = plotting
+        sys.modules["timemory.roofline"] = roofline
+        sys.modules["timemory.mpi_support"] = mpi_support
+        sys.modules["timemory.mpi"] = mpi
+        sys.modules["timemory.util"] = util
+        sys.modules["timemory.tools"] = tools
+        sys.modules["timemory.bundle"] = bundle
+        sys.modules["timemory.options"] = options
+        sys.modules["timemory.units"] = units
+        sys.modules["timemory.signals"] = signals
+        sys.modules["timemory.component"] = component
+        sys.modules["timemory.region"] = region
+        sys.modules["timemory.profiler"] = profiler
+        sys.modules["timemory.storage"] = storage
+        sys.modules["timemory.trace"] = trace
+        sys.modules["timemory.api"] = api
+        sys.modules["timemory.hardware_counters"] = hardware_counters
+        sys.modules["timemory.manager"] = manager
+        sys.modules["timemory.settings"] = settings
+
+        init = initialize
+
+        args = sys.argv[:]
+        try:
+            # when executing something like "python -m timemory.{profiler,trace,etc.} ..."
+            # or the scripts "timemory-{python-profiler,plotter,etc.} ..." or a help
+            # flag is in the arguments, disable initialization by default to avoid
+            # creating a directory like "timemory-cpu-clock-output" for commands like
+            # "python -m timemory.trace -c cpu_clock -- <cmd>" and disable finalization
+            # via the atexit since these scripts should call finalize themselves.
+            if len(args) > 0 and (
+                args[0] == "-m"
+                or os.path.basename(args[0]).startswith("timemory-")
+                or "-h" in args
+                or "--help" in args
+                or "-?" in args
+            ):
+                os.environ.setdefault("TIMEMORY_LIBRARY_CTOR", "0")
+
+            # if "--" is present, discard everything before the "--"
+            if len(args) > 0 and "--" in args:
+                idx = args.index("--")
+                args = args[(idx + 1) :]
+
+            while len(args) > 0 and len(args[0]) > 0 and args[0][0] == "-":
+                args.pop(0)
+
+        except Exception:
+            args = ["python"]
+
+        if len(args) == 0:
+            args.append("python")
+
+        if __str2bool(os.environ.get("TIMEMORY_LIBRARY_CTOR", "yes")):
+            initialize(args)
+
+        if __str2bool(os.environ.get("TIMEMORY_LIBRARY_DTOR", "yes")):
+            import atexit
+
+            atexit.register(finalize)
+
+        settings.python_exe = "{}".format(sys.executable)
+        settings.command_line = sys.argv
+
+        __all__ = [
+            "version_info",
+            "build_info",
+            "version",
+            "LINE",
+            "FUNC",
+            "FILE",
+            "line",
+            "func",
+            "file",
+            "frame",
+            "report",
+            "toggle",
+            "enable",
+            "disable",
+            "is_enabled",
+            "enabled",
+            "has_mpi_support",
+            "set_rusage_children",
+            "set_rusage_self",
+            "timemory_init",
+            "timemory_finalize",
+            "init",
+            "initialize",
+            "finalize",
+            "timemory_argparse",
+            "add_arguments",
+            "get",
+            "get_text",
+            "clear",
+            "size",
+            "mpi_init",
+            "mpi_finalize",
+            "upcxx_init",
+            "upcxx_finalize",
+            "dmp_init",
+            "dmp_finalize",
+            "start_mpip",
+            "stop_mpip",
+            "start_ompt",
+            "stop_ompt",
+            "start_ncclp",
+            "stop_ncclp",
+            "start_mallocp",
+            "stop_mallocp",
+        ]
+
+    except Exception as e:
+        print("Exception: {}".format(e))
+        exc_type, exc_value, exc_traceback = sys.exc_info()
+        import traceback
+
+        traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+        from . import mpi_support
+        from . import mpi
+        from . import roofline
+        from .common import LINE, FUNC, FILE, line, func, file, frame
+
+        __all__ = [
+            "version_info",
+            "build_info",
+            "version",
+            "mpi_support",
+            "roofline",
+            "mpi",
+            "LINE",
+            "FUNC",
+            "FILE",
+            "line",
+            "func",
+            "file",
+            "frame",
+        ]
+
+sys.modules[__name__].__setattr__(
+    "version_info",
+    (
+        int("@TIMEMORY_VERSION_MAJOR@"),
+        int("@TIMEMORY_VERSION_MINOR@"),
+        int("@TIMEMORY_VERSION_PATCH@"),
+    ),
+)
+sys.modules[__name__].__setattr__("version", "@TIMEMORY_VERSION@")
+sys.modules[__name__].__setattr__(
+    "build_info",
+    {
+        "date": "@TIMEMORY_INSTALL_DATE@",
+        "library_architecture": "@CMAKE_SYSTEM_PROCESSOR@",
+        "system_name": "@CMAKE_SYSTEM_NAME@",
+        "system_version": "@CMAKE_SYSTEM_VERSION@",
+        "build_type": "@CMAKE_BUILD_TYPE@",
+        "compiler": "@CMAKE_CXX_COMPILER@",
+        "compiler_id": "@CMAKE_CXX_COMPILER_ID@",
+        "compiler_version": "@CMAKE_CXX_COMPILER_VERSION@",
+    },
+)
+
+version_info = sys.modules[__name__].__getattribute__("version_info")
+"""Tuple of version fields"""
+
+build_info = sys.modules[__name__].__getattribute__("build_info")
+"""Build information"""
+
+version = sys.modules[__name__].__getattribute__("version")
+"""Version string"""
+
+# try to import the local hatchet first
+try:
+    from . import hatchet as local_hatchet
+    from .hatchet.readers import timemory_reader as hatchet_reader
+    from .hatchet.graphframe import GraphFrame as graphframe
+
+    sys.modules["timemory.hatchet"] = local_hatchet
+    sys.modules["timemory.hatchet_reader"] = hatchet_reader
+    __all__ += ["graphframe"]
+except ImportError as e:
+    pass
+
+# try to import real hatchet
+try:
+    if "hatchet" not in sys.modules:
+        import hatchet as global_hatchet
+
+        sys.modules["hatchet"] = global_hatchet
+except ImportError:
+    pass
+
+# if real hatchet doesn't exist, set the local one as the global
+try:
+    if "hatchet" not in sys.modules and "timemory.hatchet" in sys.modules:
+        sys.modules["hatchet"] = sys.modules["timemory.hatchet"]
+except KeyError:
+    pass

@@ -1,0 +1,100 @@
+.TH "PAPI_set_debug" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_set_debug \- Set the current debug level for error output from PAPI\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Prototype:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_set_debug( int level );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIlevel\fP one of the constants shown in the table below and defined in the \fBpapi\&.h\fP header file\&. 
+.br
+ The possible debug levels for debugging are shown below\&. 
+.PD 0
+.IP "\(bu" 1
+PAPI_QUIET Do not print anything, just return the error code 
+.IP "\(bu" 1
+PAPI_VERB_ECONT Print error message and continue 
+.IP "\(bu" 1
+PAPI_VERB_ESTOP Print error message and exit 
+.br
+
+.PP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_EINVAL\fP The debug level is invalid\&. 
+.br
+
+.br
+ The current debug level is used by both the internal error and debug message handler subroutines\&. 
+.br
+ The debug handler is only used if the library was compiled with -DDEBUG\&. 
+.br
+ The debug handler is called when there is an error upon a call to the PAPI API\&.
+.br
+ The error handler is always active and its behavior cannot be modified except for whether or not it prints anything\&.
+.RE
+.PP
+The default PAPI debug handler prints out messages in the following form: 
+.br
+ PAPI Error: Error Code code, symbol, description
+.PP
+If the error was caused from a system call and the return code is PAPI_ESYS, the message will have a colon space and the error string as reported by strerror() appended to the end\&.
+.PP
+The PAPI error handler prints out messages in the following form: 
+.br
+ PAPI Error: message\&. 
+.br
+ 
+.PP
+\fBNote\fP
+.RS 4
+This is the ONLY function that may be called BEFORE PAPI_library_init()\&. 
+.br
+ 
+.RE
+.PP
+\fBExample:\fP
+.RS 4
+
+.PP
+.nf
+int ret;
+ret = PAPI_set_debug(PAPI_VERB_ECONT);
+if ( ret != PAPI_OK ) handle_error();
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_library_init\fP 
+.PP
+\fBPAPI_get_opt\fP 
+.PP
+\fBPAPI_set_opt\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

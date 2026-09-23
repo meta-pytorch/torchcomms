@@ -1,0 +1,105 @@
+.TH "PAPI_hl_region_end" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_hl_region_end \- Read performance events at the end of a region and store the difference to the corresponding beginning of the region\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int PAPI_hl_region_end( const char* region );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIregion\fP -- a unique region name corresponding to \fBPAPI_hl_region_begin\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_OK\fP 
+.br
+\fIPAPI_ENOTRUN\fP -- EventSet is currently not running or could not determined\&. 
+.br
+\fIPAPI_ESYS\fP -- A system or C library call failed inside PAPI, see the errno variable\&. 
+.br
+\fIPAPI_EMISC\fP -- PAPI has been deactivated due to previous errors\&. 
+.br
+\fIPAPI_ENOMEM\fP -- Insufficient memory\&.
+.RE
+.PP
+\fBPAPI_hl_region_end\fP reads performance events at the end of a region and stores the difference to the corresponding beginning of the region\&.
+.PP
+Assumes that \fBPAPI_hl_region_begin\fP was called before\&.
+.PP
+Note that \fBPAPI_hl_region_end\fP does not stop counting the performance events\&. Counting continues until the application terminates\&. Therefore, the programmer can also create nested regions if required\&. To stop a running high-level event set, the programmer must call PAPI_hl_stop()\&. It should also be noted, that a marked region is thread-local and therefore has to be in the same thread\&.
+.PP
+An output of the measured events is created automatically after the application exits\&. In the case of a serial, or a thread-parallel application there is only one output file\&. MPI applications would be saved in multiple files, one per MPI rank\&. The output is generated in the current directory by default\&. However, it is recommended to specify an output directory for larger measurements, especially for MPI applications via the environment variable PAPI_OUTPUT_DIRECTORY\&. In the case where measurements are performed, while there are old measurements in the same directory, PAPI will not overwrite or delete the old measurement directories\&. Instead, timestamps are added to the old directories\&.
+.PP
+For more convenience, the output can also be printed to stdout by setting PAPI_REPORT=1\&. This is not recommended for MPI applications as each MPI rank tries to print the output concurrently\&.
+.PP
+The generated measurement output can also be converted in a better readable output\&. The python script papi_hl_output_writer\&.py enhances the output by creating some derived metrics, like IPC, MFlops/s, and MFlips/s as well as real and processor time in case the corresponding PAPI events have been recorded\&. The python script can also summarize performance events over all threads and MPI ranks when using the option 'accumulate' as seen below\&.
+.PP
+\fBExample:\fP
+.RS 4
+
+.RE
+.PP
+.PP
+.nf
+int retval;
+
+retval = PAPI_hl_region_begin("computation");
+if ( retval != PAPI_OK )
+    handle_error(1);
+
+ //Do some computation here
+
+retval = PAPI_hl_region_end("computation");
+if ( retval != PAPI_OK )
+    handle_error(1);
+.fi
+.PP
+.PP
+.PP
+.nf
+python papi_hl_output_writer\&.py \-\-type=accumulate
+
+{
+   "computation": {
+      "Region count": 1,
+      "Real time in s": 0\&.97 ,
+      "CPU time in s": 0\&.98 ,
+      "IPC": 1\&.41 ,
+      "MFLIPS /s": 386\&.28 ,
+      "MFLOPS /s": 386\&.28 ,
+      "Number of ranks ": 1,
+      "Number of threads ": 1,
+      "Number of processes ": 1
+   }
+}
+.fi
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_hl_region_begin\fP 
+.PP
+\fBPAPI_hl_read\fP 
+.PP
+\fBPAPI_hl_stop\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

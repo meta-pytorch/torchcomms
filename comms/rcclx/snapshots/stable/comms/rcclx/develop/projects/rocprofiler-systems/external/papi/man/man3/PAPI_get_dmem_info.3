@@ -1,0 +1,49 @@
+.TH "PAPI_get_dmem_info" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_dmem_info \- Get information about the dynamic memory usage of the current program\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Prototype:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+ int PAPI_get_dmem_info( PAPI_dmem_info_t *dest );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIdest\fP structure to be filled in \fBPAPI_dmem_info_t\fP
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ECMP\fP The function is not implemented for the current component\&. 
+.br
+\fIPAPI_EINVAL\fP Any value in the structure or array may be undefined as indicated by this error value\&. 
+.br
+\fIPAPI_SYS\fP A system error occurred\&.
+.RE
+.PP
+\fBNote\fP
+.RS 4
+This function is only implemented for the Linux operating system\&. This function takes a pointer to a \fBPAPI_dmem_info_t\fP structure and returns with the structure fields filled in\&. A value of PAPI_EINVAL in any field indicates an undefined parameter\&.
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_get_executable_info\fP \fBPAPI_get_hardware_info\fP \fBPAPI_get_opt\fP \fBPAPI_library_init\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

@@ -1,0 +1,73 @@
+.TH "PAPI_assign_eventset_component" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_assign_eventset_component \- Assign a component index to an existing but empty EventSet\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface:\fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+PAPI_assign_eventset_component( int  EventSet, int  cidx );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIEventSet\fP An integer identifier for an existing EventSet\&. 
+.br
+\fIcidx\fP An integer identifier for a component\&. By convention, component 0 is always the cpu component\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_ENOCMP\fP The argument cidx is not a valid component\&. 
+.br
+\fIPAPI_ENOEVST\fP The EventSet doesn't exist\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+\fBPAPI_assign_eventset_component\fP assigns a specific component index, as specified by cidx, to a new EventSet identified by EventSet, as obtained from \fBPAPI_create_eventset\fP\&. EventSets are ordinarily automatically bound to components when the first event is added\&. This routine is useful to explicitly bind an EventSet to a component before setting component related options\&.
+.PP
+\fBExamples:\fP
+.RS 4
+
+.PP
+.nf
+int EventSet = PAPI_NULL;
+if ( PAPI_create_eventset( &EventSet ) != PAPI_OK )
+handle_error( 1 );
+// Bind our EventSet to the cpu component
+if ( PAPI_assign_eventset_component( EventSet, 0 ) != PAPI_OK )
+handle_error( 1 );
+// Convert our EventSet to multiplexing
+if ( PAPI_set_multiplex( EventSet ) != PAPI_OK )
+handle_error( 1 );
+
+.fi
+.PP
+.RE
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_opt\fP 
+.br
+\fBPAPI_create_eventset\fP 
+.br
+\fBPAPI_add_events\fP 
+.br
+\fBPAPI_set_multiplex\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

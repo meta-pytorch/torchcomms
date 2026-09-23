@@ -1,0 +1,32 @@
+PAPI_AMDSMI_ROOT ?= /opt/rocm
+
+COMPSRCS += components/amd_smi/amds.c \
+            components/amd_smi/linux-amd-smi.c \
+            components/amd_smi/amds_accessors.c \
+            components/amd_smi/amds_evtapi.c \
+            components/amd_smi/amds_ctx.c
+COMPOBJS += amds.o \
+            linux-amd-smi.o \
+            amds_accessors.o \
+            amds_evtapi.o \
+            amds_ctx.o
+
+CFLAGS += -I$(PAPI_AMDSMI_ROOT)/include/amd_smi
+CFLAGS += -I$(PAPI_AMDSMI_ROOT)/include
+CFLAGS += -g
+LDFLAGS += $(LDL) -g
+
+linux-amd-smi.o: components/amd_smi/linux-amd-smi.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/amd_smi/linux-amd-smi.c -o linux-amd-smi.o
+
+amds.o: components/amd_smi/amds.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/amd_smi/amds.c -o amds.o
+
+amds_accessors.o: components/amd_smi/amds_accessors.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/amd_smi/amds_accessors.c -o amds_accessors.o
+
+amds_evtapi.o: components/amd_smi/amds_evtapi.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/amd_smi/amds_evtapi.c -o amds_evtapi.o
+
+amds_ctx.o: components/amd_smi/amds_ctx.c $(HEADERS)
+	$(CC) $(LIBCFLAGS) $(OPTFLAGS) -c components/amd_smi/amds_ctx.c -o amds_ctx.o

@@ -1,0 +1,43 @@
+.TH "RateInfo" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+RateInfo
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "int \fBEventSet\fP"
+.br
+.ti -1c
+.RI "int \fBevent_0\fP"
+.br
+.ti -1c
+.RI "short int \fBrunning\fP"
+.br
+.ti -1c
+.RI "long long \fBlast_real_time\fP"
+.br
+.ti -1c
+.RI "long long \fBlast_proc_time\fP"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "int RateInfo::event_0"
+first event of the eventset 
+.SS "int RateInfo::EventSet"
+EventSet of the thread 
+.SS "long long RateInfo::last_proc_time"
+Previous value of processor time 
+.SS "long long RateInfo::last_real_time"
+Previous value of real time 
+.SS "short int RateInfo::running"
+STOP, FLIP, FLOP, IPC or EPC 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

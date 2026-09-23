@@ -1,0 +1,48 @@
+.TH "PAPI_get_cmp_opt" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_get_cmp_opt \- Get component specific PAPI options\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fIoption\fP is an input parameter describing the course of action\&. Possible values are defined in \fBpapi\&.h\fP and briefly described in the table below\&. The Fortran calls are implementations of specific options\&. 
+.br
+\fIptr\fP is a pointer to a structure that acts as both an input and output parameter\&. 
+.br
+\fIcidx\fP An integer identifier for a component\&. By convention, component 0 is always the cpu component\&.
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP One or more of the arguments is invalid\&.
+.RE
+.PP
+PAPI_get_opt() and PAPI_set_opt() query or change the options of the PAPI library or a specific event set created by \fBPAPI_create_eventset\fP \&. Some options may require that the eventset be bound to a component before they can execute successfully\&. This can be done either by adding an event or by explicitly calling \fBPAPI_assign_eventset_component\fP \&.
+.PP
+The C interface for these functions passes a pointer to the \fBPAPI_option_t\fP structure\&. Not all options require or return information in this structure, and not all options are implemented for both get and set\&. Some options require a component index to be provided\&. These options are handled explicitly by the PAPI_get_cmp_opt() call for 'get' and implicitly through the option structure for 'set'\&. The Fortran interface is a series of calls implementing various subsets of the C interface\&. Not all options in C are available in Fortran\&.
+.PP
+\fBNote\fP
+.RS 4
+Some options, such as PAPI_DOMAIN and PAPI_MULTIPLEX, are also available as separate entry points in both C and Fortran\&.
+.RE
+.PP
+The reader is urged to see the example code in the PAPI distribution for usage of \fBPAPI_get_opt\fP\&. The file \fBpapi\&.h\fP contains definitions for the structures unioned in the \fBPAPI_option_t\fP structure\&.
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_set_debug\fP \fBPAPI_set_multiplex\fP \fBPAPI_set_domain\fP \fBPAPI_option_t\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

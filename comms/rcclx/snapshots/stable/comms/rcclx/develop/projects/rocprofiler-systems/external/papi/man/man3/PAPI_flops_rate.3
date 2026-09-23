@@ -1,0 +1,64 @@
+.TH "PAPI_flops_rate" 3 "Wed Jun 25 2025 19:30:48" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_flops_rate \- Simplified call to get Mflops/s (floating point operation rate), real and processor time\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBC Interface: \fP
+.RS 4
+#include <\fBpapi\&.h\fP> 
+.br
+int \fBPAPI_flops_rate\fP ( int event, float *rtime, float *ptime, long long *flpops, float *mflops );
+.RE
+.PP
+\fBParameters\fP
+.RS 4
+\fIevent\fP one of the three presets PAPI_FP_OPS, PAPI_SP_OPS or PAPI_DP_OPS 
+.br
+\fI*rtime\fP realtime since the latest call 
+.br
+\fI*ptime\fP process time since the latest call 
+.br
+\fI*flpops\fP floating point operations since the latest call 
+.br
+\fI*mflops\fP incremental (Mega) floating point operations per seconds since the latest call
+.RE
+.PP
+\fBReturn values\fP
+.RS 4
+\fIPAPI_EINVAL\fP The counters were already started by something other than PAPI_flops_rate()\&. 
+.br
+\fIPAPI_ENOEVNT\fP The floating point operations event does not exist\&. 
+.br
+\fIPAPI_ENOMEM\fP Insufficient memory to complete the operation\&.
+.RE
+.PP
+The first call to PAPI_flops_rate() will initialize the PAPI interface, set up the counters to monitor the floating point operations event and start the counters\&.
+.PP
+Subsequent calls will read the counters and return real time, process time, floating point operations and the Mflop/s rate since the latest call to PAPI_flops_rate()\&.
+.PP
+PAPI_flops_rate() returns information related to theoretical floating point operations rather than simple instructions\&. It uses the floating point operations event which attempts to 'correctly' account for, e\&.g\&., FMA undercounts and FP Store overcounts\&. Note that PAPI_flops_rate() is thread-safe and can therefore be called by multiple threads\&.
+.PP
+\fBSee also\fP
+.RS 4
+PAPI_flips_rate() 
+.PP
+PAPI_ipc() 
+.PP
+PAPI_epc() 
+.PP
+PAPI_rate_stop() 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

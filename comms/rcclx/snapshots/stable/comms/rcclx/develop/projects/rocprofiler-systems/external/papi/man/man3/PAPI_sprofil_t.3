@@ -1,0 +1,38 @@
+.TH "PAPI_sprofil_t" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_sprofil_t
+.SH SYNOPSIS
+.br
+.PP
+.SS "Data Fields"
+
+.in +1c
+.ti -1c
+.RI "void * \fBpr_base\fP"
+.br
+.ti -1c
+.RI "unsigned \fBpr_size\fP"
+.br
+.ti -1c
+.RI "vptr_t \fBpr_off\fP"
+.br
+.ti -1c
+.RI "unsigned \fBpr_scale\fP"
+.br
+.in -1c
+.SH "Field Documentation"
+.PP 
+.SS "void* PAPI_sprofil_t::pr_base"
+buffer base 
+.SS "vptr_t PAPI_sprofil_t::pr_off"
+pc start address (offset) 
+.SS "unsigned PAPI_sprofil_t::pr_scale"
+pc scaling factor: fixed point fraction 0xffff ~= 1, 0x8000 == \&.5, 0x4000 == \&.25, etc\&. also, two extensions 0x1000 == 1, 0x2000 == 2 
+.SS "unsigned PAPI_sprofil_t::pr_size"
+buffer size 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.

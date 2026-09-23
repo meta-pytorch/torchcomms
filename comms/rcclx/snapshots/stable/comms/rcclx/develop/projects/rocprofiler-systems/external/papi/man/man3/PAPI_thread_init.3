@@ -1,0 +1,37 @@
+.TH "PAPI_thread_init" 3 "Wed Jun 25 2025 19:30:49" "Version 7.2.0.0" "PAPI" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+PAPI_thread_init \- Initialize thread support in the PAPI library\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.SH "Detailed Description"
+.PP 
+
+.PP
+\fBParameters\fP
+.RS 4
+\fI*id_fn\fP Pointer to a function that returns current thread ID\&.
+.RE
+.PP
+\fBPAPI_thread_init\fP initializes thread support in the PAPI library\&. Applications that make no use of threads do not need to call this routine\&. This function MUST return a UNIQUE thread ID for every new thread/LWP created\&. The OpenMP call omp_get_thread_num() violates this rule, as the underlying LWPs may have been killed off by the run-time system or by a call to omp_set_num_threads() \&. In that case, it may still possible to use omp_get_thread_num() in conjunction with PAPI_unregister_thread() when the OpenMP thread has finished\&. However it is much better to use the underlying thread subsystem's call, which is pthread_self() on Linux platforms\&.
+.PP
+.PP
+.nf
+if ( PAPI_thread_init(pthread_self) != PAPI_OK )
+    exit(1);
+.fi
+.PP
+.PP
+\fBSee also\fP
+.RS 4
+\fBPAPI_register_thread\fP \fBPAPI_unregister_thread\fP \fBPAPI_get_thr_specific\fP \fBPAPI_set_thr_specific\fP \fBPAPI_thread_id\fP \fBPAPI_list_threads\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for PAPI from the source code\&.
