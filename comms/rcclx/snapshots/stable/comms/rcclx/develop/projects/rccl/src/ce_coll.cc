@@ -15,6 +15,8 @@
 #include "alloc.h"
 #include "ce_fault_inject.h"
 
+#if ROCM_VERSION >= 60400
+
 #ifdef ENABLE_FAULT_INJECTION
 // Common fault check helper
 static ncclResult_t ceFaultCheck(struct ncclComm* comm, uint32_t bit, const char* fnName) {
@@ -789,3 +791,40 @@ exit:
 fail:
   goto exit;
 }
+
+#else
+// Stubs for ROCm 6.2 compatibility
+bool ncclCeAvailable(struct ncclComm* comm, ncclFunc_t coll, int/*ncclDevRedOp_t*/ red, ncclDataType_t ty, ncclSymRegType_t winRegType) {
+  return false;
+}
+bool ncclCeImplemented(ncclFunc_t coll, int/*ncclDevRedOp_t*/ red, ncclDataType_t ty) {
+  return false;
+}
+// init.cc calls this during commFree without first checking ncclCeAvailable result,
+// so need to return success to avoid failure
+ncclResult_t ncclCeFinalize(struct ncclComm* comm) {
+  return ncclSuccess;
+}
+// The remaining functions should not be called when ncclCeAvailable is false
+ncclResult_t ncclCeInit(struct ncclComm* comm) {
+  return ncclInternalError;
+}
+ncclResult_t ncclMemOpSync(struct ncclComm* comm, cudaStream_t stream, void* ceCollHandle) {
+  return ncclInternalError;
+}
+ncclResult_t ncclLaunchCeColl(struct ncclComm* comm, struct ncclKernelPlan* plan) {
+  return ncclInternalError;
+}
+ncclResult_t ncclCeAllGather(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclCeScatter(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclCeGather(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclCeAlltoAll(struct ncclComm* comm, struct ncclCeCollArgs* args, cudaStream_t stream) {
+  return ncclInternalError;
+}
+#endif

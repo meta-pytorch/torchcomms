@@ -18,6 +18,8 @@
 #include "rma/rma.h"
 #include "rma/rma_ce.h"
 
+#if ROCM_VERSION >= 60400
+
 ncclResult_t ncclRmaCeInit(struct ncclComm* comm){
   ncclResult_t ret = ncclSuccess;
   uint64_t* signalsDevBase = nullptr;
@@ -331,3 +333,21 @@ exit:
 fail:
   goto exit;
 }
+
+#else
+// Stubs for ROCm 6.2 compatibility
+ncclResult_t ncclRmaCeFinalize(struct ncclComm* comm) {
+  return ncclSuccess;
+}
+// The remaining functions should not be called: the RMA CE path is only
+// reachable with RCCL_RMA_CU_PATH_ENABLED
+ncclResult_t ncclRmaCeInit(struct ncclComm* comm) {
+  return ncclInternalError;
+}
+ncclResult_t ncclRmaCePutLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclRmaCeWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
+  return ncclInternalError;
+}
+#endif
