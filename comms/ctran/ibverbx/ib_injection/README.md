@@ -99,54 +99,115 @@ Holding is *withholding* a real CQE — no fabricated completions, no error code
 and per-CQ order preserved exactly as a provider would.
 
 
+## Rules
+
+A rule is `(verb, action, selector, repeat)` plus action-specific fields. Four
+actions:
+
+**Failure injection only.** Skew — holding a completion, deferring a post — shifts
+timing with no error at all, so it is a separate mechanism and lands in its own
+diff, which adds `CQE_DELAY` and `CALL_DELAY` to this table.
+
+| Action | Verbs | Effect |
+|---|---|---|
+| `API_ERROR` | setup verbs, `post_send`, `post_recv`, `poll_cq` | fail the call. Pointer-returning verbs get `nullptr` + `errno`; int-returning verbs return the `errno` |
+| `WC_STATUS` | `poll_cq` | deliver a real CQE with `ibv_wc.status` overwritten |
+
+The two are deliberately separate rather than one "inject an error" action,
+because they reach different ctran paths: a `post_send` that fails never produces
+a CQE at all, whereas a bad `ibv_wc.status` flows through `processCqe`. Collapsing
+them would leave one of those untested.
+
+The matrix is sparse, and `addRule` **rejects** every gap rather than accepting a
+rule that could never fire — `WC_STATUS` on a post verb has no `ibv_wc` to write.
+
+What each combination can actually select, all enforced in `addRule` so both front
+ends are held to one contract:
+
+| Verb | Action | `deviceId` | `hwQpNum` | `opcode` | Payload |
+|---|---|---|---|---|---|
+| setup verbs (`open_device`, `alloc_pd`, `reg_mr`, `create_cq`, `create_qp`, `modify_qp`) | `API_ERROR` | wildcard only | wildcard only | wildcard only | `errnoValue` > 0 |
+| `post_send` | `API_ERROR` | yes | yes | yes (`WR` domain) | `errnoValue` > 0 |
+| `post_recv` | `API_ERROR` | yes | yes | **wildcard only** | `errnoValue` > 0 |
+| `poll_cq` | `API_ERROR` | yes | wildcard only | wildcard only | `errnoValue` > 0 |
+| `poll_cq` | `WC_STATUS` | yes | yes | yes (`WC` domain) | `wcStatus` ≠ `IBV_WC_SUCCESS` |
+
+Every "wildcard only" is a constraint, not a default: the decision is made before
+the thing exists or before it is read. Setup verbs fire before any device or QP
+exists. `ibv_recv_wr` carries no opcode field, so `shimPostRecv` can only ever
+decide with the wildcard. And an `API_ERROR` on `poll_cq` fails the call before a
+completion is read, so there is no QP or opcode to match yet. A rule naming one
+anyway would be stored, handed back a rule id, and sit inert — indistinguishable
+from the code under test handling the error correctly, which is why it is rejected
+instead.
+
+The two payload rules exist for one reason: `errnoValue` 0 and `IBV_WC_SUCCESS`
+both fire and move the counters while leaving the call, or the completion, reading
+exactly as it would have anyway. A run that reports an injection it did not
+perform is the one result this tool must never produce.
+
+### Selector
+
+```
+deviceId  | ANY      hwQpNum | ANY      opcode | ANY   + opcodeDomain(WR|WC)
+```
+
+`hwQpNum` is the **hardware** `qp_num`, not a `qpIdx`. ctran's `getDataQpNums()`
+returns provider-assigned numbers (`IbvQp::getQpNum()` → `qp_->qp_num`); an index
+is a different thing that happens to share `uint32_t`. Passing an index would
+match nothing — real `qp_num`s are large — and fail *silently*, which is the worst
+outcome for an injector. Hence the `hw` in the name.
+
+`opcodeDomain` is not redundant with the verb: `IBV_WR_RDMA_READ` is 4 and
+`IBV_WC_RDMA_READ` is 2, so comparing across namespaces matches nothing.
+
+### Repeat
+
+```
+fires iff ordinal >= firstMatch
+     && (ordinal - firstMatch) % everyNth == 0
+     && (unbounded || fired < count)
+```
+
+`firstMatch` is what makes setup-verb injection useful: `create_qp` with
+`firstMatch=3` fails the **third** QP creation — mid-VC-setup with two QPs already
+live, which is the partial-construction path where cleanup bugs live.
+`firstMatch=1` only tests the trivial early-exit.
+
+Matching is evaluated **once** per event, so a rule's schedule advances only when
+new traffic arrives.
+
 ## Usage
 
 Two surfaces today. They differ only in **how a rule is armed** — the shim and the
 seam are identical.
 
-This file lands ahead of the code, so the API below is the design: the shim starts
-as a pure forwarder, and the rule engine, control ABI and `injection::*` bridge
-arrive in the diffs after it.
-
 ### C++ CI test
 
 The only surface that can call the control API, so the only one that gets
-assertions. Point the target at the shim and drive it through the bridge
-(`IbInjectionControl.h`):
-
-```python
-env = {
-    "IBVERBX_IBVERBS_SO": "$(exe_target //comms/ctran/ibverbx/ib_injection:libibverbs.so)",
-}
-deps = ["//comms/ctran/ibverbx/ib_injection:ib-injection-control"]
-```
+assertions. A test arms rules through the C entry points; the `injection::*` C++
+bridge that wraps them lands with the harness in the next diff.
 
 ```cpp
-injection::reset();  // after ctran init, so only your traffic is measured
+// Fail the third QP creation: mid-VC-setup, two QPs already live.
+IbInjectionRule r{};
+r.verb              = IB_INJECTION_VERB_CREATE_QP;
+r.action            = IB_INJECTION_ACTION_API_ERROR;
+r.errnoValue        = ENOMEM;
+r.selector.deviceId = IB_INJECTION_ANY_DEVICE;
+r.selector.hwQpNum  = IB_INJECTION_ANY_QP;
+r.selector.opcode   = IB_INJECTION_ANY_OPCODE;
+r.repeat            = {.firstMatch = 3, .everyNth = 1, .count = 1};
 
-// Hold device 1's flush READs until device 0 has released both of its own.
-const uint32_t rule = injection::addCqeDelayAfterReleases(
-    /*deviceId=*/1, ibverbx::IBV_WC_RDMA_READ, /*afterDevice=*/0,
-    /*afterCount=*/2);
-
-// ... drive ctran ...
-const auto s = injection::getState();
-EXPECT_EQ(s.device(0).cqesReleased, 2u);
-EXPECT_EQ(s.device(1).cqesReleased, 0u);
-injection::releaseRule(rule);
+uint32_t ruleId = 0;
+ibInjectionAddRule(&r, &ruleId);
+// ... drive ctran, then read back counters with ibInjectionGetState().
 ```
 
-Failure injection needs no handshake, because it fires before any QP exists:
-
-```cpp
-// Fail the 3rd QP creation: mid-VC-setup, two QPs already live.
-injection::addSetupError(
-    IB_INJECTION_VERB_CREATE_QP, ENOMEM, /*firstMatch=*/3);
-```
-
-`injection::*` is the C++ bridge; each call is a thin wrapper over the exported C
-entry points (`ibInjectionAddRule`, `ibInjectionGetState`, …), which is what
-crosses the `dlopen` boundary.
+Setup-verb rules need no handshake at all, because they fire before any QP exists.
+A data-path rule that must name one specific QP has to be armed after connections
+are up, since `qp_num` is assigned by the provider — read it back from ctran's
+public accessors (`getDataQpNums()`) and put it in `selector.hwQpNum`.
 
 ### collperf and e2e farm jobs
 
@@ -238,8 +299,10 @@ software event the shim can move?
 
 | File | Role |
 |---|---|
-| `IbInjectionDso.cc` | exported verbs, real-provider delegation |
+| `IbInjectionApi.h` | control ABI; the only declaration shared across the dlopen boundary |
+| `IbInjectionDso.cc` | exported verbs, the 3 hot-path shims, real-provider delegation |
 | `IbverbxSymbols.def` | table of verbs to forward, and how each is resolved |
+| `InjectionEngine.{h,cc}` | rule matching, repeat scheduling, held-CQE queues, counters |
 | `version.script` | export list; a missing entry aborts `ibvInit()` |
 
 `IbverbxSymbols.def` and `version.script` must stay a superset of what
@@ -248,15 +311,18 @@ symbols) on this library's handle, and the real provider is opened `RTLD_LOCAL`,
 a missing export is simply absent. `ib_injection_dlopen_test` pins that, in both
 lookup styles.
 
+`ib_injection_engine_test` covers the rule semantics with no NIC and no dlopen: the
+engine is linked directly and driven against a fake provider.
+
 The module sits outside `tests/` on purpose: the `.so` ships in an fbpkg to
 collperf and farm jobs, so it is a shipped artifact, not test-only code. Its own
 tests live in `ib_injection/tests/`.
 
 ## Appendix: mlx5
 
-The mlx5 **data path** needs nothing special: the vtable patch overwrites
-`ibv_context::ops`, and every QP on a context shares it, so `poll_cq` /
-`post_send` / `post_recv` route through it no matter how the QP was created.
+The mlx5 **data path** is covered by the vtable patch: the shim overwrites
+`ibv_context::ops` and every QP on a context shares it, so `poll_cq` /
+`post_send` / `post_recv` land in a shim no matter how the QP was created.
 
 `mlx5dv_*` is the vendor escape hatch for features with no vendor-neutral verb.
 It is exported from libmlx5 and resolved through a **second** handle that ibverbx
