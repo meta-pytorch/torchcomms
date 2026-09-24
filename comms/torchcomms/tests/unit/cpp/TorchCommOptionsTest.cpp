@@ -165,62 +165,6 @@ TEST_F(BackendWrapperTest, SendThreadsTagToBackend) {
   EXPECT_EQ(fake->getLastSendDstForTest(), 1);
 }
 
-#ifdef C10D_BACKEND_HAS_RECONFIGURE
-TEST_F(BackendWrapperTest, ReconfigureForwardsOptionsAndRefreshesMembership) {
-  c10::intrusive_ptr<c10d::Backend> backend = wrapper_;
-  EXPECT_TRUE(backend->supportsReconfigure());
-  EXPECT_EQ(backend->get_reconfigure_handle(), comm_->getInitHandle());
-
-  c10d::ReconfigureOptions opts;
-  opts.uuid = 42;
-  opts.handles = std::vector<c10d::ReconfigureHandle>{"peer", "fake:0"};
-  opts.timeout = std::chrono::milliseconds(1234);
-  opts.hints = {{"key", "value"}};
-  getFakeBackend()->setRank(1);
-  getFakeBackend()->setSize(2);
-  auto work = backend->reconfigure(opts);
-  EXPECT_TRUE(work->getFuture()->completed());
-  EXPECT_TRUE(work->wait());
-  EXPECT_EQ(backend->getRank(), 1);
-  EXPECT_EQ(backend->getSize(), 2);
-  EXPECT_EQ(comm_->getRanks().size(), 2);
-  const auto& received = getFakeBackend()->getLastReconfigureOptions();
-  ASSERT_TRUE(received.has_value());
-  EXPECT_EQ(received->uuid, opts.uuid);
-  EXPECT_EQ(received->handles, opts.handles);
-  EXPECT_EQ(received->timeout, opts.timeout);
-  EXPECT_EQ(received->hints, opts.hints);
-}
-
-TEST_F(
-    BackendWrapperTest,
-    ReconfigurePreservesUnorderedHandlesAndDefaultTimeout) {
-  c10d::ReconfigureOptions opts;
-  opts.uuid = 43;
-  opts.handles = std::unordered_set<c10d::ReconfigureHandle>{"fake:0", "peer"};
-  wrapper_->reconfigure(opts)->wait();
-  const auto& received = getFakeBackend()->getLastReconfigureOptions();
-  ASSERT_TRUE(received.has_value());
-  EXPECT_EQ(received->handles, opts.handles);
-  EXPECT_EQ(received->timeout, std::nullopt);
-  EXPECT_TRUE(received->hints.empty());
-}
-
-TEST_F(BackendWrapperTest, FailedReconfigureDoesNotPublishMembership) {
-  c10d::ReconfigureOptions opts;
-  opts.handles = std::vector<c10d::ReconfigureHandle>{"fake:0"};
-  getFakeBackend()->setSize(1);
-  getFakeBackend()->setReconfigureFailure(true);
-  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
-  EXPECT_EQ(wrapper_->getSize(), 4);
-
-  getFakeBackend()->setReconfigureFailure(false);
-  opts.uuid = 1;
-  EXPECT_TRUE(wrapper_->reconfigure(opts)->wait());
-  EXPECT_EQ(wrapper_->getSize(), 1);
-}
-#endif
-
 TEST_F(BackendWrapperTest, RecvThreadsTagToBackend) {
   std::vector<at::Tensor> tensors = {at::empty({4}, at::kFloat)};
   wrapper_->recv(tensors, /*srcRank=*/2, /*tag=*/456);

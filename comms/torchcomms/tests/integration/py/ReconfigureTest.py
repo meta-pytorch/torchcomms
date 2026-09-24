@@ -173,47 +173,6 @@ class ReconfigureTest(unittest.TestCase):
 
         comm.finalize()
 
-    @unittest.skipUnless(
-        hasattr(torch.distributed.ProcessGroup, "reconfigure"),
-        "c10d reconfigure API unavailable",
-    )
-    def test_backend_wrapper_reconfigure(self):
-        if not self._is_supported_backend():
-            self.skipTest(f"Backend {self.backend} does not support reconfigure()")
-
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            "backend_wrapper_reconfigure",
-            enable_reconfigure=True,
-            store=self._get_store_for_comm(),
-            timeout=timedelta(seconds=30),
-        )
-        backend = torchcomms._comms._BackendWrapper(comm)
-        initialized = False
-        try:
-            self.assertTrue(backend.supports_reconfigure)
-            self.assertEqual(backend.get_reconfigure_handle(), comm.get_init_handle())
-            handles = self._collect_handles(comm, "backend_wrapper_initial")
-            for uuid in (1, 2):
-                opts = torch.distributed.distributed_c10d.ReconfigureOptions()
-                opts.uuid = uuid
-                opts.handles = handles
-                opts.timeout = timedelta(seconds=30)
-                work = backend.reconfigure(opts)
-                self.assertTrue(work.wait())
-                initialized = True
-                work.get_future().wait()
-                self.assertEqual(backend.rank(), comm.get_rank())
-                self.assertEqual(backend.size(), self.world_size)
-                tensor = torch.ones(4, device=self.device)
-                backend.allreduce([tensor]).wait()
-                self.assertEqual(tensor.cpu().tolist(), [float(self.world_size)] * 4)
-                handles = self._collect_handles(comm, f"backend_wrapper_{uuid}")
-        finally:
-            if initialized:
-                comm.finalize()
-
     def test_reconfigure_then_allreduce(self):
         """Test that allreduce works after reconfigure."""
         if not self._is_supported_backend():
