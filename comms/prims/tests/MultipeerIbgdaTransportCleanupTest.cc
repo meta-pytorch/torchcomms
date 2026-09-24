@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdlib>
 #include <functional>
 #include <memory>
@@ -599,6 +600,110 @@ TEST(
   EXPECT_FALSE(weakOwner.expired());
   delete retainedHolder;
   EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    DeregistrationFailureRetainsCallerOwner) {
+  auto owner = std::shared_ptr<void>(
+      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+  std::weak_ptr<void> weakOwner = owner;
+  std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
+  keepAlives.push_back(
+      std::make_unique<std::shared_ptr<void>>(std::move(owner)));
+  auto* retainedHolder = keepAlives.front().get();
+
+  EXPECT_FALSE(releaseResourcesOrRetainKeepAlives(
+      /*resourceLifetimeQuarantineRequired=*/false,
+      /*keepAliveLifetimeQuarantineRequired=*/false,
+      keepAlives,
+      []() noexcept { return false; }));
+  EXPECT_FALSE(weakOwner.expired());
+  delete retainedHolder;
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailedDeregistrationRetainsTransportOwner) {
+  auto owner = std::shared_ptr<void>(
+      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+  std::weak_ptr<void> weakOwner = owner;
+  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
+  auto* retainedHolder = holder.get();
+
+  EXPECT_FALSE(releaseAllocationAfterDeregistration(
+      /*registered=*/true,
+      []() noexcept { return false; },
+      [&]() noexcept { holder.reset(); },
+      [&]() noexcept { static_cast<void>(holder.release()); }));
+  EXPECT_FALSE(weakOwner.expired());
+  delete retainedHolder;
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    SuccessfulDeregistrationReleasesTransportOwner) {
+  auto owner = std::shared_ptr<void>(
+      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+  std::weak_ptr<void> weakOwner = owner;
+  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
+
+  EXPECT_TRUE(releaseAllocationAfterDeregistration(
+      /*registered=*/true,
+      []() noexcept { return true; },
+      [&]() noexcept { holder.reset(); },
+      [&]() noexcept { static_cast<void>(holder.release()); }));
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    UnregisteredTransportOwnerReleasesWithoutDeregistration) {
+  auto owner = std::shared_ptr<void>(
+      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+  std::weak_ptr<void> weakOwner = owner;
+  auto holder = std::make_unique<std::shared_ptr<void>>(std::move(owner));
+  bool deregisterCalled = false;
+
+  EXPECT_TRUE(releaseAllocationAfterDeregistration(
+      /*registered=*/false,
+      [&]() noexcept {
+        deregisterCalled = true;
+        return false;
+      },
+      [&]() noexcept { holder.reset(); },
+      [&]() noexcept { static_cast<void>(holder.release()); }));
+  EXPECT_FALSE(deregisterCalled);
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    PartialMrDeregistrationPreservesFailedEntries) {
+  int mr0 = 0;
+  int mr1 = 0;
+  int mr2 = 0;
+  std::array<int*, 3> mrs{&mr0, &mr1, &mr2};
+  std::vector<int> attemptedNics;
+
+  EXPECT_FALSE(tryDeregisterMrs(mrs, 3, [&](int nic, int*) {
+    attemptedNics.push_back(nic);
+    return nic == 1 ? -1 : 0;
+  }));
+  EXPECT_EQ(attemptedNics, (std::vector<int>{0, 1, 2}));
+  EXPECT_EQ(mrs[0], nullptr);
+  EXPECT_EQ(mrs[1], &mr1);
+  EXPECT_EQ(mrs[2], nullptr);
+
+  attemptedNics.clear();
+  EXPECT_TRUE(tryDeregisterMrs(mrs, 3, [&](int nic, int*) {
+    attemptedNics.push_back(nic);
+    return 0;
+  }));
+  EXPECT_EQ(attemptedNics, (std::vector<int>{1}));
+  EXPECT_EQ(mrs, (std::array<int*, 3>{nullptr, nullptr, nullptr}));
 }
 
 TEST(

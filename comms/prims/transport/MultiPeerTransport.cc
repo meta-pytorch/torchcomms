@@ -604,15 +604,25 @@ void MultiPeerTransport::deregisterIbBufferRange(
       "deregisterIbBufferRange: IB transport not available");
 }
 
-void MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) {
-  if (ibgdaTransport_) {
+bool MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) noexcept {
+  try {
     if (ibgda_resources_quarantined()) {
-      return;
+      return false;
     }
-    ibgdaTransport_->deregisterBuffer(ptr);
-  } else if (ibrcTransport_) {
-    ibrcTransport_->deregisterBuffer(ptr);
+    if (ibgdaTransport_) {
+      return ibgdaTransport_->deregisterBuffer(ptr);
+    }
+    if (ibrcTransport_) {
+      return ibrcTransport_->deregisterBuffer(ptr);
+    }
+  } catch (const std::exception& ex) {
+    COMMS_LOG(ERR, "Failed to deregister IB buffer {}: {}", ptr, ex.what());
+    return false;
+  } catch (...) {
+    COMMS_LOG(ERR, "Failed to deregister IB buffer {}: unknown exception", ptr);
+    return false;
   }
+  return false;
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
@@ -700,19 +710,18 @@ IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
       "registerIbCounterBuffer: IB transport not available");
 }
 
-void MultiPeerTransport::freeIbCounterBuffer(
+bool MultiPeerTransport::freeIbCounterBuffer(
     IbgdaLocalBuffer& buffer,
     void*& hostPtr) noexcept {
   if (buffer.ptr == nullptr) {
-    return;
+    return true;
   }
   if (ibgda_resources_quarantined()) {
-    buffer = IbgdaLocalBuffer{};
-    hostPtr = nullptr;
-    return;
+    return false;
   }
-  if (buffer.lkey_per_device.size > 0 && ibgdaTransport_) {
-    ibgdaTransport_->deregisterBuffer(buffer.ptr);
+  if (buffer.lkey_per_device.size > 0 &&
+      !localDeregisterIbgdaBuffer(buffer.ptr)) {
+    return false;
   }
   if (hostPtr != nullptr) {
     (void)cudaFreeHost(hostPtr);
@@ -721,6 +730,7 @@ void MultiPeerTransport::freeIbCounterBuffer(
     (void)cudaFree(buffer.ptr);
   }
   buffer = IbgdaLocalBuffer{};
+  return true;
 }
 
 MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
