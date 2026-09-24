@@ -9,6 +9,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -70,6 +71,10 @@ class P2pIbrcHostWriter {
    * @param statusHost host alias of the NIC status/error block (may be null)
    * @param depth     ring depth (power of two)
    * @param nicId     NIC index this ring targets (selects lkey/rkey per device)
+   * @param producerLease the transport's per-peer producer claim, held for
+   *        this writer's lifetime. Taken here rather than through a setter so
+   *        no holder can drop it while still driving the ring. Null only for
+   *        writers built directly over caller-owned rings, i.e. in tests.
    */
   P2pIbrcHostWriter(
       IbrcDesc* descsHost,
@@ -77,14 +82,16 @@ class P2pIbrcHostWriter {
       uint64_t* ciHost,
       IbrcNicStatus* statusHost,
       uint32_t depth,
-      uint32_t nicId)
+      uint32_t nicId,
+      std::shared_ptr<void> producerLease = nullptr)
       : descs_(descsHost),
         pi_(piHost),
         ci_(ciHost),
         status_(statusHost),
         depth_(depth),
         mask_(depth - 1),
-        nic_(nicId) {
+        nic_(nicId),
+        producerLease_(std::move(producerLease)) {
     if (descsHost == nullptr || piHost == nullptr || ciHost == nullptr) {
       throw std::runtime_error("P2pIbrcHostWriter: null command queue pointer");
     }
@@ -118,6 +125,7 @@ class P2pIbrcHostWriter {
     waitTimeout_ = other.waitTimeout_;
     opDeadline_ = other.opDeadline_;
     aborted_ = std::move(other.aborted_);
+    producerLease_ = std::move(other.producerLease_);
     return *this;
   }
 
@@ -357,6 +365,16 @@ class P2pIbrcHostWriter {
     return nic_;
   }
 
+  /**
+   * Whether this writer holds `lease` as its producer claim, so an aggregate
+   * covered by one claim can check that it actually reaches every writer it
+   * was handed. Comparing the control block, not a bool, because holding some
+   * OTHER peer's claim is the same defect as holding none.
+   */
+  bool shares_producer_lease(const std::shared_ptr<void>& lease) const {
+    return producerLease_ == lease;
+  }
+
  private:
   static constexpr uint64_t kNoWaitTarget =
       std::numeric_limits<uint64_t>::max();
@@ -564,6 +582,15 @@ class P2pIbrcHostWriter {
   // Takes precedence over waitTimeout_ -- see OpBudget.
   std::optional<std::chrono::steady_clock::time_point> opDeadline_;
   std::function<bool()> aborted_{nullptr};
+  /*
+   * The transport's per-peer producer claim, refused to a second acquirer
+   * while any strong reference survives. Every writer over a peer's rings
+   * holds one -- a lanes object's lanes share the copy it holds -- so the peer
+   * reads as free only once no writer can still drive it. Set at construction
+   * and moved with the writer; there is deliberately no setter, since clearing
+   * it under a live writer is exactly the escape it exists to close.
+   */
+  std::shared_ptr<void> producerLease_;
 };
 
 } // namespace comms::prims

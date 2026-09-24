@@ -104,6 +104,10 @@ class MultipeerIbrcTransport
   // returned writer is used; P2pIbrcHostWriter is a non-owning view of the
   // queue's mapped host memory. Do not concurrently drive the same ring from
   // device code.
+  // Throws if a live P2pIbrcHostLanes holds this peer: the two would be
+  // separate producers on rings only one may drive, which the backpressure
+  // check cannot survive -- it corrupts descriptors rather than failing, so it
+  // is refused here. Use lanes or bare writers for a peer, never both.
   P2pIbrcHostWriter getHostWriter(int peerRank, uint32_t queueIndex = 0) const;
 
   /**
@@ -258,21 +262,54 @@ class MultipeerIbrcTransport
   // Separate array: std::atomic can't live in the movable PeerResources vector.
   std::unique_ptr<std::atomic<bool>[]> peerQueuesPublished_;
   /*
-   * Non-expired while a P2pIbrcHostLanes owns that peer's rings.
+   * getHostWriter() without the ring-claim check. getHostLanes() builds its own
+   * writers after taking the claim, so the public entry point would refuse the
+   * very object it is constructing.
    *
-   * getHostLanes() always hands out command queues [0, numLanes), so a second
-   * issue for the same peer overlaps completely, and two producers on one ring
-   * break P2pIbrcHostWriter's backpressure check -- it reads the free space
-   * before a fetch-add it cannot roll back, which is only sound with a single
-   * producer. A weak_ptr rather than a flag the lanes object clears: it cannot
-   * dangle, and it needs no cooperation from an object that outlives the call
-   * that built it.
-   *
-   * Guarded by its own mutex because getHostLanes() is const and the check and
-   * the claim have to be one step. Taken once per communicator, not per call.
+   * `lease` is that claim, and every writer this builds carries it -- a lanes
+   * object passes the same token to all of its lanes. Attaching it here, on
+   * the only path that constructs a writer over transport-owned rings, is what
+   * keeps the claim un-droppable by a caller.
    */
-  mutable std::mutex hostLanesMutex_;
-  mutable std::vector<std::weak_ptr<void>> hostLanesIssued_;
+  P2pIbrcHostWriter makeHostWriter(
+      int peerRank,
+      uint32_t queueIndex,
+      std::shared_ptr<void> lease) const;
+
+  /*
+   * Take the peer's producer claim, or throw if something already holds it.
+   *
+   * A peer's rings take ONE logical producer, whichever mechanism drives them.
+   * getHostLanes() hands out command queues [0, numLanes) and getHostWriter()
+   * hands out one of the same queues, so any second acquisition overlaps, and
+   * two producers on one ring break P2pIbrcHostWriter's backpressure check --
+   * it reads the free space before a fetch-add it cannot roll back, which is
+   * only sound with a single producer.
+   *
+   * The returned token is what enforces it: every writer built under it holds
+   * a reference, as does the lanes object, so the claim covers the lifetime of
+   * the last of them and is released only then, in whichever order the two
+   * entry points are called. Sharing the token across a lanes object's lanes
+   * is what makes a lane writer moved out of it safe -- the peer stays claimed
+   * while that writer can still drive its ring. A caller that legitimately
+   * needs two positions on one peer -- a ring whose down and up peers coincide
+   * at two ranks -- shares the one object rather than acquiring twice.
+   *
+   * `what` names the entry point in the thrown message.
+   */
+  std::shared_ptr<void> claimPeerProducer(int peerRank, const char* what) const;
+
+  /*
+   * Non-expired while something holds that peer's producer claim. A weak_ptr
+   * rather than a flag the holder clears: it cannot dangle, and it needs no
+   * cooperation from an object that outlives the call that built it.
+   *
+   * Guarded by its own mutex because both entry points are const and the check
+   * and the claim have to be one step. Taken once per communicator, not per
+   * call.
+   */
+  mutable std::mutex hostProducerMutex_;
+  mutable std::vector<std::weak_ptr<void>> hostProducerClaim_;
   MappedAllocation statusControl_;
   MappedAllocation p2pTransportDevices_;
   std::vector<IbrcNicStatus*> statusHostByNic_;
