@@ -123,6 +123,15 @@ __device__ __forceinline__ int get_lane_id() {
 #endif
 }
 
+// Lane 0's value, wave-uniform (SGPR on AMD). All warp lanes must be active.
+__device__ __forceinline__ int broadcast_first_lane(int val) {
+#ifdef __HIP_PLATFORM_AMD__
+  return __builtin_amdgcn_readfirstlane(val);
+#else
+  return __shfl_sync(kFullWarpMask, val, 0);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Loads / stores with explicit memory ordering, used by the channel-state
 // communication in dispatch / combine.
