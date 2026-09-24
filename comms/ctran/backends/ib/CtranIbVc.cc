@@ -101,9 +101,6 @@ commResult_t CtranIbVirtualConn::resolveVcConfig(
       connTyp = ConnectionType::DIFF_DC;
       applyQpConfigList(NCCL_CTRAN_IB_QP_CONFIG_XDC, config);
     }
-  } else if (!comm) {
-    connTyp = ConnectionType::CTRAN_EX;
-    applyQpConfigList(NCCL_CTRAN_EX_IB_QP_CONFIG, config);
   }
 
   if (ibConfig.numQps.has_value()) {
@@ -141,16 +138,6 @@ commResult_t CtranIbVirtualConn::resolveVcConfig(
         config.qpMsgs);
     return commInvalidArgument;
   }
-
-  maxNumQps_ = config.numQps;
-  qpScalingTh_ = config.qpScalingTh;
-  vcMode_ = config.vcMode;
-  maxQpMsgs_ = config.qpMsgs;
-  // A per-WQE threshold cannot express whether the aggregate workload should
-  // use multiple NICs, so keep interleaving policy inside the transport rather
-  // than exposing it through CtranIbConfig.
-  qpInterleaveMinWqeSize_ = NCCL_CTRAN_IB_QP_INTERLEAVE_MIN_WQE_SIZE;
-  qpInterleaveDevices_ = qpInterleaveMinWqeSize_ > 0;
 
   maxNumQps_ = config.numQps;
   qpScalingTh_ = config.qpScalingTh;
@@ -223,8 +210,6 @@ std::string CtranIbVirtualConn::connTypeName(ConnectionType connTyp) {
       return "SAME_DC";
     case ConnectionType::DIFF_DC:
       return "DIFF_DC";
-    case ConnectionType::CTRAN_EX:
-      return "CTRAN_EX";
   }
   return "";
 }
@@ -239,50 +224,46 @@ std::string CtranIbVirtualConn::vcModeName(enum NCCL_CTRAN_IB_VC_MODE mode) {
   return "N/A";
 }
 
-// Global variable to ensure we only log once per connection type across all
-// CtranIbVc instances.
-static folly::Synchronized<std::unordered_map<ConnectionType, bool>>
-    connectionLogMap;
+// Global variable to ensure we only log once per connection type and
+// communicator presence across all CtranIbVc instances.
+static folly::Synchronized<std::set<std::pair<ConnectionType, bool>>>
+    loggedConnectionConfigs;
 
 void CtranIbVirtualConn::logConnectionConfig(ConnectionType connTyp) {
-  auto lockedMap = connectionLogMap.wlock();
-  auto it = lockedMap->find(connTyp);
-  if (it == lockedMap->end()) {
-    lockedMap->insert({connTyp, false});
+  auto lockedConfigs = loggedConnectionConfigs.wlock();
+  if (!lockedConfigs->insert({connTyp, comm_ != nullptr}).second) {
+    return;
   }
-  if (!lockedMap->at(connTyp)) {
-    if (comm_ && comm_->statex_) {
-      const auto& statex = comm_->statex_.get();
-      CTRAN_LOG_SUBSYS(
-          INFO,
-          INIT,
-          "CTRAN-IB-VC: QP setting for connection type {} (sameDC {}, sameZone {}): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}, "
-          "rank {} peerRank {} commHash {:x} commDesc {}",
-          connTypeName(connTyp),
-          statex->isSameDc(statex->rank(), peerRank),
-          statex->isSameZone(statex->rank(), peerRank),
-          maxNumQps_,
-          numQpsPerDevice_,
-          qpScalingTh_,
-          vcModeName(vcMode_),
-          maxQpMsgs_,
-          statex->rank(),
-          peerRank,
-          statex->commHash(),
-          statex->commDesc());
-    } else {
-      CTRAN_LOG_SUBSYS(
-          INFO,
-          INIT,
-          "CTRAN-IB-VC: QP setting for connection type {} (no statex): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}",
-          connTypeName(connTyp),
-          maxNumQps_,
-          numQpsPerDevice_,
-          qpScalingTh_,
-          vcModeName(vcMode_),
-          maxQpMsgs_);
-    }
-    lockedMap->at(connTyp) = true;
+  if (comm_ && comm_->statex_) {
+    const auto& statex = comm_->statex_.get();
+    CTRAN_LOG_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-IB-VC: QP setting for connection type {} (sameDC {}, sameZone {}): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}, "
+        "rank {} peerRank {} commHash {:x} commDesc {}",
+        connTypeName(connTyp),
+        statex->isSameDc(statex->rank(), peerRank),
+        statex->isSameZone(statex->rank(), peerRank),
+        maxNumQps_,
+        numQpsPerDevice_,
+        qpScalingTh_,
+        vcModeName(vcMode_),
+        maxQpMsgs_,
+        statex->rank(),
+        peerRank,
+        statex->commHash(),
+        statex->commDesc());
+  } else {
+    CTRAN_LOG_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-IB-VC: QP setting for connection type {} (no statex): maxNumQps_={}, numQpsPerDevice_={}, qpScalingTh_={}, vcMode_={}, maxQpMsgs_={}",
+        connTypeName(connTyp),
+        maxNumQps_,
+        numQpsPerDevice_,
+        qpScalingTh_,
+        vcModeName(vcMode_),
+        maxQpMsgs_);
   }
 }
 

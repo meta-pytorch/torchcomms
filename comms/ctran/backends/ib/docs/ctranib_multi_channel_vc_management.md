@@ -565,7 +565,7 @@ sizing parameters.
   VC ends up with `MAX_QPS / maxVcsPerPeer` data QPs unless the connection
   class overrides MAX_QPS via the `NCCL_CTRAN_IB_QP_CONFIG_*` lists
   (see below). Must be `>= maxVcsPerPeer`.
-- `NCCL_CTRAN_IB_QP_CONFIG_XRACK / XZONE / XDC / NCCL_CTRAN_EX_IB_QP_CONFIG`
+- `NCCL_CTRAN_IB_QP_CONFIG_XRACK / XZONE / XDC`
   — per-connection-class tuning. The MAX_QPS field of the matching
   configList replaces `NCCL_CTRAN_IB_MAX_QPS` for that peer; the per-VC
   slice is then that value divided by `maxVcsPerPeer`. The override

@@ -6,7 +6,7 @@
 #include <deque>
 #include <mutex>
 #include <optional>
-#include <unordered_map>
+#include <set>
 #include <vector>
 #include "comms/ctran/CtranComm.h" // @manual=//comms/ctran:ctran_comm
 #include "comms/ctran/backends/ib/CtranIbBase.h"
@@ -153,7 +153,6 @@ using ConnectionType = enum {
   SAME_ZONE = 1,
   SAME_DC = 2,
   DIFF_DC = 3,
-  CTRAN_EX = 4,
 };
 
 namespace {
