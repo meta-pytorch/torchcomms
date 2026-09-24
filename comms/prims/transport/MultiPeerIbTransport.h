@@ -945,8 +945,12 @@ class MultiPeerIbTransportBase {
   IbgdaLocalBuffer
   registerBuffer(void* ptr, std::size_t size, bool relaxedOrdering = false);
 
-  /** deregisterBuffer - Decrement refcount; deregister all per-NIC MRs at 0. */
-  void deregisterBuffer(void* ptr);
+  /**
+   * Drop one logical registration. Returns false if the registration was not
+   * found or any final MR could not be deregistered; callers that own the
+   * backing allocation must not release it after false.
+   */
+  [[nodiscard]] bool deregisterBuffer(void* ptr);
 
   /**
    * Register a local send source and expose exactly [ptr, ptr + size) without
@@ -1142,6 +1146,7 @@ class MultiPeerIbTransportBase {
     std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
     std::size_t allocSize{0};
     int refs{0};
+    bool deregistrationFailed{false};
     // Effective PCIe Relaxed Ordering the MRs were registered with (the
     // caller's request resolved against config). Part of the cache key: a
     // containment hit must resolve to the same value, else the access-flag
@@ -1203,18 +1208,33 @@ class MultiPeerIbTransportBase {
       std::size_t size,
       bool relaxedOrdering,
       RegistrationState& registrations);
-  void deregisterBufferLocked(void* ptr, RegistrationState& registrations);
+  bool deregisterBufferLocked(void* ptr, RegistrationState& registrations);
+
+  struct RegisteredDeviceBuffer {
+    std::unique_ptr<meta::comms::DeviceBuffer> buffer;
+    bool registered{false};
+  };
+
+  /**
+   * Deregister (when registered) and free one owned device allocation. The
+   * allocation is intentionally leaked instead of freed if its MRs could not be
+   * revoked, so the provider cannot reach freed memory. `label` names the
+   * allocation in the failure logs.
+   */
+  void releaseRegisteredDeviceBuffer(
+      RegisteredDeviceBuffer& owned,
+      const char* label) noexcept;
 
   // Shared send/recv staging-ring state (eager mode). Owns the bulk
   // allocations; sendRecvPeerBuffers_ slices them per peer.
   std::vector<IbSendRecvPeerBuffers> sendRecvPeerBuffers_;
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvSendStagingBulk_;
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvRecvStagingBulk_;
+  RegisteredDeviceBuffer sendRecvSendStagingBulk_;
+  RegisteredDeviceBuffer sendRecvRecvStagingBulk_;
   // Signal + device-counter control regions packed into one granularity-aligned
   // allocation (both Data-Direct-registered; share one aligned MR).
   // Host-counter configs put only the signal region here. See
   // allocateSendRecvBuffersEager.
-  std::unique_ptr<meta::comms::DeviceBuffer> sendRecvControlBulk_;
+  RegisteredDeviceBuffer sendRecvControlBulk_;
   IbgdaLocalBuffer sendRecvRecvStagingBulkReg_;
   IbgdaLocalBuffer sendRecvSignalBulkReg_;
   IbgdaLocalBuffer sendRecvCounterBulkReg_;
@@ -1313,7 +1333,7 @@ class MultiPeerIbTransportBase {
   // when device-resident). Empty in eager mode. Shared by IBGDA (Device
   // counter) and IBRC, which additionally allocates a per-peer host-mapped
   // NIC_DONE counter below.
-  std::vector<std::unique_ptr<meta::comms::DeviceBuffer>> lazyPeerBufs_;
+  std::vector<RegisteredDeviceBuffer> lazyPeerBufs_;
   std::vector<CounterSlotAllocation> lazySendRecvHostCounters_;
 };
 
