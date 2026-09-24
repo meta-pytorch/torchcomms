@@ -13,6 +13,8 @@
 #include "channel.h"
 #include "transport.h"
 #include "device.h"
+#include "meta/DeviceRackSerial.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 // Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
 
@@ -29,7 +31,7 @@ static ncclResult_t getPath(struct ncclTopoSystem* system, struct ncclTopoNode* 
       return ncclSuccess;
     }
   }
-  WARN("Could not find node of type %d id %lx", t, id);
+  ERR(ncclInternalError, "Could not find node of type %d id %lx", t, id);
   return ncclInternalError;
 }
 
@@ -120,7 +122,7 @@ static ncclResult_t ncclTopoSetPaths(struct ncclTopoNode* baseNode, struct ncclT
             }
           }
           if (reverseLink == nullptr) {
-            WARN("Failed to find reverse path from remNode %d/%lx nlinks %d to node %d/%lx", remNode->type, remNode->id,
+            ERR(ncclInternalError, "Failed to find reverse path from remNode %d/%lx nlinks %d to node %d/%lx", remNode->type, remNode->id,
                  remNode->nlinks, node->type, node->id);
             return ncclInternalError;
           }
@@ -206,7 +208,7 @@ ncclResult_t ncclGetLocalCpu(struct ncclTopoSystem* system, int gpu, int* cpu) {
   int localCpus[NCCL_TOPO_MAX_NODES], count;
   NCCLCHECK(ncclTopoGetLocal(system, GPU, gpu, CPU, localCpus, &count, NULL));
   if (count == 0) {
-    WARN("Error : could not find CPU close to GPU %d", gpu);
+    ERR(ncclInternalError, "Error : could not find CPU close to GPU %d", gpu);
     return ncclInternalError;
   }
   struct ncclTopoLinkList* paths = system->nodes[GPU].nodes[gpu].paths[CPU];
@@ -394,6 +396,20 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
 
+  // [META] Check if multi-NVLink P2P is disabled and handle rack serial matching
+  if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
+    INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
+
+    if (comm->peerInfo[rank1].rackSerial[0] != '\0' && comm->peerInfo[rank2].rackSerial[0] != '\0') {
+      *p2p = ncclx::isSameRackSerial(comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH,
+           "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %s rackSerial2: %s",
+           *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+    } else {
+      WARN("No rack serial information available, skipping rack serial check");
+    }
+  }
+
   // Use parent pointer comparison to handle multi-rank-per-GPU case:
   // Different topology indices (g1 != g2) may point to the same physical GPU
   // when multiple ranks share one device. Skip NVML P2P validation for same device.
@@ -420,7 +436,7 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
         if (!good) {
           if (!ncclParamIgnoreDisabledP2p()) {
             if (path->type <= PATH_NVB) {
-              WARN("P2P is disabled between NVLINK connected GPUs %d and %d. This should not be the case given their "
+              ERR(ncclUnhandledCudaError, "P2P is disabled between NVLINK connected GPUs %d and %d. This should not be the case given their "
                    "connectivity, and is probably due to a hardware issue. If you still want to proceed, you can set "
                    "NCCL_IGNORE_DISABLED_P2P=1.",
                    indexes[i - 1], indexes[i - 0]);
@@ -684,7 +700,7 @@ ncclResult_t ncclTopoGetIntermediateRank(struct ncclTopoSystem* system, int rank
       }
     }
     if (node->type != GPU) {
-      WARN("Could not find intermediate GPU between GPU rank %d and NIC %lx", rank, netId);
+      ERR(ncclInternalError, "Could not find intermediate GPU between GPU rank %d and NIC %lx", rank, netId);
       return ncclInternalError;
     }
     NCCLCHECK(ncclTopoDevToRank(system, NCCL_TOPO_ID_SYSTEM_ID(node->id), node->gpu.dev, /*warn=*/true,
@@ -925,7 +941,7 @@ ncclResult_t ncclTopoTrimSystem(struct ncclTopoSystem* system, struct ncclComm* 
       else gpu = NULL;
     }
     if (gpu == NULL) {
-      WARN("Could not find id %lx", ids[i]);
+      ERR(ncclInternalError, "Could not find id %lx", ids[i]);
       ret = ncclInternalError;
       goto fail;
     }

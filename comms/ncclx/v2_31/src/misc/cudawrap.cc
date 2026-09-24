@@ -12,6 +12,8 @@
 #include "cudawrap.h"
 #include <mutex>
 
+#include "comms/ctran/utils/CudaWrap.h"
+
 // This env var (NCCL_CUMEM_ENABLE) toggles cuMem API usage
 NCCL_PARAM(CuMemEnable, "CUMEM_ENABLE", -2);
 NCCL_PARAM(CuMemHostEnable, "CUMEM_HOST_ENABLE", -1);
@@ -194,7 +196,7 @@ bool ncclCudaLaunchBlocking = false;
                                                           cudaEnableDefault, &driverStatus)); \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s version %d failed with %d status %d", #symbol, version, res, driverStatus); \
+        ERR(ncclSystemError, "Retrieve %s version %d failed with %d status %d", #symbol, version, res, driverStatus); \
         return ncclSystemError; \
       } \
     } \
@@ -206,7 +208,7 @@ bool ncclCudaLaunchBlocking = false;
     res = CUDACLEARERROR(cudaGetDriverEntryPoint(#symbol, (void**)(&pfn_##symbol), cudaEnableDefault, &driverStatus)); \
     if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s failed with %d status %d", #symbol, res, driverStatus); \
+        ERR(ncclSystemError, "Retrieve %s failed with %d status %d", #symbol, res, driverStatus); \
         return ncclSystemError; \
       } \
     } \
@@ -217,7 +219,7 @@ bool ncclCudaLaunchBlocking = false;
     res = CUDACLEARERROR(cudaGetDriverEntryPoint(#symbol, (void**)(&pfn_##symbol), cudaEnableDefault)); \
     if (res != cudaSuccess) { \
       if (!ignore) { \
-        WARN("Retrieve %s failed with %d", #symbol, res); \
+        ERR(ncclSystemError, "Retrieve %s failed with %d", #symbol, res); \
         return ncclSystemError; \
       } \
     } \
@@ -325,7 +327,7 @@ static void initOnceFunc() {
 
 #if CUDART_VERSION >= 11030
   if (cudaPfnFuncLoader()) {
-    WARN("CUDA some PFN functions not found in the library");
+    ERR(ncclSystemError, "CUDA some PFN functions not found in the library");
     goto error;
   }
 #endif
@@ -354,6 +356,8 @@ error:
 
 ncclResult_t ncclCudaLibraryInit() {
   std::call_once(initOnceFlag, initOnceFunc);
+  const auto res = ctran::utils::commCudaLibraryInit();
+  if (res != commSuccess) return ncclSystemError;
   return initResult;
 }
 

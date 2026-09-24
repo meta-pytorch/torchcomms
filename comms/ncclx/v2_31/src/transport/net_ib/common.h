@@ -633,6 +633,7 @@ struct ncclIbListenComm {
   int dev;
   struct ncclSocket sock;
   struct ncclIbCommStage* stage;
+  void* ctx; // [NCCLX-PerCommConfig] per-comm config ctx, set by ncclIbListen
 };
 
 static inline void ncclIbCheckSpeedChanges(struct ncclIbSendComm* sendComm, struct ncclIbNetCommBase* base) {

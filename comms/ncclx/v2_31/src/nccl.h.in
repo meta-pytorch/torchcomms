@@ -61,6 +61,11 @@
 #endif
 
 #ifdef __cplusplus
+// [NCCLX] Needed by ncclx::Hints below, which is declared inside the extern "C"
+// region so that C++ entry points can take it by reference.
+#include <initializer_list>
+#include <string>
+#include <unordered_map>
 extern "C" {
 #endif
 
@@ -151,6 +156,34 @@ typedef struct ncclConfig_v23100 {
   int numRmaSig;
   int rmaEagerInit;
   int hostCftMode;
+
+  //
+  // [NCCLX] Attributes following here are specific to NCCLX
+  //
+  // Appended after the last upstream member, matching v2_29/v2_30. The struct is
+  // versioned and append-only, so upstream's own members keep their offsets; only
+  // sizeof() grows, and NCCLX is the only reader of the fields below.
+  //
+
+  // communicator process group information.
+  const char* commDesc{nullptr};
+
+  // commSplit group ranks information
+  int* splitGroupRanks;
+  int splitGroupSize;
+
+  // control the fast init features
+  int fastInitMode{NCCL_CONFIG_UNDEF_INT};
+
+  // Opaque pointer to an ncclx::Hints object.  When non-null, NCCLX
+  // will read key-value pairs from this object and apply them to
+  // config fields that are still at their undefined defaults.
+  void* hints{NCCL_CONFIG_UNDEF_PTR};
+
+  // Internal field -- do not access directly.  This would be private
+  // if ncclConfig_t were a C++ class.  Populated by NCCLX during
+  // communicator creation; users must not read or write this field.
+  void* ncclxConfig{NCCL_CONFIG_UNDEF_PTR};
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -181,6 +214,12 @@ typedef struct ncclConfig_v23100 {
   NCCL_CONFIG_UNDEF_INT,                    /* numRmaSig */             \
   NCCL_CONFIG_UNDEF_INT,                    /* rmaEagerInit */          \
   NCCL_CONFIG_UNDEF_INT,                    /* hostCftMode */          \
+  NCCL_CONFIG_UNDEF_PTR,                    /* commDesc */              \
+  NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
+  NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
+  NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
+  NCCL_CONFIG_UNDEF_PTR,                    /* hints */                 \
+  NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */           \
 }
 
 /* A single vendor-specific option expressed as a key-value pair. Multiple options can be
@@ -417,11 +456,14 @@ ncclResult_t pncclCommCuDevice(const ncclComm_t comm, int* device);
 ncclResult_t  ncclCommUserRank(const ncclComm_t comm, int* rank);
 ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
 
-/* Register CUDA buffer for zero-copy operation */
+/* Handle-based registration for zero-copy operation.
+ * Consider using ncclGlobalRegisterWithPtr for new code - it supports both single and
+ * multi-segment buffers without requiring handle management. */
 ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 
-/* Deregister CUDA buffer */
+/* Handle-based deregistration.
+ * Consider using ncclGlobalDeregisterWithPtr for new code. */
 ncclResult_t  ncclCommDeregister(const ncclComm_t comm, void* handle);
 ncclResult_t pncclCommDeregister(const ncclComm_t comm, void* handle);
 
@@ -466,6 +508,23 @@ typedef enum {
 ncclResult_t  ncclCommMemStats(ncclComm_t comm, ncclCommMemStat_t stat, uint64_t* value);
 ncclResult_t pncclCommMemStats(ncclComm_t comm, ncclCommMemStat_t stat, uint64_t* value);
 
+/* Pointer-based registration for all buffer types - no handle returned.
+ * Supports both single-segment and multi-segment (expandable) buffers.
+ * Use ncclGlobalDeregisterWithPtr(buf, len) to deregister.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm.
+ * cudaDev is auto-detected from the buffer pointer. */
+ncclResult_t  ncclGlobalRegisterWithPtr(void* buff, size_t size);
+ncclResult_t pncclGlobalRegisterWithPtr(void* buff, size_t size);
+
+/* Pointer-based deregistration for all buffer types.
+ * Uses pinRange to discover all physical segments and frees each.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm.
+ * cudaDev is auto-detected from the buffer pointer. */
+ncclResult_t  ncclGlobalDeregisterWithPtr(void* buff, size_t size);
+ncclResult_t pncclGlobalDeregisterWithPtr(void* buff, size_t size);
+
 /* Register memory window  */
 ncclResult_t  ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t pncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
@@ -496,6 +555,13 @@ typedef enum { ncclSum        = 0,
                 * maintain ABI compatibility. */
                ncclMaxRedOp   = 0x7fffffff>>(32-8*sizeof(ncclRedOp_dummy_t))
              } ncclRedOp_t;
+
+/* [NCCLX] Comparison operation selector.
+ * Type-only dependency: shared meta/wrapper/MetaFactory.h maps this onto
+ * commCmpOp_t, so every version dir must declare it. The RMA signal API that
+ * consumes it (ncclWaitSignal and friends) is a separate row and is not ported
+ * here. */
+typedef enum { ncclCmpEQ = 0, ncclCmpGE = 1, ncclCmpLE = 2, ncclNumCmpOps = 3} ncclCmpOp_t;
 
 /* Data types */
 typedef enum { ncclInt8       = 0, ncclChar       = 0,
@@ -904,6 +970,28 @@ ncclResult_t pncclGroupEnd();
 ncclResult_t  ncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
 ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
 
+#ifdef __cplusplus
+namespace ncclx {
+typedef std::unordered_map<std::string, std::string> kvType;
+/*
+* NCCL hints object - Allows us to set hints (key, value) in the form
+* of strings, to be used by other operations.
+*/
+class Hints {
+    public:
+        Hints();
+        explicit Hints(std::initializer_list<std::pair<std::string, std::string>> init);
+        ncclResult_t set(const std::string& key, const std::string& val);
+        ncclResult_t get(const std::string& key, std::string& val) const;
+
+    private:
+        kvType kv;
+};
+
+} // namespace ncclx
+
+#endif
+
 /*
  * Parameter access
  *
@@ -1002,6 +1090,101 @@ void pncclParamDumpAll(void);
 
 #ifdef __cplusplus
 } // end extern "C"
+#endif
+
+#ifdef __cplusplus
+
+// [META] CollTrace lifecycle feed and algorithm-statistics dump. Declared
+// outside extern "C" so the C++ container signatures work.
+#include <cstdint>
+#include <optional>
+#include <unordered_map>
+#include <vector>
+
+namespace ncclx::colltrace {
+
+inline constexpr uint64_t kInvalidReplayId = UINT64_MAX;
+
+enum class LifecycleEventType : uint8_t {
+  Enqueue,
+  Start,
+  End,
+};
+
+struct LifecycleEvent {
+  uint64_t replayId{kInvalidReplayId};
+  uint64_t commId{0};
+  // Stable one-based submission identity. Zero is reserved for no record.
+  // Matches getLatestCollTraceCollectiveId().
+  uint64_t collId{0};
+  // One-based per-execution identity. Differs from collId for graph replays.
+  uint64_t executionCollId{0};
+  LifecycleEventType eventType{LifecycleEventType::Enqueue};
+  double timestamp{0};
+};
+
+// Returns the process-local communicator identity used by lifecycle events.
+// Returns ncclInvalidArgument for a null communicator or ncclInvalidUsage if
+// the lifecycle feed is disabled.
+ncclResult_t getCollTraceCommId(ncclComm_t comm, uint64_t& commId);
+
+// Returns the latest one-based collective ID submitted on this communicator.
+// Writes zero and returns ncclSuccess if no collective has been submitted on
+// this communicator. Returns ncclInvalidArgument for a null communicator or
+// ncclInvalidUsage if the lifecycle feed is disabled.
+ncclResult_t getLatestCollTraceCollectiveId(ncclComm_t comm, uint64_t& collId);
+
+// Destructively drains lifecycle events across all lifecycle-enabled
+// communicators in this process. This call blocks until every registered
+// colltrace instance finishes a flush. Events are ordered by timestamp.
+ncclResult_t drainUnreadLifecycleEvents(std::vector<LifecycleEvent>& events);
+
+} // namespace ncclx::colltrace
+
+// NCCL_HAS_DUMP_ALGO_STAT controls whether dumpAlgoStat() is available.
+// To disable (e.g., when using a shim with a
+// different ncclComm layout), compile with -DNCCL_HAS_DUMP_ALGO_STAT=0.
+#if !defined(NCCL_HAS_DUMP_ALGO_STAT)
+#define NCCL_HAS_DUMP_ALGO_STAT
+#elif NCCL_HAS_DUMP_ALGO_STAT == 0
+#undef NCCL_HAS_DUMP_ALGO_STAT
+#endif
+
+#ifdef NCCL_HAS_DUMP_ALGO_STAT
+namespace ncclx::colltrace {
+
+// Dump collective algorithm statistics for a communicator.
+// Output map format: collective name -> algorithm name -> call count.
+// Requires NCCL_COLLTRACE=algostat to be enabled.
+// Clears and populates the output map. Empty if algostat not enabled or comm is null.
+void dumpAlgoStat(ncclComm_t comm, std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>& algoStatMap);
+
+} // namespace ncclx::colltrace
+#endif // NCCL_HAS_DUMP_ALGO_STAT
+
+namespace ncclx {
+
+/*
+ * Set per-communicator configuration
+ *
+ * Update mutable configuration fields on a live communicator. Only
+ * algorithm-selection hint keys (sendrecvAlgo, allgatherAlgo, allreduceAlgo,
+ * alltoallvAlgo, rmaAlgo) may be changed after communicator creation.
+ *
+ * The config parameter must be initialized with NCCL_CONFIG_INITIALIZER. All
+ * flat ncclConfig_t fields must remain at their undefined defaults; only the
+ * hints pointer is read. Setting any flat field or any non-algo hint key
+ * returns ncclInvalidUsage. Passing an uninitialized config (missing magic)
+ * returns ncclInvalidArgument.
+ *
+ * The caller must ensure no concurrent collective or config update is in
+ * progress on the same communicator.
+ */
+// [META:COMM_SET_CONFIG]
+ncclResult_t commSetConfig(ncclComm_t comm, const ncclConfig_t* config);
+
+} // namespace ncclx
+
 #endif
 
 #endif // end include guard

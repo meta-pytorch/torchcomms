@@ -494,7 +494,7 @@ std::mutex& getGdrMutex() {
     cast = (void**)&funcptr; \
     tmp = ncclOsDlsym(handle, symbol); \
     if (tmp == NULL) { \
-      WARN("ncclOsDlsym failed on %s - %s", symbol, ncclOsDlerror()); \
+      ERR(ncclSystemError, "ncclOsDlsym failed on %s - %s", symbol, ncclOsDlerror()); \
       goto teardown; \
     } \
     *cast = tmp; \
@@ -584,7 +584,7 @@ static const char* ncclGdrBackendName() {
 
 static ncclResult_t ncclGdrUnavailable(const char* op) {
   if (gdrOps == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
   } else {
     INFO(NCCL_INIT, "%s not available for %s backend", op, ncclGdrBackendName());
   }
@@ -593,7 +593,7 @@ static ncclResult_t ncclGdrUnavailable(const char* op) {
 
 gdr_t wrap_gdr_open(void) {
   if (gdrOps == NULL || gdrOps->open == NULL) {
-    WARN("GDRCOPY lib wrapper not initialized.");
+    ERR(ncclInternalError, "GDRCOPY lib wrapper not initialized.");
     return NULL;
   }
   gdr_t handle = gdrOps->open();
@@ -609,7 +609,7 @@ ncclResult_t wrap_gdr_close(gdr_t g) {
   if (gdrOps == NULL || gdrOps->close == NULL) return ncclGdrUnavailable("close");
   int ret = gdrOps->close(g);
   if (ret != 0) {
-    WARN("gdr_close() failed: %d", ret);
+    ERR(ncclSystemError, "gdr_close() failed: %d", ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -621,7 +621,7 @@ ncclResult_t wrap_gdr_pin_buffer(gdr_t g, unsigned long addr, size_t size, uint6
   int ret;
   GDRLOCKCALL(gdrOps->pinBuffer(g, addr, size, p2p_token, va_space, handle), ret);
   if (ret != 0) {
-    WARN("gdr_pin_buffer(addr %lx, size %zu) failed: %d", addr, size, ret);
+    ERR(ncclSystemError, "gdr_pin_buffer(addr %lx, size %zu) failed: %d", addr, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -647,14 +647,14 @@ bool ncclGdrPinV2Available(void) {
 
 ncclResult_t wrap_gdr_pin_buffer_v2(gdr_t g, unsigned long addr, size_t size, uint32_t flags, gdr_mh_t* handle) {
   if (!ncclGdrPinV2Available()) {
-    WARN("gdr_pin_buffer_v2 not available; GDRCopy >= 2.5 required");
+    ERR(ncclInternalError, "gdr_pin_buffer_v2 not available; GDRCopy >= 2.5 required");
     return ncclInternalError;
   }
   if (gdrOps == NULL || gdrOps->pinBufferV2 == NULL) return ncclGdrUnavailable("pin_buffer_v2");
   int ret;
   GDRLOCKCALL(gdrOps->pinBufferV2(g, addr, size, flags, handle), ret);
   if (ret != 0) {
-    WARN("gdr_pin_buffer_v2(addr %lx, size %zu, flags %u) failed: %d", addr, size, flags, ret);
+    ERR(ncclSystemError, "gdr_pin_buffer_v2(addr %lx, size %zu, flags %u) failed: %d", addr, size, flags, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -665,7 +665,7 @@ ncclResult_t wrap_gdr_unpin_buffer(gdr_t g, gdr_mh_t handle) {
   int ret;
   GDRLOCKCALL(gdrOps->unpinBuffer(g, handle), ret);
   if (ret != 0) {
-    WARN("gdr_unpin_buffer(handle %lx) failed: %d", handle.h, ret);
+    ERR(ncclSystemError, "gdr_unpin_buffer(handle %lx) failed: %d", handle.h, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -676,7 +676,7 @@ ncclResult_t wrap_gdr_get_info(gdr_t g, gdr_mh_t handle, gdr_info_t* info) {
   int ret;
   GDRLOCKCALL(gdrOps->getInfo(g, handle, info), ret);
   if (ret != 0) {
-    WARN("gdr_get_info(handle %lx) failed: %d", handle.h, ret);
+    ERR(ncclSystemError, "gdr_get_info(handle %lx) failed: %d", handle.h, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -687,7 +687,7 @@ ncclResult_t wrap_gdr_map(gdr_t g, gdr_mh_t handle, void** va, size_t size) {
   int ret;
   GDRLOCKCALL(gdrOps->map(g, handle, va, size), ret);
   if (ret != 0) {
-    WARN("gdr_map(handle %lx, size %zu) failed: %d", handle.h, size, ret);
+    ERR(ncclSystemError, "gdr_map(handle %lx, size %zu) failed: %d", handle.h, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -698,7 +698,7 @@ ncclResult_t wrap_gdr_unmap(gdr_t g, gdr_mh_t handle, void* va, size_t size) {
   int ret;
   GDRLOCKCALL(gdrOps->unmap(g, handle, va, size), ret);
   if (ret != 0) {
-    WARN("gdr_unmap(handle %lx, va %p, size %zu) failed: %d", handle.h, va, size, ret);
+    ERR(ncclSystemError, "gdr_unmap(handle %lx, va %p, size %zu) failed: %d", handle.h, va, size, ret);
     return ncclSystemError;
   }
   return ncclSuccess;
@@ -759,7 +759,7 @@ ncclResult_t wrap_gdr_copy_to_mapping(gdr_mh_t handle, void* map_d_ptr, const vo
   int ret;
   GDRLOCKCALL(gdrOps->copyToMapping(handle, map_d_ptr, h_ptr, size), ret);
   if (ret != 0) {
-    WARN("gdr_copy_to_mapping(handle %lx, map_d_ptr %p, h_ptr %p, size %zu) failed: %d", handle.h, map_d_ptr, h_ptr,
+    ERR(ncclSystemError, "gdr_copy_to_mapping(handle %lx, map_d_ptr %p, h_ptr %p, size %zu) failed: %d", handle.h, map_d_ptr, h_ptr,
          size, ret);
     return ncclSystemError;
   }
@@ -771,7 +771,7 @@ ncclResult_t wrap_gdr_copy_from_mapping(gdr_mh_t handle, void* h_ptr, const void
   int ret;
   GDRLOCKCALL(gdrOps->copyFromMapping(handle, h_ptr, map_d_ptr, size), ret);
   if (ret != 0) {
-    WARN("gdr_copy_from_mapping(handle %lx, h_ptr %p, map_d_ptr %p, size %zu) failed: %d", handle.h, h_ptr, map_d_ptr,
+    ERR(ncclSystemError, "gdr_copy_from_mapping(handle %lx, h_ptr %p, map_d_ptr %p, size %zu) failed: %d", handle.h, h_ptr, map_d_ptr,
          size, ret);
     return ncclSystemError;
   }

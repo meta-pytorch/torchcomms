@@ -9,7 +9,11 @@
 #include "collectives.h"
 #include "common.h"
 #include "nccl_device.h"
-#include "comm.h"
+// [META] Upstream 2.31 includes "comm.h" here; nothing in this file uses it.
+// NCCLX adds host-only C++ members to ncclComm (folly-backed colltrace, ctran
+// and allocator types), which nvcc cannot parse, so pulling comm.h into a
+// device translation unit breaks the build. v2_29/v2_30 were unaffected because
+// their device/common.cu does not include it. Upstreaming candidate.
 
 __shared__ ncclShmemData ncclShmem;
 #if __CUDA_ARCH__ < 700

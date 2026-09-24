@@ -14,6 +14,9 @@
 #include <string.h>
 #include <errno.h>
 #include <mutex>
+
+// [NCCLX-PerCommConfig] RAII scope for passing comm config to net plugin init
+#include "meta/transport/NcclxNetPluginHelper.h"
 // #include <sys/types.h>
 // #include <sys/stat.h>
 // #include <unistd.h>
@@ -150,12 +153,12 @@ ncclResult_t ncclNetCheckDeviceVersion(struct ncclComm* comm, ncclNet_t* net, in
       INFO(NCCL_INIT, "Using NCCL_NET_DEVICE_UNPACK net plugin version %d", props.netDeviceVersion);
       return ncclSuccess;
     } else {
-      WARN("NCCL_DEVICE_UNPACK plugin has incompatible version %d, this NCCL build is compatible with %d, not using it",
+      ERR(ncclInternalError, "NCCL_DEVICE_UNPACK plugin has incompatible version %d, this NCCL build is compatible with %d, not using it",
            props.netDeviceVersion, NCCL_NET_DEVICE_UNPACK_VERSION);
       return ncclInternalError;
     }
   default:
-    WARN("Unknown device code index %d", type);
+    ERR(ncclInternalError, "Unknown device code index %d", type);
     return ncclInternalError;
   }
 
@@ -322,6 +325,11 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
   bool ncclNetPluginInitialized = false;
   std::call_once(initPluginLibsOnceFlag, initPluginLibsOnceFunc);
   std::lock_guard<std::mutex> lock(netPluginMutex);
+
+  // [NCCLX-PerCommConfig] Make comm config available to ncclIbInit via side-channel.
+  // Scoped to this function, and read synchronously under the same mutex.
+  ncclx::NcclxCommConfigScope configScope(&comm->config);
+
   for (int pluginIndex = 0; pluginIndex < pluginCount; pluginIndex++) {
     if ((pluginIndex < (pluginCount - NCCL_NET_NUM_INTERNAL_PLUGINS)) &&
         (netPluginLibs[pluginIndex].ncclNetPluginState == ncclNetPluginStateLoadReady)) {
@@ -346,7 +354,7 @@ ncclResult_t ncclNetInit(struct ncclComm* comm) {
     }
   }
   if (ncclNetPluginInitialized) return ncclSuccess;
-  WARN("Failed to initialize any NET plugin");
+  ERR(ncclInvalidUsage, "Failed to initialize any NET plugin");
   return ncclInvalidUsage;
 }
 

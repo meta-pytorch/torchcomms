@@ -20,6 +20,8 @@
 #define TRANSPORT_NET 2
 #define TRANSPORT_COLLNET 3
 
+constexpr auto kMaxRackSerialLen = 63; // [META] for DeviceRackSerial string support
+
 #include "proxy.h"
 #include "comm.h"
 #include "bootstrap.h"
@@ -62,6 +64,7 @@ struct ncclPeerInfo {
   bool rmaPluginAvailable;
   bool cuMemGdrSupport;
   int mloPart; // MLOPart partition index, or -1 if not an MLOPart GPU
+  char rackSerial[kMaxRackSerialLen + 1]; // [META] string-based rack serial
 };
 
 #define CONNECT_SIZE 256

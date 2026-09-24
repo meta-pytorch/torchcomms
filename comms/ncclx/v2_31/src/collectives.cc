@@ -12,6 +12,12 @@
 #include "nccl.h"
 #include "nvtx_payload_schemas.h"
 
+#include "comms/ctran/Ctran.h"
+#include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/ExtUtils.h"
+#include "meta/NcclxConfig.h"
+#include "meta/wrapper/MetaFactory.h"
+
 const char* ncclFuncToString(ncclFunc_t fn) {
   switch (fn) {
   case ncclFuncAllGather:
@@ -143,9 +149,19 @@ NCCL_API(ncclResult_t, ncclAllGather, const void* sendbuff, void* recvbuff, size
          ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount, ncclDataType_t datatype,
                            ncclComm_t comm, cudaStream_t stream) {
+  if (sendcount == 0) return ncclSuccess;
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
   // Just pass the size of one message and not the total bytes sent/received.
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype)));
+
+  const auto algo = NCCLX_CONFIG_FIELD(comm->config, allgatherAlgo);
+  if (algo != NCCL_ALLGATHER_ALGO::orig &&
+      ctranAllGatherSupport(comm->ctranComm_.get(), algo, stream, recvbuff,
+                           sendcount * comm->nRanks * ncclTypeSize(datatype))) {
+    return metaCommToNccl(ctranAllGather(sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype),
+                                         comm->ctranComm_.get(), stream, algo));
+  }
   return ncclAllGatherConfigImpl(sendbuff, recvbuff, sendcount, datatype, comm, stream, nullptr);
 }
 
@@ -175,8 +191,25 @@ NCCL_API(ncclResult_t, ncclAlltoAll, const void* sendbuff, void* recvbuff, size_
          ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, ncclComm* comm,
                           cudaStream_t stream) {
+  if (count == 0) return ncclSuccess;
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
   NVTX3_FUNC_WITH_PARAMS(AlltoAll, NcclNvtxParamsAlltoAll,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype)));
+
+  NCCLCHECK(CudaPtrCheck(sendbuff, comm, "sendbuff", "ncclAlltoAll"));
+  NCCLCHECK(CudaPtrCheck(recvbuff, comm, "recvbuff", "ncclAlltoAll"));
+  if (sendbuff == recvbuff) {
+    ERR(ncclInvalidArgument, "Found sendbuff %p == recvbuff %p. In-place ncclAlltoAll is not supported.", sendbuff,
+        recvbuff);
+    return ncclInvalidArgument;
+  }
+
+  const auto algo = NCCLX_CONFIG_FIELD(comm->config, alltoallAlgo);
+  if (algo != NCCL_ALLTOALL_ALGO::orig &&
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), algo, stream, recvbuff)) {
+    return metaCommToNccl(
+        ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
+  }
   return ncclAlltoAllConfigImpl(sendbuff, recvbuff, count, datatype, comm, stream, nullptr);
 }
 
@@ -205,6 +238,12 @@ NCCL_API(ncclResult_t, ncclAllReduce, const void* sendbuff, void* recvbuff, size
          ncclRedOp_t op, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, ncclRedOp_t op,
                            ncclComm* comm, cudaStream_t stream) {
+  const auto algo = NCCLX_CONFIG_FIELD(comm->config, allreduceAlgo);
+  if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
+    return metaCommToNccl(ctranAllReduce(sendbuff, recvbuff, count, ncclToMetaComm(datatype), ncclToMetaComm(op),
+                                         comm->ctranComm_.get(), stream, algo));
+  }
+
   NVTX3_FUNC_WITH_PARAMS(AllReduce, NcclNvtxParamsAllReduce,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), op));
   return ncclAllReduceConfigImpl(sendbuff, recvbuff, count, datatype, op, comm, stream, nullptr);
@@ -235,6 +274,14 @@ NCCL_API(ncclResult_t, ncclBroadcast, const void* sendbuff, void* recvbuff, size
          int root, ncclComm_t comm, cudaStream_t stream);
 ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
                            ncclComm_t comm, cudaStream_t stream) {
+  if (count == 0) return ncclSuccess;
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
+  if (NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig &&
+      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
+    return metaCommToNccl(ctranBroadcast(sendbuff, recvbuff, count, ncclToMetaComm(datatype), root,
+                                         comm->ctranComm_.get(), stream, NCCL_BROADCAST_ALGO));
+  }
+
   NVTX3_FUNC_WITH_PARAMS(Broadcast, NcclNvtxParamsBroadcast,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root));
   return ncclBroadcastConfigImpl(sendbuff, recvbuff, count, datatype, root, comm, stream, nullptr);
@@ -333,8 +380,16 @@ NCCL_API(ncclResult_t, ncclReduceScatter, const void* sendbuff, void* recvbuff, 
          ncclDataType_t datatype, ncclRedOp_t op, ncclComm* comm, cudaStream_t stream);
 ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recvcount, ncclDataType_t datatype,
                                ncclRedOp_t op, ncclComm* comm, cudaStream_t stream) {
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op));
+
+  if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
+      ctranReduceScatterSupport(comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
+    return metaCommToNccl(ctranReduceScatter(sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype),
+                                             ncclToMetaComm(op), comm->ctranComm_.get(), stream,
+                                             NCCL_REDUCESCATTER_ALGO));
+  }
   return ncclReduceScatterConfigImpl(sendbuff, recvbuff, recvcount, datatype, op, comm, stream, nullptr);
 }
 
@@ -378,10 +433,9 @@ ncclResult_t ncclScatterConfig(const void* sendbuff, void* recvbuff, size_t coun
   return ncclScatterConfigImpl(sendbuff, recvbuff, count, datatype, root, comm, stream, config);
 }
 
-NCCL_API(ncclResult_t, ncclSend, const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
-         cudaStream_t stream);
-ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
-                      cudaStream_t stream) {
+static ncclResult_t baseSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+                             cudaStream_t stream) {
+  ctranGroupTrackDefaultOp(comm->ctranComm_.get());
   NVTX3_FUNC_WITH_PARAMS(Send, NcclNvtxParamsSendRecv,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), peer));
 
@@ -397,13 +451,37 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
                           stream, /* Args */
                           1,
                           1};
-  return ncclEnqueueCheck(&info);
+  ncclResult_t ret;
+  NCCLCHECK(ncclGroupStart());
+  NCCLCHECKGOTO(ncclEnqueueCheck(&info), ret, exit);
+exit:
+  NCCLCHECK(ncclGroupEnd());
+  return ret;
 }
 
-NCCL_API(ncclResult_t, ncclRecv, void* recvbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+NCCL_API(ncclResult_t, ncclSend, const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
          cudaStream_t stream);
-ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
                       cudaStream_t stream) {
+  if (count == 0) return ncclSuccess;
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
+
+  const auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo);
+  if (algo != NCCL_SENDRECV_ALGO::orig && ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
+    ncclResult_t ret;
+    NCCLCHECK(ncclGroupStart());
+    ret = metaCommToNccl(
+        ctranSend(sendbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
+    NCCLCHECK(ncclGroupEnd());
+    return ret;
+  }
+
+  return baseSend(sendbuff, count, datatype, peer, comm, stream);
+}
+
+static ncclResult_t baseRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+                             cudaStream_t stream) {
+  ctranGroupTrackDefaultOp(comm->ctranComm_.get());
   NVTX3_FUNC_WITH_PARAMS(Recv, NcclNvtxParamsSendRecv,
                          NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), peer));
 
@@ -419,7 +497,32 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
                           stream, /* Args */
                           1,
                           1};
-  return ncclEnqueueCheck(&info);
+  ncclResult_t ret;
+  NCCLCHECK(ncclGroupStart());
+  NCCLCHECKGOTO(ncclEnqueueCheck(&info), ret, exit);
+exit:
+  NCCLCHECK(ncclGroupEnd());
+  return ret;
+}
+
+NCCL_API(ncclResult_t, ncclRecv, void* recvbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+         cudaStream_t stream);
+ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
+                      cudaStream_t stream) {
+  if (count == 0) return ncclSuccess;
+  SetCudaDevRAII setCudaDev(comm->cudaDev);
+
+  const auto algo = NCCLX_CONFIG_FIELD(comm->config, sendrecvAlgo);
+  if (algo != NCCL_SENDRECV_ALGO::orig && ctranSendRecvSupport(peer, comm->ctranComm_.get(), algo, stream)) {
+    ncclResult_t ret;
+    NCCLCHECK(ncclGroupStart());
+    ret = metaCommToNccl(
+        ctranRecv(recvbuff, count, ncclToMetaComm(datatype), peer, comm->ctranComm_.get(), stream, algo));
+    NCCLCHECK(ncclGroupEnd());
+    return ret;
+  }
+
+  return baseRecv(recvbuff, count, datatype, peer, comm, stream);
 }
 
 NCCL_API(ncclResult_t, ncclPutSignal, const void* localbuff, size_t count, ncclDataType_t datatype, int peer,
