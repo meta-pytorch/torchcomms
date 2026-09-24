@@ -261,7 +261,12 @@ NCCL_DEVICE_INLINE T ncclCoopBcast(ncclCoopTile<nThreads>, T value, int root, bo
 template<typename T>
 NCCL_DEVICE_INLINE T ncclCoopBcast(ncclCoopLanes coop, T value, int root, bool entrySync=true) {
   uint32_t m = coop.lmask;
+#if ROCM_VERSION >= 60400
   uint32_t r = root == 0 ? __ffs(m)-1 : __fns(m, 0, 1+root);
+#else
+  // ROCm < 6.4 lacks __fns, which newer releases define as a wrapper around __fns32.
+  uint32_t r = root == 0 ? __ffs(m)-1 : __fns32(m, 0, 1+root);
+#endif
   constexpr int n = (sizeof(T)+4-1)/4;
   union { uint32_t u[n]; T v; };
   v = value;

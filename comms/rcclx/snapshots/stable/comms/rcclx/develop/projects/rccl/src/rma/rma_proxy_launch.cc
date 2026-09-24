@@ -18,6 +18,8 @@
 #include "rma/rma_proxy.h"
 #include "dev_runtime.h"
 
+#if ROCM_VERSION >= 60400
+
 #ifndef CU_STREAM_WRITE_VALUE_DEFAULT
 #define CU_STREAM_WRITE_VALUE_DEFAULT 0
 #endif
@@ -435,3 +437,33 @@ ncclResult_t ncclRmaProxyReclaimPlan(struct ncclComm* comm, struct ncclKernelPla
 
   return ncclSuccess;
 }
+
+#else
+// Stubs for ROCm 6.2 compatibility
+// enqueue.cc, rma_proxy.cc and rma_proxy_progress.cc call these to release proxy
+// descriptors, which only the launches below would create, so return success
+ncclResult_t ncclRmaProxyReclaimPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
+  return ncclSuccess;
+}
+ncclResult_t ncclRmaProxyDestroyDescNonPersistent(struct ncclRmaProxyDesc* desc) {
+  return ncclSuccess;
+}
+ncclResult_t ncclRmaProxyDestroyDescPersistent(struct ncclComm* comm, struct ncclRmaProxyDesc* desc) {
+  return ncclSuccess;
+}
+// rma_proxy_progress.cc polls ncclRmaProxyCircularBufEmpty; only the launches
+// below would enqueue descriptors, so the queues are always empty
+bool ncclRmaProxyCircularBufFull(struct ncclRmaProxyCtx* ctx, int peer) {
+  return false;
+}
+bool ncclRmaProxyCircularBufEmpty(struct ncclRmaProxyCtx* ctx, int peer) {
+  return true;
+}
+// RMA is unsupported on ROCm < 6.4, so RMA operations fail here
+ncclResult_t ncclRmaProxyPutLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
+  return ncclInternalError;
+}
+ncclResult_t ncclRmaProxyWaitLaunch(struct ncclComm* comm, struct ncclKernelPlan* plan, cudaStream_t stream) {
+  return ncclInternalError;
+}
+#endif

@@ -22,12 +22,13 @@
  * When 0, the compat types below are compiled.
  ************************************************************************/
 
-#if __has_include(<amd_smi/amdsmi.h>)
+#if __has_include(<amd_smi/amdsmi.h>) && ROCM_VERSION >= 60400
   #define AMDSMI_DIRECT 1
   #include <amd_smi/amdsmi.h>
 #else
   #define AMDSMI_DIRECT 0
-  // amdsmi.h not in include path: fabric API cannot be used directly either,
+  // amdsmi.h not in include path, or it predates ROCm 6.4 and lacks types used
+  // here (amdsmi_enumeration_info_t): fabric API cannot be used directly either,
   // regardless of what the CMake probe detected.
   #undef AMDSMI_FABRIC_DIRECT
   #define AMDSMI_FABRIC_DIRECT 0
