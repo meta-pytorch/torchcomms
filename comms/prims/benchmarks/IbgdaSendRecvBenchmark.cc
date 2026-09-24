@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -528,11 +529,35 @@ class IbgdaSendRecvBenchmarkContext {
     CHECK_EQ(cudaDeviceSynchronize(), cudaSuccess);
 
     if (registeredEnabled_ && globalRank_ == 0) {
-      registeredSendBuf_ =
-          transport_->registerBuffer(sendBuf_->get(), maxBytes_, true);
+      try {
+        registeredSendBuf_ =
+            transport_->registerBuffer(sendBuf_->get(), maxBytes_, true);
+        deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
+      } catch (...) {
+        bool retainSendBuffer = transport_->requiresProcessLifetimeQuarantine();
+        if (registeredSendBuf_.ptr != nullptr && !retainSendBuffer) {
+          try {
+            retainSendBuffer = !transport_->deregisterBuffer(sendBuf_->get());
+          } catch (const std::exception& ex) {
+            LOG(ERROR) << "Failed to deregister benchmark send buffer while "
+                          "handling construction failure: "
+                       << ex.what();
+            retainSendBuffer = true;
+          } catch (...) {
+            LOG(ERROR) << "Failed to deregister benchmark send buffer while "
+                          "handling construction failure";
+            retainSendBuffer = true;
+          }
+        }
+        if (retainSendBuffer) {
+          static_cast<void>(sendBuf_.release());
+        }
+        registeredSendBuf_ = {};
+        throw;
+      }
+    } else {
+      deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
     }
-
-    deviceTransport_ = transport_->getP2pTransportDevice(1 - globalRank_);
   }
 
   ~IbgdaSendRecvBenchmarkContext() {

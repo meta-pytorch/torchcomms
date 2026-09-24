@@ -69,4 +69,20 @@ bool tryDeregisterMrs(Mrs& mrs, int numNics, Deregister&& deregister) {
   return success;
 }
 
+template <typename Mrs>
+bool registrationKeysAvailable(
+    bool deregistrationFailed,
+    const Mrs& mrs,
+    int numNics) {
+  if (deregistrationFailed) {
+    return false;
+  }
+  for (int nic = 0; nic < numNics; ++nic) {
+    if (mrs[nic] == nullptr) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace comms::prims::detail

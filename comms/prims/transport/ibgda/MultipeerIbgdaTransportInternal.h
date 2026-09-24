@@ -60,7 +60,7 @@ decltype(auto) runWithProcessLifetimeQuarantineOnFailure(
     throw;
   } catch (...) {
     if (transport.requiresProcessLifetimeQuarantine()) {
-      quarantine("unknown IBGDA peer materialization failure");
+      quarantine("unknown IB transport failure requiring quarantine");
     }
     throw;
   }

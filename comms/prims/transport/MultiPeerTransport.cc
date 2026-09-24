@@ -239,6 +239,8 @@ MultiPeerTransport::~MultiPeerTransport() {
   free_device_handle();
   static_cast<void>(detail::releaseTransportForProcessLifetimeIfQuarantined(
       ibgdaTransport_, ibgda_resources_quarantined()));
+  // IBRC teardown must run to stop its progress thread. Its cleanup retains the
+  // provider resources and backing allocations when rollback was quarantined.
 }
 
 std::optional<int> MultiPeerTransport::ibgda_max_groups() const {
@@ -502,7 +504,12 @@ void MultiPeerTransport::materializePeers(const std::vector<int>& peers) {
     }
     connectIbgdaPeers();
   } else if (ibrcTransport_) {
-    materializeOn(ibrcTransport_);
+    detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibrcTransport_,
+        [&](auto&) { materializeOn(ibrcTransport_); },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
 }
 
@@ -511,15 +518,20 @@ void MultiPeerTransport::connectPeers() {
   if (ibgdaTransport_) {
     connectIbgdaPeers();
   } else if (ibrcTransport_) {
-    ibrcTransport_->connectPeers();
+    detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibrcTransport_,
+        [](auto& transport) { transport.connectPeers(); },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
 }
 
 void MultiPeerTransport::requireIbTransportUsable() const {
   if (ibgda_resources_quarantined()) {
     throw std::runtime_error(
-        "MultiPeerTransport: IBGDA transport is poisoned after ambiguous rkey "
-        "exposure; retry is not supported");
+        "MultiPeerTransport: IB transport is poisoned after an unsafe cleanup "
+        "failure; retry is not supported");
   }
 }
 
@@ -532,7 +544,7 @@ void MultiPeerTransport::connectIbgdaPeers() {
 
 void MultiPeerTransport::quarantineIbgdaTransport(
     std::string_view context) noexcept {
-  if (ibgdaTransport_ == nullptr) {
+  if (ibgdaTransport_ == nullptr && ibrcTransport_ == nullptr) {
     return;
   }
   if (ibgdaResourcesQuarantined_.exchange(true, std::memory_order_acq_rel)) {
@@ -545,17 +557,17 @@ void MultiPeerTransport::quarantineIbgdaTransport(
     } catch (const std::exception& ex) {
       COMMS_LOG(
           ERR,
-          "MultiPeerTransport: failed to publish IBGDA quarantine abort: {}",
+          "MultiPeerTransport: failed to publish IB quarantine abort: {}",
           ex.what());
     } catch (...) {
       COMMS_LOG(
-          ERR, "MultiPeerTransport: failed to publish IBGDA quarantine abort");
+          ERR, "MultiPeerTransport: failed to publish IB quarantine abort");
     }
   }
   COMMS_LOG(
       ERR,
       "MultiPeerTransport: poisoned this communicator and will retain its "
-      "IBGDA transport for process lifetime after ambiguous rkey exposure: {}",
+      "IB transport for process lifetime after unsafe cleanup: {}",
       context);
 }
 
@@ -564,10 +576,24 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
     size_t size) {
   requireIbTransportUsable();
   if (ibgdaTransport_) {
-    return ibgdaTransport_->registerBuffer(ptr, size);
+    return detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibgdaTransport_,
+        [ptr, size](auto& transport) {
+          return transport.registerBuffer(ptr, size);
+        },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
   if (ibrcTransport_) {
-    return ibrcTransport_->registerBuffer(ptr, size);
+    return detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibrcTransport_,
+        [ptr, size](auto& transport) {
+          return transport.registerBuffer(ptr, size);
+        },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
   throw std::runtime_error(
       "localRegisterIbgdaBuffer: IB transport not available");
@@ -588,11 +614,15 @@ IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
 
 void MultiPeerTransport::deregisterIbBufferRange(
     IbBufferRegistration& registration) {
-  if (ibgdaTransport_) {
-    if (ibgda_resources_quarantined()) {
+  if (ibgda_resources_quarantined()) {
+    if (ibgdaTransport_) {
       ibgdaTransport_->retainIbBufferRangeForProcessLifetime(registration);
-      return;
+    } else if (ibrcTransport_) {
+      ibrcTransport_->retainIbBufferRangeForProcessLifetime(registration);
     }
+    return;
+  }
+  if (ibgdaTransport_) {
     ibgdaTransport_->deregisterIbBufferRange(registration);
     return;
   }
@@ -609,20 +639,27 @@ bool MultiPeerTransport::localDeregisterIbgdaBuffer(void* ptr) noexcept {
     if (ibgda_resources_quarantined()) {
       return false;
     }
+    bool deregistered = false;
     if (ibgdaTransport_) {
-      return ibgdaTransport_->deregisterBuffer(ptr);
+      deregistered = ibgdaTransport_->deregisterBuffer(ptr);
+    } else if (ibrcTransport_) {
+      deregistered = ibrcTransport_->deregisterBuffer(ptr);
+    } else {
+      return false;
     }
-    if (ibrcTransport_) {
-      return ibrcTransport_->deregisterBuffer(ptr);
+    if (!deregistered) {
+      quarantineIbgdaTransport("cached MR deregistration failed");
     }
+    return deregistered;
   } catch (const std::exception& ex) {
+    quarantineIbgdaTransport("cached MR deregistration threw");
     COMMS_LOG(ERR, "Failed to deregister IB buffer {}: {}", ptr, ex.what());
     return false;
   } catch (...) {
+    quarantineIbgdaTransport("cached MR deregistration threw");
     COMMS_LOG(ERR, "Failed to deregister IB buffer {}: unknown exception", ptr);
     return false;
   }
-  return false;
 }
 
 std::vector<IbgdaRemoteBuffer> MultiPeerTransport::exchangeIbgdaBuffer(
@@ -701,7 +738,14 @@ IbgdaLocalBuffer MultiPeerTransport::registerIbCounterBuffer(
     std::size_t size) {
   requireIbTransportUsable();
   if (ibgdaTransport_) {
-    return ibgdaTransport_->registerBuffer(buffer.ptr, size);
+    return detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibgdaTransport_,
+        [ptr = buffer.ptr, size](auto& transport) {
+          return transport.registerBuffer(ptr, size);
+        },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
   if (ibrcTransport_) {
     return buffer;

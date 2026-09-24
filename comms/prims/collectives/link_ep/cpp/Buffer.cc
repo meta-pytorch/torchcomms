@@ -280,6 +280,14 @@ Buffer::Buffer(
 }
 
 Buffer::~Buffer() {
+#ifndef LINK_EP_OSS_INTRANODE
+  if (lowLatency_ != nullptr) {
+    retainLocalIpcBufferForProcessLifetime_ =
+        retainLocalIpcBufferForProcessLifetime_ ||
+        lowLatency_->requiresProcessLifetimeQuarantine();
+    lowLatency_.reset();
+  }
+#endif
   // intranode_ destructor handles workspace cleanup. Close peer IPC handles
   // BEFORE freeing the local buffer (peer handles must be closed while their
   // backing allocations are still live across the IPC; the local buffer free
@@ -293,10 +301,10 @@ Buffer::~Buffer() {
     }
   }
   peerIpcBuffers_.clear();
-  if (localIpcBuffer_ != nullptr) {
+  if (localIpcBuffer_ != nullptr && !retainLocalIpcBufferForProcessLifetime_) {
     (void)cudaFree(localIpcBuffer_);
-    localIpcBuffer_ = nullptr;
   }
+  localIpcBuffer_ = nullptr;
 }
 
 int Buffer::get_num_rdma_ranks() const noexcept {
@@ -474,6 +482,11 @@ void Buffer::destroy() {
     return;
   }
 #ifndef LINK_EP_OSS_INTRANODE
+  if (lowLatency_ != nullptr) {
+    retainLocalIpcBufferForProcessLifetime_ =
+        retainLocalIpcBufferForProcessLifetime_ ||
+        lowLatency_->requiresProcessLifetimeQuarantine();
+  }
   lowLatency_.reset();
 #endif
   intranode_.reset();
@@ -1096,7 +1109,9 @@ py::tuple Buffer::low_latency_dispatch(
         hidden,
         numExperts,
         /*numQpsPerRank=*/numLocalExperts,
-        /*externalRdmaBuffer=*/llBuffer);
+        /*externalRdmaBuffer=*/llBuffer,
+        /*externalRdmaBufferRetentionRequired=*/
+        &retainLocalIpcBufferForProcessLifetime_);
   }
 
   auto packedRecvX = torch::empty(
@@ -1408,7 +1423,9 @@ void Buffer::setup_low_latency_ibgda(
         hidden,
         numExperts,
         /*numQpsPerRank=*/numLocalExperts,
-        /*externalRdmaBuffer=*/llBuffer);
+        /*externalRdmaBuffer=*/llBuffer,
+        /*externalRdmaBufferRetentionRequired=*/
+        &retainLocalIpcBufferForProcessLifetime_);
   }
   auto bootstrap = std::make_shared<PyAllGatherBootstrap>(
       rank_, numRanks_, std::move(allGatherCallback));
