@@ -330,10 +330,14 @@ fi
 # locale_ref::get<std::locale>). The conda libfolly.pc does not list fmt as
 # a dep, so add -lfmt explicitly.
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a"
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libssl.a -l:libcrypto.a -l:libfmt.a "
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt"
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lssl -lcrypto -lfmt "
 fi
+# libobservatory.so.1 is a DT_NEEDED of libnccl.so and is installed beside it.
+# $$ because make gets this on its command line, where a bare $O expands as a
+# make variable; the quotes keep $ORIGIN from the recipe's shell.
+THIRD_PARTY_LDFLAGS+="-Wl,-rpath,'\$\$ORIGIN' "
 
 echo "$THIRD_PARTY_LDFLAGS"
 

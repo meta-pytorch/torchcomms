@@ -30,6 +30,10 @@ option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRANSPORT_CCA_HOOK "Build the minimal RDMA CCA-hook extension" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
+# There is one libobservatory.so per process. Turn this off wherever the
+# environment already supplies it, or the package brings a second copy and each
+# backend registers into a different registry.
+option(TORCHCOMMS_BUNDLE_OBSERVATORY "Ship libobservatory.so beside the NCCLX extension" ON)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
 message(STATUS "  USE_GLOO  : ${USE_GLOO}")
