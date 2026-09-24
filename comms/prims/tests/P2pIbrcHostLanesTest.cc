@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -210,7 +211,8 @@ class P2pIbrcHostLanesBudget : public ::testing::Test {
     return P2pIbrcHostLanes(makeWriters());
   }
 
-  std::vector<P2pIbrcHostWriter> makeWriters() {
+  std::vector<P2pIbrcHostWriter> makeWriters(
+      const std::shared_ptr<void>& lease = nullptr) {
     std::vector<P2pIbrcHostWriter> writers;
     writers.reserve(kLanes);
     for (int l = 0; l < kLanes; ++l) {
@@ -221,7 +223,8 @@ class P2pIbrcHostLanesBudget : public ::testing::Test {
           &ci_[i],
           &status_[i],
           kDepth,
-          static_cast<uint32_t>(l));
+          static_cast<uint32_t>(l),
+          lease);
     }
     return writers;
   }
@@ -282,10 +285,56 @@ TEST_F(P2pIbrcHostLanesBudget, RingClaimIsExclusiveAndReleased) {
   {
     auto owner = std::make_shared<char>();
     issued = owner;
-    auto held = P2pIbrcHostLanes(makeWriters(), std::move(owner));
+    // Not std::move(owner): argument evaluation is unordered, so moving here
+    // could hand makeWriters() an already-emptied token.
+    auto held = P2pIbrcHostLanes(makeWriters(owner), owner);
     EXPECT_FALSE(issued.expired()) << "claim not held while lanes are alive";
   }
   EXPECT_TRUE(issued.expired()) << "claim outlived the lanes object";
+}
+
+/*
+ * writer() hands out a movable writer, so a lane can be moved out and outlive
+ * the object that was handed the claim. Every lane therefore shares the claim
+ * rather than the lanes object holding it alone -- otherwise the peer reads as
+ * free the moment the object dies, and the transport issues a second producer
+ * onto a ring the escaped writer is still driving.
+ */
+TEST_F(P2pIbrcHostLanesBudget, ClaimSurvivesALaneMovedOutOfTheObject) {
+  std::weak_ptr<void> issued;
+  std::optional<P2pIbrcHostWriter> escaped;
+  {
+    auto owner = std::make_shared<char>();
+    issued = owner;
+    auto lanes = P2pIbrcHostLanes(makeWriters(owner), owner);
+    escaped = std::move(lanes.writer(0));
+  }
+  EXPECT_FALSE(issued.expired())
+      << "claim released while a lane writer can still drive the ring";
+
+  escaped.reset();
+  EXPECT_TRUE(issued.expired()) << "claim outlived the last lane writer";
+}
+
+/*
+ * The sharing above is a precondition, not a convention: a future second way
+ * to build lanes that forgot to pass the claim down would otherwise compile,
+ * pass every test here, and silently restore the escape. Checked at
+ * construction so the mistake cannot reach the wire.
+ */
+TEST_F(P2pIbrcHostLanesBudget, RejectsLanesThatDoNotShareTheClaim) {
+  auto owner = std::make_shared<char>();
+
+  EXPECT_THROW(
+      P2pIbrcHostLanes(makeWriters(/*lease=*/nullptr), owner),
+      std::runtime_error);
+
+  // A different peer's claim is the same defect as none at all.
+  EXPECT_THROW(
+      P2pIbrcHostLanes(makeWriters(std::make_shared<char>()), owner),
+      std::runtime_error);
+
+  EXPECT_NO_THROW(P2pIbrcHostLanes(makeWriters(owner), owner));
 }
 
 // A layout built against a wider peer must be refused rather than indexed
