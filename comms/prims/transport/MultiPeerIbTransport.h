@@ -963,12 +963,22 @@ class MultiPeerIbTransportBase {
    * allocation discovery or caching. A provider MR may be page-aligned. The
    * result exposes local keys only and is invisible to exchangeBuffer() and
    * registeredSlotMemoryExchInfo(); use registerBuffer() for memory that peers
-   * write into.
+   * write into. If registration throws after a failed rollback, callers must
+   * retain the backing allocation when requiresProcessLifetimeQuarantine()
+   * returns true. When registrationQuarantined is non-null, it is set only if
+   * this invocation left an MR active after rollback.
    */
-  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
+  IbBufferRegistration registerIbBufferRange(
+      void* ptr,
+      std::size_t size,
+      bool* registrationQuarantined = nullptr);
 
-  /** Release an exact-range registration and invalidate it. */
-  void deregisterIbBufferRange(IbBufferRegistration& registration);
+  /**
+   * Release an exact-range registration and invalidate it. Returns false and
+   * leaves the handle valid when any provider MR could not be revoked.
+   */
+  [[nodiscard]] bool deregisterIbBufferRange(
+      IbBufferRegistration& registration);
 
   /** Invalidate the handle without deregistering its process-lifetime MR. */
   void retainIbBufferRangeForProcessLifetime(

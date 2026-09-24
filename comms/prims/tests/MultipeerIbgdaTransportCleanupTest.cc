@@ -123,6 +123,14 @@ class RegistrationRollbackHarness final : private MultiPeerIbTransportBase {
         registrationQuarantined));
   }
 
+  void registerExactRangeTrackingQuarantine(
+      void* allocation,
+      std::size_t size,
+      bool& registrationQuarantined) {
+    static_cast<void>(
+        registerIbBufferRange(allocation, size, &registrationQuarantined));
+  }
+
   bool requiresProcessLifetimeQuarantine() const {
     return registrationRollbackFailed();
   }
@@ -907,6 +915,22 @@ TEST(
           unrelatedAllocationQuarantined),
       std::invalid_argument);
   EXPECT_FALSE(unrelatedAllocationQuarantined);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    ExactRangeValidationFailureDoesNotInheritPriorQuarantineResult) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  int allocation = 0;
+  bool registrationQuarantined = true;
+
+  EXPECT_THROW(
+      transport.registerExactRangeTrackingQuarantine(
+          &allocation, /*size=*/0, registrationQuarantined),
+      std::invalid_argument);
+  EXPECT_FALSE(registrationQuarantined);
 }
 
 TEST(

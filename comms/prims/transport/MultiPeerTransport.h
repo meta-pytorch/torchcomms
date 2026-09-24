@@ -328,13 +328,22 @@ class MultiPeerTransport {
    */
   IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
 
-  IbBufferRegistration registerIbBufferRange(void* ptr, std::size_t size);
+  /**
+   * Register an exact caller-owned range. On return or exception,
+   * registrationQuarantined is set only when this invocation leaves an MR
+   * active, in which case the backing allocation must remain alive until exit.
+   */
+  IbBufferRegistration registerIbBufferRange(
+      void* ptr,
+      std::size_t size,
+      bool* registrationQuarantined = nullptr);
 
   /**
-   * Deregister an exact-range buffer. After process-lifetime quarantine, the
-   * MR is retained and the caller must keep the allocation alive until exit.
+   * Deregister an exact-range buffer and invalidate its handle. Returns false
+   * when the MR and backing allocation must remain alive until process exit.
    */
-  void deregisterIbBufferRange(IbBufferRegistration& registration);
+  [[nodiscard]] bool deregisterIbBufferRange(
+      IbBufferRegistration& registration);
 
   /**
    * Deregister a previously registered IBGDA buffer.

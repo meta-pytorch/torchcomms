@@ -601,18 +601,38 @@ IbgdaLocalBuffer MultiPeerTransport::localRegisterIbgdaBuffer(
 
 IbBufferRegistration MultiPeerTransport::registerIbBufferRange(
     void* ptr,
-    std::size_t size) {
+    std::size_t size,
+    bool* registrationQuarantined) {
+  if (registrationQuarantined != nullptr) {
+    *registrationQuarantined = false;
+  }
   requireIbTransportUsable();
   if (ibgdaTransport_) {
-    return ibgdaTransport_->registerIbBufferRange(ptr, size);
+    return detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibgdaTransport_,
+        [ptr, size, registrationQuarantined](auto& transport) {
+          return transport.registerIbBufferRange(
+              ptr, size, registrationQuarantined);
+        },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
   if (ibrcTransport_) {
-    return ibrcTransport_->registerIbBufferRange(ptr, size);
+    return detail::runWithProcessLifetimeQuarantineOnFailure(
+        *ibrcTransport_,
+        [ptr, size, registrationQuarantined](auto& transport) {
+          return transport.registerIbBufferRange(
+              ptr, size, registrationQuarantined);
+        },
+        [this](std::string_view context) {
+          quarantineIbgdaTransport(context);
+        });
   }
   throw std::runtime_error("registerIbBufferRange: IB transport not available");
 }
 
-void MultiPeerTransport::deregisterIbBufferRange(
+bool MultiPeerTransport::deregisterIbBufferRange(
     IbBufferRegistration& registration) {
   if (ibgda_resources_quarantined()) {
     if (ibgdaTransport_) {
@@ -620,15 +640,25 @@ void MultiPeerTransport::deregisterIbBufferRange(
     } else if (ibrcTransport_) {
       ibrcTransport_->retainIbBufferRangeForProcessLifetime(registration);
     }
-    return;
+    return false;
   }
   if (ibgdaTransport_) {
-    ibgdaTransport_->deregisterIbBufferRange(registration);
-    return;
+    const bool deregistered =
+        ibgdaTransport_->deregisterIbBufferRange(registration);
+    if (!deregistered) {
+      quarantineIbgdaTransport("exact-range MR deregistration failed");
+      ibgdaTransport_->retainIbBufferRangeForProcessLifetime(registration);
+    }
+    return deregistered;
   }
   if (ibrcTransport_) {
-    ibrcTransport_->deregisterIbBufferRange(registration);
-    return;
+    const bool deregistered =
+        ibrcTransport_->deregisterIbBufferRange(registration);
+    if (!deregistered) {
+      quarantineIbgdaTransport("exact-range MR deregistration failed");
+      ibrcTransport_->retainIbBufferRangeForProcessLifetime(registration);
+    }
+    return deregistered;
   }
   throw std::runtime_error(
       "deregisterIbBufferRange: IB transport not available");

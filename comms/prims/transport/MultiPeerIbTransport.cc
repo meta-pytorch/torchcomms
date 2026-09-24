@@ -1492,7 +1492,11 @@ IbgdaLocalBuffer MultiPeerIbTransportBase::registerBufferLocked(
 
 IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
     void* ptr,
-    std::size_t size) {
+    std::size_t size,
+    bool* registrationQuarantined) {
+  if (registrationQuarantined != nullptr) {
+    *registrationQuarantined = false;
+  }
   checkedRangeEnd(ptr, size, "registerIbBufferRange");
   const bool useRelaxedOrdering =
       relaxedOrderingActiveForNic(config_, relaxedOrderingCapable_);
@@ -1528,11 +1532,24 @@ IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
   auto& symbols = ibverbx::ibvSymbols;
   std::array<ibverbx::ibv_mr*, kMaxNicsPerGpu> mrs{};
   const auto cleanup = [&](int end) {
-    for (int n = 0; n < end; ++n) {
-      if (mrs[n] != nullptr) {
-        symbols.ibv_internal_dereg_mr(mrs[n]);
-        mrs[n] = nullptr;
+    const bool deregistered =
+        detail::tryDeregisterMrs(mrs, end, [&](int nic, ibverbx::ibv_mr* mr) {
+          const int rc = symbols.ibv_internal_dereg_mr(mr);
+          if (rc != 0) {
+            LOG(ERROR)
+                << "MultiPeerIbTransport: failed to roll back exact-range MR "
+                   "on NIC "
+                << nic << " (rc=" << rc << ")";
+          }
+          return rc;
+        });
+    if (!deregistered) {
+      if (registrationQuarantined != nullptr) {
+        *registrationQuarantined = true;
       }
+      registrationRollbackFailed_.store(true, std::memory_order_release);
+      LOG(ERROR) << "MultiPeerIbTransport: retaining provider resources after "
+                    "exact-range registration rollback left an MR active";
     }
   };
 
@@ -1636,23 +1653,29 @@ IbBufferRegistration MultiPeerIbTransportBase::registerIbBufferRange(
       IbgdaLocalBuffer(ptr, keys), size, useRelaxedOrdering, mrs, numNics_);
 }
 
-void MultiPeerIbTransportBase::deregisterIbBufferRange(
+bool MultiPeerIbTransportBase::deregisterIbBufferRange(
     IbBufferRegistration& registration) {
   if (!registration.valid()) {
     throw std::invalid_argument(
         "deregisterIbBufferRange: invalid registration");
   }
-  for (int n = 0; n < registration.numNics_; ++n) {
-    if (registration.mrs_[n] != nullptr) {
-      const int rc =
-          ibverbx::ibvSymbols.ibv_internal_dereg_mr(registration.mrs_[n]);
-      if (rc != 0) {
-        LOG(WARNING) << "Failed to deregister exact VA MR on NIC " << n
-                     << ": rc=" << rc;
-      }
-    }
+  const bool deregistered = detail::tryDeregisterMrs(
+      registration.mrs_,
+      registration.numNics_,
+      [](int nic, ibverbx::ibv_mr* mr) {
+        const int rc = ibverbx::ibvSymbols.ibv_internal_dereg_mr(mr);
+        if (rc != 0) {
+          LOG(WARNING) << "Failed to deregister exact VA MR on NIC " << nic
+                       << ": rc=" << rc;
+        }
+        return rc;
+      });
+  if (!deregistered) {
+    registrationRollbackFailed_.store(true, std::memory_order_release);
+    return false;
   }
   registration.reset();
+  return true;
 }
 
 bool MultiPeerIbTransportBase::deregisterBuffer(void* ptr) {
