@@ -1901,17 +1901,6 @@ cvars:
      or the default configuration set (see NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
      NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS) for all collectives.
 
- - name        : NCCL_CTRAN_EX_IB_QP_CONFIG
-   type        : stringlist
-   default     :
-   description : |-
-     A set of configuration for CTRAN_EX IB communication. e.g FTAR:
-     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
-     e.g., NCCL_CTRAN_EX_IB_QP_CONFIG="1048576,16,spray,128"
-     If not given, NCCLx will use values from
-     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
-     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
-
  - name        : NCCL_CTRAN_NUM_KERNEL_ELEMS
    type        : int
    default     : 65536
