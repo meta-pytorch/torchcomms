@@ -286,9 +286,15 @@ c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
 }
 
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
-    : Backend(comm->getRank(), comm->getSize()),
-      comm_(comm),
-      options_(c10::make_intrusive<Options>()) {}
+    : Backend(-1, -1), comm_(comm), options_(c10::make_intrusive<Options>()) {
+  // TorchComm populates ranks after initialization. Dynamic backends may
+  // reject rank/size queries before reconfigure().
+  if (comm_->getRanks().empty()) {
+    return;
+  }
+  rank_ = comm_->getRank();
+  size_ = comm_->getSize();
+}
 
 #ifdef C10D_BACKEND_HAS_RECONFIGURE
 bool BackendWrapper::supportsReconfigure() const {

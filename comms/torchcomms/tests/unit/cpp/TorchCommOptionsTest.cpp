@@ -166,6 +166,29 @@ TEST_F(BackendWrapperTest, SendThreadsTagToBackend) {
 }
 
 #ifdef C10D_BACKEND_HAS_RECONFIGURE
+TEST_F(BackendWrapperTest, UninitializedCommDefersMembershipUntilReconfigure) {
+  CommOptions options;
+  options.enable_reconfigure = true;
+  auto comm =
+      new_comm(kBackendName, at::Device(at::kCPU), "dynamic_test", options);
+  c10::intrusive_ptr<c10d::Backend> backend =
+      c10::make_intrusive<BackendWrapper>(comm);
+  EXPECT_EQ(backend->getRank(), -1);
+  EXPECT_EQ(backend->getSize(), -1);
+  EXPECT_TRUE(backend->supportsReconfigure());
+  EXPECT_EQ(backend->get_reconfigure_handle(), comm->getInitHandle());
+
+  c10d::ReconfigureOptions opts;
+  opts.uuid = 44;
+  opts.handles = std::vector<c10d::ReconfigureHandle>{"fake:0"};
+  EXPECT_TRUE(backend->reconfigure(opts)->wait());
+  EXPECT_EQ(backend->getRank(), comm->getRank());
+  EXPECT_EQ(backend->getSize(), comm->getSize());
+  auto initializedBackend = c10::make_intrusive<BackendWrapper>(comm);
+  EXPECT_EQ(initializedBackend->getRank(), comm->getRank());
+  EXPECT_EQ(initializedBackend->getSize(), comm->getSize());
+}
+
 TEST_F(BackendWrapperTest, ReconfigureForwardsOptionsAndRefreshesMembership) {
   c10::intrusive_ptr<c10d::Backend> backend = wrapper_;
   EXPECT_TRUE(backend->supportsReconfigure());

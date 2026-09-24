@@ -192,6 +192,8 @@ class ReconfigureTest(unittest.TestCase):
         backend = torchcomms._comms._BackendWrapper(comm)
         initialized = False
         try:
+            self.assertEqual(backend.rank(), -1)
+            self.assertEqual(backend.size(), -1)
             self.assertTrue(backend.supports_reconfigure)
             self.assertEqual(backend.get_reconfigure_handle(), comm.get_init_handle())
             handles = self._collect_handles(comm, "backend_wrapper_initial")
