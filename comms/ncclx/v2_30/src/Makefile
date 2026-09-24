@@ -274,6 +274,7 @@ DEPFILES   := $(LIBOBJ:%.o=%.d) $(BINOBJ:%.o=%.d) $(PARAMBINOBJ:%.o=%.d)
 LDFLAGS    += -Wl,--no-undefined
 LDFLAGS    += -L${CUDA_LIB} -L${BUILDDIR} -L${CONDA_LIB_DIR} -l$(CUDARTLIB) -lpthread -lm -lrt -ldl
 LDFLAGS    += ${THIRD_PARTY_LDFLAGS}
+LDFLAGS    += -L$(LIBDIR) -lobservatory
 LDFLAGS    += -Wl,--version-script=version.script
 ifeq ($(CUDARTLIB), cudarthook)
     # Ensure that cudart symbols are resolved within the module itself.
@@ -335,9 +336,29 @@ $(INCDIR)/nccl.h : nccl.h.in ${NCCLDIR}/makefiles/version.mk
 	    -e "s/\$${nccl:Version}/$(NCCL_VERSION)/g" \
 	    $< > $@
 
+# libobservatory.so. See comms/observatory/README.md.
+#
+# -fvisibility=default overrides the hidden default in makefiles/common.mk, and
+# unlike libnccl.so below this gets no version script and no -Bsymbolic:
+# consumers must resolve these symbols here rather than locally.
+LIBOBSERVATORY_SRC    := ${BASE_DIR}/comms/observatory/colltrace/LifecycleFeedRegistry.cc
+LIBOBSERVATORY_NAME   := libobservatory.so
+LIBOBSERVATORY_SONAME := $(LIBOBSERVATORY_NAME).1
+# Listed so a header-only edit relinks. Other objects get this from their .d
+# files; this rule compiles and links in one step and has none, and a stale
+# libobservatory.so.1 is an ABI mismatch nothing else catches.
+LIBOBSERVATORY_HDRS   := $(wildcard ${BASE_DIR}/comms/observatory/colltrace/*.h)
+
+$(LIBDIR)/$(LIBOBSERVATORY_SONAME): $(LIBOBSERVATORY_SRC) $(LIBOBSERVATORY_HDRS)
+	@printf "Linking    %-35s > %s\n" $(LIBOBSERVATORY_SONAME) $@
+	mkdir -p $(LIBDIR)
+	$(CXX) $(CXXFLAGS) -fvisibility=default -I${BASE_DIR} -shared \
+	    -Wl,--no-undefined -Wl,-soname,$(LIBOBSERVATORY_SONAME) -o $@ $<
+	ln -sf $(LIBOBSERVATORY_SONAME) $(LIBDIR)/$(LIBOBSERVATORY_NAME)
+
 # Device objs (from device/Makefile manifest, incl. common.cu.o) are linked in so libnccl.so contains
 # device code (e.g. ncclGin_BackendMask<...>) that tests resolve when linking with -lnccl.
-$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFEST)
+$(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVMANIFEST) $(LIBDIR)/$(LIBOBSERVATORY_SONAME)
 	@printf "Linking    %-35s > %s\n" $(LIBTARGET) $@
 	mkdir -p $(LIBDIR)
 	$(CXX) $(CXXFLAGS) -shared -Wl,--no-as-needed -Wl,-soname,$(LIBSONAME) -o $@ $(LIBOBJ) $$(cat $(DEVMANIFEST)) $(LDFLAGS)
