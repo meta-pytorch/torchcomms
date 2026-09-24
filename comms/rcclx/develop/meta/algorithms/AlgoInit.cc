@@ -1,0 +1,84 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#include "AlgoInit.h"
+
+#include "BaselineBootstrap.h"
+#include "comm.h"
+#include "debug.h"
+#include "param.h"
+
+// Meta custom algorithm configs
+RCCL_PARAM(DdaNRanks, "DDA_NRANKS", 8);
+RCCL_PARAM(DdaMaxBlocks, "DDA_MAX_BLOCKS", 24);
+RCCL_PARAM(DdaSendbufBytes, "DDA_SENDBUF_BYTES", 32 * 1024 * 1024);
+
+RCCL_PARAM(EnableDdaAllReduce, "ENABLE_DDA_ALL_REDUCE", 1);
+RCCL_PARAM(
+    DdaAllReduceFlatMaxBytes,
+    "DDA_ALL_REDUCE_FLAT_MAX_BYTES",
+    200 * 1024);
+RCCL_PARAM(
+    DdaAllReduceTreeMaxBytes,
+    "DDA_ALL_REDUCE_TREE_MAX_BYTES",
+    29 * 1024 * 1024);
+
+RCCL_PARAM(EnableDdaAllGather, "ENABLE_DDA_ALL_GATHER", 1);
+RCCL_PARAM(DdaAllGatherMaxBytes, "DDA_ALL_GATHER_MAX_BYTES", 16 * 1024 * 1024);
+
+RCCL_PARAM(EnableDdaReduceScatter, "ENABLE_DDA_REDUCE_SCATTER", 1);
+RCCL_PARAM(
+    DdaReduceScatterMaxBytes,
+    "DDA_REDUCE_SCATTER_MAX_BYTES",
+    8 * 1024 * 1024);
+
+RCCL_PARAM(EnableDdaAllToAll, "ENABLE_DDA_ALL_TO_ALL", 1);
+RCCL_PARAM(DdaAllToAllMaxBytes, "DDA_ALL_TO_ALL_MAX_BYTES", 2 * 1024 * 1024);
+
+std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
+  // DDA (Direct Device Access) only works for single-node setups where all
+  // ranks share the same physical GPUs. Disable it for multi-node
+  // configurations.
+  if (comm->nNodes > 1) {
+    INFO(
+        NCCL_INIT,
+        "Disabling DDA for multi-node setup (nNodes=%d)",
+        comm->nNodes);
+    return nullptr;
+  }
+
+  const auto configuredNRanks = rcclParamDdaNRanks();
+  if (comm->nRanks != configuredNRanks) {
+    INFO(
+        NCCL_INIT,
+        "Disabling DDA for single-node setup "
+        "(nRanks=%d, RCCL_DDA_NRANKS=%ld)",
+        comm->nRanks,
+        static_cast<long>(configuredNRanks));
+    return nullptr;
+  }
+
+  return std::make_unique<::meta::comms::AlgoFactoryDev>(
+      std::make_shared<::rcclx::BaselineBootstrap>(comm),
+      comm->nRanks,
+      comm->rank,
+      rcclParamDdaMaxBlocks(),
+      rcclParamDdaSendbufBytes(),
+      ::meta::comms::AlgoFactoryDev::AllReduceOptions{
+          .enableDda = static_cast<bool>(rcclParamEnableDdaAllReduce()),
+          .ddaFlatMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaAllReduceFlatMaxBytes()),
+          .ddaTreeMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaAllReduceTreeMaxBytes())},
+      ::meta::comms::AlgoFactoryDev::AllGatherOptions{
+          .enableDda = static_cast<bool>(rcclParamEnableDdaAllGather()),
+          .ddaMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaAllGatherMaxBytes())},
+      ::meta::comms::AlgoFactoryDev::ReduceScatterOptions{
+          .enableDda = static_cast<bool>(rcclParamEnableDdaReduceScatter()),
+          .ddaMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaReduceScatterMaxBytes())},
+      ::meta::comms::AlgoFactoryDev::AllToAllOptions{
+          .enableDda = static_cast<bool>(rcclParamEnableDdaAllToAll()),
+          .ddaMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaAllToAllMaxBytes())});
+}

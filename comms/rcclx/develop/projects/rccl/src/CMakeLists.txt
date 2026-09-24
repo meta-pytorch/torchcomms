@@ -446,6 +446,7 @@ set(SRC_FILES
 # Run this command to get META_FILES:
 # find comms/rcclx/develop/meta -type f ! -path "*/scuba/*" ! -path "*/testinfra/*" ! -path "*/tests/*" ! -path "*/lib/*" ! -path "*/lpcoll/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sed 's|^comms/rcclx/develop/\(build/release/hipify/\)\?||' | sort
 set(RCCLX_FILES
+  meta/algorithms/AlgoInit.cc
   meta/algorithms/AlgoInit.h
   meta/algorithms/AlgoUtils.h
   meta/ctran/BaselineBootstrap.cc
