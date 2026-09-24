@@ -245,12 +245,17 @@ __device__ __forceinline__ T shfl_sync_compat(T val, int src_lane) {
 }
 
 // ---------------------------------------------------------------------------
-// WARP_COPY unroll factor. AMD uses 2 vs NVIDIA's 4 because AMD's 64-lane
-// warp already issues twice the data per stride; mismatched factors trigger
-// AMD memory-pipe stalls / data races.
+// WARP_COPY unroll factor. Unused by the AMD copy (see kWarpCopyStage).
 // ---------------------------------------------------------------------------
 #ifdef __HIP_PLATFORM_AMD__
 constexpr int kIntranodeUnrollFactor = 2;
+// 16 B elements per lane loaded before any store in the AMD warp copy.
+constexpr int kWarpCopyStage = 8;
+// 16 B vector in the global address space: without this cast, pointers from
+// buffer_ptrs[] compile to FLAT ops with a full wait before every store.
+typedef int GlobalInt4 __attribute__((ext_vector_type(4)));
+#define LINK_EP_GLOBAL_INT4(p) \
+  ((__attribute__((address_space(1))) GlobalInt4*)(p))
 #else
 constexpr int kIntranodeUnrollFactor = 4;
 #endif
@@ -273,14 +278,9 @@ __device__ __forceinline__ int ld_nc_global(const int* ptr) {
 
 __device__ __forceinline__ int4 ld_nc_global(const int4* ptr) {
 #ifdef __HIP_PLATFORM_AMD__
-  // No 16B nontemporal_load; emit 4×int32.
-  const int* p = reinterpret_cast<const int*>(ptr);
-  int4 ret;
-  ret.x = __builtin_nontemporal_load(p + 0);
-  ret.y = __builtin_nontemporal_load(p + 1);
-  ret.z = __builtin_nontemporal_load(p + 2);
-  ret.w = __builtin_nontemporal_load(p + 3);
-  return ret;
+  const GlobalInt4 v = __builtin_nontemporal_load(
+      LINK_EP_GLOBAL_INT4(const_cast<void*>(static_cast<const void*>(ptr))));
+  return make_int4(v.x, v.y, v.z, v.w);
 #else
   int4 ret;
   asm volatile("ld.global.nc.v4.s32 {%0, %1, %2, %3}, [%4];"
@@ -320,7 +320,8 @@ __device__ __forceinline__ void st_na_global(int* ptr, int val) {
 
 __device__ __forceinline__ void st_na_global(int4* ptr, int4 val) {
 #ifdef __HIP_PLATFORM_AMD__
-  *ptr = val;
+  *LINK_EP_GLOBAL_INT4(static_cast<void*>(ptr)) =
+      GlobalInt4{val.x, val.y, val.z, val.w};
 #else
   asm volatile("st.global.v4.s32 [%0], {%1, %2, %3, %4};"
                :
@@ -334,11 +335,9 @@ __device__ __forceinline__ void st_na_global(int4* ptr, int4 val) {
 // sender->peer copies only; local receiver writes keep the plain st_na_global.
 __device__ __forceinline__ void st_nt_global(int4* ptr, int4 val) {
 #ifdef __HIP_PLATFORM_AMD__
-  int* p = reinterpret_cast<int*>(ptr);
-  __builtin_nontemporal_store(val.x, p + 0);
-  __builtin_nontemporal_store(val.y, p + 1);
-  __builtin_nontemporal_store(val.z, p + 2);
-  __builtin_nontemporal_store(val.w, p + 3);
+  __builtin_nontemporal_store(
+      GlobalInt4{val.x, val.y, val.z, val.w},
+      LINK_EP_GLOBAL_INT4(static_cast<void*>(ptr)));
 #else
   asm volatile("st.global.cs.v4.s32 [%0], {%1, %2, %3, %4};"
                :
@@ -347,12 +346,17 @@ __device__ __forceinline__ void st_nt_global(int4* ptr, int4 val) {
 #endif
 }
 
-// Cached read for LOCAL data (sender's own input). On AMD, plain `__ldg`
-// suffices — local L1/L2 are coherent with the producer (CPU/torch). Using
-// `ld_nc_global` (cache-bypass) here would force every read to round-trip
-// to HBM and degrade dispatch sender throughput by 10-100x.
+// Cached read for LOCAL data (sender's own input); L1/L2 are coherent with its
+// producer. `ld_nc_global` (cache-bypass) would send every read to HBM and cut
+// dispatch sender throughput by 10-100x.
 __device__ __forceinline__ int4 ld_cached_global(const int4* ptr) {
+#ifdef __HIP_PLATFORM_AMD__
+  const GlobalInt4 v =
+      *LINK_EP_GLOBAL_INT4(const_cast<void*>(static_cast<const void*>(ptr)));
+  return make_int4(v.x, v.y, v.z, v.w);
+#else
   return __ldg(ptr);
+#endif
 }
 __device__ __forceinline__ int ld_cached_global(const int* ptr) {
   return __ldg(ptr);
@@ -375,7 +379,49 @@ __device__ __forceinline__ int64_t ld_cached_global(const int64_t* ptr) {
 // store primitives to use.
 // ---------------------------------------------------------------------------
 
+#if defined(__GFX9__)
+// s_waitcnt vmcnt(0) in the gfx9 encoding; other targets encode it differently
+// and get the compiler's waits.
+#define LINK_EP_WAIT_VMCNT0() __builtin_amdgcn_s_waitcnt(0x0F70)
+#else
+#define LINK_EP_WAIT_VMCNT0() \
+  do {                        \
+  } while (0)
+#endif
+
 #ifndef LINK_EP_UNROLLED_WARP_COPY
+#if defined(__HIP_PLATFORM_AMD__)
+// AMD: load up to kWarpCopyStage elements per lane before storing any. gfx9
+// retires vmcnt in order, so interleaving loads and stores makes every load
+// wait on earlier remote-store acks. UNROLL_FACTOR is unused.
+#define LINK_EP_UNROLLED_WARP_COPY(                                           \
+    UNROLL_FACTOR, LANE_ID, N, DST, SRC, LD_FUNC, ST_FUNC)                    \
+  do {                                                                        \
+    constexpr int _kStage = ::comms::prims::link_ep::kernels::kWarpCopyStage; \
+    constexpr int _kLanes = ::comms::prims::link_ep::kernels::kWarpSize;      \
+    typename std::remove_reference<decltype(LD_FUNC((SRC) + 0))>::type        \
+        _staged_values[_kStage];                                              \
+    auto _src = (SRC);                                                        \
+    auto _dst = (DST);                                                        \
+    for (int _base = 0; _base < (N); _base += _kStage * _kLanes) {            \
+      _Pragma("unroll") for (int _j = 0; _j < _kStage; ++_j) {                \
+        const int _i = _base + _j * _kLanes + (LANE_ID);                      \
+        if (_i < (N)) {                                                       \
+          _staged_values[_j] = LD_FUNC(_src + _i);                            \
+        }                                                                     \
+      }                                                                       \
+      /* One vmcnt(0) here: with predicated loads the compiler otherwise */   \
+      /* emits a full wait before every store.                           */   \
+      LINK_EP_WAIT_VMCNT0();                                                  \
+      _Pragma("unroll") for (int _j = 0; _j < _kStage; ++_j) {                \
+        const int _i = _base + _j * _kLanes + (LANE_ID);                      \
+        if (_i < (N)) {                                                       \
+          ST_FUNC(_dst + _i, _staged_values[_j]);                             \
+        }                                                                     \
+      }                                                                       \
+    }                                                                         \
+  } while (0)
+#else
 #define LINK_EP_UNROLLED_WARP_COPY(                                          \
     UNROLL_FACTOR, LANE_ID, N, DST, SRC, LD_FUNC, ST_FUNC)                   \
   do {                                                                       \
@@ -402,4 +448,5 @@ __device__ __forceinline__ int64_t ld_cached_global(const int64_t* ptr) {
       ST_FUNC(_dst + _i, LD_FUNC(_src + _i));                                \
     }                                                                        \
   } while (0)
+#endif // __HIP_PLATFORM_AMD__
 #endif
