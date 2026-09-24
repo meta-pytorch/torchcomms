@@ -83,7 +83,7 @@ TEST(CudaDeviceAdapterTest, ExportDmaBuffPopulatesFdOffsetAndIova) {
   constexpr int kFakeFd = 42;
   EXPECT_CALL(
       *driverApi,
-      cuMemGetHandleForAddressRange(
+      memGetHandleForAddressRange(
           _, _, _, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0))
       .WillOnce([&](void* handle,
                     CUdeviceptr,
@@ -136,7 +136,7 @@ TEST(CudaDeviceAdapterTest, ExportDmaBuffDataDirectSelectsPcieMapping) {
   constexpr int kFakeFd = 7;
   EXPECT_CALL(
       *driverApi,
-      cuMemGetHandleForAddressRange(
+      memGetHandleForAddressRange(
           _,
           _,
           _,

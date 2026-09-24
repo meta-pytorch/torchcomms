@@ -7,32 +7,22 @@
 #include "comms/uniflow/Result.h"
 
 #if defined(__HIP_PLATFORM_AMD__)
-// hipify-perl does not map the VMM dma-buf handle type; alias the CUDA spelling
-// (which survives hipification untranslated) to the HIP type so the hipified
-// interface still names a valid type on AMD. This is a hipify mapping gap, not
-// a ROCm version gate: hipMemRangeHandleTypeDmaBufFd exists with the same value
-// (0x1) in ROCm 7.0 and 7.2.
-//
-// The dma-buf export path that consumes it is implemented for AMD:
-// CudaDeviceAdapter::exportDmaBuff calls cuMemGetHandleForAddressRange, gated
-// by amdGpuDirectRdmaSupported() (amdkfd peer-mem sysfs + kallsyms probe, see
-// CudaDriverApi.cpp); RdmaTransport::registerSegment falls back to plain
-// ibv_reg_mr when the probe reports no peer-mem support.
-using CUmemRangeHandleType = hipMemRangeHandleType;
-// Same hipify gap for the dma-buf-fd enumerator used by callers of
-// cuMemGetHandleForAddressRange.
-inline constexpr hipMemRangeHandleType CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD =
-    hipMemRangeHandleTypeDmaBufFd;
-// hipify-perl also misses the stream write-value flag enumerator used by
-// streamWriteValue64. HIP has no named constant for it; the CUDA default value
-// is 0x0 (no memory barrier), which is also HIP's default, so alias to 0.
-inline constexpr unsigned int CU_STREAM_WRITE_VALUE_DEFAULT = 0u;
+// Kept out of this (hipified) header; see CudaDriverApiHipCompat.h.
+#include "comms/uniflow/drivers/cuda/CudaDriverApiHipCompat.h"
 #endif
 
 namespace uniflow {
 
 /// Thin wrapper around CUDA Driver (cu*) APIs loaded via
 /// cudaGetDriverEntryPoint.
+///
+/// On AMD this header is hipified by hipify-perl, while gpu_cpp_library callers
+/// are hipified by torch hipify, and hipify-perl releases differ too. A member
+/// name must translate identically for the header and every caller that uses
+/// it, so members wrapping a cu* function that the tools map differently drop
+/// the cu prefix (streamWriteValue64, memGetHandleForAddressRange). The
+/// exception is cuGetErrorName (torch hipify: hipGetErrorName, hipify-perl:
+/// hipDrvGetErrorName), which torch-hipified code therefore must not call.
 class CudaDriverApi {
  public:
   virtual ~CudaDriverApi() = default;
@@ -113,7 +103,9 @@ class CudaDriverApi {
       void* osHandle,
       CUmemAllocationHandleType shHandleType);
 
-  virtual Status cuMemGetHandleForAddressRange(
+  // Wraps cuMemGetHandleForAddressRange, which hipify-perl from ROCm 7.2 and
+  // TheRock translates but torch hipify does not.
+  virtual Status memGetHandleForAddressRange(
       void* handle,
       CUdeviceptr dptr,
       size_t size,

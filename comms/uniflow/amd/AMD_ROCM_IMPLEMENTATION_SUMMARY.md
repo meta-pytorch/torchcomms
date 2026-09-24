@@ -57,8 +57,12 @@ GPU runtime seam, using two mechanisms:
     `hipGetErrorName`, leaves `cuStreamWriteValue64` and
     `CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED` untranslated.
     `CudaDriverApi.h` is consumed by RDMA `CopyEngine` still on hipify-perl,
-    so driver seam stays on hipify-perl to preserve CUDA spellings until RDMA
-    consumers migrate to `gpu_cpp_library`.
+    so driver seam stays on hipify-perl, keeping header and consumers on the
+    same translation, until RDMA consumers migrate to `gpu_cpp_library`.
+    hipify-perl releases differ too (ROCm 7.2 and TheRock map
+    `cuMemGetHandleForAddressRange` and the dma-buf handle type, ROCm 7.0 does
+    not), so such names avoid the `cu` prefix or live in the never-hipified
+    `CudaDriverApiHipCompat.h`.
 - **Plain `oss_cpp_library`** — used for:
   * `cuda-topology-discovery` — `CudaTopologyDiscovery` backend wiring `CudaApi`,
     `NvmlApi` factory, `IbvApi`, and `SysfsApi` into `TopologyDiscovery`
@@ -68,7 +72,7 @@ GPU runtime seam, using two mechanisms:
 `__HIP_PLATFORM_AMD__` selects the few platform-divergent code paths that hipify
 cannot translate (e.g. int→`CUdeviceptr` cast via
 `drivers/cuda/CudaDevicePtr.h::toDevicePtr`, dma-buf handle type aliases in
-`CudaDriverApi.h`).
+the never-hipified `CudaDriverApiHipCompat.h`).
 
 ## Implementation stack (Phabricator)
 
@@ -116,8 +120,8 @@ let presence-driven selection prefer a slow PCIe-P2P link over RDMA, because
 RDMA is a GPU transport on AMD as well as NVIDIA (`transport/rdma/`):
 
 - **GPUDirect RDMA** registers GPU (VRAM) memory with the NIC via a dma-buf fd
-  exported with `cuMemGetHandleForAddressRange` (hipified to
-  `hipMemGetHandleForAddressRange` on AMD). AMD support is detected by
+  exported by `CudaDriverApi::memGetHandleForAddressRange` (which calls
+  `hipMemGetHandleForAddressRange` directly on AMD). AMD support is detected by
   `amdGpuDirectRdmaSupported()` — an amdkfd peer-mem sysfs probe
   (`/sys/kernel/mm/memory_peers/amdkfd/version` and two path variants) with an
   `ib_register_peer_memory_client` `/proc/kallsyms` fallback, mirroring

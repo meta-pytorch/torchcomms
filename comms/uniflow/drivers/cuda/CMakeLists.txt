@@ -9,6 +9,7 @@ set(UNIFLOW_CUDA_SOURCES
 set(UNIFLOW_CUDA_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaApi.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApi.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CudaDriverApiHipCompat.h
     ${CMAKE_CURRENT_SOURCE_DIR}/CudaDeviceAdapter.h
 )
 
