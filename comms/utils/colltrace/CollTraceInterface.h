@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -55,6 +56,20 @@ class ICollTrace {
   // before dumping), check isThreadCancelled() separately.
   // MUST NOT be called from the poll thread (e.g. from a plugin callback).
   virtual void waitFlush(uint64_t /*gen*/) noexcept {}
+
+  // The same wait, bounded. False means the deadline came first.
+  //
+  // Alongside the unbounded overload, not replacing it: a state dump wants to
+  // block until it has everything, while a telemetry drain would rather return
+  // short than stall on a poll thread wedged in a driver call.
+  //
+  // Defaults to reporting completion, like the unbounded overload's default of
+  // returning at once: nothing to flush is nothing to wait for.
+  virtual bool waitFlush(
+      uint64_t /*gen*/,
+      std::chrono::nanoseconds /*timeout*/) noexcept {
+    return true;
+  }
 };
 
 } // namespace meta::comms::colltrace

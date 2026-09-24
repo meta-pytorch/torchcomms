@@ -689,6 +689,18 @@ void CollTrace::waitFlush(uint64_t gen) noexcept {
   });
 }
 
+bool CollTrace::waitFlush(
+    uint64_t gen,
+    std::chrono::nanoseconds timeout) noexcept {
+  std::unique_lock lock(flushState_.mutex);
+  // A cancelled thread reads as completed, not as a timeout: it will never ack
+  // the generation, and the deadline is not why.
+  return flushState_.cv.wait_for(lock, timeout, [&] {
+    return flushState_.completed.load(std::memory_order_acquire) >= gen ||
+        isThreadCancelled();
+  });
+}
+
 void CollTrace::ackFlush(uint64_t gen) noexcept {
   if (gen > flushState_.completed.load(std::memory_order_relaxed)) {
     {
