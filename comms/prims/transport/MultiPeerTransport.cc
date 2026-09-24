@@ -14,8 +14,6 @@
 // paths in this file are guarded by `#ifndef __HIP_PLATFORM_AMD__`.
 #include <hip/hip_runtime.h>
 #else
-#include <cuda_runtime.h>
-
 #include "comms/prims/platform/CudaDriverLazy.h"
 #endif
 
@@ -27,6 +25,7 @@
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/logger/SpdlogLogger.h"
+#include "comms/utils/memtrace/McclCudaMemory.h"
 
 namespace comms::prims {
 
@@ -334,7 +333,14 @@ void MultiPeerTransport::prepareExchange() {
     transportsHost_.reserve(static_cast<std::size_t>(nRanks_));
     const std::size_t arrayBytes =
         static_cast<std::size_t>(nRanks_) * sizeof(Transport);
-    CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
+    CUDA_CHECK(
+        meta::comms::memtrace::mcclCudaMalloc(
+            &transportsGpu_,
+            arrayBytes,
+            {
+                .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                    kCommonTransportDispatchTable,
+            }));
   } catch (...) {
     exchangeState_ = ExchangeState::kFailed;
     rollbackPreparedExchange();
@@ -918,7 +924,14 @@ void MultiPeerTransport::build_device_handle(bool allowAllocation) {
   const std::size_t arrayBytes =
       static_cast<std::size_t>(nRanks_) * sizeof(Transport);
   if (allowAllocation && transportsGpu_ == nullptr) {
-    CUDA_CHECK(cudaMalloc(&transportsGpu_, arrayBytes));
+    CUDA_CHECK(
+        meta::comms::memtrace::mcclCudaMalloc(
+            &transportsGpu_,
+            arrayBytes,
+            {
+                .resourceType = meta::comms::memtrace::GpuMemoryResourceType::
+                    kCommonTransportDispatchTable,
+            }));
   }
   CUDA_CHECK(cudaMemcpy(
       transportsGpu_,
@@ -932,7 +945,7 @@ void MultiPeerTransport::build_device_handle(bool allowAllocation) {
 
 void MultiPeerTransport::free_device_handle() {
   if (transportsGpu_) {
-    (void)cudaFree(transportsGpu_);
+    (void)meta::comms::memtrace::mcclCudaFree(transportsGpu_);
     transportsGpu_ = nullptr;
   }
   transportsHost_.clear();
