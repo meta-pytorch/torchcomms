@@ -44,6 +44,15 @@ extern PFN_cuCtxGetCurrent_v4000 pfn_cuCtxGetCurrent;
 // Error handling
 extern PFN_cuGetErrorString_v6000 pfn_cuGetErrorString;
 
+/// Stream memory ops: the SM-free collectives gate and signal the caller's
+/// stream with these, so they must resolve lazily like everything else here.
+/// NOLINTs as for the other pfn_cu* globals: the lazy loader writes them
+/// through void**, so they cannot be const.
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuStreamWriteValue64_v11070 pfn_cuStreamWriteValue64;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+extern PFN_cuStreamWaitValue64_v11070 pfn_cuStreamWaitValue64;
+
 // VMM allocation
 extern PFN_cuMemCreate_v10020 pfn_cuMemCreate;
 extern PFN_cuMemRelease_v10020 pfn_cuMemRelease;
