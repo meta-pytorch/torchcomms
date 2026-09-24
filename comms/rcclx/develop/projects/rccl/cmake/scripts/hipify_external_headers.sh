@@ -13,7 +13,7 @@ fi
 
 mkdir -p "$SHIM_DIR"
 
-for dir in comms/common comms/utils comms/torchcomms; do
+for dir in comms/common comms/utils comms/torchcomms comms/observatory; do
   src="$FBCODE_DIR/$dir"
   [ -d "$src" ] || continue
   while read -r f; do
