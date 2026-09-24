@@ -412,11 +412,15 @@ class MultiPeerTransport {
    *                 buffer length is derived from the allocation itself
    *                 (via `cuMemGetAddressRange` on the VMM path) -- callers
    *                 do not need to pass a size.
+   * @param localHandlePossiblyExposed Optional sticky flag set after local
+   *                 handle export succeeds and before the first collective.
    * @return Vector of mapped peer pointers (size = nvlNRanks_), indexed by
    *         NVL local rank. Self entry is the original localPtr. Other entries
    *         are IPC-mapped pointers to peer buffers.
    */
-  std::vector<void*> exchangeNvlBuffer(void* localPtr);
+  std::vector<void*> exchangeNvlBuffer(
+      void* localPtr,
+      bool* localHandlePossiblyExposed = nullptr);
 
   /**
    * Unmap NVL IPC-mapped peer buffers obtained from exchangeNvlBuffer().

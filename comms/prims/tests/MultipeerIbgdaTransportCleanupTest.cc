@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "comms/common/bootstrap/tests/MockBootstrap.h"
+#include "comms/prims/transport/MultiPeerIbTransportInternal.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransport.h"
 #include "comms/prims/transport/ibgda/MultipeerIbgdaTransportInternal.h"
 
@@ -359,6 +360,54 @@ TEST(
 
 TEST(
     MultipeerIbgdaTransportCleanupTest,
+    LaterWindowFailureQuarantinesPreviouslyExposedCallerBuffer) {
+  bool ibgdaRkeysPossiblyExposed = false;
+  bool callerBufferPossiblyExposed = true;
+  bool ibgdaTransportQuarantined = false;
+  bool callerBufferQuarantined = false;
+
+  EXPECT_THROW(
+      runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
+          ibgdaRkeysPossiblyExposed,
+          callerBufferPossiblyExposed,
+          throwLocalValidationFailure,
+          [&](std::string_view) { ibgdaTransportQuarantined = true; },
+          [&](std::string_view) { callerBufferQuarantined = true; }),
+      std::runtime_error);
+  EXPECT_FALSE(ibgdaTransportQuarantined);
+  EXPECT_TRUE(callerBufferQuarantined);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    WindowFailureQuarantinesBothExposedResourceClasses) {
+  bool ibgdaRkeysPossiblyExposed = true;
+  bool callerBufferPossiblyExposed = true;
+  std::vector<std::string> quarantined;
+
+  try {
+    runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
+        ibgdaRkeysPossiblyExposed,
+        callerBufferPossiblyExposed,
+        throwLocalValidationFailure,
+        [&](std::string_view context) {
+          EXPECT_EQ(context, "local validation failure");
+          quarantined.emplace_back("ibgda");
+        },
+        [&](std::string_view context) {
+          EXPECT_EQ(context, "local validation failure");
+          quarantined.emplace_back("caller");
+        });
+    FAIL() << "expected local validation failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "local validation failure");
+  }
+
+  EXPECT_EQ(quarantined, (std::vector<std::string>{"ibgda", "caller"}));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
     MaterializationFailurePreservesOriginalErrorAfterOwnerQuarantine) {
   auto bootstrap = std::make_shared<StrictMockBootstrap>();
   EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
@@ -403,6 +452,153 @@ TEST(
 
   releaseUnlessProcessLifetimeQuarantined(false, [&]() { released = true; });
   EXPECT_TRUE(released);
+}
+
+TEST(MultipeerIbgdaTransportCleanupTest, NormalCleanupRunsBeforeOwnerRelease) {
+  bool cleanupRan = false;
+  bool releasedAfterCleanup = false;
+  {
+    auto owner = std::shared_ptr<void>(new int(7), [&](void* ptr) {
+      releasedAfterCleanup = cleanupRan;
+      delete static_cast<int*>(ptr);
+    });
+    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
+    keepAlives.push_back(
+        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
+
+    EXPECT_TRUE(releaseResourcesOrRetainKeepAlives(
+        /*resourceLifetimeQuarantineRequired=*/false,
+        /*keepAliveLifetimeQuarantineRequired=*/false,
+        keepAlives,
+        [&]() noexcept {
+          cleanupRan = true;
+          return true;
+        }));
+    EXPECT_FALSE(releasedAfterCleanup);
+  }
+  EXPECT_TRUE(releasedAfterCleanup);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    ExceptionUnwindAfterRkeyExposureRetainsCallerOwner) {
+  struct CleanupScope {
+    ~CleanupScope() {
+      static_cast<void>(releaseResourcesOrRetainKeepAlives(
+          quarantine, quarantine, keepAlives, [this]() noexcept {
+            cleanupRan = true;
+            return true;
+          }));
+    }
+
+    bool& quarantine;
+    bool& cleanupRan;
+    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
+  };
+
+  bool rkeysPossiblyExposed = false;
+  bool quarantined = false;
+  bool cleanupRan = false;
+  std::weak_ptr<void> weakOwner;
+  std::shared_ptr<void>* retainedHolder = nullptr;
+
+  try {
+    auto owner = std::shared_ptr<void>(
+        new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+    weakOwner = owner;
+    CleanupScope cleanup{quarantined, cleanupRan, {}};
+    cleanup.keepAlives.push_back(
+        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
+    retainedHolder = cleanup.keepAlives.front().get();
+
+    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+        rkeysPossiblyExposed,
+        [&]() {
+          rkeysPossiblyExposed = true;
+          throw std::runtime_error("post-exposure failure");
+        },
+        [&](std::string_view) { quarantined = true; });
+    FAIL() << "expected post-exposure failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "post-exposure failure");
+  }
+
+  EXPECT_TRUE(quarantined);
+  EXPECT_FALSE(cleanupRan);
+  EXPECT_FALSE(weakOwner.expired());
+  delete retainedHolder;
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailureBeforeRkeyExposureReleasesNormally) {
+  struct CleanupScope {
+    ~CleanupScope() {
+      static_cast<void>(releaseResourcesOrRetainKeepAlives(
+          quarantine, quarantine, keepAlives, [this]() noexcept {
+            cleanupRan = true;
+            return true;
+          }));
+    }
+
+    bool& quarantine;
+    bool& cleanupRan;
+    std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
+  };
+
+  bool rkeysPossiblyExposed = false;
+  bool quarantined = false;
+  bool cleanupRan = false;
+  std::weak_ptr<void> weakOwner;
+
+  try {
+    auto owner = std::shared_ptr<void>(
+        new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+    weakOwner = owner;
+    CleanupScope cleanup{quarantined, cleanupRan, {}};
+    cleanup.keepAlives.push_back(
+        std::make_unique<std::shared_ptr<void>>(std::move(owner)));
+
+    runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
+        rkeysPossiblyExposed,
+        throwLocalValidationFailure,
+        [&](std::string_view) { quarantined = true; });
+    FAIL() << "expected local validation failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "local validation failure");
+  }
+
+  EXPECT_FALSE(quarantined);
+  EXPECT_TRUE(cleanupRan);
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    CallerBufferQuarantineStillReleasesUnrelatedResources) {
+  bool cleanupRan = false;
+  auto owner = std::shared_ptr<void>(
+      new int(7), [](void* ptr) { delete static_cast<int*>(ptr); });
+  std::weak_ptr<void> weakOwner = owner;
+  std::vector<std::unique_ptr<std::shared_ptr<void>>> keepAlives;
+  keepAlives.push_back(
+      std::make_unique<std::shared_ptr<void>>(std::move(owner)));
+  auto* retainedHolder = keepAlives.front().get();
+
+  EXPECT_FALSE(releaseResourcesOrRetainKeepAlives(
+      /*resourceLifetimeQuarantineRequired=*/false,
+      /*keepAliveLifetimeQuarantineRequired=*/true,
+      keepAlives,
+      [&]() noexcept {
+        cleanupRan = true;
+        return true;
+      }));
+
+  EXPECT_TRUE(cleanupRan);
+  EXPECT_FALSE(weakOwner.expired());
+  delete retainedHolder;
+  EXPECT_TRUE(weakOwner.expired());
 }
 
 TEST(
