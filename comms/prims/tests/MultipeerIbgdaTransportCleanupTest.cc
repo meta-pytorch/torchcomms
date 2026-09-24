@@ -57,6 +57,93 @@ class PeerExchangeHarness final : private MultiPeerIbTransportBase {
   }
 };
 
+class RegistrationRollbackHarness final : private MultiPeerIbTransportBase {
+ public:
+  explicit RegistrationRollbackHarness(
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap)
+      : MultiPeerIbTransportBase(
+            /*myRank=*/0,
+            /*nRanks=*/2,
+            std::move(bootstrap),
+            makeConfig()) {}
+
+  void recordFailedRollback(
+      void* allocation,
+      std::size_t size,
+      ibverbx::ibv_mr* mr) {
+    CachedMr cached;
+    cached.mrs[0] = mr;
+    cached.allocSize = size;
+    auto registrations = registrationState_.wlock();
+    quarantineFailedRegistrationRollback(
+        reinterpret_cast<uintptr_t>(allocation), cached, *registrations);
+  }
+
+  void recordHealthyRegistration(
+      void* allocation,
+      std::size_t size,
+      ibverbx::ibv_mr* mr) {
+    CachedMr cached;
+    cached.mrs[0] = mr;
+    cached.allocSize = size;
+    cached.refs = 1;
+    auto registrations = registrationState_.wlock();
+    if (!registrations->registeredBuffers
+             .emplace(reinterpret_cast<uintptr_t>(allocation), cached)
+             .second) {
+      throw std::runtime_error("registration already exists");
+    }
+  }
+
+  bool registrationIsQuarantined(void* allocation) const {
+    auto registrations = registrationState_.rlock();
+    const auto it = registrations->registeredBuffers.find(
+        reinterpret_cast<uintptr_t>(allocation));
+    return it != registrations->registeredBuffers.end() &&
+        it->second.deregistrationFailed;
+  }
+
+  bool deregister(void* allocation) {
+    return deregisterBuffer(allocation);
+  }
+
+  void exchangeFailedRegistration(void* allocation) {
+    static_cast<void>(
+        exchangeBuffer(IbgdaLocalBuffer(allocation, NetworkLKeys{})));
+  }
+
+  void registerTrackingQuarantine(
+      void* allocation,
+      std::size_t size,
+      bool& registrationQuarantined) {
+    static_cast<void>(registerBufferTrackingQuarantine(
+        allocation,
+        size,
+        /*relaxedOrdering=*/false,
+        registrationQuarantined));
+  }
+
+  bool requiresProcessLifetimeQuarantine() const {
+    return registrationRollbackFailed();
+  }
+
+  bool tracksFailedMr(void* allocation, ibverbx::ibv_mr* mr) const {
+    auto registrations = registrationState_.rlock();
+    const auto it = registrations->registeredBuffers.find(
+        reinterpret_cast<uintptr_t>(allocation));
+    return it != registrations->registeredBuffers.end() &&
+        it->second.refs == 0 && it->second.deregistrationFailed &&
+        it->second.mrs[0] == mr;
+  }
+
+ private:
+  static MultipeerIbTransportConfig makeConfig() {
+    MultipeerIbTransportConfig config;
+    config.gpuNicMap[0] = {"test_nic"};
+    return config;
+  }
+};
+
 class MaterializationFailureHarness final
     : public MultiPeerIbTransport<MaterializationFailureHarness> {
  public:
@@ -704,6 +791,141 @@ TEST(
   }));
   EXPECT_EQ(attemptedNics, (std::vector<int>{1}));
   EXPECT_EQ(mrs, (std::array<int*, 3>{nullptr, nullptr, nullptr}));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailedRegistrationRollbackTracksMrAndQuarantinesOwner) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  ibverbx::ibv_mr mr{};
+  int allocation = 0;
+  bool ownerQuarantined = false;
+
+  try {
+    runWithProcessLifetimeQuarantineOnFailure(
+        transport,
+        [&](auto& candidate) {
+          candidate.recordFailedRollback(&allocation, sizeof(allocation), &mr);
+          throw std::runtime_error("original registration failure");
+        },
+        [&](std::string_view context) {
+          EXPECT_EQ(context, "original registration failure");
+          ownerQuarantined = true;
+        });
+    FAIL() << "expected original registration failure";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "original registration failure");
+  }
+
+  EXPECT_TRUE(ownerQuarantined);
+  EXPECT_TRUE(transport.requiresProcessLifetimeQuarantine());
+  EXPECT_TRUE(transport.tracksFailedMr(&allocation, &mr));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailedRollbackCollisionQuarantinesExistingRegistration) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  ibverbx::ibv_mr survivingMr{};
+  int allocation = 0;
+
+  transport.recordHealthyRegistration(
+      &allocation, sizeof(allocation), /*mr=*/nullptr);
+  transport.recordFailedRollback(
+      &allocation, sizeof(allocation) * 2, &survivingMr);
+
+  EXPECT_TRUE(transport.requiresProcessLifetimeQuarantine());
+  EXPECT_TRUE(transport.registrationIsQuarantined(&allocation));
+  EXPECT_FALSE(transport.deregister(&allocation));
+  EXPECT_TRUE(transport.registrationIsQuarantined(&allocation));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    WiderSameBaseRegistrationIsRejectedBeforeProviderRegistration) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  int allocation = 0;
+  bool registrationQuarantined = false;
+
+  transport.recordHealthyRegistration(
+      &allocation, sizeof(allocation), /*mr=*/nullptr);
+
+  EXPECT_THROW(
+      transport.registerTrackingQuarantine(
+          &allocation, sizeof(allocation) * 2, registrationQuarantined),
+      std::runtime_error);
+  EXPECT_FALSE(registrationQuarantined);
+  EXPECT_FALSE(transport.registrationIsQuarantined(&allocation));
+  EXPECT_TRUE(transport.deregister(&allocation));
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailedRegistrationRollbackCannotBeExchanged) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  ibverbx::ibv_mr mr{};
+  int allocation = 0;
+
+  transport.recordFailedRollback(&allocation, sizeof(allocation), &mr);
+
+  EXPECT_THROW(
+      transport.exchangeFailedRegistration(&allocation), std::runtime_error);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    FailedRegistrationRollbackMarksOnlyItsAllocationForRetention) {
+  auto bootstrap = std::make_shared<StrictMockBootstrap>();
+  EXPECT_CALL(*bootstrap, duplicate()).WillOnce([] { return nullptr; });
+  RegistrationRollbackHarness transport(bootstrap);
+  ibverbx::ibv_mr mr{};
+  int allocation = 0;
+  int unrelatedAllocation = 0;
+  bool failedAllocationQuarantined = false;
+  bool unrelatedAllocationQuarantined = false;
+
+  transport.recordFailedRollback(&allocation, sizeof(allocation), &mr);
+
+  EXPECT_THROW(
+      transport.registerTrackingQuarantine(
+          &allocation, sizeof(allocation), failedAllocationQuarantined),
+      std::runtime_error);
+  EXPECT_TRUE(failedAllocationQuarantined);
+
+  EXPECT_THROW(
+      transport.registerTrackingQuarantine(
+          &unrelatedAllocation,
+          /*size=*/0,
+          unrelatedAllocationQuarantined),
+      std::invalid_argument);
+  EXPECT_FALSE(unrelatedAllocationQuarantined);
+}
+
+TEST(
+    MultipeerIbgdaTransportCleanupTest,
+    QuarantinedOrIncompleteRegistrationCannotPublishKeys) {
+  int mr0 = 0;
+  int mr1 = 0;
+  std::array<int*, 2> mrs{&mr0, &mr1};
+
+  EXPECT_TRUE(registrationKeysAvailable(
+      /*deregistrationFailed=*/false, mrs, mrs.size()));
+
+  mrs[1] = nullptr;
+  EXPECT_FALSE(registrationKeysAvailable(
+      /*deregistrationFailed=*/false, mrs, mrs.size()));
+
+  mrs[1] = &mr1;
+  EXPECT_FALSE(registrationKeysAvailable(
+      /*deregistrationFailed=*/true, mrs, mrs.size()));
 }
 
 TEST(

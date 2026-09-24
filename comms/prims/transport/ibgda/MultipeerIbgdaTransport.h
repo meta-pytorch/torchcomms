@@ -3,6 +3,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -258,9 +259,7 @@ class MultipeerIbgdaTransport
     return collapsedCq_;
   }
 
-  bool requiresProcessLifetimeQuarantine() const {
-    return requiresProcessLifetimeQuarantine_;
-  }
+  bool requiresProcessLifetimeQuarantine() const noexcept;
 
  private:
   using QpSlotResources = detail::IbgdaQpSlotResources;
@@ -383,7 +382,7 @@ class MultipeerIbgdaTransport
   // Once set, the owning dispatcher detaches this object for process lifetime.
   // A direct owner that reaches the destructor instead retains every underlying
   // QP, MR, and referenced allocation rather than releasing exposed resources.
-  bool requiresProcessLifetimeQuarantine_{false};
+  std::atomic<bool> requiresProcessLifetimeQuarantine_{false};
 
   enum class ExchangeState { kUnprepared, kPrepared, kExchanged, kFailed };
   ExchangeState exchangeState_{ExchangeState::kUnprepared};
