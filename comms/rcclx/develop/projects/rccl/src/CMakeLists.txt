@@ -785,6 +785,10 @@ set(COMMON_FILES
   comms/utils/logger/SpdlogLogger.h
   comms/utils/MemUtils.cc
   comms/utils/MemUtils.h
+  comms/utils/memtrace/GpuMemoryTracker.cc
+  comms/utils/memtrace/GpuMemoryTracker.h
+  comms/utils/memtrace/McclCudaMemory.cc
+  comms/utils/memtrace/McclCudaMemory.h
   comms/utils/memtrace/MemoryTrace.cc
   comms/utils/memtrace/MemoryTrace.h
   comms/utils/PrecisionClock.cc
