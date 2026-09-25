@@ -53,6 +53,13 @@ struct LifecycleFeedSource {
   std::shared_ptr<const LifecycleFeedOps> ops;
 };
 
+// The id a feed stamps on its events, unique for the life of the process.
+// It lives here rather than with the plugin because the plugin is compiled
+// into each backend's shared object: a counter there is per-library, and two
+// backends would hand out the same ids from 1 up. Consumers key on this id,
+// so the collision merges two communicators into one identity.
+uint64_t getNextLifecycleFeedCommId() noexcept;
+
 // Re-registering an owner replaces its feed.
 //
 // Returns false, having registered nothing, when `ops.alive` is already empty:

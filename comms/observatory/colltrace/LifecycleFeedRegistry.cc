@@ -50,6 +50,11 @@ uint64_t lifecycleFeedFailures() noexcept {
   return failureCount().load(std::memory_order_relaxed);
 }
 
+uint64_t getNextLifecycleFeedCommId() noexcept {
+  static std::atomic<uint64_t> nextCommId{1};
+  return nextCommId.fetch_add(1, std::memory_order_relaxed);
+}
+
 // Every function below that drops an entry moves it into a local first, so the
 // last reference goes once the lock is released. A callable can capture
 // anything, and one that reaches back into the registry as it dies would
