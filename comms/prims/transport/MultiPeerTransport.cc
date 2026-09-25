@@ -770,7 +770,9 @@ MultiPeerTransport::NvlMemMode MultiPeerTransport::detectNvlMemMode(
 #endif
 }
 
-std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(void* localPtr) {
+std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(
+    void* localPtr,
+    bool* localHandlePossiblyExposed) {
   if (!nvlBootstrapAdapter_ || nvlNRanks_ <= 1) {
     throw std::runtime_error(
         "exchangeNvlBuffer: NVL transport not available or single rank");
@@ -808,7 +810,8 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(void* localPtr) {
         phys->handle(),
         localPtr,
         phys->size(),
-        /*preferFabric=*/mode == NvlMemMode::kFabric);
+        /*preferFabric=*/mode == NvlMemMode::kFabric,
+        localHandlePossiblyExposed);
 
     std::vector<void*> mappedPtrs = pm.peerPtrs;
     nvlExchangeRecords_[localPtr] = NvlExchangeRecord{mode, std::move(pm)};
@@ -817,7 +820,11 @@ std::vector<void*> MultiPeerTransport::exchangeNvlBuffer(void* localPtr) {
   }
 
   auto pm = nvlMemExchangeCudaIpc(
-      *nvlBootstrapAdapter_, nvlLocalRank_, nvlNRanks_, localPtr);
+      *nvlBootstrapAdapter_,
+      nvlLocalRank_,
+      nvlNRanks_,
+      localPtr,
+      localHandlePossiblyExposed);
   std::vector<void*> mappedPtrs = pm.peerPtrs;
   nvlExchangeRecords_[localPtr] =
       NvlExchangeRecord{NvlMemMode::kCudaIpc, std::move(pm)};

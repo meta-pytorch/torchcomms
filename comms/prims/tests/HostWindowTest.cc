@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
+#include <memory>
+#include <stdexcept>
 
 #include "comms/prims/transport/MultiPeerTransport.h"
 #include "comms/prims/window/HostWindow.h"
@@ -20,6 +22,32 @@ using meta::comms::MPIEnvironmentBase;
 
 namespace comms::prims::tests {
 
+class HostWindowTestPeer {
+ public:
+  static void setCallerBufferLifetimeQuarantineRequired(
+      HostWindow& window,
+      bool quarantined) {
+    window.callerBufferLifetimeQuarantineRequired_ = quarantined;
+  }
+
+  static bool callerBufferPossiblyExposed(const HostWindow& window) {
+    return window.callerBufferPossiblyExposed_;
+  }
+
+  static std::shared_ptr<void>* lastCallerBufferKeepAlive(HostWindow& window) {
+    return window.callerBufferKeepAlives_
+        .at(window.callerBufferKeepAlives_.size() - 1)
+        .get();
+  }
+};
+
+std::shared_ptr<void> makeCudaBuffer(std::size_t size) {
+  void* ptr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&ptr, size));
+  return std::shared_ptr<void>(
+      ptr, [](void* allocation) { static_cast<void>(cudaFree(allocation)); });
+}
+
 class HostWindowTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
@@ -31,12 +59,13 @@ class HostWindowTestFixture : public MpiBaseTestFixture {
     MpiBaseTestFixture::TearDown();
   }
 
-  std::unique_ptr<MultiPeerTransport> createTransport() {
+  std::unique_ptr<MultiPeerTransport> createTransport(bool disableIb = false) {
     auto bootstrap = std::make_shared<MpiBootstrap>();
     MultiPeerTransportConfig config;
     config.nvlConfig.pipelineDepth = 2;
     config.nvlConfig.maxNumChannels = 64;
     config.nvlConfig.perChannelSize = 16 * 1024;
+    config.disableIb = disableIb;
     auto transport = std::make_unique<MultiPeerTransport>(
         globalRank, numRanks, localRank, bootstrap, config);
     transport->exchange();
@@ -118,13 +147,10 @@ TEST_F(HostWindowTestFixture, RegisterLocalBufferBeforeExchange) {
   WindowConfig config{.peerSignalCount = 1};
   HostWindow window(*transport, config);
 
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, 1024));
+  auto buffer = makeCudaBuffer(1024);
 
   // No IBGDA peers in mock transport → returns nullopt
-  EXPECT_FALSE(window.registerLocalBuffer(buf, 1024).has_value());
-
-  CUDACHECK_TEST(cudaFree(buf));
+  EXPECT_FALSE(window.registerLocalBuffer(buffer, 1024).has_value());
 }
 
 TEST_F(HostWindowTestFixture, RegisterLocalBufferAfterExchange) {
@@ -133,12 +159,9 @@ TEST_F(HostWindowTestFixture, RegisterLocalBufferAfterExchange) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, 4096));
+  auto buffer = makeCudaBuffer(4096);
 
-  EXPECT_FALSE(window.registerLocalBuffer(buf, 4096).has_value());
-
-  CUDACHECK_TEST(cudaFree(buf));
+  EXPECT_FALSE(window.registerLocalBuffer(buffer, 4096).has_value());
 }
 
 TEST_F(HostWindowTestFixture, RegisterMultipleLocalBuffers) {
@@ -147,20 +170,13 @@ TEST_F(HostWindowTestFixture, RegisterMultipleLocalBuffers) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* buf0 = nullptr;
-  void* buf1 = nullptr;
-  void* buf2 = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf0, 1024));
-  CUDACHECK_TEST(cudaMalloc(&buf1, 2048));
-  CUDACHECK_TEST(cudaMalloc(&buf2, 4096));
+  auto buffer0 = makeCudaBuffer(1024);
+  auto buffer1 = makeCudaBuffer(2048);
+  auto buffer2 = makeCudaBuffer(4096);
 
-  EXPECT_FALSE(window.registerLocalBuffer(buf0, 1024).has_value());
-  EXPECT_FALSE(window.registerLocalBuffer(buf1, 2048).has_value());
-  EXPECT_FALSE(window.registerLocalBuffer(buf2, 4096).has_value());
-
-  CUDACHECK_TEST(cudaFree(buf0));
-  CUDACHECK_TEST(cudaFree(buf1));
-  CUDACHECK_TEST(cudaFree(buf2));
+  EXPECT_FALSE(window.registerLocalBuffer(buffer0, 1024).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(buffer1, 2048).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(buffer2, 4096).has_value());
 }
 
 // =============================================================================
@@ -172,12 +188,10 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferBeforeExchange) {
   WindowConfig config{.peerSignalCount = 1};
   HostWindow window(*transport, config);
 
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, 1024));
+  auto buffer = makeCudaBuffer(1024);
 
-  window.registerAndExchangeBuffer(buf, 1024);
-
-  CUDACHECK_TEST(cudaFree(buf));
+  window.registerAndExchangeBuffer(buffer, 1024);
+  EXPECT_TRUE(HostWindowTestPeer::callerBufferPossiblyExposed(window));
 }
 
 TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferAfterExchange) {
@@ -186,12 +200,9 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferAfterExchange) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* buf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf, 4096));
+  auto buffer = makeCudaBuffer(4096);
 
-  window.registerAndExchangeBuffer(buf, 4096);
-
-  CUDACHECK_TEST(cudaFree(buf));
+  window.registerAndExchangeBuffer(buffer, 4096);
 }
 
 TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferCalledTwiceThrows) {
@@ -200,17 +211,97 @@ TEST_F(HostWindowTestFixture, RegisterAndExchangeBufferCalledTwiceThrows) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* buf0 = nullptr;
-  void* buf1 = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&buf0, 1024));
-  CUDACHECK_TEST(cudaMalloc(&buf1, 1024));
+  auto buffer0 = makeCudaBuffer(1024);
+  auto buffer1 = makeCudaBuffer(1024);
 
-  window.registerAndExchangeBuffer(buf0, 1024);
+  window.registerAndExchangeBuffer(buffer0, 1024);
   EXPECT_THROW(
-      window.registerAndExchangeBuffer(buf1, 1024), std::runtime_error);
+      window.registerAndExchangeBuffer(buffer1, 1024), std::runtime_error);
+}
 
-  CUDACHECK_TEST(cudaFree(buf0));
-  CUDACHECK_TEST(cudaFree(buf1));
+TEST_F(HostWindowTestFixture, RejectsInvalidOwnedBuffers) {
+  auto transport = createTransport();
+  WindowConfig config{};
+  auto buffer = makeCudaBuffer(1024);
+
+  EXPECT_THROW(
+      (HostWindow(
+          *transport, config, std::shared_ptr<void>{}, /*userBufferSize=*/1)),
+      std::invalid_argument);
+  EXPECT_THROW(
+      (HostWindow(*transport, config, buffer, /*userBufferSize=*/0)),
+      std::invalid_argument);
+
+  HostWindow window(*transport, config);
+  EXPECT_THROW(
+      window.registerLocalBuffer(std::shared_ptr<void>{}, 1),
+      std::invalid_argument);
+  EXPECT_THROW(window.registerLocalBuffer(buffer, 0), std::invalid_argument);
+  EXPECT_THROW(
+      window.registerAndExchangeBuffer(std::shared_ptr<void>{}, 1),
+      std::invalid_argument);
+  EXPECT_THROW(
+      window.registerAndExchangeBuffer(buffer, 0), std::invalid_argument);
+}
+
+TEST_F(HostWindowTestFixture, RetainsCallerBufferUntilWindowDestruction) {
+  auto transport = createTransport();
+  std::weak_ptr<void> weakOwner;
+  {
+    WindowConfig config{};
+    HostWindow window(*transport, config);
+    window.exchange();
+
+    auto buffer = makeCudaBuffer(1024);
+    weakOwner = buffer;
+    window.registerAndExchangeBuffer(buffer, 1024);
+    buffer.reset();
+    EXPECT_FALSE(weakOwner.expired());
+  }
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST_F(HostWindowTestFixture, NoIbLocalRegistrationDoesNotRetainOwner) {
+  auto transport = createTransport(/*disableIb=*/true);
+  WindowConfig config{};
+  HostWindow window(*transport, config);
+  window.exchange();
+
+  auto buffer = makeCudaBuffer(1024);
+  std::weak_ptr<void> weakOwner = buffer;
+  EXPECT_FALSE(window.registerLocalBuffer(buffer, 1024).has_value());
+  buffer.reset();
+  EXPECT_TRUE(weakOwner.expired());
+}
+
+TEST_F(
+    HostWindowTestFixture,
+    QuarantineDuringExceptionUnwindRetainsCallerOwner) {
+  auto transport = createTransport(/*disableIb=*/true);
+  std::weak_ptr<void> weakOwner;
+  std::shared_ptr<void>* retainedHolder = nullptr;
+
+  try {
+    WindowConfig config{};
+    HostWindow window(*transport, config);
+    window.exchange();
+
+    auto buffer = makeCudaBuffer(1024);
+    weakOwner = buffer;
+    window.registerAndExchangeBuffer(buffer, 1024);
+    retainedHolder = HostWindowTestPeer::lastCallerBufferKeepAlive(window);
+    buffer.reset();
+    HostWindowTestPeer::setCallerBufferLifetimeQuarantineRequired(
+        window, /*quarantined=*/true);
+    throw std::runtime_error("force HostWindow exception unwind");
+  } catch (const std::runtime_error& ex) {
+    EXPECT_STREQ(ex.what(), "force HostWindow exception unwind");
+  }
+
+  ASSERT_NE(retainedHolder, nullptr);
+  EXPECT_FALSE(weakOwner.expired());
+  delete retainedHolder;
+  EXPECT_TRUE(weakOwner.expired());
 }
 
 // =============================================================================
@@ -223,16 +314,11 @@ TEST_F(HostWindowTestFixture, LocalThenExchangeBuffer) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* localBuf = nullptr;
-  void* dstBuf = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&localBuf, 1024));
-  CUDACHECK_TEST(cudaMalloc(&dstBuf, 2048));
+  auto localBuffer = makeCudaBuffer(1024);
+  auto dstBuffer = makeCudaBuffer(2048);
 
-  EXPECT_FALSE(window.registerLocalBuffer(localBuf, 1024).has_value());
-  window.registerAndExchangeBuffer(dstBuf, 2048);
-
-  CUDACHECK_TEST(cudaFree(localBuf));
-  CUDACHECK_TEST(cudaFree(dstBuf));
+  EXPECT_FALSE(window.registerLocalBuffer(localBuffer, 1024).has_value());
+  window.registerAndExchangeBuffer(dstBuffer, 2048);
 }
 
 TEST_F(HostWindowTestFixture, ExchangeThenLocalBuffer) {
@@ -241,20 +327,13 @@ TEST_F(HostWindowTestFixture, ExchangeThenLocalBuffer) {
   HostWindow window(*transport, config);
   window.exchange();
 
-  void* dstBuf = nullptr;
-  void* localBuf0 = nullptr;
-  void* localBuf1 = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&dstBuf, 2048));
-  CUDACHECK_TEST(cudaMalloc(&localBuf0, 1024));
-  CUDACHECK_TEST(cudaMalloc(&localBuf1, 4096));
+  auto dstBuffer = makeCudaBuffer(2048);
+  auto localBuffer0 = makeCudaBuffer(1024);
+  auto localBuffer1 = makeCudaBuffer(4096);
 
-  window.registerAndExchangeBuffer(dstBuf, 2048);
-  EXPECT_FALSE(window.registerLocalBuffer(localBuf0, 1024).has_value());
-  EXPECT_FALSE(window.registerLocalBuffer(localBuf1, 4096).has_value());
-
-  CUDACHECK_TEST(cudaFree(dstBuf));
-  CUDACHECK_TEST(cudaFree(localBuf0));
-  CUDACHECK_TEST(cudaFree(localBuf1));
+  window.registerAndExchangeBuffer(dstBuffer, 2048);
+  EXPECT_FALSE(window.registerLocalBuffer(localBuffer0, 1024).has_value());
+  EXPECT_FALSE(window.registerLocalBuffer(localBuffer1, 4096).has_value());
 }
 
 } // namespace comms::prims::tests

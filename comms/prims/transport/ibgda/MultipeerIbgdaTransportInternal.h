@@ -86,6 +86,37 @@ decltype(auto) runWithProcessLifetimeQuarantineOnFailureAfterRkeyExposure(
   }
 }
 
+template <
+    typename Operation,
+    typename QuarantineIbTransport,
+    typename QuarantineCallerBuffer>
+decltype(auto) runWithProcessLifetimeQuarantineOnFailureAfterWindowExposure(
+    bool& ibgdaRkeysPossiblyExposed,
+    bool& callerBufferPossiblyExposed,
+    Operation&& operation,
+    QuarantineIbTransport&& quarantineIbTransport,
+    QuarantineCallerBuffer&& quarantineCallerBuffer) {
+  try {
+    return std::forward<Operation>(operation)();
+  } catch (const std::exception& ex) {
+    if (ibgdaRkeysPossiblyExposed) {
+      quarantineIbTransport(ex.what());
+    }
+    if (callerBufferPossiblyExposed) {
+      quarantineCallerBuffer(ex.what());
+    }
+    throw;
+  } catch (...) {
+    if (ibgdaRkeysPossiblyExposed) {
+      quarantineIbTransport("unknown window exchange failure");
+    }
+    if (callerBufferPossiblyExposed) {
+      quarantineCallerBuffer("unknown window exchange failure");
+    }
+    throw;
+  }
+}
+
 template <typename ReleaseResources>
 void releaseUnlessProcessLifetimeQuarantined(
     bool processLifetimeQuarantineRequired,

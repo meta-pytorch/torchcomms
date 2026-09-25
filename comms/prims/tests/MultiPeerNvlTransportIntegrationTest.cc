@@ -6,6 +6,7 @@
 #include <folly/init/Init.h>
 #include "comms/utils/logger/SpdlogLogger.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -185,13 +186,15 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
     int peerRank = (globalRank == 0) ? 1 : 0;
     const int testValue = 0xCD + globalRank;
 
-    DeviceBuffer windowBuffer(kTransferSize);
-    auto windowBuf_d = windowBuffer.get();
+    auto windowBuffer = std::make_shared<DeviceBuffer>(kTransferSize);
+    auto windowBuf_d = windowBuffer->get();
+    std::shared_ptr<void> windowBufferOwner(windowBuffer, windowBuf_d);
     CUDACHECK_TEST(cudaMemset(windowBuf_d, 0, kTransferSize));
 
-    DeviceBuffer localSrcBuffer(kTransferSize);
+    auto localSrcBuffer = std::make_shared<DeviceBuffer>(kTransferSize);
     DeviceBuffer resultBuffer(sizeof(int));
-    auto localSrc_d = localSrcBuffer.get();
+    auto localSrc_d = localSrcBuffer->get();
+    std::shared_ptr<void> localSrcBufferOwner(localSrcBuffer, localSrc_d);
     auto result_d = static_cast<int*>(resultBuffer.get());
 
     if (globalRank == 0) {
@@ -223,8 +226,9 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
 
     auto window = std::make_unique<HostWindow>(*transport, wmConfig);
     window->exchange();
-    window->registerAndExchangeBuffer(windowBuf_d, kTransferSize);
-    auto srcLkeys = window->registerLocalBuffer(localSrc_d, kTransferSize);
+    window->registerAndExchangeBuffer(windowBufferOwner, kTransferSize);
+    auto srcLkeys =
+        window->registerLocalBuffer(localSrcBufferOwner, kTransferSize);
     if (expectedTransportType.has_value()) {
       ASSERT_TRUE(srcLkeys.has_value())
           << label << " local source buffer did not get IB lkeys";

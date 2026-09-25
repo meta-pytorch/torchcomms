@@ -621,7 +621,8 @@ NvlPeerMem nvlMemExchangeVmm(
     CUmemGenericAllocationHandle localHandle,
     void* localPtr,
     std::size_t allocatedSize,
-    bool preferFabric) {
+    bool preferFabric,
+    bool* localHandlePossiblyExposed) {
   NvlPeerMem result;
   result.peerPtrs.assign(static_cast<std::size_t>(nRanks), nullptr);
   result.peerPtrs[static_cast<std::size_t>(rank)] = localPtr;
@@ -632,6 +633,7 @@ NvlPeerMem nvlMemExchangeVmm(
   (void)localHandle;
   (void)allocatedSize;
   (void)preferFabric;
+  (void)localHandlePossiblyExposed;
   throw std::runtime_error("nvlMemExchangeVmm requires CUDA 12.3+");
 #else
   const ShareableHandleType exportType = preferFabric
@@ -651,6 +653,9 @@ NvlPeerMem nvlMemExchangeVmm(
     }
   } catch (...) {
     exportError = std::current_exception();
+  }
+  if (!exportError && localHandlePossiblyExposed != nullptr) {
+    *localHandlePossiblyExposed = true;
   }
   detail::allGatherAndAgree(
       bootstrap,
@@ -792,18 +797,21 @@ NvlPeerMem nvlMemExchangeCudaIpc(
     meta::comms::IBootstrap& bootstrap,
     int32_t rank,
     int32_t nRanks,
-    void* localPtr) {
+    void* localPtr,
+    bool* localHandlePossiblyExposed) {
   NvlPeerMem result;
   result.peerPtrs.assign(static_cast<std::size_t>(nRanks), nullptr);
   result.peerPtrs[static_cast<std::size_t>(rank)] = localPtr;
+  std::vector<cudaIpcMemHandle_t> allHandles(static_cast<std::size_t>(nRanks));
 
   cudaIpcMemHandle_t localHandle{};
   checkCudaError(
       cudaIpcGetMemHandle(&localHandle, localPtr),
       "cudaIpcGetMemHandle failed");
-
-  std::vector<cudaIpcMemHandle_t> allHandles(static_cast<std::size_t>(nRanks));
   allHandles[static_cast<std::size_t>(rank)] = localHandle;
+  if (localHandlePossiblyExposed != nullptr) {
+    *localHandlePossiblyExposed = true;
+  }
 
   auto gatherResult =
       bootstrap
