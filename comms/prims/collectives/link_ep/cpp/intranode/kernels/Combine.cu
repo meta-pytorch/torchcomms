@@ -206,15 +206,22 @@ __global__ void __launch_bounds__(kNumThreads, 1) intranode_combine_kernel(
       int* channel_tail_idx_ptr =
           channel_head_idx_ptr + num_channels * kNumRanks;
 
+      // Keep this loop wave-uniform. A per-lane `while (lane_id < kNumRanks)`
+      // deadlocks on AMD: codegen parks a lane after its head publish until the
+      // other lanes publish too; its rank's tail goes stale meanwhile, reducers
+      // stall on it, and so the other heads never advance.
       int last_head = 0;
-      while (lane_id < kNumRanks) {
+      while (true) {
         bool retired = true;
 #pragma unroll
         for (int i = 1; i < num_recv_warps; ++i) {
           retired = retired && warp_retired[i];
         }
-        if (retired) {
+        if (broadcast_first_lane(retired)) {
           break;
+        }
+        if (lane_id >= kNumRanks) {
+          continue;
         }
 
         // Acquire-load the tail to pair with the sender's release-store on both
