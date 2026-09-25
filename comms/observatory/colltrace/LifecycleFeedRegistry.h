@@ -31,6 +31,10 @@ struct LifecycleFeedOps {
   // broken.
   std::function<bool(uint64_t, std::chrono::nanoseconds)> waitFlush;
   std::function<std::vector<LifecycleEventRecord>()> drainUnread;
+  // The highest collective id this feed has stamped so far. A consumer binds
+  // its own record of a collective to the ids the feed is handing out, and it
+  // has no other way to learn where the feed has reached.
+  std::function<uint64_t()> latestCollId;
   // What a collective captured into a graph is. Answered by the feed that
   // reported it, not by whoever owns the communicator now: a comm that
   // rebuilds its tracer keeps reporting the old one's replays, and the new
@@ -108,6 +112,13 @@ uint64_t lifecycleFeedFailures() noexcept;
 std::optional<CapturedCollDescription> describeCapturedCollective(
     uint64_t commId,
     uint64_t capturedCollId);
+
+// The highest collective id the feed stamping `commId` has reached. Keyed on
+// the id, not the communicator, so a caller needs nothing of the backend that
+// owns it. Empty when no live feed stamps the id, when the feed cannot answer,
+// or when asking it raises; a zero id is the unset default several feeds may
+// carry, so it answers empty too.
+std::optional<uint64_t> lifecycleLatestCollIdForCommId(uint64_t commId);
 
 // Drops every feed. Tests only: a process has one registry, so a test that
 // leaves entries behind changes the next one.

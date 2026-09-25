@@ -40,6 +40,9 @@ struct FakeFeed {
   bool stallsForever{false};
   // What the drain offered this feed, in the order it was asked.
   std::vector<std::chrono::nanoseconds> budgets;
+  uint64_t latestCollId{0};
+  int latestCollIdCount{0};
+  bool throwOnLatestCollId{false};
 
   LifecycleFeedOps ops(const std::shared_ptr<FakeFeed>& owner) {
     return LifecycleFeedOps{
@@ -57,6 +60,14 @@ struct FakeFeed {
             [this] {
               ++drainCount;
               return std::exchange(unread, {});
+            },
+        .latestCollId =
+            [this] {
+              ++latestCollIdCount;
+              if (throwOnLatestCollId) {
+                throw std::runtime_error("registrant blew up");
+              }
+              return latestCollId;
             },
         .describeCaptured =
             [this](uint64_t collId) -> std::optional<CapturedCollDescription> {
@@ -224,6 +235,83 @@ TEST_F(LifecycleFeedRegistryTest, DescribesThroughTheFeedStampingTheCommId) {
   ASSERT_TRUE(described.has_value());
   EXPECT_EQ(described->opName, "AllReduce");
   EXPECT_EQ(other->describeCount, 0) << "a feed stamping another id was asked";
+}
+
+TEST_F(
+    LifecycleFeedRegistryTest,
+    AnswersTheLatestCollIdOfTheFeedStampingTheId) {
+  auto other = makeFeed(4);
+  auto feed = makeFeed(5);
+  other->latestCollId = 3;
+  feed->latestCollId = 17;
+  ASSERT_TRUE(registerLifecycleFeed(other.get(), other->ops(other)));
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), feed->ops(feed)));
+
+  EXPECT_EQ(lifecycleLatestCollIdForCommId(5), 17);
+  EXPECT_EQ(other->latestCollIdCount, 0)
+      << "a feed stamping another id was asked";
+}
+
+TEST_F(LifecycleFeedRegistryTest, LatestCollIdIsEmptyWhenNoFeedStampsTheId) {
+  auto feed = makeFeed(4);
+  feed->latestCollId = 17;
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), feed->ops(feed)));
+
+  EXPECT_FALSE(lifecycleLatestCollIdForCommId(9).has_value());
+}
+
+TEST_F(LifecycleFeedRegistryTest, LatestCollIdIsEmptyForTheUnsetId) {
+  // Zero is the default several feeds may carry, so no one of them owns it.
+  auto feed = makeFeed(0);
+  feed->latestCollId = 17;
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), feed->ops(feed)));
+
+  EXPECT_FALSE(lifecycleLatestCollIdForCommId(0).has_value());
+}
+
+TEST_F(LifecycleFeedRegistryTest, ADeadOwnersFeedHasNoLatestCollId) {
+  // The entry outlives its owner until a snapshot reaps it.
+  auto feed = makeFeed(5);
+  feed->latestCollId = 17;
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), feed->ops(feed)));
+  feed.reset();
+
+  EXPECT_FALSE(lifecycleLatestCollIdForCommId(5).has_value());
+}
+
+TEST_F(LifecycleFeedRegistryTest, LatestCollIdIsEmptyWhenTheFeedCannotAnswer) {
+  // What a backend built before the callable existed registers.
+  auto feed = makeFeed(5);
+  auto ops = feed->ops(feed);
+  ops.latestCollId = nullptr;
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), std::move(ops)));
+
+  EXPECT_FALSE(lifecycleLatestCollIdForCommId(5).has_value());
+  EXPECT_EQ(lifecycleFeedFailures(), 0u)
+      << "an unset callable is not a failure";
+}
+
+TEST_F(LifecycleFeedRegistryTest, LatestCollIdSurvivesAFeedThatThrows) {
+  auto feed = makeFeed(5);
+  feed->throwOnLatestCollId = true;
+  ASSERT_TRUE(registerLifecycleFeed(feed.get(), feed->ops(feed)));
+
+  EXPECT_FALSE(lifecycleLatestCollIdForCommId(5).has_value());
+  EXPECT_EQ(lifecycleFeedFailures(), 1u) << "a throwing feed is counted";
+}
+
+TEST_F(LifecycleFeedRegistryTest, AThrowingFeedDoesNotHideTheOneBehindIt) {
+  // Nothing rejects two live feeds stamping one id, so a backend whose
+  // latestCollId raises must not take the answer away from the feed after it.
+  auto thrower = makeFeed(5);
+  auto answerer = makeFeed(5);
+  thrower->throwOnLatestCollId = true;
+  answerer->latestCollId = 17;
+  ASSERT_TRUE(registerLifecycleFeed(thrower.get(), thrower->ops(thrower)));
+  ASSERT_TRUE(registerLifecycleFeed(answerer.get(), answerer->ops(answerer)));
+
+  EXPECT_EQ(lifecycleLatestCollIdForCommId(5), 17);
+  EXPECT_EQ(lifecycleFeedFailures(), 1u) << "the throwing feed is counted";
 }
 
 TEST_F(LifecycleFeedRegistryTest, DescribeIsEmptyWhenNoFeedStampsTheCommId) {
