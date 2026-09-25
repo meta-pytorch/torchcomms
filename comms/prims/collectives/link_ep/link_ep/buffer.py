@@ -22,8 +22,9 @@ try:
     # Installed egg: this package is top-level, so `_cpp` sits beside it.
     # pyre-ignore[21]: only resolvable in the installed-egg layout
     from . import _cpp
-except ModuleNotFoundError:
+except ImportError:
     # Buck: this package is nested one level deeper than the extension.
+    # `from . import` of a missing name raises ImportError, not ModuleNotFoundError.
     # pyre-ignore[21]: cpp_python_extension at runtime
     from comms.prims.collectives.link_ep import _cpp  # @manual
 
@@ -34,43 +35,40 @@ logger: logging.Logger = logging.getLogger(__name__)
 Config = _cpp.Config  # type: ignore[misc]
 
 
-_PEER_ACCESS_PREWARMED: bool = False
+_PEER_ACCESS_ERROR_CHECKED: bool = False
+_HIP_ERROR_PEER_ACCESS_ALREADY_ENABLED = 704
 
 
-def _prewarm_peer_access(num_ranks: int) -> None:
-    """Pre-enable peer access between every (cur_dev, peer) pair so PyTorch's
-    HIP allocator's later `hipDeviceEnablePeerAccess` returns
-    `hipErrorPeerAccessAlreadyEnabled` cleanly (PyTorch's caching allocator
-    silently swallows that error). Idempotent — runs at most once per process.
+def _clear_peer_access_error() -> None:
+    """Clear a pending `hipErrorPeerAccessAlreadyEnabled` before the first collective.
+
+    A same-device launch surfaces a pending error here rather than inside the first
+    `dist.all_gather_object`. Runs at most once per process.
+
+    Do not pre-enable peer access with cross-device tensor copies: the caching
+    allocator then grants every peer access to each later expandable-segment growth,
+    which stalls steps that reach a new memory peak. The kernels don't need it; peer
+    buffers use IPC mappings opened with `cudaIpcMemLazyEnablePeerAccess`.
     """
-    global _PEER_ACCESS_PREWARMED
-    if _PEER_ACCESS_PREWARMED:
+    global _PEER_ACCESS_ERROR_CHECKED
+    if (
+        _PEER_ACCESS_ERROR_CHECKED
+        or not torch.cuda.is_available()
+        or torch.version.hip is None
+    ):
         return
-    if not torch.cuda.is_available():
-        return
-    cur = torch.cuda.current_device()
-    n_devices = torch.cuda.device_count()
-    n = min(num_ranks, n_devices)
-    for peer in range(n):
-        if peer == cur:
-            continue
-        if not torch.cuda.can_device_access_peer(cur, peer):
-            continue
-        try:
-            torch.cuda._lazy_init()
-            # Trigger BOTH directions: peer→cur (.to copy) and cur→peer
-            # (an explicit CUDAGuard + write). Both directions must be
-            # enabled before the dispatch kernel issues cross-rank atomics
-            # and DMA transfers; PyTorch's caching allocator otherwise
-            # tries to enable them lazily during the first kernel and
-            # blows up with `hipErrorPeerAccessAlreadyEnabled` when NCCL
-            # has already set them up.
-            with torch.cuda.device(cur):
-                _ = torch.zeros(1, device=f"cuda:{peer}").to(f"cuda:{cur}")
-                _ = torch.zeros(1, device=f"cuda:{cur}").to(f"cuda:{peer}")
-        except Exception as e:  # noqa: BLE001
-            logger.debug("prewarm peer (%d <-> %d) failed: %s", cur, peer, e)
-    _PEER_ACCESS_PREWARMED = True
+    try:
+        torch.zeros(1, device=torch.cuda.current_device()).add_(1)
+        torch.cuda.current_stream().synchronize()
+    except RuntimeError as e:
+        # torch.AcceleratorError carries the HIP status; older builds only the text.
+        if (
+            getattr(e, "error_code", None) != _HIP_ERROR_PEER_ACCESS_ALREADY_ENABLED
+            and "already enabled" not in str(e).lower()
+        ):
+            raise
+        logger.info("link_ep: cleared HIP peer-access error: %s", e)
+    _PEER_ACCESS_ERROR_CHECKED = True
 
 
 class Buffer:
@@ -169,16 +167,8 @@ class Buffer:
             use_fabric,
         )
 
-        # On AMD, PyTorch's distributed `_object_to_tensor` path fails on the
-        # first `dist.all_gather_object(...)` after our `_cpp.Buffer`
-        # ctor with `hipErrorPeerAccessAlreadyEnabled`. The error originates
-        # in `torch.ByteTensor(byte_storage).to(device)` because PyTorch's
-        # caching allocator tries to enable peer access between the rank's
-        # GPU and other GPUs that NCCL/RCCL has already set up. Pre-warm
-        # peer access between every pair *before* the first collective so
-        # PyTorch sees the access already exists and short-circuits — this
-        # is benign on NVIDIA (idempotent) and avoids the AMD failure.
-        _prewarm_peer_access(self.group_size)
+        # Must precede the first all_gather_object below.
+        _clear_peer_access_error()
 
         # Synchronize device IDs
         local_device_id = self.runtime.get_local_device_id()

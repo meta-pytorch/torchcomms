@@ -16,8 +16,9 @@ try:
     # Installed egg: this package is top-level, so `_cpp` sits beside it.
     # pyre-ignore[21]: only resolvable in the installed-egg layout
     from . import _cpp
-except ModuleNotFoundError:
+except ImportError:
     # Buck: this package is nested one level deeper than the extension.
+    # `from . import` of a missing name raises ImportError, not ModuleNotFoundError.
     # pyre-ignore[21]: cpp_python_extension at runtime
     from comms.prims.collectives.link_ep import _cpp  # @manual
 
