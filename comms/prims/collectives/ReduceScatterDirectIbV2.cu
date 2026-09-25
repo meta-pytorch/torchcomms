@@ -269,9 +269,14 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
     __shared__ volatile int s_published;
     __shared__ volatile int s_consumed;
     __shared__ volatile int s_nchunks;
+    __shared__ volatile int s_terminal;
 
     constexpr int kBookThreads = comms::device::kWarpSize;
     const bool is_book = group.thread_id_in_group < kBookThreads;
+    if (group.is_leader()) {
+      s_terminal = 0;
+    }
+    group.sync();
 
     for (int base = 0; base < num_peers; base += kMaxPeersInFlight) {
       const int count = min(kMaxPeersInFlight, num_peers - base);
@@ -300,6 +305,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
         if (group.thread_id_in_group == 0) {
           int c = 0;
           int released = -1;
+          bool releaseAborted = false;
           while (true) {
             const int s = c % kSlots;
             // Acquire chunk c from every peer. Each call is non-blocking, so a
@@ -340,6 +346,7 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
               }
             }
             if (finished || aborted) {
+              releaseAborted = aborted;
               s_nchunks = c;
               __threadfence_block();
               s_published = c;
@@ -357,27 +364,55 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
               const int ps = (c - 1) % kSlots;
               for (int i = 0; i < count; ++i) {
                 auto transport = args.peers[rpeer_of[i]];
-                transport.progress_recv_release_once(
-                    solo, abortDevice, rviews[ps][i]);
+                if (!transport.progress_recv_release_once(
+                        solo, abortDevice, rviews[ps][i])) {
+                  releaseAborted = true;
+                  break;
+                }
                 rviews[ps][i] = detail::RecvChunkAcquisition{};
+              }
+              if (releaseAborted) {
+                // The refused credit belongs to chunk c-1. Chunk c is already
+                // acquired and published, so reducers may consume it before
+                // terminating even though no further slots may be released.
+                s_nchunks = c + 1;
+                __threadfence_block();
+                s_published = c;
+                break;
               }
               released = c - 1;
             }
             ++c;
           }
           // Drain the slots the reducers still hold.
-          while (released < c - 1) {
+          while (!releaseAborted && released < c - 1) {
             const int d = released + 1;
             while (s_consumed < d) {
             }
             const int ds = d % kSlots;
             for (int i = 0; i < count; ++i) {
               auto transport = args.peers[rpeer_of[i]];
-              transport.progress_recv_release_once(
-                  solo, abortDevice, rviews[ds][i]);
+              if (!transport.progress_recv_release_once(
+                      solo, abortDevice, rviews[ds][i])) {
+                releaseAborted = true;
+                break;
+              }
               rviews[ds][i] = detail::RecvChunkAcquisition{};
             }
+            if (releaseAborted) {
+              break;
+            }
             released = d;
+          }
+          if (releaseAborted) {
+            // Every peer may have an acquired chunk in flight. Retire only the
+            // local progress state; publishing more SLOT_FREE credits after
+            // abort would incorrectly release the senders.
+            for (int i = 0; i < count; ++i) {
+              auto transport = args.peers[rpeer_of[i]];
+              transport.abandon_recv_progress(solo);
+            }
+            s_terminal = 1;
           }
         }
       } else {
@@ -419,6 +454,9 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
         }
       }
       group.sync();
+      if (s_terminal != 0) {
+        break;
+      }
     }
   } else if (group.is_leader()) {
     // Chunk-outer / peer-inner: chunk c goes to every peer before chunk c+1,
@@ -434,12 +472,12 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
     for (int base = 0; base < num_peers; base += kMaxPeersInFlight) {
       const int count = min(kMaxPeersInFlight, num_peers - base);
       int peer_of[kMaxPeersInFlight];
-      bool posted[kMaxPeersInFlight];
+      bool fullyPosted[kMaxPeersInFlight];
       for (int i = 0; i < count; ++i) {
         const int step = base + i;
         peer_of[i] = direct_ib_reduce_scatter_peer_for_step(
             my_rank, W, channel, step, DirectIbReduceScatterRole::SEND);
-        posted[i] = false;
+        fullyPosted[i] = false;
         auto transport = args.peers[peer_of[i]];
         transport.init_registered_send_progress(
             solo,
@@ -450,30 +488,55 @@ __launch_bounds__(kBlockSize, 1) void direct_reduce_scatter_ib_v2_kernel(
       }
 
       int remaining = count;
-      while (remaining > 0) {
+      bool batchAborted = false;
+      while (remaining > 0 && !batchAborted) {
         for (int i = 0; i < count; ++i) {
-          if (posted[i]) {
+          if (fullyPosted[i]) {
             continue;
           }
           auto transport = args.peers[peer_of[i]];
           const auto st =
               transport.progress_registered_send_once(solo, abortDevice);
+          if (st == IbgdaRegisteredSendProgressStatus::Aborted) {
+            batchAborted = true;
+            break;
+          }
           if (st == IbgdaRegisteredSendProgressStatus::Posted) {
-            posted[i] = true;
+            fullyPosted[i] = true;
             --remaining;
           }
         }
       }
 
-      // The NIC reads the caller's input buffer directly, so the transfer is
-      // not finished when the last WQE is posted. Drain before returning or the
-      // caller may reuse that buffer while it is still being read.
-      for (int i = 0; i < count; ++i) {
-        auto transport = args.peers[peer_of[i]];
-        while (
-            transport.progress_registered_send_drain_once(solo, abortDevice) !=
-            IbgdaRegisteredSendProgressStatus::Drained) {
+      // On the healthy path, drain every fully posted transfer before the
+      // source can be reused. An abort can interrupt a partially posted peer;
+      // local progress then terminates, but its registered source remains live
+      // until teardown or reconfiguration of the owning transport completes.
+      bool drainAborted = false;
+      for (int i = 0; i < count && !drainAborted; ++i) {
+        if (!fullyPosted[i]) {
+          continue;
         }
+        auto transport = args.peers[peer_of[i]];
+        while (true) {
+          const auto st =
+              transport.progress_registered_send_drain_once(solo, abortDevice);
+          if (st == IbgdaRegisteredSendProgressStatus::Drained) {
+            break;
+          }
+          if (st == IbgdaRegisteredSendProgressStatus::Aborted) {
+            drainAborted = true;
+            break;
+          }
+        }
+      }
+      batchAborted = batchAborted || drainAborted;
+      if (batchAborted) {
+        for (int i = 0; i < count; ++i) {
+          auto transport = args.peers[peer_of[i]];
+          transport.abandon_send_progress(solo);
+        }
+        break;
       }
     }
   }
