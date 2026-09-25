@@ -59,6 +59,7 @@ class BackendWrapper : public c10d::Backend {
   };
 
   explicit BackendWrapper(std::shared_ptr<TorchComm> comm);
+  BackendWrapper(std::shared_ptr<TorchComm> comm, int rank, int size);
   ~BackendWrapper() override = default;
 
   c10::intrusive_ptr<c10d::Work> broadcast(

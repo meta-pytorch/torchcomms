@@ -5,6 +5,7 @@
 
 #include <ATen/ATen.h>
 #include <cstdlib>
+#include <string>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
@@ -14,6 +15,7 @@
 
 using ::testing::_;
 using ::testing::DoAll;
+using ::testing::HasSubstr;
 using ::testing::InSequence;
 using ::testing::Invoke;
 using ::testing::NiceMock;
@@ -217,7 +219,9 @@ TEST_F(BackendWrapperTest, ReconfigureForwardsOptionsAndRefreshesMembership) {
 
 TEST_F(
     BackendWrapperTest,
-    ReconfigurePreservesUnorderedHandlesAndDefaultTimeout) {
+    ReconfigurePreservesUnorderedHandlesAndUsesDefaultTimeout) {
+  const auto defaultTimeout = std::chrono::milliseconds(7654);
+  wrapper_->setTimeout(defaultTimeout);
   c10d::ReconfigureOptions opts;
   opts.uuid = 43;
   opts.handles = std::unordered_set<c10d::ReconfigureHandle>{"fake:0", "peer"};
@@ -225,16 +229,72 @@ TEST_F(
   const auto& received = getFakeBackend()->getLastReconfigureOptions();
   ASSERT_TRUE(received.has_value());
   EXPECT_EQ(received->handles, opts.handles);
-  EXPECT_EQ(received->timeout, std::nullopt);
+  EXPECT_EQ(received->timeout, defaultTimeout);
   EXPECT_TRUE(received->hints.empty());
 }
 
-TEST_F(BackendWrapperTest, FailedReconfigureDoesNotPublishMembership) {
+TEST_F(BackendWrapperTest, DynamicConstructorSeedsMembershipAndStableHandle) {
+  CommOptions options;
+  options.enable_reconfigure = true;
+  auto comm = new_comm(
+      kBackendName, at::Device(at::kCPU), "dynamic_constructor", options);
+  ASSERT_NE(comm, nullptr);
+  auto* fake = dynamic_cast<TorchCommFake*>(comm->getBackendImpl().get());
+  ASSERT_NE(fake, nullptr);
+
+  auto wrapper =
+      c10::make_intrusive<BackendWrapper>(comm, /*rank=*/7, /*size=*/8);
+  EXPECT_EQ(wrapper->getRank(), 7);
+  EXPECT_EQ(wrapper->getSize(), 8);
+  EXPECT_EQ(wrapper->get_reconfigure_handle(), "fake:0");
+
+  fake->setRank(1);
+  EXPECT_EQ(wrapper->get_reconfigure_handle(), "fake:0");
+}
+
+TEST_F(BackendWrapperTest, ReconfigureForwardsDuplicateOpaqueHandles) {
+  const std::vector<c10d::ReconfigureHandle> handles{"fake:0", "fake:0"};
+  getFakeBackend()->setSize(2);
+  c10d::ReconfigureOptions opts;
+  opts.handles = handles;
+
+  EXPECT_TRUE(wrapper_->reconfigure(opts)->wait());
+
+  const auto& received = getFakeBackend()->getLastReconfigureOptions();
+  ASSERT_TRUE(received.has_value());
+  EXPECT_EQ(
+      std::get<std::vector<c10d::ReconfigureHandle>>(received->handles),
+      handles);
+}
+
+TEST_F(BackendWrapperTest, ReconfigureRejectsEmptyOrMissingLocalHandle) {
+  c10d::ReconfigureOptions opts;
+
+  opts.handles = std::vector<c10d::ReconfigureHandle>{};
+  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+
+  opts.handles = std::vector<c10d::ReconfigureHandle>{"peer"};
+  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+}
+
+TEST_F(
+    BackendWrapperTest,
+    FailedReconfigureReportsDiagnosticAndDoesNotPublishMembership) {
   c10d::ReconfigureOptions opts;
   opts.handles = std::vector<c10d::ReconfigureHandle>{"fake:0"};
   getFakeBackend()->setSize(1);
   getFakeBackend()->setReconfigureFailure(true);
-  EXPECT_THROW(wrapper_->reconfigure(opts), c10::Error);
+  try {
+    wrapper_->reconfigure(opts);
+    FAIL() << "Expected reconfigure failure";
+  } catch (const c10::Error& error) {
+    EXPECT_THAT(error.what(), HasSubstr(kBackendName));
+    EXPECT_THAT(
+        error.what(),
+        HasSubstr(
+            "work status=" +
+            std::to_string(static_cast<int>(TorchWork::WorkStatus::ERROR))));
+  }
   EXPECT_EQ(wrapper_->getSize(), 4);
 
   getFakeBackend()->setReconfigureFailure(false);

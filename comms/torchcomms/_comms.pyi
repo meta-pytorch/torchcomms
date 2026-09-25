@@ -4,7 +4,7 @@
 
 from datetime import timedelta
 from enum import auto, Enum
-from typing import Any, Callable, Dict, List, Set, Type
+from typing import Any, Callable, Dict, List, overload, Set, Type
 
 InitHandle = str
 
@@ -755,7 +755,11 @@ def new_comm(
 ) -> TorchComm: ...
 
 class _BackendWrapper:
+    @overload
     def __init__(self, comm: TorchComm) -> None: ...
+    @overload
+    def __init__(self, comm: TorchComm, rank: int, size: int) -> None: ...
+    def set_timeout(self, timeout: timedelta) -> None: ...
     def get_comm(self) -> TorchComm: ...
     def get_mem_allocator(self) -> Any: ...
 

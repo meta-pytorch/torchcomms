@@ -139,7 +139,7 @@ class TorchCommFake : public TorchCommBackend {
 
   // Fault Tolerance
   InitHandle getInitHandle() const override {
-    return "fake:" + std::to_string(rank_);
+    return initHandle_;
   }
 
   bool supportsReconfigure() const override {
@@ -266,6 +266,7 @@ class TorchCommFake : public TorchCommBackend {
   bool aborted_{false};
   std::optional<std::chrono::milliseconds> timeout_;
   std::unordered_map<std::string, std::string> hints_;
+  InitHandle initHandle_{"fake:0"};
   bool shouldFailReconfigure_{false};
   std::optional<ReconfigureOptions> lastReconfigureOptions_;
   std::unordered_set<void*> registered_addrs_;
