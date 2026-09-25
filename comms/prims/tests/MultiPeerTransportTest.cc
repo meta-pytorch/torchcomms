@@ -1,6 +1,8 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <array>
 #include <cstring>
+#include <optional>
 
 #include <unistd.h>
 
@@ -23,6 +25,7 @@
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
+#include "comms/utils/memtrace/GpuMemoryTracker.h"
 
 using namespace meta::comms;
 
@@ -38,6 +41,9 @@ using meta::comms::testing::MockBootstrap;
  */
 class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
  protected:
+  static constexpr int kMaxNumChannels = 64;
+  static constexpr std::size_t kPerChannelSize = 4 * 1024;
+
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
@@ -45,14 +51,16 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
   }
 
   std::unique_ptr<MultiPeerTransport> createTransport(
-      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr) {
+      std::shared_ptr<comms::fault_tolerance::Abort> abort = nullptr,
+      std::optional<MemSharingMode> nvlMemSharingMode = std::nullopt) {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
                 .pipelineDepth = 4,
                 .p2pSignalCount = 4,
-                .maxNumChannels = 64,
-                .perChannelSize = 4 * 1024,
+                .maxNumChannels = kMaxNumChannels,
+                .perChannelSize = kPerChannelSize,
+                .memSharingMode = nvlMemSharingMode,
             },
         .ibConfig =
             {
@@ -188,6 +196,81 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeSucceeds) {
 
   auto transport = createTransport();
   EXPECT_NO_THROW(transport->exchange());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(
+    MultiPeerTransportTestFixture,
+    PreparedExchangeTracksGpuMemoryResources) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto tracker = std::make_shared<meta::comms::memtrace::GpuMemoryTracker>(
+      meta::comms::memtrace::GpuMemoryContext{});
+  meta::comms::memtrace::ScopedGpuMemoryContext scope{tracker.get()};
+  auto transport = createTransport(nullptr, MemSharingMode::kCudaIpc);
+  if (transport->nvl_n_ranks() < 2) {
+    GTEST_SKIP() << "Requires at least one NVL peer";
+  }
+  const auto expectedStagingBytes =
+      static_cast<std::size_t>(transport->nvl_n_ranks() - 1) * kMaxNumChannels *
+      kPerChannelSize;
+  transport->prepareExchange();
+  transport->exchangePrepared();
+
+  const auto dispatchTableResourceIndex =
+      static_cast<std::size_t>(meta::comms::memtrace::GpuMemoryResourceType::
+                                   kCommonTransportDispatchTable);
+  const auto stagingResourceIndex = static_cast<std::size_t>(
+      meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pDataStaging);
+  const auto unclassifiedResourceIndex = static_cast<std::size_t>(
+      meta::comms::memtrace::GpuMemoryResourceType::kUnclassified);
+  const std::array constructorResources{
+      meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pSignal,
+      meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pChannelState,
+      meta::comms::memtrace::GpuMemoryResourceType::kNvlP2pChannelProgress,
+  };
+  const auto expectedDispatchTableBytes =
+      static_cast<std::size_t>(numRanks) * sizeof(Transport);
+  auto snapshot = tracker->snapshot();
+  for (const auto resource : constructorResources) {
+    EXPECT_GT(
+        snapshot.resources[static_cast<std::size_t>(resource)].currentBytes, 0);
+  }
+  EXPECT_EQ(
+      snapshot.resources[dispatchTableResourceIndex].currentBytes,
+      expectedDispatchTableBytes);
+  EXPECT_EQ(
+      snapshot.resources[dispatchTableResourceIndex].peakBytes,
+      expectedDispatchTableBytes);
+  EXPECT_EQ(
+      snapshot.resources[dispatchTableResourceIndex].totalAllocatedBytes,
+      expectedDispatchTableBytes);
+  EXPECT_GE(
+      snapshot.total.currentBytes,
+      expectedDispatchTableBytes + expectedStagingBytes);
+  const auto& stagingUsage = snapshot.resources[stagingResourceIndex];
+  EXPECT_EQ(stagingUsage.currentBytes, expectedStagingBytes);
+  EXPECT_EQ(stagingUsage.peakBytes, expectedStagingBytes);
+  EXPECT_EQ(stagingUsage.totalAllocatedBytes, expectedStagingBytes);
+  EXPECT_EQ(
+      snapshot.resources[unclassifiedResourceIndex],
+      meta::comms::memtrace::GpuMemoryUsage{});
+
+  transport.reset();
+  snapshot = tracker->snapshot();
+  EXPECT_EQ(snapshot.resources[dispatchTableResourceIndex].currentBytes, 0);
+  EXPECT_EQ(
+      snapshot.resources[dispatchTableResourceIndex].totalFreedBytes,
+      expectedDispatchTableBytes);
+  EXPECT_EQ(snapshot.resources[stagingResourceIndex].currentBytes, 0);
+  EXPECT_EQ(
+      snapshot.resources[stagingResourceIndex].totalFreedBytes,
+      expectedStagingBytes);
+  EXPECT_EQ(snapshot.total.currentBytes, 0);
+  EXPECT_EQ(snapshot.activeAllocations, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
