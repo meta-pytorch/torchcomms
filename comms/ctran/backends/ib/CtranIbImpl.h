@@ -7,6 +7,7 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -38,13 +39,67 @@
   } while (0)
 
 namespace ctran::ib {
-inline void getRemoteKeysImpl(
-    void* ibRegElem,
-    std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK>& rkeys) {
-  auto mrs = reinterpret_cast<std::vector<ibverbx::IbvMr>*>(ibRegElem);
-  for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
-    rkeys.at(device) = (*mrs)[device].mr()->rkey;
+inline commResult_t validateConfiguredDeviceCount(
+    const int configuredDeviceCount,
+    const size_t rkeyCapacity) {
+  if (configuredDeviceCount <= 0) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: invalid configured IB device count {}",
+        configuredDeviceCount);
+    return commInvalidArgument;
   }
+  if (static_cast<size_t>(configuredDeviceCount) > rkeyCapacity) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: configured IB device count {} exceeds rkey capacity {}",
+        configuredDeviceCount,
+        rkeyCapacity);
+    return commInvalidArgument;
+  }
+  return commSuccess;
+}
+
+inline commResult_t getRemoteKeysImpl(
+    void* ibRegElem,
+    const int configuredDeviceCount,
+    std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK>& rkeys) {
+  if (ibRegElem == nullptr) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: getRemoteKeys called with a null IB registration handle");
+    return commInvalidArgument;
+  }
+
+  FB_COMMCHECK(
+      validateConfiguredDeviceCount(configuredDeviceCount, rkeys.size()));
+  const auto deviceCount = static_cast<size_t>(configuredDeviceCount);
+
+  const auto* mrs =
+      reinterpret_cast<const std::vector<ibverbx::IbvMr>*>(ibRegElem);
+  if (mrs->size() < deviceCount) {
+    CTRAN_ERR(
+        commInvalidArgument,
+        "CTRAN-IB: registration carries {} memory regions but {} devices are "
+        "configured",
+        mrs->size(),
+        deviceCount);
+    return commInvalidArgument;
+  }
+  // Validate every MR before mutating the output.
+  for (size_t device = 0; device < deviceCount; device++) {
+    if ((*mrs)[device].mr() == nullptr) {
+      CTRAN_ERR(
+          commInvalidArgument,
+          "CTRAN-IB: registration memory region {} is null",
+          device);
+      return commInvalidArgument;
+    }
+  }
+  for (size_t device = 0; device < deviceCount; device++) {
+    rkeys[device] = (*mrs)[device].mr()->rkey;
+  }
+  return commSuccess;
 }
 } // namespace ctran::ib
 #endif
