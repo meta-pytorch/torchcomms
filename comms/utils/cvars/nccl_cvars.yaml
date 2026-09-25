@@ -2041,7 +2041,8 @@ cvars:
      zero-copy paths. Out-of-place ranks stage their input before running the
      same peer schedule. Fine-grained tracing is suppressed without changing
      that schedule. A divergent value across ranks fails communicator
-     initialization.
+     initialization. Enabled by default; set false to use the unidirectional
+     Ring path.
 
  - name        : MCCL_PRIMS_TRACE_ENABLE
    type        : bool
