@@ -187,7 +187,11 @@ device attributes. Built with uniflow-local `hipify` rule (hipify-perl) +
 `hip_toolchain_override`, **not** `gpu_cpp_library`, due to symbol-translation
 blocker: `gpu_cpp_library` hipify renames `CU_STREAM_WRITE_VALUE_DEFAULT` breaking
 RDMA `CopyEngine` consumers still on hipify-perl. Until RDMA migrates to
-`gpu_cpp_library`, driver seam stays on hipify-perl to preserve CUDA spellings.
+`gpu_cpp_library`, driver seam stays on hipify-perl so header and consumers
+translate identically. hipify-perl releases also differ (ROCm 7.2 and TheRock
+map `cuMemGetHandleForAddressRange` and the dma-buf handle type, ROCm 7.0 does
+not), so such names avoid the `cu` prefix or live in the never-hipified
+`CudaDriverApiHipCompat.h`.
 
 ### Topology Discovery backend
 
@@ -293,8 +297,11 @@ If you encounter errors about CUDA functions not being recognized on AMD:
    mixing `gpu_cpp_library` hipify output with hipify-perl consumers.
    `cuda-driver-api` must stay on uniflow-local hipify-perl until RDMA
    `CopyEngine` migrates to `gpu_cpp_library` — see `drivers/cuda/BUCK` Phase 2
-   seam comment for blocker details. Both producer and consumer must use same
-   hipify tool to preserve CUDA spellings.
+   seam comment for blocker details. Producer and consumers must translate each
+   name they share identically; errors such as
+   `redefinition of 'hipMemRangeHandleTypeDmaBufFd'` or
+   `no member named 'cuMemGetHandleForAddressRange'` mean a newer hipify-perl
+   (ROCm 7.2, TheRock) translated a name the other side kept.
 
 ### Neutral Zone Guard Failures
 

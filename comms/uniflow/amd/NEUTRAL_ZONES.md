@@ -37,8 +37,10 @@ GPU-specific code lives **only** behind the seams in:
     due to symbol-translation blocker: fbcode gpu_cpp_library hipify renames
     `CU_STREAM_WRITE_VALUE_DEFAULT` → `hipStreamWriteValueDefault` and mishandles
     other driver symbols, breaking RDMA consumers (`CopyEngine`) that still use
-    hipify-perl and expect CUDA spellings. Until RDMA moves to gpu_cpp_library,
-    driver seam stays on hipify-perl to preserve CUDA spellings in exported header.
+    hipify-perl. Until RDMA moves to gpu_cpp_library, driver seam stays on
+    hipify-perl so header and consumers translate identically; names that
+    hipify-perl releases translate differently (ROCm 7.0 vs 7.2/TheRock) avoid
+    the `cu` prefix or live in never-hipified `CudaDriverApiHipCompat.h`.
   * `cuda-topology-discovery` — `CudaTopologyDiscovery` backend wiring CUDA,
     NVML, ibverbs and sysfs into `TopologyDiscovery` interface; plain C++ library
     selecting GPU seam targets via deps.
@@ -80,6 +82,7 @@ fbcode//comms/uniflow/drivers/nvml(/|:).*   # NVML / amdsmi topology seam (facto
 # clang_root, ...) is a parse-time dep of every C++ target and is NOT matched.
 .*//third-party.*/cuda(/[^:]*)?:(cuda-lazy|cuda|nvml-lazy|nvml)
 .*//third-party.*/rocm(/[^:]*)?:(amdhip64-lazy|amdhip64|amdsmi-lazy|amdsmi)
+.*//third-party.*/therock(/[^:]*)?:(amdhip64-lazy|amdhip64|amd_smi-lazy|amd_smi)
 ```
 
 Run them with:

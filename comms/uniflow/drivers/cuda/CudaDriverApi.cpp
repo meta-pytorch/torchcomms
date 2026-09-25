@@ -598,16 +598,16 @@ Status CudaDriverApi::cuMemImportFromShareableHandle(
   CU_CALL(cuMemImportFromShareableHandle, handle, osHandle, shHandleType);
 }
 
-Status CudaDriverApi::cuMemGetHandleForAddressRange(
+Status CudaDriverApi::memGetHandleForAddressRange(
     void* handle,
     CUdeviceptr dptr,
     size_t size,
     CUmemRangeHandleType handleType,
     unsigned long long flags) {
 #if defined(__HIP_PLATFORM_AMD__)
-  // hipify-perl does not map cuMemGetHandleForAddressRange, so call the HIP
-  // dma-buf fd export directly (GPUDirect RDMA path). CU_ENSURE_INIT() mirrors
-  // the CU_CALL path; the global symbol is qualified to avoid the member name.
+  // Not every hipify-perl release maps cuMemGetHandleForAddressRange (ROCm 7.0
+  // gates it behind -experimental), so call the HIP dma-buf fd export directly
+  // (GPUDirect RDMA path). CU_ENSURE_INIT() mirrors the CU_CALL path.
   CU_ENSURE_INIT();
   return cuRetToStatus(
       ::hipMemGetHandleForAddressRange(handle, dptr, size, handleType, flags),

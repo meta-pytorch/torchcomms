@@ -107,7 +107,7 @@ class MockCudaDriverApi : public CudaDriverApi {
       (override));
   MOCK_METHOD(
       Status,
-      cuMemGetHandleForAddressRange,
+      memGetHandleForAddressRange,
       (void* handle,
        CUdeviceptr dptr,
        size_t size,
