@@ -9,6 +9,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/utils/CtranLogUtils.h"
@@ -233,6 +234,10 @@ inline commResult_t sendRecvImpl(
   static thread_local auto sendRecvConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::SENDRECV);
 
+  // Set-once ambient IB config for this group; the puts below observe it
+  // without per-call overrides.
+  CtranIbActiveConfigRAII activeIbConfig(mapper->ctranIbPtr(), sendRecvConfig);
+
   // As we recv control msgs, issue PUT operations
   bool isIssuedFirst = false;
   while (putReqs.size() < sendOpGroup.size() && !comm->testAbort()) {
@@ -272,8 +277,7 @@ inline commResult_t sendRecvImpl(
                 .memHdl_ = sendMemHdl[i],
                 .remoteAccessKey_ = remoteAccessKey[i],
                 .notify_ = true,
-                .kernElem_ = op->send.kElem,
-                .ibConfig_ = sendRecvConfig},
+                .kernElem_ = op->send.kElem},
             &req));
         putReqs[i] = std::unique_ptr<CtranMapperRequest>(req);
         timestamp->putIssued.push_back(
