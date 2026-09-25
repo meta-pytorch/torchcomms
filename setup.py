@@ -209,6 +209,16 @@ class build_ext(build_ext_orig):
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
             f"-DTORCHCOMMS_BUNDLE_OBSERVATORY={flag_str(TORCHCOMMS_BUNDLE_OBSERVATORY)}",
         ]
+        # Route the extension phase through the same compiler cache the NCCLX
+        # make phase uses. Set by scripts/_build_wheel.sh only when it has a
+        # working sccache; unset everywhere else, including local builds.
+        if os.environ.get("USE_SCCACHE"):
+            cmake_args += [
+                "-DCMAKE_C_COMPILER_LAUNCHER=sccache",
+                "-DCMAKE_CXX_COMPILER_LAUNCHER=sccache",
+                "-DCMAKE_CUDA_COMPILER_LAUNCHER=sccache",
+            ]
+
         parallel_level = os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL", "").strip()
         if parallel_level:
             try:
